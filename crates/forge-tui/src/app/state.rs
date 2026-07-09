@@ -4163,6 +4163,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn needs_input_sessions_tiebreaks_equal_enqueue_by_session_id() {
+        // `sessions` is a HashMap (unordered iteration), so equal enqueue
+        // times must resolve deterministically via the session-id
+        // tiebreak or the band would flicker order between frames. Seed
+        // in reverse id order to prove the sort, not insertion order.
+        let mut app = App::test_default();
+        seed_needs_input_session(&mut app, "zeta", 500);
+        seed_needs_input_session(&mut app, "alpha", 500);
+        let entries = app.needs_input_sessions();
+        let order: Vec<&str> = entries.iter().map(|e| e.session_key.as_str()).collect();
+        assert_eq!(order, vec!["alpha", "zeta"], "equal enqueue -> deterministic id tiebreak");
+    }
+
+    #[test]
+    fn needs_input_sessions_resolves_worker_role_from_live_worker() {
+        use forge_workspace::{SessionKey, WorkerEntry};
+
+        let mut app = App::test_default();
+        let ws = app.workspace.clone().expect("test workspace");
+        ws.seed_test_project_with_static_workers("core-v1", "/tmp/core-v1", &[]);
+        // Insert the worker under the SAME key list_projects returns
+        // (derived from the project path, not the name).
+        let project_key = ws
+            .list_projects()
+            .into_iter()
+            .find(|p| p.name == "core-v1")
+            .expect("seeded project")
+            .key;
+        let worker_key = SessionKey::from_session_id("worker-steward-uuid");
+        ws.insert_live_worker(
+            &project_key,
+            WorkerEntry {
+                label: "steward".into(),
+                charter: "be sharp".into(),
+                session_key: worker_key.clone(),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".into(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+
+        // A waiting (background) bucket for that worker session.
+        let mut session = crate::app::session::UiSession::new(worker_key.clone());
+        let mut prompt = crate::app::prompt::PromptState::from_permission(
+            "tc-w".to_owned(),
+            crate::app::prompt::tests::make_permission_request(),
+        );
+        prompt.enqueued_at = std::time::SystemTime::UNIX_EPOCH;
+        session.prompt_queue.push_back(prompt);
+        app.sessions.insert(worker_key.clone(), session);
+
+        let entries = app.needs_input_sessions();
+        let entry = entries.iter().find(|e| e.session_key == worker_key).expect("worker entry");
+        assert_eq!(entry.name, "core-v1", "name resolves to the owning project");
+        assert_eq!(entry.role.as_deref(), Some("steward"), "role resolves to the worker label");
+    }
+
     /// A worker spawned into a git worktree carries the worktree path
     /// (`<project>/.claude/worktrees/<label>`) as its cwd, but its bucket
     /// is stamped with the PARENT project name (resolved at Connect), so

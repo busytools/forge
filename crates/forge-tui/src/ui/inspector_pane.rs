@@ -4068,4 +4068,114 @@ mod tests {
         app.switch_active_session(key);
         assert_eq!(app.active_session_key.as_ref(), Some(&bg), "the click jumps to the session");
     }
+
+    #[test]
+    fn attention_row_target_is_pinned_regardless_of_body_scroll() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        // The band is pinned above the scroll body, so scrolling the
+        // active session's inspector body must not move the attention
+        // row's hit target. Locks the invariant against a future
+        // "fold the band into the scroll body" refactor.
+        let mut app = app_with_waiting_session("granite-backend");
+        let bg = forge_workspace::SessionKey::from_session_id("granite-backend");
+        let area = Rect { x: 0, y: 0, width: 40, height: 24 };
+
+        let row_y_at = |app: &mut App, offset: u16| -> u16 {
+            if let Some(active) = app.try_active_bucket_mut() {
+                active.inspector_scroll_offset = offset;
+            }
+            app.pane_hit_targets.clear();
+            let mut term = Terminal::new(TestBackend::new(40, 24)).expect("terminal");
+            term.draw(|f| render(f, area, app)).expect("draw");
+            app.pane_hit_targets
+                .iter()
+                .find_map(|t| match t {
+                    PaneHitTarget::InspectorAttentionRow { session_key, y, .. }
+                        if *session_key == bg =>
+                    {
+                        Some(*y)
+                    }
+                    _ => None,
+                })
+                .expect("attention row target stamped")
+        };
+
+        let unscrolled = row_y_at(&mut app, 0);
+        let scrolled = row_y_at(&mut app, 50);
+        assert_eq!(unscrolled, scrolled, "the pinned row stays put while the body scrolls");
+    }
+
+    #[test]
+    fn attention_band_caps_rows_clamps_body_and_skips_clipped_rows() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = App::test_default();
+        for i in 0..6 {
+            let key = forge_workspace::SessionKey::from_session_id(format!("bg-{i}"));
+            let mut session = crate::app::session::UiSession::new(key.clone());
+            session.project = Some(format!("proj-{i}"));
+            let prompt = crate::app::prompt::PromptState::from_permission(
+                format!("tc-{i}"),
+                crate::app::prompt::tests::make_permission_request(),
+            );
+            session.prompt_queue.push_back(prompt);
+            app.sessions.insert(key, session);
+        }
+        assert_eq!(app.needs_input_sessions().len(), 6, "six background waiters");
+
+        let count_rows = |app: &App| {
+            app.pane_hit_targets
+                .iter()
+                .filter(|t| matches!(t, PaneHitTarget::InspectorAttentionRow { .. }))
+                .count()
+        };
+
+        // Tall pane: the fixed cap shows ATTENTION_MAX_ROWS rows + `+N more`.
+        app.pane_hit_targets.clear();
+        let mut term = Terminal::new(TestBackend::new(40, 30)).expect("terminal");
+        let mut body = Rect::default();
+        term.draw(|f| body = render_attention_band(f, Rect::new(0, 2, 40, 24), &mut app))
+            .expect("draw");
+        assert_eq!(count_rows(&app), ATTENTION_MAX_ROWS, "cap: only K rows stamped");
+        assert!(body.height > 0, "body kept on a tall pane");
+        assert!(buffer_text(term.backend().buffer()).contains("+1 more"), "overflow tail renders");
+
+        // Short pane: the band clamps to keep body rows, and clipped rows
+        // are not stamped (the clip-skip branch).
+        app.pane_hit_targets.clear();
+        let mut term = Terminal::new(TestBackend::new(40, 30)).expect("terminal");
+        let mut body = Rect::default();
+        term.draw(|f| body = render_attention_band(f, Rect::new(0, 2, 40, 7), &mut app))
+            .expect("draw");
+        assert!(body.height > 0, "body stays non-empty on a short pane: {body:?}");
+        let stamped = count_rows(&app);
+        assert!(
+            (1..ATTENTION_MAX_ROWS).contains(&stamped),
+            "clip reduced the stamped rows below the cap: {stamped}",
+        );
+    }
+
+    #[test]
+    fn fmt_countdown_hours_and_attention_detail_clock_skew() {
+        use std::time::{Duration, SystemTime};
+
+        // Hours branch (>= 1h).
+        assert_eq!(fmt_countdown(Duration::from_secs(3661)), "1h1m");
+        assert_eq!(fmt_countdown(Duration::from_secs(7200)), "2h0m");
+
+        // Clock skew: `now` earlier than `enqueued_at` -> duration_since
+        // Err -> "0s", not a panic or a bogus huge age.
+        let entry = AttentionEntry {
+            session_key: forge_workspace::SessionKey::from_session_id("s"),
+            name: "p".to_owned(),
+            role: None,
+            kind: AttentionKind::Question,
+            enqueued_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1000),
+        };
+        let earlier = SystemTime::UNIX_EPOCH + Duration::from_secs(500);
+        assert_eq!(attention_detail(&entry, earlier), "question \u{00B7} 0s");
+    }
 }
