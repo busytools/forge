@@ -2265,8 +2265,8 @@ impl App {
     /// per `Task` / `Agent` dispatch (a visible root) plus a tail of
     /// the last `SUBAGENT_TAIL_CAP` `SubagentChild` tool calls under
     /// each root, identified via `parent_tool_use_id` on the
-    /// scope-registered map. Returns an empty Vec when every root in
-    /// the view is at a terminal status - mirrors
+    /// scope-registered map. Returns an empty Vec when every root is
+    /// terminal AND drained from `alive_task_ids` - mirrors
     /// `clear_workflows_if_all_terminal` so the section auto-clears.
     /// Pure derive over `UiSession` state; no mutation, no new wire
     /// surface.
@@ -2353,18 +2353,16 @@ impl App {
             .map(|root| {
                 let children = children_by_parent.remove(root.id.as_str()).unwrap_or_default();
                 let total_count = children.len();
-                // Terminal roots show the trailing `· N tools` summary
-                // instead of the live tail (per the render path), so
-                // honour that contract by emptying the field in the
-                // derive too - `tail` then literally means "the live
-                // tail to render". `total_count` survives because the
-                // summary reads from it.
-                let in_progress = matches!(
-                    root.status,
+                // Alive-but-terminal roots (backgrounded) render running; a
+                // still-`Pending` root stays queued rather than spinning.
+                let running = root_is_active(&root)
+                    && root.status != crate::agent::model::ToolCallStatus::Pending;
+                let status = if running {
                     crate::agent::model::ToolCallStatus::InProgress
-                        | crate::agent::model::ToolCallStatus::Pending
-                );
-                let tail = if in_progress {
+                } else {
+                    root.status
+                };
+                let tail = if running {
                     let tail_start = children.len().saturating_sub(cap);
                     children[tail_start..]
                         .iter()
@@ -2380,7 +2378,7 @@ impl App {
                 crate::app::state::types::SubagentEntry {
                     tool_use_id: root.id.clone(),
                     label: subagent_label_from_root(root),
-                    status: root.status,
+                    status,
                     tail,
                     total_count,
                 }
@@ -7510,5 +7508,85 @@ mod tests {
             "a backgrounded-but-alive subagent stays in the SUBAGENTS view; got {view:?}",
         );
         assert_eq!(view[0].tool_use_id, "tu-root-bg");
+    }
+
+    /// Companion to the keeps-alive test: a backgrounded root whose
+    /// sentinel status reads terminal but that is still in
+    /// `alive_task_ids` must render as *running* - InProgress status
+    /// (spinner, no `· N tools` summary) AND its live tool tail
+    /// preserved. Deriving the row from `root.status` alone painted a
+    /// ✓ and dropped the tail even though the task kept working.
+    #[test]
+    fn subagents_view_backgrounded_alive_root_shows_running_with_tail() {
+        let mut app = App::test_default();
+        let root = make_subagent_root_tc(
+            "tu-root-bg2",
+            "Explore",
+            "long-running background scan",
+            model::ToolCallStatus::Completed,
+        );
+        // More children than the cap so this also exercises the tail cap
+        // on the alive-via-task_ids path (the existing cap test drives an
+        // InProgress-status root instead).
+        let child_count = SUBAGENT_TAIL_CAP + 2;
+        let mut children = Vec::new();
+        for i in 1..=child_count {
+            children.push(make_subagent_child_tc(
+                &format!("tu-bg-c{i}"),
+                "Read",
+                &format!("bg-file-{i}.rs"),
+            ));
+        }
+        push_subagent_session(&mut app, root, children);
+        let _: () = app.with_turn_state_mut(|ts| {
+            ts.task_tool_use_ids.insert("task-bg2".to_owned(), "tu-root-bg2".to_owned());
+            ts.alive_task_ids.insert("task-bg2".to_owned());
+        });
+
+        let view = app.subagents_view();
+        assert_eq!(view.len(), 1, "alive backgrounded root stays; got {view:?}");
+        assert_eq!(
+            view[0].status,
+            model::ToolCallStatus::InProgress,
+            "alive backgrounded root must render running, not its sentinel-terminal status; got {:?}",
+            view[0].status,
+        );
+        assert_eq!(
+            view[0].total_count, child_count,
+            "total_count counts every child; got {}",
+            view[0].total_count,
+        );
+        assert_eq!(
+            view[0].tail.len(),
+            SUBAGENT_TAIL_CAP,
+            "alive backgrounded root keeps its live tail, capped at SUBAGENT_TAIL_CAP; got {:?}",
+            view[0].tail,
+        );
+    }
+
+    /// A freshly-dispatched root sits at `Pending` (queued `○`) until the
+    /// CLI reports progress. The liveness promotion is only for a
+    /// backgrounded root whose sentinel flipped it terminal - it must NOT
+    /// fire for a not-yet-started `Pending` root just because that root
+    /// counts as active for the section gate.
+    #[test]
+    fn subagents_view_pending_root_stays_pending() {
+        let mut app = App::test_default();
+        let root = make_subagent_root_tc(
+            "tu-root-pending",
+            "Explore",
+            "queued scan",
+            model::ToolCallStatus::Pending,
+        );
+        push_subagent_session(&mut app, root, Vec::new());
+
+        let view = app.subagents_view();
+        assert_eq!(view.len(), 1, "a pending root still shows in the section; got {view:?}");
+        assert_eq!(
+            view[0].status,
+            model::ToolCallStatus::Pending,
+            "a not-yet-started root stays Pending (queued), not forced to the running spinner; got {:?}",
+            view[0].status,
+        );
     }
 }

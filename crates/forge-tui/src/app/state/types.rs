@@ -305,10 +305,9 @@ pub struct SubagentEntry {
     /// the raw sdk_tool_name (`Task` / `Agent`).
     pub label: String,
     pub status: model::ToolCallStatus,
-    /// Last [`SUBAGENT_TAIL_CAP`] children in chronological (block)
-    /// order. Empty when no children have arrived yet OR when the
-    /// root is at a terminal status (the section then renders the
-    /// trailing `· N tools` summary instead of the live tail).
+    /// Last [`SUBAGENT_TAIL_CAP`] children (block order), populated only
+    /// while the root is running. A terminal root instead renders the
+    /// trailing `· N tools` summary; a queued root shows neither.
     pub tail: Vec<SubagentChildEntry>,
     /// Total visible-or-hidden child tool calls registered under
     /// this root - the truncated `tail` may carry fewer entries.
