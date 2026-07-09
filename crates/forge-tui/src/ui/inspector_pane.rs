@@ -173,6 +173,18 @@ fn build_inline_banner(width: u16) -> Vec<Line<'static>> {
     ]
 }
 
+/// Max session rows the pinned band renders before collapsing the
+/// tail into a `+N more` line. Bounds the band's height regardless of
+/// how many sessions are waiting so a burst can't crowd out GIT.
+/// Matches the TASKS section's per-section cap.
+const ATTENTION_MAX_ROWS: usize = 5;
+
+/// Rows the band leaves for the scrollable body when the pane has the
+/// height to spare, so the band never consumes the whole pane. On a
+/// pane too short to honour this the band clips (and its clipped rows
+/// are skipped when stamping) rather than hide the body entirely.
+const ATTENTION_MIN_BODY_ROWS: u16 = 3;
+
 /// Render the pinned NEEDS INPUT attention band into the top of
 /// `area` when any background session is waiting, returning the body
 /// rect below it (fed to the scrollable body). When nothing waits the
@@ -187,9 +199,21 @@ fn render_attention_band(frame: &mut Frame, area: Rect, app: &mut App) -> Rect {
     if entries.is_empty() {
         return area;
     }
+    let total = entries.len();
+    // Fixed row cap bounds the band regardless of waiter count; the
+    // tail collapses to a `+N more` line.
+    let shown = total.min(ATTENTION_MAX_ROWS);
+    let overflow = total - shown;
+
     let now = std::time::SystemTime::now();
-    let lines = build_attention_lines(&entries, area.width, now);
-    let band_height = u16::try_from(lines.len()).unwrap_or(u16::MAX).min(area.height);
+    let lines = build_attention_lines(&entries[..shown], total, overflow, area.width, now);
+    // Clamp the band so the scrollable body keeps at least
+    // ATTENTION_MIN_BODY_ROWS when the pane is tall enough; on a very
+    // short pane the band shows what it can (at least the header) and
+    // the body takes the rest.
+    let natural = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let band_height =
+        natural.min(area.height.saturating_sub(ATTENTION_MIN_BODY_ROWS)).min(area.height).max(1);
     let band_area = Rect { x: area.x, y: area.y, width: area.width, height: band_height };
     frame.render_widget(Paragraph::new(lines), band_area);
 
@@ -199,7 +223,7 @@ fn render_attention_band(frame: &mut Frame, area: Rect, app: &mut App) -> Rect {
     // resolve to an off-screen row.
     let band_bottom = band_area.y.saturating_add(band_height);
     let x_end = area.x.saturating_add(area.width);
-    for (i, entry) in entries.iter().enumerate() {
+    for (i, entry) in entries[..shown].iter().enumerate() {
         let offset = u16::try_from(i.saturating_add(1)).unwrap_or(u16::MAX);
         let row_y = band_area.y.saturating_add(offset);
         if row_y >= band_bottom {
@@ -222,22 +246,40 @@ fn render_attention_band(frame: &mut Frame, area: Rect, app: &mut App) -> Rect {
     }
 }
 
-/// Build the pinned NEEDS INPUT band's lines from `entries` (already
-/// sorted stalest-first): the `△ NEEDS INPUT` header + count, one row
-/// per session, then a DIM `─` rule bracketing the band off from the
-/// scrolling body.
+/// Build the pinned NEEDS INPUT band's lines: the `△ NEEDS INPUT`
+/// header (with the full `total` waiter count), one row per `shown`
+/// session (already sorted stalest-first), an optional dim `+N more`
+/// line when `overflow > 0`, then a DIM `─` rule bracketing the band
+/// off from the scrolling body.
 fn build_attention_lines(
-    entries: &[AttentionEntry],
+    shown: &[AttentionEntry],
+    total: usize,
+    overflow: usize,
     width: u16,
     now: std::time::SystemTime,
 ) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(entries.len() + 2);
-    lines.push(attention_header_line(width, entries.len()));
-    for entry in entries {
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(shown.len() + 3);
+    lines.push(attention_header_line(width, total));
+    for entry in shown {
         lines.push(attention_row_line(width, entry, now));
+    }
+    if overflow > 0 {
+        lines.push(attention_overflow_line(overflow));
     }
     push_section_rule(&mut lines, width);
     lines
+}
+
+/// The band's `+N more` overflow line: dim italic, matching the
+/// TASKS / GIT-layer overflow rows.
+fn attention_overflow_line(overflow: usize) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(" ".repeat(usize::from(PANE_PAD))),
+        Span::styled(
+            format!("+{overflow} more"),
+            Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+        ),
+    ])
 }
 
 /// Attention-band header: yellow `△ NEEDS INPUT` with a right-justified
@@ -3867,14 +3909,14 @@ mod tests {
             .join("\n")
     }
 
-    /// The band's lines for the current app state, or an empty `Vec`
-    /// when nothing is waiting (the render path's no-band case).
+    /// The band's lines for the current app state (all entries shown,
+    /// no overflow), or an empty `Vec` when nothing is waiting.
     fn build_attention_band(app: &App, width: u16) -> Vec<Line<'static>> {
         let entries = app.needs_input_sessions();
         if entries.is_empty() {
             return Vec::new();
         }
-        build_attention_lines(&entries, width, std::time::SystemTime::now())
+        build_attention_lines(&entries, entries.len(), 0, width, std::time::SystemTime::now())
     }
 
     #[test]
