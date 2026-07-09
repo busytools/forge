@@ -246,11 +246,11 @@ fn render_attention_band(frame: &mut Frame, area: Rect, app: &mut App) -> Rect {
     }
 }
 
-/// Build the pinned NEEDS INPUT band's lines: the `△ NEEDS INPUT`
-/// header (with the full `total` waiter count), one row per `shown`
-/// session (already sorted stalest-first), an optional dim `+N more`
-/// line when `overflow > 0`, then a DIM `─` rule bracketing the band
-/// off from the scrolling body.
+/// Build the pinned NEEDS INPUT band's lines: the DIM-bold ` NEEDS INPUT`
+/// header (with the full `total` waiter count), a blank spacer, one row
+/// per `shown` session (already sorted stalest-first), an optional dim
+/// `+N more` line when `overflow > 0`, then a blank + DIM `─` rule
+/// bracketing the band off from the scrolling body.
 fn build_attention_lines(
     shown: &[AttentionEntry],
     total: usize,
@@ -4067,6 +4067,66 @@ mod tests {
         // Switching (what the click handler does) makes it the active session.
         app.switch_active_session(key);
         assert_eq!(app.active_session_key.as_ref(), Some(&bg), "the click jumps to the session");
+    }
+
+    #[test]
+    fn attention_row_hit_target_lands_on_its_own_rendered_row() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        // Two waiting sessions with distinct names: the stamped hit-target
+        // `y` (render_attention_band) and the line layout
+        // (build_attention_lines) are two separate magic numbers, so an
+        // off-by-one lands a click on the WRONG session's row rather than a
+        // blank - this pins each stamp to the buffer row it actually
+        // targets. Guards the header/spacer/row offset against silent drift.
+        let names = ["alpha-project", "beta-project"];
+        let mut app = App::test_default();
+        for name in names {
+            let key = forge_workspace::SessionKey::from_session_id(name);
+            let mut session = crate::app::session::UiSession::new(key.clone());
+            session.project = Some(name.to_owned());
+            let prompt = crate::app::prompt::PromptState::from_permission(
+                format!("tc-{name}"),
+                crate::app::prompt::tests::make_permission_request(),
+            );
+            session.prompt_queue.push_back(prompt);
+            app.sessions.insert(key, session);
+        }
+        assert_eq!(app.needs_input_sessions().len(), 2, "two background waiters");
+        let expected: std::collections::HashMap<forge_workspace::SessionKey, &str> =
+            names.iter().map(|n| (forge_workspace::SessionKey::from_session_id(*n), *n)).collect();
+
+        let width = 60u16;
+        let area = Rect { x: 0, y: 0, width, height: 24 };
+        let mut term = Terminal::new(TestBackend::new(width, 24)).expect("terminal");
+        term.draw(|f| {
+            render_attention_band(f, area, &mut app);
+        })
+        .expect("draw");
+
+        let buffer = term.backend().buffer().clone();
+        let row_text = |y: u16| -> String {
+            let w = usize::from(buffer.area.width);
+            let start = usize::from(y) * w;
+            buffer.content[start..start + w].iter().map(ratatui::buffer::Cell::symbol).collect()
+        };
+
+        let mut checked = 0;
+        for target in &app.pane_hit_targets {
+            let PaneHitTarget::InspectorAttentionRow { session_key, y, .. } = target else {
+                continue;
+            };
+            let want = expected.get(session_key).expect("stamped key is a seeded session");
+            let text = row_text(*y);
+            assert!(text.contains('\u{25b3}'), "row at y={y} carries the △ marker; got {text:?}");
+            assert!(
+                text.contains(want),
+                "hit-target y={y} must land on its own session's row ({want}); got {text:?}",
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 2, "both waiting sessions stamped a row target");
     }
 
     #[test]
