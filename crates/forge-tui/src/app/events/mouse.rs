@@ -838,6 +838,11 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             }
             PaneHitTarget::InspectorAttentionRow { session_key, .. } => {
                 app.switch_active_session(session_key);
+                // Dismiss the Narrow-tier overlay so the click lands the
+                // user on the chat where the prompt is, matching the
+                // projects-overlay row-click. No-op at Wide/Medium.
+                app.projects_pane_overlay_open = false;
+                app.inspector_pane_overlay_open = false;
                 app.needs_redraw = true;
                 return true;
             }
