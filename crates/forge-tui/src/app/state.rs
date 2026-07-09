@@ -1640,9 +1640,23 @@ impl App {
     /// Inspector NEEDS INPUT band hides on empty.
     pub fn needs_input_sessions(&self) -> Vec<AttentionEntry> {
         let active = self.active_session_key.as_ref();
+        // Cheap first pass: which background sessions have a head-of-queue
+        // prompt? The common case (nothing waiting) returns here without
+        // touching the workspace - no `list_projects` clone, no live-
+        // workers lock - since this runs on every inspector render.
+        let waiting: Vec<(&forge_workspace::SessionKey, &crate::app::session::UiSession)> = self
+            .sessions
+            .iter()
+            .filter(|(key, session)| active != Some(*key) && !session.prompt_queue.is_empty())
+            .collect();
+        if waiting.is_empty() {
+            return Vec::new();
+        }
+
+        // At least one session is waiting: resolve names / roles. One
+        // (project, role) row per live worker so the per-session lookup
+        // is a map hit, not a nested per-project scan.
         let projects = self.workspace.as_ref().map(|ws| ws.list_projects()).unwrap_or_default();
-        // One (project, role) row per live worker so the per-session
-        // lookup is a map hit, not a nested per-project scan.
         let mut worker_index: HashMap<forge_workspace::SessionKey, (String, String)> =
             HashMap::new();
         if let Some(ws) = self.workspace.as_ref() {
@@ -1657,11 +1671,8 @@ impl App {
         }
         let project_refs: Vec<&forge_workspace::ProjectView> = projects.iter().collect();
 
-        let mut entries: Vec<AttentionEntry> = Vec::new();
-        for (key, session) in &self.sessions {
-            if active == Some(key) {
-                continue;
-            }
+        let mut entries: Vec<AttentionEntry> = Vec::with_capacity(waiting.len());
+        for (key, session) in waiting {
             let Some(prompt) = session.prompt_queue.front() else { continue };
             let kind = match &prompt.source {
                 crate::app::prompt::PromptSource::Permission { tool_name, .. } => {
