@@ -15,9 +15,9 @@ use crate::app::state::cache_metrics::CacheMetrics;
 use crate::app::state::messages::ChatMessage;
 use crate::app::state::render_budget::{RenderCacheEvictionKey, RenderCacheSlotState};
 use crate::app::state::types::{
-    HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeState, MonitorEntry,
-    PasteSessionState, PendingCommandAck, RecentSessionInfo, SelectionState, SessionUsageState,
-    StopHookSummaryState, TodoItem, ToolCallScope, UsageState, WorkflowEntry,
+    BackgroundTask, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeState,
+    MonitorEntry, PasteSessionState, PendingCommandAck, RecentSessionInfo, SelectionState,
+    SessionUsageState, StopHookSummaryState, TodoItem, ToolCallScope, UsageState, WorkflowEntry,
 };
 use crate::app::state::viewport::ChatViewport;
 use crate::app::state::{ChatRenderTraceState, TerminalToolCallRef, TurnNoticeRef};
@@ -300,6 +300,13 @@ pub struct UiSession {
     /// `MonitorEntry::OUTPUT_TAIL_MAX` per entry.
     pub monitors: Vec<MonitorEntry>,
 
+    /// CLI-authoritative background-task snapshot surfaced as the
+    /// Inspector BACKGROUND section. Replaced wholesale on each
+    /// `background_tasks_changed` event; an empty snapshot clears it
+    /// and hides the section. Session-scoped because background tasks
+    /// outlive the turn that spawned them.
+    pub background_tasks: Vec<BackgroundTask>,
+
     /// Pending time-based schedules (`ScheduleWakeup` + `CronCreate`)
     /// surfaced in the Inspector SCHEDULES section. Pruned by the
     /// ~1s timer tick via `App::prune_expired_schedules`.
@@ -509,6 +516,7 @@ impl Default for UiSession {
             last_stop_hook_summary: None,
             stop_hook_summary_expanded: std::collections::HashMap::default(),
             monitors: Vec::default(),
+            background_tasks: Vec::default(),
             schedules: Vec::default(),
             workflows: Vec::default(),
             group_collapse_levels: std::collections::HashMap::default(),

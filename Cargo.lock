@@ -1234,6 +1234,7 @@ dependencies = [
  "dirs",
  "forge-primitives",
  "forge-sdk",
+ "forge-test-harness",
  "forge-tui",
  "forge-workspace",
  "futures",

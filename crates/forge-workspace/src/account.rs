@@ -235,6 +235,31 @@ impl AccountStateMap {
         self.by_key.get(key).map(|s| &s.config_dir)
     }
 
+    /// Reverse of [`Self::config_dir`]: the account key bound to `dir`.
+    /// A live session runs under its account's `config_dir`, so this
+    /// maps that dir back to the key to rotate off on a 429.
+    pub fn key_for_config_dir(&self, dir: &std::path::Path) -> Option<AccountKey> {
+        self.by_key.iter().find(|(_, state)| state.config_dir == dir).map(|(key, _)| key.clone())
+    }
+
+    /// Mark the account bound to `config_dir` rate-limited from a live
+    /// 429, flipping `is_account_usable` false until the next successful
+    /// probe. `retry_after` schedules that probe so a transient throttle
+    /// self-corrects (sub-second hints fall back to the exponential
+    /// default via [`Self::set_last_error`]). No-op when no account maps
+    /// to `config_dir`.
+    pub fn mark_rate_limited_by_config_dir(
+        &mut self,
+        config_dir: &std::path::Path,
+        retry_after: Option<std::time::Duration>,
+    ) -> bool {
+        let Some(key) = self.key_for_config_dir(config_dir) else {
+            return false;
+        };
+        self.set_last_error(&key, UsageFetchStatus::RateLimited, retry_after);
+        true
+    }
+
     /// Distinct on-disk config_dirs across every known account. Used by
     /// the team-resume scan, which must look under every account a
     /// worker could have been spawned under (the assignment-plan

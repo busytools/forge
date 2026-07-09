@@ -47,6 +47,32 @@ pub(crate) struct SessionTask {
     pub(crate) workspace: std::sync::Weak<crate::Workspace>,
 }
 
+/// Server hold-down carried by a rate-limit signal, when the wire
+/// provides one.
+struct RateLimitHit {
+    retry_after: Option<std::time::Duration>,
+}
+
+/// Detect a definitive account-rate-limit from an inbound SDK message.
+/// The exact 429 status and the `RateLimit` error enum both ride the
+/// `api_retry` system message, with `retry_delay_ms` as the hold-down;
+/// the typed enum covers a rate-limit classified without a numeric
+/// status.
+fn rate_limit_hit_from_message(msg: &forge_primitives::Message) -> Option<RateLimitHit> {
+    use forge_primitives::{ApiRetryError, Message};
+    let Message::System { subtype, data, .. } = msg else {
+        return None;
+    };
+    if subtype != "api_retry" {
+        return None;
+    }
+    let update = forge_agent::translate::state_parsing::build_api_retry_update(data.as_object()?)?;
+    let rate_limited = update.error_status == Some(429) || update.error == ApiRetryError::RateLimit;
+    rate_limited.then(|| RateLimitHit {
+        retry_after: Some(std::time::Duration::from_millis(update.retry_delay_ms)),
+    })
+}
+
 impl SessionTask {
     pub(crate) async fn run(mut self) {
         tracing::debug!(
@@ -482,6 +508,7 @@ impl SessionTask {
                     guard.current_inbound_hop = None;
                     guard.turn_pending = false;
                 }
+                self.note_rate_limit_from_message(&msg);
                 self.emit(SessionUpdate::ChatAppended { session_id, msg });
             }
             AgentEvent::HookObservation {
@@ -501,6 +528,39 @@ impl SessionTask {
                     agent_type,
                 });
             }
+        }
+    }
+
+    /// Mark this session's account rate-limited on a live 429 so the
+    /// next assignment rotates off it, reacting faster than the periodic
+    /// usage probe. Self-correcting: `retry_after` schedules the
+    /// re-probe that clears the mark once the account recovers.
+    fn note_rate_limit_from_message(&self, msg: &forge_primitives::Message) {
+        let Some(hit) = rate_limit_hit_from_message(msg) else {
+            return;
+        };
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        let config_dir = self.handle.config_dir();
+        let marked = workspace
+            .account_states()
+            .lock()
+            .mark_rate_limited_by_config_dir(&config_dir, hit.retry_after);
+        if marked {
+            tracing::info!(
+                target: "forge_workspace::session_task",
+                key = %self.key.as_str(),
+                config_dir = %config_dir.display(),
+                "marked session account rate-limited from a live 429; next assignment rotates off it",
+            );
+        } else {
+            tracing::warn!(
+                target: "forge_workspace::session_task",
+                key = %self.key.as_str(),
+                config_dir = %config_dir.display(),
+                "live 429 detected but the session config_dir maps to no tracked account; cannot rotate",
+            );
         }
     }
 
@@ -1319,6 +1379,162 @@ mod tests {
     fn empty_domain() -> DomainSession {
         let (handle, _rx) = Agent::testing_stub();
         DomainSession::new(SessionKey::from_str_for_test("test"), Some(Arc::new(handle)))
+    }
+
+    fn loaded_account(name: &str) -> crate::config::LoadedAccount {
+        crate::config::LoadedAccount {
+            display_name: name.to_owned(),
+            config_dir: std::path::PathBuf::from(format!("/fake/{name}")),
+            proxy: true,
+        }
+    }
+
+    fn api_retry(error_status: u64, error: &str) -> forge_primitives::Message {
+        forge_primitives::Message::System {
+            subtype: "api_retry".to_owned(),
+            session_id: Some("s1".to_owned()),
+            data: serde_json::json!({
+                "attempt": 1,
+                "max_retries": 4,
+                "retry_delay_ms": 5000,
+                "error_status": error_status,
+                "error": error,
+            }),
+        }
+    }
+
+    /// Reproduce: a live 429 (api_retry carrying error_status=429) for
+    /// the active session flips its account not-usable via
+    /// set_last_error, so the next assignment rotates off it without
+    /// waiting for the periodic usage probe.
+    #[test]
+    fn live_429_flips_active_account_to_unusable() {
+        use crate::account::{AccountKey, AccountStateMap};
+        let mut map = AccountStateMap::new(&[loaded_account("A"), loaded_account("B")]);
+        let key_a = AccountKey("A".to_owned());
+        assert!(map.is_account_usable(&key_a), "account usable before the 429");
+
+        let hit = rate_limit_hit_from_message(&api_retry(429, "rate_limit"))
+            .expect("429 detected as a rate-limit");
+        assert!(
+            map.mark_rate_limited_by_config_dir(std::path::Path::new("/fake/A"), hit.retry_after),
+            "the active account's config_dir maps to a known key",
+        );
+
+        assert!(
+            !map.is_account_usable(&key_a),
+            "429 must flip the active account unusable so the next assignment rotates",
+        );
+        assert!(
+            map.is_account_usable(&AccountKey("B".to_owned())),
+            "the sibling account stays usable",
+        );
+    }
+
+    /// The `RateLimit` error enum is a rate-limit even when the wire
+    /// omits a numeric status.
+    #[test]
+    fn rate_limit_enum_without_numeric_status_is_a_hit() {
+        let msg = forge_primitives::Message::System {
+            subtype: "api_retry".to_owned(),
+            session_id: Some("s1".to_owned()),
+            data: serde_json::json!({
+                "attempt": 1,
+                "max_retries": 4,
+                "retry_delay_ms": 3000,
+                "error": "rate_limit",
+            }),
+        };
+        assert!(rate_limit_hit_from_message(&msg).is_some());
+    }
+
+    /// A non-rate-limit api_retry (e.g. a 529 server_error) must NOT
+    /// rotate the account - only 429 / RateLimit does.
+    #[test]
+    fn non_rate_limit_retry_does_not_rotate() {
+        assert!(rate_limit_hit_from_message(&api_retry(529, "server_error")).is_none());
+    }
+
+    async fn workspace_with_account_config_dir(
+        config_dir: &str,
+    ) -> (tempfile::TempDir, Arc<crate::Workspace>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge dir");
+        std::fs::write(
+            forge.join("forge.toml"),
+            format!(
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Acct\"]\n\n\
+                 [[orgs.projects]]\nname = \"forge\"\npath = \"~/Projects/forge\"\n\n\
+                 [[accounts]]\ndisplay_name = \"Acct\"\nconfig_dir = \"{config_dir}\"\n"
+            ),
+        )
+        .expect("write forge.toml");
+        let workspace =
+            Arc::new(crate::Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        (dir, workspace)
+    }
+
+    /// Build a `SessionTask` bound to `workspace` with a testing-stub
+    /// handle (its `config_dir` is the `TESTING_STUB_CONFIG_DIR`
+    /// `/tmp/forge-testing-stub`). Only `note_rate_limit_from_message`
+    /// is exercised, so the command/update channels stay idle.
+    fn session_task_for(workspace: &Arc<crate::Workspace>) -> SessionTask {
+        let (handle, _cmds) = Agent::testing_stub();
+        let handle = Arc::new(handle);
+        let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
+        let (update_tx, _update_rx) = mpsc::unbounded_channel();
+        let key = SessionKey::from_str_for_test("rl-test");
+        let domain = Arc::new(Mutex::new(DomainSession::new(key.clone(), Some(handle.clone()))));
+        SessionTask {
+            key,
+            handle,
+            command_rx,
+            domain,
+            update_tx,
+            spawn_key: None,
+            connected_once: false,
+            workspace: Arc::downgrade(workspace),
+        }
+    }
+
+    /// End-to-end glue: a 429 on a session whose `config_dir` IS a
+    /// tracked account rotates that account via
+    /// `note_rate_limit_from_message` (upgrade + handle.config_dir() +
+    /// the account-map lock).
+    #[tokio::test]
+    async fn note_rate_limit_rotates_the_sessions_own_account() {
+        use crate::account::AccountKey;
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub").await;
+        let key = AccountKey("Acct".to_owned());
+        assert!(workspace.account_states().lock().is_account_usable(&key), "usable before the 429");
+
+        let task = session_task_for(&workspace);
+        task.note_rate_limit_from_message(&api_retry(429, "rate_limit"));
+
+        assert!(
+            !workspace.account_states().lock().is_account_usable(&key),
+            "a 429 on the session rotates its own account off",
+        );
+    }
+
+    /// The config_dir-match seam (the #394-class risk): a 429 whose
+    /// session `config_dir` maps to no tracked account must NOT rotate
+    /// an unrelated account - it hits the warn path instead.
+    #[tokio::test]
+    async fn note_rate_limit_leaves_untracked_config_dir_accounts_alone() {
+        use crate::account::AccountKey;
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-test-rl-other").await;
+        let key = AccountKey("Acct".to_owned());
+        assert!(workspace.account_states().lock().is_account_usable(&key));
+
+        let task = session_task_for(&workspace);
+        task.note_rate_limit_from_message(&api_retry(429, "rate_limit"));
+
+        assert!(
+            workspace.account_states().lock().is_account_usable(&key),
+            "a 429 whose config_dir maps to no tracked account must not rotate an unrelated one",
+        );
     }
 
     /// `apply_event_to_domain` on `AgentEvent::Connected` stamps (or

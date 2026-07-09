@@ -71,6 +71,7 @@ testing = ["forge-workspace/testing"]
 
 [dev-dependencies]
 forge-sdk = { workspace = true }
+forge-test-harness = { path = "../forge-test-harness" }
 forge-tui = { path = ".", features = ["testing"] }
 forge-workspace = { workspace = true, features = ["test-helpers", "testing"] }
 insta = { workspace = true }

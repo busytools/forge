@@ -113,7 +113,7 @@ crates/forge-test-harness/
     │                                   # post_tool_use_failure, stop,
     │                                   # subagent_stop, notification
     ├── scenarios_outbound_controls.rs  # set_model, mcp_reconnect, mcp_toggle,
-    │                                   # rewind_files, stop_task, interrupt
+    │                                   # stop_task, interrupt
     ├── scenarios_compact.rs            # /compact slash command + PreCompact hook
     ├── scenarios_stream_event.rs       # include_partial_messages → stream_event
     └── debug_smoke.rs                  # raw-wire diagnostic (FORGE_WIRE_DEBUG=1)
@@ -181,7 +181,6 @@ redaction-scrubbed.
 | `control_request: set_model` (out)          | set_model                                   |
 | `control_request: mcp_reconnect` (out)      | mcp_reconnect                               |
 | `control_request: mcp_toggle` (out)         | mcp_toggle                                  |
-| `control_request: rewind_files` (out)       | rewind_files                                |
 | `control_request: stop_task` (out)          | stop_task                                   |
 | `control_request: interrupt` (out)          | interrupt                                   |
 | `control_request: can_use_tool` (in)        | permission_deny                             |

@@ -33,10 +33,8 @@ pub enum Message {
         /// turns. `AssistantMessage.error`
         ///
         error: Option<AssistantMessageError>,
-        /// Stable identifier for this assistant turn, used for file
-        /// checkpointing (`enable_file_checkpointing=true`) and as the
-        /// target of `forge_sdk::Client::rewind_files`.
-        /// the CLI `AssistantMessage.uuid`.
+        /// Stable identifier for this assistant turn - the CLI
+        /// `AssistantMessage.uuid`.
         uuid: Option<String>,
     },
 
@@ -48,11 +46,9 @@ pub enum Message {
         session_id: String,
         /// Parent tool-use id when this is a sub-agent turn.
         parent_tool_use_id: Option<String>,
-        /// Stable identifier for this user turn - the `user_message_id`
-        /// `forge_sdk::Client::rewind_files` takes.
-        /// the CLI `UserMessage.uuid`. `None` unless the
-        /// CLI is configured to emit them
-        /// (`extra_args={"replay-user-messages": None}`).
+        /// Stable identifier for this user turn - the CLI
+        /// `UserMessage.uuid`. `None` unless the CLI is configured to
+        /// emit them (`extra_args={"replay-user-messages": None}`).
         uuid: Option<String>,
         /// Raw tool-result payload the CLI attaches when this user turn
         /// reports a tool's output. The CLI `UserMessage.tool_use_result`;
@@ -240,6 +236,68 @@ pub enum Message {
         uuid: String,
     },
 
+    /// Full background-task set after it changed. Subtype
+    /// `"background_tasks_changed"` (2.1.204); carries the whole list,
+    /// not a delta.
+    BackgroundTasksChanged {
+        /// Every background task after the change; each entry carries
+        /// `task_id` / `task_type` / `description`.
+        tasks: Vec<Value>,
+        /// Unique identifier for this event.
+        uuid: String,
+        /// Session id the event applies to.
+        session_id: String,
+    },
+
+    /// Available slash-command set after it changed. Subtype
+    /// `"commands_changed"` (2.1.204), emitted on plugin reload.
+    CommandsChanged {
+        /// Every slash command after the change.
+        commands: Vec<Value>,
+        /// Unique identifier for this event.
+        uuid: String,
+        /// Session id the event applies to.
+        session_id: String,
+    },
+
+    /// A hook began executing. Subtype `"hook_started"` (2.1.204).
+    HookStarted {
+        /// Stable id for this hook run, paired with [`Self::HookResponse`].
+        hook_id: String,
+        /// Hook matcher name (e.g. `"SessionStart:startup"`).
+        hook_name: String,
+        /// Hook event that fired it (e.g. `"SessionStart"`).
+        hook_event: String,
+        /// Unique identifier for this event.
+        uuid: String,
+        /// Session id the event applies to.
+        session_id: String,
+    },
+
+    /// A hook finished executing. Subtype `"hook_response"` (2.1.204).
+    HookResponse {
+        /// Stable id tying this back to its [`Self::HookStarted`].
+        hook_id: String,
+        /// Hook matcher name (e.g. `"SessionStart:startup"`).
+        hook_name: String,
+        /// Hook event that fired it (e.g. `"SessionStart"`).
+        hook_event: String,
+        /// Outcome tag reported by the CLI (e.g. `"success"`).
+        outcome: String,
+        /// Process exit code of the hook command.
+        exit_code: i64,
+        /// Combined output surfaced to the session.
+        output: String,
+        /// Raw stdout of the hook command.
+        stdout: String,
+        /// Raw stderr of the hook command.
+        stderr: String,
+        /// Unique identifier for this event.
+        uuid: String,
+        /// Session id the event applies to.
+        session_id: String,
+    },
+
     /// Rate-limit state transition. The CLI emits this when the current
     /// rate-limit window changes state (e.g. `allowed` → `allowed_warning`).
     /// Wire shape mirrors +
@@ -385,6 +443,10 @@ impl Message {
             | Message::ThinkingTokens { session_id, .. }
             | Message::TurnDuration { session_id, .. }
             | Message::StopHookSummary { session_id, .. }
+            | Message::BackgroundTasksChanged { session_id, .. }
+            | Message::CommandsChanged { session_id, .. }
+            | Message::HookStarted { session_id, .. }
+            | Message::HookResponse { session_id, .. }
             | Message::Result { session_id, .. }
             | Message::StreamEvent { session_id, .. } => Some(session_id.as_str()),
             Message::System { session_id, .. } => session_id.as_deref(),
@@ -814,8 +876,6 @@ enum SystemRepr {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "subtype", rename_all = "snake_case")]
-// Wire-shape enum - variants share the `Task` prefix to match the CLI's wire-tag scheme.
-#[allow(clippy::enum_variant_names)]
 enum TypedSystemRepr {
     TaskStarted {
         task_id: String,
@@ -898,6 +958,35 @@ enum TypedSystemRepr {
         parent_tool_use_id: Option<String>,
         session_id: String,
         uuid: String,
+    },
+    BackgroundTasksChanged {
+        tasks: Vec<Value>,
+        uuid: String,
+        session_id: String,
+    },
+    CommandsChanged {
+        commands: Vec<Value>,
+        uuid: String,
+        session_id: String,
+    },
+    HookStarted {
+        hook_id: String,
+        hook_name: String,
+        hook_event: String,
+        uuid: String,
+        session_id: String,
+    },
+    HookResponse {
+        hook_id: String,
+        hook_name: String,
+        hook_event: String,
+        outcome: String,
+        exit_code: i64,
+        output: String,
+        stdout: String,
+        stderr: String,
+        uuid: String,
+        session_id: String,
     },
 }
 
@@ -1024,6 +1113,46 @@ impl From<MessageRepr> for Message {
                 parent_tool_use_id,
                 session_id,
                 uuid,
+            },
+            MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::BackgroundTasksChanged {
+                tasks,
+                uuid,
+                session_id,
+            })) => Message::BackgroundTasksChanged { tasks, uuid, session_id },
+            MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::CommandsChanged {
+                commands,
+                uuid,
+                session_id,
+            })) => Message::CommandsChanged { commands, uuid, session_id },
+            MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::HookStarted {
+                hook_id,
+                hook_name,
+                hook_event,
+                uuid,
+                session_id,
+            })) => Message::HookStarted { hook_id, hook_name, hook_event, uuid, session_id },
+            MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::HookResponse {
+                hook_id,
+                hook_name,
+                hook_event,
+                outcome,
+                exit_code,
+                output,
+                stdout,
+                stderr,
+                uuid,
+                session_id,
+            })) => Message::HookResponse {
+                hook_id,
+                hook_name,
+                hook_event,
+                outcome,
+                exit_code,
+                output,
+                stdout,
+                stderr,
+                uuid,
+                session_id,
             },
             MessageRepr::System(SystemRepr::Generic(GenericSystemRepr {
                 subtype,
@@ -1226,6 +1355,52 @@ impl From<Message> for MessageRepr {
                 parent_tool_use_id,
                 session_id,
                 uuid,
+            })),
+            Message::BackgroundTasksChanged { tasks, uuid, session_id } => {
+                MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::BackgroundTasksChanged {
+                    tasks,
+                    uuid,
+                    session_id,
+                }))
+            }
+            Message::CommandsChanged { commands, uuid, session_id } => {
+                MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::CommandsChanged {
+                    commands,
+                    uuid,
+                    session_id,
+                }))
+            }
+            Message::HookStarted { hook_id, hook_name, hook_event, uuid, session_id } => {
+                MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::HookStarted {
+                    hook_id,
+                    hook_name,
+                    hook_event,
+                    uuid,
+                    session_id,
+                }))
+            }
+            Message::HookResponse {
+                hook_id,
+                hook_name,
+                hook_event,
+                outcome,
+                exit_code,
+                output,
+                stdout,
+                stderr,
+                uuid,
+                session_id,
+            } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::HookResponse {
+                hook_id,
+                hook_name,
+                hook_event,
+                outcome,
+                exit_code,
+                output,
+                stdout,
+                stderr,
+                uuid,
+                session_id,
             })),
             Message::RateLimitEvent { rate_limit_info, uuid, session_id } => {
                 MessageRepr::RateLimitEvent { rate_limit_info, uuid, session_id }
@@ -1653,6 +1828,73 @@ mod tests_message_extras {
     }
 
     #[test]
+    fn background_tasks_changed_encode_round_trips() {
+        let msg = Message::BackgroundTasksChanged {
+            tasks: vec![
+                json!({"task_id": "t1", "task_type": "local_workflow", "description": "d"}),
+            ],
+            uuid: "bg-uuid".to_owned(),
+            session_id: "sess-bg".to_owned(),
+        };
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        assert_eq!(encoded["type"], "system");
+        assert_eq!(encoded["subtype"], "background_tasks_changed");
+        let decoded: Message = serde_json::from_value(encoded).expect("decode");
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn commands_changed_encode_round_trips() {
+        let msg = Message::CommandsChanged {
+            commands: vec![json!({"name": "audit", "description": "sweep"})],
+            uuid: "cmd-uuid".to_owned(),
+            session_id: "sess-cmd".to_owned(),
+        };
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        assert_eq!(encoded["type"], "system");
+        assert_eq!(encoded["subtype"], "commands_changed");
+        let decoded: Message = serde_json::from_value(encoded).expect("decode");
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn hook_started_encode_round_trips() {
+        let msg = Message::HookStarted {
+            hook_id: "h1".to_owned(),
+            hook_name: "SessionStart:startup".to_owned(),
+            hook_event: "SessionStart".to_owned(),
+            uuid: "hs-uuid".to_owned(),
+            session_id: "sess-hs".to_owned(),
+        };
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        assert_eq!(encoded["type"], "system");
+        assert_eq!(encoded["subtype"], "hook_started");
+        let decoded: Message = serde_json::from_value(encoded).expect("decode");
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn hook_response_encode_round_trips() {
+        let msg = Message::HookResponse {
+            hook_id: "h1".to_owned(),
+            hook_name: "SessionStart:startup".to_owned(),
+            hook_event: "SessionStart".to_owned(),
+            outcome: "success".to_owned(),
+            exit_code: 0,
+            output: "body".to_owned(),
+            stdout: "body".to_owned(),
+            stderr: String::new(),
+            uuid: "hr-uuid".to_owned(),
+            session_id: "sess-hr".to_owned(),
+        };
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        assert_eq!(encoded["type"], "system");
+        assert_eq!(encoded["subtype"], "hook_response");
+        let decoded: Message = serde_json::from_value(encoded).expect("decode");
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
     fn stop_hook_summary_decodes_from_wire_shape() {
         // Wire shape (verbatim from `baselines/sdk/2.1.156/...`):
         // rich object with `hookCount` + `hookInfos` array + optional
@@ -1825,5 +2067,110 @@ mod tests_message_extras {
         };
         assert_eq!(actions, 0);
         assert!(hook_infos.is_empty());
+    }
+
+    #[test]
+    fn background_tasks_changed_decodes_as_typed_variant() {
+        let raw = json!({
+            "type": "system",
+            "subtype": "background_tasks_changed",
+            "tasks": [{
+                "task_id": "wfm8lm8vx",
+                "task_type": "local_workflow",
+                "description": "Fan out two trivial agents returning ping and pong",
+            }],
+            "uuid": "145d5225-f94f-411a-b76b-d7bef6506eff",
+            "session_id": "c35950bc-376e-4c74-be2d-8f31f32c613b",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::BackgroundTasksChanged { tasks, session_id, .. } = msg else {
+            panic!("expected BackgroundTasksChanged, got {msg:?}");
+        };
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0]["task_id"], "wfm8lm8vx");
+        assert_eq!(session_id, "c35950bc-376e-4c74-be2d-8f31f32c613b");
+    }
+
+    #[test]
+    fn commands_changed_decodes_as_typed_variant() {
+        let raw = json!({
+            "type": "system",
+            "subtype": "commands_changed",
+            "commands": [{"name": "audit", "description": "sweep a codebase"}],
+            "uuid": "72af9cde-8c41-434d-baea-f2353a66dab8",
+            "session_id": "35f88fef-f4c4-4c35-bffa-e363335aa2ac",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::CommandsChanged { commands, .. } = msg else {
+            panic!("expected CommandsChanged, got {msg:?}");
+        };
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0]["name"], "audit");
+    }
+
+    #[test]
+    fn hook_started_decodes_as_typed_variant() {
+        let raw = json!({
+            "type": "system",
+            "subtype": "hook_started",
+            "hook_id": "cc3b0e3e-f894-43dd-9819-e594a4aa4904",
+            "hook_name": "SessionStart:startup",
+            "hook_event": "SessionStart",
+            "uuid": "0a58da42-e1bd-4b87-9d50-711800d43388",
+            "session_id": "c35950bc-376e-4c74-be2d-8f31f32c613b",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::HookStarted { hook_name, hook_event, hook_id, .. } = msg else {
+            panic!("expected HookStarted, got {msg:?}");
+        };
+        assert_eq!(hook_name, "SessionStart:startup");
+        assert_eq!(hook_event, "SessionStart");
+        assert_eq!(hook_id, "cc3b0e3e-f894-43dd-9819-e594a4aa4904");
+    }
+
+    #[test]
+    fn hook_response_decodes_as_typed_variant() {
+        let raw = json!({
+            "type": "system",
+            "subtype": "hook_response",
+            "hook_id": "946738fb-ca47-4c50-861f-d763fd50eab9",
+            "hook_name": "SessionStart:startup",
+            "hook_event": "SessionStart",
+            "output": "index body",
+            "outcome": "success",
+            "exit_code": 0,
+            "stderr": "",
+            "stdout": "index body",
+            "uuid": "d6867063-339c-469d-803d-169cddc5b4eb",
+            "session_id": "c35950bc-376e-4c74-be2d-8f31f32c613b",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::HookResponse { outcome, exit_code, stdout, .. } = msg else {
+            panic!("expected HookResponse, got {msg:?}");
+        };
+        assert_eq!(outcome, "success");
+        assert_eq!(exit_code, 0);
+        assert_eq!(stdout, "index body");
+    }
+
+    #[test]
+    fn status_subtype_stays_generic_system() {
+        // `status` is heterogeneous (compacting / compact-result /
+        // permissionMode); it deliberately stays on the generic
+        // catch-all rather than a typed variant.
+        let raw = json!({
+            "type": "system",
+            "subtype": "status",
+            "status": null,
+            "permissionMode": "plan",
+            "uuid": "c77b2ac7-825f-4fb6-a7e5-3d6fd940b293",
+            "session_id": "2b5e2c9f-70c7-4df5-81fa-1b5507ce96a4",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::System { subtype, data, .. } = msg else {
+            panic!("expected generic System, got {msg:?}");
+        };
+        assert_eq!(subtype, "status");
+        assert_eq!(data["permissionMode"], "plan");
     }
 }

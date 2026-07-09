@@ -112,6 +112,11 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         // consistent regardless of which side of the wire the call
         // came from.
         "advisor" => ("\u{2726}", "Advisor"),
+        // CLI 2.1.204 tool surface (new names in the init tool list).
+        "DesignSync" => ("\u{21bb}", "DesignSync"),
+        "ReportFindings" => ("\u{25a4}", "ReportFindings"),
+        "SendMessage" => ("\u{27a4}", "SendMessage"),
+        "ShareOnboardingGuide" => ("\u{29c9}", "ShareOnboardingGuide"),
         _ => ("\u{25cb}", "Tool"),
     }
 }
@@ -172,5 +177,15 @@ mod tests {
         assert_eq!(tool_name_label("web_search"), ("\u{2295}", "WebSearch"));
         assert_eq!(tool_name_label("web_fetch"), ("\u{2295}", "WebFetch"));
         assert_eq!(tool_name_label("advisor"), ("\u{2726}", "Advisor"));
+    }
+
+    /// CLI 2.1.204 tool surface. Asserts glyph + label so a future
+    /// edit that swaps either surfaces here.
+    #[test]
+    fn cli_2_1_204_tool_glyphs_match_picks() {
+        assert_eq!(tool_name_label("DesignSync"), ("\u{21bb}", "DesignSync"));
+        assert_eq!(tool_name_label("ReportFindings"), ("\u{25a4}", "ReportFindings"));
+        assert_eq!(tool_name_label("SendMessage"), ("\u{27a4}", "SendMessage"));
+        assert_eq!(tool_name_label("ShareOnboardingGuide"), ("\u{29c9}", "ShareOnboardingGuide"));
     }
 }

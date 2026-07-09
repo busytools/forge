@@ -40,6 +40,8 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         Message::TaskNotification { .. } => handle_task_notification(app, msg),
         Message::RateLimitEvent { .. } => handle_rate_limit_event(app, msg),
         Message::Result { .. } => handle_result(app, msg),
+        Message::BackgroundTasksChanged { .. } => handle_background_tasks_changed(app, msg),
+        Message::CommandsChanged { .. } => handle_commands_changed(app, msg),
         // No-op arms:
         // - `StreamEvent` (partial-message streaming) + `Error` /
         //   `Unknown` (transport / forward-compat) - re-add a handler
@@ -50,10 +52,15 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         //   fresh captures, all zero), so the prior banner chip +
         //   per-message stamp + per-session cache were dead code and
         //   got deleted.
+        // - 2.1.204 `hook_started` / `hook_response`: typed for
+        //   wire-conformance; no UI surface yet (hook-activity is a
+        //   separate feature).
         Message::StreamEvent { .. }
         | Message::Error { .. }
         | Message::Unknown { .. }
-        | Message::TurnDuration { .. } => {}
+        | Message::TurnDuration { .. }
+        | Message::HookStarted { .. }
+        | Message::HookResponse { .. } => {}
         // #273: typed wrappers around the CLI 2.1.156 system events.
         Message::ThinkingTokens { estimated_tokens, .. } => {
             handle_thinking_tokens(app, estimated_tokens);
@@ -872,19 +879,44 @@ fn apply_compaction_boundary(app: &mut App, data: &Value) {
     );
 }
 
+/// Parse a `slash_commands` / `commands` array into `AvailableCommand`s.
+/// Entries are either bare name strings (the `system/init`
+/// `slash_commands` shape) or `{name, description, argumentHint}`
+/// objects (the `commands_changed` shape); both flow through here so
+/// init and the live refresh share one boundary. Non-string / nameless
+/// entries are skipped; an empty `argumentHint` collapses to `None`.
+fn available_commands_from_json(arr: &[Value]) -> Vec<forge_primitives::AvailableCommand> {
+    arr.iter()
+        .filter_map(|entry| {
+            if let Some(name) = entry.as_str() {
+                if name.is_empty() {
+                    return None;
+                }
+                return Some(forge_primitives::AvailableCommand {
+                    name: name.to_owned(),
+                    description: String::new(),
+                    input_hint: None,
+                });
+            }
+            let obj = entry.as_object()?;
+            let name = obj.get("name")?.as_str().filter(|s| !s.is_empty())?.to_owned();
+            let description =
+                obj.get("description").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let input_hint = obj
+                .get("argumentHint")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned);
+            Some(forge_primitives::AvailableCommand { name, description, input_hint })
+        })
+        .collect()
+}
+
 /// Build `AvailableCommandsUpdate` from System(init).slash_commands.
 fn apply_available_commands_from_init(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
     let Some(arr) = record.get("slash_commands").and_then(Value::as_array) else { return };
-    let commands: Vec<forge_primitives::AvailableCommand> = arr
-        .iter()
-        .filter_map(|v| v.as_str())
-        .map(|name| forge_primitives::AvailableCommand {
-            name: name.to_owned(),
-            description: String::new(),
-            input_hint: None,
-        })
-        .collect();
+    let commands = available_commands_from_json(arr);
     if commands.is_empty() {
         return;
     }
@@ -1341,6 +1373,71 @@ fn apply_tool_summary_update(app: &mut App, tool_use_id: &str, summary: &str) {
         ..Default::default()
     };
     apply_tool_call_update(app, tool_use_id, fields);
+}
+
+/// Replace the active session's background-task snapshot from a
+/// `background_tasks_changed` event. The event carries the CLI's full
+/// registry every change, so this overwrites wholesale; an empty
+/// `tasks` array clears the list and the Inspector BACKGROUND section
+/// auto-hides. Entries missing `task_id` / `task_type` / `description`
+/// (or not objects) are skipped rather than panicked.
+fn handle_background_tasks_changed(app: &mut App, msg: Message) {
+    use crate::app::state::types::BackgroundTask;
+    let Message::BackgroundTasksChanged { tasks, .. } = msg else { return };
+    let parsed: Vec<BackgroundTask> = tasks
+        .iter()
+        .filter_map(|task| {
+            let obj = task.as_object()?;
+            Some(BackgroundTask {
+                task_id: obj.get("task_id")?.as_str()?.to_owned(),
+                task_type: obj.get("task_type")?.as_str()?.to_owned(),
+                description: obj.get("description")?.as_str()?.to_owned(),
+            })
+        })
+        .collect();
+    // Drift breadcrumb (Hard Rule #16): if the CLI renamed a field
+    // every entry fails the parse and the section silently never
+    // appears. An empty snapshot is a legitimate state (section
+    // auto-hides), so this only logs - the replace still applies.
+    if tasks.len() != parsed.len() {
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "background_tasks_parse_dropped",
+            message = "background_tasks_changed dropped unparseable entries; possible wire drift",
+            outcome = "partial",
+            dropped = tasks.len() - parsed.len(),
+            entry_count = tasks.len(),
+        );
+    }
+    *app.background_tasks_mut() = parsed;
+}
+
+/// Refresh the active session's slash-command list from a
+/// `commands_changed` event (emitted after a plugin/command reload).
+/// Parses via the shared boundary and applies through
+/// `apply_available_commands_update`, so the `/` dropdown, `/help`,
+/// and autocomplete all pick up the fresh list instead of the stale
+/// init-time seed.
+fn handle_commands_changed(app: &mut App, msg: Message) {
+    let Message::CommandsChanged { commands, .. } = msg else { return };
+    let parsed = available_commands_from_json(&commands);
+    // Drift guard (Hard Rule #16): a non-empty payload that parses to
+    // nothing means the CLI's command-entry shape changed under us.
+    // Applying it would silently wipe the `/` dropdown + `/help`, so
+    // skip and leave the prior list intact. A legitimately empty
+    // `commands: []` (plugin uninstall) still falls through to clear.
+    if parsed.is_empty() && !commands.is_empty() {
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "commands_changed_parse_empty",
+            message = "commands_changed carried entries but none parsed; likely wire drift, keeping prior list",
+            outcome = "skipped",
+            entry_count = commands.len(),
+        );
+        return;
+    }
+    let model_update = crate::app::connect::type_converters::map_available_commands_update(parsed);
+    super::apply_available_commands_update(app, model_update);
 }
 
 fn handle_rate_limit_event(app: &mut App, msg: Message) {
@@ -2560,5 +2657,179 @@ mod inbound_message_surfacing_tests {
             Some(2),
             "pointer on the surviving tail placeholder",
         );
+    }
+}
+
+#[cfg(test)]
+mod background_tasks_changed_tests {
+    //! `background_tasks_changed` carries the CLI's authoritative
+    //! snapshot of every backgrounded task. Each event REPLACES the
+    //! session's list wholesale; an empty `tasks` array clears it so
+    //! the Inspector BACKGROUND section auto-hides.
+    use super::handle_sdk_message;
+    use crate::app::App;
+    use forge_primitives::Message;
+    use serde_json::json;
+
+    fn background_event(tasks: Vec<serde_json::Value>) -> Message {
+        Message::BackgroundTasksChanged { tasks, uuid: String::new(), session_id: String::new() }
+    }
+
+    #[test]
+    fn snapshot_populates_then_empty_snapshot_clears() {
+        let mut app = App::test_default();
+        handle_sdk_message(
+            &mut app,
+            background_event(vec![json!({
+                "task_id": "b3cjfmhsq",
+                "task_type": "local_bash",
+                "description": "Print marker after 1s in background",
+            })]),
+        );
+        let tasks = app.background_tasks();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].task_id, "b3cjfmhsq");
+        assert_eq!(tasks[0].task_type, "local_bash");
+        assert_eq!(tasks[0].description, "Print marker after 1s in background");
+
+        // Full-snapshot semantics: an empty array replaces the list
+        // with nothing.
+        handle_sdk_message(&mut app, background_event(Vec::new()));
+        assert!(app.background_tasks().is_empty());
+    }
+
+    #[test]
+    fn later_snapshot_replaces_rather_than_appends() {
+        let mut app = App::test_default();
+        handle_sdk_message(
+            &mut app,
+            background_event(vec![json!({
+                "task_id": "first",
+                "task_type": "local_bash",
+                "description": "one",
+            })]),
+        );
+        handle_sdk_message(
+            &mut app,
+            background_event(vec![json!({
+                "task_id": "second",
+                "task_type": "agent",
+                "description": "two",
+            })]),
+        );
+        let tasks = app.background_tasks();
+        assert_eq!(tasks.len(), 1, "each event replaces the whole list");
+        assert_eq!(tasks[0].task_id, "second");
+        assert_eq!(tasks[0].task_type, "agent");
+    }
+
+    #[test]
+    fn malformed_entries_are_skipped_not_panicked() {
+        let mut app = App::test_default();
+        handle_sdk_message(
+            &mut app,
+            background_event(vec![
+                json!({"task_id": "ok", "task_type": "local_bash", "description": "good"}),
+                json!({"task_type": "local_bash"}),
+                json!("not-an-object"),
+            ]),
+        );
+        let tasks = app.background_tasks();
+        assert_eq!(tasks.len(), 1, "malformed entries dropped, valid one kept");
+        assert_eq!(tasks[0].task_id, "ok");
+    }
+}
+
+#[cfg(test)]
+mod commands_changed_tests {
+    //! `commands_changed` carries the fresh slash-command list after a
+    //! plugin/command reload. It must REPLACE the session's
+    //! `available_commands` (feeding the `/` dropdown + `/help`), not
+    //! append to it.
+    use super::handle_sdk_message;
+    use crate::app::App;
+    use forge_primitives::{AvailableCommand, Message};
+    use serde_json::json;
+
+    fn commands_event(commands: Vec<serde_json::Value>) -> Message {
+        Message::CommandsChanged { commands, uuid: String::new(), session_id: String::new() }
+    }
+
+    #[test]
+    fn refresh_replaces_the_command_list() {
+        let mut app = App::test_default();
+        *app.available_commands_mut() = vec![AvailableCommand::new("stale", "")];
+
+        handle_sdk_message(
+            &mut app,
+            commands_event(vec![
+                json!({"name": "gateway-upgrade", "description": "upgrade flow", "argumentHint": ""}),
+                json!({"name": "greptile", "description": "code search", "argumentHint": "<query>"}),
+            ]),
+        );
+
+        let names: Vec<&str> = app.available_commands().iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["gateway-upgrade", "greptile"], "list replaced, not appended");
+        // argumentHint parses into input_hint; an empty hint drops to None.
+        let greptile =
+            app.available_commands().iter().find(|c| c.name == "greptile").expect("greptile");
+        assert_eq!(greptile.input_hint.as_deref(), Some("<query>"));
+        let gateway =
+            app.available_commands().iter().find(|c| c.name == "gateway-upgrade").expect("gateway");
+        assert_eq!(gateway.input_hint, None, "empty argumentHint collapses to None");
+    }
+
+    #[test]
+    fn helper_handles_both_string_and_object_shapes() {
+        use super::available_commands_from_json;
+        // init `slash_commands` shape: bare name strings -> name-only
+        // commands (the pre-refactor init behaviour).
+        let from_strings = available_commands_from_json(&[json!("audit"), json!("resume")]);
+        assert_eq!(from_strings.len(), 2);
+        assert_eq!(from_strings[0].name, "audit");
+        assert_eq!(from_strings[0].description, "");
+        assert_eq!(from_strings[0].input_hint, None);
+        // commands_changed shape: objects; nameless / scalar entries drop.
+        let from_objects = available_commands_from_json(&[
+            json!({"name": "x", "description": "d", "argumentHint": "<a>"}),
+            json!({"description": "no name"}),
+            json!(42),
+        ]);
+        assert_eq!(from_objects.len(), 1, "nameless / scalar entries skipped");
+        assert_eq!(from_objects[0].name, "x");
+        assert_eq!(from_objects[0].description, "d");
+        assert_eq!(from_objects[0].input_hint.as_deref(), Some("<a>"));
+        // Empty names are degenerate (a blank, un-selectable dropdown
+        // row) - skipped in both the string and object shapes.
+        let empties = available_commands_from_json(&[
+            json!(""),
+            json!({"name": "", "description": "blank"}),
+            json!({"name": "real"}),
+        ]);
+        assert_eq!(empties.len(), 1, "empty-name entries skipped in both shapes");
+        assert_eq!(empties[0].name, "real");
+    }
+
+    #[test]
+    fn non_empty_but_unparseable_payload_keeps_prior_list() {
+        // Drift guard (Hard Rule #16): a payload that carries entries
+        // but parses to nothing signals the CLI's entry shape changed;
+        // applying it would wipe the dropdown + /help. Keep the prior
+        // list instead.
+        let mut app = App::test_default();
+        *app.available_commands_mut() = vec![AvailableCommand::new("keep", "")];
+        handle_sdk_message(&mut app, commands_event(vec![json!({"no_name": "x"}), json!(7)]));
+        let names: Vec<&str> = app.available_commands().iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["keep"], "drift guard keeps the prior list intact");
+    }
+
+    #[test]
+    fn legit_empty_payload_clears_the_list() {
+        // A genuinely empty `commands: []` (e.g. plugin uninstall) is
+        // an intended clear, distinct from the drift case above.
+        let mut app = App::test_default();
+        *app.available_commands_mut() = vec![AvailableCommand::new("gone", "")];
+        handle_sdk_message(&mut app, commands_event(Vec::new()));
+        assert!(app.available_commands().is_empty(), "empty commands_changed clears the list");
     }
 }
