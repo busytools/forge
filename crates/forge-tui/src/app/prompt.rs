@@ -26,6 +26,10 @@ pub struct PromptState {
     /// user enters the allow-with-edits sub-mode; serialized back to
     /// the CLI on submit.
     pub edited_input: Option<Value>,
+    /// When this prompt entered the queue; drives the Inspector
+    /// NEEDS INPUT band's wait-age. Stamped at construction, which
+    /// in production is the same instant it is enqueued.
+    pub enqueued_at: std::time::SystemTime,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -97,6 +101,7 @@ impl PromptState {
             selected_option_indices: BTreeSet::new(),
             mode: PromptMode::OptionPicker,
             edited_input: None,
+            enqueued_at: std::time::SystemTime::now(),
         }
     }
 
@@ -148,6 +153,7 @@ impl PromptState {
             selected_option_indices: BTreeSet::new(),
             mode: PromptMode::OptionPicker,
             edited_input: None,
+            enqueued_at: std::time::SystemTime::now(),
         }
     }
 
@@ -635,6 +641,16 @@ pub(crate) mod tests {
     fn from_permission_focused_index_is_zero() {
         let state = PromptState::from_permission("tc-1".into(), make_permission_request());
         assert_eq!(state.focused_option_index, 0);
+    }
+
+    #[test]
+    fn constructors_stamp_enqueued_at_to_now() {
+        let before = std::time::SystemTime::now();
+        let perm = PromptState::from_permission("tc-1".into(), make_permission_request());
+        let question = PromptState::from_question("tc-q".into(), make_question_request(false));
+        let after = std::time::SystemTime::now();
+        assert!(perm.enqueued_at >= before && perm.enqueued_at <= after);
+        assert!(question.enqueued_at >= before && question.enqueued_at <= after);
     }
 
     #[test]

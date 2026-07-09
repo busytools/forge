@@ -58,6 +58,8 @@ use ratatui::widgets::Paragraph;
 use super::theme;
 use crate::agent::model::ToolCallStatus;
 use crate::app::App;
+use crate::app::AttentionEntry;
+use crate::app::AttentionKind;
 use crate::app::MessageBlock;
 use crate::app::PaneHitTarget;
 use crate::app::TodoStatus;
@@ -82,13 +84,15 @@ const PATH_STATS_GAP: usize = 2;
 /// A vertical scrollbar renders on the right edge when the body
 /// overflows the visible area.
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
-    let (banner_area, body_area) = split_banner_body(area);
+    let (banner_area, rest_area) = split_banner_body(area);
 
     // Pinned banner: `INSPECTOR` in RUST_ORANGE bold + dim rule.
     let banner_lines = build_inline_banner(area.width);
     frame.render_widget(Paragraph::new(banner_lines), banner_area);
 
-    // Scrollable body.
+    // Pinned NEEDS INPUT band (when any background session is waiting),
+    // then the scrollable body in the space below it.
+    let body_area = render_attention_band(frame, rest_area, app);
     render_scrollable_body(frame, body_area, app);
 }
 
@@ -134,6 +138,7 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
         x_end: close_x_end,
     });
 
+    let body_area = render_attention_band(frame, body_area, app);
     render_scrollable_body(frame, body_area, app);
 }
 
@@ -166,6 +171,198 @@ fn build_inline_banner(width: u16) -> Vec<Line<'static>> {
             Span::styled("\u{2500}".repeat(rule_width), Style::default().fg(theme::DIM)),
         ]),
     ]
+}
+
+/// Max session rows the pinned band renders before collapsing the
+/// tail into a `+N more` line. Bounds the band's height regardless of
+/// how many sessions are waiting so a burst can't crowd out GIT.
+/// Matches the TASKS section's per-section cap.
+const ATTENTION_MAX_ROWS: usize = 5;
+
+/// Rows the band leaves for the scrollable body when the pane has the
+/// height to spare, so the band never consumes the whole pane. On a
+/// pane too short to honour this the band clips (and its clipped rows
+/// are skipped when stamping) rather than hide the body entirely.
+const ATTENTION_MIN_BODY_ROWS: u16 = 3;
+
+/// Render the pinned NEEDS INPUT attention band into the top of
+/// `area` when any background session is waiting, returning the body
+/// rect below it (fed to the scrollable body). When nothing waits the
+/// band is absent and `area` is returned unchanged - GIT then sits
+/// directly under the banner rule, as before. The band never scrolls;
+/// it stays fixed while the sections below it move.
+fn render_attention_band(frame: &mut Frame, area: Rect, app: &mut App) -> Rect {
+    if area.height == 0 || area.width == 0 {
+        return area;
+    }
+    let entries = app.needs_input_sessions();
+    if entries.is_empty() {
+        return area;
+    }
+    let total = entries.len();
+    // Fixed row cap bounds the band regardless of waiter count; the
+    // tail collapses to a `+N more` line.
+    let shown = total.min(ATTENTION_MAX_ROWS);
+    let overflow = total - shown;
+
+    let now = std::time::SystemTime::now();
+    let lines = build_attention_lines(&entries[..shown], total, overflow, area.width, now);
+    // Clamp the band so the scrollable body keeps at least
+    // ATTENTION_MIN_BODY_ROWS when the pane is tall enough; on a very
+    // short pane the band shows what it can (at least the header) and
+    // the body takes the rest.
+    let natural = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let band_height =
+        natural.min(area.height.saturating_sub(ATTENTION_MIN_BODY_ROWS)).min(area.height).max(1);
+    let band_area = Rect { x: area.x, y: area.y, width: area.width, height: band_height };
+    frame.render_widget(Paragraph::new(lines), band_area);
+
+    // Stamp a click-to-jump target per visible row. The header is at
+    // band_area.y (row 0); session row i sits at band_area.y + 1 + i.
+    // Rows clipped by a short pane are skipped so a click can't
+    // resolve to an off-screen row.
+    let band_bottom = band_area.y.saturating_add(band_height);
+    let x_end = area.x.saturating_add(area.width);
+    for (i, entry) in entries[..shown].iter().enumerate() {
+        let offset = u16::try_from(i.saturating_add(1)).unwrap_or(u16::MAX);
+        let row_y = band_area.y.saturating_add(offset);
+        if row_y >= band_bottom {
+            break;
+        }
+        app.pane_hit_targets.push(PaneHitTarget::InspectorAttentionRow {
+            session_key: entry.session_key.clone(),
+            y: row_y,
+            height: 1,
+            x_start: area.x,
+            x_end,
+        });
+    }
+
+    Rect {
+        x: area.x,
+        y: band_bottom,
+        width: area.width,
+        height: area.height.saturating_sub(band_height),
+    }
+}
+
+/// Build the pinned NEEDS INPUT band's lines: the `△ NEEDS INPUT`
+/// header (with the full `total` waiter count), one row per `shown`
+/// session (already sorted stalest-first), an optional dim `+N more`
+/// line when `overflow > 0`, then a DIM `─` rule bracketing the band
+/// off from the scrolling body.
+fn build_attention_lines(
+    shown: &[AttentionEntry],
+    total: usize,
+    overflow: usize,
+    width: u16,
+    now: std::time::SystemTime,
+) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(shown.len() + 3);
+    lines.push(attention_header_line(width, total));
+    for entry in shown {
+        lines.push(attention_row_line(width, entry, now));
+    }
+    if overflow > 0 {
+        lines.push(attention_overflow_line(overflow));
+    }
+    push_section_rule(&mut lines, width);
+    lines
+}
+
+/// The band's `+N more` overflow line: dim italic, matching the
+/// TASKS / GIT-layer overflow rows.
+fn attention_overflow_line(overflow: usize) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(" ".repeat(usize::from(PANE_PAD))),
+        Span::styled(
+            format!("+{overflow} more"),
+            Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+        ),
+    ])
+}
+
+/// Attention-band header: yellow `△ NEEDS INPUT` with a right-justified
+/// DIM count of waiting sessions. The `△` glyph + yellow match the
+/// Projects-pane background-attention triangle.
+fn attention_header_line(width: u16, count: usize) -> Line<'static> {
+    const LABEL: &str = "NEEDS INPUT";
+    let count_str = count.to_string();
+    let chrome = usize::from(PANE_PAD)
+        + 2 // glyph + space
+        + LABEL.chars().count()
+        + count_str.chars().count()
+        + usize::from(PANE_PAD); // right gutter
+    let pad = usize::from(width).saturating_sub(chrome).max(1);
+    Line::from(vec![
+        Span::raw(" ".repeat(usize::from(PANE_PAD))),
+        Span::styled("\u{25b3}".to_owned(), Style::default().fg(theme::STATUS_WARNING)),
+        Span::raw(" "),
+        Span::styled(
+            LABEL.to_owned(),
+            Style::default().fg(theme::STATUS_WARNING).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(count_str, Style::default().fg(theme::DIM)),
+    ])
+}
+
+/// One attention-band row: yellow `△` + white-bold project name +
+/// DIM ` (role)` (workers only) + the DIM kind/tool/wait-age detail
+/// right-justified. The name truncates to fit; the detail is capped so
+/// a long tool name can't crowd the name out, and the row honours the
+/// 1-col right gutter every inspector section observes.
+fn attention_row_line(
+    width: u16,
+    entry: &AttentionEntry,
+    now: std::time::SystemTime,
+) -> Line<'static> {
+    let inner = usize::from(width);
+    let role_suffix = entry.role.as_deref().map(|role| format!(" ({role})")).unwrap_or_default();
+    let role_width = role_suffix.chars().count();
+    // Cap the detail so a long MCP tool name can't leave the name with
+    // zero room: reserve both gutters + glyph/space + role + 2 cols.
+    let detail_cap = inner.saturating_sub(2 * usize::from(PANE_PAD) + 2 + role_width + 2).max(1);
+    let detail = truncate_or_pass(&attention_detail(entry, now), detail_cap);
+    let detail_width = detail.chars().count();
+
+    let name_chrome = usize::from(PANE_PAD)
+        + 2 // glyph + space
+        + role_width
+        + 1 // min gap before the detail
+        + detail_width
+        + usize::from(PANE_PAD); // right gutter
+    let name_budget = row_text_budget(inner, name_chrome);
+    let fitted_name = truncate_or_pass(&entry.name, name_budget);
+
+    let used =
+        2 * usize::from(PANE_PAD) + 2 + fitted_name.chars().count() + role_width + detail_width;
+    let pad = inner.saturating_sub(used).max(1);
+
+    Line::from(vec![
+        Span::raw(" ".repeat(usize::from(PANE_PAD))),
+        Span::styled("\u{25b3}".to_owned(), Style::default().fg(theme::STATUS_WARNING)),
+        Span::raw(" "),
+        Span::styled(fitted_name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled(role_suffix, Style::default().fg(theme::DIM)),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(detail, Style::default().fg(theme::DIM)),
+    ])
+}
+
+/// The DIM detail cluster for an attention row: the kind, the tool
+/// name (permission prompts only), and the wait-age, joined by ` · `
+/// (the inspector's separator). E.g. `permission · Bash · 3m` or
+/// `question · 20s`.
+fn attention_detail(entry: &AttentionEntry, now: std::time::SystemTime) -> String {
+    let wait = fmt_countdown(now.duration_since(entry.enqueued_at).unwrap_or_default());
+    match &entry.kind {
+        AttentionKind::Permission { tool } if !tool.is_empty() => {
+            format!("permission \u{00B7} {tool} \u{00B7} {wait}")
+        }
+        AttentionKind::Permission { .. } => format!("permission \u{00B7} {wait}"),
+        AttentionKind::Question => format!("question \u{00B7} {wait}"),
+    }
 }
 
 /// Render the inspector body (`GIT` → `TASKS` → `PROCESSES` ...)
@@ -3679,5 +3876,306 @@ mod tests {
         app.gotify_connected = true;
         app.gotify_subs = vec![sub()];
         assert!(gotify_section_visible(&app), "shown only when connected with a subscription");
+    }
+
+    // ---------------------------------------------------------
+    // NEEDS INPUT attention band (pinned above the scroll body).
+    // ---------------------------------------------------------
+
+    /// Seed one BACKGROUND session (not the active bucket) carrying a
+    /// pending permission prompt, stamped with a project name so the
+    /// row resolves without a workspace catalog.
+    fn app_with_waiting_session(name: &str) -> App {
+        let mut app = App::test_default();
+        let key = forge_workspace::SessionKey::from_session_id(name);
+        let mut session = crate::app::session::UiSession::new(key.clone());
+        session.project = Some(name.to_owned());
+        let prompt = crate::app::prompt::PromptState::from_permission(
+            format!("tc-{name}"),
+            crate::app::prompt::tests::make_permission_request(),
+        );
+        session.prompt_queue.push_back(prompt);
+        app.sessions.insert(key, session);
+        app
+    }
+
+    fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
+        let width = usize::from(buffer.area.width);
+        buffer
+            .content
+            .chunks(width)
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The band's lines for the current app state (all entries shown,
+    /// no overflow), or an empty `Vec` when nothing is waiting.
+    fn build_attention_band(app: &App, width: u16) -> Vec<Line<'static>> {
+        let entries = app.needs_input_sessions();
+        if entries.is_empty() {
+            return Vec::new();
+        }
+        build_attention_lines(&entries, entries.len(), 0, width, std::time::SystemTime::now())
+    }
+
+    #[test]
+    fn attention_band_absent_when_no_session_waits() {
+        let app = App::test_default();
+        assert!(build_attention_band(&app, 40).is_empty(), "no waiting session -> empty band");
+    }
+
+    #[test]
+    fn attention_band_renders_header_and_row_when_a_session_waits() {
+        let app = app_with_waiting_session("gateway-backend");
+        // Width 60 so the full name renders alongside the whole detail
+        // (at the 40-col Wide pane the name legitimately truncates to
+        // keep the kind/tool/wait detail whole - see the fit test).
+        let lines = build_attention_band(&app, 60);
+        assert!(!lines.is_empty(), "a waiting session produces a band");
+        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("NEEDS INPUT"), "header present: {text}");
+        assert!(text.contains("gateway-backend"), "session name in a row: {text}");
+        assert!(text.contains("permission"), "permission kind rendered: {text}");
+        assert!(text.contains("Bash"), "tool name for a permission prompt: {text}");
+    }
+
+    #[test]
+    fn attention_detail_formats_kind_tool_and_wait() {
+        use std::time::{Duration, SystemTime};
+        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        let perm = AttentionEntry {
+            session_key: forge_workspace::SessionKey::from_session_id("p"),
+            name: "gateway-backend".to_owned(),
+            role: None,
+            kind: AttentionKind::Permission { tool: "Bash".to_owned() },
+            enqueued_at: base,
+        };
+        // 3m20s waited -> compact "3m".
+        assert_eq!(
+            attention_detail(&perm, base + Duration::from_secs(200)),
+            "permission \u{00B7} Bash \u{00B7} 3m"
+        );
+
+        let question = AttentionEntry { kind: AttentionKind::Question, ..perm.clone() };
+        assert_eq!(
+            attention_detail(&question, base + Duration::from_secs(20)),
+            "question \u{00B7} 20s"
+        );
+
+        let no_tool =
+            AttentionEntry { kind: AttentionKind::Permission { tool: String::new() }, ..perm };
+        assert_eq!(
+            attention_detail(&no_tool, base + Duration::from_secs(20)),
+            "permission \u{00B7} 20s"
+        );
+    }
+
+    #[test]
+    fn attention_band_passes_through_empty_and_shrinks_body_when_present() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let area = Rect { x: 0, y: 2, width: 40, height: 20 };
+
+        // Empty: the body rect passes through unchanged.
+        let mut app = App::test_default();
+        let mut term = Terminal::new(TestBackend::new(40, 24)).expect("terminal");
+        let mut empty_body = Rect::default();
+        term.draw(|f| empty_body = render_attention_band(f, area, &mut app)).expect("draw");
+        assert_eq!(empty_body, area, "no band -> body rect unchanged");
+
+        // Present: the band takes the top rows; the body shifts down and
+        // shrinks so GIT (drawn into the returned rect) is pushed down.
+        let mut app = app_with_waiting_session("gateway-backend");
+        let mut term = Terminal::new(TestBackend::new(40, 24)).expect("terminal");
+        let mut body = Rect::default();
+        term.draw(|f| body = render_attention_band(f, area, &mut app)).expect("draw");
+        assert!(body.y > area.y, "body pushed down below the band: {body:?}");
+        assert!(body.height < area.height, "body shrank by the band height: {body:?}");
+        assert_eq!(body.x, area.x, "body keeps the pane x");
+        assert_eq!(body.width, area.width, "body keeps the pane width");
+        assert_eq!(body.y + body.height, area.y + area.height, "band + body tile the area");
+        let text = buffer_text(term.backend().buffer());
+        assert!(text.contains("NEEDS INPUT"), "band header rendered into the buffer: {text}");
+    }
+
+    #[test]
+    fn attention_rows_fit_within_inner_width() {
+        let now = std::time::SystemTime::UNIX_EPOCH;
+        let entry = AttentionEntry {
+            session_key: forge_workspace::SessionKey::from_session_id("s"),
+            name: "a-very-long-project-name-that-must-truncate".to_owned(),
+            role: Some("steward".to_owned()),
+            kind: AttentionKind::Permission { tool: "mcp__forge__workers__spawn".to_owned() },
+            enqueued_at: now,
+        };
+        for width in [30_u16, 40, 60] {
+            let header = attention_header_line(width, 3);
+            let row = attention_row_line(width, &entry, now);
+            for line in [&header, &row] {
+                let w = rendered_width(line);
+                assert!(
+                    w <= usize::from(width),
+                    "line exceeds width {width}: {w} cols in {:?}",
+                    line_text(line),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn attention_row_stamps_clickable_jump_target() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = app_with_waiting_session("gateway-backend");
+        let bg = forge_workspace::SessionKey::from_session_id("gateway-backend");
+        assert_ne!(
+            app.active_session_key.as_ref(),
+            Some(&bg),
+            "precondition: the waiting session is a background session",
+        );
+
+        let area = Rect { x: 0, y: 2, width: 40, height: 20 };
+        let mut term = Terminal::new(TestBackend::new(40, 24)).expect("terminal");
+        term.draw(|f| {
+            render_attention_band(f, area, &mut app);
+        })
+        .expect("draw");
+
+        let (key, y, x_start) = app
+            .pane_hit_targets
+            .iter()
+            .find_map(|t| match t {
+                PaneHitTarget::InspectorAttentionRow { session_key, y, x_start, .. } => {
+                    Some((session_key.clone(), *y, *x_start))
+                }
+                _ => None,
+            })
+            .expect("an attention-row hit target is stamped");
+        assert_eq!(key, bg, "target carries the waiting session's key");
+        assert!(y > area.y, "the row sits below the band header");
+
+        // A click on the row resolves to this x+y-bounded target.
+        let hit = app.pane_hit_targets.iter().find(|t| t.contains(x_start, y));
+        assert!(
+            matches!(hit, Some(PaneHitTarget::InspectorAttentionRow { .. })),
+            "a click on the row hits the attention target",
+        );
+
+        // Switching (what the click handler does) makes it the active session.
+        app.switch_active_session(key);
+        assert_eq!(app.active_session_key.as_ref(), Some(&bg), "the click jumps to the session");
+    }
+
+    #[test]
+    fn attention_row_target_is_pinned_regardless_of_body_scroll() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        // The band is pinned above the scroll body, so scrolling the
+        // active session's inspector body must not move the attention
+        // row's hit target. Locks the invariant against a future
+        // "fold the band into the scroll body" refactor.
+        let mut app = app_with_waiting_session("gateway-backend");
+        let bg = forge_workspace::SessionKey::from_session_id("gateway-backend");
+        let area = Rect { x: 0, y: 0, width: 40, height: 24 };
+
+        let row_y_at = |app: &mut App, offset: u16| -> u16 {
+            if let Some(active) = app.try_active_bucket_mut() {
+                active.inspector_scroll_offset = offset;
+            }
+            app.pane_hit_targets.clear();
+            let mut term = Terminal::new(TestBackend::new(40, 24)).expect("terminal");
+            term.draw(|f| render(f, area, app)).expect("draw");
+            app.pane_hit_targets
+                .iter()
+                .find_map(|t| match t {
+                    PaneHitTarget::InspectorAttentionRow { session_key, y, .. }
+                        if *session_key == bg =>
+                    {
+                        Some(*y)
+                    }
+                    _ => None,
+                })
+                .expect("attention row target stamped")
+        };
+
+        let unscrolled = row_y_at(&mut app, 0);
+        let scrolled = row_y_at(&mut app, 50);
+        assert_eq!(unscrolled, scrolled, "the pinned row stays put while the body scrolls");
+    }
+
+    #[test]
+    fn attention_band_caps_rows_clamps_body_and_skips_clipped_rows() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = App::test_default();
+        for i in 0..6 {
+            let key = forge_workspace::SessionKey::from_session_id(format!("bg-{i}"));
+            let mut session = crate::app::session::UiSession::new(key.clone());
+            session.project = Some(format!("proj-{i}"));
+            let prompt = crate::app::prompt::PromptState::from_permission(
+                format!("tc-{i}"),
+                crate::app::prompt::tests::make_permission_request(),
+            );
+            session.prompt_queue.push_back(prompt);
+            app.sessions.insert(key, session);
+        }
+        assert_eq!(app.needs_input_sessions().len(), 6, "six background waiters");
+
+        let count_rows = |app: &App| {
+            app.pane_hit_targets
+                .iter()
+                .filter(|t| matches!(t, PaneHitTarget::InspectorAttentionRow { .. }))
+                .count()
+        };
+
+        // Tall pane: the fixed cap shows ATTENTION_MAX_ROWS rows + `+N more`.
+        app.pane_hit_targets.clear();
+        let mut term = Terminal::new(TestBackend::new(40, 30)).expect("terminal");
+        let mut body = Rect::default();
+        term.draw(|f| body = render_attention_band(f, Rect::new(0, 2, 40, 24), &mut app))
+            .expect("draw");
+        assert_eq!(count_rows(&app), ATTENTION_MAX_ROWS, "cap: only K rows stamped");
+        assert!(body.height > 0, "body kept on a tall pane");
+        assert!(buffer_text(term.backend().buffer()).contains("+1 more"), "overflow tail renders");
+
+        // Short pane: the band clamps to keep body rows, and clipped rows
+        // are not stamped (the clip-skip branch).
+        app.pane_hit_targets.clear();
+        let mut term = Terminal::new(TestBackend::new(40, 30)).expect("terminal");
+        let mut body = Rect::default();
+        term.draw(|f| body = render_attention_band(f, Rect::new(0, 2, 40, 7), &mut app))
+            .expect("draw");
+        assert!(body.height > 0, "body stays non-empty on a short pane: {body:?}");
+        let stamped = count_rows(&app);
+        assert!(
+            (1..ATTENTION_MAX_ROWS).contains(&stamped),
+            "clip reduced the stamped rows below the cap: {stamped}",
+        );
+    }
+
+    #[test]
+    fn fmt_countdown_hours_and_attention_detail_clock_skew() {
+        use std::time::{Duration, SystemTime};
+
+        // Hours branch (>= 1h).
+        assert_eq!(fmt_countdown(Duration::from_secs(3661)), "1h1m");
+        assert_eq!(fmt_countdown(Duration::from_secs(7200)), "2h0m");
+
+        // Clock skew: `now` earlier than `enqueued_at` -> duration_since
+        // Err -> "0s", not a panic or a bogus huge age.
+        let entry = AttentionEntry {
+            session_key: forge_workspace::SessionKey::from_session_id("s"),
+            name: "p".to_owned(),
+            role: None,
+            kind: AttentionKind::Question,
+            enqueued_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1000),
+        };
+        let earlier = SystemTime::UNIX_EPOCH + Duration::from_secs(500);
+        assert_eq!(attention_detail(&entry, earlier), "question \u{00B7} 0s");
     }
 }

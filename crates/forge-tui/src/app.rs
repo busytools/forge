@@ -59,20 +59,20 @@ pub use spinner_picker::SpinnerPickerState;
 pub(crate) use state::MarkdownRenderKey;
 pub(crate) use state::cache_metrics;
 pub use state::{
-    AnsweredQuestion, App, AppStatus, BackgroundTask, BlockCache, CacheMetrics,
-    CachedMessageSegment, ChatMessage, ChatRenderTraceState, ChatViewport, ExtraUsage, HelpView,
-    IncrementalMarkdown, InvalidationLevel, LayoutInvalidation, LoginHint, McpState, MessageBlock,
-    MessageRenderCache, MessageRenderCacheKey, MessageRenderSignature, MessageRole, MessageUsage,
-    ModeInfo, ModeState, MonitorEntry, MonitorStatus, NoticeBlock, NoticeDedupKey, NoticeStage,
-    PaneHitTarget, PasteSessionState, PendingCommandAck, PhaseEntry, PhaseStatus,
-    RateLimitIncidentKey, RecentSessionInfo, SUBAGENT_TAIL_CAP, ScheduleEntry, ScheduleKind,
-    ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState, SessionTurnState,
-    SessionUsageState, StopHookEntry, StopHookSummaryState, SubagentChildEntry, SubagentEntry,
-    SystemSeverity, TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem, TodoStatus,
-    ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UsageSnapshot, UsageSourceKind,
-    UsageSourceMode, UsageState, UsageWindow, WelcomeBlock, WorkflowEntry, WorkflowStatus,
-    compute_scrollbar_geometry, hash_text_block_content, hash_welcome_block_content,
-    is_execute_tool_name, is_monitor_tool_name,
+    AnsweredQuestion, App, AppStatus, AttentionEntry, AttentionKind, BackgroundTask, BlockCache,
+    CacheMetrics, CachedMessageSegment, ChatMessage, ChatRenderTraceState, ChatViewport,
+    ExtraUsage, HelpView, IncrementalMarkdown, InvalidationLevel, LayoutInvalidation, LoginHint,
+    McpState, MessageBlock, MessageRenderCache, MessageRenderCacheKey, MessageRenderSignature,
+    MessageRole, MessageUsage, ModeInfo, ModeState, MonitorEntry, MonitorStatus, NoticeBlock,
+    NoticeDedupKey, NoticeStage, PaneHitTarget, PasteSessionState, PendingCommandAck, PhaseEntry,
+    PhaseStatus, RateLimitIncidentKey, RecentSessionInfo, SUBAGENT_TAIL_CAP, ScheduleEntry,
+    ScheduleKind, ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState,
+    SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState, SubagentChildEntry,
+    SubagentEntry, SystemSeverity, TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem,
+    TodoStatus, ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UsageSnapshot,
+    UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, WelcomeBlock, WorkflowEntry,
+    WorkflowStatus, compute_scrollbar_geometry, hash_text_block_content,
+    hash_welcome_block_content, is_execute_tool_name, is_monitor_tool_name,
 };
 pub use view::ActiveView;
 
