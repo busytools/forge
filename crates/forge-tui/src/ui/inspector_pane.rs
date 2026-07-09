@@ -218,13 +218,13 @@ fn render_attention_band(frame: &mut Frame, area: Rect, app: &mut App) -> Rect {
     frame.render_widget(Paragraph::new(lines), band_area);
 
     // Stamp a click-to-jump target per visible row. The header is at
-    // band_area.y (row 0); session row i sits at band_area.y + 1 + i.
-    // Rows clipped by a short pane are skipped so a click can't
-    // resolve to an off-screen row.
+    // band_area.y (row 0), a blank spacer at row 1; session row i sits
+    // at band_area.y + 2 + i. Rows clipped by a short pane are skipped
+    // so a click can't resolve to an off-screen row.
     let band_bottom = band_area.y.saturating_add(band_height);
     let x_end = area.x.saturating_add(area.width);
     for (i, entry) in entries[..shown].iter().enumerate() {
-        let offset = u16::try_from(i.saturating_add(1)).unwrap_or(u16::MAX);
+        let offset = u16::try_from(i.saturating_add(2)).unwrap_or(u16::MAX);
         let row_y = band_area.y.saturating_add(offset);
         if row_y >= band_bottom {
             break;
@@ -258,14 +258,20 @@ fn build_attention_lines(
     width: u16,
     now: std::time::SystemTime,
 ) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(shown.len() + 3);
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(shown.len() + 4);
     lines.push(attention_header_line(width, total));
+    // Blank between header and first row, matching the TASKS / SUBAGENTS
+    // section rhythm (the framing is what gives the band breathing room,
+    // so rows stay compact single lines).
+    lines.push(Line::default());
     for entry in shown {
         lines.push(attention_row_line(width, entry, now));
     }
     if overflow > 0 {
         lines.push(attention_overflow_line(overflow));
     }
+    // Blank before the closing rule that separates the band from GIT.
+    lines.push(Line::default());
     push_section_rule(&mut lines, width);
     lines
 }
@@ -282,25 +288,19 @@ fn attention_overflow_line(overflow: usize) -> Line<'static> {
     ])
 }
 
-/// Attention-band header: yellow `△ NEEDS INPUT` with a right-justified
-/// DIM count of waiting sessions. The `△` glyph + yellow match the
-/// Projects-pane background-attention triangle.
+/// Attention-band header: DIM-bold ` NEEDS INPUT` with a right-justified
+/// DIM count of waiting sessions - styled exactly like the other section
+/// headers (`GIT` / `TASKS` / `SUBAGENTS`). The per-session attention
+/// `△` lives on the rows, not the header.
 fn attention_header_line(width: u16, count: usize) -> Line<'static> {
-    const LABEL: &str = "NEEDS INPUT";
+    const LABEL: &str = " NEEDS INPUT";
     let count_str = count.to_string();
-    let chrome = usize::from(PANE_PAD)
-        + 2 // glyph + space
-        + LABEL.chars().count()
-        + count_str.chars().count()
-        + usize::from(PANE_PAD); // right gutter
+    let chrome = LABEL.chars().count() + count_str.chars().count() + usize::from(PANE_PAD); // right gutter
     let pad = usize::from(width).saturating_sub(chrome).max(1);
     Line::from(vec![
-        Span::raw(" ".repeat(usize::from(PANE_PAD))),
-        Span::styled("\u{25b3}".to_owned(), Style::default().fg(theme::STATUS_WARNING)),
-        Span::raw(" "),
         Span::styled(
             LABEL.to_owned(),
-            Style::default().fg(theme::STATUS_WARNING).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
         ),
         Span::raw(" ".repeat(pad)),
         Span::styled(count_str, Style::default().fg(theme::DIM)),
