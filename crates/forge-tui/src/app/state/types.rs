@@ -198,7 +198,9 @@ impl ScheduleEntry {
 /// NEEDS INPUT band. Derived from the front `PromptState.source`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttentionKind {
-    /// A `can_use_tool` permission request; `tool` is the tool title.
+    /// A `can_use_tool` permission request; `tool` is the raw tool
+    /// name (e.g. `Bash`, `mcp__forge__workers__spawn`), not a display
+    /// title.
     Permission { tool: String },
     /// An `AskUserQuestion` request.
     Question,
