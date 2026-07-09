@@ -58,6 +58,8 @@ use ratatui::widgets::Paragraph;
 use super::theme;
 use crate::agent::model::ToolCallStatus;
 use crate::app::App;
+use crate::app::AttentionEntry;
+use crate::app::AttentionKind;
 use crate::app::MessageBlock;
 use crate::app::PaneHitTarget;
 use crate::app::TodoStatus;
@@ -82,13 +84,15 @@ const PATH_STATS_GAP: usize = 2;
 /// A vertical scrollbar renders on the right edge when the body
 /// overflows the visible area.
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
-    let (banner_area, body_area) = split_banner_body(area);
+    let (banner_area, rest_area) = split_banner_body(area);
 
     // Pinned banner: `INSPECTOR` in RUST_ORANGE bold + dim rule.
     let banner_lines = build_inline_banner(area.width);
     frame.render_widget(Paragraph::new(banner_lines), banner_area);
 
-    // Scrollable body.
+    // Pinned NEEDS INPUT band (when any background session is waiting),
+    // then the scrollable body in the space below it.
+    let body_area = render_attention_band(frame, rest_area, app);
     render_scrollable_body(frame, body_area, app);
 }
 
@@ -134,6 +138,7 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
         x_end: close_x_end,
     });
 
+    let body_area = render_attention_band(frame, body_area, app);
     render_scrollable_body(frame, body_area, app);
 }
 
@@ -166,6 +171,133 @@ fn build_inline_banner(width: u16) -> Vec<Line<'static>> {
             Span::styled("\u{2500}".repeat(rule_width), Style::default().fg(theme::DIM)),
         ]),
     ]
+}
+
+/// Render the pinned NEEDS INPUT attention band into the top of
+/// `area` when any background session is waiting, returning the body
+/// rect below it (fed to the scrollable body). When nothing waits the
+/// band is absent and `area` is returned unchanged - GIT then sits
+/// directly under the banner rule, as before. The band never scrolls;
+/// it stays fixed while the sections below it move.
+fn render_attention_band(frame: &mut Frame, area: Rect, app: &mut App) -> Rect {
+    if area.height == 0 || area.width == 0 {
+        return area;
+    }
+    let lines = build_attention_band(app, area.width);
+    if lines.is_empty() {
+        return area;
+    }
+    let band_height = u16::try_from(lines.len()).unwrap_or(u16::MAX).min(area.height);
+    let band_area = Rect { x: area.x, y: area.y, width: area.width, height: band_height };
+    frame.render_widget(Paragraph::new(lines), band_area);
+    Rect {
+        x: area.x,
+        y: area.y.saturating_add(band_height),
+        width: area.width,
+        height: area.height.saturating_sub(band_height),
+    }
+}
+
+/// Build the pinned NEEDS INPUT band's lines: the `△ NEEDS INPUT`
+/// header + count, one row per waiting background session (stalest
+/// first), then a DIM `─` rule bracketing the band off from the
+/// scrolling body. Empty `Vec` when nothing is waiting.
+fn build_attention_band(app: &App, width: u16) -> Vec<Line<'static>> {
+    let entries = app.needs_input_sessions();
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    let now = std::time::SystemTime::now();
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(entries.len() + 2);
+    lines.push(attention_header_line(width, entries.len()));
+    for entry in &entries {
+        lines.push(attention_row_line(width, entry, now));
+    }
+    push_section_rule(&mut lines, width);
+    lines
+}
+
+/// Attention-band header: yellow `△ NEEDS INPUT` with a right-justified
+/// DIM count of waiting sessions. The `△` glyph + yellow match the
+/// Projects-pane background-attention triangle.
+fn attention_header_line(width: u16, count: usize) -> Line<'static> {
+    const LABEL: &str = "NEEDS INPUT";
+    let count_str = count.to_string();
+    let chrome = usize::from(PANE_PAD)
+        + 2 // glyph + space
+        + LABEL.chars().count()
+        + count_str.chars().count()
+        + usize::from(PANE_PAD); // right gutter
+    let pad = usize::from(width).saturating_sub(chrome).max(1);
+    Line::from(vec![
+        Span::raw(" ".repeat(usize::from(PANE_PAD))),
+        Span::styled("\u{25b3}".to_owned(), Style::default().fg(theme::STATUS_WARNING)),
+        Span::raw(" "),
+        Span::styled(
+            LABEL.to_owned(),
+            Style::default().fg(theme::STATUS_WARNING).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(count_str, Style::default().fg(theme::DIM)),
+    ])
+}
+
+/// One attention-band row: yellow `△` + white-bold project name +
+/// DIM ` (role)` (workers only) + the DIM kind/tool/wait-age detail
+/// right-justified. The name truncates to fit; the detail is capped so
+/// a long tool name can't crowd the name out, and the row honours the
+/// 1-col right gutter every inspector section observes.
+fn attention_row_line(
+    width: u16,
+    entry: &AttentionEntry,
+    now: std::time::SystemTime,
+) -> Line<'static> {
+    let inner = usize::from(width);
+    let role_suffix = entry.role.as_deref().map(|role| format!(" ({role})")).unwrap_or_default();
+    let role_width = role_suffix.chars().count();
+    // Cap the detail so a long MCP tool name can't leave the name with
+    // zero room: reserve both gutters + glyph/space + role + 2 cols.
+    let detail_cap = inner.saturating_sub(2 * usize::from(PANE_PAD) + 2 + role_width + 2).max(1);
+    let detail = truncate_or_pass(&attention_detail(entry, now), detail_cap);
+    let detail_width = detail.chars().count();
+
+    let name_chrome = usize::from(PANE_PAD)
+        + 2 // glyph + space
+        + role_width
+        + 1 // min gap before the detail
+        + detail_width
+        + usize::from(PANE_PAD); // right gutter
+    let name_budget = row_text_budget(inner, name_chrome);
+    let fitted_name = truncate_or_pass(&entry.name, name_budget);
+
+    let used =
+        2 * usize::from(PANE_PAD) + 2 + fitted_name.chars().count() + role_width + detail_width;
+    let pad = inner.saturating_sub(used).max(1);
+
+    Line::from(vec![
+        Span::raw(" ".repeat(usize::from(PANE_PAD))),
+        Span::styled("\u{25b3}".to_owned(), Style::default().fg(theme::STATUS_WARNING)),
+        Span::raw(" "),
+        Span::styled(fitted_name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled(role_suffix, Style::default().fg(theme::DIM)),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(detail, Style::default().fg(theme::DIM)),
+    ])
+}
+
+/// The DIM detail cluster for an attention row: the kind, the tool
+/// name (permission prompts only), and the wait-age, joined by ` · `
+/// (the inspector's separator). E.g. `permission · Bash · 3m` or
+/// `question · 20s`.
+fn attention_detail(entry: &AttentionEntry, now: std::time::SystemTime) -> String {
+    let wait = fmt_countdown(now.duration_since(entry.enqueued_at).unwrap_or_default());
+    match &entry.kind {
+        AttentionKind::Permission { tool } if !tool.is_empty() => {
+            format!("permission \u{00B7} {tool} \u{00B7} {wait}")
+        }
+        AttentionKind::Permission { .. } => format!("permission \u{00B7} {wait}"),
+        AttentionKind::Question => format!("question \u{00B7} {wait}"),
+    }
 }
 
 /// Render the inspector body (`GIT` → `TASKS` → `PROCESSES` ...)
@@ -3679,5 +3811,141 @@ mod tests {
         app.gotify_connected = true;
         app.gotify_subs = vec![sub()];
         assert!(gotify_section_visible(&app), "shown only when connected with a subscription");
+    }
+
+    // ---------------------------------------------------------
+    // NEEDS INPUT attention band (pinned above the scroll body).
+    // ---------------------------------------------------------
+
+    /// Seed one BACKGROUND session (not the active bucket) carrying a
+    /// pending permission prompt, stamped with a project name so the
+    /// row resolves without a workspace catalog.
+    fn app_with_waiting_session(name: &str) -> App {
+        let mut app = App::test_default();
+        let key = forge_workspace::SessionKey::from_session_id(name);
+        let mut session = crate::app::session::UiSession::new(key.clone());
+        session.project = Some(name.to_owned());
+        let prompt = crate::app::prompt::PromptState::from_permission(
+            format!("tc-{name}"),
+            crate::app::prompt::tests::make_permission_request(),
+        );
+        session.prompt_queue.push_back(prompt);
+        app.sessions.insert(key, session);
+        app
+    }
+
+    fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
+        let width = usize::from(buffer.area.width);
+        buffer
+            .content
+            .chunks(width)
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn attention_band_absent_when_no_session_waits() {
+        let app = App::test_default();
+        assert!(build_attention_band(&app, 40).is_empty(), "no waiting session -> empty band");
+    }
+
+    #[test]
+    fn attention_band_renders_header_and_row_when_a_session_waits() {
+        let app = app_with_waiting_session("granite-backend");
+        // Width 60 so the full name renders alongside the whole detail
+        // (at the 40-col Wide pane the name legitimately truncates to
+        // keep the kind/tool/wait detail whole - see the fit test).
+        let lines = build_attention_band(&app, 60);
+        assert!(!lines.is_empty(), "a waiting session produces a band");
+        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("NEEDS INPUT"), "header present: {text}");
+        assert!(text.contains("granite-backend"), "session name in a row: {text}");
+        assert!(text.contains("permission"), "permission kind rendered: {text}");
+        assert!(text.contains("Bash"), "tool name for a permission prompt: {text}");
+    }
+
+    #[test]
+    fn attention_detail_formats_kind_tool_and_wait() {
+        use std::time::{Duration, SystemTime};
+        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        let perm = AttentionEntry {
+            session_key: forge_workspace::SessionKey::from_session_id("p"),
+            name: "granite-backend".to_owned(),
+            role: None,
+            kind: AttentionKind::Permission { tool: "Bash".to_owned() },
+            enqueued_at: base,
+        };
+        // 3m20s waited -> compact "3m".
+        assert_eq!(
+            attention_detail(&perm, base + Duration::from_secs(200)),
+            "permission \u{00B7} Bash \u{00B7} 3m"
+        );
+
+        let question = AttentionEntry { kind: AttentionKind::Question, ..perm.clone() };
+        assert_eq!(
+            attention_detail(&question, base + Duration::from_secs(20)),
+            "question \u{00B7} 20s"
+        );
+
+        let bare =
+            AttentionEntry { kind: AttentionKind::Permission { tool: String::new() }, ..perm };
+        assert_eq!(
+            attention_detail(&bare, base + Duration::from_secs(20)),
+            "permission \u{00B7} 20s"
+        );
+    }
+
+    #[test]
+    fn attention_band_passes_through_empty_and_shrinks_body_when_present() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let area = Rect { x: 0, y: 2, width: 40, height: 20 };
+
+        // Empty: the body rect passes through unchanged.
+        let mut app = App::test_default();
+        let mut term = Terminal::new(TestBackend::new(40, 24)).expect("terminal");
+        let mut empty_body = Rect::default();
+        term.draw(|f| empty_body = render_attention_band(f, area, &mut app)).expect("draw");
+        assert_eq!(empty_body, area, "no band -> body rect unchanged");
+
+        // Present: the band takes the top rows; the body shifts down and
+        // shrinks so GIT (drawn into the returned rect) is pushed down.
+        let mut app = app_with_waiting_session("granite-backend");
+        let mut term = Terminal::new(TestBackend::new(40, 24)).expect("terminal");
+        let mut body = Rect::default();
+        term.draw(|f| body = render_attention_band(f, area, &mut app)).expect("draw");
+        assert!(body.y > area.y, "body pushed down below the band: {body:?}");
+        assert!(body.height < area.height, "body shrank by the band height: {body:?}");
+        assert_eq!(body.x, area.x, "body keeps the pane x");
+        assert_eq!(body.width, area.width, "body keeps the pane width");
+        assert_eq!(body.y + body.height, area.y + area.height, "band + body tile the area");
+        let text = buffer_text(term.backend().buffer());
+        assert!(text.contains("NEEDS INPUT"), "band header rendered into the buffer: {text}");
+    }
+
+    #[test]
+    fn attention_rows_fit_within_inner_width() {
+        let now = std::time::SystemTime::UNIX_EPOCH;
+        let entry = AttentionEntry {
+            session_key: forge_workspace::SessionKey::from_session_id("s"),
+            name: "a-very-long-project-name-that-must-truncate".to_owned(),
+            role: Some("steward".to_owned()),
+            kind: AttentionKind::Permission { tool: "mcp__forge__workers__spawn".to_owned() },
+            enqueued_at: now,
+        };
+        for width in [30_u16, 40, 60] {
+            let header = attention_header_line(width, 3);
+            let row = attention_row_line(width, &entry, now);
+            for line in [&header, &row] {
+                let w = rendered_width(line);
+                assert!(
+                    w <= usize::from(width),
+                    "line exceeds width {width}: {w} cols in {:?}",
+                    line_text(line),
+                );
+            }
+        }
     }
 }
