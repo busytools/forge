@@ -218,13 +218,13 @@ fn render_attention_band(frame: &mut Frame, area: Rect, app: &mut App) -> Rect {
     frame.render_widget(Paragraph::new(lines), band_area);
 
     // Stamp a click-to-jump target per visible row. The header is at
-    // band_area.y (row 0); session row i sits at band_area.y + 1 + i.
-    // Rows clipped by a short pane are skipped so a click can't
-    // resolve to an off-screen row.
+    // band_area.y (row 0), a blank spacer at row 1; session row i sits
+    // at band_area.y + 2 + i. Rows clipped by a short pane are skipped
+    // so a click can't resolve to an off-screen row.
     let band_bottom = band_area.y.saturating_add(band_height);
     let x_end = area.x.saturating_add(area.width);
     for (i, entry) in entries[..shown].iter().enumerate() {
-        let offset = u16::try_from(i.saturating_add(1)).unwrap_or(u16::MAX);
+        let offset = u16::try_from(i.saturating_add(2)).unwrap_or(u16::MAX);
         let row_y = band_area.y.saturating_add(offset);
         if row_y >= band_bottom {
             break;
@@ -246,11 +246,11 @@ fn render_attention_band(frame: &mut Frame, area: Rect, app: &mut App) -> Rect {
     }
 }
 
-/// Build the pinned NEEDS INPUT band's lines: the `△ NEEDS INPUT`
-/// header (with the full `total` waiter count), one row per `shown`
-/// session (already sorted stalest-first), an optional dim `+N more`
-/// line when `overflow > 0`, then a DIM `─` rule bracketing the band
-/// off from the scrolling body.
+/// Build the pinned NEEDS INPUT band's lines: the DIM-bold ` NEEDS INPUT`
+/// header (with the full `total` waiter count), a blank spacer, one row
+/// per `shown` session (already sorted stalest-first), an optional dim
+/// `+N more` line when `overflow > 0`, then a blank + DIM `─` rule
+/// bracketing the band off from the scrolling body.
 fn build_attention_lines(
     shown: &[AttentionEntry],
     total: usize,
@@ -258,14 +258,19 @@ fn build_attention_lines(
     width: u16,
     now: std::time::SystemTime,
 ) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(shown.len() + 3);
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(shown.len() + 4);
     lines.push(attention_header_line(width, total));
+    // Blank between header and first row, matching the TASKS / SUBAGENTS
+    // section rhythm.
+    lines.push(Line::default());
     for entry in shown {
         lines.push(attention_row_line(width, entry, now));
     }
     if overflow > 0 {
         lines.push(attention_overflow_line(overflow));
     }
+    // Blank before the closing rule that separates the band from GIT.
+    lines.push(Line::default());
     push_section_rule(&mut lines, width);
     lines
 }
@@ -282,25 +287,19 @@ fn attention_overflow_line(overflow: usize) -> Line<'static> {
     ])
 }
 
-/// Attention-band header: yellow `△ NEEDS INPUT` with a right-justified
-/// DIM count of waiting sessions. The `△` glyph + yellow match the
-/// Projects-pane background-attention triangle.
+/// Attention-band header: DIM-bold ` NEEDS INPUT` with a right-justified
+/// DIM count of waiting sessions - styled exactly like the other section
+/// headers (`GIT` / `TASKS` / `SUBAGENTS`). The per-session attention
+/// `△` lives on the rows, not the header.
 fn attention_header_line(width: u16, count: usize) -> Line<'static> {
-    const LABEL: &str = "NEEDS INPUT";
+    const LABEL: &str = " NEEDS INPUT";
     let count_str = count.to_string();
-    let chrome = usize::from(PANE_PAD)
-        + 2 // glyph + space
-        + LABEL.chars().count()
-        + count_str.chars().count()
-        + usize::from(PANE_PAD); // right gutter
+    let chrome = LABEL.chars().count() + count_str.chars().count() + usize::from(PANE_PAD); // right gutter
     let pad = usize::from(width).saturating_sub(chrome).max(1);
     Line::from(vec![
-        Span::raw(" ".repeat(usize::from(PANE_PAD))),
-        Span::styled("\u{25b3}".to_owned(), Style::default().fg(theme::STATUS_WARNING)),
-        Span::raw(" "),
         Span::styled(
             LABEL.to_owned(),
-            Style::default().fg(theme::STATUS_WARNING).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
         ),
         Span::raw(" ".repeat(pad)),
         Span::styled(count_str, Style::default().fg(theme::DIM)),
@@ -1787,7 +1786,7 @@ fn append_subagents_section(lines: &mut Vec<Line<'static>>, app: &App, width: u1
 
 /// Render one SUBAGENTS entry: header (status_icon + `◇` + label,
 /// plus a `· N tools` trailing summary on terminal roots) and, for
-/// in-progress roots, an indented tail of the last 3-4 hidden child
+/// a running root, an indented tail of the last 3-4 hidden child
 /// tool calls. Each tail row reuses `theme::tool_name_label` so the
 /// kind glyph + label match the standard chat tool row.
 fn append_subagent_row(
@@ -1847,14 +1846,9 @@ fn append_subagent_row(
     }
     lines.push(Line::from(header_spans));
 
-    if !in_progress {
-        return;
-    }
-
-    // Tail rows: 6-space indent + kind glyph + space + kind label +
-    // double-space + title. Layout mirrors a standard chat tool-call
-    // row's icon column but nested deeper to read as a child of the
-    // root header above.
+    // Tail gated on `entry.tail` alone - the derive fills it only for a
+    // running root, so render never recomputes a status predicate. 6-space
+    // indent nests each row under the header like a chat tool-call row.
     let tail_indent = "      "; // 6 spaces - 2 pane pad + 4 for the nest.
     let fixed_chrome = tail_indent.chars().count()
         + 1   // kind glyph cell
@@ -3526,6 +3520,71 @@ mod tests {
     }
 
     #[test]
+    fn append_subagent_row_tail_gated_on_field_not_status() {
+        // Contract guard for the derive/render decoupling: the derive owns
+        // "is this root running", the render just draws the tail it's
+        // handed. A terminal-status entry carrying a tail is not a state the
+        // derive produces - it exists here only to prove the render keys the
+        // tail on `entry.tail`, so a re-introduced status-based early-return
+        // (which would drop this tail) fails loudly.
+        use crate::agent::model::ToolCallStatus;
+        use crate::app::{SubagentChildEntry, SubagentEntry};
+
+        let entry = SubagentEntry {
+            tool_use_id: "tu-root".to_owned(),
+            label: "Explore".to_owned(),
+            status: ToolCallStatus::Completed,
+            tail: vec![SubagentChildEntry {
+                sdk_tool_name: "Read".to_owned(),
+                title: "probe.rs".to_owned(),
+                status: ToolCallStatus::Completed,
+            }],
+            total_count: 5,
+        };
+        let mut lines = Vec::new();
+        append_subagent_row(&mut lines, &entry, 60, '\u{2022}');
+        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(
+            joined.contains("probe.rs"),
+            "render must draw the derived tail regardless of terminal status; got:\n{joined}",
+        );
+        // Companion: the summary path is status-gated (terminal -> `· N
+        // tools`), independent of the field-gated tail above.
+        assert!(
+            joined.contains("5 tools"),
+            "terminal status still drives the `· N tools` summary; got:\n{joined}",
+        );
+    }
+
+    #[test]
+    fn append_subagent_row_pending_renders_queued_header_only() {
+        // Pending render contract: a queued root shows the `○` glyph, no
+        // `· N tools` summary, and no tail rows - the one render branch the
+        // section cluster otherwise never exercises. Guards a future
+        // narrowing of the summary's `in_progress` predicate that would
+        // leak a spurious `· 0 tools` onto a queued root.
+        use crate::agent::model::ToolCallStatus;
+        use crate::app::SubagentEntry;
+
+        let entry = SubagentEntry {
+            tool_use_id: "tu-root".to_owned(),
+            label: "Explore".to_owned(),
+            status: ToolCallStatus::Pending,
+            tail: Vec::new(),
+            total_count: 0,
+        };
+        let mut lines = Vec::new();
+        append_subagent_row(&mut lines, &entry, 60, '\u{2022}');
+        assert_eq!(lines.len(), 1, "queued root renders a single header line; got {lines:?}");
+        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains('\u{25cb}'), "queued root shows the ○ glyph; got:\n{joined}");
+        assert!(
+            !joined.contains("tools"),
+            "queued root shows no `· N tools` summary; got:\n{joined}",
+        );
+    }
+
+    #[test]
     fn subagents_section_hidden_when_view_is_empty() {
         let app = App::test_default();
         let mut lines = Vec::new();
@@ -4067,6 +4126,66 @@ mod tests {
         // Switching (what the click handler does) makes it the active session.
         app.switch_active_session(key);
         assert_eq!(app.active_session_key.as_ref(), Some(&bg), "the click jumps to the session");
+    }
+
+    #[test]
+    fn attention_row_hit_target_lands_on_its_own_rendered_row() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        // Two waiting sessions with distinct names: the stamped hit-target
+        // `y` (render_attention_band) and the line layout
+        // (build_attention_lines) are two separate magic numbers, so an
+        // off-by-one lands a click on the WRONG session's row rather than a
+        // blank - this pins each stamp to the buffer row it actually
+        // targets. Guards the header/spacer/row offset against silent drift.
+        let names = ["alpha-project", "beta-project"];
+        let mut app = App::test_default();
+        for name in names {
+            let key = forge_workspace::SessionKey::from_session_id(name);
+            let mut session = crate::app::session::UiSession::new(key.clone());
+            session.project = Some(name.to_owned());
+            let prompt = crate::app::prompt::PromptState::from_permission(
+                format!("tc-{name}"),
+                crate::app::prompt::tests::make_permission_request(),
+            );
+            session.prompt_queue.push_back(prompt);
+            app.sessions.insert(key, session);
+        }
+        assert_eq!(app.needs_input_sessions().len(), 2, "two background waiters");
+        let expected: std::collections::HashMap<forge_workspace::SessionKey, &str> =
+            names.iter().map(|n| (forge_workspace::SessionKey::from_session_id(*n), *n)).collect();
+
+        let width = 60u16;
+        let area = Rect { x: 0, y: 0, width, height: 24 };
+        let mut term = Terminal::new(TestBackend::new(width, 24)).expect("terminal");
+        term.draw(|f| {
+            render_attention_band(f, area, &mut app);
+        })
+        .expect("draw");
+
+        let buffer = term.backend().buffer().clone();
+        let row_text = |y: u16| -> String {
+            let w = usize::from(buffer.area.width);
+            let start = usize::from(y) * w;
+            buffer.content[start..start + w].iter().map(ratatui::buffer::Cell::symbol).collect()
+        };
+
+        let mut checked = 0;
+        for target in &app.pane_hit_targets {
+            let PaneHitTarget::InspectorAttentionRow { session_key, y, .. } = target else {
+                continue;
+            };
+            let want = expected.get(session_key).expect("stamped key is a seeded session");
+            let text = row_text(*y);
+            assert!(text.contains('\u{25b3}'), "row at y={y} carries the △ marker; got {text:?}");
+            assert!(
+                text.contains(want),
+                "hit-target y={y} must land on its own session's row ({want}); got {text:?}",
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 2, "both waiting sessions stamped a row target");
     }
 
     #[test]
