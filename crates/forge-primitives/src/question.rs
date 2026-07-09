@@ -41,7 +41,9 @@ pub struct QuestionRequest {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuestionAnnotation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
 }
 
@@ -50,4 +52,26 @@ pub struct QuestionAnnotation {
 pub enum QuestionOutcome {
     Answered { selected_option_ids: Vec<String>, annotation: Option<QuestionAnnotation> },
     Cancelled,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::QuestionAnnotation;
+
+    #[test]
+    fn annotation_omits_none_fields_rather_than_serializing_null() {
+        // The AskUserQuestion tool schema types `notes`/`preview` as
+        // optional strings and rejects an explicit `null`. A selected
+        // option carrying a preview with no user note must serialize
+        // without a `notes` key - not `"notes": null`, which the
+        // permission handler was feeding back as updated tool input.
+        let annotation = QuestionAnnotation { preview: Some("shown".to_owned()), notes: None };
+        let value = serde_json::to_value(&annotation).expect("serialize");
+        let obj = value.as_object().expect("annotation serializes to an object");
+        assert_eq!(obj.get("preview").and_then(serde_json::Value::as_str), Some("shown"));
+        assert!(
+            !obj.contains_key("notes"),
+            "None fields must be omitted, not serialized as null; got {value}",
+        );
+    }
 }
