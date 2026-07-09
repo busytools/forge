@@ -1,5 +1,5 @@
 // =====
-// TESTS: 11
+// TESTS: 12
 // =====
 //
 // Tool call lifecycle integration tests.
@@ -12,7 +12,7 @@ use pretty_assertions::assert_eq;
 
 use crate::helpers::test_app;
 use crate::message_helpers::{
-    assistant_message, assistant_message_with_parent, send_msg, tool_result_block,
+    assistant_message, assistant_message_with_parent, send_msg, text_block, tool_result_block,
     tool_result_error_block, tool_use_block, user_message,
 };
 
@@ -534,5 +534,43 @@ async fn subagent_section_clears_when_terminal_task_updated_drains_alive_task() 
         app.subagents_view().is_empty(),
         "section clears once the terminal task_updated drains the alive task; got {:?}",
         app.subagents_view(),
+    );
+}
+
+/// Regression (2.1.204 local-agent streaming): a subagent's assistant
+/// message carries `parent_tool_use_id` on the envelope and now streams
+/// its narration text into the parent's live wire. Its tool calls scope
+/// to the SUBAGENTS inspector, but its narration text must NOT leak into
+/// the main chat.
+#[tokio::test]
+async fn subagent_assistant_narration_does_not_leak_into_main_chat() {
+    let mut app = test_app();
+
+    // Main-agent narration must still render (guard against over-suppression).
+    send_msg(&mut app, assistant_message(vec![text_block("main agent line")]));
+    // Subagent narration (parent_tool_use_id set) must be suppressed.
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![text_block("subagent narration leaking")],
+            "toolu-parent",
+        ),
+    );
+
+    let chat_text: String = app
+        .messages()
+        .iter()
+        .flat_map(|m| m.blocks.iter())
+        .filter_map(|b| match b {
+            MessageBlock::Text(t) => Some(t.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(chat_text.contains("main agent line"), "main-agent narration must still render");
+    assert!(
+        !chat_text.contains("subagent narration leaking"),
+        "subagent narration must not leak into the main chat; got {chat_text:?}",
     );
 }

@@ -214,10 +214,15 @@ fn walk_assistant_content(
     use crate::agent::model;
     use forge_primitives::ContentBlock;
 
+    // A subagent message (parent_tool_use_id set) belongs in the
+    // SUBAGENTS inspector, so its narration/thinking must not leak into
+    // the main chat (2.1.204 local agents stream it into the parent wire).
+    let is_subagent = parent_tool_use_id.is_some_and(|parent| !parent.trim().is_empty());
+
     for block in content {
         match block {
             ContentBlock::Text { text } => {
-                if text.is_empty() {
+                if is_subagent || text.is_empty() {
                     continue;
                 }
                 super::clear_compaction_state(app, true);
@@ -227,7 +232,7 @@ fn walk_assistant_content(
                 super::streaming::handle_agent_message_chunk(app, chunk);
             }
             ContentBlock::Thinking { thinking, .. } => {
-                if thinking.is_empty() {
+                if is_subagent || thinking.is_empty() {
                     continue;
                 }
                 let chunk_chars = thinking.chars().count();
