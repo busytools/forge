@@ -1527,7 +1527,11 @@ impl Workspace {
             accounts
                 .ordered_keys
                 .iter()
-                .filter(|k| accounts.is_account_usable(k))
+                // Mirror the ready_accounts + pick_for_project experimental
+                // filters. Defensive: the plan pool never holds an
+                // experimental account, so this only keeps the three
+                // assignment-path predicates consistent.
+                .filter(|k| accounts.is_account_usable(k) && !accounts.is_experimental(k))
                 .cloned()
                 .collect()
         };
