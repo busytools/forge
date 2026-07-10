@@ -310,13 +310,25 @@ pub async fn run_recovery_poll(workspace_weak: Weak<Workspace>) {
         };
 
         // Snapshot the bailed accounts under the parking_lot lock,
-        // then drop the lock before any awaits.
+        // then drop the lock before any awaits. Base-url accounts are
+        // excluded: this poll gates on `claude auth status` (keychain),
+        // which is permanently None for a base-url account, so it can
+        // never recover one - it would only burn a shellout every 30 s
+        // and log a misleading "kept bailed". A bailed base-url account
+        // recovers instead via the 60 s usage poller, which re-probes it
+        // and flips it Ready when its endpoint heals.
         let bailed: Vec<(AccountKey, std::path::PathBuf)> = {
             let accounts = workspace.account_states().lock();
             accounts
                 .by_key
                 .iter()
-                .filter(|(_, s)| s.loading == LoadingState::Bailed)
+                .filter(|(_, s)| {
+                    s.loading == LoadingState::Bailed
+                        && !matches!(
+                            oauth_usage::probe_plan(&s.env),
+                            oauth_usage::ProbePlan::BaseUrl { .. }
+                        )
+                })
                 .map(|(k, s)| (k.clone(), s.config_dir.clone()))
                 .collect()
         };
