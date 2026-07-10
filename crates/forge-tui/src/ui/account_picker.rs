@@ -249,6 +249,7 @@ mod tests {
                 five_hour_util: 100.0,
                 seven_day_util: 63.0,
                 resets_at: Some(future),
+                experimental: false,
             },
             AccountRow {
                 display_name: "Granite1".to_owned(),
@@ -258,6 +259,7 @@ mod tests {
                 five_hour_util: 34.0,
                 seven_day_util: 22.0,
                 resets_at: None,
+                experimental: false,
             },
         ];
         crate::app::account_picker::open(&mut app, rows);

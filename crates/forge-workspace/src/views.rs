@@ -132,6 +132,11 @@ pub struct AccountRow {
     /// When the account unlocks - `Some` only while it is at its cap,
     /// so the picker shows a reset ETA on rate-limited rows only.
     pub resets_at: Option<SystemTime>,
+    /// `true` for an `experimental = true` account. The picker renders
+    /// these in a separate `EXPERIMENTAL` group with an amber tag; they
+    /// are offered globally (regardless of the project's org pin)
+    /// because they are excluded from every auto-assignment path.
+    pub experimental: bool,
 }
 
 /// One session under a project.

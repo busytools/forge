@@ -2022,18 +2022,27 @@ impl Workspace {
         let accounts = self.accounts.lock();
         // Resolve the allow-list to concrete account names, falling
         // back to every configured account when the project pins none.
-        let names: Vec<String> = if allowed_accounts.is_empty() {
+        // Experimental accounts are then unioned in regardless of the
+        // org pin (deduped) - they are excluded from auto-assignment but
+        // globally selectable in the picker.
+        let mut names: Vec<String> = if allowed_accounts.is_empty() {
             accounts.ordered_keys.iter().map(|k| k.0.clone()).collect()
         } else {
             allowed_accounts.to_vec()
         };
-        names
+        for key in &accounts.ordered_keys {
+            if accounts.is_experimental(key) && !names.contains(&key.0) {
+                names.push(key.0.clone());
+            }
+        }
+        let mut rows: Vec<crate::AccountRow> = names
             .into_iter()
             .filter_map(|name| {
                 let key = AccountKey(name.clone());
                 let config_dir = accounts.config_dir(&key)?.clone();
                 let usable = accounts.is_account_usable(&key);
                 let is_current = current_account == Some(name.as_str());
+                let experimental = accounts.is_experimental(&key);
                 let (five_hour_util, seven_day_util, resets_at) =
                     accounts.usage(&key).map_or((0.0, 0.0, None), |snapshot| {
                         (
@@ -2050,9 +2059,15 @@ impl Workspace {
                     five_hour_util,
                     seven_day_util,
                     resets_at,
+                    experimental,
                 })
             })
-            .collect()
+            .collect();
+        // Stable-sort so regular rows lead and experimental rows trail,
+        // matching the picker's EXPERIMENTAL group. `false` sorts before
+        // `true`, and the sort preserves within-group order.
+        rows.sort_by_key(|row| row.experimental);
+        rows
     }
 
     /// Resolves a `SessionTarget` to the `SessionKey` used to look up
@@ -5301,6 +5316,81 @@ mod tests {
         assert!(rows[1].usable, "B under cap on both windows");
         assert!((rows[1].five_hour_util - 34.0).abs() < f64::EPSILON);
         assert!(rows[1].resets_at.is_none(), "usable account has no reset ETA");
+    }
+
+    /// Experimental accounts are globally selectable: they appear in the
+    /// picker snapshot even when the project's org allow-list does NOT
+    /// pin them, flagged experimental and sorted after the regular rows.
+    #[test]
+    fn project_accounts_snapshot_includes_experimental_globally() {
+        let (ws, _rx) = Workspace::testing_stub();
+        {
+            let mut map = AccountStateMap::new(&[
+                crate::config::LoadedAccount {
+                    display_name: "A".to_owned(),
+                    config_dir: PathBuf::from("/cfg/A"),
+                    proxy: true,
+                    env: std::collections::HashMap::new(),
+                    experimental: false,
+                },
+                crate::config::LoadedAccount {
+                    display_name: "Exp".to_owned(),
+                    config_dir: PathBuf::from("/cfg/Exp"),
+                    proxy: true,
+                    env: std::collections::HashMap::new(),
+                    experimental: true,
+                },
+            ]);
+            map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
+            map.set_usage(&AccountKey("Exp".to_owned()), account_usage_snapshot(10.0, 10.0, None));
+            *ws.accounts.lock() = map;
+        }
+
+        // Allow-list pins only "A"; "Exp" is a different org's account.
+        let rows = ws.project_accounts_snapshot(&["A".to_owned()], Some("A"));
+
+        assert_eq!(rows.len(), 2, "experimental Exp is unioned in despite not being pinned");
+        assert_eq!(rows[0].display_name, "A", "regular allow-list rows come first");
+        assert!(!rows[0].experimental, "A is a regular account");
+        assert_eq!(rows[1].display_name, "Exp", "experimental rows sorted last");
+        assert!(rows[1].experimental, "Exp is flagged experimental");
+    }
+
+    /// An experimental account that also happens to sit in the project's
+    /// allow-list renders exactly once (deduped), flagged experimental.
+    #[test]
+    fn project_accounts_snapshot_dedups_experimental_in_allowlist() {
+        let (ws, _rx) = Workspace::testing_stub();
+        {
+            let mut map = AccountStateMap::new(&[
+                crate::config::LoadedAccount {
+                    display_name: "A".to_owned(),
+                    config_dir: PathBuf::from("/cfg/A"),
+                    proxy: true,
+                    env: std::collections::HashMap::new(),
+                    experimental: false,
+                },
+                crate::config::LoadedAccount {
+                    display_name: "Exp".to_owned(),
+                    config_dir: PathBuf::from("/cfg/Exp"),
+                    proxy: true,
+                    env: std::collections::HashMap::new(),
+                    experimental: true,
+                },
+            ]);
+            map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
+            map.set_usage(&AccountKey("Exp".to_owned()), account_usage_snapshot(10.0, 10.0, None));
+            *ws.accounts.lock() = map;
+        }
+
+        // "Exp" is BOTH pinned by the allow-list AND experimental.
+        let rows = ws.project_accounts_snapshot(&["A".to_owned(), "Exp".to_owned()], None);
+
+        assert_eq!(rows.len(), 2, "no duplicate row for the already-pinned experimental account");
+        let exp_rows: Vec<&crate::AccountRow> =
+            rows.iter().filter(|r| r.display_name == "Exp").collect();
+        assert_eq!(exp_rows.len(), 1, "Exp appears exactly once");
+        assert!(exp_rows[0].experimental, "the deduped Exp row stays flagged experimental");
     }
 
     /// An empty allow-list (project pins no accounts) falls back to

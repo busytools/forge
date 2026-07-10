@@ -158,6 +158,7 @@ mod tests {
             five_hour_util: 10.0,
             seven_day_util: 5.0,
             resets_at: None,
+            experimental: false,
         }
     }
 
