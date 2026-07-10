@@ -9,6 +9,7 @@
 //! Direct-return accessors (config_dir, settings_documents, etc.)
 //! live on [`AgentHandle`] as method passthroughs to the bridge.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -71,13 +72,6 @@ impl AgentHandle {
         document: &serde_json::Value,
     ) -> Result<(), forge_sdk::Error> {
         self.bridge.write_settings_document(target, document)
-    }
-
-    pub async fn oauth_usage(
-        &self,
-    ) -> Result<crate::cloud::oauth_usage::OauthUsage, crate::cloud::oauth_usage::OauthUsageError>
-    {
-        self.bridge.oauth_usage().await
     }
 
     /// Returns a clone of the bridge's bound forge-account
@@ -304,7 +298,9 @@ impl Agent {
     /// when set, is stamped onto every `forge_sdk::Options`
     /// constructed by spawn_session so the subprocess inherits
     /// `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` and its wire
-    /// classification gets normalised to `cli` shape. Returns a
+    /// classification gets normalised to `cli` shape. `env` carries
+    /// the account's `[accounts.env]` (forge.toml), stamped onto the
+    /// spawned subprocess alongside `CLAUDE_CONFIG_DIR`. Returns a
     /// handle holding the command sender + events receiver + direct-
     /// accessor passthroughs.
     pub fn spawn(
@@ -312,8 +308,9 @@ impl Agent {
         display_name: Option<String>,
         proxy: Option<forge_sdk::transport::proxy::ProxyHandle>,
         extra_mcp_servers: Vec<(String, forge_sdk::mcp::McpServer)>,
+        env: HashMap<String, String>,
     ) -> AgentHandle {
-        let bridge = ForgeSdkBridge::new(config_dir, display_name, proxy, extra_mcp_servers);
+        let bridge = ForgeSdkBridge::new(config_dir, display_name, proxy, extra_mcp_servers, env);
         let agent_event_rx = bridge.take_events().unwrap_or_else(|| mpsc::unbounded_channel().1);
 
         let (commands_tx, commands_rx) = mpsc::unbounded_channel::<AgentCommand>();

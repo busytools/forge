@@ -13,6 +13,7 @@
 //! because the field is documented inconsistently (sometimes ISO-8601,
 //! sometimes a numeric epoch).
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -95,7 +96,7 @@ async fn oauth_usage_user_agent() -> Result<&'static str, OauthUsageError> {
 pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageError> {
     let credentials = load_oauth_credentials(config_dir).ok_or(OauthUsageError::NoCredentials)?;
 
-    let first = probe(&credentials).await;
+    let first = probe(&credentials, None).await;
     match first {
         Err(OauthUsageError::Unauthorized(status))
             if credentials.expires_at.is_none_or(|t| t < std::time::SystemTime::now()) =>
@@ -111,7 +112,7 @@ pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageErro
             // change. Try one refresh + retry; on any refresh failure,
             // fall through to the original Unauthorized.
             match refresh_via_cli_spawn(config_dir).await {
-                Ok(new_creds) => probe(&new_creds).await,
+                Ok(new_creds) => probe(&new_creds, None).await,
                 Err(refresh_err) => {
                     tracing::warn!(
                         target: "forge_agent::cloud::oauth_usage",
@@ -128,7 +129,59 @@ pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageErro
     }
 }
 
+/// The `/api/oauth/usage` endpoint URL. Defaults to the hardcoded
+/// Anthropic host; a `base_url` override (an account's
+/// `ANTHROPIC_BASE_URL`) redirects the probe to an alternate endpoint
+/// serving the same `OauthUsage` shape. Any trailing slash on the
+/// override is trimmed so `http://host/` and `http://host` behave
+/// identically.
+fn usage_url(base_url: Option<&str>) -> String {
+    match base_url {
+        Some(base) => format!("{}/api/oauth/usage", base.trim_end_matches('/')),
+        None => OAUTH_USAGE_URL.to_owned(),
+    }
+}
+
+/// How an account's usage should be probed, derived once from its
+/// `[accounts.env]`. The loader and poller both read this single
+/// decision so the probe source AND the response-mapping strictness
+/// stay in lockstep.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ProbePlan {
+    /// Account sets `ANTHROPIC_BASE_URL`: probe `{base_url}/api/oauth/usage`
+    /// with the env `ANTHROPIC_AUTH_TOKEN` bearer (the macOS keychain is
+    /// skipped - a base-url account has no keychain entry), and map the
+    /// response leniently via [`super::oauth::snapshot_from_payload_lenient`]
+    /// (each window independently optional). A base-url auth failure
+    /// must NOT trigger the keychain CLI-spawn refresh: the probe never
+    /// reads that token, so refreshing it burns billed `claude -p hi`
+    /// spawns to no effect.
+    BaseUrl { base_url: String, bearer: String },
+    /// Normal Anthropic account: default host + macOS keychain bearer,
+    /// strict mapping (a 200 must carry the five-hour window), and the
+    /// CLI-spawn auth-recovery refresh on a 401.
+    Keychain,
+}
+
+/// Derive the [`ProbePlan`] for an account from its `[accounts.env]`.
+/// Keyed purely on an `ANTHROPIC_BASE_URL` override, so any account
+/// that sets one probes via its own endpoint; every other account uses
+/// the keychain path.
+pub fn probe_plan<S: std::hash::BuildHasher>(env: &HashMap<String, String, S>) -> ProbePlan {
+    let Some(base_url) =
+        env.get("ANTHROPIC_BASE_URL").map(|value| value.trim()).filter(|value| !value.is_empty())
+    else {
+        return ProbePlan::Keychain;
+    };
+    let bearer = env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str).unwrap_or_default();
+    ProbePlan::BaseUrl { base_url: base_url.to_owned(), bearer: bearer.to_owned() }
+}
+
 /// One round-trip against `/api/oauth/usage` using `credentials.access_token`.
+///
+/// `base_url` overrides the default Anthropic host when `Some` (an
+/// account carrying an `ANTHROPIC_BASE_URL` env override polls its own
+/// endpoint); the `/api/oauth/usage` path is always appended.
 ///
 /// Exposed as a separate entry point from [`oauth_usage`] so the
 /// boot-time per-account loading task in
@@ -137,7 +190,10 @@ pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageErro
 /// on `auth_status` rather than going through `oauth_usage`'s
 /// internal auto-refresh). Other callers should still prefer
 /// `oauth_usage` for the auto-refresh convenience.
-pub async fn probe(credentials: &OauthCredentials) -> Result<OauthUsage, OauthUsageError> {
+pub async fn probe(
+    credentials: &OauthCredentials,
+    base_url: Option<&str>,
+) -> Result<OauthUsage, OauthUsageError> {
     let headers = oauth_headers(&credentials.access_token).await?;
     let client = crate::http_trust::with_extra_roots(
         reqwest::Client::builder().timeout(OAUTH_TIMEOUT).default_headers(headers),
@@ -146,7 +202,7 @@ pub async fn probe(credentials: &OauthCredentials) -> Result<OauthUsage, OauthUs
     .map_err(|error| OauthUsageError::Network(format!("client build: {error}")))?;
 
     let response = client
-        .get(OAUTH_USAGE_URL)
+        .get(usage_url(base_url))
         .send()
         .await
         .map_err(|error| OauthUsageError::Network(error.to_string()))?;
@@ -254,6 +310,74 @@ fn truncated_body_suffix(body: &[u8]) -> String {
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn usage_url_defaults_to_anthropic_host() {
+        assert_eq!(usage_url(None), OAUTH_USAGE_URL);
+    }
+
+    #[test]
+    fn usage_url_uses_base_url_override_and_trims_trailing_slash() {
+        assert_eq!(
+            usage_url(Some("http://localhost:18765")),
+            "http://localhost:18765/api/oauth/usage",
+        );
+        assert_eq!(
+            usage_url(Some("http://localhost:18765/")),
+            "http://localhost:18765/api/oauth/usage",
+            "trailing slash trimmed so host and host/ behave identically",
+        );
+    }
+
+    #[test]
+    fn probe_plan_base_url_reads_base_and_token_from_env() {
+        let mut env = HashMap::new();
+        env.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
+        env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-codex".to_owned());
+        assert_eq!(
+            probe_plan(&env),
+            ProbePlan::BaseUrl {
+                base_url: "http://localhost:18765".to_owned(),
+                bearer: "sk-codex".to_owned(),
+            },
+        );
+    }
+
+    #[test]
+    fn probe_plan_keychain_without_base_url() {
+        // A normal Anthropic account (no ANTHROPIC_BASE_URL) -> Keychain
+        // so the caller keeps the default host + keychain bearer.
+        let mut env = HashMap::new();
+        env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-codex".to_owned());
+        assert_eq!(probe_plan(&env), ProbePlan::Keychain);
+        assert_eq!(probe_plan(&HashMap::new()), ProbePlan::Keychain);
+    }
+
+    #[test]
+    fn probe_plan_keychain_for_empty_base_url() {
+        let mut env = HashMap::new();
+        env.insert("ANTHROPIC_BASE_URL".to_owned(), "   ".to_owned());
+        assert_eq!(
+            probe_plan(&env),
+            ProbePlan::Keychain,
+            "whitespace-only base url is not an override",
+        );
+    }
+
+    #[test]
+    fn probe_plan_base_url_missing_token_defaults_to_empty_bearer() {
+        // A proxy on localhost ignores the bearer; an absent
+        // ANTHROPIC_AUTH_TOKEN must not suppress the override.
+        let mut env = HashMap::new();
+        env.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
+        assert_eq!(
+            probe_plan(&env),
+            ProbePlan::BaseUrl {
+                base_url: "http://localhost:18765".to_owned(),
+                bearer: String::new(),
+            },
+        );
+    }
 
     #[test]
     fn retry_after_integer_seconds_round_trip() {

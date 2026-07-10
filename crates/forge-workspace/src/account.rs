@@ -100,6 +100,12 @@ pub(crate) struct AccountState {
     /// `[[accounts]] proxy = true|false` toggle in forge.toml.
     /// Defaults to `true` when the field is absent.
     pub proxy: bool,
+    /// Per-account environment from `[accounts.env]`. Stamped onto the
+    /// account's `claude` subprocess at spawn, and consulted by the
+    /// usage probe: an `ANTHROPIC_BASE_URL` key here redirects the
+    /// probe to `{base_url}/api/oauth/usage` with the account's
+    /// `ANTHROPIC_AUTH_TOKEN` bearer.
+    pub env: std::collections::HashMap<String, String>,
     /// Latest usage snapshot fetched by the workspace's background
     /// poller. `None` until the first successful fetch. Drives the
     /// picker's order; also surfaced to the TUI's bottom panel via
@@ -181,6 +187,7 @@ impl AccountStateMap {
                 AccountState {
                     config_dir: account.config_dir.clone(),
                     proxy: account.proxy,
+                    env: account.env.clone(),
                     usage: None,
                     last_error: None,
                     next_probe_at: None,
@@ -233,6 +240,13 @@ impl AccountStateMap {
     /// hands the dir to `Agent::spawn` as `CLAUDE_CONFIG_DIR`).
     pub fn config_dir(&self, key: &AccountKey) -> Option<&PathBuf> {
         self.by_key.get(key).map(|s| &s.config_dir)
+    }
+
+    /// Per-account `[accounts.env]` map for `key`. Consumed by the
+    /// spawn path (stamped onto the child) and the usage poller /
+    /// loader (base-url override detection). `None` for unknown keys.
+    pub fn env(&self, key: &AccountKey) -> Option<&std::collections::HashMap<String, String>> {
+        self.by_key.get(key).map(|s| &s.env)
     }
 
     /// Reverse of [`Self::config_dir`]: the account key bound to `dir`.
@@ -740,6 +754,7 @@ mod tests {
             display_name: name.to_owned(),
             config_dir: PathBuf::from(format!("/fake/{name}")),
             proxy: true,
+            env: std::collections::HashMap::new(),
         }
     }
 
@@ -771,6 +786,34 @@ mod tests {
             seven_day_sonnet: None,
             extra_usage: None,
         }
+    }
+
+    #[test]
+    fn proxy_enabled_reflects_account_flag() {
+        let mut direct = make_account("Direct");
+        direct.proxy = false;
+        let map = AccountStateMap::new(&[make_account("Proxied"), direct]);
+        assert!(map.proxy_enabled(&AccountKey("Proxied".to_owned())));
+        assert!(!map.proxy_enabled(&AccountKey("Direct".to_owned())));
+    }
+
+    #[test]
+    fn env_accessor_returns_account_env() {
+        let mut codex = make_account("Codex");
+        codex.env.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
+        let map = AccountStateMap::new(&[codex, make_account("Plain")]);
+        assert_eq!(
+            map.env(&AccountKey("Codex".to_owned()))
+                .and_then(|e| e.get("ANTHROPIC_BASE_URL"))
+                .map(String::as_str),
+            Some("http://localhost:18765"),
+        );
+        assert!(
+            map.env(&AccountKey("Plain".to_owned()))
+                .is_some_and(std::collections::HashMap::is_empty),
+            "account with no env -> empty map",
+        );
+        assert!(map.env(&AccountKey("Unknown".to_owned())).is_none(), "unknown key -> None");
     }
 
     #[test]

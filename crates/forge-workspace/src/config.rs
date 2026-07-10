@@ -14,6 +14,7 @@
 //! No LRU, no round-robin, no fallback to accounts outside the org's
 //! subset.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -85,6 +86,13 @@ struct AccountEntry {
     /// it enabled.
     #[serde(default = "default_account_proxy")]
     proxy: bool,
+    /// Free-form environment stamped onto the account's `claude`
+    /// subprocess at spawn. Absent `[accounts.env]` table -> empty.
+    /// An `ANTHROPIC_BASE_URL` key here is the implicit signal that
+    /// the account talks to an alternate endpoint (usage probe hits
+    /// `{base_url}/api/oauth/usage`); no dedicated backend field.
+    #[serde(default)]
+    env: HashMap<String, String>,
 }
 
 fn default_account_proxy() -> bool {
@@ -99,6 +107,9 @@ pub(crate) struct LoadedAccount {
     /// attached to sessions for this account. See
     /// [`AccountEntry::proxy`].
     pub proxy: bool,
+    /// Per-account environment from `[accounts.env]`, stamped onto the
+    /// spawned `claude` subprocess. See [`AccountEntry::env`].
+    pub env: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -262,6 +273,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             display_name: entry.display_name,
             config_dir: expand_home(&entry.config_dir),
             proxy: entry.proxy,
+            env: entry.env,
         });
     }
 
@@ -399,6 +411,48 @@ auto_start = true
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
 "#
+    }
+
+    #[test]
+    fn parses_account_env_table_and_proxy_false() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+config_dir = "~/.claude-codex"
+proxy = false
+[accounts.env]
+ANTHROPIC_BASE_URL = "http://localhost:18765"
+ANTHROPIC_AUTH_TOKEN = "unused"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        let account = &config.accounts[0];
+        assert_eq!(account.display_name, "Codex");
+        assert_eq!(
+            account.env.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some("http://localhost:18765"),
+        );
+        assert_eq!(account.env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str), Some("unused"));
+        assert!(!account.proxy, "proxy = false parsed");
+    }
+
+    #[test]
+    fn account_without_env_table_is_empty_and_proxy_defaults_true() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), minimal_config());
+        let config = load_from_dir(dir.path()).expect("happy path");
+        let account = &config.accounts[0];
+        assert!(account.env.is_empty(), "no [accounts.env] -> empty map");
+        assert!(account.proxy, "absent proxy field defaults to true");
     }
 
     #[test]

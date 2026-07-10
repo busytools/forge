@@ -7,6 +7,7 @@
 //! bridge owns the resulting `Client`; this module exposes the
 //! helpers it calls.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -137,6 +138,7 @@ pub(crate) async fn spawn_session(
     let display_name = bridge.display_name();
     let proxy = bridge.proxy();
     let extra_mcp_servers = bridge.extra_mcp_servers();
+    let account_env = bridge.env();
     let options = build_options_with_callback(
         cwd,
         resume_id,
@@ -145,9 +147,8 @@ pub(crate) async fn spawn_session(
         Arc::clone(bridge.inner_pending()),
         Arc::clone(bridge.inner_pending_questions()),
         Arc::clone(bridge.session_id_slot_arc()),
-        &config_dir,
-        proxy,
         extra_mcp_servers,
+        AccountBinding { config_dir: &config_dir, proxy, env: &account_env },
     );
     let (client, events) = Client::spawn(options).await?;
     // For resume sessions the CLI flag carried the real session id -
@@ -504,6 +505,35 @@ pub(crate) fn parse_permission_mode(mode: &str) -> anyhow::Result<PermissionMode
 /// measuring.
 const EXCLUDE_DYNAMIC_SECTIONS: bool = false;
 
+/// Forge-stamped env keys an `[accounts.env]` entry can actually
+/// override: `CLAUDE_CONFIG_DIR` (stamped into `options.env` before the
+/// account-env loop) and `HTTPS_PROXY` / `HTTP_PROXY` /
+/// `NODE_EXTRA_CA_CERTS` (stamped by `forge_sdk::transport::process`
+/// before it applies `options.env`). Reusing one silently overrides
+/// forge's stamp and can defeat the wire-classification rewriter (Hard
+/// Rule #16), so a collision is warned - though the stamp still applies
+/// (forge.toml is trusted, hand-authored). `CLAUDE_AGENT_SDK_VERSION` is
+/// deliberately absent: process.rs stamps it LAST, unconditionally,
+/// after the account-env loop, so forge always wins and a warn would
+/// be a false alarm.
+const FORGE_RESERVED_ENV_KEYS: &[&str] =
+    &["CLAUDE_CONFIG_DIR", "HTTPS_PROXY", "HTTP_PROXY", "NODE_EXTRA_CA_CERTS"];
+
+fn is_reserved_env_key(key: &str) -> bool {
+    FORGE_RESERVED_ENV_KEYS.contains(&key)
+}
+
+/// Per-account spawn binding threaded into every `claude` subprocess:
+/// the account's `config_dir` (exported as `CLAUDE_CONFIG_DIR`),
+/// whether to attach the wire-classification rewriter `proxy`, and the
+/// account's `[accounts.env]` extras. All three come from the bridge's
+/// account binding, distinct from the per-launch `SessionLaunchSettings`.
+pub(crate) struct AccountBinding<'a> {
+    pub config_dir: &'a Path,
+    pub proxy: Option<forge_sdk::transport::proxy::ProxyHandle>,
+    pub env: &'a HashMap<String, String>,
+}
+
 fn build_options_with_callback(
     cwd: &str,
     resume: Option<&str>,
@@ -512,9 +542,8 @@ fn build_options_with_callback(
     pending: PendingResponses,
     pending_questions: PendingQuestions,
     session_id_slot: Arc<parking_lot::Mutex<String>>,
-    config_dir: &Path,
-    proxy: Option<forge_sdk::transport::proxy::ProxyHandle>,
     extra_mcp_servers: Vec<(String, forge_sdk::mcp::McpServer)>,
+    binding: AccountBinding<'_>,
 ) -> Options {
     // Passthrough hooks emit `AgentEvent::HookObservation` for every
     // PreToolUse / UserPromptSubmit input without altering the dispatch
@@ -697,16 +726,32 @@ fn build_options_with_callback(
     // Per-spawn `CLAUDE_CONFIG_DIR` - workspace-driven so each
     // `claude` subprocess reads/writes the bound account's
     // user-data tree (oauth tokens, projects history, settings).
-    // Threaded through as a typed `Path` from the bridge; no
-    // free-form HashMap of env vars at this layer.
-    b = b.env("CLAUDE_CONFIG_DIR", config_dir.to_string_lossy().to_string());
+    // Threaded through as a typed `Path` from the bridge.
+    b = b.env("CLAUDE_CONFIG_DIR", binding.config_dir.to_string_lossy().to_string());
+
+    // Per-account `[accounts.env]` from forge.toml (hand-authored,
+    // trusted), stamped onto the child so an account can point `claude`
+    // at an alternate endpoint (`ANTHROPIC_BASE_URL`) or set any other
+    // env it needs. Runs after the `CLAUDE_CONFIG_DIR` stamp so a
+    // caller could override it deliberately; process.rs stamps
+    // `CLAUDE_AGENT_SDK_VERSION` last regardless.
+    for (key, value) in binding.env {
+        if is_reserved_env_key(key) {
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                key = %key,
+                "account [accounts.env] sets a forge-reserved key; it overrides forge's own stamp and can defeat the wire-classification rewriter",
+            );
+        }
+        b = b.env(key, value);
+    }
 
     // Wire-classification rewriter proxy: when the workspace booted
     // one at startup, every subprocess gets HTTPS_PROXY +
     // NODE_EXTRA_CA_CERTS pointing at it. The CLI then self-classifies
     // as `sdk-cli` (piped stdout); the proxy normalises that to `cli`
     // on the wire across the 6 signal channels.
-    if let Some(handle) = proxy {
+    if let Some(handle) = binding.proxy {
         b = b.proxy(handle);
     }
 
@@ -722,7 +767,7 @@ fn build_options_with_callback(
         effort_source,
         cwd_present = !cwd.is_empty(),
         resume_present = resume.is_some(),
-        config_dir = %config_dir.display(),
+        config_dir = %binding.config_dir.display(),
     );
     b.build()
 }
@@ -1287,6 +1332,88 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         pending.lock().insert(id.to_owned(), tx);
         rx
+    }
+
+    #[test]
+    fn reserved_env_keys_are_flagged_and_others_are_not() {
+        // Iterate the const so it and the predicate stay in lockstep.
+        for reserved in super::FORGE_RESERVED_ENV_KEYS {
+            assert!(super::is_reserved_env_key(reserved), "{reserved} is forge-reserved");
+        }
+        // process.rs stamps CLAUDE_AGENT_SDK_VERSION last + unconditionally,
+        // so an account env value can never override it - not reserved.
+        assert!(!super::is_reserved_env_key("CLAUDE_AGENT_SDK_VERSION"));
+        assert!(!super::is_reserved_env_key("ANTHROPIC_BASE_URL"));
+        assert!(!super::is_reserved_env_key("ANTHROPIC_AUTH_TOKEN"));
+        assert!(!super::is_reserved_env_key("ANTHROPIC_SMALL_FAST_MODEL"));
+    }
+
+    #[test]
+    fn build_options_still_stamps_a_reserved_key_despite_the_warn() {
+        // The collision warns but does not suppress the stamp: a
+        // forge-reserved key in [accounts.env] still lands on the child
+        // (forge.toml is trusted, hand-authored).
+        use crate::client::SessionLaunchSettings;
+        use std::path::Path;
+        use tokio::sync::mpsc;
+
+        let (event_tx, _rx) = mpsc::unbounded_channel();
+        let launch = SessionLaunchSettings::default();
+        let mut env = HashMap::new();
+        env.insert("HTTPS_PROXY".to_owned(), "http://acct-proxy:8080".to_owned());
+        assert!(super::is_reserved_env_key("HTTPS_PROXY"));
+        let options = super::build_options_with_callback(
+            "",
+            None,
+            &launch,
+            event_tx,
+            fresh_pending(),
+            fresh_pending_questions(),
+            Arc::new(Mutex::new(String::new())),
+            Vec::new(),
+            super::AccountBinding { config_dir: Path::new("/cfg/x"), proxy: None, env: &env },
+        );
+        assert_eq!(
+            options.env.get("HTTPS_PROXY").map(String::as_str),
+            Some("http://acct-proxy:8080"),
+        );
+    }
+
+    #[test]
+    fn build_options_stamps_account_env_and_config_dir() {
+        use crate::client::SessionLaunchSettings;
+        use std::path::Path;
+        use tokio::sync::mpsc;
+
+        let (event_tx, _rx) = mpsc::unbounded_channel();
+        let launch = SessionLaunchSettings::default();
+        let mut env = HashMap::new();
+        env.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
+        env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "unused".to_owned());
+        let options = super::build_options_with_callback(
+            "",
+            None,
+            &launch,
+            event_tx,
+            fresh_pending(),
+            fresh_pending_questions(),
+            Arc::new(Mutex::new(String::new())),
+            Vec::new(),
+            super::AccountBinding { config_dir: Path::new("/cfg/codex"), proxy: None, env: &env },
+        );
+        assert_eq!(
+            options.env.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some("http://localhost:18765"),
+        );
+        assert_eq!(options.env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str), Some("unused"));
+        assert_eq!(
+            options.env.get("CLAUDE_CONFIG_DIR").map(String::as_str),
+            Some("/cfg/codex"),
+            "bound account config_dir still stamped alongside the account env",
+        );
+        // proxy = None (a `proxy = false` account) -> no rewriter handle
+        // on the built Options, so process.rs stamps no HTTPS_PROXY.
+        assert!(options.proxy.is_none());
     }
 
     #[test]
