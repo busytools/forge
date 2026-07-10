@@ -206,6 +206,7 @@ pub(super) fn handle_auth_required_event(
         session.pending_cancel = false;
         session.mcp = super::super::McpState::default();
         super::turn::finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
+        session.clear_background_task_registry();
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
         let _ = session;
@@ -242,6 +243,7 @@ pub(super) fn handle_auth_required_event(
     *app.mcp_mut() = super::super::McpState::default();
     crate::app::usage::reset_for_session_change(app);
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
+    app.clear_active_session_background_task_registry();
     app.clear_active_turn_assistant();
     super::notices::clear_turn_notice_tracking(app);
     // Flip the active bucket's lifecycle state too - if the user
@@ -299,6 +301,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         session.last_rate_limit_update = None;
         session.mcp = super::super::McpState::default();
         super::turn::finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
+        session.clear_background_task_registry();
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
         let next_state = if is_rate_limited {
@@ -365,6 +368,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
     *app.pending_command_label_mut() = None;
     *app.pending_command_ack_mut() = None;
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
+    app.clear_active_session_background_task_registry();
     app.input_mut().clear();
     *app.pending_submit_mut() = None;
     app.status = AppStatus::Error;
@@ -930,5 +934,101 @@ mod stamp_project_tests {
             Some("stampproj"),
             "force = true re-stamps from the cwd",
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod teardown_clears_background_registry_tests {
+    use super::handle_auth_required_event;
+    use super::handle_connection_failed_event;
+    use crate::app::App;
+    use crate::app::BackgroundTask;
+    use crate::app::session::UiSession;
+    use forge_workspace::SessionKey;
+
+    fn seed_task(bucket: &mut UiSession) {
+        bucket.background_tasks.push(BackgroundTask {
+            task_id: "t1".to_owned(),
+            task_type: "local_bash".to_owned(),
+            description: "gh run watch".to_owned(),
+        });
+        bucket.session_task_tool_use_ids.insert("t1".to_owned(), "tc-1".to_owned());
+    }
+
+    /// A background (non-active) session that fails to connect while a
+    /// backgrounded task is registered must drop the registry: the CLI
+    /// never sends a terminal `background_tasks_changed` for a dead
+    /// session, so nothing else would clear it and the row would spin
+    /// forever over its Failed glyph.
+    #[test]
+    fn background_connection_failure_clears_background_registry() {
+        let mut app = App::test_default();
+        let key = SessionKey::from_session_id("bg-fail");
+        let mut bucket = UiSession::new(key.clone());
+        seed_task(&mut bucket);
+        app.sessions.insert(key.clone(), bucket);
+        assert_ne!(
+            app.active_session_key.as_ref(),
+            Some(&key),
+            "precondition: the failing session is not the active one",
+        );
+
+        handle_connection_failed_event(&mut app, &key, "connection refused");
+
+        let bucket = app.sessions.get(&key).expect("bucket survives as a Failed shell");
+        assert!(!bucket.has_live_background_work(), "background_tasks cleared on teardown");
+        assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared too");
+    }
+
+    /// Same guarantee on the focused (active-session) failure path.
+    #[test]
+    fn focused_connection_failure_clears_background_registry() {
+        let mut app = App::test_default();
+        let key = app.active_session_key.clone().expect("active key");
+        seed_task(app.sessions.get_mut(&key).expect("active bucket"));
+
+        handle_connection_failed_event(&mut app, &key, "connection refused");
+
+        let bucket = app.sessions.get(&key).expect("bucket");
+        assert!(!bucket.has_live_background_work(), "background_tasks cleared on teardown");
+        assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared too");
+    }
+
+    /// Token-expiry is the same bug through a different door: a background
+    /// session hitting auth-required with a live task must drop the registry
+    /// too, or it spins forever over its `⚠` glyph.
+    #[test]
+    fn background_auth_required_clears_background_registry() {
+        let mut app = App::test_default();
+        let key = SessionKey::from_session_id("bg-auth");
+        let mut bucket = UiSession::new(key.clone());
+        seed_task(&mut bucket);
+        app.sessions.insert(key.clone(), bucket);
+        assert_ne!(
+            app.active_session_key.as_ref(),
+            Some(&key),
+            "precondition: the auth-blocked session is not the active one",
+        );
+
+        handle_auth_required_event(&mut app, &key, "oauth".to_owned(), "Log in".to_owned());
+
+        let bucket = app.sessions.get(&key).expect("bucket");
+        assert!(!bucket.has_live_background_work(), "auth-required clears background_tasks");
+        assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared too");
+    }
+
+    /// Same guarantee on the focused (active-session) auth-required path.
+    #[test]
+    fn focused_auth_required_clears_background_registry() {
+        let mut app = App::test_default();
+        let key = app.active_session_key.clone().expect("active key");
+        seed_task(app.sessions.get_mut(&key).expect("active bucket"));
+
+        handle_auth_required_event(&mut app, &key, "oauth".to_owned(), "Log in".to_owned());
+
+        let bucket = app.sessions.get(&key).expect("bucket");
+        assert!(!bucket.has_live_background_work(), "auth-required clears background_tasks");
+        assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared too");
     }
 }

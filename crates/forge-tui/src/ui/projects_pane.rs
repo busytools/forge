@@ -484,10 +484,16 @@ fn append_org_project_row(
         // "background session needs you", not "the one you're looking at".
         let needs_attention = !*is_focused
             && app.sessions.get(session_key).is_some_and(|b| !b.prompt_queue.is_empty());
+        // A live backgrounded task keeps the row spinning even after its
+        // turn settles to Idle - pending input still wins over both.
+        let has_background_work = app
+            .sessions
+            .get(session_key)
+            .is_some_and(crate::app::session::UiSession::has_live_background_work);
         let (glyph, glyph_color) = if needs_attention {
             ("\u{25b3}".to_owned(), theme::STATUS_WARNING)
         } else {
-            glyph_for_lifecycle(*lifecycle, *is_focused, spinner_glyph)
+            glyph_for_lifecycle(*lifecycle, *is_focused, has_background_work, spinner_glyph)
         };
         let name_style = if *is_focused {
             Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
@@ -695,6 +701,12 @@ fn append_worker_tree_children(
             .map_or(SessionLifecycleState::Spawning, |s| s.lifecycle_state);
         let needs_attention = !is_focused
             && app.sessions.get(&worker.session_key).is_some_and(|b| !b.prompt_queue.is_empty());
+        // A worker running its own backgrounded task (e.g. a `gh run watch`)
+        // spins its row like a lead does - same Idle-only promotion.
+        let has_background_work = app
+            .sessions
+            .get(&worker.session_key)
+            .is_some_and(crate::app::session::UiSession::has_live_background_work);
         let (glyph, glyph_color) = if needs_attention {
             ("\u{25b3}".to_owned(), theme::STATUS_WARNING)
         } else if matches!(worker.status, forge_primitives::WorkerLiveness::Failed) {
@@ -703,7 +715,7 @@ fn append_worker_tree_children(
             // human-readable reason (set by transition_worker_to_failed).
             ("\u{2715}".to_owned(), theme::STATUS_ERROR)
         } else {
-            glyph_for_lifecycle(lifecycle, is_focused, spinner_glyph)
+            glyph_for_lifecycle(lifecycle, is_focused, has_background_work, spinner_glyph)
         };
 
         // Left-indent (1) + `│  ` (3) so the worker's tree connector
@@ -858,18 +870,26 @@ pub(crate) fn resolve_active_project_view<'p>(
 /// state. The session-is-active flag drives whether the
 /// Running/Spawning spinner picks up the accent color (active +
 /// running = `RUST_ORANGE`, background + running = terminal default).
+/// `has_background_work` promotes an otherwise-settled session to the
+/// spinner while a backgrounded task is live (see
+/// [`crate::app::session::UiSession::has_live_background_work`]).
 /// `spinner_glyph` is the active style's current frame, resolved by
 /// the caller via `App::active_spinner_glyph`.
 fn glyph_for_lifecycle(
     lifecycle: SessionLifecycleState,
     session_is_active: bool,
+    has_background_work: bool,
     spinner_glyph: char,
 ) -> (String, Color) {
+    // Spinner cases - an in-progress turn, or an otherwise-Idle session with
+    // a live backgrounded task - come from the shared session_shows_spinner
+    // predicate. The frame-tick gate keys off the same function, so the row
+    // glyph and the animation gate never disagree about what animates.
+    if crate::app::session::session_shows_spinner(lifecycle, has_background_work) {
+        let color = if session_is_active { theme::RUST_ORANGE } else { Color::Reset };
+        return (spinner_glyph.to_string(), color);
+    }
     match lifecycle {
-        SessionLifecycleState::Running | SessionLifecycleState::Spawning => {
-            let color = if session_is_active { theme::RUST_ORANGE } else { Color::Reset };
-            (spinner_glyph.to_string(), color)
-        }
         SessionLifecycleState::Attention => ("△".to_owned(), theme::STATUS_WARNING),
         // Idle = "alive, no turn in progress". Use a filled bullet so
         // the row reads as occupied (the design spec calls for blank
@@ -889,6 +909,13 @@ fn glyph_for_lifecycle(
         SessionLifecycleState::Sleeping
         | SessionLifecycleState::Failed
         | SessionLifecycleState::LoggedOut => ("·".to_owned(), theme::DIM),
+        // session_shows_spinner returns true for Running / Spawning, so this
+        // arm is unreachable in practice; kept so the match stays exhaustive
+        // over the lifecycle enum, and renders the spinner if ever reached.
+        SessionLifecycleState::Running | SessionLifecycleState::Spawning => {
+            let color = if session_is_active { theme::RUST_ORANGE } else { Color::Reset };
+            (spinner_glyph.to_string(), color)
+        }
     }
 }
 
@@ -2468,5 +2495,232 @@ mod tests {
             "\u{2014}",
         );
         assert_eq!(usage_error_label(forge_workspace::UsageFetchStatus::Other, false), "\u{2014}");
+    }
+
+    /// Seed a pooled lead bucket for `project_path` in the given lifecycle
+    /// state, returning `(app, project)` ready to feed `append_project_rows`.
+    /// Mirrors the production lead-resolution path (cwd_raw match, not a
+    /// worker) so the row renders through the live branch.
+    fn app_with_lead_bucket(
+        project_path: &str,
+        lifecycle: crate::app::session::SessionLifecycleState,
+    ) -> (App, ProjectView, forge_workspace::SessionKey) {
+        use crate::app::session::UiSession;
+        use forge_workspace::{ProjectKey, SessionKey};
+
+        let mut app = App::test_default();
+        let lead_key = SessionKey::from_session_id("lead-bg");
+        let mut lead = UiSession::new(lead_key.clone());
+        lead.cwd_raw = project_path.to_owned();
+        lead.lifecycle_state = lifecycle;
+        app.sessions.insert(lead_key.clone(), lead);
+
+        let project = ProjectView::new_for_test(
+            ProjectKey::new_for_test("bg-activity-project"),
+            "bg-activity-project",
+            project_path,
+            Vec::new(),
+        );
+        (app, project, lead_key)
+    }
+
+    /// Join the rendered project row that carries `needle` into one string.
+    fn rendered_row(lines: &[Line<'static>], needle: &str) -> String {
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .find(|l| l.contains(needle))
+            .expect("project row renders")
+    }
+
+    /// Reproduce-first: an Idle lead bucket with a live backgrounded task
+    /// must show the active spinner, not the idle bullet. Fails on the
+    /// turn-only glyph logic (renders `●`); passes once background work
+    /// feeds the glyph decision.
+    #[test]
+    fn idle_project_with_live_background_task_renders_spinner() {
+        use crate::app::BackgroundTask;
+        use crate::app::session::SessionLifecycleState;
+
+        let project_path = "/tmp/bg-activity-project";
+        let (mut app, project, lead_key) =
+            app_with_lead_bucket(project_path, SessionLifecycleState::Idle);
+        app.sessions.get_mut(&lead_key).expect("lead bucket").background_tasks.push(
+            BackgroundTask {
+                task_id: "t1".to_owned(),
+                task_type: "local_bash".to_owned(),
+                description: "cargo build".to_owned(),
+            },
+        );
+        let frames = app.spinner_style.frames();
+
+        let area = Rect { x: 0, y: 0, width: 44, height: 20 };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_project_rows(&mut lines, area, &mut app, std::slice::from_ref(&project));
+
+        let row = rendered_row(&lines, "bg-activity-project");
+        assert!(
+            !row.contains('\u{25cf}'),
+            "Idle + live background task must not render the idle bullet ●; got: {row}"
+        );
+        assert!(
+            row.chars().any(|c| frames.contains(&c)),
+            "Idle + live background task must render the active spinner glyph; got: {row}"
+        );
+    }
+
+    /// An Idle lead bucket with no background work keeps the idle bullet -
+    /// the new signal does not disturb the settled-session glyph.
+    #[test]
+    fn idle_project_without_background_task_renders_idle_bullet() {
+        use crate::app::session::SessionLifecycleState;
+
+        let project_path = "/tmp/bg-activity-project";
+        let (mut app, project, _lead_key) =
+            app_with_lead_bucket(project_path, SessionLifecycleState::Idle);
+        let frames = app.spinner_style.frames();
+
+        let area = Rect { x: 0, y: 0, width: 44, height: 20 };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_project_rows(&mut lines, area, &mut app, std::slice::from_ref(&project));
+
+        let row = rendered_row(&lines, "bg-activity-project");
+        assert!(
+            row.contains('\u{25cf}'),
+            "Idle with no background work keeps the idle bullet ●; got: {row}"
+        );
+        assert!(
+            !row.chars().any(|c| frames.contains(&c)),
+            "no spinner when idle with no background work; got: {row}"
+        );
+    }
+
+    /// A non-focused session with a pending prompt still wins with the
+    /// yellow △ even when it also has live background work - attention
+    /// override stays ahead of the background-work spinner.
+    #[test]
+    fn needs_attention_overrides_background_work_spinner() {
+        use crate::app::BackgroundTask;
+        use crate::app::session::SessionLifecycleState;
+
+        let project_path = "/tmp/bg-activity-project";
+        let (mut app, project, lead_key) =
+            app_with_lead_bucket(project_path, SessionLifecycleState::Idle);
+        // Not the focused row - the △ override only fires on background
+        // sessions.
+        app.active_session_key = None;
+        {
+            let lead = app.sessions.get_mut(&lead_key).expect("lead bucket");
+            lead.background_tasks.push(BackgroundTask {
+                task_id: "t1".to_owned(),
+                task_type: "local_bash".to_owned(),
+                description: "cargo build".to_owned(),
+            });
+            lead.prompt_queue.push_back(crate::app::prompt::PromptState::from_permission(
+                "tc-bg".to_owned(),
+                crate::app::prompt::tests::make_permission_request(),
+            ));
+        }
+        let frames = app.spinner_style.frames();
+
+        let area = Rect { x: 0, y: 0, width: 44, height: 20 };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_project_rows(&mut lines, area, &mut app, std::slice::from_ref(&project));
+
+        let row = rendered_row(&lines, "bg-activity-project");
+        assert!(
+            row.contains('\u{25b3}'),
+            "pending prompt shows the yellow △ even with background work; got: {row}"
+        );
+        assert!(
+            !row.chars().any(|c| frames.contains(&c)),
+            "△ attention override wins over the background-work spinner; got: {row}"
+        );
+    }
+
+    /// Background work promotes ONLY an Idle session to the spinner.
+    /// Attention / AuthRequired must keep their own glyph so a live task
+    /// never masks a session that needs the user (pending prompt / login).
+    #[test]
+    fn glyph_promotes_to_spinner_only_over_idle() {
+        use crate::app::session::SessionLifecycleState;
+
+        let (glyph, _) = glyph_for_lifecycle(SessionLifecycleState::Idle, false, true, 'X');
+        assert_eq!(glyph, "X", "Idle + background work shows the spinner");
+
+        let (glyph, _) = glyph_for_lifecycle(SessionLifecycleState::Idle, false, false, 'X');
+        assert_eq!(glyph, "\u{25cf}", "Idle + no background work keeps the bullet");
+
+        let (glyph, color) =
+            glyph_for_lifecycle(SessionLifecycleState::Attention, false, true, 'X');
+        assert_eq!(glyph, "\u{25b3}", "Attention keeps its triangle even with background work");
+        assert_eq!(color, theme::STATUS_WARNING);
+
+        let (glyph, color) =
+            glyph_for_lifecycle(SessionLifecycleState::AuthRequired, false, true, 'X');
+        assert_eq!(glyph, "\u{26a0}", "AuthRequired keeps its warning even with background work");
+        assert_eq!(color, theme::STATUS_WARNING);
+    }
+
+    /// A worker whose own session is Idle but has a live backgrounded task
+    /// spins its row like a lead, via the same Idle-only promotion.
+    #[test]
+    fn worker_row_spins_on_its_own_background_work() {
+        use crate::app::BackgroundTask;
+        use crate::app::session::{SessionLifecycleState, UiSession};
+        use forge_workspace::{ProjectKey, SessionKey, WorkerEntry};
+        use std::time::SystemTime;
+
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("workspace stub");
+        let project_key = ProjectKey::new_for_test("bg-worker-project");
+        let worker_session_key = SessionKey::from_session_id("worker-bg");
+        let entry = WorkerEntry {
+            label: "runner".into(),
+            charter: "bg-work-test".into(),
+            session_key: worker_session_key.clone(),
+            status: forge_primitives::WorkerLiveness::Running,
+            spawned_at: SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead".into(),
+            needs_tag: false,
+            is_git_repo_at_spawn: false,
+            diagnostic: None,
+            kick: None,
+        };
+        workspace.insert_live_worker(&project_key, entry);
+
+        let mut worker_session = UiSession::new(worker_session_key.clone());
+        worker_session.lifecycle_state = SessionLifecycleState::Idle;
+        worker_session.background_tasks.push(BackgroundTask {
+            task_id: "t1".to_owned(),
+            task_type: "local_bash".to_owned(),
+            description: "gh run watch".to_owned(),
+        });
+        app.sessions.insert(worker_session_key, worker_session);
+
+        let project = ProjectView::new_for_test(
+            project_key,
+            "bg-worker-project",
+            "/tmp/bg-worker-project",
+            Vec::new(),
+        );
+        let area = Rect { x: 0, y: 0, width: 44, height: 20 };
+        let spinner = '\u{280B}';
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_worker_tree_children(&mut lines, area, &mut app, &project, spinner);
+
+        let row = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .find(|l| l.contains("runner"))
+            .expect("worker row renders");
+        assert!(
+            row.contains(spinner),
+            "an Idle worker with a live background task must spin its row; got: {row}"
+        );
+        assert!(
+            !row.contains('\u{25cf}'),
+            "worker with background work must not show the idle bullet; got: {row}"
+        );
     }
 }

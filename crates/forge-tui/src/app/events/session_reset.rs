@@ -79,6 +79,7 @@ fn reset_input_state_for_new_session(app: &mut App) {
 fn reset_interaction_state_for_new_session(app: &mut App) {
     app.clear_tool_scope_tracking();
     app.active_tool_call_index_mut().clear();
+    app.clear_active_session_background_task_registry();
     app.todos_mut().clear();
     app.focus = super::super::FocusManager::default();
     app.available_commands_mut().clear();
@@ -624,5 +625,39 @@ mod tests {
         load_resume_history(&mut app, &[]);
 
         assert_eq!(app.workflows().len(), 2, "mixed-state WORKFLOWS must survive");
+    }
+
+    /// Starting a fresh session must drop the previous session's
+    /// background-task registry - it is session-scoped and the incoming
+    /// session has its own live set.
+    #[test]
+    fn reset_for_new_session_clears_background_registry() {
+        use super::reset_for_new_session;
+        use crate::agent::model;
+
+        let mut app = App::test_default();
+        let key = app.active_session_key.clone().expect("active key");
+        {
+            let bucket = app.sessions.get_mut(&key).expect("active bucket");
+            bucket.background_tasks.push(crate::app::BackgroundTask {
+                task_id: "t1".to_owned(),
+                task_type: "local_bash".to_owned(),
+                description: "gh run watch".to_owned(),
+            });
+            bucket.session_task_tool_use_ids.insert("t1".to_owned(), "tc-1".to_owned());
+        }
+
+        reset_for_new_session(
+            &mut app,
+            model::SessionId::new("reset-target"),
+            model::CurrentModel::new("m", "m", "m"),
+            None,
+            false,
+        );
+
+        let active = app.active_session_key.clone().expect("active key after reset");
+        let bucket = app.sessions.get(&active).expect("active bucket after reset");
+        assert!(!bucket.has_live_background_work(), "reset drops the background-task registry");
+        assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared on reset too");
     }
 }

@@ -450,6 +450,41 @@ impl UiSession {
     pub fn new(key: SessionKey) -> Self {
         Self { key: Some(key), last_activity_at: Instant::now(), ..Self::default() }
     }
+
+    /// True while the session has a live backgrounded task (bash / agent /
+    /// workflow). The CLI keeps `background_tasks` to the currently-live
+    /// set, replacing it wholesale on each `background_tasks_changed`, so a
+    /// non-empty registry means work is happening even after the spawning
+    /// turn has completed. Drives the Projects-pane activity spinner
+    /// alongside the turn-driven lifecycle state.
+    pub fn has_live_background_work(&self) -> bool {
+        !self.background_tasks.is_empty()
+    }
+
+    /// Drop the CLI-fed background-task registry and its task-id ->
+    /// tool-use-id mirror. The two are cleared together because the mirror
+    /// only means anything as a lookup INTO the registry. Called on session
+    /// teardown (connection failure, reset): the CLI drains
+    /// `background_tasks` only via a terminal `background_tasks_changed`,
+    /// which never arrives for a dead/replaced session, so without this the
+    /// registry - and the activity spinner + frame-tick it drives - would
+    /// stay stale forever.
+    pub fn clear_background_task_registry(&mut self) {
+        self.background_tasks.clear();
+        self.session_task_tool_use_ids.clear();
+    }
+}
+
+/// Whether a session's Projects-pane row shows the activity spinner: an
+/// in-progress turn (`Running` / `Spawning`), or an otherwise-Idle session
+/// with a live backgrounded task. Attention / AuthRequired / Failed keep
+/// their own glyph, so the promotion is over the Idle bullet only. Shared
+/// by the row glyph (`glyph_for_lifecycle`) and the frame-tick gate
+/// (`any_background_activity`) so the two never disagree about what
+/// animates.
+pub fn session_shows_spinner(lifecycle: SessionLifecycleState, has_background_work: bool) -> bool {
+    matches!(lifecycle, SessionLifecycleState::Running | SessionLifecycleState::Spawning)
+        || (matches!(lifecycle, SessionLifecycleState::Idle) && has_background_work)
 }
 
 impl Default for UiSession {
@@ -591,5 +626,24 @@ mod tests {
         assert!(app.sessions.contains_key(&real), "real bucket exists");
         assert_eq!(app.cwd(), "/work/foo");
         assert_eq!(app.files_accessed(), 3);
+    }
+
+    /// The `background_tasks` registry lists only currently-live
+    /// backgrounded tasks (the CLI replaces it wholesale on each
+    /// `background_tasks_changed`), so a non-empty registry is the
+    /// "session is doing background work" signal the Projects pane reads.
+    #[test]
+    fn has_live_background_work_tracks_registry_emptiness() {
+        use crate::app::state::types::BackgroundTask;
+
+        let mut session = super::UiSession::new(forge_workspace::SessionKey::from_session_id("bg"));
+        assert!(!session.has_live_background_work(), "empty registry is not live work");
+
+        session.background_tasks.push(BackgroundTask {
+            task_id: "t1".to_owned(),
+            task_type: "local_bash".to_owned(),
+            description: "cargo build".to_owned(),
+        });
+        assert!(session.has_live_background_work(), "a live backgrounded task is live work");
     }
 }

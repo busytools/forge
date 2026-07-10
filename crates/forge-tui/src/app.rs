@@ -300,15 +300,9 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 
         // Render once, only when something changed. The extra
         // is_animating clause keeps the per-row spinners on background
-        // Running / Spawning sessions animating; the active session
-        // already drives ticks via `app.status` above.
-        let any_background_running = app.sessions.values().any(|s| {
-            matches!(
-                s.lifecycle_state,
-                crate::app::session::SessionLifecycleState::Running
-                    | crate::app::session::SessionLifecycleState::Spawning
-            )
-        });
+        // sessions animating; the active session already drives ticks
+        // via `app.status` above.
+        let any_background_running = any_background_activity(app);
         let is_animating = matches!(
             app.status,
             AppStatus::Connecting
@@ -419,6 +413,18 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     ratatui::restore();
 
     Ok(())
+}
+
+/// True while any session should keep its Projects-pane row spinner
+/// advancing off the active-status path. Counts exactly the rows that
+/// spin (via the shared `session_shows_spinner`), so a background-only
+/// -active row keeps ticking while an Attention/triangle row with a live
+/// task does not - no wasted redraws, and no drift from the glyph. The
+/// active session already drives ticks via `app.status`.
+fn any_background_activity(app: &App) -> bool {
+    app.sessions.values().any(|s| {
+        crate::app::session::session_shows_spinner(s.lifecycle_state, s.has_live_background_work())
+    })
 }
 
 fn advance_spinner_frame(app: &mut App, now: Instant) {
@@ -1040,6 +1046,63 @@ mod tests {
         assert_eq!(app.input().text(), "draft");
         assert!(app.messages().is_empty());
         assert!(rx.try_recv().is_err(), "Esc should prevent deferred submit dispatch");
+    }
+
+    #[test]
+    fn animation_gate_reflects_live_background_work() {
+        use crate::app::session::{SessionLifecycleState, UiSession};
+
+        let mut app = App::test_default();
+        app.sessions.clear();
+
+        let key = forge_workspace::SessionKey::from_session_id("bg-gate");
+        let mut session = UiSession::new(key.clone());
+        session.lifecycle_state = SessionLifecycleState::Idle;
+        app.sessions.insert(key.clone(), session);
+
+        // Idle with no background work: nothing to animate.
+        assert!(!any_background_activity(&app), "idle with no background work must not animate");
+
+        // A live backgrounded task promotes the gate so the frame ticker
+        // keeps advancing for a row that's active only because of it.
+        app.sessions.get_mut(&key).expect("bucket").background_tasks.push(
+            crate::app::BackgroundTask {
+                task_id: "t1".to_owned(),
+                task_type: "local_bash".to_owned(),
+                description: "cargo build".to_owned(),
+            },
+        );
+        assert!(any_background_activity(&app), "idle with live background work must animate");
+    }
+
+    /// The gate must count exactly the rows that spin: an Attention session
+    /// shows a triangle (not a spinner) even with a live backgrounded task,
+    /// so it must NOT tick the frame - otherwise we burn redraws animating a
+    /// static glyph. A Running session always spins and ticks.
+    #[test]
+    fn animation_gate_counts_only_spinning_rows() {
+        use crate::app::session::{SessionLifecycleState, UiSession};
+
+        let mut app = App::test_default();
+        app.sessions.clear();
+
+        let key = forge_workspace::SessionKey::from_session_id("gate-match");
+        let mut session = UiSession::new(key.clone());
+        session.lifecycle_state = SessionLifecycleState::Attention;
+        session.background_tasks.push(crate::app::BackgroundTask {
+            task_id: "t1".to_owned(),
+            task_type: "local_bash".to_owned(),
+            description: "gh run watch".to_owned(),
+        });
+        app.sessions.insert(key.clone(), session);
+        assert!(
+            !any_background_activity(&app),
+            "Attention + background work shows a triangle, not a spinner - gate must not tick",
+        );
+
+        app.sessions.get_mut(&key).expect("bucket").lifecycle_state =
+            SessionLifecycleState::Running;
+        assert!(any_background_activity(&app), "a Running session spins, so the gate ticks");
     }
 
     #[test]
