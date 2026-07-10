@@ -505,6 +505,25 @@ pub(crate) fn parse_permission_mode(mode: &str) -> anyhow::Result<PermissionMode
 /// measuring.
 const EXCLUDE_DYNAMIC_SECTIONS: bool = false;
 
+/// Env keys forge stamps itself onto every `claude` child (here in
+/// build_options plus `HTTPS_PROXY` / `HTTP_PROXY` / `NODE_EXTRA_CA_CERTS`
+/// / `CLAUDE_AGENT_SDK_VERSION` in `forge_sdk::transport::process`). An
+/// `[accounts.env]` entry reusing one silently overrides forge's own
+/// stamp and can defeat the wire-classification rewriter (Hard Rule #16),
+/// so a collision is warned even though the stamp still applies (the
+/// forge.toml trust model keeps the value).
+const FORGE_RESERVED_ENV_KEYS: &[&str] = &[
+    "CLAUDE_CONFIG_DIR",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NODE_EXTRA_CA_CERTS",
+    "CLAUDE_AGENT_SDK_VERSION",
+];
+
+fn is_reserved_env_key(key: &str) -> bool {
+    FORGE_RESERVED_ENV_KEYS.contains(&key)
+}
+
 /// Per-account spawn binding threaded into every `claude` subprocess:
 /// the account's `config_dir` (exported as `CLAUDE_CONFIG_DIR`),
 /// whether to attach the wire-classification rewriter `proxy`, and the
@@ -718,6 +737,13 @@ fn build_options_with_callback(
     // caller could override it deliberately; process.rs stamps
     // `CLAUDE_AGENT_SDK_VERSION` last regardless.
     for (key, value) in binding.env {
+        if is_reserved_env_key(key) {
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                key = %key,
+                "account [accounts.env] sets a forge-reserved key; it overrides forge's own stamp and can defeat the wire-classification rewriter",
+            );
+        }
         b = b.env(key, value);
     }
 
@@ -1307,6 +1333,22 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         pending.lock().insert(id.to_owned(), tx);
         rx
+    }
+
+    #[test]
+    fn reserved_env_keys_are_flagged_and_others_are_not() {
+        for reserved in [
+            "CLAUDE_CONFIG_DIR",
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "NODE_EXTRA_CA_CERTS",
+            "CLAUDE_AGENT_SDK_VERSION",
+        ] {
+            assert!(super::is_reserved_env_key(reserved), "{reserved} is forge-reserved");
+        }
+        assert!(!super::is_reserved_env_key("ANTHROPIC_BASE_URL"));
+        assert!(!super::is_reserved_env_key("ANTHROPIC_AUTH_TOKEN"));
+        assert!(!super::is_reserved_env_key("ANTHROPIC_SMALL_FAST_MODEL"));
     }
 
     #[test]
