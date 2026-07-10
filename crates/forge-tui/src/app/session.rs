@@ -450,6 +450,16 @@ impl UiSession {
     pub fn new(key: SessionKey) -> Self {
         Self { key: Some(key), last_activity_at: Instant::now(), ..Self::default() }
     }
+
+    /// True while the session has a live backgrounded task (bash / agent /
+    /// workflow). The CLI keeps `background_tasks` to the currently-live
+    /// set, replacing it wholesale on each `background_tasks_changed`, so a
+    /// non-empty registry means work is happening even after the spawning
+    /// turn has completed. Drives the Projects-pane activity spinner
+    /// alongside the turn-driven lifecycle state.
+    pub fn has_live_background_work(&self) -> bool {
+        !self.background_tasks.is_empty()
+    }
 }
 
 impl Default for UiSession {
@@ -591,5 +601,24 @@ mod tests {
         assert!(app.sessions.contains_key(&real), "real bucket exists");
         assert_eq!(app.cwd(), "/work/foo");
         assert_eq!(app.files_accessed(), 3);
+    }
+
+    /// The `background_tasks` registry lists only currently-live
+    /// backgrounded tasks (the CLI replaces it wholesale on each
+    /// `background_tasks_changed`), so a non-empty registry is the
+    /// "session is doing background work" signal the Projects pane reads.
+    #[test]
+    fn has_live_background_work_tracks_registry_emptiness() {
+        use crate::app::state::types::BackgroundTask;
+
+        let mut session = super::UiSession::new(forge_workspace::SessionKey::from_session_id("bg"));
+        assert!(!session.has_live_background_work(), "empty registry is not live work");
+
+        session.background_tasks.push(BackgroundTask {
+            task_id: "t1".to_owned(),
+            task_type: "local_bash".to_owned(),
+            description: "cargo build".to_owned(),
+        });
+        assert!(session.has_live_background_work(), "a live backgrounded task is live work");
     }
 }
