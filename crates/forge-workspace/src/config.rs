@@ -93,6 +93,12 @@ struct AccountEntry {
     /// `{base_url}/api/oauth/usage`); no dedicated backend field.
     #[serde(default)]
     env: HashMap<String, String>,
+    /// When true, the account is excluded from every auto-assignment
+    /// path (assignment plan + round-robin fallback) but stays
+    /// globally selectable in the `/account` picker. Defaults to
+    /// false so existing accounts keep rotating normally.
+    #[serde(default)]
+    experimental: bool,
 }
 
 fn default_account_proxy() -> bool {
@@ -110,6 +116,9 @@ pub(crate) struct LoadedAccount {
     /// Per-account environment from `[accounts.env]`, stamped onto the
     /// spawned `claude` subprocess. See [`AccountEntry::env`].
     pub env: HashMap<String, String>,
+    /// Excluded from auto-assignment, picker-only. See
+    /// [`AccountEntry::experimental`].
+    pub experimental: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -274,6 +283,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             config_dir: expand_home(&entry.config_dir),
             proxy: entry.proxy,
             env: entry.env,
+            experimental: entry.experimental,
         });
     }
 
@@ -453,6 +463,36 @@ ANTHROPIC_AUTH_TOKEN = "unused"
         let account = &config.accounts[0];
         assert!(account.env.is_empty(), "no [accounts.env] -> empty map");
         assert!(account.proxy, "absent proxy field defaults to true");
+        assert!(!account.experimental, "absent experimental field defaults to false");
+    }
+
+    #[test]
+    fn parses_account_experimental_flag() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex", "Granite"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+config_dir = "~/.claude-codex"
+experimental = true
+[[accounts]]
+display_name = "Granite"
+config_dir = "~/.claude"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        let codex = config.accounts.iter().find(|a| a.display_name == "Codex").expect("Codex");
+        let granite =
+            config.accounts.iter().find(|a| a.display_name == "Granite").expect("Granite");
+        assert!(codex.experimental, "experimental = true parsed");
+        assert!(!granite.experimental, "account without the field defaults to false");
     }
 
     #[test]

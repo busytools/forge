@@ -106,6 +106,11 @@ pub(crate) struct AccountState {
     /// probe to `{base_url}/api/oauth/usage` with the account's
     /// `ANTHROPIC_AUTH_TOKEN` bearer.
     pub env: std::collections::HashMap<String, String>,
+    /// When true, the account is excluded from every auto-assignment
+    /// path (the assignment plan and the round-robin fallback) but
+    /// stays globally selectable in the `/account` picker. Mirrors the
+    /// `[[accounts]] experimental = true` toggle in forge.toml.
+    pub experimental: bool,
     /// Latest usage snapshot fetched by the workspace's background
     /// poller. `None` until the first successful fetch. Drives the
     /// picker's order; also surfaced to the TUI's bottom panel via
@@ -188,6 +193,7 @@ impl AccountStateMap {
                     config_dir: account.config_dir.clone(),
                     proxy: account.proxy,
                     env: account.env.clone(),
+                    experimental: account.experimental,
                     usage: None,
                     last_error: None,
                     next_probe_at: None,
@@ -293,6 +299,13 @@ impl AccountStateMap {
     /// the spawn path's normal-case key always resolves).
     pub fn proxy_enabled(&self, key: &AccountKey) -> bool {
         self.by_key.get(key).is_some_and(|s| s.proxy)
+    }
+
+    /// Whether `key` is an experimental account (excluded from
+    /// auto-assignment, picker-only). Returns `false` for unknown
+    /// keys.
+    pub fn is_experimental(&self, key: &AccountKey) -> bool {
+        self.by_key.get(key).is_some_and(|s| s.experimental)
     }
 
     /// Replace the cached usage snapshot for `key` and clear any
@@ -562,6 +575,9 @@ impl AccountStateMap {
         )> = allowed
             .iter()
             .filter_map(|name| self.ordered_keys.iter().find(|k| k.0 == *name))
+            // Experimental accounts are picker-only: never auto-assigned,
+            // even when pinned by the project's allow-list.
+            .filter(|k| !self.is_experimental(k))
             .map(|k| {
                 let state = self.by_key.get(k);
                 (
@@ -592,7 +608,14 @@ impl AccountStateMap {
                         target: "forge_workspace::account",
                         "pick_for_project: candidates resolved to empty; allow list = {allowed:?}",
                     );
-                    self.ordered_keys.first().cloned().unwrap_or(AccountKey(String::new()))
+                    // Last resort still skips experimental accounts, so
+                    // an all-experimental allow-list falls onto the first
+                    // non-experimental account rather than assigning one.
+                    self.ordered_keys
+                        .iter()
+                        .find(|k| !self.is_experimental(k))
+                        .cloned()
+                        .unwrap_or(AccountKey(String::new()))
                 },
                 |(k, _, _, _)| (*k).clone(),
             )
@@ -755,6 +778,7 @@ mod tests {
             config_dir: PathBuf::from(format!("/fake/{name}")),
             proxy: true,
             env: std::collections::HashMap::new(),
+            experimental: false,
         }
     }
 
@@ -795,6 +819,19 @@ mod tests {
         let map = AccountStateMap::new(&[make_account("Proxied"), direct]);
         assert!(map.proxy_enabled(&AccountKey("Proxied".to_owned())));
         assert!(!map.proxy_enabled(&AccountKey("Direct".to_owned())));
+    }
+
+    #[test]
+    fn is_experimental_reflects_account_flag() {
+        let mut exp = make_account("Exp");
+        exp.experimental = true;
+        let map = AccountStateMap::new(&[make_account("Regular"), exp]);
+        assert!(map.is_experimental(&AccountKey("Exp".to_owned())));
+        assert!(!map.is_experimental(&AccountKey("Regular".to_owned())));
+        assert!(
+            !map.is_experimental(&AccountKey("Unknown".to_owned())),
+            "unknown key is not experimental",
+        );
     }
 
     #[test]
@@ -1787,6 +1824,41 @@ mod tests {
         map.set_loading(&key("Personal"), LoadingState::Bailed);
         let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Personal".to_owned()]);
         assert_eq!(picked.0, "Granite");
+    }
+
+    #[test]
+    fn pick_for_project_excludes_experimental_even_when_only_usable() {
+        // Exp is experimental AND the only usable account; Regular is
+        // Bailed. The picker must still refuse Exp and fall back to the
+        // non-experimental candidate rather than assign an experimental
+        // account. Experimental accounts are picker-only.
+        let mut exp = make_account("Exp");
+        exp.experimental = true;
+        let mut map = AccountStateMap::new(&[make_account("Regular"), exp]);
+        map.set_loading(&key("Regular"), LoadingState::Bailed);
+        map.set_usage(&key("Exp"), snapshot(Some(10.0), Some(10.0)));
+        let (picked, _) = map.pick_for_project(&["Regular".to_owned(), "Exp".to_owned()]);
+        assert_eq!(
+            picked.0, "Regular",
+            "experimental account is never auto-assigned, even as the only usable one",
+        );
+    }
+
+    #[test]
+    fn pick_for_project_never_returns_experimental_as_last_resort() {
+        // The allow-list contains ONLY an experimental account. It is
+        // filtered out entirely, so the last-resort fallback skips it
+        // and returns the first non-experimental account instead.
+        let mut exp = make_account("Exp");
+        exp.experimental = true;
+        let mut map = AccountStateMap::new(&[exp, make_account("Regular")]);
+        map.set_usage(&key("Exp"), snapshot(Some(10.0), Some(10.0)));
+        map.set_usage(&key("Regular"), snapshot(Some(10.0), Some(10.0)));
+        let (picked, _) = map.pick_for_project(&["Exp".to_owned()]);
+        assert_eq!(
+            picked.0, "Regular",
+            "experimental never returned; last-resort skips to a non-experimental account",
+        );
     }
 
     #[test]
