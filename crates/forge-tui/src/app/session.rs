@@ -460,6 +460,19 @@ impl UiSession {
     pub fn has_live_background_work(&self) -> bool {
         !self.background_tasks.is_empty()
     }
+
+    /// Drop the CLI-fed background-task registry and its task-id ->
+    /// tool-use-id mirror. The two are cleared together because the mirror
+    /// only means anything as a lookup INTO the registry. Called on session
+    /// teardown (connection failure, reset): the CLI drains
+    /// `background_tasks` only via a terminal `background_tasks_changed`,
+    /// which never arrives for a dead/replaced session, so without this the
+    /// registry - and the activity spinner + frame-tick it drives - would
+    /// stay stale forever.
+    pub fn clear_background_task_registry(&mut self) {
+        self.background_tasks.clear();
+        self.session_task_tool_use_ids.clear();
+    }
 }
 
 impl Default for UiSession {

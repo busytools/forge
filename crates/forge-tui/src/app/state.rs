@@ -1892,6 +1892,13 @@ impl App {
         self.active_bucket_mut().session_task_tool_use_ids.remove(task_id);
     }
 
+    /// Clear the active session's background-task registry (and its
+    /// task-id mirror) on teardown. See
+    /// [`UiSession::clear_background_task_registry`].
+    pub(crate) fn clear_active_session_background_task_registry(&mut self) {
+        self.active_bucket_mut().clear_background_task_registry();
+    }
+
     /// Active session's SCHEDULES entries (Inspector SCHEDULES
     /// section). Pruned by the ~1s timer tick.
     pub fn schedules(&self) -> &[crate::app::state::types::ScheduleEntry] {
