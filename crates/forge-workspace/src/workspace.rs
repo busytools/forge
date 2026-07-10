@@ -1854,23 +1854,29 @@ impl Workspace {
         // (~hundreds of ms), within the 60 s poll interval.
         let mut any_success = false;
         for (key, dir, env) in entries {
-            // A base-url-override account probes its own endpoint with
-            // the env bearer (skipping the keychain + the auth-refresh
-            // wrapper) and tolerates the cold `{}` as an all-None (n/a)
-            // snapshot; normal accounts keep the keychain + default host.
-            let base_url_override = forge_agent::cloud::oauth_usage::base_url_override(&env);
-            let fetch_result = match &base_url_override {
-                Some((base_url, bearer)) => {
+            // One decision (probe_plan) drives both the probe source and
+            // the response-mapping strictness. A base-url-override account
+            // probes its own endpoint with the env bearer (skipping the
+            // keychain + the auth-refresh wrapper) and maps leniently
+            // (each window independent; cold `{}` -> n/a); a normal
+            // account keeps the keychain + default host + strict mapping.
+            let plan = forge_agent::cloud::oauth_usage::probe_plan(&env);
+            let is_base_url =
+                matches!(plan, forge_agent::cloud::oauth_usage::ProbePlan::BaseUrl { .. });
+            let fetch_result = match &plan {
+                forge_agent::cloud::oauth_usage::ProbePlan::BaseUrl { base_url, bearer } => {
                     let creds = forge_agent::cloud::oauth_credentials::OauthCredentials {
                         access_token: bearer.clone(),
                         expires_at: None,
                     };
                     forge_agent::cloud::oauth_usage::probe(&creds, Some(base_url)).await
                 }
-                None => forge_agent::cloud::oauth_usage::oauth_usage(&dir).await,
+                forge_agent::cloud::oauth_usage::ProbePlan::Keychain => {
+                    forge_agent::cloud::oauth_usage::oauth_usage(&dir).await
+                }
             };
             let map_payload = |payload| {
-                if base_url_override.is_some() {
+                if is_base_url {
                     Ok(forge_agent::cloud::oauth::snapshot_from_payload_lenient(payload))
                 } else {
                     forge_agent::cloud::oauth::snapshot_from_payload(payload)

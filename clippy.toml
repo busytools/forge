@@ -23,9 +23,10 @@ allow-indexing-slicing-in-tests = true
 absolute-paths-max-segments = 3
 
 # Bumped from default 7 to cover render/recursion fns with layout state
-# threaded as flat params. Workspace-internal; no public API impact.
-# 2026-05-21: bumped 9 -> 10 for `build_options_with_callback` gaining
-# `extra_mcp_servers` (#114 peer-coordination plumbing).
+# threaded as flat params (a forge-tui render fn sits at 10).
+# Workspace-internal; no public API impact.
+# `build_options_with_callback` is back to 9 args after its per-account
+# inputs (config_dir/proxy/env) were bundled into `AccountBinding`.
 too-many-arguments-threshold = 10
 
 # Short identifiers common in CLI arg parsing, loops, and channel names.

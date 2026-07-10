@@ -104,25 +104,30 @@ pub async fn run_account_loading(
             // Workspace dropped during shutdown; exit cleanly.
             return;
         };
-        // A base-url-override account (`ANTHROPIC_BASE_URL` in
-        // `[accounts.env]`) probes its own endpoint with the env
-        // bearer, skipping the keychain (it has no keychain entry).
-        // Normal accounts keep the keychain + default host.
+        // One decision (probe_plan) drives the probe source, the
+        // response-mapping strictness, and whether a 401 is eligible for
+        // the keychain refresh. A base-url-override account
+        // (`ANTHROPIC_BASE_URL` in `[accounts.env]`) probes its own
+        // endpoint with the env bearer and skips the keychain; a normal
+        // account uses the keychain + default host.
         let account_env =
             workspace.account_states().lock().env(&account_key).cloned().unwrap_or_default();
-        let base_url_override = oauth_usage::base_url_override(&account_env);
-        let probe_result = match &base_url_override {
-            Some((base_url, bearer)) => {
+        let plan = oauth_usage::probe_plan(&account_env);
+        let is_base_url = matches!(plan, oauth_usage::ProbePlan::BaseUrl { .. });
+        let probe_result = match &plan {
+            oauth_usage::ProbePlan::BaseUrl { base_url, bearer } => {
                 let creds = oauth_credentials::OauthCredentials {
                     access_token: bearer.clone(),
                     expires_at: None,
                 };
                 oauth_usage::probe(&creds, Some(base_url)).await
             }
-            None => match oauth_credentials::load_oauth_credentials(&config_dir) {
-                Some(creds) => oauth_usage::probe(&creds, None).await,
-                None => Err(OauthUsageError::NoCredentials),
-            },
+            oauth_usage::ProbePlan::Keychain => {
+                match oauth_credentials::load_oauth_credentials(&config_dir) {
+                    Some(creds) => oauth_usage::probe(&creds, None).await,
+                    None => Err(OauthUsageError::NoCredentials),
+                }
+            }
         };
 
         match probe_result {
@@ -130,23 +135,23 @@ pub async fn run_account_loading(
                 // A base-url proxy emits each window independently (and
                 // omits `five_hour` cold or post-5h-reset); map leniently
                 // so a valid partial payload renders its present windows
-                // (n/a for the rest) instead of bailing the account.
-                let mapped = if base_url_override.is_some() {
-                    Ok(oauth::snapshot_from_payload_lenient(payload))
+                // (n/a for the rest). The keychain path keeps the strict
+                // mapper (a 200 must carry five_hour).
+                let snapshot = if is_base_url {
+                    oauth::snapshot_from_payload_lenient(payload)
                 } else {
-                    oauth::snapshot_from_payload(payload)
-                };
-                let snapshot = match mapped {
-                    Ok(s) => s,
-                    Err(err) => {
-                        tracing::warn!(
-                            target: "forge_workspace::account_loader",
-                            account = %account_key.0,
-                            error = ?err,
-                            "boot probe returned 200 but snapshot mapping failed; retrying",
-                        );
-                        tokio::time::sleep(PROBE_RETRY_INTERVAL).await;
-                        continue;
+                    match oauth::snapshot_from_payload(payload) {
+                        Ok(s) => s,
+                        Err(err) => {
+                            tracing::warn!(
+                                target: "forge_workspace::account_loader",
+                                account = %account_key.0,
+                                error = ?err,
+                                "boot probe returned 200 but snapshot mapping failed; retrying",
+                            );
+                            tokio::time::sleep(PROBE_RETRY_INTERVAL).await;
+                            continue;
+                        }
                     }
                 };
                 workspace.account_states().lock().set_usage(&account_key, snapshot);
@@ -158,11 +163,17 @@ pub async fn run_account_loading(
                 );
                 return;
             }
+            // Keychain auth failure -> CLI-spawn refresh recovery. Guarded
+            // to the keychain plan: a base-url 401 must NEVER reach
+            // refresh_via_cli_spawn (it refreshes a keychain token the
+            // base-url probe never reads and would burn up to
+            // MAX_LOADING_ITERATIONS billed `claude -p hi` spawns). A
+            // base-url auth error falls through to the classified arm.
             Err(
                 OauthUsageError::NoCredentials
                 | OauthUsageError::Expired
                 | OauthUsageError::Unauthorized(_),
-            ) => {
+            ) if !is_base_url => {
                 // Auth-recovery path. Transition to Refreshing so the
                 // launchpad shows in-flight; fire the CLI-spawn refresh
                 // which internally pre-gates via auth_status. Any
@@ -209,17 +220,26 @@ pub async fn run_account_loading(
                 tokio::time::sleep(retry_after.unwrap_or(PROBE_RETRY_INTERVAL)).await;
             }
             Err(err) => {
+                // Transient/terminal, including a base-url auth failure:
+                // it stays visible (Unauthorized/Expired flip to Bailed
+                // via set_last_error) and out of the keychain refresh
+                // above. Network / HTTP / decode failures back off and
+                // retry within the loading loop's iteration cap.
+                let status = match &err {
+                    OauthUsageError::Unauthorized(_) | OauthUsageError::NoCredentials => {
+                        UsageFetchStatus::Unauthorized
+                    }
+                    OauthUsageError::Expired => UsageFetchStatus::Expired,
+                    _ => UsageFetchStatus::NetworkFailed,
+                };
                 tracing::debug!(
                     target: "forge_workspace::account_loader",
                     account = %account_key.0,
                     error = %err,
-                    "boot probe returned transient error; retrying",
+                    status = ?status,
+                    "boot probe failed; recording + backing off",
                 );
-                workspace.account_states().lock().set_last_error(
-                    &account_key,
-                    UsageFetchStatus::NetworkFailed,
-                    None,
-                );
+                workspace.account_states().lock().set_last_error(&account_key, status, None);
                 tokio::time::sleep(PROBE_RETRY_INTERVAL).await;
             }
         }

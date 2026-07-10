@@ -142,24 +142,39 @@ fn usage_url(base_url: Option<&str>) -> String {
     }
 }
 
-/// Probe inputs derived from an account's `[accounts.env]` map.
-/// `Some((base_url, bearer))` when the account sets `ANTHROPIC_BASE_URL`:
-/// the usage probe hits `{base_url}/api/oauth/usage` with the account's
-/// `ANTHROPIC_AUTH_TOKEN` as the bearer, skipping the macOS keychain (a
-/// base-url account has no keychain entry, so a keychain read would
-/// bail `NoCredentials` before reaching the endpoint). `None` for a
-/// normal Anthropic account (default host + keychain bearer). Keyed
-/// purely on the base-url override, so any account that sets it polls
-/// via its own endpoint.
-pub fn base_url_override<S: std::hash::BuildHasher>(
-    env: &HashMap<String, String, S>,
-) -> Option<(String, String)> {
-    let base_url = env
-        .get("ANTHROPIC_BASE_URL")
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())?;
+/// How an account's usage should be probed, derived once from its
+/// `[accounts.env]`. The loader and poller both read this single
+/// decision so the probe source AND the response-mapping strictness
+/// stay in lockstep.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ProbePlan {
+    /// Account sets `ANTHROPIC_BASE_URL`: probe `{base_url}/api/oauth/usage`
+    /// with the env `ANTHROPIC_AUTH_TOKEN` bearer (the macOS keychain is
+    /// skipped - a base-url account has no keychain entry), and map the
+    /// response leniently via [`super::oauth::snapshot_from_payload_lenient`]
+    /// (each window independently optional). A base-url auth failure
+    /// must NOT trigger the keychain CLI-spawn refresh: the probe never
+    /// reads that token, so refreshing it burns billed `claude -p hi`
+    /// spawns to no effect.
+    BaseUrl { base_url: String, bearer: String },
+    /// Normal Anthropic account: default host + macOS keychain bearer,
+    /// strict mapping (a 200 must carry the five-hour window), and the
+    /// CLI-spawn auth-recovery refresh on a 401.
+    Keychain,
+}
+
+/// Derive the [`ProbePlan`] for an account from its `[accounts.env]`.
+/// Keyed purely on an `ANTHROPIC_BASE_URL` override, so any account
+/// that sets one probes via its own endpoint; every other account uses
+/// the keychain path.
+pub fn probe_plan<S: std::hash::BuildHasher>(env: &HashMap<String, String, S>) -> ProbePlan {
+    let Some(base_url) =
+        env.get("ANTHROPIC_BASE_URL").map(|value| value.trim()).filter(|value| !value.is_empty())
+    else {
+        return ProbePlan::Keychain;
+    };
     let bearer = env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str).unwrap_or_default();
-    Some((base_url.to_owned(), bearer.to_owned()))
+    ProbePlan::BaseUrl { base_url: base_url.to_owned(), bearer: bearer.to_owned() }
 }
 
 /// One round-trip against `/api/oauth/usage` using `credentials.access_token`.
@@ -315,42 +330,52 @@ mod tests {
     }
 
     #[test]
-    fn base_url_override_reads_base_and_token_from_env() {
+    fn probe_plan_base_url_reads_base_and_token_from_env() {
         let mut env = HashMap::new();
         env.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
         env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-codex".to_owned());
         assert_eq!(
-            base_url_override(&env),
-            Some(("http://localhost:18765".to_owned(), "sk-codex".to_owned())),
+            probe_plan(&env),
+            ProbePlan::BaseUrl {
+                base_url: "http://localhost:18765".to_owned(),
+                bearer: "sk-codex".to_owned(),
+            },
         );
     }
 
     #[test]
-    fn base_url_override_none_without_base_url() {
-        // A normal Anthropic account (no ANTHROPIC_BASE_URL) -> None so
-        // the caller keeps the default host + keychain bearer.
+    fn probe_plan_keychain_without_base_url() {
+        // A normal Anthropic account (no ANTHROPIC_BASE_URL) -> Keychain
+        // so the caller keeps the default host + keychain bearer.
         let mut env = HashMap::new();
         env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-codex".to_owned());
-        assert_eq!(base_url_override(&env), None);
-        assert_eq!(base_url_override(&HashMap::new()), None);
+        assert_eq!(probe_plan(&env), ProbePlan::Keychain);
+        assert_eq!(probe_plan(&HashMap::new()), ProbePlan::Keychain);
     }
 
     #[test]
-    fn base_url_override_empty_base_url_is_none() {
+    fn probe_plan_keychain_for_empty_base_url() {
         let mut env = HashMap::new();
         env.insert("ANTHROPIC_BASE_URL".to_owned(), "   ".to_owned());
-        assert_eq!(base_url_override(&env), None, "whitespace-only base url is not an override");
+        assert_eq!(
+            probe_plan(&env),
+            ProbePlan::Keychain,
+            "whitespace-only base url is not an override",
+        );
     }
 
     #[test]
-    fn base_url_override_missing_token_defaults_to_empty_bearer() {
+    fn probe_plan_base_url_missing_token_defaults_to_empty_bearer() {
         // A proxy on localhost ignores the bearer; an absent
         // ANTHROPIC_AUTH_TOKEN must not suppress the override.
         let mut env = HashMap::new();
         env.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
         assert_eq!(
-            base_url_override(&env),
-            Some(("http://localhost:18765".to_owned(), String::new())),
+            probe_plan(&env),
+            ProbePlan::BaseUrl {
+                base_url: "http://localhost:18765".to_owned(),
+                bearer: String::new(),
+            },
         );
     }
 
