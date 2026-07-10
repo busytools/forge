@@ -41,6 +41,13 @@ struct ForgeToml {
     /// stays dormant.
     #[serde(default)]
     gotify: Option<GotifyConfig>,
+    /// Optional top-level `[env]` table - environment stamped onto
+    /// every account's `claude` subprocess as the BASE, with each
+    /// account's `[accounts.env]` overriding it per-key. Merged into
+    /// `LoadedAccount.env` at load (see `load_from_dir`); not exposed
+    /// on the loaded config. Absent table -> empty.
+    #[serde(default)]
+    env: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -270,6 +277,11 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         return Err(WorkspaceError::NoAccountsConfigured { path });
     }
 
+    // Global `[env]` is the BASE each account's effective env starts
+    // from; the account's own `[accounts.env]` extends it, so account
+    // keys override global keys.
+    let global_env = parsed.env;
+
     // Validate accounts first - orgs cross-reference them.
     let mut seen_account_names: std::collections::HashSet<String> =
         std::collections::HashSet::new();
@@ -278,11 +290,13 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         if !seen_account_names.insert(entry.display_name.clone()) {
             return Err(WorkspaceError::DuplicateAccount { path, name: entry.display_name });
         }
+        let mut env = global_env.clone();
+        env.extend(entry.env);
         accounts.push(LoadedAccount {
             display_name: entry.display_name,
             config_dir: expand_home(&entry.config_dir),
             proxy: entry.proxy,
-            env: entry.env,
+            env,
             experimental: entry.experimental,
         });
     }
@@ -475,6 +489,119 @@ ANTHROPIC_AUTH_TOKEN = "unused"
         assert!(account.env.is_empty(), "no [accounts.env] -> empty map");
         assert!(account.proxy, "absent proxy field defaults to true");
         assert!(!account.experimental, "absent experimental field defaults to false");
+    }
+
+    #[test]
+    fn parses_top_level_env_table() {
+        let raw =
+            format!("[env]\nCLAUDE_CODE_AUTO_COMPACT_WINDOW = \"950000\"\n{}", minimal_config());
+        let parsed: ForgeToml = toml::from_str(&raw).expect("parse top-level [env]");
+        assert_eq!(
+            parsed.env.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW").map(String::as_str),
+            Some("950000"),
+        );
+    }
+
+    #[test]
+    fn absent_top_level_env_table_is_empty() {
+        let parsed: ForgeToml = toml::from_str(minimal_config()).expect("parse without [env]");
+        assert!(parsed.env.is_empty(), "no [env] -> empty map");
+    }
+
+    #[test]
+    fn global_env_lands_in_account_without_its_own_env() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[env]
+CLAUDE_CODE_AUTO_COMPACT_WINDOW = "950000"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        let account = &config.accounts[0];
+        assert_eq!(
+            account.env.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW").map(String::as_str),
+            Some("950000"),
+            "global [env] key merged into an account with no [accounts.env]",
+        );
+    }
+
+    #[test]
+    fn account_env_overrides_global_env_per_key() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[env]
+CLAUDE_CODE_AUTO_COMPACT_WINDOW = "950000"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex", "Gateway"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+config_dir = "~/.claude-codex"
+[accounts.env]
+CLAUDE_CODE_AUTO_COMPACT_WINDOW = "372000"
+[[accounts]]
+display_name = "Gateway"
+config_dir = "~/.claude"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        let codex = config.accounts.iter().find(|a| a.display_name == "Codex").expect("Codex");
+        let gateway =
+            config.accounts.iter().find(|a| a.display_name == "Gateway").expect("Gateway");
+        assert_eq!(
+            codex.env.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW").map(String::as_str),
+            Some("372000"),
+            "per-account [accounts.env] overrides the global [env] key",
+        );
+        assert_eq!(
+            gateway.env.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW").map(String::as_str),
+            Some("950000"),
+            "an account with no override inherits the global [env] key",
+        );
+    }
+
+    #[test]
+    fn no_global_env_leaves_account_env_untouched() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+config_dir = "~/.claude-codex"
+[accounts.env]
+ANTHROPIC_BASE_URL = "http://localhost:18765"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        let account = &config.accounts[0];
+        assert_eq!(account.env.len(), 1, "no [env] -> env is exactly the account's own");
+        assert_eq!(
+            account.env.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some("http://localhost:18765"),
+        );
     }
 
     #[test]
