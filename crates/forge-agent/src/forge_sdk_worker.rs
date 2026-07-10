@@ -505,20 +505,19 @@ pub(crate) fn parse_permission_mode(mode: &str) -> anyhow::Result<PermissionMode
 /// measuring.
 const EXCLUDE_DYNAMIC_SECTIONS: bool = false;
 
-/// Env keys forge stamps itself onto every `claude` child (here in
-/// build_options plus `HTTPS_PROXY` / `HTTP_PROXY` / `NODE_EXTRA_CA_CERTS`
-/// / `CLAUDE_AGENT_SDK_VERSION` in `forge_sdk::transport::process`). An
-/// `[accounts.env]` entry reusing one silently overrides forge's own
-/// stamp and can defeat the wire-classification rewriter (Hard Rule #16),
-/// so a collision is warned even though the stamp still applies (the
-/// forge.toml trust model keeps the value).
-const FORGE_RESERVED_ENV_KEYS: &[&str] = &[
-    "CLAUDE_CONFIG_DIR",
-    "HTTPS_PROXY",
-    "HTTP_PROXY",
-    "NODE_EXTRA_CA_CERTS",
-    "CLAUDE_AGENT_SDK_VERSION",
-];
+/// Forge-stamped env keys an `[accounts.env]` entry can actually
+/// override: `CLAUDE_CONFIG_DIR` (stamped into `options.env` before the
+/// account-env loop) and `HTTPS_PROXY` / `HTTP_PROXY` /
+/// `NODE_EXTRA_CA_CERTS` (stamped by `forge_sdk::transport::process`
+/// before it applies `options.env`). Reusing one silently overrides
+/// forge's stamp and can defeat the wire-classification rewriter (Hard
+/// Rule #16), so a collision is warned - though the stamp still applies
+/// (forge.toml is trusted, hand-authored). `CLAUDE_AGENT_SDK_VERSION` is
+/// deliberately absent: process.rs stamps it LAST, unconditionally,
+/// after the account-env loop, so forge always wins and a warn would
+/// be a false alarm.
+const FORGE_RESERVED_ENV_KEYS: &[&str] =
+    &["CLAUDE_CONFIG_DIR", "HTTPS_PROXY", "HTTP_PROXY", "NODE_EXTRA_CA_CERTS"];
 
 fn is_reserved_env_key(key: &str) -> bool {
     FORGE_RESERVED_ENV_KEYS.contains(&key)
@@ -1337,18 +1336,47 @@ mod tests {
 
     #[test]
     fn reserved_env_keys_are_flagged_and_others_are_not() {
-        for reserved in [
-            "CLAUDE_CONFIG_DIR",
-            "HTTPS_PROXY",
-            "HTTP_PROXY",
-            "NODE_EXTRA_CA_CERTS",
-            "CLAUDE_AGENT_SDK_VERSION",
-        ] {
+        // Iterate the const so it and the predicate stay in lockstep.
+        for reserved in super::FORGE_RESERVED_ENV_KEYS {
             assert!(super::is_reserved_env_key(reserved), "{reserved} is forge-reserved");
         }
+        // process.rs stamps CLAUDE_AGENT_SDK_VERSION last + unconditionally,
+        // so an account env value can never override it - not reserved.
+        assert!(!super::is_reserved_env_key("CLAUDE_AGENT_SDK_VERSION"));
         assert!(!super::is_reserved_env_key("ANTHROPIC_BASE_URL"));
         assert!(!super::is_reserved_env_key("ANTHROPIC_AUTH_TOKEN"));
         assert!(!super::is_reserved_env_key("ANTHROPIC_SMALL_FAST_MODEL"));
+    }
+
+    #[test]
+    fn build_options_still_stamps_a_reserved_key_despite_the_warn() {
+        // The collision warns but does not suppress the stamp: a
+        // forge-reserved key in [accounts.env] still lands on the child
+        // (forge.toml is trusted, hand-authored).
+        use crate::client::SessionLaunchSettings;
+        use std::path::Path;
+        use tokio::sync::mpsc;
+
+        let (event_tx, _rx) = mpsc::unbounded_channel();
+        let launch = SessionLaunchSettings::default();
+        let mut env = HashMap::new();
+        env.insert("HTTPS_PROXY".to_owned(), "http://acct-proxy:8080".to_owned());
+        assert!(super::is_reserved_env_key("HTTPS_PROXY"));
+        let options = super::build_options_with_callback(
+            "",
+            None,
+            &launch,
+            event_tx,
+            fresh_pending(),
+            fresh_pending_questions(),
+            Arc::new(Mutex::new(String::new())),
+            Vec::new(),
+            super::AccountBinding { config_dir: Path::new("/cfg/x"), proxy: None, env: &env },
+        );
+        assert_eq!(
+            options.env.get("HTTPS_PROXY").map(String::as_str),
+            Some("http://acct-proxy:8080"),
+        );
     }
 
     #[test]
