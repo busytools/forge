@@ -57,6 +57,12 @@ pub enum WorkspaceError {
     EmptyOrgAccounts { path: PathBuf, org: String },
 
     #[error(
+        "org '{org}' in forge.toml at {} lists only experimental accounts; list at least one non-experimental account",
+        path.display()
+    )]
+    AllExperimentalOrgAccounts { path: PathBuf, org: String },
+
+    #[error(
         "org '{org}' in forge.toml at {} references unknown account '{account}'; valid accounts: {valid}",
         path.display()
     )]

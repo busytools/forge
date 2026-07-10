@@ -287,6 +287,11 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         });
     }
 
+    // Experimental account names, for the "org lists only experimental
+    // accounts" validation below.
+    let experimental_account_names: std::collections::HashSet<String> =
+        accounts.iter().filter(|a| a.experimental).map(|a| a.display_name.clone()).collect();
+
     // Validate orgs + build the flat project list.
     let mut seen_org_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut seen_project_names: std::collections::HashSet<String> =
@@ -311,6 +316,12 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                     valid: valid.join(", "),
                 });
             }
+        }
+        // An org whose accounts are all experimental leaves its projects
+        // with nothing assignable - the auto_start path would fall
+        // through to a foreign non-experimental account. Reject at load.
+        if org_entry.accounts.iter().all(|a| experimental_account_names.contains(a)) {
+            return Err(WorkspaceError::AllExperimentalOrgAccounts { path, org: org_entry.name });
         }
         if org_entry.projects.is_empty() {
             return Err(WorkspaceError::EmptyOrg { path, org: org_entry.name });
@@ -688,6 +699,65 @@ config_dir = "~/.claude-subspace"
             }
             other => panic!("expected UnknownOrgAccount, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn all_experimental_org_accounts_errors() {
+        // An org whose entire account list is experimental would leave
+        // its auto_start project with no assignable account and silently
+        // bind to a foreign non-experimental account at runtime. Reject
+        // it at load.
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+
+[[accounts]]
+display_name = "Codex"
+config_dir = "~/.claude-codex"
+experimental = true
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("all-experimental org should error");
+        assert!(
+            matches!(err, WorkspaceError::AllExperimentalOrgAccounts { ref org, .. } if org == "Personal"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn org_with_a_non_experimental_account_loads() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex", "Granite"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+
+[[accounts]]
+display_name = "Codex"
+config_dir = "~/.claude-codex"
+experimental = true
+
+[[accounts]]
+display_name = "Granite"
+config_dir = "~/.claude"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("org with a non-experimental account loads");
+        assert_eq!(config.orgs[0].accounts, vec!["Codex".to_owned(), "Granite".to_owned()]);
     }
 
     #[test]
