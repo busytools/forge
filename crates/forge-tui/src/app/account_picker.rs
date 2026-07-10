@@ -200,6 +200,33 @@ mod tests {
     }
 
     #[test]
+    fn selected_maps_across_the_experimental_boundary() {
+        let mut app = App::test_default();
+        // Rows arrive pre-sorted [regular, experimental] from the
+        // snapshot; the dim EXPERIMENTAL header the render inserts does
+        // not shift the highlight index, so nav still spans both groups.
+        let exp = AccountRow {
+            display_name: "Exp".to_owned(),
+            config_dir: PathBuf::from("/cfg/Exp"),
+            is_current: false,
+            usable: true,
+            five_hour_util: 10.0,
+            seven_day_util: 5.0,
+            resets_at: None,
+            experimental: true,
+        };
+        open(&mut app, vec![row("A", false), exp]);
+        handle_key(&mut app, key(KeyCode::Down));
+        let state = app.account_picker.as_ref().expect("open");
+        assert_eq!(state.highlight, 1);
+        assert_eq!(state.selected().map(|r| r.display_name.as_str()), Some("Exp"));
+        assert!(
+            state.selected().expect("selected").experimental,
+            "highlight lands on the experimental row across the boundary",
+        );
+    }
+
+    #[test]
     fn esc_closes_the_picker() {
         let mut app = App::test_default();
         open(&mut app, vec![row("A", true), row("B", false)]);

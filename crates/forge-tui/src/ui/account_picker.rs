@@ -27,8 +27,11 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
     let project = app.active_project_name().unwrap_or_else(|| "project".to_owned());
 
     let inner_w = usize::from(WIDTH.saturating_sub(2));
+    let has_experimental = state.rows.iter().any(|row| row.experimental);
     // header + blank + N rows + blank + footer, inside a 1-cell border.
-    let body_lines = state.rows.len().saturating_add(4);
+    // The EXPERIMENTAL group adds a blank separator + its own header.
+    let group_lines = if has_experimental { 2 } else { 0 };
+    let body_lines = state.rows.len().saturating_add(4).saturating_add(group_lines);
     let height = u16::try_from(body_lines).unwrap_or(0).saturating_add(2);
     let overlay = centered(area, WIDTH, height);
 
@@ -56,7 +59,24 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
     ));
     lines.push(Line::default());
 
+    // Rows arrive pre-sorted [regular..., experimental...]. Emit a dim
+    // EXPERIMENTAL header at the boundary (reusing the launchpad's
+    // org-grouping shape). The header is a plain line - it never
+    // consumes a highlight index, so arrow-nav still maps straight onto
+    // `state.rows`.
+    let mut experimental_header_drawn = false;
     for (idx, row) in state.rows.iter().enumerate() {
+        if row.experimental && !experimental_header_drawn {
+            lines.push(Line::default());
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    "EXPERIMENTAL",
+                    Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            experimental_header_drawn = true;
+        }
         lines.push(account_row_line(row, idx == state.highlight, inner_w));
     }
 
@@ -125,12 +145,24 @@ fn account_row_line(row: &AccountRow, selected: bool, inner_w: usize) -> Line<'s
         spans.push(Span::styled(eta, Style::default().fg(theme::STATUS_WARNING)));
     }
 
-    // Status tag, right-aligned.
+    // Status tag, right-aligned. Experimental rows prefix an amber
+    // `experimental` tag + a dim separator so the reason they are
+    // grouped is legible even without the section header.
     let (tag, tag_color) =
         if row.usable { ("usable", Color::Green) } else { ("rate limited", theme::STATUS_ERROR) };
-    let pad = inner_w.saturating_sub(used + display_len(tag));
+    let sep = " \u{00B7} ";
+    let tag_block = if row.experimental {
+        display_len("experimental") + display_len(sep) + display_len(tag)
+    } else {
+        display_len(tag)
+    };
+    let pad = inner_w.saturating_sub(used + tag_block);
     if pad > 0 {
         spans.push(Span::raw(" ".repeat(pad)));
+    }
+    if row.experimental {
+        spans.push(Span::styled("experimental", Style::default().fg(theme::EXPERIMENTAL)));
+        spans.push(Span::styled(sep.to_owned(), Style::default().fg(theme::DIM)));
     }
     spans.push(Span::styled(tag.to_owned(), Style::default().fg(tag_color)));
 
@@ -284,5 +316,53 @@ mod tests {
         assert!(capped.contains("resets"), "capped account shows a reset ETA: {capped}");
         let usable = lines.iter().find(|l| l.contains("Granite1")).expect("usable row present");
         assert!(!usable.contains("resets"), "usable account shows no reset ETA: {usable}");
+    }
+
+    #[test]
+    fn renders_experimental_group_with_amber_tag() {
+        let mut app = App::test_default();
+        let rows = vec![
+            AccountRow {
+                display_name: "Granite".to_owned(),
+                config_dir: PathBuf::from("/c/granite"),
+                is_current: true,
+                usable: true,
+                five_hour_util: 10.0,
+                seven_day_util: 5.0,
+                resets_at: None,
+                experimental: false,
+            },
+            AccountRow {
+                display_name: "Codex".to_owned(),
+                config_dir: PathBuf::from("/c/codex"),
+                is_current: false,
+                usable: true,
+                five_hour_util: 20.0,
+                seven_day_util: 8.0,
+                resets_at: None,
+                experimental: true,
+            },
+        ];
+        crate::app::account_picker::open(&mut app, rows);
+
+        let lines = render_picker(&app, 80, 16);
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("EXPERIMENTAL"), "experimental section header present: {joined}");
+        let codex = lines.iter().find(|l| l.contains("Codex")).expect("codex row present");
+        assert!(codex.contains("experimental"), "experimental row carries the amber tag: {codex}");
+        let granite = lines.iter().find(|l| l.contains("Granite")).expect("granite row present");
+        assert!(
+            !granite.contains("experimental"),
+            "regular row has no experimental tag: {granite}"
+        );
+
+        // The dim header separates the group: it sits after the regular
+        // row and before the experimental one.
+        let granite_idx = lines.iter().position(|l| l.contains("Granite")).expect("granite idx");
+        let header_idx = lines.iter().position(|l| l.contains("EXPERIMENTAL")).expect("header idx");
+        let codex_idx = lines.iter().position(|l| l.contains("Codex")).expect("codex idx");
+        assert!(granite_idx < header_idx, "header follows the regular rows");
+        assert!(header_idx < codex_idx, "header precedes the experimental rows");
     }
 }
