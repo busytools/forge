@@ -210,8 +210,12 @@ fn collect_descendants(
 /// through unchanged at the call site).
 pub fn extract_inner_command(cmdline: &str) -> Option<String> {
     let after_eval = cmdline.split_once("eval '")?.1;
-    let inner = after_eval.split_once("' < /dev/null")?.0;
-    Some(inner.trim().to_owned())
+    // Terminate at the OUTERMOST `' < /dev/null` (the eval close-quote) so a
+    // command that itself contains that redirect doesn't cut off early.
+    let inner = after_eval.rsplit_once("' < /dev/null")?.0;
+    // The wrapper re-escapes each `'` as the POSIX sequence `'"'"'`; reverse it
+    // so a single-quote command still matches its wire `raw_input.command`.
+    Some(inner.trim().replace(r#"'"'"'"#, "'"))
 }
 
 /// Strip the executable's directory from a cmdline headline so the row
@@ -372,6 +376,13 @@ mod tests {
     /// between `eval '` and `' < /dev/null`.
     const REAL_WRAPPER: &str = "/bin/zsh -c source /Users/x/.claude/shell-snapshots/snapshot-zsh-1.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2>/dev/null || true && eval 'gh run watch 123 --exit-status' < /dev/null && pwd -P >| /tmp/claude-ab12-cwd";
 
+    /// Ground-truth wrapper captured via `ps -axww` for a backgrounded Bash
+    /// whose command contains single-quotes: the wrapper re-escapes each `'`
+    /// inside the eval'd command as the POSIX sequence `'"'"'` (close-quote,
+    /// a double-quoted quote, reopen-quote), and the wire `raw_input.command`
+    /// was `echo 'sq-marker'; sleep 40`.
+    const SINGLE_QUOTE_WRAPPER: &str = r#"/bin/zsh -c source /Users/x/.claude/shell-snapshots/snapshot-zsh-1.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2>/dev/null || true && eval 'echo '"'"'sq-marker'"'"'; sleep 40' < /dev/null && pwd -P >| /tmp/claude-ab12-cwd"#;
+
     #[test]
     fn extract_inner_command_unwraps_real_wrapper() {
         assert_eq!(
@@ -399,6 +410,39 @@ mod tests {
         // whitespace on both sides (after unwrapping) makes it match.
         let tool_command = "gh run watch 123\n  --exit-status";
         assert!(process_cmdline_matches_tool_input(REAL_WRAPPER, tool_command));
+    }
+
+    #[test]
+    fn extract_inner_command_unescapes_shell_single_quotes() {
+        // The `'"'"'` escape the wrapper applies to each single-quote must be
+        // reversed so the recovered command reads verbatim.
+        assert_eq!(
+            extract_inner_command(SINGLE_QUOTE_WRAPPER).as_deref(),
+            Some("echo 'sq-marker'; sleep 40")
+        );
+    }
+
+    #[test]
+    fn extract_inner_command_terminates_at_outermost_redirect() {
+        // A command that itself contains `' < /dev/null` must not terminate the
+        // unwrap early: the real terminator is the OUTERMOST occurrence (the
+        // eval close-quote), so unwrapping splits on the last one.
+        let wrapper = format!(
+            "/bin/zsh -c source /x/snap.sh 2>/dev/null || true && eval '{}' < /dev/null && pwd -P >| /tmp/claude-x-cwd",
+            r#"echo '"'"'hi'"'"' < /dev/null"#
+        );
+        assert_eq!(extract_inner_command(&wrapper).as_deref(), Some("echo 'hi' < /dev/null"));
+    }
+
+    #[test]
+    fn single_quote_command_matches_its_wrapper() {
+        // Without the un-escape the `'"'"'`-vs-`'` mismatch breaks the
+        // substring match, so the OS process never correlates to its wire
+        // tool call (renders as a raw unmatched row + a synthetic duplicate).
+        assert!(process_cmdline_matches_tool_input(
+            SINGLE_QUOTE_WRAPPER,
+            "echo 'sq-marker'; sleep 40"
+        ));
     }
 
     #[test]
