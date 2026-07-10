@@ -18,7 +18,7 @@
 //! process. We still surface alive Cron rows from the wire alone
 //! since there's nothing to OS-walk for them.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use forge_workspace::env::processes::{
     InfraLabel, ProcessEntry, ProcessSnapshot, basename_exe, classify_known_infra,
@@ -31,6 +31,7 @@ use crate::agent::model::ToolCallStatus;
 use crate::app::MessageBlock;
 use crate::app::MessageRole;
 use crate::app::state::tool_call_info::{ToolCallInfo, is_execute_tool_name, is_monitor_tool_name};
+use crate::app::state::types::BackgroundTask;
 
 /// Soft cap on the rendered PROCESSES section. Sanity bound so a
 /// runaway process tree doesn't blow up the body line count; users
@@ -199,8 +200,100 @@ pub fn collect_active_processes(app: &App) -> ProcessCollection {
         rows.extend(rows_from_os_snapshot(snapshot, &wire_alive));
     }
 
+    // Feed the CLI's authoritative backgrounded-`local_bash` registry in:
+    // a short-lived / just-started / pre-first-scan bash can be in
+    // `background_tasks` yet absent from the OS snapshot, so without this
+    // it renders nowhere. Commands resolve through the session-scoped task
+    // map (survives turn finalisation, unlike the turn-scoped one), so a
+    // bash that outlived its turn is still deduped correctly rather than
+    // dropped. Skipped entirely when the registry has no local_bash.
+    if session.background_tasks.iter().any(|task| task.task_type == "local_bash") {
+        let command_by_task_id = session_command_by_task_id(session);
+        let synthetic = background_bash_rows(
+            &session.background_tasks,
+            &command_by_task_id,
+            session.process_snapshot.as_ref(),
+        );
+        // Reserve room so these gap-fill rows survive the sanity cap - they
+        // are appended last, so a full OS walk would otherwise truncate the
+        // authoritative registry rows first.
+        rows.truncate(PROCESSES_MAX.saturating_sub(synthetic.len()));
+        rows.extend(synthetic);
+    }
+
     rows.truncate(PROCESSES_MAX);
     ProcessCollection { rows }
+}
+
+/// Build `task_id` -> wire command for the active session by joining the
+/// session-scoped task map (`task_id` -> `tool_use_id`, survives turn
+/// finalisation) with each tool call's `raw_input.command`. Used to dedup
+/// the backgrounded-`local_bash` feed against OS-scan rows.
+fn session_command_by_task_id(session: &crate::app::session::UiSession) -> HashMap<String, String> {
+    let command_by_tool_use: HashMap<&str, &str> = session
+        .messages
+        .iter()
+        .flat_map(|message| &message.blocks)
+        .filter_map(|block| match block {
+            MessageBlock::ToolCall(tc) => {
+                let command = read_str_field(tc.raw_input.as_ref(), "command");
+                (!command.is_empty()).then_some((tc.id.as_str(), command))
+            }
+            _ => None,
+        })
+        .collect();
+    session
+        .session_task_tool_use_ids
+        .iter()
+        .filter_map(|(task_id, tool_use_id)| {
+            command_by_tool_use
+                .get(tool_use_id.as_str())
+                .map(|command| (task_id.clone(), (*command).to_owned()))
+        })
+        .collect()
+}
+
+/// Synthesise PROCESSES rows for CLI-registry backgrounded `local_bash`
+/// the OS scan hasn't surfaced. Skips a task whose command already
+/// substring-matches a scanned process (the OS walk covers it) or is
+/// unresolvable (terminal-cleared from the session map); non-`local_bash`
+/// kinds route to SUBAGENTS / WORKFLOWS.
+fn background_bash_rows(
+    background_tasks: &[BackgroundTask],
+    command_by_task_id: &HashMap<String, String>,
+    snapshot: Option<&ProcessSnapshot>,
+) -> Vec<ProcessRow> {
+    background_tasks
+        .iter()
+        .filter(|task| task.task_type == "local_bash")
+        .filter_map(|task| {
+            let command = command_by_task_id.get(&task.task_id)?;
+            let has_os_row = snapshot.is_some_and(|snapshot| {
+                snapshot
+                    .processes
+                    .iter()
+                    .any(|entry| process_cmdline_matches_tool_input(&entry.command, command))
+            });
+            (!has_os_row).then(|| synthetic_background_bash_row(&task.description, &task.task_type))
+        })
+        .collect()
+}
+
+/// A backgrounded-bash row sourced from the CLI registry rather than the
+/// OS scan: description as headline, `task_type` as the trailing tag, no
+/// memory (there's no scanned process behind it).
+fn synthetic_background_bash_row(description: &str, task_type: &str) -> ProcessRow {
+    ProcessRow {
+        kind: ProcessKind::BashBackgrounded,
+        headline: description.to_owned(),
+        detail: None,
+        metadata: task_type.to_owned(),
+        status: ToolCallStatus::InProgress,
+        memory_bytes: None,
+        depth: 0,
+        is_last_sibling: true,
+        ancestor_has_more: Vec::new(),
+    }
 }
 
 /// DFS the OS snapshot's process tree from claude's direct children
@@ -213,8 +306,6 @@ fn rows_from_os_snapshot<'a>(
     snapshot: &'a ProcessSnapshot,
     wire_alive: &'a [&'a ToolCallInfo],
 ) -> Vec<ProcessRow> {
-    use std::collections::HashMap;
-
     // Index by pid + build a parent → children adjacency list.
     let by_pid: HashMap<u32, &ProcessEntry> =
         snapshot.processes.iter().map(|e| (e.pid, e)).collect();
@@ -1137,5 +1228,86 @@ mod tests {
             ProcessSnapshot { processes: Vec::new(), scanned_at: std::time::SystemTime::now() };
         let rows = rows_from_os_snapshot(&snapshot, &[]);
         assert!(rows.is_empty());
+    }
+
+    fn bg_task(task_id: &str, task_type: &str, description: &str) -> BackgroundTask {
+        BackgroundTask {
+            task_id: task_id.to_owned(),
+            task_type: task_type.to_owned(),
+            description: description.to_owned(),
+        }
+    }
+
+    #[test]
+    fn background_bash_rows_synthesizes_when_os_scan_misses_it() {
+        // A short-lived / just-started backgrounded bash is in the CLI's
+        // registry but absent from the OS snapshot -> synthesise a row so
+        // it isn't dropped now that the standalone BACKGROUND section is
+        // gone.
+        let tasks = vec![bg_task("t1", "local_bash", "Print marker after 1s")];
+        let mut cmd_by_task = HashMap::new();
+        cmd_by_task.insert("t1".to_owned(), "sleep 1 && echo marker".to_owned());
+        let snapshot =
+            ProcessSnapshot { processes: Vec::new(), scanned_at: std::time::SystemTime::now() };
+        let rows = background_bash_rows(&tasks, &cmd_by_task, Some(&snapshot));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, ProcessKind::BashBackgrounded);
+        assert_eq!(rows[0].headline, "Print marker after 1s");
+        assert_eq!(rows[0].metadata, "local_bash");
+        assert!(rows[0].memory_bytes.is_none());
+        assert_eq!(rows[0].status, ToolCallStatus::InProgress);
+    }
+
+    #[test]
+    fn background_bash_rows_dedups_against_matching_os_row() {
+        // The bash IS in the snapshot (its wire command substring-matches
+        // a scanned process), so the OS row already covers it - no
+        // synthetic duplicate.
+        let tasks = vec![bg_task("t1", "local_bash", "Run tests")];
+        let mut cmd_by_task = HashMap::new();
+        cmd_by_task.insert("t1".to_owned(), "cargo nextest run".to_owned());
+        let entry = fake_entry(42, "zsh", &real_wrapper("cargo nextest run"), 8 * 1024 * 1024);
+        let snapshot =
+            ProcessSnapshot { processes: vec![entry], scanned_at: std::time::SystemTime::now() };
+        let rows = background_bash_rows(&tasks, &cmd_by_task, Some(&snapshot));
+        assert!(rows.is_empty(), "matched OS row covers it; got {rows:?}");
+    }
+
+    #[test]
+    fn background_bash_rows_ignores_non_bash_task_types() {
+        // Agents route to SUBAGENTS, workflows to WORKFLOWS - only
+        // local_bash is fed to PROCESSES.
+        let tasks = vec![
+            bg_task("a", "local_agent", "Audit history"),
+            bg_task("w", "local_workflow", "Run workflow"),
+        ];
+        let rows = background_bash_rows(&tasks, &HashMap::new(), None);
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn background_bash_rows_synthesizes_before_first_scan() {
+        // Cold start: `task_started` mapped the command this turn but no
+        // snapshot exists yet. The registry bash still surfaces.
+        let tasks = vec![bg_task("t1", "local_bash", "npm run build")];
+        let mut cmd_by_task = HashMap::new();
+        cmd_by_task.insert("t1".to_owned(), "npm run build".to_owned());
+        let rows = background_bash_rows(&tasks, &cmd_by_task, None);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].headline, "npm run build");
+    }
+
+    #[test]
+    fn background_bash_rows_skips_unresolved_task_to_avoid_double() {
+        // A backgrounded bash that outlived its turn: `task_started`'s
+        // mapping was cleared at turn finalisation, so the command can't
+        // be resolved. Its still-alive process is already an OS row, so
+        // the feed must NOT add a synthetic duplicate.
+        let tasks = vec![bg_task("t1", "local_bash", "gh run watch 123")];
+        let entry = fake_entry(9, "gh", "gh run watch 123 --exit-status", 8 * 1024 * 1024);
+        let snapshot =
+            ProcessSnapshot { processes: vec![entry], scanned_at: std::time::SystemTime::now() };
+        let rows = background_bash_rows(&tasks, &HashMap::new(), Some(&snapshot));
+        assert!(rows.is_empty(), "unresolved task must not double the OS row; got {rows:?}");
     }
 }

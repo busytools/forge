@@ -1,5 +1,5 @@
 // =====
-// TESTS: 12
+// TESTS: 13
 // =====
 //
 // Tool call lifecycle integration tests.
@@ -535,6 +535,101 @@ async fn subagent_section_clears_when_terminal_task_updated_drains_alive_task() 
         "section clears once the terminal task_updated drains the alive task; got {:?}",
         app.subagents_view(),
     );
+}
+
+/// Producer-path coverage: the session-scoped task map is populated by the
+/// REAL `handle_task_started`, not a test setter. A backgrounded agent
+/// whose spawning turn finalises (turn_state wiped) must still surface in
+/// SUBAGENTS via the session-map INTERSECT `background_tasks` registry. An
+/// arg-swap in `handle_task_started` (storing tool_use_id -> task_id)
+/// silently breaks this while the hand-populated unit tests stay green, so
+/// this drives the real wire path end to end.
+#[tokio::test]
+async fn backgrounded_agent_survives_turn_reset_over_real_wire_path() {
+    let mut app = test_app();
+
+    // Agent dispatch + one child tool call (the live tail).
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_root",
+            "Agent",
+            serde_json::json!({
+                "subagent_type": "Explore",
+                "description": "long-running background agent",
+                "prompt": "long-running background agent",
+            }),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block(
+                "toolu_child",
+                "Read",
+                serde_json::json!({"file": "conv-row.tsx"}),
+            )],
+            "toolu_root",
+        ),
+    );
+    // Real producer: TaskStarted drives handle_task_started ->
+    // insert_session_task_mapping(task_id -> tool_use_id).
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-root".to_owned(),
+            description: "long-running background agent".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_root".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+        },
+    );
+    // Backgrounding sentinel: the immediate tool_result flips the root's
+    // card terminal while the agent keeps running (the round-1 false-
+    // terminal). After this, only the session-map INTERSECT registry can
+    // keep it alive across the turn reset below.
+    send_msg(
+        &mut app,
+        user_message(vec![tool_result_block(
+            "toolu_root",
+            serde_json::json!("Agent launched in background. Task ID: task-root"),
+        )]),
+    );
+    assert_eq!(
+        tool_call_block(&app, "toolu_root").status,
+        model::ToolCallStatus::Completed,
+        "sentinel must flip the root card terminal, else the test doesn't exercise the backstop",
+    );
+    // The CLI registry lists it as a live backgrounded agent.
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![serde_json::json!({
+                "task_id": "task-root",
+                "task_type": "local_agent",
+                "description": "long-running background agent",
+            })],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+    // Turn finalisation wipes the turn-scoped liveness; the session map
+    // must carry the root across.
+    let _: () = app.with_turn_state_mut(|ts| {
+        ts.task_tool_use_ids.clear();
+        ts.alive_task_ids.clear();
+    });
+
+    let view = app.subagents_view();
+    assert_eq!(
+        view.len(),
+        1,
+        "backgrounded agent survives turn reset via the real producer path; got {view:?}",
+    );
+    assert_eq!(view[0].tool_use_id, "toolu_root");
+    assert_eq!(view[0].status, model::ToolCallStatus::InProgress);
+    assert_eq!(view[0].tail.len(), 1, "its live tool tail is preserved; got {:?}", view[0].tail);
 }
 
 /// Regression (2.1.204 local-agent streaming): a subagent's assistant
