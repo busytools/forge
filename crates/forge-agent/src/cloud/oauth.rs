@@ -88,33 +88,29 @@ pub fn snapshot_from_payload(
     })
 }
 
-/// Like [`snapshot_from_payload`] but maps a payload whose windows are
-/// all absent - the cold `{}` a base-url-override account's proxy
-/// returns before its first upstream request populates the rate-limit
-/// data - to an all-None snapshot instead of the "missing session
-/// window" error. That cold state must render as "n/a" bars, not a
-/// fetch error. A normal Anthropic 200 always carries `five_hour`, so
-/// [`snapshot_from_payload`]'s stricter gate still guards the default
-/// path; only base-url-override accounts route through here.
-pub fn snapshot_from_payload_allow_empty(
-    payload: super::oauth_usage::OauthUsage,
-) -> Result<UsageSnapshot, OauthFetchError> {
-    let all_windows_absent = payload.five_hour.is_none()
-        && payload.seven_day.is_none()
-        && payload.seven_day_opus.is_none()
-        && payload.seven_day_sonnet.is_none();
-    if all_windows_absent {
-        return Ok(UsageSnapshot {
-            source: UsageSourceKind::Oauth,
-            fetched_at: SystemTime::now(),
-            five_hour: None,
-            seven_day: None,
-            seven_day_opus: None,
-            seven_day_sonnet: None,
-            extra_usage: map_extra_usage(payload.extra_usage),
-        });
+/// Maps a payload to a snapshot with every window treated as
+/// independently optional, never requiring `five_hour`. This is the
+/// base-url path's mapper: an alternate-endpoint proxy emits each
+/// window on its own (`{}`, `{five_hour}`, `{seven_day}`,
+/// `{five_hour, seven_day}`), and a missing `five_hour` is a valid
+/// steady state - the cold start before the first upstream request,
+/// and the post-5h-reset window where the proxy drops the key
+/// entirely - not a malformed response. `{}` maps to all-None (n/a
+/// bars); an out-of-contract error-shaped 200 lands here as n/a too
+/// rather than erroring. Contrast [`snapshot_from_payload`], which
+/// requires `five_hour` and guards the default Anthropic path where a
+/// 200 without it signals response-shape drift. Infallible - there is
+/// no window this can reject.
+pub fn snapshot_from_payload_lenient(payload: super::oauth_usage::OauthUsage) -> UsageSnapshot {
+    UsageSnapshot {
+        source: UsageSourceKind::Oauth,
+        fetched_at: SystemTime::now(),
+        five_hour: map_window(payload.five_hour),
+        seven_day: map_window(payload.seven_day),
+        seven_day_opus: map_window(payload.seven_day_opus),
+        seven_day_sonnet: map_window(payload.seven_day_sonnet),
+        extra_usage: map_extra_usage(payload.extra_usage),
     }
-    snapshot_from_payload(payload)
 }
 
 fn map_window(payload: Option<super::oauth_usage::OauthUsageWindow>) -> Option<UsageWindow> {
@@ -145,12 +141,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn allow_empty_maps_empty_payload_to_all_none_snapshot() {
+    fn lenient_maps_seven_day_only_without_erroring() {
+        // Post-5h-reset steady state: the proxy drops the `five_hour`
+        // key entirely (serde skip) and sends only `seven_day`. That
+        // must map to a snapshot with five_hour None + seven_day Some,
+        // NOT a fetch error - the earlier all-absent-else-strict logic
+        // routed this to the strict mapper and flipped the account to a
+        // fetch error every 5h cycle.
+        let payload: crate::cloud::oauth_usage::OauthUsage =
+            serde_json::from_slice(br#"{"seven_day":{"utilization":10.0}}"#).expect("decode");
+        let snapshot = snapshot_from_payload_lenient(payload);
+        assert!(snapshot.five_hour.is_none());
+        assert_eq!(snapshot.seven_day.as_ref().map(|window| window.utilization), Some(10.0));
+    }
+
+    #[test]
+    fn lenient_maps_empty_payload_to_all_none_snapshot() {
         // A base-url account's proxy returns `{}` until warm; that must
         // become an all-None snapshot (n/a bars), not a fetch error.
         let snapshot =
-            snapshot_from_payload_allow_empty(crate::cloud::oauth_usage::OauthUsage::default())
-                .expect("empty payload is n/a, not an error");
+            snapshot_from_payload_lenient(crate::cloud::oauth_usage::OauthUsage::default());
         assert!(snapshot.five_hour.is_none());
         assert!(snapshot.seven_day.is_none());
         assert!(snapshot.seven_day_opus.is_none());
@@ -159,13 +169,14 @@ mod tests {
     }
 
     #[test]
-    fn allow_empty_still_maps_populated_payload_normally() {
+    fn lenient_maps_five_hour_only_populated() {
         let payload: crate::cloud::oauth_usage::OauthUsage = serde_json::from_slice(
             br#"{ "five_hour": { "utilization": 42.0, "resets_at": "2025-12-25T12:00:00.000Z" } }"#,
         )
         .expect("decode");
-        let snapshot = snapshot_from_payload_allow_empty(payload).expect("snapshot");
+        let snapshot = snapshot_from_payload_lenient(payload);
         assert_eq!(snapshot.five_hour.as_ref().map(|window| window.utilization), Some(42.0));
+        assert!(snapshot.seven_day.is_none());
     }
 
     #[test]

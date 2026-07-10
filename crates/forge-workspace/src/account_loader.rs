@@ -127,11 +127,12 @@ pub async fn run_account_loading(
 
         match probe_result {
             Ok(payload) => {
-                // A base-url proxy returns `{}` until warm; tolerate that
-                // as an all-None snapshot (n/a) rather than bailing the
-                // account through the retry cap.
+                // A base-url proxy emits each window independently (and
+                // omits `five_hour` cold or post-5h-reset); map leniently
+                // so a valid partial payload renders its present windows
+                // (n/a for the rest) instead of bailing the account.
                 let mapped = if base_url_override.is_some() {
-                    oauth::snapshot_from_payload_allow_empty(payload)
+                    Ok(oauth::snapshot_from_payload_lenient(payload))
                 } else {
                     oauth::snapshot_from_payload(payload)
                 };

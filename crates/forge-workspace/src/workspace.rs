@@ -1871,7 +1871,7 @@ impl Workspace {
             };
             let map_payload = |payload| {
                 if base_url_override.is_some() {
-                    forge_agent::cloud::oauth::snapshot_from_payload_allow_empty(payload)
+                    Ok(forge_agent::cloud::oauth::snapshot_from_payload_lenient(payload))
                 } else {
                     forge_agent::cloud::oauth::snapshot_from_payload(payload)
                 }
