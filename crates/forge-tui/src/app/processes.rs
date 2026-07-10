@@ -1406,4 +1406,68 @@ mod tests {
             coll.rows,
         );
     }
+
+    #[test]
+    fn collect_active_processes_does_not_enrich_bash_when_registry_drained_after_turn_reset() {
+        // Intersection gate: a stale session-map entry ALONE must NOT enrich.
+        // Same setup as the enriched-across-turn-reset sibling, but the
+        // registry (`background_tasks`) is drained (a killed task whose
+        // terminal task_updated never arrived). The still-running OS process
+        // must stay a plain Process row, never a phantom BashBackgrounded -
+        // `background_tasks` is the authoritative liveness gate.
+        use crate::app::{App, ChatMessage};
+
+        let mut app = App::test_default();
+
+        let mut bash = fake_tool_call_info(
+            "tu-bash",
+            "Bash",
+            json!({
+                "command": "sleep 60 && echo done",
+                "description": "Wait then print",
+                "run_in_background": true,
+            }),
+        );
+        bash.status = ToolCallStatus::Completed;
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(bash))],
+            None,
+        ));
+
+        // Session map still carries the mapping (survives turn reset), but the
+        // registry is drained - no local_bash entry to gate on.
+        app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
+
+        app.set_active_process_snapshot_for_test(ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![ProcessEntry {
+                pid: 4242,
+                parent_pid: 1,
+                name: "zsh".to_owned(),
+                command: "/bin/zsh -c -l eval 'sleep 60 && echo done' < /dev/null".to_owned(),
+                memory_bytes: 4 * 1024 * 1024,
+                started_at_unix: None,
+            }],
+        });
+
+        let _: () = app.with_turn_state_mut(|ts| {
+            ts.task_tool_use_ids.clear();
+            ts.alive_task_ids.clear();
+        });
+
+        let coll = collect_active_processes(&app);
+        assert!(
+            coll.rows.iter().all(|r| r.kind != ProcessKind::BashBackgrounded),
+            "stale session-map entry alone must not enrich a phantom row; got {:?}",
+            coll.rows,
+        );
+        assert_eq!(coll.rows.len(), 1, "the OS process still shows once; got {:?}", coll.rows);
+        assert_eq!(coll.rows[0].kind, ProcessKind::Process);
+        assert_eq!(
+            coll.rows[0].headline, "sleep 60 && echo done",
+            "unenriched row carries the raw command; got {:?}",
+            coll.rows,
+        );
+    }
 }
