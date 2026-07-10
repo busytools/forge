@@ -881,20 +881,15 @@ fn glyph_for_lifecycle(
     has_background_work: bool,
     spinner_glyph: char,
 ) -> (String, Color) {
-    // A live backgrounded task (bash / agent / workflow) outlives the turn
-    // that spawned it, so promote an otherwise-settled Idle session to the
-    // active spinner. Scoped to Idle only: Attention / AuthRequired / Failed
-    // keep their own glyph so a live task never masks a session that needs
-    // the user (pending prompt, login) or has died.
-    if has_background_work && matches!(lifecycle, SessionLifecycleState::Idle) {
+    // Spinner cases - an in-progress turn, or an otherwise-Idle session with
+    // a live backgrounded task - come from the shared session_shows_spinner
+    // predicate. The frame-tick gate keys off the same function, so the row
+    // glyph and the animation gate never disagree about what animates.
+    if crate::app::session::session_shows_spinner(lifecycle, has_background_work) {
         let color = if session_is_active { theme::RUST_ORANGE } else { Color::Reset };
         return (spinner_glyph.to_string(), color);
     }
     match lifecycle {
-        SessionLifecycleState::Running | SessionLifecycleState::Spawning => {
-            let color = if session_is_active { theme::RUST_ORANGE } else { Color::Reset };
-            (spinner_glyph.to_string(), color)
-        }
         SessionLifecycleState::Attention => ("△".to_owned(), theme::STATUS_WARNING),
         // Idle = "alive, no turn in progress". Use a filled bullet so
         // the row reads as occupied (the design spec calls for blank
@@ -914,6 +909,13 @@ fn glyph_for_lifecycle(
         SessionLifecycleState::Sleeping
         | SessionLifecycleState::Failed
         | SessionLifecycleState::LoggedOut => ("·".to_owned(), theme::DIM),
+        // session_shows_spinner returns true for Running / Spawning, so this
+        // arm is unreachable in practice; kept so the match stays exhaustive
+        // over the lifecycle enum, and renders the spinner if ever reached.
+        SessionLifecycleState::Running | SessionLifecycleState::Spawning => {
+            let color = if session_is_active { theme::RUST_ORANGE } else { Color::Reset };
+            (spinner_glyph.to_string(), color)
+        }
     }
 }
 

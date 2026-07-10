@@ -475,6 +475,18 @@ impl UiSession {
     }
 }
 
+/// Whether a session's Projects-pane row shows the activity spinner: an
+/// in-progress turn (`Running` / `Spawning`), or an otherwise-Idle session
+/// with a live backgrounded task. Attention / AuthRequired / Failed keep
+/// their own glyph, so the promotion is over the Idle bullet only. Shared
+/// by the row glyph (`glyph_for_lifecycle`) and the frame-tick gate
+/// (`any_background_activity`) so the two never disagree about what
+/// animates.
+pub fn session_shows_spinner(lifecycle: SessionLifecycleState, has_background_work: bool) -> bool {
+    matches!(lifecycle, SessionLifecycleState::Running | SessionLifecycleState::Spawning)
+        || (matches!(lifecycle, SessionLifecycleState::Idle) && has_background_work)
+}
+
 impl Default for UiSession {
     fn default() -> Self {
         // `Instant` has no `Default` impl, so the derive is replaced
