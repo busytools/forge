@@ -878,9 +878,11 @@ fn glyph_for_lifecycle(
     spinner_glyph: char,
 ) -> (String, Color) {
     // A live backgrounded task (bash / agent / workflow) outlives the turn
-    // that spawned it, so treat the session like an in-progress turn -
-    // keep the active spinner rather than settling to the idle bullet.
-    if has_background_work {
+    // that spawned it, so promote an otherwise-settled Idle session to the
+    // active spinner. Scoped to Idle only: Attention / AuthRequired / Failed
+    // keep their own glyph so a live task never masks a session that needs
+    // the user (pending prompt, login) or has died.
+    if has_background_work && matches!(lifecycle, SessionLifecycleState::Idle) {
         let color = if session_is_active { theme::RUST_ORANGE } else { Color::Reset };
         return (spinner_glyph.to_string(), color);
     }
@@ -2628,5 +2630,29 @@ mod tests {
             !row.chars().any(|c| frames.contains(&c)),
             "△ attention override wins over the background-work spinner; got: {row}"
         );
+    }
+
+    /// Background work promotes ONLY an Idle session to the spinner.
+    /// Attention / AuthRequired must keep their own glyph so a live task
+    /// never masks a session that needs the user (pending prompt / login).
+    #[test]
+    fn glyph_promotes_to_spinner_only_over_idle() {
+        use crate::app::session::SessionLifecycleState;
+
+        let (glyph, _) = glyph_for_lifecycle(SessionLifecycleState::Idle, false, true, 'X');
+        assert_eq!(glyph, "X", "Idle + background work shows the spinner");
+
+        let (glyph, _) = glyph_for_lifecycle(SessionLifecycleState::Idle, false, false, 'X');
+        assert_eq!(glyph, "\u{25cf}", "Idle + no background work keeps the bullet");
+
+        let (glyph, color) =
+            glyph_for_lifecycle(SessionLifecycleState::Attention, false, true, 'X');
+        assert_eq!(glyph, "\u{25b3}", "Attention keeps its triangle even with background work");
+        assert_eq!(color, theme::STATUS_WARNING);
+
+        let (glyph, color) =
+            glyph_for_lifecycle(SessionLifecycleState::AuthRequired, false, true, 'X');
+        assert_eq!(glyph, "\u{26a0}", "AuthRequired keeps its warning even with background work");
+        assert_eq!(color, theme::STATUS_WARNING);
     }
 }
