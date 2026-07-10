@@ -605,18 +605,10 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         append_gotify_section(lines, app, width);
     }
 
-    // BACKGROUND sits directly above PROCESSES: the CLI's
-    // authoritative background-task registry (full snapshot from
-    // `background_tasks_changed`), auto-hidden when empty. PROCESSES
-    // stays the heuristic OS-tree lens; a backgrounded bash can appear
-    // in both.
-    if !app.background_tasks().is_empty() {
-        lines.push(Line::default());
-        push_section_rule(lines, width);
-        lines.push(Line::default());
-        append_background_section(lines, app, width);
-    }
-
+    // PROCESSES is the single activity lens below SCHEDULES/GOTIFY:
+    // the OS process tree plus the CLI's authoritative backgrounded
+    // `local_bash` registry (agents render in SUBAGENTS, workflows in
+    // WORKFLOWS). Auto-hidden when nothing is active.
     let processes = collect_active_processes(app);
     if !processes.is_empty() {
         lines.push(Line::default());
@@ -2068,49 +2060,6 @@ fn truncate_or_pass(s: &str, max_chars: usize) -> String {
     out
 }
 
-/// Append the BACKGROUND section: the CLI's authoritative
-/// background-task snapshot, one row per task. Each row is the active
-/// orange spinner glyph + the task description + a right-justified dim
-/// `· <task_type>` tag naming the kind (`local_bash`, `agent`, ...).
-/// The caller gates on `app.background_tasks().is_empty()`; the
-/// snapshot empties out when the last task finishes, so the section
-/// disappears.
-fn append_background_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
-    let tasks = app.background_tasks();
-    if tasks.is_empty() {
-        return;
-    }
-
-    lines.push(Line::from(Span::styled(
-        " BACKGROUND".to_owned(),
-        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
-    )));
-    lines.push(Line::default());
-
-    let inner_width = usize::from(width);
-    let glyph = app.active_spinner_glyph();
-    for task in tasks {
-        let trailing_chrome = 3 /* " · " */ + task.task_type.chars().count();
-        let chrome = usize::from(PANE_PAD)
-            + 1   // spinner glyph
-            + 1   // space after glyph
-            + trailing_chrome
-            + usize::from(PANE_PAD); // right gutter
-        let budget = row_text_budget(inner_width, chrome);
-        let label = truncate_or_pass(&task.description, budget);
-        let pad = budget.saturating_sub(label.chars().count());
-        lines.push(Line::from(vec![
-            Span::raw(" ".repeat(usize::from(PANE_PAD))),
-            Span::styled(glyph.to_string(), Style::default().fg(theme::RUST_ORANGE)),
-            Span::raw(" ".to_owned()),
-            Span::styled(label, Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(" ".repeat(pad)),
-            Span::styled(" \u{00B7} ".to_owned(), Style::default().fg(theme::DIM)),
-            Span::styled(task.task_type.clone(), Style::default().fg(theme::DIM)),
-        ]));
-    }
-}
-
 /// Wrap `s` onto multiple lines so that each piece fits within
 /// `max_chars` columns. Breaks on whitespace where possible; falls
 /// back to hard-cut on long single tokens. Returns an empty `Vec`
@@ -2325,11 +2274,10 @@ fn glyph_and_style_for(process: &ProcessRow, active_glyph: char) -> (String, Col
                 )
             }
             ProcessKind::BashBackgrounded => (
-                // Wire-matched Bash - RUST_ORANGE spinner so the row
-                // stands out as "tracked work" against the dim
-                // spinners of generic OS processes. (#273 Task 8
-                // retired Monitor from PROCESSES, so this branch is
-                // exclusively Bash.)
+                // Backgrounded Bash - either an OS-matched wire row or a
+                // registry-fed synthetic row - in a RUST_ORANGE spinner so
+                // it stands out as "tracked work" against the dim spinners
+                // of generic OS processes.
                 active_glyph.to_string(),
                 theme::RUST_ORANGE,
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
@@ -2560,47 +2508,11 @@ mod tests {
     }
 
     #[test]
-    fn background_section_renders_rows_and_hides_when_empty() {
+    fn append_body_omits_background_section() {
+        // The standalone BACKGROUND section is gone: even a populated
+        // background_tasks snapshot never renders a BACKGROUND header.
         use crate::app::BackgroundTask;
         let mut app = App::test_default();
-
-        // Empty snapshot: the section function produces nothing.
-        let mut lines = Vec::new();
-        append_background_section(&mut lines, &app, 40);
-        assert!(lines.is_empty(), "empty snapshot renders no lines");
-
-        *app.background_tasks_mut() = vec![
-            BackgroundTask {
-                task_id: "b3cjfmhsq".to_owned(),
-                task_type: "local_bash".to_owned(),
-                description: "Print marker after 1s".to_owned(),
-            },
-            BackgroundTask {
-                task_id: "a7".to_owned(),
-                task_type: "agent".to_owned(),
-                description: "Audit the migration history".to_owned(),
-            },
-        ];
-        let mut lines = Vec::new();
-        append_background_section(&mut lines, &app, 40);
-        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
-        assert!(text.contains("BACKGROUND"), "section header renders: {text}");
-        assert!(text.contains("Print marker after 1s"), "first task description: {text}");
-        assert!(text.contains("local_bash"), "first task type tag: {text}");
-        assert!(text.contains("Audit the migration history"), "second task description: {text}");
-        assert!(text.contains("\u{00B7} agent"), "second task type tag: {text}");
-    }
-
-    #[test]
-    fn append_body_gates_background_section_on_non_empty_snapshot() {
-        use crate::app::BackgroundTask;
-        let mut app = App::test_default();
-
-        let mut lines = Vec::new();
-        append_body(&mut lines, &app, 60);
-        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
-        assert!(!text.contains("BACKGROUND"), "section absent with empty snapshot: {text}");
-
         *app.background_tasks_mut() = vec![BackgroundTask {
             task_id: "b1".to_owned(),
             task_type: "local_bash".to_owned(),
@@ -2609,8 +2521,133 @@ mod tests {
         let mut lines = Vec::new();
         append_body(&mut lines, &app, 60);
         let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
-        assert!(text.contains("BACKGROUND"), "section present with a task: {text}");
-        assert!(text.contains("Run the integration suite"), "task row renders: {text}");
+        assert!(!text.contains("BACKGROUND"), "BACKGROUND section removed: {text}");
+    }
+
+    #[test]
+    fn append_body_surfaces_turn_outlived_backgrounded_bash_under_processes() {
+        // A backgrounded Bash that outlived its spawning turn: the Bash is
+        // in the transcript, its session-scoped task_id mapping survives,
+        // the CLI registry still lists it, but turn_state is empty (turn
+        // finalised) and there's no process snapshot (the ~1 s scan hasn't
+        // caught it). It must still surface - under PROCESSES.
+        use crate::app::{BackgroundTask, ChatMessage, MessageBlock, MessageRole};
+        let mut app = App::test_default();
+        let mut bash = subagent_test_child_info("tu-bash", "Bash", "npm run build");
+        bash.raw_input =
+            Some(serde_json::json!({ "command": "npm run build", "run_in_background": true }));
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(bash))],
+            None,
+        ));
+        // Session-scoped mapping (from task_started) - turn_state is left
+        // empty to simulate a finalised turn.
+        app.insert_session_task_mapping("b1".to_owned(), "tu-bash".to_owned());
+        *app.background_tasks_mut() = vec![BackgroundTask {
+            task_id: "b1".to_owned(),
+            task_type: "local_bash".to_owned(),
+            description: "Run the integration suite".to_owned(),
+        }];
+        let mut lines = Vec::new();
+        append_body(&mut lines, &app, 60);
+        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("PROCESSES"), "PROCESSES section renders: {text}");
+        assert!(
+            text.contains("Run the integration suite"),
+            "bash row renders under PROCESSES: {text}"
+        );
+        assert!(text.contains("local_bash"), "task_type tag renders: {text}");
+        assert!(!text.contains("BACKGROUND"), "no BACKGROUND section: {text}");
+    }
+
+    #[test]
+    fn append_body_omits_backgrounded_agent_from_processes() {
+        // A backgrounded agent routes to SUBAGENTS, never a flat
+        // PROCESSES row - the feed filters to local_bash.
+        use crate::app::BackgroundTask;
+        let mut app = App::test_default();
+        *app.background_tasks_mut() = vec![BackgroundTask {
+            task_id: "a1".to_owned(),
+            task_type: "local_agent".to_owned(),
+            description: "Review conv-row animation".to_owned(),
+        }];
+        let mut lines = Vec::new();
+        append_body(&mut lines, &app, 60);
+        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(!text.contains("BACKGROUND"), "no BACKGROUND section: {text}");
+        assert!(
+            !text.contains("Review conv-row animation"),
+            "agent is not surfaced as a flat PROCESSES row: {text}"
+        );
+    }
+
+    #[test]
+    fn collect_processes_dedups_backgrounded_bash_to_exactly_one_row() {
+        // The same backgrounded bash is in the transcript (wire-alive), the
+        // OS snapshot (matching cmdline), and the CLI registry. It must
+        // render EXACTLY once - the enriched OS row - not doubled by the
+        // authoritative feed.
+        use crate::app::{BackgroundTask, ChatMessage, MessageBlock, MessageRole};
+        use forge_workspace::env::processes::{ProcessEntry, ProcessSnapshot};
+        let mut app = App::test_default();
+        let mut bash = subagent_test_child_info("tu-bash", "Bash", "cargo nextest run");
+        bash.raw_input = Some(serde_json::json!({
+            "command": "cargo nextest run",
+            "description": "Run unit tests",
+            "run_in_background": true,
+        }));
+        bash.status = crate::agent::model::ToolCallStatus::InProgress;
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(bash))],
+            None,
+        ));
+        app.insert_session_task_mapping("b1".to_owned(), "tu-bash".to_owned());
+        *app.background_tasks_mut() = vec![BackgroundTask {
+            task_id: "b1".to_owned(),
+            task_type: "local_bash".to_owned(),
+            description: "Run unit tests".to_owned(),
+        }];
+        app.set_active_process_snapshot_for_test(ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![ProcessEntry {
+                pid: 42,
+                parent_pid: 1,
+                name: "zsh".to_owned(),
+                command: "/bin/zsh -c -l eval 'cargo nextest run' < /dev/null".to_owned(),
+                memory_bytes: 32 * 1024 * 1024,
+                started_at_unix: None,
+            }],
+        });
+
+        let coll = crate::app::processes::collect_active_processes(&app);
+        let count = coll.rows.iter().filter(|row| row.headline == "Run unit tests").count();
+        assert_eq!(count, 1, "backgrounded bash renders exactly once; rows: {:?}", coll.rows);
+    }
+
+    #[test]
+    fn append_body_routes_backgrounded_workflow_to_workflows_not_processes() {
+        // A backgrounded local_workflow surfaces in WORKFLOWS (driven by
+        // its session-scoped WorkflowEntry), never as a flat PROCESSES row.
+        use crate::app::BackgroundTask;
+        let mut app = App::test_default();
+        app.upsert_workflow_from_tool_input("tu-wf", "nightly-audit".to_owned(), None);
+        *app.background_tasks_mut() = vec![BackgroundTask {
+            task_id: "wf1".to_owned(),
+            task_type: "local_workflow".to_owned(),
+            description: "nightly-audit run".to_owned(),
+        }];
+        let mut lines = Vec::new();
+        append_body(&mut lines, &app, 60);
+        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("WORKFLOWS"), "workflow renders in WORKFLOWS: {text}");
+        assert!(text.contains("nightly-audit"), "workflow name shows in WORKFLOWS: {text}");
+        assert!(!text.contains("BACKGROUND"), "no BACKGROUND section: {text}");
+        assert!(
+            !text.contains("nightly-audit run"),
+            "registry description not surfaced as a flat PROCESSES row: {text}"
+        );
     }
 
     #[test]

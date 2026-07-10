@@ -300,12 +300,27 @@ pub struct UiSession {
     /// `MonitorEntry::OUTPUT_TAIL_MAX` per entry.
     pub monitors: Vec<MonitorEntry>,
 
-    /// CLI-authoritative background-task snapshot surfaced as the
-    /// Inspector BACKGROUND section. Replaced wholesale on each
-    /// `background_tasks_changed` event; an empty snapshot clears it
-    /// and hides the section. Session-scoped because background tasks
-    /// outlive the turn that spawned them.
+    /// CLI-authoritative background-task snapshot. `local_bash` entries
+    /// feed the Inspector PROCESSES section (agents / workflows surface
+    /// in SUBAGENTS / WORKFLOWS). Replaced wholesale on each
+    /// `background_tasks_changed` event. Session-scoped because
+    /// background tasks outlive the turn that spawned them.
     pub background_tasks: Vec<BackgroundTask>,
+
+    /// Session-scoped `task_id` -> `tool_use_id`, mirroring
+    /// `SessionTurnState::task_tool_use_ids` but surviving turn
+    /// finalisation. Populated at `task_started` (when the mapping is
+    /// live), cleared at terminal `task_updated`. The turn-scoped copy is
+    /// wiped every turn-complete, so surfaces driven by the session-scoped
+    /// `background_tasks` registry - SUBAGENTS backgrounded-agent liveness
+    /// and the PROCESSES `local_bash` feed - resolve a task that outlived
+    /// its turn through this map instead. Both consumers INTERSECT it with
+    /// the registry (the authoritative gate), so a leaked entry (terminal
+    /// `task_updated` never arrived) is inert, never a phantom live row -
+    /// hence it is intentionally NOT turn-scoped and NOT pruned in
+    /// `background_tasks_changed` (task_started can precede a task's first
+    /// registry event, so pruning there would drop a just-started task).
+    pub session_task_tool_use_ids: std::collections::HashMap<String, String>,
 
     /// Pending time-based schedules (`ScheduleWakeup` + `CronCreate`)
     /// surfaced in the Inspector SCHEDULES section. Pruned by the
@@ -517,6 +532,7 @@ impl Default for UiSession {
             stop_hook_summary_expanded: std::collections::HashMap::default(),
             monitors: Vec::default(),
             background_tasks: Vec::default(),
+            session_task_tool_use_ids: std::collections::HashMap::default(),
             schedules: Vec::default(),
             workflows: Vec::default(),
             group_collapse_levels: std::collections::HashMap::default(),
