@@ -701,6 +701,12 @@ fn append_worker_tree_children(
             .map_or(SessionLifecycleState::Spawning, |s| s.lifecycle_state);
         let needs_attention = !is_focused
             && app.sessions.get(&worker.session_key).is_some_and(|b| !b.prompt_queue.is_empty());
+        // A worker running its own backgrounded task (e.g. a `gh run watch`)
+        // spins its row like a lead does - same Idle-only promotion.
+        let has_background_work = app
+            .sessions
+            .get(&worker.session_key)
+            .is_some_and(crate::app::session::UiSession::has_live_background_work);
         let (glyph, glyph_color) = if needs_attention {
             ("\u{25b3}".to_owned(), theme::STATUS_WARNING)
         } else if matches!(worker.status, forge_primitives::WorkerLiveness::Failed) {
@@ -709,9 +715,7 @@ fn append_worker_tree_children(
             // human-readable reason (set by transition_worker_to_failed).
             ("\u{2715}".to_owned(), theme::STATUS_ERROR)
         } else {
-            // Workers spin off their own lifecycle; background-work
-            // promotion is a project-lead-row concern only.
-            glyph_for_lifecycle(lifecycle, is_focused, false, spinner_glyph)
+            glyph_for_lifecycle(lifecycle, is_focused, has_background_work, spinner_glyph)
         };
 
         // Left-indent (1) + `│  ` (3) so the worker's tree connector
@@ -2654,5 +2658,67 @@ mod tests {
             glyph_for_lifecycle(SessionLifecycleState::AuthRequired, false, true, 'X');
         assert_eq!(glyph, "\u{26a0}", "AuthRequired keeps its warning even with background work");
         assert_eq!(color, theme::STATUS_WARNING);
+    }
+
+    /// A worker whose own session is Idle but has a live backgrounded task
+    /// spins its row like a lead, via the same Idle-only promotion.
+    #[test]
+    fn worker_row_spins_on_its_own_background_work() {
+        use crate::app::BackgroundTask;
+        use crate::app::session::{SessionLifecycleState, UiSession};
+        use forge_workspace::{ProjectKey, SessionKey, WorkerEntry};
+        use std::time::SystemTime;
+
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("workspace stub");
+        let project_key = ProjectKey::new_for_test("bg-worker-project");
+        let worker_session_key = SessionKey::from_session_id("worker-bg");
+        let entry = WorkerEntry {
+            label: "runner".into(),
+            charter: "bg-work-test".into(),
+            session_key: worker_session_key.clone(),
+            status: forge_primitives::WorkerLiveness::Running,
+            spawned_at: SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead".into(),
+            needs_tag: false,
+            is_git_repo_at_spawn: false,
+            diagnostic: None,
+            kick: None,
+        };
+        workspace.insert_live_worker(&project_key, entry);
+
+        let mut worker_session = UiSession::new(worker_session_key.clone());
+        worker_session.lifecycle_state = SessionLifecycleState::Idle;
+        worker_session.background_tasks.push(BackgroundTask {
+            task_id: "t1".to_owned(),
+            task_type: "local_bash".to_owned(),
+            description: "gh run watch".to_owned(),
+        });
+        app.sessions.insert(worker_session_key, worker_session);
+
+        let project = ProjectView::new_for_test(
+            project_key,
+            "bg-worker-project",
+            "/tmp/bg-worker-project",
+            Vec::new(),
+        );
+        let area = Rect { x: 0, y: 0, width: 44, height: 20 };
+        let spinner = '\u{280B}';
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_worker_tree_children(&mut lines, area, &mut app, &project, spinner);
+
+        let row = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .find(|l| l.contains("runner"))
+            .expect("worker row renders");
+        assert!(
+            row.contains(spinner),
+            "an Idle worker with a live background task must spin its row; got: {row}"
+        );
+        assert!(
+            !row.contains('\u{25cf}'),
+            "worker with background work must not show the idle bullet; got: {row}"
+        );
     }
 }
