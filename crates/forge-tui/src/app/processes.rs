@@ -560,14 +560,20 @@ fn sort_siblings_inplace(
     let sort_mem = |e: &ProcessEntry| -> u64 {
         subtree_totals.and_then(|m| m.get(&e.pid).copied()).unwrap_or(e.memory_bytes)
     };
-    // 0 = wire-matched work, 1 = MCP-server infra, 2 = generic; lower pins first.
+    // Mirror build_row_for_entry's kind arms so sort tier and render kind never
+    // disagree: matched Bash renders BashBackgrounded (0); a matched Monitor
+    // renders generic (2 - its authoritative surface is the MONITORS section);
+    // otherwise MCP-server infra (1) or unrecognized generic (2).
     let tier = |e: &ProcessEntry| -> u8 {
-        if is_matched_entry(e, wire_alive) {
-            0
-        } else if classify_known_infra(&e.command).is_some() {
-            1
-        } else {
-            2
+        let matched = wire_alive.iter().copied().find(|tc| {
+            let cmd = read_str_field(tc.raw_input.as_ref(), "command");
+            !cmd.is_empty() && process_cmdline_matches_tool_input(&e.command, cmd)
+        });
+        match matched {
+            Some(tc) if is_monitor_tool_name(&tc.sdk_tool_name) => 2,
+            Some(tc) if is_execute_tool_name(&tc.sdk_tool_name) => 0,
+            _ if classify_known_infra(&e.command).is_some() => 1,
+            _ => 2,
         }
     };
     entries.sort_by(|a, b| {
@@ -576,17 +582,6 @@ fn sort_siblings_inplace(
             .then_with(|| sort_mem(b).cmp(&sort_mem(a)))
             .then_with(|| a.pid.cmp(&b.pid))
     });
-}
-
-/// True when `entry`'s cmdline substring-matches any alive wire
-/// tool call's `command` field. Used by [`sort_siblings_inplace`]
-/// to pin matched rows; the actual kind/glyph decision happens in
-/// [`build_row_for_entry`].
-fn is_matched_entry(entry: &ProcessEntry, wire_alive: &[&ToolCallInfo]) -> bool {
-    wire_alive.iter().any(|tc| {
-        let cmd = read_str_field(tc.raw_input.as_ref(), "command");
-        !cmd.is_empty() && process_cmdline_matches_tool_input(&entry.command, cmd)
-    })
 }
 
 /// OS process matched to a wire-tracked backgrounded `Bash`. Headline
@@ -1173,6 +1168,39 @@ mod tests {
         let rows = rows_from_os_snapshot(&snapshot, &[]);
         assert_eq!(rows[0].headline, "node a.mjs", "lower PID first on equal memory");
         assert_eq!(rows[1].headline, "node b.mjs");
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_monitor_match_sorts_in_generic_tier_below_mcp() {
+        // A Monitor match renders as a generic Process row, so the sort tier
+        // must treat it as generic - not pin it to the matched-work tier the
+        // way a Bash match does. Otherwise a monitored process sits above
+        // MCP-server infra while rendering dim/generic (tier vs render
+        // disagreement). The MCP server must outrank the Monitor-matched row.
+        let mon = fake_tool_call_info(
+            "toolu_mon",
+            "Monitor",
+            json!({ "command": "tail -F /var/log/app.log", "persistent": true }),
+        );
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                // Monitor-matched, light.
+                fake_entry(100, "tail", "tail -F /var/log/app.log", 8 * 1024 * 1024),
+                // MCP server, heavier.
+                fake_entry(200, "npm", "npm exec @upstash/context7-mcp", 200 * 1024 * 1024),
+            ],
+        };
+        let rows = rows_from_os_snapshot(&snapshot, &[&mon]);
+        let mcp_idx = rows.iter().position(|r| r.kind == ProcessKind::McpServer).expect("mcp row");
+        let mon_idx = rows
+            .iter()
+            .position(|r| r.kind == ProcessKind::Process)
+            .expect("monitor-matched generic row");
+        assert!(
+            mcp_idx < mon_idx,
+            "MCP server must outrank a Monitor-matched generic row; got {rows:?}"
+        );
     }
 
     #[test]
