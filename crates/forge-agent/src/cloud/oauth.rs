@@ -59,11 +59,6 @@ impl From<super::oauth_usage::OauthUsageError> for OauthFetchError {
     }
 }
 
-pub async fn fetch_snapshot(conn: &crate::AgentHandle) -> Result<UsageSnapshot, OauthFetchError> {
-    let payload = conn.oauth_usage().await?;
-    snapshot_from_payload(payload)
-}
-
 /// Map a fetched [`OauthUsage`](super::oauth_usage::OauthUsage)
 /// payload into the TUI-facing [`UsageSnapshot`]. Exposed so the
 /// workspace facade can pump the payload through this same mapping

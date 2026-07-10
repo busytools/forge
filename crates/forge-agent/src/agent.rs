@@ -74,13 +74,6 @@ impl AgentHandle {
         self.bridge.write_settings_document(target, document)
     }
 
-    pub async fn oauth_usage(
-        &self,
-    ) -> Result<crate::cloud::oauth_usage::OauthUsage, crate::cloud::oauth_usage::OauthUsageError>
-    {
-        self.bridge.oauth_usage().await
-    }
-
     /// Returns a clone of the bridge's bound forge-account
     /// `display_name` (when forge-workspace picked one). Used by
     /// the connect-flow to emit a `ForgeAccountIdentityReady`

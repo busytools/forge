@@ -820,13 +820,6 @@ impl ForgeSdkBridge {
     ) -> Result<(), forge_sdk::Error> {
         crate::userdata::settings::write_settings_document(&self.inner.config_dir, target, document)
     }
-
-    pub(crate) async fn oauth_usage(
-        &self,
-    ) -> Result<crate::cloud::oauth_usage::OauthUsage, crate::cloud::oauth_usage::OauthUsageError>
-    {
-        crate::cloud::oauth_usage::oauth_usage(&self.inner.config_dir).await
-    }
 }
 
 #[cfg(test)]

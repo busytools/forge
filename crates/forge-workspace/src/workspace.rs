@@ -4391,23 +4391,6 @@ impl Workspace {
         Some(handle.config_dir())
     }
 
-    /// Fetch the OAuth usage payload via the bridge bound to `key`.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` with a human-readable message when no agent is
-    /// registered for `key`; otherwise propagates the bridge's
-    /// `OauthUsageError`.
-    pub async fn oauth_usage(
-        &self,
-        key: &SessionKey,
-    ) -> Result<forge_agent::cloud::oauth_usage::OauthUsage, String> {
-        let handle = self
-            .agent_handle_for(key)
-            .ok_or_else(|| "Bridge connection required for OAuth usage fetch.".to_owned())?;
-        handle.oauth_usage().await.map_err(|err| err.to_string())
-    }
-
     /// OS PID of the `claude` subprocess bound to `key`. Returns
     /// `None` when the session has no live client (pre-spawn /
     /// post-disconnect / synthetic spawn bucket). The PID is stable
