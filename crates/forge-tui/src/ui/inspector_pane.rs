@@ -2274,11 +2274,10 @@ fn glyph_and_style_for(process: &ProcessRow, active_glyph: char) -> (String, Col
                 )
             }
             ProcessKind::BashBackgrounded => (
-                // Wire-matched Bash - RUST_ORANGE spinner so the row
-                // stands out as "tracked work" against the dim
-                // spinners of generic OS processes. (#273 Task 8
-                // retired Monitor from PROCESSES, so this branch is
-                // exclusively Bash.)
+                // Backgrounded Bash - either an OS-matched wire row or a
+                // registry-fed synthetic row - in a RUST_ORANGE spinner so
+                // it stands out as "tracked work" against the dim spinners
+                // of generic OS processes.
                 active_glyph.to_string(),
                 theme::RUST_ORANGE,
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD),

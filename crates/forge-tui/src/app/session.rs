@@ -314,7 +314,12 @@ pub struct UiSession {
     /// wiped every turn-complete, so surfaces driven by the session-scoped
     /// `background_tasks` registry - SUBAGENTS backgrounded-agent liveness
     /// and the PROCESSES `local_bash` feed - resolve a task that outlived
-    /// its turn through this map instead.
+    /// its turn through this map instead. Both consumers INTERSECT it with
+    /// the registry (the authoritative gate), so a leaked entry (terminal
+    /// `task_updated` never arrived) is inert, never a phantom live row -
+    /// hence it is intentionally NOT turn-scoped and NOT pruned in
+    /// `background_tasks_changed` (task_started can precede a task's first
+    /// registry event, so pruning there would drop a just-started task).
     pub session_task_tool_use_ids: std::collections::HashMap<String, String>,
 
     /// Pending time-based schedules (`ScheduleWakeup` + `CronCreate`)

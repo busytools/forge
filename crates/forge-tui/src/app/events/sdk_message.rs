@@ -1423,7 +1423,11 @@ fn handle_background_tasks_changed(app: &mut App, msg: Message) {
     }
     // Drift breadcrumb (Hard Rule #16): every kind must route to a section
     // (local_bash -> PROCESSES; agent/local_agent -> SUBAGENTS;
-    // local_workflow/workflow -> WORKFLOWS). An unrecognised kind renders
+    // local_workflow/workflow -> WORKFLOWS via the tool-call-driven
+    // WorkflowEntry, which - unlike bash/agents - only goes terminal on
+    // workflow_progress `done` / terminal task_updated, never the
+    // backgrounding sentinel, so a registered workflow can't false-terminal
+    // and needs no registry backstop). An unrecognised kind renders
     // nowhere - warn so a renamed CLI kind is caught rather than silent.
     for task in &parsed {
         if !matches!(

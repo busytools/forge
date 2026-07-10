@@ -7660,6 +7660,37 @@ mod tests {
         );
     }
 
+    /// Locks the intersection design: the session map alone must NOT keep a
+    /// root alive - the `background_tasks` registry is the authoritative
+    /// gate. A terminal-status root with a session-map entry but an EMPTY
+    /// registry (and wiped turn state) auto-clears. Guards against a future
+    /// refactor dropping the registry gate (which would resurrect stale
+    /// leaked map entries as phantom live rows).
+    #[test]
+    fn subagents_view_session_map_without_registry_does_not_keep_root_alive() {
+        let mut app = App::test_default();
+        let root = make_subagent_root_tc(
+            "tu-root-gate",
+            "Explore",
+            "finished agent",
+            model::ToolCallStatus::Completed,
+        );
+        push_subagent_session(&mut app, root, Vec::new());
+        // Map entry present (e.g. a leaked mapping), but the registry is
+        // empty and the turn-scoped liveness is wiped.
+        app.insert_session_task_mapping("task-gate".to_owned(), "tu-root-gate".to_owned());
+        let _: () = app.with_turn_state_mut(|ts| {
+            ts.task_tool_use_ids.clear();
+            ts.alive_task_ids.clear();
+        });
+
+        assert!(
+            app.subagents_view().is_empty(),
+            "a session-map entry alone (no registry gate) must not keep a terminal root alive; got {:?}",
+            app.subagents_view(),
+        );
+    }
+
     /// A freshly-dispatched root sits at `Pending` (queued `○`) until the
     /// CLI reports progress. The liveness promotion is only for a
     /// backgrounded root whose sentinel flipped it terminal - it must NOT
