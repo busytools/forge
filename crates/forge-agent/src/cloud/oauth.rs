@@ -108,6 +108,22 @@ pub fn snapshot_from_payload_lenient(payload: super::oauth_usage::OauthUsage) ->
     }
 }
 
+/// Map a probe payload to a snapshot, picking the mapper the probe
+/// plan calls for: a base-url account maps leniently (each window
+/// independent, never erroring), a keychain account maps strictly (a
+/// 200 must carry the five-hour window). The loader and poller share
+/// this so their base-url-vs-keychain mapping never drifts apart.
+pub fn map_probe_snapshot(
+    is_base_url: bool,
+    payload: super::oauth_usage::OauthUsage,
+) -> Result<UsageSnapshot, OauthFetchError> {
+    if is_base_url {
+        Ok(snapshot_from_payload_lenient(payload))
+    } else {
+        snapshot_from_payload(payload)
+    }
+}
+
 fn map_window(payload: Option<super::oauth_usage::OauthUsageWindow>) -> Option<UsageWindow> {
     let payload = payload?;
     let utilization = payload.utilization?;
@@ -134,6 +150,22 @@ fn map_extra_usage(payload: Option<super::oauth_usage::OauthExtraUsage>) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn map_probe_snapshot_routes_by_plan() {
+        // The seven-day-only shape (post-5h-reset steady state) is valid
+        // on the base-url path but not the keychain path.
+        let seven_day_only = || -> crate::cloud::oauth_usage::OauthUsage {
+            serde_json::from_slice(br#"{"seven_day":{"utilization":10.0}}"#).expect("decode")
+        };
+        let lenient = map_probe_snapshot(true, seven_day_only()).expect("base-url maps leniently");
+        assert!(lenient.five_hour.is_none());
+        assert_eq!(lenient.seven_day.as_ref().map(|window| window.utilization), Some(10.0));
+        assert!(
+            map_probe_snapshot(false, seven_day_only()).is_err(),
+            "keychain path still requires five_hour",
+        );
+    }
 
     #[test]
     fn lenient_maps_seven_day_only_without_erroring() {

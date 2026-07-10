@@ -1875,33 +1875,28 @@ impl Workspace {
                     forge_agent::cloud::oauth_usage::oauth_usage(&dir).await
                 }
             };
-            let map_payload = |payload| {
-                if is_base_url {
-                    Ok(forge_agent::cloud::oauth::snapshot_from_payload_lenient(payload))
-                } else {
-                    forge_agent::cloud::oauth::snapshot_from_payload(payload)
-                }
-            };
             match fetch_result {
-                Ok(payload) => match map_payload(payload) {
-                    Ok(snapshot) => {
-                        self.accounts.lock().set_usage(&key, snapshot);
-                        any_success = true;
+                Ok(payload) => {
+                    match forge_agent::cloud::oauth::map_probe_snapshot(is_base_url, payload) {
+                        Ok(snapshot) => {
+                            self.accounts.lock().set_usage(&key, snapshot);
+                            any_success = true;
+                        }
+                        Err(err) => {
+                            self.accounts.lock().set_last_error(
+                                &key,
+                                crate::account::UsageFetchStatus::Other,
+                                None,
+                            );
+                            tracing::debug!(
+                                target: "forge_workspace::account",
+                                account = %key.0,
+                                error = ?err,
+                                "usage_poll snapshot mapping failed",
+                            );
+                        }
                     }
-                    Err(err) => {
-                        self.accounts.lock().set_last_error(
-                            &key,
-                            crate::account::UsageFetchStatus::Other,
-                            None,
-                        );
-                        tracing::debug!(
-                            target: "forge_workspace::account",
-                            account = %key.0,
-                            error = ?err,
-                            "usage_poll snapshot mapping failed",
-                        );
-                    }
-                },
+                }
                 Err(err) => {
                     let status = classify_oauth_usage_error(&err);
                     // Pull the server-provided Retry-After out of the
@@ -4442,7 +4437,7 @@ impl Workspace {
 /// transport failures (`Network`), so the TUI's bottom-panel hint
 /// can tell the user something specific rather than a generic
 /// "fetch error".
-fn classify_oauth_usage_error(
+pub(crate) fn classify_oauth_usage_error(
     err: &forge_primitives::usage::oauth::OauthUsageError,
 ) -> account::UsageFetchStatus {
     use account::UsageFetchStatus;
