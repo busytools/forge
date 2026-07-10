@@ -210,7 +210,9 @@ fn collect_descendants(
 /// through unchanged at the call site).
 pub fn extract_inner_command(cmdline: &str) -> Option<String> {
     let after_eval = cmdline.split_once("eval '")?.1;
-    let inner = after_eval.split_once("' < /dev/null")?.0;
+    // Terminate at the OUTERMOST `' < /dev/null` (the eval close-quote) so a
+    // command that itself contains that redirect doesn't cut off early.
+    let inner = after_eval.rsplit_once("' < /dev/null")?.0;
     // The wrapper re-escapes each `'` as the POSIX sequence `'"'"'`; reverse it
     // so a single-quote command still matches its wire `raw_input.command`.
     Some(inner.trim().replace(r#"'"'"'"#, "'"))
@@ -418,6 +420,18 @@ mod tests {
             extract_inner_command(SINGLE_QUOTE_WRAPPER).as_deref(),
             Some("echo 'sq-marker'; sleep 40")
         );
+    }
+
+    #[test]
+    fn extract_inner_command_terminates_at_outermost_redirect() {
+        // A command that itself contains `' < /dev/null` must not terminate the
+        // unwrap early: the real terminator is the OUTERMOST occurrence (the
+        // eval close-quote), so unwrapping splits on the last one.
+        let wrapper = format!(
+            "/bin/zsh -c source /x/snap.sh 2>/dev/null || true && eval '{}' < /dev/null && pwd -P >| /tmp/claude-x-cwd",
+            r#"echo '"'"'hi'"'"' < /dev/null"#
+        );
+        assert_eq!(extract_inner_command(&wrapper).as_deref(), Some("echo 'hi' < /dev/null"));
     }
 
     #[test]
