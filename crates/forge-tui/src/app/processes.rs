@@ -1158,6 +1158,24 @@ mod tests {
     }
 
     #[test]
+    fn rows_from_os_snapshot_tie_breaks_equal_memory_same_tier_by_pid() {
+        // Two same-tier (generic) roots with IDENTICAL memory must order by
+        // PID ascending - the documented cross-frame determinism guarantee.
+        // Input is reversed vs PID order so a stable sort without the PID
+        // tie-break would leave "node b.mjs" first.
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                fake_entry(200, "node", "node b.mjs", 64 * 1024 * 1024),
+                fake_entry(100, "node", "node a.mjs", 64 * 1024 * 1024),
+            ],
+        };
+        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        assert_eq!(rows[0].headline, "node a.mjs", "lower PID first on equal memory");
+        assert_eq!(rows[1].headline, "node b.mjs");
+    }
+
+    #[test]
     fn rows_from_os_snapshot_keeps_pinned_above_heavier_unpinned() {
         // Pinned (matched) row stays on top even when an unpinned
         // sibling has more memory.
