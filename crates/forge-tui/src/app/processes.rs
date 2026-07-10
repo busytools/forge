@@ -488,7 +488,10 @@ fn overflow_row(hidden: usize, depth: u8, ancestor_has_more: Vec<bool>) -> Proce
 /// cmdline, if any. Shared by [`build_row_for_entry`] and the tier in
 /// `sort_siblings_inplace` so the two never classify the same match
 /// differently.
-fn wire_match<'a>(entry: &ProcessEntry, wire_alive: &[&'a ToolCallInfo]) -> Option<&'a ToolCallInfo> {
+fn wire_match<'a>(
+    entry: &ProcessEntry,
+    wire_alive: &[&'a ToolCallInfo],
+) -> Option<&'a ToolCallInfo> {
     wire_alive.iter().copied().find(|tc| {
         let cmd = read_str_field(tc.raw_input.as_ref(), "command");
         !cmd.is_empty() && process_cmdline_matches_tool_input(&entry.command, cmd)
@@ -1687,6 +1690,59 @@ mod tests {
             bash_idx < mcp_idx,
             "backgrounded bash must sort above MCP server; got {:?}",
             coll.rows,
+        );
+    }
+
+    #[test]
+    fn collect_active_processes_synthetic_bash_survives_the_row_cap() {
+        // Synthetic local_bash rows LEAD (the old truncate-reserve is gone), so
+        // with more OS rows than the cap the leading synthetic bash must still
+        // survive the truncation. Locks that ordering invariant in.
+        use crate::app::{App, ChatMessage};
+
+        let mut app = App::test_default();
+
+        // A resolvable backgrounded bash the OS scan did NOT catch.
+        let bash = fake_tool_call_info(
+            "tu-bash",
+            "Bash",
+            json!({ "command": "deploy.sh", "description": "Deploy", "run_in_background": true }),
+        );
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(bash))],
+            None,
+        ));
+        app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
+        *app.background_tasks_mut() = vec![BackgroundTask {
+            task_id: "task-bash".to_owned(),
+            task_type: "local_bash".to_owned(),
+            description: "Deploy".to_owned(),
+        }];
+
+        // More generic OS roots than PROCESSES_MAX, none matching the bash.
+        let processes = (0..60u32)
+            .map(|i| ProcessEntry {
+                pid: 1000 + i,
+                parent_pid: 1,
+                name: "worker".to_owned(),
+                command: format!("worker{i} --serve"),
+                memory_bytes: 10 * 1024 * 1024,
+                started_at_unix: None,
+            })
+            .collect();
+        app.set_active_process_snapshot_for_test(ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes,
+        });
+
+        let coll = collect_active_processes(&app);
+        assert_eq!(coll.rows.len(), PROCESSES_MAX, "capped at the sanity max");
+        assert_eq!(
+            coll.rows[0].kind,
+            ProcessKind::BashBackgrounded,
+            "leading synthetic bash survives the cap; got {:?}",
+            coll.rows[0],
         );
     }
 }
