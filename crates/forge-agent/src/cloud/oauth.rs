@@ -3,60 +3,14 @@ use std::time::SystemTime;
 use crate::cloud::time::parse_timestamp_value;
 use crate::cloud::{ExtraUsage, UsageSnapshot, UsageSourceKind, UsageWindow};
 
+/// Why a probe payload could not be mapped to a [`UsageSnapshot`].
+/// Only [`snapshot_from_payload`] produces this (a keychain 200 that
+/// omits the session window); the base-url path maps leniently and
+/// never fails. Callers log it and back off - they don't branch on a
+/// cause - so a single message-carrying variant is all that's needed.
 #[derive(Debug)]
 pub enum OauthFetchError {
-    Unavailable(String),
-    Unauthorized(String),
     Failed(String),
-}
-
-impl OauthFetchError {
-    pub fn should_fallback_to_cli(&self) -> bool {
-        matches!(self, Self::Unavailable(_) | Self::Unauthorized(_))
-    }
-
-    pub fn into_message(self) -> String {
-        match self {
-            Self::Unavailable(message) | Self::Unauthorized(message) | Self::Failed(message) => {
-                message
-            }
-        }
-    }
-}
-
-impl From<super::oauth_usage::OauthUsageError> for OauthFetchError {
-    fn from(error: super::oauth_usage::OauthUsageError) -> Self {
-        use super::oauth_usage::OauthUsageError;
-        match error {
-            OauthUsageError::NoCredentials => Self::Unavailable(
-                "No Claude OAuth credentials found. Run `claude auth login` in a terminal.".to_owned(),
-            ),
-            OauthUsageError::Expired => Self::Unavailable(
-                "Claude OAuth credentials expired. Run `claude auth login` in a terminal to refresh them.".to_owned(),
-            ),
-            OauthUsageError::Unauthorized(_) => Self::Unauthorized(
-                "Claude OAuth usage request was rejected. Run `claude auth login` in a terminal to refresh credentials."
-                    .to_owned(),
-            ),
-            OauthUsageError::HttpStatus(status, suffix) => {
-                Self::Failed(format!("Claude OAuth usage request failed with HTTP {status}{suffix}"))
-            }
-            OauthUsageError::RateLimited { retry_after } => {
-                let suffix = retry_after
-                    .map(|d| format!(" (retry_after={}s)", d.as_secs()))
-                    .unwrap_or_default();
-                Self::Failed(format!(
-                    "Claude OAuth usage request was rate-limited (HTTP 429){suffix}"
-                ))
-            }
-            OauthUsageError::Network(message) => {
-                Self::Failed(format!("Claude OAuth network error: {message}"))
-            }
-            OauthUsageError::Decode(message) => {
-                Self::Failed(format!("Failed to decode Claude OAuth usage response: {message}"))
-            }
-        }
-    }
 }
 
 /// Map a fetched [`OauthUsage`](super::oauth_usage::OauthUsage)
