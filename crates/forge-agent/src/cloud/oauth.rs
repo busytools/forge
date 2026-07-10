@@ -88,6 +88,35 @@ pub fn snapshot_from_payload(
     })
 }
 
+/// Like [`snapshot_from_payload`] but maps a payload whose windows are
+/// all absent - the cold `{}` a base-url-override account's proxy
+/// returns before its first upstream request populates the rate-limit
+/// data - to an all-None snapshot instead of the "missing session
+/// window" error. That cold state must render as "n/a" bars, not a
+/// fetch error. A normal Anthropic 200 always carries `five_hour`, so
+/// [`snapshot_from_payload`]'s stricter gate still guards the default
+/// path; only base-url-override accounts route through here.
+pub fn snapshot_from_payload_allow_empty(
+    payload: super::oauth_usage::OauthUsage,
+) -> Result<UsageSnapshot, OauthFetchError> {
+    let all_windows_absent = payload.five_hour.is_none()
+        && payload.seven_day.is_none()
+        && payload.seven_day_opus.is_none()
+        && payload.seven_day_sonnet.is_none();
+    if all_windows_absent {
+        return Ok(UsageSnapshot {
+            source: UsageSourceKind::Oauth,
+            fetched_at: SystemTime::now(),
+            five_hour: None,
+            seven_day: None,
+            seven_day_opus: None,
+            seven_day_sonnet: None,
+            extra_usage: map_extra_usage(payload.extra_usage),
+        });
+    }
+    snapshot_from_payload(payload)
+}
+
 fn map_window(payload: Option<super::oauth_usage::OauthUsageWindow>) -> Option<UsageWindow> {
     let payload = payload?;
     let utilization = payload.utilization?;
@@ -114,6 +143,30 @@ fn map_extra_usage(payload: Option<super::oauth_usage::OauthExtraUsage>) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn allow_empty_maps_empty_payload_to_all_none_snapshot() {
+        // A base-url account's proxy returns `{}` until warm; that must
+        // become an all-None snapshot (n/a bars), not a fetch error.
+        let snapshot =
+            snapshot_from_payload_allow_empty(crate::cloud::oauth_usage::OauthUsage::default())
+                .expect("empty payload is n/a, not an error");
+        assert!(snapshot.five_hour.is_none());
+        assert!(snapshot.seven_day.is_none());
+        assert!(snapshot.seven_day_opus.is_none());
+        assert!(snapshot.seven_day_sonnet.is_none());
+        assert_eq!(snapshot.source, UsageSourceKind::Oauth);
+    }
+
+    #[test]
+    fn allow_empty_still_maps_populated_payload_normally() {
+        let payload: crate::cloud::oauth_usage::OauthUsage = serde_json::from_slice(
+            br#"{ "five_hour": { "utilization": 42.0, "resets_at": "2025-12-25T12:00:00.000Z" } }"#,
+        )
+        .expect("decode");
+        let snapshot = snapshot_from_payload_allow_empty(payload).expect("snapshot");
+        assert_eq!(snapshot.five_hour.as_ref().map(|window| window.utilization), Some(42.0));
+    }
 
     #[test]
     fn maps_sparse_oauth_payload() {

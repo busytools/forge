@@ -104,14 +104,38 @@ pub async fn run_account_loading(
             // Workspace dropped during shutdown; exit cleanly.
             return;
         };
-        let probe_result = match oauth_credentials::load_oauth_credentials(&config_dir) {
-            Some(creds) => oauth_usage::probe(&creds).await,
-            None => Err(OauthUsageError::NoCredentials),
+        // A base-url-override account (`ANTHROPIC_BASE_URL` in
+        // `[accounts.env]`) probes its own endpoint with the env
+        // bearer, skipping the keychain (it has no keychain entry).
+        // Normal accounts keep the keychain + default host.
+        let account_env =
+            workspace.account_states().lock().env(&account_key).cloned().unwrap_or_default();
+        let base_url_override = oauth_usage::base_url_override(&account_env);
+        let probe_result = match &base_url_override {
+            Some((base_url, bearer)) => {
+                let creds = oauth_credentials::OauthCredentials {
+                    access_token: bearer.clone(),
+                    expires_at: None,
+                };
+                oauth_usage::probe(&creds, Some(base_url)).await
+            }
+            None => match oauth_credentials::load_oauth_credentials(&config_dir) {
+                Some(creds) => oauth_usage::probe(&creds, None).await,
+                None => Err(OauthUsageError::NoCredentials),
+            },
         };
 
         match probe_result {
             Ok(payload) => {
-                let snapshot = match oauth::snapshot_from_payload(payload) {
+                // A base-url proxy returns `{}` until warm; tolerate that
+                // as an all-None snapshot (n/a) rather than bailing the
+                // account through the retry cap.
+                let mapped = if base_url_override.is_some() {
+                    oauth::snapshot_from_payload_allow_empty(payload)
+                } else {
+                    oauth::snapshot_from_payload(payload)
+                };
+                let snapshot = match mapped {
                     Ok(s) => s,
                     Err(err) => {
                         tracing::warn!(

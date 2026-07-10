@@ -1802,7 +1802,11 @@ impl Workspace {
     /// user needs to act on. Public so tests can drive a
     /// deterministic refresh without waiting for the 30 s tick.
     pub async fn refresh_account_usage_once(self: &Arc<Self>) {
-        let entries: Vec<(AccountKey, std::path::PathBuf)> = {
+        let entries: Vec<(
+            AccountKey,
+            std::path::PathBuf,
+            std::collections::HashMap<String, String>,
+        )> = {
             let accounts = self.accounts.lock();
             accounts
                 .ordered_keys
@@ -1817,7 +1821,11 @@ impl Workspace {
                 // moment has passed gets a fresh probe via the
                 // override even if the backoff timer is still active.
                 .filter(|key| accounts.scheduler_should_probe(key))
-                .filter_map(|key| accounts.config_dir(key).map(|dir| (key.clone(), dir.clone())))
+                .filter_map(|key| {
+                    accounts.config_dir(key).map(|dir| {
+                        (key.clone(), dir.clone(), accounts.env(key).cloned().unwrap_or_default())
+                    })
+                })
                 .collect()
         };
 
@@ -1833,7 +1841,7 @@ impl Workspace {
         // per-iteration set_usage / set_last_error locks below.
         {
             let mut accounts = self.accounts.lock();
-            for (key, _) in &entries {
+            for (key, _, _) in &entries {
                 if !accounts.should_probe_now(key) {
                     accounts.disarm_override(key);
                 }
@@ -1845,10 +1853,31 @@ impl Workspace {
         // Serial execution staggers requests by per-probe latency
         // (~hundreds of ms), within the 60 s poll interval.
         let mut any_success = false;
-        for (key, dir) in entries {
-            let fetch_result = forge_agent::cloud::oauth_usage::oauth_usage(&dir).await;
+        for (key, dir, env) in entries {
+            // A base-url-override account probes its own endpoint with
+            // the env bearer (skipping the keychain + the auth-refresh
+            // wrapper) and tolerates the cold `{}` as an all-None (n/a)
+            // snapshot; normal accounts keep the keychain + default host.
+            let base_url_override = forge_agent::cloud::oauth_usage::base_url_override(&env);
+            let fetch_result = match &base_url_override {
+                Some((base_url, bearer)) => {
+                    let creds = forge_agent::cloud::oauth_credentials::OauthCredentials {
+                        access_token: bearer.clone(),
+                        expires_at: None,
+                    };
+                    forge_agent::cloud::oauth_usage::probe(&creds, Some(base_url)).await
+                }
+                None => forge_agent::cloud::oauth_usage::oauth_usage(&dir).await,
+            };
+            let map_payload = |payload| {
+                if base_url_override.is_some() {
+                    forge_agent::cloud::oauth::snapshot_from_payload_allow_empty(payload)
+                } else {
+                    forge_agent::cloud::oauth::snapshot_from_payload(payload)
+                }
+            };
             match fetch_result {
-                Ok(payload) => match forge_agent::cloud::oauth::snapshot_from_payload(payload) {
+                Ok(payload) => match map_payload(payload) {
                     Ok(snapshot) => {
                         self.accounts.lock().set_usage(&key, snapshot);
                         any_success = true;
