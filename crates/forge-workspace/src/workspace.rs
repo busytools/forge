@@ -987,7 +987,13 @@ impl Workspace {
         // Anthropic with native sdk-cli classification - used for
         // API-key accounts where the rewriter adds no value, or for
         // debugging the raw wire shape.
-        let account_proxy_enabled = self.accounts.lock().proxy_enabled(&account_key);
+        let (account_proxy_enabled, account_env) = {
+            let accounts = self.accounts.lock();
+            (
+                accounts.proxy_enabled(&account_key),
+                accounts.env(&account_key).cloned().unwrap_or_default(),
+            )
+        };
         let attached_proxy = if account_proxy_enabled { self.proxy.clone() } else { None };
 
         // Hoist DomainSession creation to BEFORE Agent::spawn so the
@@ -1082,6 +1088,7 @@ impl Workspace {
             Some(account_key.0.clone()),
             attached_proxy,
             vec![("forge".to_owned(), forge_server)],
+            account_env,
         );
         // Project-rooted targets (`Default` / `Named`) resume the
         // project's lead session when the on-disk catalog has one,
@@ -5233,11 +5240,13 @@ mod tests {
                     display_name: "A".to_owned(),
                     config_dir: PathBuf::from("/cfg/A"),
                     proxy: true,
+                    env: std::collections::HashMap::new(),
                 },
                 crate::config::LoadedAccount {
                     display_name: "B".to_owned(),
                     config_dir: PathBuf::from("/cfg/B"),
                     proxy: true,
+                    env: std::collections::HashMap::new(),
                 },
             ]);
             // A: 5h saturated (100%, future reset) -> rate limited; 7d 63%.
@@ -5286,11 +5295,13 @@ mod tests {
                     display_name: "One".to_owned(),
                     config_dir: PathBuf::from("/c/One"),
                     proxy: true,
+                    env: std::collections::HashMap::new(),
                 },
                 crate::config::LoadedAccount {
                     display_name: "Two".to_owned(),
                     config_dir: PathBuf::from("/c/Two"),
                     proxy: true,
+                    env: std::collections::HashMap::new(),
                 },
             ]);
             map.set_usage(&AccountKey("One".to_owned()), account_usage_snapshot(10.0, 10.0, None));

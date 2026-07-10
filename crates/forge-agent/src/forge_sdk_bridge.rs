@@ -108,6 +108,12 @@ pub(crate) struct BridgeInner {
     /// the same `forge` server name. Cheap to clone - each entry
     /// is just a name + a few `Arc<dyn Tool>`s.
     extra_mcp_servers: Vec<(String, forge_sdk::mcp::McpServer)>,
+    /// Per-account `[accounts.env]` from forge.toml, stamped onto the
+    /// spawned `claude` subprocess by
+    /// `forge_sdk_worker::build_options_with_callback`. Empty when
+    /// `Agent::spawn` is called directly without a workspace (tests,
+    /// smoke) or for an account with no `[accounts.env]` table.
+    env: HashMap<String, String>,
 }
 
 impl ForgeSdkBridge {
@@ -125,6 +131,7 @@ impl ForgeSdkBridge {
         display_name: Option<String>,
         proxy: Option<ProxyHandle>,
         extra_mcp_servers: Vec<(String, forge_sdk::mcp::McpServer)>,
+        env: HashMap<String, String>,
     ) -> Self {
         let (event_tx, events_rx) = mpsc::unbounded_channel();
         Self {
@@ -139,12 +146,19 @@ impl ForgeSdkBridge {
                 display_name,
                 proxy,
                 extra_mcp_servers,
+                env,
             }),
         }
     }
 
     pub(crate) fn proxy(&self) -> Option<ProxyHandle> {
         self.inner.proxy.clone()
+    }
+
+    /// Per-account `[accounts.env]` map to stamp onto every spawned
+    /// `claude` subprocess. Cloned per `spawn_session` call.
+    pub(crate) fn env(&self) -> HashMap<String, String> {
+        self.inner.env.clone()
     }
 
     /// Forge-workspace-supplied in-process MCP servers to attach to
@@ -265,7 +279,7 @@ impl ForgeSdkBridge {
 #[cfg(any(test, feature = "testing"))]
 impl Default for ForgeSdkBridge {
     fn default() -> Self {
-        Self::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None, None, Vec::new())
+        Self::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None, None, Vec::new(), HashMap::new())
     }
 }
 
@@ -820,7 +834,13 @@ mod tests {
     use super::*;
 
     fn test_bridge() -> ForgeSdkBridge {
-        ForgeSdkBridge::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None, None, Vec::new())
+        ForgeSdkBridge::new(
+            PathBuf::from(TESTING_STUB_CONFIG_DIR),
+            None,
+            None,
+            Vec::new(),
+            HashMap::new(),
+        )
     }
 
     #[test]
