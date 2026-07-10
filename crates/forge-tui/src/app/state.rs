@@ -1870,8 +1870,8 @@ impl App {
         &mut self.active_bucket_mut().monitors
     }
 
-    /// Active session's CLI background-task snapshot (Inspector
-    /// BACKGROUND section reads this).
+    /// Active session's CLI background-task snapshot (the PROCESSES
+    /// section's `local_bash` feed reads this).
     pub fn background_tasks(&self) -> &[crate::app::state::types::BackgroundTask] {
         self.active_session().map_or(&[], |s| s.background_tasks.as_slice())
     }

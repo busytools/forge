@@ -300,11 +300,11 @@ pub struct UiSession {
     /// `MonitorEntry::OUTPUT_TAIL_MAX` per entry.
     pub monitors: Vec<MonitorEntry>,
 
-    /// CLI-authoritative background-task snapshot surfaced as the
-    /// Inspector BACKGROUND section. Replaced wholesale on each
-    /// `background_tasks_changed` event; an empty snapshot clears it
-    /// and hides the section. Session-scoped because background tasks
-    /// outlive the turn that spawned them.
+    /// CLI-authoritative background-task snapshot. `local_bash` entries
+    /// feed the Inspector PROCESSES section (agents / workflows surface
+    /// in SUBAGENTS / WORKFLOWS). Replaced wholesale on each
+    /// `background_tasks_changed` event. Session-scoped because
+    /// background tasks outlive the turn that spawned them.
     pub background_tasks: Vec<BackgroundTask>,
 
     /// Pending time-based schedules (`ScheduleWakeup` + `CronCreate`)

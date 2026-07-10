@@ -1383,8 +1383,8 @@ fn apply_tool_summary_update(app: &mut App, tool_use_id: &str, summary: &str) {
 /// Replace the active session's background-task snapshot from a
 /// `background_tasks_changed` event. The event carries the CLI's full
 /// registry every change, so this overwrites wholesale; an empty
-/// `tasks` array clears the list and the Inspector BACKGROUND section
-/// auto-hides. Entries missing `task_id` / `task_type` / `description`
+/// `tasks` array clears the list so the PROCESSES `local_bash` feed
+/// drains. Entries missing `task_id` / `task_type` / `description`
 /// (or not objects) are skipped rather than panicked.
 fn handle_background_tasks_changed(app: &mut App, msg: Message) {
     use crate::app::state::types::BackgroundTask;
@@ -2670,7 +2670,7 @@ mod background_tasks_changed_tests {
     //! `background_tasks_changed` carries the CLI's authoritative
     //! snapshot of every backgrounded task. Each event REPLACES the
     //! session's list wholesale; an empty `tasks` array clears it so
-    //! the Inspector BACKGROUND section auto-hides.
+    //! the PROCESSES `local_bash` feed drains.
     use super::handle_sdk_message;
     use crate::app::App;
     use forge_primitives::Message;

@@ -131,10 +131,10 @@ impl MonitorEntry {
     }
 }
 
-/// One entry in the Inspector BACKGROUND section, parsed from a
-/// `background_tasks_changed` event's task snapshot. `task_type`
-/// names the kind (`local_bash`, `agent`, ...) and renders as a dim
-/// trailing tag.
+/// A CLI-tracked background task from a `background_tasks_changed`
+/// event's snapshot. `local_bash` entries feed the Inspector PROCESSES
+/// section (deduped against the OS scan); agents / workflows surface in
+/// their own sections. `task_type` names the kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackgroundTask {
     pub task_id: String,
