@@ -312,10 +312,9 @@ fn synthetic_background_bash_row(description: &str, task_type: &str) -> ProcessR
 
 /// DFS the OS snapshot's process tree from claude's direct children
 /// down, emitting one [`ProcessRow`] per node in pre-order with
-/// correct `depth` + tree-connector metadata. Wire-matched rows
-/// (`Bash` / `Monitor`) are pinned at the top of each sibling
-/// group; unmatched siblings sort by memory desc with PID as the
-/// stable tie-break.
+/// correct `depth` + tree-connector metadata. Siblings within each
+/// group are ordered by [`sort_siblings_inplace`] (kind tier, then
+/// memory descending with PID as the stable tie-break).
 fn rows_from_os_snapshot<'a>(
     snapshot: &'a ProcessSnapshot,
     wire_alive: &'a [&'a ToolCallInfo],
@@ -409,7 +408,7 @@ fn emit_with_descendants<'a>(
     // process spawns a swarm (cargo → N rustc workers, supervisor →
     // N MCP servers) the section would otherwise drown in
     // near-identical rows. Show the top-priority subset (sibling
-    // sort already pinned matched + lower-PID first) and emit a
+    // sort already ordered by tier + memory + lower-PID) and emit a
     // single `+N more` overflow row at the same depth so the user
     // knows there's more below.
     let (visible_count, hidden) = if n > MAX_CHILDREN_PER_PARENT {
