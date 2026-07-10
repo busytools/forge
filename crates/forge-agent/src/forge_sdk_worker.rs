@@ -729,18 +729,20 @@ fn build_options_with_callback(
     // Threaded through as a typed `Path` from the bridge.
     b = b.env("CLAUDE_CONFIG_DIR", binding.config_dir.to_string_lossy().to_string());
 
-    // Per-account `[accounts.env]` from forge.toml (hand-authored,
-    // trusted), stamped onto the child so an account can point `claude`
-    // at an alternate endpoint (`ANTHROPIC_BASE_URL`) or set any other
-    // env it needs. Runs after the `CLAUDE_CONFIG_DIR` stamp so a
-    // caller could override it deliberately; process.rs stamps
-    // `CLAUDE_AGENT_SDK_VERSION` last regardless.
+    // The account's effective env from forge.toml (hand-authored,
+    // trusted) - the global `[env]` base merged with per-account
+    // `[accounts.env]` (account wins) - stamped onto the child so an
+    // account can point `claude` at an alternate endpoint
+    // (`ANTHROPIC_BASE_URL`) or set any other env it needs. Runs after
+    // the `CLAUDE_CONFIG_DIR` stamp so a caller could override it
+    // deliberately; process.rs stamps `CLAUDE_AGENT_SDK_VERSION` last
+    // regardless.
     for (key, value) in binding.env {
         if is_reserved_env_key(key) {
             tracing::warn!(
                 target: crate::logging::targets::BRIDGE_LIFECYCLE,
                 key = %key,
-                "account [accounts.env] sets a forge-reserved key; it overrides forge's own stamp and can defeat the wire-classification rewriter",
+                "forge.toml [env] / [accounts.env] sets a forge-reserved key; it overrides forge's own stamp and can defeat the wire-classification rewriter",
             );
         }
         b = b.env(key, value);
@@ -1351,7 +1353,8 @@ mod tests {
     #[test]
     fn build_options_still_stamps_a_reserved_key_despite_the_warn() {
         // The collision warns but does not suppress the stamp: a
-        // forge-reserved key in [accounts.env] still lands on the child
+        // forge-reserved key in the merged env (global [env] or
+        // per-account [accounts.env]) still lands on the child
         // (forge.toml is trusted, hand-authored).
         use crate::client::SessionLaunchSettings;
         use std::path::Path;
