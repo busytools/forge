@@ -1,5 +1,5 @@
 // =====
-// TESTS: 13
+// TESTS: 14
 // =====
 //
 // Tool call lifecycle integration tests.
@@ -630,6 +630,95 @@ async fn backgrounded_agent_survives_turn_reset_over_real_wire_path() {
     assert_eq!(view[0].tool_use_id, "toolu_root");
     assert_eq!(view[0].status, model::ToolCallStatus::InProgress);
     assert_eq!(view[0].tail.len(), 1, "its live tool tail is preserved; got {:?}", view[0].tail);
+}
+
+/// Producer-path sibling of
+/// `backgrounded_agent_survives_turn_reset_over_real_wire_path` for a
+/// backgrounded `local_bash`. Drives the real wire (`handle_task_started`
+/// -> session map, backgrounding sentinel -> Completed card,
+/// `handle_background_tasks_changed` -> registry) then resets the turn, and
+/// asserts the session-scoped state the PROCESSES feed reads survives: the
+/// registry lists it as `local_bash` and the session task map still
+/// resolves its tool_use_id. The rendered enrichment
+/// (`collect_active_processes` + OS-snapshot match) is exercised in-crate -
+/// an OS snapshot can't be injected from an integration crate - so this
+/// guards the producer an arg-swap in `handle_task_started` would silently
+/// break.
+#[tokio::test]
+async fn backgrounded_bash_survives_turn_reset_over_real_wire_path() {
+    let mut app = test_app();
+
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_bash",
+            "Bash",
+            serde_json::json!({
+                "command": "sleep 60 && echo done",
+                "description": "Wait then print",
+                "run_in_background": true,
+            }),
+        )]),
+    );
+    // Real producer: TaskStarted -> insert_session_task_mapping(task_id -> tool_use_id).
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-bash".to_owned(),
+            description: "Wait then print".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_bash".to_owned()),
+            task_type: Some("local_bash".to_owned()),
+        },
+    );
+    // Backgrounding sentinel flips the card terminal while the process runs -
+    // the state where only the session-scoped registry can keep it enriched.
+    send_msg(
+        &mut app,
+        user_message(vec![tool_result_block(
+            "toolu_bash",
+            serde_json::json!("Command running in background. Task ID: task-bash"),
+        )]),
+    );
+    assert_eq!(
+        tool_call_block(&app, "toolu_bash").status,
+        model::ToolCallStatus::Completed,
+        "sentinel must flip the card terminal, else the test doesn't exercise the backstop",
+    );
+    // CLI registry lists it as a live backgrounded local_bash.
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![serde_json::json!({
+                "task_id": "task-bash",
+                "task_type": "local_bash",
+                "description": "Wait then print",
+            })],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+    // Turn finalisation wipes the turn-scoped liveness.
+    let _: () = app.with_turn_state_mut(|ts| {
+        ts.task_tool_use_ids.clear();
+        ts.alive_task_ids.clear();
+    });
+
+    let session = app.active_session().expect("active session");
+    assert_eq!(
+        session.session_task_tool_use_ids.get("task-bash").map(String::as_str),
+        Some("toolu_bash"),
+        "session task map resolves the backgrounded bash across turn reset",
+    );
+    assert!(
+        session
+            .background_tasks
+            .iter()
+            .any(|task| task.task_id == "task-bash" && task.task_type == "local_bash"),
+        "registry still lists it as local_bash; got {:?}",
+        session.background_tasks,
+    );
 }
 
 /// Regression (2.1.204 local-agent streaming): a subagent's assistant
