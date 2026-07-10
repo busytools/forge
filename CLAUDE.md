@@ -132,7 +132,7 @@ First match wins.
   `tokio::process::Command` in a TUI module, stop. That belongs in
   `forge-agent::env::*` with a `forge-workspace::*` method exposing
   it. TUI calls the workspace method async (see
-  `Workspace::oauth_usage` / `Workspace::scan_git_diff` for the
+  `Workspace::scan_git_diff` for the
   precedent).
 - **Adding a `SessionUpdate` variant for purely TUI-internal data.**
   The single-channel event bus is for cross-crate flow. If the
@@ -146,7 +146,7 @@ First match wins.
 - **Workspace methods that bypass the Command bus for user actions.**
   User-initiated actions (Prompt, Cancel, SetMode, NewSession, etc.)
   go through `Workspace::dispatch(Command)`. Query-style refreshes
-  (`refresh_status_snapshot`, `oauth_usage`, `scan_git_diff`) are
+  (`refresh_status_snapshot`, `scan_git_diff`) are
   direct inherent methods. Don't conflate the two.
 
 ### When the placement is genuinely ambiguous
@@ -192,7 +192,7 @@ refreshes are direct `Workspace` methods rather than command
 variants: `refresh_status_snapshot`, `refresh_oauth_credentials_snapshot`,
 `refresh_context_usage`, `reload_plugins`, `refresh_mcp_snapshot`.
 Direct-accessor facades (`settings_documents`, `write_settings_document`,
-`project_memory_path`, `config_dir_for`, `oauth_usage`) also live as
+`project_memory_path`, `config_dir_for`) also live as
 inherent `Workspace` methods. `SessionUpdate::Connected` /
 `SessionReplaced` / `AuthCompleted` no longer carry an
 `Arc<AgentHandle>` payload - the handle is stamped onto the

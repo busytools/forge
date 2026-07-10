@@ -65,6 +65,54 @@ const RECOVERY_POLL_INTERVAL: Duration = Duration::from_secs(30);
 /// account stays Bailed and the next 30 s tick retries.
 const RECOVERY_AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// What the boot-loading loop should do with a probe error, decided
+/// from the plan + the error. Keeps the loader's branching testable and
+/// its error classification unified with the poller (both route the
+/// status through [`crate::workspace::classify_oauth_usage_error`]).
+#[derive(Debug, PartialEq)]
+enum BootProbeAction {
+    /// Keychain auth failure: fire the CLI-spawn refresh recovery. Never
+    /// chosen for a base-url account - its probe doesn't read a keychain
+    /// token, so a refresh would burn billed `claude -p hi` spawns for
+    /// nothing.
+    Refresh,
+    /// Terminal failure: record the status (an auth error bails the
+    /// account), recompute the plan, and stop the task. A base-url auth
+    /// failure lands here; the 60 s usage poller re-probes it later and
+    /// flips it Ready when the endpoint heals.
+    Terminal(UsageFetchStatus),
+    /// Transient failure: record the status, back off, and loop. Carries
+    /// the server `Retry-After` for a 429.
+    RetryLoop(UsageFetchStatus, Option<Duration>),
+}
+
+/// Decide the [`BootProbeAction`] for a boot-probe error. Auth failures
+/// refresh on the keychain path but are terminal on the base-url path;
+/// a 429 or any network / HTTP / decode failure is a retry-loop. The
+/// status is the shared [`crate::workspace::classify_oauth_usage_error`]
+/// verdict so the loader and poller never label the same error
+/// differently.
+fn boot_probe_action(is_base_url: bool, err: &OauthUsageError) -> BootProbeAction {
+    let status = crate::workspace::classify_oauth_usage_error(err);
+    match err {
+        OauthUsageError::NoCredentials
+        | OauthUsageError::Expired
+        | OauthUsageError::Unauthorized(_) => {
+            if is_base_url {
+                BootProbeAction::Terminal(status)
+            } else {
+                BootProbeAction::Refresh
+            }
+        }
+        OauthUsageError::RateLimited { retry_after } => {
+            BootProbeAction::RetryLoop(status, *retry_after)
+        }
+        OauthUsageError::Network(_)
+        | OauthUsageError::HttpStatus(_, _)
+        | OauthUsageError::Decode(_) => BootProbeAction::RetryLoop(status, None),
+    }
+}
+
 /// Run the boot-time loading state machine for one account until it
 /// reaches a terminal `LoadingState`.
 ///
@@ -104,14 +152,40 @@ pub async fn run_account_loading(
             // Workspace dropped during shutdown; exit cleanly.
             return;
         };
-        let probe_result = match oauth_credentials::load_oauth_credentials(&config_dir) {
-            Some(creds) => oauth_usage::probe(&creds).await,
-            None => Err(OauthUsageError::NoCredentials),
+        // One decision (probe_plan) drives the probe source, the
+        // response-mapping strictness, and whether a 401 is eligible for
+        // the keychain refresh. A base-url-override account
+        // (`ANTHROPIC_BASE_URL` in `[accounts.env]`) probes its own
+        // endpoint with the env bearer and skips the keychain; a normal
+        // account uses the keychain + default host.
+        let account_env =
+            workspace.account_states().lock().env(&account_key).cloned().unwrap_or_default();
+        let plan = oauth_usage::probe_plan(&account_env);
+        let is_base_url = matches!(plan, oauth_usage::ProbePlan::BaseUrl { .. });
+        let probe_result = match &plan {
+            oauth_usage::ProbePlan::BaseUrl { base_url, bearer } => {
+                let creds = oauth_credentials::OauthCredentials {
+                    access_token: bearer.clone(),
+                    expires_at: None,
+                };
+                oauth_usage::probe(&creds, Some(base_url)).await
+            }
+            oauth_usage::ProbePlan::Keychain => {
+                match oauth_credentials::load_oauth_credentials(&config_dir) {
+                    Some(creds) => oauth_usage::probe(&creds, None).await,
+                    None => Err(OauthUsageError::NoCredentials),
+                }
+            }
         };
 
         match probe_result {
             Ok(payload) => {
-                let snapshot = match oauth::snapshot_from_payload(payload) {
+                // Map per plan (shared with the poller): base-url leniently
+                // (each window independent, cold `{}` -> n/a), keychain
+                // strictly (a 200 must carry five_hour). A keychain mapping
+                // failure is a transient response-shape drift; back off +
+                // retry. Base-url never errors here.
+                let snapshot = match oauth::map_probe_snapshot(is_base_url, payload) {
                     Ok(s) => s,
                     Err(err) => {
                         tracing::warn!(
@@ -133,70 +207,76 @@ pub async fn run_account_loading(
                 );
                 return;
             }
-            Err(
-                OauthUsageError::NoCredentials
-                | OauthUsageError::Expired
-                | OauthUsageError::Unauthorized(_),
-            ) => {
-                // Auth-recovery path. Transition to Refreshing so the
-                // launchpad shows in-flight; fire the CLI-spawn refresh
-                // which internally pre-gates via auth_status. Any
-                // failure (including NotLoggedIn) transitions to
-                // Bailed - the 30 s recovery poll picks the account
-                // back up when auth_status flips back.
-                workspace
-                    .account_states()
-                    .lock()
-                    .set_loading(&account_key, LoadingState::Refreshing);
-                match oauth_credentials::refresh_via_cli_spawn(&config_dir).await {
-                    Ok(_new_creds) => {
-                        // Fresh creds landed; loop and re-probe. Reset
-                        // to Loading so the launchpad glyph reflects
-                        // the next probe attempt rather than the
-                        // mid-refresh state.
-                        workspace
-                            .account_states()
-                            .lock()
-                            .set_loading(&account_key, LoadingState::Loading);
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            target: "forge_workspace::account_loader",
-                            account = %account_key.0,
-                            error = %err,
-                            "refresh_via_cli_spawn failed during boot loading; account Bailed",
-                        );
-                        workspace
-                            .account_states()
-                            .lock()
-                            .set_loading(&account_key, LoadingState::Bailed);
-                        workspace.recompute_plan_if_ready();
-                        return;
+            Err(err) => match boot_probe_action(is_base_url, &err) {
+                BootProbeAction::Refresh => {
+                    // Keychain auth-recovery (never base-url). Transition to
+                    // Refreshing so the launchpad shows in-flight; fire the
+                    // CLI-spawn refresh (pre-gated via auth_status). On
+                    // success loop + re-probe; any failure Bails and the
+                    // 30 s recovery poll retries once auth_status flips back.
+                    workspace
+                        .account_states()
+                        .lock()
+                        .set_loading(&account_key, LoadingState::Refreshing);
+                    match oauth_credentials::refresh_via_cli_spawn(&config_dir).await {
+                        Ok(_new_creds) => {
+                            workspace
+                                .account_states()
+                                .lock()
+                                .set_loading(&account_key, LoadingState::Loading);
+                        }
+                        Err(refresh_err) => {
+                            tracing::warn!(
+                                target: "forge_workspace::account_loader",
+                                account = %account_key.0,
+                                error = %refresh_err,
+                                "refresh_via_cli_spawn failed during boot loading; account Bailed",
+                            );
+                            workspace
+                                .account_states()
+                                .lock()
+                                .set_loading(&account_key, LoadingState::Bailed);
+                            workspace.recompute_plan_if_ready();
+                            return;
+                        }
                     }
                 }
-            }
-            Err(OauthUsageError::RateLimited { retry_after }) => {
-                workspace.account_states().lock().set_last_error(
-                    &account_key,
-                    UsageFetchStatus::RateLimited,
-                    retry_after,
-                );
-                tokio::time::sleep(retry_after.unwrap_or(PROBE_RETRY_INTERVAL)).await;
-            }
-            Err(err) => {
-                tracing::debug!(
-                    target: "forge_workspace::account_loader",
-                    account = %account_key.0,
-                    error = %err,
-                    "boot probe returned transient error; retrying",
-                );
-                workspace.account_states().lock().set_last_error(
-                    &account_key,
-                    UsageFetchStatus::NetworkFailed,
-                    None,
-                );
-                tokio::time::sleep(PROBE_RETRY_INTERVAL).await;
-            }
+                BootProbeAction::Terminal(status) => {
+                    // A base-url auth failure the keychain refresh can't
+                    // help. Record it (Unauthorized/Expired bail + stay
+                    // visible), recompute the plan, and RETURN so the task
+                    // doesn't spin the iteration cap or hold lead assignment
+                    // stale. The 60 s usage poller re-probes the account and
+                    // flips it Ready once the endpoint heals.
+                    tracing::warn!(
+                        target: "forge_workspace::account_loader",
+                        account = %account_key.0,
+                        error = %err,
+                        status = ?status,
+                        "boot probe hit a terminal error; account Bailed",
+                    );
+                    workspace.account_states().lock().set_last_error(&account_key, status, None);
+                    workspace.recompute_plan_if_ready();
+                    return;
+                }
+                BootProbeAction::RetryLoop(status, retry_after) => {
+                    // Transient (network / rate-limit): record + back off +
+                    // loop. A 429 carries the server Retry-After.
+                    tracing::debug!(
+                        target: "forge_workspace::account_loader",
+                        account = %account_key.0,
+                        error = %err,
+                        status = ?status,
+                        "boot probe returned transient error; retrying",
+                    );
+                    workspace.account_states().lock().set_last_error(
+                        &account_key,
+                        status,
+                        retry_after,
+                    );
+                    tokio::time::sleep(retry_after.unwrap_or(PROBE_RETRY_INTERVAL)).await;
+                }
+            },
         }
     }
 }
@@ -230,13 +310,25 @@ pub async fn run_recovery_poll(workspace_weak: Weak<Workspace>) {
         };
 
         // Snapshot the bailed accounts under the parking_lot lock,
-        // then drop the lock before any awaits.
+        // then drop the lock before any awaits. Base-url accounts are
+        // excluded: this poll gates on `claude auth status` (keychain),
+        // which is permanently None for a base-url account, so it can
+        // never recover one - it would only burn a shellout every 30 s
+        // and log a misleading "kept bailed". A bailed base-url account
+        // recovers instead via the 60 s usage poller, which re-probes it
+        // and flips it Ready when its endpoint heals.
         let bailed: Vec<(AccountKey, std::path::PathBuf)> = {
             let accounts = workspace.account_states().lock();
             accounts
                 .by_key
                 .iter()
-                .filter(|(_, s)| s.loading == LoadingState::Bailed)
+                .filter(|(_, s)| {
+                    s.loading == LoadingState::Bailed
+                        && !matches!(
+                            oauth_usage::probe_plan(&s.env),
+                            oauth_usage::ProbePlan::BaseUrl { .. }
+                        )
+                })
                 .map(|(k, s)| (k.clone(), s.config_dir.clone()))
                 .collect()
         };
@@ -360,5 +452,45 @@ mod tests {
     #[test]
     fn probe_retry_interval_is_2s() {
         assert_eq!(PROBE_RETRY_INTERVAL, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn boot_probe_action_base_url_auth_is_terminal_not_refresh() {
+        // The base-url path never spawns the keychain refresh; an auth
+        // failure is terminal (visible + bailed), NOT Refresh, NOT a loop.
+        assert_eq!(
+            boot_probe_action(true, &OauthUsageError::Unauthorized(401)),
+            BootProbeAction::Terminal(UsageFetchStatus::Unauthorized),
+        );
+    }
+
+    #[test]
+    fn boot_probe_action_keychain_auth_refreshes() {
+        for err in [
+            OauthUsageError::Unauthorized(401),
+            OauthUsageError::Expired,
+            OauthUsageError::NoCredentials,
+        ] {
+            assert_eq!(boot_probe_action(false, &err), BootProbeAction::Refresh, "{err:?}");
+        }
+    }
+
+    #[test]
+    fn boot_probe_action_network_is_retry_loop_on_either_plan() {
+        for is_base_url in [true, false] {
+            assert_eq!(
+                boot_probe_action(is_base_url, &OauthUsageError::Network("dns".to_owned())),
+                BootProbeAction::RetryLoop(UsageFetchStatus::NetworkFailed, None),
+            );
+        }
+    }
+
+    #[test]
+    fn boot_probe_action_rate_limited_carries_retry_after() {
+        let retry_after = Some(Duration::from_secs(60));
+        assert_eq!(
+            boot_probe_action(true, &OauthUsageError::RateLimited { retry_after }),
+            BootProbeAction::RetryLoop(UsageFetchStatus::RateLimited, retry_after),
+        );
     }
 }

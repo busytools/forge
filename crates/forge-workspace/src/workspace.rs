@@ -987,7 +987,13 @@ impl Workspace {
         // Anthropic with native sdk-cli classification - used for
         // API-key accounts where the rewriter adds no value, or for
         // debugging the raw wire shape.
-        let account_proxy_enabled = self.accounts.lock().proxy_enabled(&account_key);
+        let (account_proxy_enabled, account_env) = {
+            let accounts = self.accounts.lock();
+            (
+                accounts.proxy_enabled(&account_key),
+                accounts.env(&account_key).cloned().unwrap_or_default(),
+            )
+        };
         let attached_proxy = if account_proxy_enabled { self.proxy.clone() } else { None };
 
         // Hoist DomainSession creation to BEFORE Agent::spawn so the
@@ -1082,6 +1088,7 @@ impl Workspace {
             Some(account_key.0.clone()),
             attached_proxy,
             vec![("forge".to_owned(), forge_server)],
+            account_env,
         );
         // Project-rooted targets (`Default` / `Named`) resume the
         // project's lead session when the on-disk catalog has one,
@@ -1795,7 +1802,11 @@ impl Workspace {
     /// user needs to act on. Public so tests can drive a
     /// deterministic refresh without waiting for the 30 s tick.
     pub async fn refresh_account_usage_once(self: &Arc<Self>) {
-        let entries: Vec<(AccountKey, std::path::PathBuf)> = {
+        let entries: Vec<(
+            AccountKey,
+            std::path::PathBuf,
+            std::collections::HashMap<String, String>,
+        )> = {
             let accounts = self.accounts.lock();
             accounts
                 .ordered_keys
@@ -1810,7 +1821,11 @@ impl Workspace {
                 // moment has passed gets a fresh probe via the
                 // override even if the backoff timer is still active.
                 .filter(|key| accounts.scheduler_should_probe(key))
-                .filter_map(|key| accounts.config_dir(key).map(|dir| (key.clone(), dir.clone())))
+                .filter_map(|key| {
+                    accounts.config_dir(key).map(|dir| {
+                        (key.clone(), dir.clone(), accounts.env(key).cloned().unwrap_or_default())
+                    })
+                })
                 .collect()
         };
 
@@ -1826,7 +1841,7 @@ impl Workspace {
         // per-iteration set_usage / set_last_error locks below.
         {
             let mut accounts = self.accounts.lock();
-            for (key, _) in &entries {
+            for (key, _, _) in &entries {
                 if !accounts.should_probe_now(key) {
                     accounts.disarm_override(key);
                 }
@@ -1838,28 +1853,50 @@ impl Workspace {
         // Serial execution staggers requests by per-probe latency
         // (~hundreds of ms), within the 60 s poll interval.
         let mut any_success = false;
-        for (key, dir) in entries {
-            let fetch_result = forge_agent::cloud::oauth_usage::oauth_usage(&dir).await;
+        for (key, dir, env) in entries {
+            // One decision (probe_plan) drives both the probe source and
+            // the response-mapping strictness. A base-url-override account
+            // probes its own endpoint with the env bearer (skipping the
+            // keychain + the auth-refresh wrapper) and maps leniently
+            // (each window independent; cold `{}` -> n/a); a normal
+            // account keeps the keychain + default host + strict mapping.
+            let plan = forge_agent::cloud::oauth_usage::probe_plan(&env);
+            let is_base_url =
+                matches!(plan, forge_agent::cloud::oauth_usage::ProbePlan::BaseUrl { .. });
+            let fetch_result = match &plan {
+                forge_agent::cloud::oauth_usage::ProbePlan::BaseUrl { base_url, bearer } => {
+                    let creds = forge_agent::cloud::oauth_credentials::OauthCredentials {
+                        access_token: bearer.clone(),
+                        expires_at: None,
+                    };
+                    forge_agent::cloud::oauth_usage::probe(&creds, Some(base_url)).await
+                }
+                forge_agent::cloud::oauth_usage::ProbePlan::Keychain => {
+                    forge_agent::cloud::oauth_usage::oauth_usage(&dir).await
+                }
+            };
             match fetch_result {
-                Ok(payload) => match forge_agent::cloud::oauth::snapshot_from_payload(payload) {
-                    Ok(snapshot) => {
-                        self.accounts.lock().set_usage(&key, snapshot);
-                        any_success = true;
+                Ok(payload) => {
+                    match forge_agent::cloud::oauth::map_probe_snapshot(is_base_url, payload) {
+                        Ok(snapshot) => {
+                            self.accounts.lock().set_usage(&key, snapshot);
+                            any_success = true;
+                        }
+                        Err(err) => {
+                            self.accounts.lock().set_last_error(
+                                &key,
+                                crate::account::UsageFetchStatus::Other,
+                                None,
+                            );
+                            tracing::debug!(
+                                target: "forge_workspace::account",
+                                account = %key.0,
+                                error = ?err,
+                                "usage_poll snapshot mapping failed",
+                            );
+                        }
                     }
-                    Err(err) => {
-                        self.accounts.lock().set_last_error(
-                            &key,
-                            crate::account::UsageFetchStatus::Other,
-                            None,
-                        );
-                        tracing::debug!(
-                            target: "forge_workspace::account",
-                            account = %key.0,
-                            error = ?err,
-                            "usage_poll snapshot mapping failed",
-                        );
-                    }
-                },
+                }
                 Err(err) => {
                     let status = classify_oauth_usage_error(&err);
                     // Pull the server-provided Retry-After out of the
@@ -4349,23 +4386,6 @@ impl Workspace {
         Some(handle.config_dir())
     }
 
-    /// Fetch the OAuth usage payload via the bridge bound to `key`.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` with a human-readable message when no agent is
-    /// registered for `key`; otherwise propagates the bridge's
-    /// `OauthUsageError`.
-    pub async fn oauth_usage(
-        &self,
-        key: &SessionKey,
-    ) -> Result<forge_agent::cloud::oauth_usage::OauthUsage, String> {
-        let handle = self
-            .agent_handle_for(key)
-            .ok_or_else(|| "Bridge connection required for OAuth usage fetch.".to_owned())?;
-        handle.oauth_usage().await.map_err(|err| err.to_string())
-    }
-
     /// OS PID of the `claude` subprocess bound to `key`. Returns
     /// `None` when the session has no live client (pre-spawn /
     /// post-disconnect / synthetic spawn bucket). The PID is stable
@@ -4417,7 +4437,7 @@ impl Workspace {
 /// transport failures (`Network`), so the TUI's bottom-panel hint
 /// can tell the user something specific rather than a generic
 /// "fetch error".
-fn classify_oauth_usage_error(
+pub(crate) fn classify_oauth_usage_error(
     err: &forge_primitives::usage::oauth::OauthUsageError,
 ) -> account::UsageFetchStatus {
     use account::UsageFetchStatus;
@@ -5233,11 +5253,13 @@ mod tests {
                     display_name: "A".to_owned(),
                     config_dir: PathBuf::from("/cfg/A"),
                     proxy: true,
+                    env: std::collections::HashMap::new(),
                 },
                 crate::config::LoadedAccount {
                     display_name: "B".to_owned(),
                     config_dir: PathBuf::from("/cfg/B"),
                     proxy: true,
+                    env: std::collections::HashMap::new(),
                 },
             ]);
             // A: 5h saturated (100%, future reset) -> rate limited; 7d 63%.
@@ -5286,11 +5308,13 @@ mod tests {
                     display_name: "One".to_owned(),
                     config_dir: PathBuf::from("/c/One"),
                     proxy: true,
+                    env: std::collections::HashMap::new(),
                 },
                 crate::config::LoadedAccount {
                     display_name: "Two".to_owned(),
                     config_dir: PathBuf::from("/c/Two"),
                     proxy: true,
+                    env: std::collections::HashMap::new(),
                 },
             ]);
             map.set_usage(&AccountKey("One".to_owned()), account_usage_snapshot(10.0, 10.0, None));

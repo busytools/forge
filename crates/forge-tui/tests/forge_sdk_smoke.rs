@@ -56,7 +56,8 @@ fn smoke_config_dir() -> PathBuf {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a real `claude` binary on PATH; burns API budget"]
 async fn forge_sdk_e2e_round_trip() {
-    let agent_handle = Agent::spawn(smoke_config_dir(), None, None, Vec::new());
+    let agent_handle =
+        Agent::spawn(smoke_config_dir(), None, None, Vec::new(), std::collections::HashMap::new());
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
     let agent: Arc<forge_workspace::AgentHandle> = Arc::new(agent_handle);
 
@@ -88,7 +89,8 @@ async fn forge_sdk_e2e_round_trip() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a real `claude` binary on PATH; burns API budget"]
 async fn forge_sdk_e2e_multi_turn() {
-    let agent_handle = Agent::spawn(smoke_config_dir(), None, None, Vec::new());
+    let agent_handle =
+        Agent::spawn(smoke_config_dir(), None, None, Vec::new(), std::collections::HashMap::new());
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
     let agent: Arc<forge_workspace::AgentHandle> = Arc::new(agent_handle);
 
@@ -130,7 +132,8 @@ async fn forge_sdk_e2e_multi_turn() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a real `claude` binary on PATH; burns API budget"]
 async fn forge_sdk_e2e_tool_call_emits_event() {
-    let agent_handle = Agent::spawn(smoke_config_dir(), None, None, Vec::new());
+    let agent_handle =
+        Agent::spawn(smoke_config_dir(), None, None, Vec::new(), std::collections::HashMap::new());
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
     let agent: Arc<forge_workspace::AgentHandle> = Arc::new(agent_handle);
 
@@ -170,7 +173,8 @@ async fn forge_sdk_e2e_tool_call_emits_event() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a real `claude` binary on PATH; burns API budget"]
 async fn forge_sdk_e2e_cancel_mid_turn() {
-    let agent_handle = Agent::spawn(smoke_config_dir(), None, None, Vec::new());
+    let agent_handle =
+        Agent::spawn(smoke_config_dir(), None, None, Vec::new(), std::collections::HashMap::new());
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
     let agent: Arc<forge_workspace::AgentHandle> = Arc::new(agent_handle);
 
@@ -244,7 +248,8 @@ async fn forge_sdk_e2e_cancel_mid_turn() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a real `claude` binary on PATH; burns API budget"]
 async fn forge_sdk_e2e_status_and_context_snapshots() {
-    let agent_handle = Agent::spawn(smoke_config_dir(), None, None, Vec::new());
+    let agent_handle =
+        Agent::spawn(smoke_config_dir(), None, None, Vec::new(), std::collections::HashMap::new());
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
     let agent: Arc<forge_workspace::AgentHandle> = Arc::new(agent_handle);
 
@@ -295,7 +300,8 @@ async fn forge_sdk_e2e_status_and_context_snapshots() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a real `claude` binary on PATH; burns API budget"]
 async fn forge_sdk_e2e_mcp_snapshot() {
-    let agent_handle = Agent::spawn(smoke_config_dir(), None, None, Vec::new());
+    let agent_handle =
+        Agent::spawn(smoke_config_dir(), None, None, Vec::new(), std::collections::HashMap::new());
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
     let agent: Arc<forge_workspace::AgentHandle> = Arc::new(agent_handle);
 
@@ -340,7 +346,13 @@ async fn forge_sdk_e2e_mcp_snapshot() {
 async fn forge_sdk_e2e_resume_session() {
     // Spawn a fresh session, drive one prompt, capture sid.
     let session_id = {
-        let agent_handle = Agent::spawn(smoke_config_dir(), None, None, Vec::new());
+        let agent_handle = Agent::spawn(
+            smoke_config_dir(),
+            None,
+            None,
+            Vec::new(),
+            std::collections::HashMap::new(),
+        );
         let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
         let agent: Arc<forge_workspace::AgentHandle> = Arc::new(agent_handle);
 
@@ -365,7 +377,8 @@ async fn forge_sdk_e2e_resume_session() {
     };
 
     // Resume by id on a fresh worker.
-    let agent_handle = Agent::spawn(smoke_config_dir(), None, None, Vec::new());
+    let agent_handle =
+        Agent::spawn(smoke_config_dir(), None, None, Vec::new(), std::collections::HashMap::new());
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
     let agent: Arc<forge_workspace::AgentHandle> = Arc::new(agent_handle);
 
