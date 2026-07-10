@@ -166,13 +166,32 @@ pub fn collect_active_processes(app: &App) -> ProcessCollection {
     //    foreground `cargo build` / `git status` / `ls` rows pick
     //    up the wire's `description` as a headline instead of
     //    falling through to the generic OS row.
-    let alive_tool_use_ids: HashSet<String> = app.with_turn_state(|ts| {
+    let mut alive_tool_use_ids: HashSet<String> = app.with_turn_state(|ts| {
         ts.task_tool_use_ids
             .iter()
             .filter(|(task_id, _)| ts.alive_task_ids.contains(*task_id))
             .map(|(_, tool_use_id)| tool_use_id.clone())
             .collect()
     });
+    // Session-scoped backstop for a backgrounded `local_bash` that outlived
+    // its turn: the turn-scoped set above is wiped at turn-complete and the
+    // backgrounding sentinel already flipped its card terminal, so resolve it
+    // through the `background_tasks` (local_bash) INTERSECT session-task-map
+    // signal to keep its OS row enriched. Mirrors `subagents_view`'s
+    // `backgrounded_agent_roots`.
+    let bash_task_ids: HashSet<&str> = session
+        .background_tasks
+        .iter()
+        .filter(|task| task.task_type == "local_bash")
+        .map(|task| task.task_id.as_str())
+        .collect();
+    alive_tool_use_ids.extend(
+        session
+            .session_task_tool_use_ids
+            .iter()
+            .filter(|(task_id, _)| bash_task_ids.contains(task_id.as_str()))
+            .map(|(_, tool_use_id)| tool_use_id.clone()),
+    );
     let wire_alive: Vec<&ToolCallInfo> = session
         .messages
         .iter()
@@ -1309,5 +1328,82 @@ mod tests {
             ProcessSnapshot { processes: vec![entry], scanned_at: std::time::SystemTime::now() };
         let rows = background_bash_rows(&tasks, &HashMap::new(), Some(&snapshot));
         assert!(rows.is_empty(), "unresolved task must not double the OS row; got {rows:?}");
+    }
+
+    #[test]
+    fn collect_active_processes_keeps_os_caught_bash_enriched_after_turn_reset() {
+        // A backgrounded bash caught by the OS scan must stay an enriched
+        // BashBackgrounded row (wire description headline) after its
+        // spawning turn finalises - not degrade to a generic Process row
+        // showing the raw command. The turn-scoped alive set is wiped at
+        // turn-complete, so only the session-scoped background_tasks
+        // registry (resolved via the session task map) keeps the OS row
+        // enriched. Mirrors SUBAGENTS cross-turn survival.
+        use crate::app::{App, ChatMessage};
+
+        let mut app = App::test_default();
+
+        // The backgrounding sentinel already flipped the card to Completed
+        // while the OS process keeps running.
+        let mut bash = fake_tool_call_info(
+            "tu-bash",
+            "Bash",
+            json!({
+                "command": "sleep 60 && echo done",
+                "description": "Wait then print",
+                "run_in_background": true,
+            }),
+        );
+        bash.status = ToolCallStatus::Completed;
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(bash))],
+            None,
+        ));
+
+        // Session-scoped signals the real producer writes mid-turn: the
+        // task map (task_id -> tool_use_id) and the local_bash registry.
+        app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
+        *app.background_tasks_mut() = vec![BackgroundTask {
+            task_id: "task-bash".to_owned(),
+            task_type: "local_bash".to_owned(),
+            description: "Wait then print".to_owned(),
+        }];
+
+        // OS scan caught the still-running process (cmdline substring-matches
+        // the wire command).
+        app.set_active_process_snapshot_for_test(ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![ProcessEntry {
+                pid: 4242,
+                parent_pid: 1,
+                name: "zsh".to_owned(),
+                command: "/bin/zsh -c -l eval 'sleep 60 && echo done' < /dev/null".to_owned(),
+                memory_bytes: 4 * 1024 * 1024,
+                started_at_unix: None,
+            }],
+        });
+
+        // Turn finalises: turn-scoped liveness wiped. The session-scoped
+        // registry must carry the enrichment across.
+        let _: () = app.with_turn_state_mut(|ts| {
+            ts.task_tool_use_ids.clear();
+            ts.alive_task_ids.clear();
+        });
+
+        let coll = collect_active_processes(&app);
+        let bash_rows: Vec<_> =
+            coll.rows.iter().filter(|r| r.kind == ProcessKind::BashBackgrounded).collect();
+        assert_eq!(bash_rows.len(), 1, "exactly one enriched bash row; got {:?}", coll.rows);
+        assert_eq!(
+            bash_rows[0].headline, "Wait then print",
+            "row keeps the wire description, not the raw command; got {:?}",
+            coll.rows,
+        );
+        assert!(
+            !coll.rows.iter().any(|r| r.kind == ProcessKind::Process),
+            "no degraded generic Process row; got {:?}",
+            coll.rows,
+        );
     }
 }
