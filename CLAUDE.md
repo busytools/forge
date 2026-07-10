@@ -132,7 +132,7 @@ First match wins.
   `tokio::process::Command` in a TUI module, stop. That belongs in
   `forge-agent::env::*` with a `forge-workspace::*` method exposing
   it. TUI calls the workspace method async (see
-  `Workspace::oauth_usage` / `Workspace::scan_git_diff` for the
+  `Workspace::scan_git_diff` for the
   precedent).
 - **Adding a `SessionUpdate` variant for purely TUI-internal data.**
   The single-channel event bus is for cross-crate flow. If the
@@ -146,7 +146,7 @@ First match wins.
 - **Workspace methods that bypass the Command bus for user actions.**
   User-initiated actions (Prompt, Cancel, SetMode, NewSession, etc.)
   go through `Workspace::dispatch(Command)`. Query-style refreshes
-  (`refresh_status_snapshot`, `oauth_usage`, `scan_git_diff`) are
+  (`refresh_status_snapshot`, `scan_git_diff`) are
   direct inherent methods. Don't conflate the two.
 
 ### When the placement is genuinely ambiguous
