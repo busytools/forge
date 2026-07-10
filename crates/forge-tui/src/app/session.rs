@@ -307,6 +307,16 @@ pub struct UiSession {
     /// background tasks outlive the turn that spawned them.
     pub background_tasks: Vec<BackgroundTask>,
 
+    /// Session-scoped `task_id` -> `tool_use_id`, mirroring
+    /// `SessionTurnState::task_tool_use_ids` but surviving turn
+    /// finalisation. Populated at `task_started` (when the mapping is
+    /// live), cleared at terminal `task_updated`. The turn-scoped copy is
+    /// wiped every turn-complete, so surfaces driven by the session-scoped
+    /// `background_tasks` registry - SUBAGENTS backgrounded-agent liveness
+    /// and the PROCESSES `local_bash` feed - resolve a task that outlived
+    /// its turn through this map instead.
+    pub session_task_tool_use_ids: std::collections::HashMap<String, String>,
+
     /// Pending time-based schedules (`ScheduleWakeup` + `CronCreate`)
     /// surfaced in the Inspector SCHEDULES section. Pruned by the
     /// ~1s timer tick via `App::prune_expired_schedules`.
@@ -517,6 +527,7 @@ impl Default for UiSession {
             stop_hook_summary_expanded: std::collections::HashMap::default(),
             monitors: Vec::default(),
             background_tasks: Vec::default(),
+            session_task_tool_use_ids: std::collections::HashMap::default(),
             schedules: Vec::default(),
             workflows: Vec::default(),
             group_collapse_levels: std::collections::HashMap::default(),

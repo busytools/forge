@@ -2526,11 +2526,12 @@ mod tests {
     }
 
     #[test]
-    fn append_body_surfaces_backgrounded_bash_under_processes() {
-        // Wire shape: a backgrounded Bash in the transcript, its task_id
-        // mapped by task_started, and the CLI registry listing it. With
-        // no process snapshot (pre-first-scan) it can only surface via
-        // the authoritative feed - and must land in PROCESSES.
+    fn append_body_surfaces_turn_outlived_backgrounded_bash_under_processes() {
+        // A backgrounded Bash that outlived its spawning turn: the Bash is
+        // in the transcript, its session-scoped task_id mapping survives,
+        // the CLI registry still lists it, but turn_state is empty (turn
+        // finalised) and there's no process snapshot (the ~1 s scan hasn't
+        // caught it). It must still surface - under PROCESSES.
         use crate::app::{BackgroundTask, ChatMessage, MessageBlock, MessageRole};
         let mut app = App::test_default();
         let mut bash = subagent_test_child_info("tu-bash", "Bash", "npm run build");
@@ -2541,9 +2542,9 @@ mod tests {
             vec![MessageBlock::ToolCall(Box::new(bash))],
             None,
         ));
-        let _: () = app.with_turn_state_mut(|ts| {
-            ts.task_tool_use_ids.insert("b1".to_owned(), "tu-bash".to_owned());
-        });
+        // Session-scoped mapping (from task_started) - turn_state is left
+        // empty to simulate a finalised turn.
+        app.insert_session_task_mapping("b1".to_owned(), "tu-bash".to_owned());
         *app.background_tasks_mut() = vec![BackgroundTask {
             task_id: "b1".to_owned(),
             task_type: "local_bash".to_owned(),
@@ -2579,6 +2580,74 @@ mod tests {
         assert!(
             !text.contains("Review conv-row animation"),
             "agent is not surfaced as a flat PROCESSES row: {text}"
+        );
+    }
+
+    #[test]
+    fn collect_processes_dedups_backgrounded_bash_to_exactly_one_row() {
+        // The same backgrounded bash is in the transcript (wire-alive), the
+        // OS snapshot (matching cmdline), and the CLI registry. It must
+        // render EXACTLY once - the enriched OS row - not doubled by the
+        // authoritative feed.
+        use crate::app::{BackgroundTask, ChatMessage, MessageBlock, MessageRole};
+        use forge_workspace::env::processes::{ProcessEntry, ProcessSnapshot};
+        let mut app = App::test_default();
+        let mut bash = subagent_test_child_info("tu-bash", "Bash", "cargo nextest run");
+        bash.raw_input = Some(serde_json::json!({
+            "command": "cargo nextest run",
+            "description": "Run unit tests",
+            "run_in_background": true,
+        }));
+        bash.status = crate::agent::model::ToolCallStatus::InProgress;
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(bash))],
+            None,
+        ));
+        app.insert_session_task_mapping("b1".to_owned(), "tu-bash".to_owned());
+        *app.background_tasks_mut() = vec![BackgroundTask {
+            task_id: "b1".to_owned(),
+            task_type: "local_bash".to_owned(),
+            description: "Run unit tests".to_owned(),
+        }];
+        app.set_active_process_snapshot_for_test(ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![ProcessEntry {
+                pid: 42,
+                parent_pid: 1,
+                name: "zsh".to_owned(),
+                command: "/bin/zsh -c -l eval 'cargo nextest run' < /dev/null".to_owned(),
+                memory_bytes: 32 * 1024 * 1024,
+                started_at_unix: None,
+            }],
+        });
+
+        let coll = crate::app::processes::collect_active_processes(&app);
+        let count = coll.rows.iter().filter(|row| row.headline == "Run unit tests").count();
+        assert_eq!(count, 1, "backgrounded bash renders exactly once; rows: {:?}", coll.rows);
+    }
+
+    #[test]
+    fn append_body_routes_backgrounded_workflow_to_workflows_not_processes() {
+        // A backgrounded local_workflow surfaces in WORKFLOWS (driven by
+        // its session-scoped WorkflowEntry), never as a flat PROCESSES row.
+        use crate::app::BackgroundTask;
+        let mut app = App::test_default();
+        app.upsert_workflow_from_tool_input("tu-wf", "nightly-audit".to_owned(), None);
+        *app.background_tasks_mut() = vec![BackgroundTask {
+            task_id: "wf1".to_owned(),
+            task_type: "local_workflow".to_owned(),
+            description: "nightly-audit run".to_owned(),
+        }];
+        let mut lines = Vec::new();
+        append_body(&mut lines, &app, 60);
+        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("WORKFLOWS"), "workflow renders in WORKFLOWS: {text}");
+        assert!(text.contains("nightly-audit"), "workflow name shows in WORKFLOWS: {text}");
+        assert!(!text.contains("BACKGROUND"), "no BACKGROUND section: {text}");
+        assert!(
+            !text.contains("nightly-audit run"),
+            "registry description not surfaced as a flat PROCESSES row: {text}"
         );
     }
 

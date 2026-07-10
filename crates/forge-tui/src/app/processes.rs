@@ -200,55 +200,64 @@ pub fn collect_active_processes(app: &App) -> ProcessCollection {
         rows.extend(rows_from_os_snapshot(snapshot, &wire_alive));
     }
 
-    // Feed the CLI's authoritative backgrounded-`local_bash` registry
-    // in: a short-lived or just-started bash can be in `background_tasks`
-    // yet absent from the ~1 s OS snapshot, so without this it renders
-    // nowhere once the standalone BACKGROUND section is gone. Deduped by
-    // the wire command so a scanned bash isn't doubled; agents /
-    // workflows are filtered out (they own SUBAGENTS / WORKFLOWS).
-    let command_by_task_id: HashMap<String, String> = {
-        let command_by_tool_use: HashMap<&str, &str> = session
-            .messages
-            .iter()
-            .flat_map(|m| &m.blocks)
-            .filter_map(|block| match block {
-                MessageBlock::ToolCall(tc) => {
-                    let command = read_str_field(tc.raw_input.as_ref(), "command");
-                    (!command.is_empty()).then_some((tc.id.as_str(), command))
-                }
-                _ => None,
-            })
-            .collect();
-        app.with_turn_state(|ts| {
-            ts.task_tool_use_ids
-                .iter()
-                .filter_map(|(task_id, tool_use_id)| {
-                    command_by_tool_use
-                        .get(tool_use_id.as_str())
-                        .map(|command| (task_id.clone(), (*command).to_owned()))
-                })
-                .collect()
-        })
-    };
-    rows.extend(background_bash_rows(
-        &session.background_tasks,
-        &command_by_task_id,
-        session.process_snapshot.as_ref(),
-    ));
+    // Feed the CLI's authoritative backgrounded-`local_bash` registry in:
+    // a short-lived / just-started / pre-first-scan bash can be in
+    // `background_tasks` yet absent from the OS snapshot, so without this
+    // it renders nowhere. Commands resolve through the session-scoped task
+    // map (survives turn finalisation, unlike the turn-scoped one), so a
+    // bash that outlived its turn is still deduped correctly rather than
+    // dropped. Skipped entirely when the registry has no local_bash.
+    if session.background_tasks.iter().any(|task| task.task_type == "local_bash") {
+        let command_by_task_id = session_command_by_task_id(session);
+        let synthetic = background_bash_rows(
+            &session.background_tasks,
+            &command_by_task_id,
+            session.process_snapshot.as_ref(),
+        );
+        // Reserve room so these gap-fill rows survive the sanity cap - they
+        // are appended last, so a full OS walk would otherwise truncate the
+        // authoritative registry rows first.
+        rows.truncate(PROCESSES_MAX.saturating_sub(synthetic.len()));
+        rows.extend(synthetic);
+    }
 
     rows.truncate(PROCESSES_MAX);
     ProcessCollection { rows }
 }
 
-/// Synthesise PROCESSES rows for CLI-authoritative backgrounded
-/// `local_bash` tasks the OS scan hasn't surfaced. A task is skipped
-/// when its wire command already substring-matches a scanned process
-/// (the OS walk emitted the row) or when the command can't be resolved
-/// (`task_started`'s mapping was cleared at turn finalisation, so the
-/// task outlived its turn - any still-alive process is already an OS
-/// row). What remains is the genuine gap: a short-lived / just-started /
-/// pre-first-scan bash the scan missed. Non-`local_bash` kinds are
-/// skipped (agents render in SUBAGENTS, workflows in WORKFLOWS).
+/// Build `task_id` -> wire command for the active session by joining the
+/// session-scoped task map (`task_id` -> `tool_use_id`, survives turn
+/// finalisation) with each tool call's `raw_input.command`. Used to dedup
+/// the backgrounded-`local_bash` feed against OS-scan rows.
+fn session_command_by_task_id(session: &crate::app::session::UiSession) -> HashMap<String, String> {
+    let command_by_tool_use: HashMap<&str, &str> = session
+        .messages
+        .iter()
+        .flat_map(|message| &message.blocks)
+        .filter_map(|block| match block {
+            MessageBlock::ToolCall(tc) => {
+                let command = read_str_field(tc.raw_input.as_ref(), "command");
+                (!command.is_empty()).then_some((tc.id.as_str(), command))
+            }
+            _ => None,
+        })
+        .collect();
+    session
+        .session_task_tool_use_ids
+        .iter()
+        .filter_map(|(task_id, tool_use_id)| {
+            command_by_tool_use
+                .get(tool_use_id.as_str())
+                .map(|command| (task_id.clone(), (*command).to_owned()))
+        })
+        .collect()
+}
+
+/// Synthesise PROCESSES rows for CLI-registry backgrounded `local_bash`
+/// the OS scan hasn't surfaced. Skips a task whose command already
+/// substring-matches a scanned process (the OS walk covers it) or is
+/// unresolvable (terminal-cleared from the session map); non-`local_bash`
+/// kinds route to SUBAGENTS / WORKFLOWS.
 fn background_bash_rows(
     background_tasks: &[BackgroundTask],
     command_by_task_id: &HashMap<String, String>,

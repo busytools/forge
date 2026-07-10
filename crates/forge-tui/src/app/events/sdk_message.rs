@@ -1137,6 +1137,10 @@ fn handle_task_started(app: &mut App, msg: Message) {
             // patch lands.
             ts.alive_task_ids.insert(task_id_owned);
         });
+        // Session-scoped mirror that survives turn finalisation - the
+        // cross-turn resolver for backgrounded agents (SUBAGENTS) and
+        // the PROCESSES local_bash feed.
+        app.insert_session_task_mapping(task_id.clone(), id.to_owned());
         // stamp the wire-level task_id on the matching
         // MonitorEntry so subsequent `task_notification` / `task_updated`
         // events (keyed by task_id) can route to the right row.
@@ -1235,6 +1239,9 @@ fn handle_task_updated(app: &mut App, msg: Message) {
         let _: () = app.with_turn_state_mut(|ts| {
             ts.alive_task_ids.remove(&task_id_owned);
         });
+        // Drop the session-scoped mirror too; keyed by task_id, so it
+        // runs even post-turn when the tool_use_id lookup below is empty.
+        app.remove_session_task_mapping(&task_id);
     }
 
     // The standard tool-call card update still requires the
@@ -1413,6 +1420,24 @@ fn handle_background_tasks_changed(app: &mut App, msg: Message) {
             dropped = tasks.len() - parsed.len(),
             entry_count = tasks.len(),
         );
+    }
+    // Drift breadcrumb (Hard Rule #16): every kind must route to a section
+    // (local_bash -> PROCESSES; agent/local_agent -> SUBAGENTS;
+    // local_workflow/workflow -> WORKFLOWS). An unrecognised kind renders
+    // nowhere - warn so a renamed CLI kind is caught rather than silent.
+    for task in &parsed {
+        if !matches!(
+            task.task_type.as_str(),
+            "local_bash" | "agent" | "local_agent" | "local_workflow" | "workflow"
+        ) {
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "background_task_unrouted_kind",
+                message = "background_tasks entry has an unrecognised task_type; renders in no Inspector section (possible wire drift)",
+                outcome = "partial",
+                task_type = %task.task_type,
+            );
+        }
     }
     *app.background_tasks_mut() = parsed;
 }
@@ -2680,6 +2705,10 @@ mod background_tasks_changed_tests {
         Message::BackgroundTasksChanged { tasks, uuid: String::new(), session_id: String::new() }
     }
 
+    fn background_tasks(app: &App) -> &[crate::app::state::types::BackgroundTask] {
+        app.active_session().map_or(&[], |s| s.background_tasks.as_slice())
+    }
+
     #[test]
     fn snapshot_populates_then_empty_snapshot_clears() {
         let mut app = App::test_default();
@@ -2691,7 +2720,7 @@ mod background_tasks_changed_tests {
                 "description": "Print marker after 1s in background",
             })]),
         );
-        let tasks = app.background_tasks();
+        let tasks = background_tasks(&app);
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].task_id, "b3cjfmhsq");
         assert_eq!(tasks[0].task_type, "local_bash");
@@ -2700,7 +2729,7 @@ mod background_tasks_changed_tests {
         // Full-snapshot semantics: an empty array replaces the list
         // with nothing.
         handle_sdk_message(&mut app, background_event(Vec::new()));
-        assert!(app.background_tasks().is_empty());
+        assert!(background_tasks(&app).is_empty());
     }
 
     #[test]
@@ -2722,7 +2751,7 @@ mod background_tasks_changed_tests {
                 "description": "two",
             })]),
         );
-        let tasks = app.background_tasks();
+        let tasks = background_tasks(&app);
         assert_eq!(tasks.len(), 1, "each event replaces the whole list");
         assert_eq!(tasks[0].task_id, "second");
         assert_eq!(tasks[0].task_type, "agent");
@@ -2739,7 +2768,7 @@ mod background_tasks_changed_tests {
                 json!("not-an-object"),
             ]),
         );
-        let tasks = app.background_tasks();
+        let tasks = background_tasks(&app);
         assert_eq!(tasks.len(), 1, "malformed entries dropped, valid one kept");
         assert_eq!(tasks[0].task_id, "ok");
     }

@@ -1870,18 +1870,26 @@ impl App {
         &mut self.active_bucket_mut().monitors
     }
 
-    /// Active session's CLI background-task snapshot (the PROCESSES
-    /// section's `local_bash` feed reads this).
-    pub fn background_tasks(&self) -> &[crate::app::state::types::BackgroundTask] {
-        self.active_session().map_or(&[], |s| s.background_tasks.as_slice())
-    }
-
     /// Mutable accessor for the active session's background-task
     /// snapshot. Auto-creates the pre-Connect bucket if missing.
     pub(crate) fn background_tasks_mut(
         &mut self,
     ) -> &mut Vec<crate::app::state::types::BackgroundTask> {
         &mut self.active_bucket_mut().background_tasks
+    }
+
+    /// Record a session-scoped `task_id` -> `tool_use_id` at
+    /// `task_started`, so a task that outlives its turn stays resolvable
+    /// after the turn-scoped map is wiped (see
+    /// `UiSession::session_task_tool_use_ids`).
+    pub(crate) fn insert_session_task_mapping(&mut self, task_id: String, tool_use_id: String) {
+        self.active_bucket_mut().session_task_tool_use_ids.insert(task_id, tool_use_id);
+    }
+
+    /// Drop a session-scoped task mapping when the task reaches a
+    /// terminal state. No-op when absent.
+    pub(crate) fn remove_session_task_mapping(&mut self, task_id: &str) {
+        self.active_bucket_mut().session_task_tool_use_ids.remove(task_id);
     }
 
     /// Active session's SCHEDULES entries (Inspector SCHEDULES
@@ -2332,8 +2340,30 @@ impl App {
                 .map(|(_, tool_use_id)| tool_use_id.clone())
                 .collect()
         });
+        // Session-scoped backstop: a backgrounded agent keeps running
+        // after its spawning turn Results, but the turn-scoped set above
+        // is wiped at turn-complete and the sentinel flipped its root
+        // terminal - and an agent has no OS process to fall back to. Mark
+        // a root active while its task_id is still in the session-scoped
+        // `background_tasks` registry under an agent kind (resolved via the
+        // session-scoped task map). Mirrors WORKFLOWS' cross-turn survival.
+        let backgrounded_agent_roots: std::collections::HashSet<&str> = {
+            let agent_task_ids: std::collections::HashSet<&str> = session
+                .background_tasks
+                .iter()
+                .filter(|task| matches!(task.task_type.as_str(), "agent" | "local_agent"))
+                .map(|task| task.task_id.as_str())
+                .collect();
+            session
+                .session_task_tool_use_ids
+                .iter()
+                .filter(|(task_id, _)| agent_task_ids.contains(task_id.as_str()))
+                .map(|(_, tool_use_id)| tool_use_id.as_str())
+                .collect()
+        };
         let root_is_active = |root: &&crate::app::ToolCallInfo| {
             alive_tool_use_ids.contains(root.id.as_str())
+                || backgrounded_agent_roots.contains(root.id.as_str())
                 || matches!(
                     root.status,
                     crate::agent::model::ToolCallStatus::InProgress
@@ -3464,6 +3494,19 @@ fn subagent_label_from_root(root: &ToolCallInfo) -> String {
         (Some(kind), None) => kind,
         (None, Some(line)) => line,
         (None, None) => root.sdk_tool_name.clone(),
+    }
+}
+
+#[cfg(test)]
+impl App {
+    /// Test-only: stamp a process snapshot on the active session so
+    /// `collect_active_processes` can be exercised end-to-end with a
+    /// populated OS scan.
+    pub(crate) fn set_active_process_snapshot_for_test(
+        &mut self,
+        snapshot: forge_workspace::env::processes::ProcessSnapshot,
+    ) {
+        self.active_bucket_mut().process_snapshot = Some(snapshot);
     }
 }
 
@@ -7561,6 +7604,59 @@ mod tests {
             SUBAGENT_TAIL_CAP,
             "alive backgrounded root keeps its live tail, capped at SUBAGENT_TAIL_CAP; got {:?}",
             view[0].tail,
+        );
+    }
+
+    /// Regression (unify-activity): a backgrounded AGENT that outlives its
+    /// spawning turn. The sentinel flips the root terminal and turn
+    /// finalisation wipes the turn-scoped alive set, so the turn-scoped
+    /// path drops it - and an agent has no OS process to fall back to. The
+    /// session-scoped `background_tasks` registry (agent kind, resolved via
+    /// the session-scoped task map) must keep it in SUBAGENTS with its
+    /// tail, mirroring how WORKFLOWS survives across turns.
+    #[test]
+    fn subagents_view_keeps_backgrounded_agent_alive_via_registry_after_turn_reset() {
+        let mut app = App::test_default();
+        let root = make_subagent_root_tc(
+            "tu-root-bg-agent",
+            "Explore",
+            "long-running background agent",
+            model::ToolCallStatus::Completed,
+        );
+        let child = make_subagent_child_tc("tu-bg-agent-c1", "Read", "conv-row.tsx");
+        push_subagent_session(&mut app, root, vec![child]);
+        // task_started recorded the session-scoped mapping (survives reset).
+        app.insert_session_task_mapping("task-bg-agent".to_owned(), "tu-root-bg-agent".to_owned());
+        // The CLI registry still lists it as a live backgrounded agent.
+        *app.background_tasks_mut() = vec![crate::app::state::types::BackgroundTask {
+            task_id: "task-bg-agent".to_owned(),
+            task_type: "local_agent".to_owned(),
+            description: "long-running background agent".to_owned(),
+        }];
+        // Turn finalisation wiped the turn-scoped liveness.
+        let _: () = app.with_turn_state_mut(|ts| {
+            ts.task_tool_use_ids.clear();
+            ts.alive_task_ids.clear();
+        });
+
+        let view = app.subagents_view();
+        assert_eq!(
+            view.len(),
+            1,
+            "a backgrounded agent still in the registry survives turn reset; got {view:?}",
+        );
+        assert_eq!(view[0].tool_use_id, "tu-root-bg-agent");
+        assert_eq!(
+            view[0].status,
+            model::ToolCallStatus::InProgress,
+            "registry-alive backgrounded agent renders running; got {:?}",
+            view[0].status,
+        );
+        assert_eq!(
+            view[0].tail.len(),
+            1,
+            "its live tool tail is preserved; got {:?}",
+            view[0].tail
         );
     }
 
