@@ -484,15 +484,23 @@ fn overflow_row(hidden: usize, depth: u8, ancestor_has_more: Vec<bool>) -> Proce
     }
 }
 
+/// The alive wire tool call whose `command` substring-matches `entry`'s
+/// cmdline, if any. Shared by [`build_row_for_entry`] and the tier in
+/// `sort_siblings_inplace` so the two never classify the same match
+/// differently.
+fn wire_match<'a>(entry: &ProcessEntry, wire_alive: &[&'a ToolCallInfo]) -> Option<&'a ToolCallInfo> {
+    wire_alive.iter().copied().find(|tc| {
+        let cmd = read_str_field(tc.raw_input.as_ref(), "command");
+        !cmd.is_empty() && process_cmdline_matches_tool_input(&entry.command, cmd)
+    })
+}
+
 /// Build a row for a single OS entry, doing the wire-match check
 /// against the alive tool calls. Tree position (`depth`,
 /// `is_last_sibling`, `ancestor_has_more`) is initialised to
 /// defaults; the DFS walker overwrites them.
 fn build_row_for_entry(entry: &ProcessEntry, wire_alive: &[&ToolCallInfo]) -> ProcessRow {
-    let matched = wire_alive.iter().copied().find(|tc| {
-        let cmd = read_str_field(tc.raw_input.as_ref(), "command");
-        !cmd.is_empty() && process_cmdline_matches_tool_input(&entry.command, cmd)
-    });
+    let matched = wire_match(entry, wire_alive);
     match matched {
         // Monitor's authoritative surface is the
         // dedicated MONITORS Inspector section. The PROCESSES row
@@ -542,7 +550,7 @@ fn mcp_server_row(entry: &ProcessEntry, infra: &InfraLabel) -> ProcessRow {
 
 /// Sort entries in place by kind tier, then effective memory descending
 /// with PID as the stable tie-break (PID is fixed for a process's lifetime
-/// so ties stay deterministic across frames). Tiers: wire-matched work pins
+/// so ties stay deterministic across frames). Tiers: matched Bash work pins
 /// to the top, then MCP-server infra, then unrecognized generic processes -
 /// so a light MCP server still sorts above a heavier loose process, and
 /// memory only orders within a tier.
@@ -565,11 +573,7 @@ fn sort_siblings_inplace(
     // renders generic (2 - its authoritative surface is the MONITORS section);
     // otherwise MCP-server infra (1) or unrecognized generic (2).
     let tier = |e: &ProcessEntry| -> u8 {
-        let matched = wire_alive.iter().copied().find(|tc| {
-            let cmd = read_str_field(tc.raw_input.as_ref(), "command");
-            !cmd.is_empty() && process_cmdline_matches_tool_input(&e.command, cmd)
-        });
-        match matched {
+        match wire_match(e, wire_alive) {
             Some(tc) if is_monitor_tool_name(&tc.sdk_tool_name) => 2,
             Some(tc) if is_execute_tool_name(&tc.sdk_tool_name) => 0,
             _ if classify_known_infra(&e.command).is_some() => 1,
