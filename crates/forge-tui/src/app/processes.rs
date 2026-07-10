@@ -210,34 +210,28 @@ pub fn collect_active_processes(app: &App) -> ProcessCollection {
 
     let mut rows: Vec<ProcessRow> = Vec::new();
 
-    // OS-walked entries - the source of truth for live work.
+    // Registry-fed backgrounded `local_bash` rows lead: a bash the OS scan
+    // hasn't surfaced (short-lived, pre-first-scan, or turn-outlived) is active
+    // work, so it sits above the OS walk's steady MCP-server tier instead of
+    // trailing below it, and leading keeps it ahead of the sanity cap. Commands
+    // resolve through the session-scoped task map (survives turn finalisation),
+    // so a bash the OS scan already covers is deduped out, not doubled.
+    if session.background_tasks.iter().any(|task| task.task_type == "local_bash") {
+        let command_by_task_id = session_command_by_task_id(session);
+        rows.extend(background_bash_rows(
+            &session.background_tasks,
+            &command_by_task_id,
+            session.process_snapshot.as_ref(),
+        ));
+    }
+
+    // OS-walked entries follow - the source of truth for live work.
     // Bash / Monitor wire entries that didn't match an OS row are
     // intentionally dropped (the OS walk is the truth of what is
     // RUNNING). CronCreate registrations live in the dedicated
     // SCHEDULES Inspector section, not here.
     if let Some(snapshot) = session.process_snapshot.as_ref() {
         rows.extend(rows_from_os_snapshot(snapshot, &wire_alive));
-    }
-
-    // Feed the CLI's authoritative backgrounded-`local_bash` registry in:
-    // a short-lived / just-started / pre-first-scan bash can be in
-    // `background_tasks` yet absent from the OS snapshot, so without this
-    // it renders nowhere. Commands resolve through the session-scoped task
-    // map (survives turn finalisation, unlike the turn-scoped one), so a
-    // bash that outlived its turn is still deduped correctly rather than
-    // dropped. Skipped entirely when the registry has no local_bash.
-    if session.background_tasks.iter().any(|task| task.task_type == "local_bash") {
-        let command_by_task_id = session_command_by_task_id(session);
-        let synthetic = background_bash_rows(
-            &session.background_tasks,
-            &command_by_task_id,
-            session.process_snapshot.as_ref(),
-        );
-        // Reserve room so these gap-fill rows survive the sanity cap - they
-        // are appended last, so a full OS walk would otherwise truncate the
-        // authoritative registry rows first.
-        rows.truncate(PROCESSES_MAX.saturating_sub(synthetic.len()));
-        rows.extend(synthetic);
     }
 
     rows.truncate(PROCESSES_MAX);
@@ -1467,6 +1461,137 @@ mod tests {
         assert_eq!(
             coll.rows[0].headline, "sleep 60 && echo done",
             "unenriched row carries the raw command; got {:?}",
+            coll.rows,
+        );
+    }
+
+    #[test]
+    fn collect_active_processes_matches_single_quote_bash_as_one_enriched_row() {
+        // A backgrounded bash whose command contains single-quotes: the shell
+        // wrapper re-escapes each `'` as `'"'"'`. The OS row must still
+        // correlate to its wire tool call (enriched BashBackgrounded,
+        // description headline) AND the synthetic registry feed must dedup
+        // against it - exactly one row, not a raw unmatched Process row plus a
+        // synthetic duplicate.
+        use crate::app::{App, ChatMessage};
+
+        let mut app = App::test_default();
+
+        // Backgrounded bash: the sentinel flipped its card Completed while the
+        // OS process keeps running, so enrichment rides the session-scoped
+        // registry, not the turn-scoped alive set.
+        let mut bash = fake_tool_call_info(
+            "tu-bash",
+            "Bash",
+            json!({
+                "command": "echo 'sq-marker'; sleep 40",
+                "description": "Print marker then wait",
+                "run_in_background": true,
+            }),
+        );
+        bash.status = ToolCallStatus::Completed;
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(bash))],
+            None,
+        ));
+
+        app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
+        *app.background_tasks_mut() = vec![BackgroundTask {
+            task_id: "task-bash".to_owned(),
+            task_type: "local_bash".to_owned(),
+            description: "Print marker then wait".to_owned(),
+        }];
+
+        // OS scan caught the process; its cmdline carries the `'"'"'`-escaped
+        // single-quotes exactly as `ps -axww` reports them.
+        app.set_active_process_snapshot_for_test(ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![ProcessEntry {
+                pid: 4242,
+                parent_pid: 1,
+                name: "zsh".to_owned(),
+                command: real_wrapper(r#"echo '"'"'sq-marker'"'"'; sleep 40"#),
+                memory_bytes: 4 * 1024 * 1024,
+                started_at_unix: None,
+            }],
+        });
+
+        let coll = collect_active_processes(&app);
+        assert_eq!(
+            coll.rows.len(),
+            1,
+            "exactly one row, no synthetic duplicate; got {:?}",
+            coll.rows
+        );
+        assert_eq!(coll.rows[0].kind, ProcessKind::BashBackgrounded, "got {:?}", coll.rows);
+        assert_eq!(coll.rows[0].headline, "Print marker then wait", "got {:?}", coll.rows);
+        assert!(
+            !coll.rows.iter().any(|r| r.kind == ProcessKind::Process),
+            "no raw unmatched Process row; got {:?}",
+            coll.rows,
+        );
+    }
+
+    #[test]
+    fn collect_active_processes_sorts_synthetic_bash_above_mcp_server() {
+        // An OS-missed backgrounded bash surfaces only as a synthetic row; it
+        // must cluster with the other active-work rows ABOVE steady
+        // MCP-server infra, not be appended below it.
+        use crate::app::{App, ChatMessage};
+
+        let mut app = App::test_default();
+
+        // A resolvable backgrounded bash the OS scan did NOT catch.
+        let bash = fake_tool_call_info(
+            "tu-bash",
+            "Bash",
+            json!({
+                "command": "deploy.sh --prod",
+                "description": "Deploy to prod",
+                "run_in_background": true,
+            }),
+        );
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(bash))],
+            None,
+        ));
+        app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
+        *app.background_tasks_mut() = vec![BackgroundTask {
+            task_id: "task-bash".to_owned(),
+            task_type: "local_bash".to_owned(),
+            description: "Deploy to prod".to_owned(),
+        }];
+
+        // Snapshot has only a memory-heavy MCP server: under the old
+        // append-last order it landed above the trailing synthetic bash row.
+        app.set_active_process_snapshot_for_test(ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![ProcessEntry {
+                pid: 100,
+                parent_pid: 1,
+                name: "npm".to_owned(),
+                command: "npm exec @upstash/context7-mcp".to_owned(),
+                memory_bytes: 200 * 1024 * 1024,
+                started_at_unix: None,
+            }],
+        });
+
+        let coll = collect_active_processes(&app);
+        let bash_idx = coll
+            .rows
+            .iter()
+            .position(|r| r.kind == ProcessKind::BashBackgrounded)
+            .expect("synthetic bash row present");
+        let mcp_idx = coll
+            .rows
+            .iter()
+            .position(|r| r.kind == ProcessKind::McpServer)
+            .expect("mcp server row present");
+        assert!(
+            bash_idx < mcp_idx,
+            "backgrounded bash must sort above MCP server; got {:?}",
             coll.rows,
         );
     }
