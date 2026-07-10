@@ -192,7 +192,7 @@ refreshes are direct `Workspace` methods rather than command
 variants: `refresh_status_snapshot`, `refresh_oauth_credentials_snapshot`,
 `refresh_context_usage`, `reload_plugins`, `refresh_mcp_snapshot`.
 Direct-accessor facades (`settings_documents`, `write_settings_document`,
-`project_memory_path`, `config_dir_for`, `oauth_usage`) also live as
+`project_memory_path`, `config_dir_for`) also live as
 inherent `Workspace` methods. `SessionUpdate::Connected` /
 `SessionReplaced` / `AuthCompleted` no longer carry an
 `Arc<AgentHandle>` payload - the handle is stamped onto the
