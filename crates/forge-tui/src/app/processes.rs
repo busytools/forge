@@ -138,11 +138,12 @@ impl ProcessCollection {
 /// the OS process's cmdline. Cron rows tag along separately because
 /// they're registrations, not processes.
 ///
-/// Order: DFS pre-order from claude's direct children. Within each
-/// sibling group, matched (pinned) rows take priority over unmatched
-/// ones; rows in the same pin tier sort by `memory_bytes` descending
-/// with PID as the stable tie-break. Cron rows are appended at the
-/// end. Final list is capped at [`PROCESSES_MAX`] for sanity.
+/// Order: registry-fed backgrounded `local_bash` rows the OS scan missed
+/// lead, then the OS walk in DFS pre-order from claude's direct children.
+/// Within each sibling group, rows sort by tier - matched work, then MCP
+/// servers, then generic processes - with `memory_bytes` descending and PID
+/// as the tie-break inside each tier. Final list is capped at
+/// [`PROCESSES_MAX`] for sanity.
 pub fn collect_active_processes(app: &App) -> ProcessCollection {
     let Some(session) = app.active_session() else {
         return ProcessCollection { rows: Vec::new() };
@@ -540,10 +541,12 @@ fn mcp_server_row(entry: &ProcessEntry, infra: &InfraLabel) -> ProcessRow {
     }
 }
 
-/// Sort entries in place: wire-matched rows pin to the top of their
-/// sibling group, then by effective memory descending with PID as the
-/// stable tie-break (PID is fixed for a process's lifetime so ties stay
-/// deterministic across frames).
+/// Sort entries in place by kind tier, then effective memory descending
+/// with PID as the stable tie-break (PID is fixed for a process's lifetime
+/// so ties stay deterministic across frames). Tiers: wire-matched work pins
+/// to the top, then MCP-server infra, then unrecognized generic processes -
+/// so a light MCP server still sorts above a heavier loose process, and
+/// memory only orders within a tier.
 ///
 /// `subtree_totals`, when supplied for depth-0 roots, overrides each
 /// entry's sort-memory with its subtree total - so a supervisor sorts
@@ -558,14 +561,21 @@ fn sort_siblings_inplace(
     let sort_mem = |e: &ProcessEntry| -> u64 {
         subtree_totals.and_then(|m| m.get(&e.pid).copied()).unwrap_or(e.memory_bytes)
     };
-    entries.sort_by(|a, b| {
-        let a_m = is_matched_entry(a, wire_alive);
-        let b_m = is_matched_entry(b, wire_alive);
-        match (a_m, b_m) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => sort_mem(b).cmp(&sort_mem(a)).then_with(|| a.pid.cmp(&b.pid)),
+    // 0 = wire-matched work, 1 = MCP-server infra, 2 = generic; lower pins first.
+    let tier = |e: &ProcessEntry| -> u8 {
+        if is_matched_entry(e, wire_alive) {
+            0
+        } else if classify_known_infra(&e.command).is_some() {
+            1
+        } else {
+            2
         }
+    };
+    entries.sort_by(|a, b| {
+        tier(a)
+            .cmp(&tier(b))
+            .then_with(|| sort_mem(b).cmp(&sort_mem(a)))
+            .then_with(|| a.pid.cmp(&b.pid))
     });
 }
 
@@ -1111,6 +1121,41 @@ mod tests {
         assert_eq!(rows[0].headline, "node huge");
         assert_eq!(rows[1].headline, "node medium");
         assert_eq!(rows[2].headline, "node small");
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_orders_matched_then_mcp_then_generic_over_memory() {
+        // Tier model: matched/wire-tracked work first, then MCP-server infra,
+        // then unrecognized generic processes - memory-desc only WITHIN a tier,
+        // so a light MCP still outranks a heavier generic.
+        let tc = fake_tool_call_info(
+            "toolu_1",
+            "Bash",
+            json!({
+                "description": "Run tests",
+                "command": "cargo nextest run",
+                "run_in_background": true,
+            }),
+        );
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                // Generic, heaviest by far.
+                fake_entry(300, "postgres", "postgres -D /data", 512 * 1024 * 1024),
+                // MCP server, light.
+                fake_entry(200, "npm", "npm exec @upstash/context7-mcp", 20 * 1024 * 1024),
+                // Matched bash, lightest.
+                fake_entry(100, "zsh", "/bin/zsh -c -l eval 'cargo nextest run'", 10 * 1024 * 1024),
+            ],
+        };
+        let rows = rows_from_os_snapshot(&snapshot, &[&tc]);
+        assert_eq!(rows[0].kind, ProcessKind::BashBackgrounded, "matched pins top; got {rows:?}");
+        assert_eq!(
+            rows[1].kind,
+            ProcessKind::McpServer,
+            "MCP above generic despite less memory; got {rows:?}"
+        );
+        assert_eq!(rows[2].kind, ProcessKind::Process, "generic last; got {rows:?}");
     }
 
     #[test]
