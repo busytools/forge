@@ -138,11 +138,12 @@ impl ProcessCollection {
 /// the OS process's cmdline. Cron rows tag along separately because
 /// they're registrations, not processes.
 ///
-/// Order: DFS pre-order from claude's direct children. Within each
-/// sibling group, matched (pinned) rows take priority over unmatched
-/// ones; rows in the same pin tier sort by `memory_bytes` descending
-/// with PID as the stable tie-break. Cron rows are appended at the
-/// end. Final list is capped at [`PROCESSES_MAX`] for sanity.
+/// Order: registry-fed backgrounded `local_bash` rows the OS scan missed
+/// lead, then the OS walk in DFS pre-order from claude's direct children.
+/// Within each sibling group, rows sort by tier - matched work, then MCP
+/// servers, then generic processes - with `memory_bytes` descending and PID
+/// as the tie-break inside each tier. Final list is capped at
+/// [`PROCESSES_MAX`] for sanity.
 pub fn collect_active_processes(app: &App) -> ProcessCollection {
     let Some(session) = app.active_session() else {
         return ProcessCollection { rows: Vec::new() };
@@ -210,34 +211,28 @@ pub fn collect_active_processes(app: &App) -> ProcessCollection {
 
     let mut rows: Vec<ProcessRow> = Vec::new();
 
-    // OS-walked entries - the source of truth for live work.
+    // Registry-fed backgrounded `local_bash` rows lead: a bash the OS scan
+    // hasn't surfaced (short-lived, pre-first-scan, or turn-outlived) is active
+    // work, so it sits above the OS walk's steady MCP-server tier instead of
+    // trailing below it, and leading keeps it ahead of the sanity cap. Commands
+    // resolve through the session-scoped task map (survives turn finalisation),
+    // so a bash the OS scan already covers is deduped out, not doubled.
+    if session.background_tasks.iter().any(|task| task.task_type == "local_bash") {
+        let command_by_task_id = session_command_by_task_id(session);
+        rows.extend(background_bash_rows(
+            &session.background_tasks,
+            &command_by_task_id,
+            session.process_snapshot.as_ref(),
+        ));
+    }
+
+    // OS-walked entries follow - the source of truth for live work.
     // Bash / Monitor wire entries that didn't match an OS row are
     // intentionally dropped (the OS walk is the truth of what is
     // RUNNING). CronCreate registrations live in the dedicated
     // SCHEDULES Inspector section, not here.
     if let Some(snapshot) = session.process_snapshot.as_ref() {
         rows.extend(rows_from_os_snapshot(snapshot, &wire_alive));
-    }
-
-    // Feed the CLI's authoritative backgrounded-`local_bash` registry in:
-    // a short-lived / just-started / pre-first-scan bash can be in
-    // `background_tasks` yet absent from the OS snapshot, so without this
-    // it renders nowhere. Commands resolve through the session-scoped task
-    // map (survives turn finalisation, unlike the turn-scoped one), so a
-    // bash that outlived its turn is still deduped correctly rather than
-    // dropped. Skipped entirely when the registry has no local_bash.
-    if session.background_tasks.iter().any(|task| task.task_type == "local_bash") {
-        let command_by_task_id = session_command_by_task_id(session);
-        let synthetic = background_bash_rows(
-            &session.background_tasks,
-            &command_by_task_id,
-            session.process_snapshot.as_ref(),
-        );
-        // Reserve room so these gap-fill rows survive the sanity cap - they
-        // are appended last, so a full OS walk would otherwise truncate the
-        // authoritative registry rows first.
-        rows.truncate(PROCESSES_MAX.saturating_sub(synthetic.len()));
-        rows.extend(synthetic);
     }
 
     rows.truncate(PROCESSES_MAX);
@@ -317,10 +312,9 @@ fn synthetic_background_bash_row(description: &str, task_type: &str) -> ProcessR
 
 /// DFS the OS snapshot's process tree from claude's direct children
 /// down, emitting one [`ProcessRow`] per node in pre-order with
-/// correct `depth` + tree-connector metadata. Wire-matched rows
-/// (`Bash` / `Monitor`) are pinned at the top of each sibling
-/// group; unmatched siblings sort by memory desc with PID as the
-/// stable tie-break.
+/// correct `depth` + tree-connector metadata. Siblings within each
+/// group are ordered by [`sort_siblings_inplace`] (kind tier, then
+/// memory descending with PID as the stable tie-break).
 fn rows_from_os_snapshot<'a>(
     snapshot: &'a ProcessSnapshot,
     wire_alive: &'a [&'a ToolCallInfo],
@@ -414,7 +408,7 @@ fn emit_with_descendants<'a>(
     // process spawns a swarm (cargo → N rustc workers, supervisor →
     // N MCP servers) the section would otherwise drown in
     // near-identical rows. Show the top-priority subset (sibling
-    // sort already pinned matched + lower-PID first) and emit a
+    // sort already ordered by tier + memory + lower-PID) and emit a
     // single `+N more` overflow row at the same depth so the user
     // knows there's more below.
     let (visible_count, hidden) = if n > MAX_CHILDREN_PER_PARENT {
@@ -490,15 +484,26 @@ fn overflow_row(hidden: usize, depth: u8, ancestor_has_more: Vec<bool>) -> Proce
     }
 }
 
+/// The alive wire tool call whose `command` substring-matches `entry`'s
+/// cmdline, if any. Shared by [`build_row_for_entry`] and the tier in
+/// `sort_siblings_inplace` so the two never classify the same match
+/// differently.
+fn wire_match<'a>(
+    entry: &ProcessEntry,
+    wire_alive: &[&'a ToolCallInfo],
+) -> Option<&'a ToolCallInfo> {
+    wire_alive.iter().copied().find(|tc| {
+        let cmd = read_str_field(tc.raw_input.as_ref(), "command");
+        !cmd.is_empty() && process_cmdline_matches_tool_input(&entry.command, cmd)
+    })
+}
+
 /// Build a row for a single OS entry, doing the wire-match check
 /// against the alive tool calls. Tree position (`depth`,
 /// `is_last_sibling`, `ancestor_has_more`) is initialised to
 /// defaults; the DFS walker overwrites them.
 fn build_row_for_entry(entry: &ProcessEntry, wire_alive: &[&ToolCallInfo]) -> ProcessRow {
-    let matched = wire_alive.iter().copied().find(|tc| {
-        let cmd = read_str_field(tc.raw_input.as_ref(), "command");
-        !cmd.is_empty() && process_cmdline_matches_tool_input(&entry.command, cmd)
-    });
+    let matched = wire_match(entry, wire_alive);
     match matched {
         // Monitor's authoritative surface is the
         // dedicated MONITORS Inspector section. The PROCESSES row
@@ -546,10 +551,12 @@ fn mcp_server_row(entry: &ProcessEntry, infra: &InfraLabel) -> ProcessRow {
     }
 }
 
-/// Sort entries in place: wire-matched rows pin to the top of their
-/// sibling group, then by effective memory descending with PID as the
-/// stable tie-break (PID is fixed for a process's lifetime so ties stay
-/// deterministic across frames).
+/// Sort entries in place by kind tier, then effective memory descending
+/// with PID as the stable tie-break (PID is fixed for a process's lifetime
+/// so ties stay deterministic across frames). Tiers: matched Bash work pins
+/// to the top, then MCP-server infra, then unrecognized generic processes -
+/// so a light MCP server still sorts above a heavier loose process, and
+/// memory only orders within a tier.
 ///
 /// `subtree_totals`, when supplied for depth-0 roots, overrides each
 /// entry's sort-memory with its subtree total - so a supervisor sorts
@@ -564,26 +571,24 @@ fn sort_siblings_inplace(
     let sort_mem = |e: &ProcessEntry| -> u64 {
         subtree_totals.and_then(|m| m.get(&e.pid).copied()).unwrap_or(e.memory_bytes)
     };
-    entries.sort_by(|a, b| {
-        let a_m = is_matched_entry(a, wire_alive);
-        let b_m = is_matched_entry(b, wire_alive);
-        match (a_m, b_m) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => sort_mem(b).cmp(&sort_mem(a)).then_with(|| a.pid.cmp(&b.pid)),
+    // Mirror build_row_for_entry's kind arms so sort tier and render kind never
+    // disagree: matched Bash renders BashBackgrounded (0); a matched Monitor
+    // renders generic (2 - its authoritative surface is the MONITORS section);
+    // otherwise MCP-server infra (1) or unrecognized generic (2).
+    let tier = |e: &ProcessEntry| -> u8 {
+        match wire_match(e, wire_alive) {
+            Some(tc) if is_monitor_tool_name(&tc.sdk_tool_name) => 2,
+            Some(tc) if is_execute_tool_name(&tc.sdk_tool_name) => 0,
+            _ if classify_known_infra(&e.command).is_some() => 1,
+            _ => 2,
         }
+    };
+    entries.sort_by(|a, b| {
+        tier(a)
+            .cmp(&tier(b))
+            .then_with(|| sort_mem(b).cmp(&sort_mem(a)))
+            .then_with(|| a.pid.cmp(&b.pid))
     });
-}
-
-/// True when `entry`'s cmdline substring-matches any alive wire
-/// tool call's `command` field. Used by [`sort_siblings_inplace`]
-/// to pin matched rows; the actual kind/glyph decision happens in
-/// [`build_row_for_entry`].
-fn is_matched_entry(entry: &ProcessEntry, wire_alive: &[&ToolCallInfo]) -> bool {
-    wire_alive.iter().any(|tc| {
-        let cmd = read_str_field(tc.raw_input.as_ref(), "command");
-        !cmd.is_empty() && process_cmdline_matches_tool_input(&entry.command, cmd)
-    })
 }
 
 /// OS process matched to a wire-tracked backgrounded `Bash`. Headline
@@ -1120,6 +1125,92 @@ mod tests {
     }
 
     #[test]
+    fn rows_from_os_snapshot_orders_matched_then_mcp_then_generic_over_memory() {
+        // Tier model: matched/wire-tracked work first, then MCP-server infra,
+        // then unrecognized generic processes - memory-desc only WITHIN a tier,
+        // so a light MCP still outranks a heavier generic.
+        let tc = fake_tool_call_info(
+            "toolu_1",
+            "Bash",
+            json!({
+                "description": "Run tests",
+                "command": "cargo nextest run",
+                "run_in_background": true,
+            }),
+        );
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                // Generic, heaviest by far.
+                fake_entry(300, "postgres", "postgres -D /data", 512 * 1024 * 1024),
+                // MCP server, light.
+                fake_entry(200, "npm", "npm exec @upstash/context7-mcp", 20 * 1024 * 1024),
+                // Matched bash, lightest.
+                fake_entry(100, "zsh", "/bin/zsh -c -l eval 'cargo nextest run'", 10 * 1024 * 1024),
+            ],
+        };
+        let rows = rows_from_os_snapshot(&snapshot, &[&tc]);
+        assert_eq!(rows[0].kind, ProcessKind::BashBackgrounded, "matched pins top; got {rows:?}");
+        assert_eq!(
+            rows[1].kind,
+            ProcessKind::McpServer,
+            "MCP above generic despite less memory; got {rows:?}"
+        );
+        assert_eq!(rows[2].kind, ProcessKind::Process, "generic last; got {rows:?}");
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_tie_breaks_equal_memory_same_tier_by_pid() {
+        // Two same-tier (generic) roots with IDENTICAL memory must order by
+        // PID ascending - the documented cross-frame determinism guarantee.
+        // Input is reversed vs PID order so a stable sort without the PID
+        // tie-break would leave "node b.mjs" first.
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                fake_entry(200, "node", "node b.mjs", 64 * 1024 * 1024),
+                fake_entry(100, "node", "node a.mjs", 64 * 1024 * 1024),
+            ],
+        };
+        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        assert_eq!(rows[0].headline, "node a.mjs", "lower PID first on equal memory");
+        assert_eq!(rows[1].headline, "node b.mjs");
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_monitor_match_sorts_in_generic_tier_below_mcp() {
+        // A Monitor match renders as a generic Process row, so the sort tier
+        // must treat it as generic - not pin it to the matched-work tier the
+        // way a Bash match does. Otherwise a monitored process sits above
+        // MCP-server infra while rendering dim/generic (tier vs render
+        // disagreement). The MCP server must outrank the Monitor-matched row.
+        let mon = fake_tool_call_info(
+            "toolu_mon",
+            "Monitor",
+            json!({ "command": "tail -F /var/log/app.log", "persistent": true }),
+        );
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                // Monitor-matched, light.
+                fake_entry(100, "tail", "tail -F /var/log/app.log", 8 * 1024 * 1024),
+                // MCP server, heavier.
+                fake_entry(200, "npm", "npm exec @upstash/context7-mcp", 200 * 1024 * 1024),
+            ],
+        };
+        let rows = rows_from_os_snapshot(&snapshot, &[&mon]);
+        let mcp_idx = rows.iter().position(|r| r.kind == ProcessKind::McpServer).expect("mcp row");
+        let mon_idx = rows
+            .iter()
+            .position(|r| r.kind == ProcessKind::Process)
+            .expect("monitor-matched generic row");
+        assert!(
+            mcp_idx < mon_idx,
+            "MCP server must outrank a Monitor-matched generic row; got {rows:?}"
+        );
+    }
+
+    #[test]
     fn rows_from_os_snapshot_keeps_pinned_above_heavier_unpinned() {
         // Pinned (matched) row stays on top even when an unpinned
         // sibling has more memory.
@@ -1468,6 +1559,190 @@ mod tests {
             coll.rows[0].headline, "sleep 60 && echo done",
             "unenriched row carries the raw command; got {:?}",
             coll.rows,
+        );
+    }
+
+    #[test]
+    fn collect_active_processes_matches_single_quote_bash_as_one_enriched_row() {
+        // A backgrounded bash whose command contains single-quotes: the shell
+        // wrapper re-escapes each `'` as `'"'"'`. The OS row must still
+        // correlate to its wire tool call (enriched BashBackgrounded,
+        // description headline) AND the synthetic registry feed must dedup
+        // against it - exactly one row, not a raw unmatched Process row plus a
+        // synthetic duplicate.
+        use crate::app::{App, ChatMessage};
+
+        let mut app = App::test_default();
+
+        // Backgrounded bash: the sentinel flipped its card Completed while the
+        // OS process keeps running, so enrichment rides the session-scoped
+        // registry, not the turn-scoped alive set.
+        let mut bash = fake_tool_call_info(
+            "tu-bash",
+            "Bash",
+            json!({
+                "command": "echo 'sq-marker'; sleep 40",
+                "description": "Print marker then wait",
+                "run_in_background": true,
+            }),
+        );
+        bash.status = ToolCallStatus::Completed;
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(bash))],
+            None,
+        ));
+
+        app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
+        *app.background_tasks_mut() = vec![BackgroundTask {
+            task_id: "task-bash".to_owned(),
+            task_type: "local_bash".to_owned(),
+            description: "Print marker then wait".to_owned(),
+        }];
+
+        // OS scan caught the process; its cmdline carries the `'"'"'`-escaped
+        // single-quotes exactly as `ps -axww` reports them.
+        app.set_active_process_snapshot_for_test(ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![ProcessEntry {
+                pid: 4242,
+                parent_pid: 1,
+                name: "zsh".to_owned(),
+                command: real_wrapper(r#"echo '"'"'sq-marker'"'"'; sleep 40"#),
+                memory_bytes: 4 * 1024 * 1024,
+                started_at_unix: None,
+            }],
+        });
+
+        let coll = collect_active_processes(&app);
+        assert_eq!(
+            coll.rows.len(),
+            1,
+            "exactly one row, no synthetic duplicate; got {:?}",
+            coll.rows
+        );
+        assert_eq!(coll.rows[0].kind, ProcessKind::BashBackgrounded, "got {:?}", coll.rows);
+        assert_eq!(coll.rows[0].headline, "Print marker then wait", "got {:?}", coll.rows);
+        assert!(
+            !coll.rows.iter().any(|r| r.kind == ProcessKind::Process),
+            "no raw unmatched Process row; got {:?}",
+            coll.rows,
+        );
+    }
+
+    #[test]
+    fn collect_active_processes_sorts_synthetic_bash_above_mcp_server() {
+        // An OS-missed backgrounded bash surfaces only as a synthetic row; it
+        // must cluster with the other active-work rows ABOVE steady
+        // MCP-server infra, not be appended below it.
+        use crate::app::{App, ChatMessage};
+
+        let mut app = App::test_default();
+
+        // A resolvable backgrounded bash the OS scan did NOT catch.
+        let bash = fake_tool_call_info(
+            "tu-bash",
+            "Bash",
+            json!({
+                "command": "deploy.sh --prod",
+                "description": "Deploy to prod",
+                "run_in_background": true,
+            }),
+        );
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(bash))],
+            None,
+        ));
+        app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
+        *app.background_tasks_mut() = vec![BackgroundTask {
+            task_id: "task-bash".to_owned(),
+            task_type: "local_bash".to_owned(),
+            description: "Deploy to prod".to_owned(),
+        }];
+
+        // Snapshot has only a memory-heavy MCP server: under the old
+        // append-last order it landed above the trailing synthetic bash row.
+        app.set_active_process_snapshot_for_test(ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![ProcessEntry {
+                pid: 100,
+                parent_pid: 1,
+                name: "npm".to_owned(),
+                command: "npm exec @upstash/context7-mcp".to_owned(),
+                memory_bytes: 200 * 1024 * 1024,
+                started_at_unix: None,
+            }],
+        });
+
+        let coll = collect_active_processes(&app);
+        let bash_idx = coll
+            .rows
+            .iter()
+            .position(|r| r.kind == ProcessKind::BashBackgrounded)
+            .expect("synthetic bash row present");
+        let mcp_idx = coll
+            .rows
+            .iter()
+            .position(|r| r.kind == ProcessKind::McpServer)
+            .expect("mcp server row present");
+        assert!(
+            bash_idx < mcp_idx,
+            "backgrounded bash must sort above MCP server; got {:?}",
+            coll.rows,
+        );
+    }
+
+    #[test]
+    fn collect_active_processes_synthetic_bash_survives_the_row_cap() {
+        // Synthetic local_bash rows LEAD (the old truncate-reserve is gone), so
+        // with more OS rows than the cap the leading synthetic bash must still
+        // survive the truncation. Locks that ordering invariant in.
+        use crate::app::{App, ChatMessage};
+
+        let mut app = App::test_default();
+
+        // A resolvable backgrounded bash the OS scan did NOT catch.
+        let bash = fake_tool_call_info(
+            "tu-bash",
+            "Bash",
+            json!({ "command": "deploy.sh", "description": "Deploy", "run_in_background": true }),
+        );
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(bash))],
+            None,
+        ));
+        app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
+        *app.background_tasks_mut() = vec![BackgroundTask {
+            task_id: "task-bash".to_owned(),
+            task_type: "local_bash".to_owned(),
+            description: "Deploy".to_owned(),
+        }];
+
+        // More generic OS roots than PROCESSES_MAX, none matching the bash.
+        let processes = (0..60u32)
+            .map(|i| ProcessEntry {
+                pid: 1000 + i,
+                parent_pid: 1,
+                name: "worker".to_owned(),
+                command: format!("worker{i} --serve"),
+                memory_bytes: 10 * 1024 * 1024,
+                started_at_unix: None,
+            })
+            .collect();
+        app.set_active_process_snapshot_for_test(ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes,
+        });
+
+        let coll = collect_active_processes(&app);
+        assert_eq!(coll.rows.len(), PROCESSES_MAX, "capped at the sanity max");
+        assert_eq!(
+            coll.rows[0].kind,
+            ProcessKind::BashBackgrounded,
+            "leading synthetic bash survives the cap; got {:?}",
+            coll.rows[0],
         );
     }
 }
