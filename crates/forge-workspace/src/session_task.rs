@@ -1387,6 +1387,7 @@ mod tests {
             config_dir: std::path::PathBuf::from(format!("/fake/{name}")),
             proxy: true,
             env: std::collections::HashMap::new(),
+            experimental: false,
         }
     }
 

@@ -23,6 +23,10 @@ pub const STATUS_WARNING: Color = Color::Yellow;
 pub const SLASH_COMMAND: Color = Color::LightMagenta;
 pub const SUBAGENT_TOKEN: Color = Color::LightBlue;
 
+// Amber accent for the `/account` picker's experimental tag. Distinct
+// from the yellow reset-ETA (STATUS_WARNING) so the two never blur.
+pub const EXPERIMENTAL: Color = Color::Rgb(201, 161, 59);
+
 // Gotify external-notification accent - the ◈ gotify glyph + the `Gotify`
 // source label in the chat notification block. Cyan, distinct from
 // RUST_ORANGE (peer / agent traffic).

@@ -1527,7 +1527,11 @@ impl Workspace {
             accounts
                 .ordered_keys
                 .iter()
-                .filter(|k| accounts.is_account_usable(k))
+                // Mirror the ready_accounts + pick_for_project experimental
+                // filters. Defensive: the plan pool never holds an
+                // experimental account, so this only keeps the three
+                // assignment-path predicates consistent.
+                .filter(|k| accounts.is_account_usable(k) && !accounts.is_experimental(k))
                 .cloned()
                 .collect()
         };
@@ -1582,6 +1586,11 @@ impl Workspace {
             let ready: Vec<AccountKey> = accounts
                 .ordered_keys
                 .iter()
+                // Experimental accounts never enter the assignment pool
+                // (leads, static + adhoc workers) even when a project's
+                // org pins them; they are reachable only via the
+                // `/account` picker.
+                .filter(|k| !accounts.is_experimental(k))
                 .filter(|k| {
                     accounts
                         .by_key
@@ -2017,18 +2026,27 @@ impl Workspace {
         let accounts = self.accounts.lock();
         // Resolve the allow-list to concrete account names, falling
         // back to every configured account when the project pins none.
-        let names: Vec<String> = if allowed_accounts.is_empty() {
+        // Experimental accounts are then unioned in regardless of the
+        // org pin (deduped) - they are excluded from auto-assignment but
+        // globally selectable in the picker.
+        let mut names: Vec<String> = if allowed_accounts.is_empty() {
             accounts.ordered_keys.iter().map(|k| k.0.clone()).collect()
         } else {
             allowed_accounts.to_vec()
         };
-        names
+        for key in &accounts.ordered_keys {
+            if accounts.is_experimental(key) && !names.contains(&key.0) {
+                names.push(key.0.clone());
+            }
+        }
+        let mut rows: Vec<crate::AccountRow> = names
             .into_iter()
             .filter_map(|name| {
                 let key = AccountKey(name.clone());
                 let config_dir = accounts.config_dir(&key)?.clone();
                 let usable = accounts.is_account_usable(&key);
                 let is_current = current_account == Some(name.as_str());
+                let experimental = accounts.is_experimental(&key);
                 let (five_hour_util, seven_day_util, resets_at) =
                     accounts.usage(&key).map_or((0.0, 0.0, None), |snapshot| {
                         (
@@ -2045,9 +2063,15 @@ impl Workspace {
                     five_hour_util,
                     seven_day_util,
                     resets_at,
+                    experimental,
                 })
             })
-            .collect()
+            .collect();
+        // Stable-sort so regular rows lead and experimental rows trail,
+        // matching the picker's EXPERIMENTAL group. `false` sorts before
+        // `true`, and the sort preserves within-group order.
+        rows.sort_by_key(|row| row.experimental);
+        rows
     }
 
     /// Resolves a `SessionTarget` to the `SessionKey` used to look up
@@ -5254,12 +5278,14 @@ mod tests {
                     config_dir: PathBuf::from("/cfg/A"),
                     proxy: true,
                     env: std::collections::HashMap::new(),
+                    experimental: false,
                 },
                 crate::config::LoadedAccount {
                     display_name: "B".to_owned(),
                     config_dir: PathBuf::from("/cfg/B"),
                     proxy: true,
                     env: std::collections::HashMap::new(),
+                    experimental: false,
                 },
             ]);
             // A: 5h saturated (100%, future reset) -> rate limited; 7d 63%.
@@ -5296,6 +5322,81 @@ mod tests {
         assert!(rows[1].resets_at.is_none(), "usable account has no reset ETA");
     }
 
+    /// Experimental accounts are globally selectable: they appear in the
+    /// picker snapshot even when the project's org allow-list does NOT
+    /// pin them, flagged experimental and sorted after the regular rows.
+    #[test]
+    fn project_accounts_snapshot_includes_experimental_globally() {
+        let (ws, _rx) = Workspace::testing_stub();
+        {
+            let mut map = AccountStateMap::new(&[
+                crate::config::LoadedAccount {
+                    display_name: "A".to_owned(),
+                    config_dir: PathBuf::from("/cfg/A"),
+                    proxy: true,
+                    env: std::collections::HashMap::new(),
+                    experimental: false,
+                },
+                crate::config::LoadedAccount {
+                    display_name: "Exp".to_owned(),
+                    config_dir: PathBuf::from("/cfg/Exp"),
+                    proxy: true,
+                    env: std::collections::HashMap::new(),
+                    experimental: true,
+                },
+            ]);
+            map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
+            map.set_usage(&AccountKey("Exp".to_owned()), account_usage_snapshot(10.0, 10.0, None));
+            *ws.accounts.lock() = map;
+        }
+
+        // Allow-list pins only "A"; "Exp" is a different org's account.
+        let rows = ws.project_accounts_snapshot(&["A".to_owned()], Some("A"));
+
+        assert_eq!(rows.len(), 2, "experimental Exp is unioned in despite not being pinned");
+        assert_eq!(rows[0].display_name, "A", "regular allow-list rows come first");
+        assert!(!rows[0].experimental, "A is a regular account");
+        assert_eq!(rows[1].display_name, "Exp", "experimental rows sorted last");
+        assert!(rows[1].experimental, "Exp is flagged experimental");
+    }
+
+    /// An experimental account that also happens to sit in the project's
+    /// allow-list renders exactly once (deduped), flagged experimental.
+    #[test]
+    fn project_accounts_snapshot_dedups_experimental_in_allowlist() {
+        let (ws, _rx) = Workspace::testing_stub();
+        {
+            let mut map = AccountStateMap::new(&[
+                crate::config::LoadedAccount {
+                    display_name: "A".to_owned(),
+                    config_dir: PathBuf::from("/cfg/A"),
+                    proxy: true,
+                    env: std::collections::HashMap::new(),
+                    experimental: false,
+                },
+                crate::config::LoadedAccount {
+                    display_name: "Exp".to_owned(),
+                    config_dir: PathBuf::from("/cfg/Exp"),
+                    proxy: true,
+                    env: std::collections::HashMap::new(),
+                    experimental: true,
+                },
+            ]);
+            map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
+            map.set_usage(&AccountKey("Exp".to_owned()), account_usage_snapshot(10.0, 10.0, None));
+            *ws.accounts.lock() = map;
+        }
+
+        // "Exp" is BOTH pinned by the allow-list AND experimental.
+        let rows = ws.project_accounts_snapshot(&["A".to_owned(), "Exp".to_owned()], None);
+
+        assert_eq!(rows.len(), 2, "no duplicate row for the already-pinned experimental account");
+        let exp_rows: Vec<&crate::AccountRow> =
+            rows.iter().filter(|r| r.display_name == "Exp").collect();
+        assert_eq!(exp_rows.len(), 1, "Exp appears exactly once");
+        assert!(exp_rows[0].experimental, "the deduped Exp row stays flagged experimental");
+    }
+
     /// An empty allow-list (project pins no accounts) falls back to
     /// every configured account in definition order; a `None`
     /// current-account marks no row.
@@ -5309,12 +5410,14 @@ mod tests {
                     config_dir: PathBuf::from("/c/One"),
                     proxy: true,
                     env: std::collections::HashMap::new(),
+                    experimental: false,
                 },
                 crate::config::LoadedAccount {
                     display_name: "Two".to_owned(),
                     config_dir: PathBuf::from("/c/Two"),
                     proxy: true,
                     env: std::collections::HashMap::new(),
+                    experimental: false,
                 },
             ]);
             map.set_usage(&AccountKey("One".to_owned()), account_usage_snapshot(10.0, 10.0, None));
@@ -10169,6 +10272,39 @@ config_dir = "~/.claude-beta"
         dir
     }
 
+    /// An experimental account defined FIRST (Exp), a regular account
+    /// second (Alpha), both pinned by the org, project with no
+    /// allow-list. Without the experimental exclusion the lead would
+    /// bind to definition-order pool[0] = Exp; the exclusion forces it
+    /// onto Alpha.
+    fn make_workspace_dir_experimental() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Exp", "Alpha"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[accounts]]
+display_name = "Exp"
+config_dir = "~/.claude-exp"
+experimental = true
+
+[[accounts]]
+display_name = "Alpha"
+config_dir = "~/.claude-alpha"
+"#,
+        )
+        .expect("write forge.toml");
+        dir
+    }
+
     #[tokio::test]
     async fn recompute_plan_if_ready_binds_lead_in_account_definition_order() {
         // Two ready accounts + an empty project allow-list: the pool is
@@ -10206,6 +10342,62 @@ config_dir = "~/.claude-beta"
             plan.lookup(&project_key, &"lead".to_owned()).cloned(),
             Some(AccountKey("Alpha".to_owned())),
             "lead must bind to the first definition-order account, not a HashMap-order pick",
+        );
+    }
+
+    #[tokio::test]
+    async fn recompute_plan_if_ready_excludes_experimental_from_pool() {
+        // Exp is defined first and pinned by the org, but marked
+        // experimental. The assignment-plan pool must skip it: the
+        // lead binds to Alpha (the non-experimental account), never to
+        // definition-order pool[0] = Exp.
+        let dir = make_workspace_dir_experimental();
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            for name in ["Exp", "Alpha"] {
+                let snapshot = forge_primitives::usage::UsageSnapshot {
+                    source: forge_primitives::usage::UsageSourceKind::Oauth,
+                    fetched_at: std::time::SystemTime::UNIX_EPOCH,
+                    five_hour: None,
+                    seven_day: None,
+                    seven_day_opus: None,
+                    seven_day_sonnet: None,
+                    extra_usage: None,
+                };
+                accounts.set_usage(&AccountKey(name.to_owned()), snapshot);
+            }
+        }
+
+        workspace.recompute_plan_if_ready();
+        let plan = workspace.assignment_plan.lock();
+        let plan = plan.as_ref().expect("plan populates once all_loaded fires");
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        assert_eq!(
+            plan.lookup(&project_key, &"lead".to_owned()).cloned(),
+            Some(AccountKey("Alpha".to_owned())),
+            "experimental Exp is excluded from the pool; the lead binds to Alpha",
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_account_for_switch_resolves_experimental_account() {
+        // The /account manual switch must be able to resolve an
+        // experimental account - it is the only way one ever gets used.
+        // resolve_account_for_switch feeds forced_account, which bypasses
+        // the picker/plan entirely.
+        let dir = make_workspace_dir_experimental();
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let resolved = workspace.resolve_account_for_switch("Exp");
+        assert_eq!(
+            resolved.map(|(key, _)| key),
+            Some(AccountKey("Exp".to_owned())),
+            "an experimental account still resolves for the /account switch",
         );
     }
 
