@@ -344,6 +344,14 @@ impl SessionTask {
                         &key,
                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                     );
+                    // A project-spawn that never connected still holds
+                    // its buffered peer asks on the synth key - those
+                    // were never delivered, so the target_session match
+                    // above can't reach them.
+                    workspace.expire_buffered_peer_prompts(
+                        &key,
+                        crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+                    );
                     // Worker async spawn failure: classify the
                     // failure, dispatch a typed
                     // WorkerSpawnFailedNotice envelope to the lead's

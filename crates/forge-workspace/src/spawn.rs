@@ -133,6 +133,14 @@ pub(crate) fn handle_spawn_project(
                 error = %err,
                 "spawn_project: get_agent_handle failed"
             );
+            // No SessionTask exists to run its ConnectionFailed arm, so
+            // fail any peer asks buffered against this synth key here -
+            // otherwise the caller's LLM waits on a spawn that never
+            // happened.
+            workspace.expire_buffered_peer_prompts(
+                &synth_key,
+                crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+            );
             try_emit(
                 workspace,
                 "spawn_project::ConnectionFailed",

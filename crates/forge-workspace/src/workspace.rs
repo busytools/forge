@@ -4789,6 +4789,33 @@ impl Workspace {
             );
         }
     }
+
+    /// Fail every peer ask buffered against a project-spawn synth key
+    /// that never connected. The sleeping-target delivery path parks
+    /// wrapped prompts on the `__spawn_<project>__` `DomainSession`
+    /// and kicks a spawn; if that spawn never reaches `Connected`, the
+    /// buffered asks were never delivered (no `target_session` stamp)
+    /// and the synth key resolves to no catalog project, so
+    /// `expire_target_inflight` can't reach them. Drain and fail each
+    /// so the caller's LLM gets its `DeliveryFailureNotice`. No-op for
+    /// a key with no buffered prompts (any non-synth or already-drained
+    /// session).
+    pub(crate) fn expire_buffered_peer_prompts(
+        self: &Arc<Self>,
+        synth_key: &SessionKey,
+        reason: crate::mcp::peers::types::PeerFailureReason,
+    ) {
+        let buffered = {
+            let domain = self.domain_handles.lock().get(synth_key).cloned();
+            let Some(domain) = domain else {
+                return;
+            };
+            std::mem::take(&mut domain.lock().pending_peer_prompts)
+        };
+        for wrapped in buffered {
+            self.expire_inflight_ask_failed(&wrapped.correlation_id, reason);
+        }
+    }
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -7849,6 +7876,56 @@ config_dir = "~/.claude-subspace"
         assert!(
             !workspace.inflight_asks.lock().contains_key(&id),
             "worker-bound ask expired via target_session match"
+        );
+    }
+
+    /// A peer ask buffered against a `__spawn_<project>__` synth key
+    /// whose spawn never connects must be failed: the ask was never
+    /// delivered (no target_session stamp) and the synth key resolves
+    /// to no catalog project, so only expire_buffered_peer_prompts
+    /// can reach it.
+    #[tokio::test]
+    async fn expire_buffered_peer_prompts_fails_undelivered_spawn_asks() {
+        use crate::domain_session::DomainSession;
+        use crate::mcp::peers::types::{
+            CorrelationId, InflightAsk, PeerFailureReason, WrappedKind, WrappedPrompt,
+        };
+        let (workspace, _rx) = Workspace::testing_stub();
+
+        let synth_key = SessionKey::from_session_id("__spawn_granite-backend__");
+        let id = CorrelationId::new_ask();
+        let wrapped = WrappedPrompt {
+            correlation_id: id.clone(),
+            kind: WrappedKind::Question,
+            sender_name: "forge".to_owned(),
+            sender_org: "Personal".to_owned(),
+            hop: 1,
+            hop_limit: 10,
+            body: "are you up?".to_owned(),
+        };
+        let domain = Arc::new(Mutex::new(DomainSession::new(synth_key.clone(), None)));
+        domain.lock().pending_peer_prompts.push(wrapped);
+        workspace.domain_handles.lock().insert(synth_key.clone(), domain);
+        workspace.inflight_asks.lock().insert(
+            id.clone(),
+            InflightAsk {
+                correlation_id: id.clone(),
+                caller: SessionKey::from_str_for_test("asker"),
+                caller_project: "forge".to_owned(),
+                target_project: "granite-backend".to_owned(),
+                target_session: None,
+            },
+        );
+
+        workspace.expire_buffered_peer_prompts(&synth_key, PeerFailureReason::TargetConnectionFailed);
+
+        assert!(
+            !workspace.inflight_asks.lock().contains_key(&id),
+            "buffered ask failed when the spawn never connected"
+        );
+        assert!(
+            workspace.domain_handles.lock().get(&synth_key).unwrap().lock().pending_peer_prompts.is_empty(),
+            "buffered prompts drained"
         );
     }
 
