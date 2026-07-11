@@ -130,7 +130,6 @@ pub(crate) struct LoadedAccount {
 
 #[derive(Debug, Clone)]
 pub(crate) struct LoadedConfig {
-    pub orgs: Vec<LoadedOrg>,
     pub projects: Vec<LoadedProject>,
     /// Index into `projects` for the default startup target -
     /// alphabetically-first project that carries `auto_start = true`,
@@ -145,14 +144,6 @@ pub(crate) struct LoadedConfig {
     /// `[gotify]` server connection, or `None` when the section is
     /// absent (Gotify disabled).
     pub gotify: Option<GotifyConfig>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct LoadedOrg {
-    pub name: String,
-    /// Pinned account `display_name`s shared by all projects in
-    /// this org. Always non-empty (load enforces).
-    pub accounts: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -201,7 +192,6 @@ impl LoadedConfig {
     #[cfg(any(test, feature = "testing"))]
     pub(crate) fn empty_for_test() -> Self {
         Self {
-            orgs: Vec::new(),
             projects: Vec::new(),
             default_index: 0,
             accounts: Vec::new(),
@@ -310,7 +300,6 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     let mut seen_org_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut seen_project_names: std::collections::HashSet<String> =
         std::collections::HashSet::new();
-    let mut orgs: Vec<LoadedOrg> = Vec::with_capacity(parsed.orgs.len());
     let mut projects: Vec<LoadedProject> = Vec::new();
     for org_entry in parsed.orgs {
         if !seen_org_names.insert(org_entry.name.clone()) {
@@ -376,7 +365,6 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 static_workers: static_worker_labels,
             });
         }
-        orgs.push(LoadedOrg { name: org_entry.name, accounts: org_entry.accounts });
     }
 
     if projects.is_empty() {
@@ -396,7 +384,6 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     };
 
     Ok(LoadedConfig {
-        orgs,
         projects,
         default_index,
         accounts,
@@ -678,8 +665,6 @@ config_dir = "~/.claude"
         let dir = tempdir().expect("tempdir");
         write_config(dir.path(), minimal_config());
         let config = load_from_dir(dir.path()).expect("happy path");
-        assert_eq!(config.orgs.len(), 1);
-        assert_eq!(config.orgs[0].name, "Personal");
         assert_eq!(config.projects.len(), 1);
         assert_eq!(config.default_project().name, "forge");
         assert_eq!(config.default_project().org, "Personal");
@@ -884,7 +869,10 @@ config_dir = "~/.claude"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("org with a non-experimental account loads");
-        assert_eq!(config.orgs[0].accounts, vec!["Codex".to_owned(), "Granite".to_owned()]);
+        assert_eq!(
+            config.default_project().accounts,
+            vec!["Codex".to_owned(), "Granite".to_owned()]
+        );
     }
 
     #[test]

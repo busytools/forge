@@ -736,19 +736,6 @@ impl Workspace {
         })
     }
 
-    /// Handle to the workspace-owned wire-classification rewriter
-    /// proxy, when one is bound. `None` only in `testing_stub` paths.
-    pub fn proxy_handle(&self) -> Option<&forge_agent::proxy::ProxyHandle> {
-        self.proxy.as_ref()
-    }
-
-    /// Return the names of all orgs in declaration order, paired
-    /// with their pinned account list. The Projects pane uses this
-    /// to drive the org-grouped tree render.
-    pub fn list_orgs(&self) -> Vec<(String, Vec<String>)> {
-        self.config.orgs.iter().map(|org| (org.name.clone(), org.accounts.clone())).collect()
-    }
-
     /// Effective `[ui]` settings. All fields have defaults so callers
     /// can use the result without worrying about whether the section
     /// was present in the config file. `spinner` carries the resolved

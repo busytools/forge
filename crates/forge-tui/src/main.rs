@@ -148,9 +148,6 @@ fn run() -> anyhow::Result<()> {
 /// fall back to `$HOME/.claude`. After this point, the resolved path
 /// is threaded as a typed `PathBuf` (via `Workspace::new`, which in
 /// turn binds each `Agent::spawn(config_dir)` to its account's path).
-/// forge-sdk exposes `claude_config_dir_from_env() -> Option<PathBuf>`
-/// for the env-only branch; the host-default fallback lives here so
-/// the SDK stays opinion-free about "what to do when env is unset".
 ///
 /// Per hard rule #15 - no cwd-derived fallbacks. When `$CLAUDE_CONFIG_DIR`
 /// is unset/empty AND `dirs::home_dir()` returns None, refuse to launch
