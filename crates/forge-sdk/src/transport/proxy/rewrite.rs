@@ -482,6 +482,12 @@ pub fn finalize_string_pass(body: Bytes) -> Bytes {
         return body;
     }
     let Ok(mut s) = String::from_utf8(body.to_vec()) else {
+        // Only reached after a positive needle hit: a leak is
+        // escaping in a body we can't rewrite.
+        tracing::warn!(
+            len = body.len(),
+            "finalize pass skipped: classification needle in non-UTF-8 body",
+        );
         return body;
     };
     for (needle, replacement) in FINALIZE_NEEDLES {
