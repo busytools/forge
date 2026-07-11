@@ -594,7 +594,7 @@ impl WorkerFacade for ProdWorkerFacade {
         target_label: &str,
         wrapped: WrappedPrompt,
     ) -> Result<WorkerTargetStatus, WorkerDeliverError> {
-        if wrapped.hop > wrapped.hop_limit {
+        if wrapped.exceeds_hop_limit() {
             return Err(WorkerDeliverError::HopLimitExceeded {
                 hop: wrapped.hop,
                 limit: wrapped.hop_limit,
@@ -637,7 +637,7 @@ impl WorkerFacade for ProdWorkerFacade {
         caller: &SessionKey,
         wrapped: WrappedPrompt,
     ) -> Result<WorkerTargetStatus, WorkerLeadDeliverError> {
-        if wrapped.hop > wrapped.hop_limit {
+        if wrapped.exceeds_hop_limit() {
             return Err(WorkerLeadDeliverError::HopLimitExceeded {
                 hop: wrapped.hop,
                 limit: wrapped.hop_limit,
@@ -870,7 +870,7 @@ impl WorkerFacade for MockWorkerFacade {
         target_label: &str,
         wrapped: WrappedPrompt,
     ) -> Result<WorkerTargetStatus, WorkerDeliverError> {
-        if wrapped.hop > wrapped.hop_limit {
+        if wrapped.exceeds_hop_limit() {
             return Err(WorkerDeliverError::HopLimitExceeded {
                 hop: wrapped.hop,
                 limit: wrapped.hop_limit,
@@ -900,7 +900,7 @@ impl WorkerFacade for MockWorkerFacade {
         caller: &SessionKey,
         wrapped: WrappedPrompt,
     ) -> Result<WorkerTargetStatus, WorkerLeadDeliverError> {
-        if wrapped.hop > wrapped.hop_limit {
+        if wrapped.exceeds_hop_limit() {
             return Err(WorkerLeadDeliverError::HopLimitExceeded {
                 hop: wrapped.hop,
                 limit: wrapped.hop_limit,

@@ -170,6 +170,13 @@ pub struct WrappedPrompt {
 }
 
 impl WrappedPrompt {
+    /// True when this envelope has been relayed past its hop limit -
+    /// the anti-relay-cycle guard every delivery path checks before
+    /// forwarding.
+    pub(crate) fn exceeds_hop_limit(&self) -> bool {
+        self.hop > self.hop_limit
+    }
+
     /// Build the exact prose string that gets injected into the
     /// recipient's chat as a `Command::Prompt` text. The format MUST
     /// match the prefix patterns `forge-tui::ui::peer_block::detect_inbound`

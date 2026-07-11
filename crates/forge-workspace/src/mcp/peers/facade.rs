@@ -341,7 +341,7 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         target_project: &str,
         wrapped: WrappedPrompt,
     ) -> Result<TargetStatus, DeliverError> {
-        if wrapped.hop > wrapped.hop_limit {
+        if wrapped.exceeds_hop_limit() {
             return Err(DeliverError::HopLimitExceeded {
                 hop: wrapped.hop,
                 limit: wrapped.hop_limit,
@@ -511,7 +511,7 @@ impl WorkspaceFacade for MockWorkspaceFacade {
         if let Some(err) = self.force_deliver_error.lock().clone() {
             return Err(err);
         }
-        if wrapped.hop > wrapped.hop_limit {
+        if wrapped.exceeds_hop_limit() {
             return Err(DeliverError::HopLimitExceeded {
                 hop: wrapped.hop,
                 limit: wrapped.hop_limit,

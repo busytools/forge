@@ -696,7 +696,6 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) ->
 /// `merge_messaging_groups` to also emit `RenderUnit::MessagingGroup`
 /// for within-message peer/worker runs.
 fn partition_tool_call_groups(blocks: &[MessageBlock]) -> Vec<RenderUnit> {
-    const GROUP_THRESHOLD: usize = 1;
     let mut units = Vec::with_capacity(blocks.len());
     let mut i = 0;
     while i < blocks.len() {
@@ -723,41 +722,34 @@ fn partition_tool_call_groups(blocks: &[MessageBlock]) -> Vec<RenderUnit> {
             }
             run_end_exclusive += 1;
         }
-        let run_len = run_end_exclusive - run_start;
-        if run_len < GROUP_THRESHOLD {
+        // A run is always >= 1 block. `blocks[run_start]` is a visible
+        // groupable ToolCall: the outer loop's hidden-and-breaker checks
+        // both returned false for this slot. Defensive fallback (the
+        // leading block somehow isn't a ToolCall) emits the run as
+        // Individual rows so the renderer can't panic on bad input.
+        let MessageBlock::ToolCall(leader_tc) = &blocks[run_start] else {
             for idx in run_start..run_end_exclusive {
                 units.push(RenderUnit::Individual(idx));
             }
-        } else {
-            // `blocks[run_start]` is guaranteed to be a visible groupable
-            // ToolCall: the outer loop's hidden-and-breaker checks both
-            // return false for this slot. Defensive fallback (the leading
-            // block somehow isn't a ToolCall) emits the run as Individual
-            // rows so the renderer can't panic on bad input.
-            let MessageBlock::ToolCall(leader_tc) = &blocks[run_start] else {
-                for idx in run_start..run_end_exclusive {
-                    units.push(RenderUnit::Individual(idx));
-                }
-                i = run_end_exclusive;
-                continue;
-            };
-            let leader_id = GroupId::from_leader_id(leader_tc.id.clone());
-            let mut kind_count = KindCount::default();
-            for block in &blocks[run_start..run_end_exclusive] {
-                if let MessageBlock::ToolCall(tc) = block
-                    && !tc.hidden
-                {
-                    kind_count.tally(tc);
-                }
+            i = run_end_exclusive;
+            continue;
+        };
+        let leader_id = GroupId::from_leader_id(leader_tc.id.clone());
+        let mut kind_count = KindCount::default();
+        for block in &blocks[run_start..run_end_exclusive] {
+            if let MessageBlock::ToolCall(tc) = block
+                && !tc.hidden
+            {
+                kind_count.tally(tc);
             }
-            let aggregate_status = aggregate_run_status(&blocks[run_start..run_end_exclusive]);
-            units.push(RenderUnit::Group {
-                range: run_start..run_end_exclusive,
-                leader_id,
-                kind_count,
-                aggregate_status,
-            });
         }
+        let aggregate_status = aggregate_run_status(&blocks[run_start..run_end_exclusive]);
+        units.push(RenderUnit::Group {
+            range: run_start..run_end_exclusive,
+            leader_id,
+            kind_count,
+            aggregate_status,
+        });
         i = run_end_exclusive;
     }
     units
