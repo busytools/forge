@@ -470,7 +470,7 @@ mod tests {
         assert!(cache.get_for_width(120).is_none());
     }
 
-    /// Regression for #125 round-2: on a stale-LRU hit at width W,
+    /// Regression for #125: on a stale-LRU hit at width W,
     /// the subsequent `measure_and_set_height(W)` must read the
     /// promoted slot's segments, not the LIVE slot's. Otherwise
     /// width-dependent bodies (diff content) memoize a height

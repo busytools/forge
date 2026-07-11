@@ -319,12 +319,10 @@ impl SessionTask {
                     // the project was asleep.
                     self.drain_pending_gotify_prompts();
                 }
-                // Fire worker re-tag for both first-Connected and
-                // post-/new Connected paths. #166: the previous
-                // shape only called this in the else branch, so a
-                // /new on a worker session wrote the new session's
-                // JSONL but never tagged it - the resume scan then
-                // picked the pre-/new orphan.
+                // Re-tag must fire on BOTH first-Connected and
+                // post-/new Connected paths: a /new writes a fresh
+                // JSONL, and if it isn't re-tagged the resume scan
+                // picks the stale pre-/new orphan instead.
                 if let Some(workspace) = self.workspace.upgrade() {
                     workspace.apply_worker_tag_or_rollback(&real_key, &cwd_for_tag);
                 }

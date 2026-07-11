@@ -2,10 +2,9 @@
 //!
 //! These types are workspace-internal - only `forge-workspace`
 //! (the tool impls, the workspace's inflight tracking, the spawn-
-//! routing handlers) references them. Per the audit's I7 finding,
-//! they used to live in `forge-primitives::peers` but never actually
-//! crossed crate boundaries; relocating here honours the
-//! "primitives = cross-crate wire types only" placement rule.
+//! routing handlers) references them. Kept out of `forge-primitives`
+//! because they never cross a crate boundary (primitives is for
+//! cross-crate wire types only).
 //!
 //! The one truly cross-crate peer type - `PeerInflightStats` -
 //! stays in `forge-primitives` because the TUI reads it through

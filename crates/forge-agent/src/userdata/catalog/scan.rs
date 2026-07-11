@@ -452,8 +452,8 @@ fn read_session_lite(path: &Path) -> Option<LiteSessionFile> {
 /// `{"type":"tag"}` row's `"tag"` field. Empty strings are filtered.
 /// Returns `None` when no tag row is present or any read errors out.
 ///
-/// Last-wins semantics preserve PR #167: a `/new` re-tag appended
-/// later in the transcript supersedes the original spawn tag.
+/// Last-wins semantics: a `/new` re-tag appended later in the
+/// transcript supersedes the original spawn tag.
 fn find_session_tag<R: BufRead>(reader: R) -> Option<String> {
     let mut last_tag: Option<String> = None;
     for line in reader.lines() {

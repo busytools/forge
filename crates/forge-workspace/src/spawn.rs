@@ -183,26 +183,11 @@ pub(crate) fn handle_deliver_peer_prompt(
         // dispatch so any tools the target's LLM fires on the resulting
         // turn read the correct ambient hop via peek_current_inbound_hop.
         stamp_inbound_hop(workspace, &target_key, wrapped.hop);
-        // Bump target's incoming counter (sidebar badge) - only for
-        // `Question` wrappers (an ask expecting a reply).
-        //
-        // Tells (Message kind) are intentionally NOT bumped here.
-        // Badges represent pending asks awaiting reply, NOT generic
-        // activity. A tell has no matching decrement path - no reply
-        // correlates back - so bumping `outgoing` on every tell would
-        // grow the counter without bound. Future reader: if you see
-        // `outgoing` not advancing on a `tell_agent` call, that's by
-        // design. See #308 Fix B (user picked Option 1, 2026-06-01):
-        // tells stay non-bumping, badges retain ask-correlation
-        // semantics. If a future design wants an "is anything
-        // happening" signal that includes tells, that's a separate
-        // counter (and a separate glyph) rather than reusing the
-        // ask-correlated `outgoing` / `incoming`.
-        //
-        // Replies / Late-replies / Caller-timeout / Recipient-expired
-        // / Delivery-failure also flow through this dispatch path,
-        // and they too don't bump for the same "no matching
-        // decrement" reason.
+        // Bump the target's incoming badge only for `Question`
+        // wrappers. Badges count pending asks awaiting reply; every
+        // other kind (tells, replies, delivery-failure notices) has no
+        // matching decrement, so bumping would grow the counter
+        // without bound.
         if matches!(wrapped.kind, crate::mcp::peers::types::WrappedKind::Question) {
             let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace);
             facade.bump_inflight_stats(&target_key, PeerStatsDelta::IncomingPlus1);

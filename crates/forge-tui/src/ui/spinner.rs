@@ -1,9 +1,7 @@
 //! Shared spinner frame selection.
 //!
 //! One time-based helper drives every animated spinner surface from
-//! the active `SpinnerStyle`'s own cadence, replacing the per-file
-//! braille constants that used to live in `ui/input`, `ui/message`,
-//! `ui/projects_pane`, and `ui/inspector_pane`.
+//! the active `SpinnerStyle`'s own cadence.
 
 use forge_workspace::SpinnerStyle;
 

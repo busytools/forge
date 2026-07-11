@@ -9365,8 +9365,8 @@ mod build_resume_map_tests {
         }
     }
 
-    /// Regression for the reviewer-flagged miss on PR #164: workers
-    /// spawned with `--worktree=<label>` `chdir` into
+    /// Regression for the worktree-subdir resume miss on PR #164:
+    /// workers spawned with `--worktree=<label>` `chdir` into
     /// `<project>/.claude/worktrees/<label>/` which is indexed under
     /// a SIBLING `<config_dir>/projects/<sanitize(worktree_path)>/`
     /// subdir. A `directory=Some(<project>)` scan misses them. The
