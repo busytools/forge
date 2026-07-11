@@ -684,7 +684,14 @@ impl WorkerFacade for ProdWorkerFacade {
 
     fn register_inflight_ask(&self, ask: InflightAsk) {
         let Some(ws) = self.workspace.upgrade() else { return };
-        ws.inflight_asks.lock().insert(ask.correlation_id.clone(), ask);
+        let id = ask.correlation_id.clone();
+        if ws.inflight_asks.lock().insert(id.clone(), ask).is_some() {
+            tracing::warn!(
+                target: "forge_workspace::mcp::workers::facade",
+                correlation_id = %id,
+                "register_inflight_ask: collision on correlation id - prior ask overwritten",
+            );
+        }
     }
 
     fn complete_inflight_ask(&self, id: &CorrelationId) -> Option<InflightAsk> {

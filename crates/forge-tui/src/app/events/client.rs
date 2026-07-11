@@ -255,9 +255,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 // Track when the failure counters last incremented so
                 // the projects_pane render can fade those indicators
                 // after 60 s.
-                if stats.timed_out > session.peer_badges.timed_out
-                    || stats.delivery_failed > session.peer_badges.delivery_failed
-                {
+                if stats.delivery_failed > session.peer_badges.delivery_failed {
                     session.peer_badges_last_failure_at = Some(std::time::Instant::now());
                 }
                 session.peer_badges = stats;

@@ -4597,7 +4597,6 @@ impl Workspace {
                 let entry = stats.entry(to.clone()).or_default();
                 entry.outgoing = entry.outgoing.saturating_add(from_stats.outgoing);
                 entry.incoming = entry.incoming.saturating_add(from_stats.incoming);
-                entry.timed_out = entry.timed_out.saturating_add(from_stats.timed_out);
                 entry.delivery_failed =
                     entry.delivery_failed.saturating_add(from_stats.delivery_failed);
             }
