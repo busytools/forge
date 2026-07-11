@@ -91,13 +91,11 @@ pub struct ProcessEntry {
 /// returns successfully - sysinfo failures, missing processes, or empty
 /// trees all collapse to an empty snapshot with a fresh `scanned_at`.
 ///
-/// `extra_commands` carries the active session's live backgrounded
-/// `local_bash` commands. A backgrounded bash is `setsid`-detached (or
-/// orphaned to init when its session's claude was killed), so it sits
-/// OUTSIDE claude's descendant tree - the plain walk misses it and the
-/// Inspector falls back to a memory-less synthetic row. Adopting the
-/// command-matched process and its subtree as extra roots gives it the
-/// same RAM + process-tree row as any other work.
+/// `extra_commands` are the session's live backgrounded `local_bash`
+/// commands: such a bash is `setsid`-detached (or orphaned to init when
+/// its session's claude exits) so it sits outside claude's tree, and
+/// adopting the command-matched wrapper plus its subtree gives it a real
+/// RAM + process-tree row instead of a memory-less synthetic one.
 ///
 /// Filters applied to every candidate: skip the scanner's own pid,
 /// zombies/dead (in the table but no live work), and the one-shot `ps` /
@@ -188,6 +186,10 @@ fn select_snapshot(
         let matched_roots: Vec<u32> = candidates
             .iter()
             .filter(|entry| !included.contains(&entry.pid))
+            // Only a genuine claude bash wrapper is an adoptable backgrounded
+            // local_bash; gating on a successful unwrap keeps a foreign process
+            // that merely substring-matches the wire command out of the snapshot.
+            .filter(|entry| extract_inner_command(&entry.command).is_some())
             .filter(|entry| {
                 extra_commands
                     .iter()
@@ -469,6 +471,22 @@ mod tests {
         let selected = select_snapshot(candidates, 100, &extra);
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].pid, 500);
+    }
+
+    #[test]
+    fn select_snapshot_does_not_adopt_foreign_non_wrapper_match() {
+        // A foreign process whose raw cmdline substring-matches the wire
+        // command but is NOT a claude bash wrapper (nothing to unwrap) must
+        // not be adopted, even though the substring matches.
+        let candidates = vec![
+            entry(200, 100, "cargo build"),
+            entry(500, 1, "gh run watch 123 --exit-status --repo busytools/forge"),
+        ];
+        let extra = vec!["gh run watch 123 --exit-status".to_owned()];
+        assert_eq!(
+            selected_pids(&select_snapshot(candidates, 100, &extra)),
+            [200].into_iter().collect()
+        );
     }
 
     #[test]
