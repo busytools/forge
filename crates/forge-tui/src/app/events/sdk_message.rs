@@ -49,6 +49,12 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         Message::Error { error } => {
             if let Some(key) = app.active_session_key.clone() {
                 super::turn::handle_turn_error_event(app, &key, &error, None, None);
+            } else {
+                tracing::warn!(
+                    target: crate::logging::targets::APP_SESSION,
+                    error = %error,
+                    "fatal Message::Error with no active session to attribute it to",
+                );
             }
         }
         // No-op arms:
