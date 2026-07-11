@@ -233,7 +233,18 @@ fn apply_timer_tick(app: &mut App) {
     if !should_refresh(session) {
         return;
     }
+    debug_assert!(
+        app.workspace.is_some(),
+        "workspace unset after init (process apply_timer_tick); MVVM contract violated",
+    );
     let Some(workspace) = app.workspace.as_ref() else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "process_scan_workspace_unset",
+            message = "App.workspace is None during process apply_timer_tick; skipping scan",
+            outcome = "skipped",
+            key = %active_key.as_str(),
+        );
         return;
     };
     let claude_pid = workspace.claude_pid(&active_key);

@@ -476,10 +476,20 @@ pub fn get_session_messages(
         })
     };
     let Some(path) = candidate else {
+        tracing::debug!(%session_id, "get_session_messages: no on-disk file for session");
         return Vec::new();
     };
-    let Ok(file) = fs::File::open(&path) else {
-        return Vec::new();
+    let file = match fs::File::open(&path) {
+        Ok(file) => file,
+        Err(err) => {
+            tracing::warn!(
+                %session_id,
+                path = %path.display(),
+                %err,
+                "get_session_messages: open failed; backfill renders empty",
+            );
+            return Vec::new();
+        }
     };
     parse_session_messages(file)
 }

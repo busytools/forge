@@ -215,9 +215,11 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             crate::app::prompt::snapshot_draft_if_needed(app);
         }
         SessionUpdate::McpOperationError { error, .. } => {
-            if is_active_or_global {
-                crate::app::config::handle_mcp_operation_error(app, &error);
-            }
+            // Ungated to match the McpSnapshot leg: the handler stamps
+            // global overlay state (in_flight / last_error), so gating
+            // on the active session would strand the error - and the
+            // stale in_flight - when the user tabs away mid-operation.
+            crate::app::config::handle_mcp_operation_error(app, &error);
         }
         SessionUpdate::TurnComplete { key, terminal_reason } => {
             turn::apply_session_update_turn_complete(app, &key, terminal_reason);
