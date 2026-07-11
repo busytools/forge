@@ -1371,6 +1371,47 @@ mod tests {
     }
 
     #[test]
+    fn live_local_bash_commands_returns_only_local_bash_commands() {
+        use crate::app::{App, ChatMessage};
+
+        let mut app = App::test_default();
+        let bash = fake_tool_call_info(
+            "tu-bash",
+            "Bash",
+            json!({ "command": "gh run watch 123 --exit-status", "run_in_background": true }),
+        );
+        let agent = fake_tool_call_info("tu-agent", "Task", json!({ "command": "investigate" }));
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(bash)), MessageBlock::ToolCall(Box::new(agent))],
+            None,
+        ));
+        app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
+        app.insert_session_task_mapping("task-agent".to_owned(), "tu-agent".to_owned());
+        *app.background_tasks_mut() = vec![
+            bg_task("task-bash", "local_bash", "watch CI"),
+            bg_task("task-agent", "local_agent", "investigate"),
+        ];
+
+        let session = app.active_session().expect("active session");
+        // Only the local_bash task's command is returned; the agent's is not.
+        assert_eq!(
+            live_local_bash_commands(session),
+            vec!["gh run watch 123 --exit-status".to_owned()]
+        );
+    }
+
+    #[test]
+    fn live_local_bash_commands_empty_without_local_bash_task() {
+        use crate::app::App;
+
+        let mut app = App::test_default();
+        *app.background_tasks_mut() = vec![bg_task("task-agent", "local_agent", "investigate")];
+        let session = app.active_session().expect("active session");
+        assert!(live_local_bash_commands(session).is_empty());
+    }
+
+    #[test]
     fn background_bash_rows_synthesizes_when_os_scan_misses_it() {
         // A short-lived / just-started backgrounded bash is in the CLI's
         // registry but absent from the OS snapshot -> synthesise a row so
