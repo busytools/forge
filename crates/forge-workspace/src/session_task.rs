@@ -218,7 +218,7 @@ impl SessionTask {
                 // (permission denied, disk full, etc.) DO roll back:
                 // release session + emit Removed.
                 //
-                // TODO: lead sessions are currently never tagged
+                // TODO(ved): lead sessions are currently never tagged
                 // with `forge:lead`. The resolver falls back to
                 // latest untagged so existing behaviour works, but
                 // explicit lead tagging is a spec gap we should
