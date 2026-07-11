@@ -1223,6 +1223,33 @@ pub(crate) fn handle_despawn_worker(
 /// target label vanished between the dispatch and the handler firing
 /// (worker closed, lead cascade fired), the prompt is dropped with a
 /// warn log.
+/// Buffer `wrapped` on `target_key`'s `DomainSession` when the target
+/// hasn't finished its Connected handshake (no `session_id` yet). Returns
+/// `Some(wrapped)` when the target IS connected (caller delivers now), or
+/// `None` when it buffered (the target's Connected handler drains
+/// `pending_peer_prompts`, doing the bump + render + dispatch). Mirrors
+/// the sleeping-peer buffering in `handle_deliver_peer_prompt` so the
+/// bump/hop bookkeeping happens exactly once, at real delivery time.
+fn buffer_prompt_until_connected(
+    workspace: &Arc<Workspace>,
+    target_key: &SessionKey,
+    wrapped: WrappedPrompt,
+) -> Option<WrappedPrompt> {
+    let Some(domain) = workspace.domain_handles.lock().get(target_key).cloned() else {
+        // No DomainSession to buffer on (target vanished); let the caller
+        // proceed - its dispatch warns on the missing target.
+        return Some(wrapped);
+    };
+    let mut d = domain.lock();
+    if d.session_id.is_some() {
+        return Some(wrapped);
+    }
+    let current = d.current_inbound_hop.unwrap_or(0);
+    d.current_inbound_hop = Some(current.max(wrapped.hop));
+    d.pending_peer_prompts.push(wrapped);
+    None
+}
+
 pub(crate) fn handle_deliver_worker_prompt(
     workspace: &Arc<Workspace>,
     _caller: SessionKey,
@@ -1247,6 +1274,16 @@ pub(crate) fn handle_deliver_worker_prompt(
         return;
     };
     let target_key = entry.session_key.clone();
+
+    // A worker addressed before it finishes its Connected handshake has
+    // no session_id yet, so a bare Command::Prompt would be dropped by
+    // execute_command_via_handle. Buffer it on the worker's own
+    // DomainSession instead - its Connected handler drains
+    // pending_peer_prompts (bump + render + dispatch) exactly like the
+    // sleeping-peer path. Skips the tag retry / stamp / dispatch below.
+    let Some(wrapped) = buffer_prompt_until_connected(workspace, &target_key, wrapped) else {
+        return;
+    };
 
     // Opportunistic tag-write retry: if this worker was spawned idle
     // (no initial_prompt), the JSONL didn't exist at Connected and
@@ -1342,6 +1379,13 @@ pub(crate) fn handle_deliver_worker_prompt_to_lead(
         );
         return;
     }
+
+    // Same pre-Connect guard as the sibling-worker path: if the lead
+    // hasn't stamped its session_id yet, buffer for its Connected drain
+    // rather than dispatching a Command::Prompt that would be dropped.
+    let Some(wrapped) = buffer_prompt_until_connected(workspace, target_lead_key, wrapped) else {
+        return;
+    };
 
     stamp_inbound_hop(workspace, target_lead_key, wrapped.hop);
 
@@ -1987,6 +2031,50 @@ config_dir = "~/.claude-subspace"
         // No panic, no dispatch attempted. (We can't easily observe
         // "no dispatch" without a stubbed dispatch; the absence of a
         // panic + dropped channels is the test.)
+    }
+
+    /// A worker addressed before it Connects (session_id still None)
+    /// must have the prompt buffered onto its DomainSession, not
+    /// dropped - its Connected handler drains pending_peer_prompts.
+    #[tokio::test]
+    async fn deliver_to_unconnected_worker_buffers_the_prompt() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        let worker_key = SessionKey::from_session_id("__spawn_worker_forge_builder_abc__");
+        workspace.insert_live_worker(
+            &project,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "builder".into(),
+                charter: "c".into(),
+                session_key: worker_key.clone(),
+                status: forge_primitives::WorkerLiveness::Spawning,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".into(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        // Pre-Connect DomainSession: session_id is None.
+        let domain = std::sync::Arc::new(parking_lot::Mutex::new(
+            crate::domain_session::DomainSession::new(worker_key.clone(), None),
+        ));
+        workspace.domain_handles.lock().insert(worker_key.clone(), domain.clone());
+
+        handle_deliver_worker_prompt(
+            &workspace,
+            SessionKey::from_str_for_test("lead"),
+            &project,
+            "builder",
+            fixture_wrapped(),
+        );
+
+        assert_eq!(
+            domain.lock().pending_peer_prompts.len(),
+            1,
+            "prompt buffered for the worker's Connected drain, not dropped"
+        );
     }
 
     /// Regression for C2: concurrent spawns of the same label must
