@@ -86,23 +86,26 @@ pub struct ProcessEntry {
     pub started_at_unix: Option<u64>,
 }
 
-/// Walk the descendants of `claude_pid` and build a sorted snapshot.
-/// Always returns successfully - sysinfo failures, missing processes,
-/// or empty descendant trees all collapse to an empty snapshot with
-/// a fresh `scanned_at`.
+/// Walk `claude_pid`'s descendant tree plus any command-matched
+/// backgrounded `local_bash` and build a sorted snapshot. Always
+/// returns successfully - sysinfo failures, missing processes, or empty
+/// trees all collapse to an empty snapshot with a fresh `scanned_at`.
 ///
-/// Filters applied:
-/// - Skip the scan-process itself (sysinfo's `current_pid`).
-/// - Skip zombies (`Run` / `Sleep` only; defunct entries don't
-///   represent live work).
-/// - Skip ephemeral `ps` / `sysinfo` self-probes that would
-///   themselves match the walk window (mirrors architect's
-///   filter pattern).
-pub fn scan(claude_pid: u32) -> ProcessSnapshot {
-    // `System::new()` is cheap; refreshing processes is the
-    // expensive bit. Limit the refresh to memory + cmdline only
-    // (skip CPU sampling which requires two refreshes spaced apart
-    // to be meaningful, disk I/O which we don't render, etc.).
+/// `extra_commands` carries the active session's live backgrounded
+/// `local_bash` commands. A backgrounded bash is `setsid`-detached (or
+/// orphaned to init when its session's claude was killed), so it sits
+/// OUTSIDE claude's descendant tree - the plain walk misses it and the
+/// Inspector falls back to a memory-less synthetic row. Adopting the
+/// command-matched process and its subtree as extra roots gives it the
+/// same RAM + process-tree row as any other work.
+///
+/// Filters applied to every candidate: skip the scanner's own pid,
+/// zombies/dead (in the table but no live work), and the one-shot `ps` /
+/// `sysinfo` self-probes that would themselves match the walk window.
+pub fn scan(claude_pid: u32, extra_commands: &[String]) -> ProcessSnapshot {
+    // `System::new()` is cheap; refreshing processes is the expensive
+    // bit. Limit the refresh to memory + cmdline only (skip CPU sampling
+    // which needs two spaced refreshes, disk I/O we don't render, etc.).
     let mut system = System::new();
     system.refresh_processes_specifics(
         ProcessesToUpdate::All,
@@ -111,8 +114,8 @@ pub fn scan(claude_pid: u32) -> ProcessSnapshot {
     );
 
     let self_pid = sysinfo::get_current_pid().ok();
-    let mut processes = Vec::new();
-    collect_descendants(&system, Pid::from_u32(claude_pid), self_pid, &mut processes);
+    let candidates = live_candidates(&system, self_pid);
+    let mut processes = select_snapshot(candidates, claude_pid, extra_commands);
 
     // Sort by memory descending so the rendered top-N surfaces the
     // heaviest workers first. Stable secondary key by PID keeps
@@ -122,81 +125,100 @@ pub fn scan(claude_pid: u32) -> ProcessSnapshot {
     ProcessSnapshot { processes, scanned_at: SystemTime::now() }
 }
 
-/// Recursively walk `sysinfo::System`'s process table, collecting
-/// every descendant of `root_pid`. Filters out the scanner's own
-/// process and known-uninteresting noise.
-fn collect_descendants(
-    system: &System,
-    root_pid: Pid,
-    self_pid: Option<Pid>,
-    out: &mut Vec<ProcessEntry>,
-) {
-    use std::collections::HashSet;
-
-    // sysinfo doesn't expose a "give me children of X" query - we
-    // index parent_pid → children once, then walk from root.
-    let mut children_of: std::collections::HashMap<Pid, Vec<Pid>> =
-        std::collections::HashMap::new();
+/// Build a `ProcessEntry` for every live, interesting process in the
+/// table, dropping the scanner's own pid, zombies/dead, and the one-shot
+/// `ps` / `sysinfo` self-probes (mirrors architect's filter pattern).
+fn live_candidates(system: &System, self_pid: Option<Pid>) -> Vec<ProcessEntry> {
+    let mut out = Vec::new();
     for (pid, proc) in system.processes() {
-        if let Some(parent) = proc.parent() {
-            children_of.entry(parent).or_default().push(*pid);
+        if self_pid == Some(*pid) {
+            continue;
+        }
+        if matches!(proc.status(), sysinfo::ProcessStatus::Zombie | sysinfo::ProcessStatus::Dead) {
+            continue;
+        }
+        let name = proc.name().to_string_lossy().to_string();
+        if name == "ps" || name == "sysinfo" {
+            continue;
+        }
+        let command = proc
+            .cmd()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        out.push(ProcessEntry {
+            pid: pid.as_u32(),
+            parent_pid: proc.parent().map_or(0, Pid::as_u32),
+            name,
+            command,
+            memory_bytes: proc.memory(),
+            started_at_unix: proc.start_time().checked_sub(0).filter(|t| *t > 0),
+        });
+    }
+    out
+}
+
+/// Select the processes that belong in the snapshot: the descendants of
+/// `claude_pid`, plus any candidate whose cmdline matches one of
+/// `extra_commands` together with ITS descendants (a backgrounded
+/// `local_bash` living outside claude's tree). Pure over `candidates` so
+/// the adoption logic is unit-testable without a live process table.
+fn select_snapshot(
+    candidates: Vec<ProcessEntry>,
+    claude_pid: u32,
+    extra_commands: &[String],
+) -> Vec<ProcessEntry> {
+    // sysinfo has no "children of X" query - index parent -> children
+    // once, then walk.
+    let mut children_of: std::collections::HashMap<u32, Vec<u32>> =
+        std::collections::HashMap::new();
+    for entry in &candidates {
+        children_of.entry(entry.parent_pid).or_default().push(entry.pid);
+    }
+
+    let mut included: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    // claude's descendants (claude itself is never a row).
+    include_subtree(&children_of, claude_pid, &mut included);
+
+    // Adopt command-matched processes outside claude's tree + their
+    // subtrees. Collect the roots under the immutable borrow first, then
+    // walk each - the root itself joins the snapshot, unlike claude.
+    if !extra_commands.is_empty() {
+        let matched_roots: Vec<u32> = candidates
+            .iter()
+            .filter(|entry| !included.contains(&entry.pid))
+            .filter(|entry| {
+                extra_commands
+                    .iter()
+                    .any(|cmd| process_cmdline_matches_tool_input(&entry.command, cmd))
+            })
+            .map(|entry| entry.pid)
+            .collect();
+        for root in matched_roots {
+            if included.insert(root) {
+                include_subtree(&children_of, root, &mut included);
+            }
         }
     }
 
-    let mut stack = vec![root_pid];
-    let mut visited: HashSet<Pid> = HashSet::new();
-    while let Some(parent) = stack.pop() {
-        let Some(children) = children_of.get(&parent) else { continue };
-        for &child_pid in children {
-            if !visited.insert(child_pid) {
-                continue;
+    candidates.into_iter().filter(|entry| included.contains(&entry.pid)).collect()
+}
+
+/// Insert every descendant of `root` (not `root` itself) into
+/// `included`, walking the `parent -> children` index.
+fn include_subtree(
+    children_of: &std::collections::HashMap<u32, Vec<u32>>,
+    root: u32,
+    included: &mut std::collections::HashSet<u32>,
+) {
+    let mut stack = vec![root];
+    while let Some(pid) = stack.pop() {
+        let Some(children) = children_of.get(&pid) else { continue };
+        for &child in children {
+            if included.insert(child) {
+                stack.push(child);
             }
-            stack.push(child_pid);
-
-            // Skip the scanner's own process - would appear when
-            // forge itself runs as a descendant of claude (it
-            // shouldn't, but defensively).
-            if self_pid == Some(child_pid) {
-                continue;
-            }
-
-            let Some(proc) = system.process(child_pid) else { continue };
-
-            // Skip zombies / dead - they're in the table but
-            // represent no live work.
-            if matches!(
-                proc.status(),
-                sysinfo::ProcessStatus::Zombie | sysinfo::ProcessStatus::Dead
-            ) {
-                continue;
-            }
-
-            // Skip our own one-shot `ps` / `sysinfo` probes that
-            // would otherwise appear in the snapshot. Architect
-            // does the same filter for its `psutil.Process(claude).children()`
-            // walk.
-            let name = proc.name().to_string_lossy().to_string();
-            if name == "ps" || name == "sysinfo" {
-                continue;
-            }
-
-            let command = proc
-                .cmd()
-                .iter()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-                .join(" ");
-
-            let started_at_unix = proc.start_time().checked_sub(0).filter(|t| *t > 0);
-
-            out.push(ProcessEntry {
-                pid: child_pid.as_u32(),
-                parent_pid: parent.as_u32(),
-                name,
-                command,
-                memory_bytes: proc.memory(),
-                started_at_unix,
-            });
         }
     }
 }
@@ -383,6 +405,72 @@ mod tests {
     /// was `echo 'sq-marker'; sleep 40`.
     const SINGLE_QUOTE_WRAPPER: &str = r#"/bin/zsh -c source /Users/x/.claude/shell-snapshots/snapshot-zsh-1.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2>/dev/null || true && eval 'echo '"'"'sq-marker'"'"'; sleep 40' < /dev/null && pwd -P >| /tmp/claude-ab12-cwd"#;
 
+    fn entry(pid: u32, parent_pid: u32, command: &str) -> ProcessEntry {
+        ProcessEntry {
+            pid,
+            parent_pid,
+            name: "bash".to_owned(),
+            command: command.to_owned(),
+            memory_bytes: 1024,
+            started_at_unix: Some(1),
+        }
+    }
+
+    fn selected_pids(entries: &[ProcessEntry]) -> std::collections::BTreeSet<u32> {
+        entries.iter().map(|entry| entry.pid).collect()
+    }
+
+    #[test]
+    fn select_snapshot_keeps_claude_descendants_drops_siblings() {
+        // claude=100; child 200 -> grandchild 300; unrelated sibling 400 under init.
+        let candidates =
+            vec![entry(200, 100, "cargo build"), entry(300, 200, "rustc"), entry(400, 1, "sshd")];
+        assert_eq!(
+            selected_pids(&select_snapshot(candidates, 100, &[])),
+            [200, 300].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn select_snapshot_without_commands_drops_detached_bash() {
+        // Reproduce-first: a backgrounded bash setsid-detached under init
+        // (parent 1, not a claude descendant). With no extra_commands the
+        // scan misses it entirely - the memory-less synthetic-row bug.
+        let candidates = vec![entry(200, 100, "cargo build"), entry(500, 1, REAL_WRAPPER)];
+        assert_eq!(
+            selected_pids(&select_snapshot(candidates, 100, &[])),
+            [200].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn select_snapshot_adopts_command_matched_detached_bash_and_subtree() {
+        // Same detached bash, now with its wire command in extra_commands:
+        // it AND the child it spawned join the snapshot as adopted roots;
+        // the unrelated init-child stays out.
+        let candidates = vec![
+            entry(200, 100, "cargo build"),
+            entry(500, 1, REAL_WRAPPER),
+            entry(600, 500, "gh api repos/foo"),
+            entry(700, 1, "sshd"),
+        ];
+        let extra = vec!["gh run watch 123 --exit-status".to_owned()];
+        assert_eq!(
+            selected_pids(&select_snapshot(candidates, 100, &extra)),
+            [200, 500, 600].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn select_snapshot_command_match_inside_claude_tree_not_doubled() {
+        // A matched bash that IS a claude descendant appears exactly once.
+        let candidates = vec![entry(500, 100, REAL_WRAPPER)];
+        let extra = vec!["gh run watch 123 --exit-status".to_owned()];
+        let selected = select_snapshot(candidates, 100, &extra);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].pid, 500);
+    }
+
     #[test]
     fn extract_inner_command_unwraps_real_wrapper() {
         assert_eq!(
@@ -562,7 +650,7 @@ mod tests {
         // PID 0 is the kernel scheduler on Linux / never has children
         // on macOS - walk should yield zero descendants. Confirms
         // `scan` is total even for nonsense input.
-        let snapshot = scan(0);
+        let snapshot = scan(0, &[]);
         // Don't assert empty - PID 0 has children on Linux (kthreadd).
         // What we DO assert: scanned_at is recent + no panic.
         let age = SystemTime::now().duration_since(snapshot.scanned_at).map_or(0, |d| d.as_secs());
@@ -576,6 +664,6 @@ mod tests {
         // that the scan path doesn't trip over its own foot when
         // self_pid filter applies.
         let me = std::process::id();
-        let _ = scan(me);
+        let _ = scan(me, &[]);
     }
 }

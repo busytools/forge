@@ -267,6 +267,28 @@ fn session_command_by_task_id(session: &crate::app::session::UiSession) -> HashM
         .collect()
 }
 
+/// The active session's live backgrounded `local_bash` commands, resolved
+/// through the same session-scoped task map the row builder uses. Fed to
+/// the OS process scan so a `setsid`-detached / orphaned bash outside
+/// claude's descendant tree is adopted into the snapshot (RAM + tree)
+/// instead of falling back to a memory-less synthetic row.
+pub(crate) fn live_local_bash_commands(session: &crate::app::session::UiSession) -> Vec<String> {
+    let local_bash_task_ids: HashSet<&str> = session
+        .background_tasks
+        .iter()
+        .filter(|task| task.task_type == "local_bash")
+        .map(|task| task.task_id.as_str())
+        .collect();
+    if local_bash_task_ids.is_empty() {
+        return Vec::new();
+    }
+    session_command_by_task_id(session)
+        .into_iter()
+        .filter(|(task_id, _)| local_bash_task_ids.contains(task_id.as_str()))
+        .map(|(_, command)| command)
+        .collect()
+}
+
 /// Synthesise PROCESSES rows for CLI-registry backgrounded `local_bash`
 /// the OS scan hasn't surfaced. Skips a task whose command already
 /// substring-matches a scanned process (the OS walk covers it) or is
@@ -327,9 +349,9 @@ fn rows_from_os_snapshot<'a>(
         children_of.entry(entry.parent_pid).or_default().push(entry);
     }
 
-    // Roots = entries whose parent is NOT in the snapshot (the
-    // snapshot only includes claude's descendants, so a missing
-    // parent means the parent IS claude itself).
+    // Roots = entries whose parent is NOT in the snapshot: a claude
+    // descendant whose parent is claude, or an adopted backgrounded bash
+    // whose parent is init - both parents sit outside the snapshot.
     let mut roots: Vec<&ProcessEntry> =
         snapshot.processes.iter().filter(|e| !by_pid.contains_key(&e.parent_pid)).collect();
     // Depth-0 roots sort by the subtree total they display, not their

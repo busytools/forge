@@ -92,8 +92,11 @@ impl Drop for ScanInFlightGuard {
 }
 
 /// Spawn a tokio local task that runs
-/// `forge_workspace::env::processes::scan(claude_pid)` on a blocking
-/// pool and sends a `SnapshotReady` on completion.
+/// `forge_workspace::env::processes::scan(claude_pid, extra_commands)` on
+/// a blocking pool and sends a `SnapshotReady` on completion.
+/// `extra_commands` are the session's live backgrounded `local_bash`
+/// commands, so a detached/orphaned bash outside claude's tree is adopted
+/// into the snapshot rather than rendered as a memory-less synthetic row.
 ///
 /// Early-returns (debug-logged) when:
 /// - `claude_pid` is `None` (pre-spawn / disconnected session).
@@ -104,6 +107,7 @@ pub fn request_refresh(
     claude_pid: Option<u32>,
     generation: u64,
     scan_in_flight: Arc<AtomicBool>,
+    extra_commands: Vec<String>,
 ) {
     let Some(claude_pid) = claude_pid else {
         tracing::debug!(
@@ -135,7 +139,7 @@ pub fn request_refresh(
         // pool so the per-second ticker on this runtime doesn't
         // stall behind the ~50-100 ms scan.
         let snapshot = match tokio::task::spawn_blocking(move || {
-            forge_workspace::env::processes::scan(claude_pid)
+            forge_workspace::env::processes::scan(claude_pid, &extra_commands)
         })
         .await
         {
@@ -235,12 +239,14 @@ fn apply_timer_tick(app: &mut App) {
     let claude_pid = workspace.claude_pid(&active_key);
     let generation = session.process_scan_generation;
     let scan_in_flight = Arc::clone(&session.process_scan_in_flight);
+    let extra_commands = crate::app::processes::live_local_bash_commands(session);
     request_refresh(
         app.process_scan_event_tx.clone(),
         active_key,
         claude_pid,
         generation,
         scan_in_flight,
+        extra_commands,
     );
 }
 
