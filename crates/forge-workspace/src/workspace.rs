@@ -3926,6 +3926,10 @@ impl Workspace {
         let Some((project_key, entry)) = lookup else {
             return false;
         };
+        // Any ask already routed at this worker dies with the spawn -
+        // buffered asks were never delivered, so the target_session
+        // predicate in expire_target_inflight can't catch them.
+        self.expire_inflight_for_closed_worker(&project_key, &entry.label);
         // Classify against the entry's recorded is_git_repo_at_spawn
         // flag - same heuristic the sync workers__spawn path uses.
         let classified = crate::mcp::workers::facade::classify_worker_spawn_failure(
@@ -4642,11 +4646,13 @@ impl Workspace {
     /// - A `SessionTask::drop` fires (target's session was closed by
     ///   any reason - user close, lifecycle terminate, panic)
     ///
-    /// Maps the closing `SessionKey` to its project name via
-    /// `list_projects`, then walks `inflight_asks` for entries whose
-    /// `target_project` matches and dispatches the failure dual-path
-    /// notification for each (PeerAskFailed UI state + Command::Prompt
-    /// with DeliveryFailureNotice wrapper to caller).
+    /// Walks `inflight_asks` for entries stamped with the closing
+    /// session (`target_session`, set at delivery - covers workers,
+    /// whose composite `target_project` never matches a plain project
+    /// name) or whose `target_project` matches the closing session's
+    /// project, and dispatches the failure dual-path notification for
+    /// each (PeerAskFailed UI state + Command::Prompt with
+    /// DeliveryFailureNotice wrapper to caller).
     ///
     /// Idempotent. Safe to call from a Drop impl via Weak<Workspace>.
     pub(crate) fn expire_target_inflight(
@@ -4654,17 +4660,15 @@ impl Workspace {
         closing_key: &SessionKey,
         reason: crate::mcp::peers::types::PeerFailureReason,
     ) {
-        // Find the project this closing session belongs to. If we can't
-        // (caller raced with config-reload; defensive only), there's
-        // nothing to do.
+        // Find the project this closing session belongs to. Workers
+        // never enter the catalog mirror, so this lookup can miss for
+        // them; the target_session predicate below still catches
+        // their delivered asks.
         let project_name = self
             .list_projects()
             .into_iter()
             .find(|v| v.sessions.iter().any(|s| s.session == *closing_key))
             .map(|v| v.name);
-        let Some(project_name) = project_name else {
-            return;
-        };
 
         // Snapshot the IDs to expire. Holding the inflight_asks lock
         // across the dispatch loop below would risk re-entrancy via
@@ -4672,7 +4676,10 @@ impl Workspace {
         let ids_to_expire: Vec<CorrelationId> = {
             let asks = self.inflight_asks.lock();
             asks.iter()
-                .filter(|(_, ask)| ask.target_project == project_name)
+                .filter(|(_, ask)| {
+                    ask.target_session.as_ref() == Some(closing_key)
+                        || project_name.as_ref().is_some_and(|name| ask.target_project == *name)
+                })
                 .map(|(id, _)| id.clone())
                 .collect()
         };
@@ -7791,11 +7798,9 @@ config_dir = "~/.claude-subspace"
 
     /// expire_inflight_ask_failed dispatches `PeerInflightStatsChanged`
     /// for the delivery-failed bookkeeping and removes the entry.
-    /// expire_target_inflight is a thin loop over this per-id path; in
-    /// production it resolves the closing session's project via
-    /// `list_projects` (catalog-backed), so an in-memory test that
-    /// never writes to disk would early-return on project lookup. We
-    /// exercise the per-id unit instead.
+    /// expire_target_inflight is a thin loop over this per-id path
+    /// (its predicate is pinned separately by
+    /// `expire_target_inflight_matches_worker_asks_by_target_session`).
     #[tokio::test]
     async fn expire_inflight_ask_failed_dispatches_failure_notice() {
         use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
@@ -7827,6 +7832,37 @@ config_dir = "~/.claude-subspace"
         }
         assert!(saw_stats, "PeerInflightStatsChanged fires for delivery_failed bump");
         assert!(!workspace.inflight_asks.lock().contains_key(&id));
+    }
+
+    /// expire_target_inflight expires asks stamped with the closing
+    /// session key even when the closing session resolves to no
+    /// catalog project and target_project is a worker composite -
+    /// the crash path for a worker that dies mid-ask.
+    #[tokio::test]
+    async fn expire_target_inflight_matches_worker_asks_by_target_session() {
+        use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
+        let dir = forge_toml_with_two_projects();
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+
+        let worker_key = SessionKey::from_str_for_test("worker-sess-1");
+        let id = CorrelationId::new_ask();
+        workspace.inflight_asks.lock().insert(
+            id.clone(),
+            InflightAsk {
+                correlation_id: id.clone(),
+                caller: SessionKey::from_str_for_test("lead-1"),
+                caller_project: "forge".to_owned(),
+                target_project: crate::mcp::workers::worker_target_project_key("forge", "builder"),
+                target_session: Some(worker_key.clone()),
+            },
+        );
+
+        workspace.expire_target_inflight(&worker_key, PeerFailureReason::TargetConnectionFailed);
+        assert!(
+            !workspace.inflight_asks.lock().contains_key(&id),
+            "worker-bound ask expired via target_session match"
+        );
     }
 
     /// A failed/expired ask must clear the TARGET's incoming badge, not
@@ -9915,6 +9951,40 @@ mod async_worker_spawn_failure_tests {
         assert!(third_event.is_ok(), "fresh diagnostic must re-emit");
         let entries = workspace.list_live_workers(&project_key);
         assert_eq!(entries[0].diagnostic.as_deref(), Some("more specific reason"));
+    }
+
+    /// handle_async_worker_spawn_failure expires worker-bound inflight
+    /// asks: an ask buffered against a worker whose spawn dies was
+    /// never delivered, so no target_session stamp exists and nothing
+    /// else clears it - the caller would wait forever.
+    #[tokio::test]
+    async fn async_worker_spawn_failure_expires_worker_bound_asks() {
+        use crate::mcp::peers::types::{CorrelationId, InflightAsk};
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let project_key = ProjectKey::new("proj-x");
+        let synth_key = "__spawn_worker_proj-x_builder_abc__";
+        let session_key = SessionKey::from_session_id(synth_key);
+        workspace.insert_live_worker(&project_key, fake_worker("builder", synth_key, "lead", true));
+
+        let id = CorrelationId::new_ask();
+        workspace.inflight_asks.lock().insert(
+            id.clone(),
+            InflightAsk {
+                correlation_id: id.clone(),
+                caller: SessionKey::from_str_for_test("lead-1"),
+                caller_project: "proj-x".to_owned(),
+                target_project: crate::mcp::workers::worker_target_project_key(
+                    "proj-x", "builder",
+                ),
+                target_session: None,
+            },
+        );
+
+        workspace.handle_async_worker_spawn_failure(&session_key, "resume failed: boom");
+        assert!(
+            !workspace.inflight_asks.lock().contains_key(&id),
+            "buffered worker ask expired on spawn failure"
+        );
     }
 
     /// #245 Layer C test gap 11: a worker that flipped to Failed
