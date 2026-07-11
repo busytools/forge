@@ -6890,6 +6890,53 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
         assert_eq!(buffered, vec!["nightly".to_owned()], "buffered for the worker owner");
     }
 
+    /// A cron for a worker that's a live entry but still Spawning
+    /// (session_id None) must NOT dispatch a bare Command::Prompt
+    /// (dropped) - the session_id gate in live_cron_owner routes it to
+    /// the owner-keyed buffer, drained on the worker's own Connected.
+    #[test]
+    fn deliver_cron_to_spawning_worker_buffers_via_owner() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project_with_static_workers(
+            "proj",
+            "/tmp/wc-spawning",
+            &["reviewer".to_owned()],
+        );
+        let key = ws.list_projects().into_iter().find(|v| v.name == "proj").expect("view").key;
+        let worker_key = SessionKey::from_session_id("worker-spawning-cron");
+        ws.insert_live_worker(&key, live_worker_entry("reviewer", "worker-spawning-cron"));
+        // Registered but not connected: session_id stays None.
+        ws.register_domain_session(worker_key.clone(), None);
+
+        ws.enable_test_dispatch_intercept();
+        let outcome = crate::spawn::deliver_cron_prompt(
+            &ws,
+            "proj",
+            Some("reviewer"),
+            "nightly".to_owned(),
+            false,
+        );
+        assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
+        let dispatched = ws.drain_test_dispatch_buffer();
+        assert!(
+            !dispatched.iter().any(|c| matches!(
+                c, Command::Prompt { key, .. } if key == &worker_key
+            )),
+            "no bare Prompt to the still-spawning worker (would be dropped)",
+        );
+        let buffered: Vec<String> = ws
+            .pending_cron_by_owner
+            .lock()
+            .get(&("proj".to_owned(), Some("reviewer".to_owned())))
+            .map(|v| v.iter().map(|p| p.text.clone()).collect())
+            .unwrap_or_default();
+        assert_eq!(
+            buffered,
+            vec!["nightly".to_owned()],
+            "buffered for the worker's Connected drain"
+        );
+    }
+
     #[tokio::test]
     async fn deliver_asleep_dynamic_worker_cron_buffers_and_wakes_the_project() {
         let (ws, _rx) = Workspace::testing_stub();

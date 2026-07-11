@@ -440,9 +440,10 @@ fn cron_owner_exists(
 /// spawn-key's DomainSession and dispatch `Command::SpawnProject`
 /// (`SessionTask` drains + echoes on Connected via
 /// `drain_pending_gotify_prompts`). Mirrors [`deliver_cron_prompt`] plus
-/// the peer chat-echo; a team-worker subscription whose worker is asleep
+/// the peer chat-echo. A team-worker subscription with NO live entry
 /// falls through to lead delivery (spawning the project brings the team
-/// up). A project no longer in forge.toml is logged and skipped.
+/// up); a live-but-not-yet-connected worker buffers on its own domain
+/// instead. A project no longer in forge.toml is logged and skipped.
 pub(crate) fn deliver_gotify_message(
     workspace: &Arc<Workspace>,
     project: &str,
@@ -480,6 +481,17 @@ pub(crate) fn deliver_gotify_message(
             }
         } else if let Some(domain) = workspace.domain_session_for(&worker_key) {
             domain.lock().pending_gotify_prompts.push(notification);
+        } else {
+            // Live entry exists but its DomainSession isn't registered yet
+            // (the sub-second window between insert_live_worker and the
+            // spawn's handle registration). Nowhere to buffer; warn so the
+            // drop isn't silent rather than mis-routing to the lead.
+            tracing::warn!(
+                target: "forge_workspace::spawn",
+                project = %project,
+                role = %role,
+                "gotify notification dropped: worker entry present but no DomainSession yet",
+            );
         }
         return;
     }
