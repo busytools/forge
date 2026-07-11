@@ -4819,6 +4819,19 @@ impl Workspace {
 
 #[cfg(any(test, feature = "testing"))]
 impl Workspace {
+    /// Mark a session as having completed its Connected handshake by
+    /// stamping `session_id` on its `DomainSession` (registering one if
+    /// absent). Delivery paths gate dispatch-vs-buffer on this, so tests
+    /// that assert a live worker/lead receives a prompt need it set -
+    /// in production every Running session has it stamped by `Connected`.
+    #[cfg(test)]
+    pub(crate) fn mark_session_connected_for_test(&self, key: &SessionKey, session_id: &str) {
+        let domain = self
+            .domain_session_for(key)
+            .unwrap_or_else(|| self.register_domain_session(key.clone(), None));
+        domain.lock().session_id = Some(forge_primitives::SessionId::new(session_id));
+    }
+
     /// Construct a stub `AgentHandle` plus the matching
     /// `Receiver<forge_primitives::AgentCommand>` that drains every command
     /// dispatched to it. Tests use this to wire `App.set_active_conn`
@@ -6448,6 +6461,7 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
             },
         );
 
+        ws.mark_session_connected_for_test(&worker_key, "worker-reviewer");
         let notif = gotify_notif("Backups", "Nightly backup", "done", 5);
         ws.enable_test_dispatch_intercept();
         crate::spawn::deliver_gotify_message(&ws, "forge", Some("reviewer"), notif.clone());
@@ -6511,6 +6525,48 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
             .pending_gotify_prompts
             .clone();
         assert_eq!(buffered, vec![notif], "the notification was buffered");
+    }
+
+    /// A team-worker subscription whose worker is a live entry but still
+    /// Spawning (session_id None) must buffer on the worker's own
+    /// DomainSession for its Connected drain - not dispatch a bare
+    /// Command::Prompt (dropped) and not fall through to the lead.
+    #[test]
+    fn deliver_gotify_message_to_spawning_team_worker_buffers_on_its_domain() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_static_workers(
+            "forge",
+            "/tmp/gotify-spawning",
+            &["reviewer".to_owned()],
+        );
+        let view_key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .map(|v| v.key)
+            .expect("seeded project view");
+        let worker_key = SessionKey::from_session_id("worker-spawning");
+        ws.insert_live_worker(&view_key, live_worker_entry("reviewer", "worker-spawning"));
+        // Register the domain WITHOUT stamping session_id: still Spawning.
+        ws.register_domain_session(worker_key.clone(), None);
+
+        let notif = gotify_notif("Backups", "backup", "env", 5);
+        ws.enable_test_dispatch_intercept();
+        crate::spawn::deliver_gotify_message(&ws, "forge", Some("reviewer"), notif.clone());
+        let dispatched = ws.drain_test_dispatch_buffer();
+
+        assert!(
+            dispatched.is_empty(),
+            "no bare Prompt (dropped) and no lead fallback for a spawning worker",
+        );
+        let buffered = ws
+            .domain_session_for(&worker_key)
+            .expect("worker domain")
+            .lock()
+            .pending_gotify_prompts
+            .clone();
+        assert_eq!(buffered, vec![notif], "buffered on the worker's own domain for its drain");
     }
 
     #[test]
@@ -6745,6 +6801,7 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
             },
         );
 
+        ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
         ws.enable_test_dispatch_intercept();
         let outcome =
             crate::spawn::deliver_cron_prompt(&ws, "cronlead", None, "morning".to_owned(), false);
@@ -6777,6 +6834,7 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
         let key = ws.list_projects().into_iter().find(|v| v.name == "proj").expect("view").key;
         ws.insert_live_worker(&key, live_worker_entry("reviewer", "worker-uuid"));
         let worker_key = SessionKey::from_session_id("worker-uuid");
+        ws.mark_session_connected_for_test(&worker_key, "worker-uuid");
 
         ws.enable_test_dispatch_intercept();
         let outcome = crate::spawn::deliver_cron_prompt(
@@ -6919,6 +6977,7 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
             },
         );
 
+        ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
         ws.enable_test_dispatch_intercept();
         crate::spawn::deliver_cron_prompt(&ws, "proj", None, "standup".to_owned(), true);
         crate::spawn::deliver_cron_prompt(&ws, "proj", None, "standup".to_owned(), false);
@@ -6955,6 +7014,7 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
                 account: AccountKey("test".to_owned()),
             },
         );
+        ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
 
         let now = std::time::SystemTime::now();
         let cron = |id: &str, prompt: &str, next_fire| CronEntry {

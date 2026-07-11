@@ -380,14 +380,22 @@ fn live_cron_owner(
     team_role: Option<&str>,
 ) -> Option<SessionKey> {
     let live = workspace.list_live_workers(&view.key);
-    if let Some(label) = team_role {
-        return live.into_iter().find(|w| w.label == label).map(|w| w.session_key);
-    }
-    let live_keys: std::collections::HashSet<_> = live.into_iter().map(|w| w.session_key).collect();
-    view.sessions
-        .iter()
-        .find(|s| s.is_open && !live_keys.contains(&s.session))
-        .map(|s| s.session.clone())
+    let candidate = if let Some(label) = team_role {
+        live.into_iter().find(|w| w.label == label).map(|w| w.session_key)
+    } else {
+        let live_keys: std::collections::HashSet<_> =
+            live.into_iter().map(|w| w.session_key).collect();
+        view.sessions
+            .iter()
+            .find(|s| s.is_open && !live_keys.contains(&s.session))
+            .map(|s| s.session.clone())
+    };
+    // Only treat the owner as a live dispatch target once it has stamped
+    // its session_id. A still-spawning owner (session_id None) would drop
+    // a bare Command::Prompt, so fall through to the buffer-and-wake path
+    // where its own Connected handler drains the owner-keyed buffer.
+    let key = candidate?;
+    workspace.domain_session_for(&key).filter(|d| d.lock().session_id.is_some()).map(|_| key)
 }
 
 /// Outcome of checking whether a cron's owner still exists to be woken.
@@ -441,26 +449,37 @@ pub(crate) fn deliver_gotify_message(
     team_role: Option<&str>,
     notification: GotifyNotification,
 ) {
-    // A team-worker subscription targets that worker when it's running.
+    // A team-worker subscription targets that worker. Once it's a live
+    // entry the notification belongs to it, never the lead - so handle
+    // both the connected case (dispatch now) and the still-spawning case
+    // (buffer on the worker's own DomainSession for its Connected drain)
+    // here, and never fall through to the lead below.
     if let Some(role) = team_role
-        && let Some(worker_key) = running_team_worker(workspace, project, role)
+        && let Some(worker_key) = team_worker_key(workspace, project, role)
     {
-        // Echo the notification block BEFORE the LLM-side dispatch so it
-        // renders in order regardless of which event the TUI reducer drains
-        // first (mirrors handle_deliver_peer_prompt).
-        push_gotify_notification_into_chat(workspace, &worker_key, &notification);
-        if let Err(err) = workspace.dispatch(Command::Prompt {
-            key: worker_key,
-            text: notification.to_prose(),
-            attachments: Vec::new(),
-        }) {
-            tracing::warn!(
-                target: "forge_workspace::spawn",
-                project = %project,
-                role = %role,
-                error = ?err,
-                "gotify deliver to running team worker failed",
-            );
+        let connected = workspace
+            .domain_session_for(&worker_key)
+            .is_some_and(|d| d.lock().session_id.is_some());
+        if connected {
+            // Echo the notification block BEFORE the LLM-side dispatch so
+            // it renders in order regardless of which event the TUI reducer
+            // drains first (mirrors handle_deliver_peer_prompt).
+            push_gotify_notification_into_chat(workspace, &worker_key, &notification);
+            if let Err(err) = workspace.dispatch(Command::Prompt {
+                key: worker_key,
+                text: notification.to_prose(),
+                attachments: Vec::new(),
+            }) {
+                tracing::warn!(
+                    target: "forge_workspace::spawn",
+                    project = %project,
+                    role = %role,
+                    error = ?err,
+                    "gotify deliver to running team worker failed",
+                );
+            }
+        } else if let Some(domain) = workspace.domain_session_for(&worker_key) {
+            domain.lock().pending_gotify_prompts.push(notification);
         }
         return;
     }
@@ -527,8 +546,10 @@ pub(crate) fn deliver_gotify_message(
     }
 }
 
-/// The running team worker of role `label` in `project`, if any.
-fn running_team_worker(
+/// The team worker of role `label` in `project`, if a live entry
+/// exists - regardless of whether it has finished connecting. The
+/// caller checks connectedness to decide dispatch-vs-buffer.
+fn team_worker_key(
     workspace: &Arc<Workspace>,
     project: &str,
     label: &str,
