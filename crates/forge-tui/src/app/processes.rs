@@ -267,6 +267,28 @@ fn session_command_by_task_id(session: &crate::app::session::UiSession) -> HashM
         .collect()
 }
 
+/// The active session's live backgrounded `local_bash` commands, resolved
+/// through the same session-scoped task map the row builder uses. Fed to
+/// the OS process scan so a `setsid`-detached / orphaned bash outside
+/// claude's descendant tree is adopted into the snapshot (RAM + tree)
+/// instead of falling back to a memory-less synthetic row.
+pub(crate) fn live_local_bash_commands(session: &crate::app::session::UiSession) -> Vec<String> {
+    let local_bash_task_ids: HashSet<&str> = session
+        .background_tasks
+        .iter()
+        .filter(|task| task.task_type == "local_bash")
+        .map(|task| task.task_id.as_str())
+        .collect();
+    if local_bash_task_ids.is_empty() {
+        return Vec::new();
+    }
+    session_command_by_task_id(session)
+        .into_iter()
+        .filter(|(task_id, _)| local_bash_task_ids.contains(task_id.as_str()))
+        .map(|(_, command)| command)
+        .collect()
+}
+
 /// Synthesise PROCESSES rows for CLI-registry backgrounded `local_bash`
 /// the OS scan hasn't surfaced. Skips a task whose command already
 /// substring-matches a scanned process (the OS walk covers it) or is
@@ -327,9 +349,9 @@ fn rows_from_os_snapshot<'a>(
         children_of.entry(entry.parent_pid).or_default().push(entry);
     }
 
-    // Roots = entries whose parent is NOT in the snapshot (the
-    // snapshot only includes claude's descendants, so a missing
-    // parent means the parent IS claude itself).
+    // Roots = entries whose parent is NOT in the snapshot: a claude
+    // descendant whose parent is claude, or an adopted backgrounded bash
+    // whose parent is init - both parents sit outside the snapshot.
     let mut roots: Vec<&ProcessEntry> =
         snapshot.processes.iter().filter(|e| !by_pid.contains_key(&e.parent_pid)).collect();
     // Depth-0 roots sort by the subtree total they display, not their
@@ -1346,6 +1368,47 @@ mod tests {
             task_type: task_type.to_owned(),
             description: description.to_owned(),
         }
+    }
+
+    #[test]
+    fn live_local_bash_commands_returns_only_local_bash_commands() {
+        use crate::app::{App, ChatMessage};
+
+        let mut app = App::test_default();
+        let bash = fake_tool_call_info(
+            "tu-bash",
+            "Bash",
+            json!({ "command": "gh run watch 123 --exit-status", "run_in_background": true }),
+        );
+        let agent = fake_tool_call_info("tu-agent", "Task", json!({ "command": "investigate" }));
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(bash)), MessageBlock::ToolCall(Box::new(agent))],
+            None,
+        ));
+        app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
+        app.insert_session_task_mapping("task-agent".to_owned(), "tu-agent".to_owned());
+        *app.background_tasks_mut() = vec![
+            bg_task("task-bash", "local_bash", "watch CI"),
+            bg_task("task-agent", "local_agent", "investigate"),
+        ];
+
+        let session = app.active_session().expect("active session");
+        // Only the local_bash task's command is returned; the agent's is not.
+        assert_eq!(
+            live_local_bash_commands(session),
+            vec!["gh run watch 123 --exit-status".to_owned()]
+        );
+    }
+
+    #[test]
+    fn live_local_bash_commands_empty_without_local_bash_task() {
+        use crate::app::App;
+
+        let mut app = App::test_default();
+        *app.background_tasks_mut() = vec![bg_task("task-agent", "local_agent", "investigate")];
+        let session = app.active_session().expect("active session");
+        assert!(live_local_bash_commands(session).is_empty());
     }
 
     #[test]
