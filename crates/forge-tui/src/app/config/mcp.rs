@@ -258,13 +258,33 @@ pub(crate) fn is_mcp_action_available(
 
 pub(crate) fn handle_mcp_operation_error(
     app: &mut App,
+    key: &forge_workspace::SessionKey,
     error: &forge_primitives::McpOperationError,
 ) {
-    app.mcp_mut().in_flight = false;
     let formatted = format_mcp_operation_error(error);
-    app.mcp_mut().last_error = Some(formatted.clone());
-    app.config.last_error = Some(formatted);
-    app.config.status_message = None;
+    // Target the session the error belongs to, not whatever is focused
+    // (mirrors the McpSnapshot leg). Only the active session touches the
+    // config overlay's own error line; a background session's failure
+    // writes its own bucket so it surfaces when the user switches to it.
+    let is_active = app.active_session_key.as_ref() == Some(key);
+    if is_active {
+        app.mcp_mut().in_flight = false;
+        app.mcp_mut().last_error = Some(formatted.clone());
+        app.config.last_error = Some(formatted);
+        app.config.status_message = None;
+    } else if let Some(session) = app.session_mut(key) {
+        session.mcp.in_flight = false;
+        session.mcp.last_error = Some(formatted);
+    } else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_CONFIG,
+            event_name = "mcp_operation_error_dropped",
+            message = "MCP operation error for an unknown session",
+            outcome = "dropped",
+            session_id = %key.as_str(),
+        );
+        return;
+    }
     tracing::error!(
         target: crate::logging::targets::APP_CONFIG,
         event_name = "mcp_operation_error_applied",

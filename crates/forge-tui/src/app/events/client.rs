@@ -214,12 +214,8 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             }
             crate::app::prompt::snapshot_draft_if_needed(app);
         }
-        SessionUpdate::McpOperationError { error, .. } => {
-            // Ungated to match the McpSnapshot leg: the handler stamps
-            // global overlay state (in_flight / last_error), so gating
-            // on the active session would strand the error - and the
-            // stale in_flight - when the user tabs away mid-operation.
-            crate::app::config::handle_mcp_operation_error(app, &error);
+        SessionUpdate::McpOperationError { key, error } => {
+            crate::app::config::handle_mcp_operation_error(app, &key, &error);
         }
         SessionUpdate::TurnComplete { key, terminal_reason } => {
             turn::apply_session_update_turn_complete(app, &key, terminal_reason);
@@ -1442,6 +1438,34 @@ mod tests {
         );
         assert_eq!(app.sessions.get(&key_a).expect("a").mcp.servers.len(), 1);
         assert!(app.needs_redraw);
+    }
+
+    #[test]
+    fn mcp_operation_error_routes_to_target_session_not_focused() {
+        // key_a is the focused session, key_b a background one. A
+        // background session's MCP error must land on ITS bucket, not
+        // corrupt the focused session's /mcp overlay state.
+        let mut app = App::test_default();
+        let (key_a, key_b) = seed_two_sessions(&mut app);
+        app.sessions.get_mut(&key_a).expect("a").mcp.in_flight = true;
+        app.sessions.get_mut(&key_b).expect("b").mcp.in_flight = true;
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::McpOperationError {
+                key: key_b.clone(),
+                error: forge_primitives::McpOperationError {
+                    server_name: Some("ctx7".into()),
+                    operation: "reconnect".into(),
+                    message: "boom".into(),
+                },
+            },
+        );
+        let b = app.sessions.get(&key_b).expect("b");
+        assert!(!b.mcp.in_flight, "background session's in_flight cleared");
+        assert!(b.mcp.last_error.is_some(), "background session's error recorded");
+        let a = app.sessions.get(&key_a).expect("a");
+        assert!(a.mcp.in_flight, "focused session's mcp state untouched");
+        assert!(a.mcp.last_error.is_none(), "focused session gets no stray error");
     }
 
     #[test]
