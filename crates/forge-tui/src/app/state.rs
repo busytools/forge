@@ -29,7 +29,7 @@ pub use types::{
     ScheduleKind, ScrollbarDragState, SelectionKind, SelectionPoint, SelectionState,
     SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState, SubagentChildEntry,
     SubagentEntry, TodoItem, TodoStatus, ToolCallScope, UsageSnapshot, UsageSourceKind,
-    UsageSourceMode, UsageState, UsageWindow, WorkflowEntry, WorkflowStatus,
+    UsageState, UsageWindow, WorkflowEntry, WorkflowStatus,
 };
 pub use viewport::{
     ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,

@@ -79,11 +79,6 @@ pub struct ProcessEntry {
     /// Resident memory in bytes. Rendered abbreviated (`234M`,
     /// `1.2G`) on the row's metadata line.
     pub memory_bytes: u64,
-    /// Wall-clock seconds-since-epoch when this process was forked.
-    /// Optional because some sysinfo backends report 0 for very
-    /// short-lived processes; the renderer just hides "elapsed"
-    /// when missing.
-    pub started_at_unix: Option<u64>,
 }
 
 /// Walk `claude_pid`'s descendant tree plus any command-matched
@@ -151,7 +146,6 @@ fn live_candidates(system: &System, self_pid: Option<Pid>) -> Vec<ProcessEntry> 
             name,
             command,
             memory_bytes: proc.memory(),
-            started_at_unix: proc.start_time().checked_sub(0).filter(|t| *t > 0),
         });
     }
     out
@@ -414,7 +408,6 @@ mod tests {
             name: "bash".to_owned(),
             command: command.to_owned(),
             memory_bytes: 1024,
-            started_at_unix: Some(1),
         }
     }
 
