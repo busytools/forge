@@ -121,9 +121,9 @@ impl PeerInboundKind {
     /// key off `Some(..)` here.
     pub(crate) fn peer_sender_identity(&self) -> Option<&str> {
         match self {
-            Self::Question { from, .. }
-            | Self::Message { from, .. }
-            | Self::Reply { from, .. } => Some(from),
+            Self::Question { from, .. } | Self::Message { from, .. } | Self::Reply { from, .. } => {
+                Some(from)
+            }
             Self::DeliveryFailure { target, .. } => Some(target),
             Self::WorkerSpawnFailed { label, .. } => Some(label),
             Self::Gotify { .. } | Self::Cron { .. } => None,

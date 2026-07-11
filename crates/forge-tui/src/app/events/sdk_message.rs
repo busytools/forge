@@ -2906,10 +2906,7 @@ mod error_message_tests {
         ));
         app.active_messages_mut().push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
 
-        handle_sdk_message(
-            &mut app,
-            Message::Error { error: "read loop died".to_owned() },
-        );
+        handle_sdk_message(&mut app, Message::Error { error: "read loop died".to_owned() });
 
         // The empty tail assistant is replaced by a surfaced system
         // error - proof the frame took the turn-error path, not the

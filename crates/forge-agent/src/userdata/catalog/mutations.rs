@@ -114,5 +114,4 @@ mod tests {
         let r = tag_session(&fake_config_dir(), session_id, Some("   "), None);
         assert!(matches!(r, Err(Error::MessageParse { .. })));
     }
-
 }

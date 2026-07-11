@@ -383,13 +383,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         alpha.iter().copied().find(|&i| projects[i].auto_start).unwrap_or_else(|| alpha[0])
     };
 
-    Ok(LoadedConfig {
-        projects,
-        default_index,
-        accounts,
-        ui: parsed.ui,
-        gotify: parsed.gotify,
-    })
+    Ok(LoadedConfig { projects, default_index, accounts, ui: parsed.ui, gotify: parsed.gotify })
 }
 
 pub(crate) fn expand_home(path: &str) -> PathBuf {

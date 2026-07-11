@@ -121,10 +121,7 @@ impl ControlDispatchHandle {
         if let Err(err) = &result {
             let resp = ControlResponse {
                 ty: ControlResponseType::ControlResponse,
-                response: ControlResponseKind::Error {
-                    request_id,
-                    error: err.to_string(),
-                },
+                response: ControlResponseKind::Error { request_id, error: err.to_string() },
             };
             if let Ok(mut line) = serde_json::to_string(&resp) {
                 line.push('\n');

@@ -2163,6 +2163,13 @@ config_dir = "~/.claude-subspace"
         // Install the testing stub so config_dir_for resolves (to
         // /tmp/forge-testing-stub via the bridge's default config_dir).
         let _agent_rx = workspace.install_testing_stub(&session_key);
+        // A Running worker has completed its Connected handshake, so
+        // stamp session_id - otherwise the pre-Connect buffer guard in
+        // handle_deliver_worker_prompt would park the prompt and the
+        // tag retry (asserted below) would never fire.
+        if let Some(domain) = workspace.domain_session_for(&session_key) {
+            domain.lock().session_id = Some(forge_primitives::SessionId::new(&session_id));
+        }
 
         // Pre-seed the worker entry: Running but needs_tag = true,
         // matching the post-deferred-NotFound state from the

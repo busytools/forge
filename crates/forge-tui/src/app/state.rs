@@ -28,8 +28,8 @@ pub use types::{
     PhaseStatus, RecentSessionInfo, RenderCacheBudget, SUBAGENT_TAIL_CAP, ScheduleEntry,
     ScheduleKind, ScrollbarDragState, SelectionKind, SelectionPoint, SelectionState,
     SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState, SubagentChildEntry,
-    SubagentEntry, TodoItem, TodoStatus, ToolCallScope, UsageSnapshot, UsageSourceKind,
-    UsageState, UsageWindow, WorkflowEntry, WorkflowStatus,
+    SubagentEntry, TodoItem, TodoStatus, ToolCallScope, UsageSnapshot, UsageSourceKind, UsageState,
+    UsageWindow, WorkflowEntry, WorkflowStatus,
 };
 pub use viewport::{
     ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,

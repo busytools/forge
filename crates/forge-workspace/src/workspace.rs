@@ -7916,14 +7916,22 @@ config_dir = "~/.claude-subspace"
             },
         );
 
-        workspace.expire_buffered_peer_prompts(&synth_key, PeerFailureReason::TargetConnectionFailed);
+        workspace
+            .expire_buffered_peer_prompts(&synth_key, PeerFailureReason::TargetConnectionFailed);
 
         assert!(
             !workspace.inflight_asks.lock().contains_key(&id),
             "buffered ask failed when the spawn never connected"
         );
         assert!(
-            workspace.domain_handles.lock().get(&synth_key).unwrap().lock().pending_peer_prompts.is_empty(),
+            workspace
+                .domain_handles
+                .lock()
+                .get(&synth_key)
+                .unwrap()
+                .lock()
+                .pending_peer_prompts
+                .is_empty(),
             "buffered prompts drained"
         );
     }
@@ -10036,9 +10044,7 @@ mod async_worker_spawn_failure_tests {
                 correlation_id: id.clone(),
                 caller: SessionKey::from_str_for_test("lead-1"),
                 caller_project: "proj-x".to_owned(),
-                target_project: crate::mcp::workers::worker_target_project_key(
-                    "proj-x", "builder",
-                ),
+                target_project: crate::mcp::workers::worker_target_project_key("proj-x", "builder"),
                 target_session: None,
             },
         );
