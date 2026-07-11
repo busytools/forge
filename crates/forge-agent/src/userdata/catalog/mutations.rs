@@ -1,8 +1,6 @@
 //! Filesystem-backed session mutations:
 //!
 //! - [`tag_session`] - appends a `tag` JSONL entry (pass `None` to clear).
-//! - [`delete_session`] - removes the `<session_id>.jsonl` file and any
-//!   sibling `<session_id>/` subagent-transcript directory.
 
 use std::fs;
 use std::io::Write;
@@ -46,45 +44,6 @@ pub fn tag_session(
         "sessionId": session_id,
     });
     append_to_session(config_dir, session_id, directory, &payload)
-}
-
-/// Delete a session - removes the `<session_id>.jsonl` file and any
-/// sibling `<session_id>/` subdirectory that holds subagent transcripts.
-///
-/// # Errors
-///
-/// - [`Error::MessageParse`] when `session_id` is not a valid UUID.
-/// - [`Error::Io`] when the session file can't be found or removal fails.
-pub fn delete_session(
-    config_dir: &Path,
-    session_id: &str,
-    directory: Option<&str>,
-) -> Result<(), Error> {
-    validate_uuid(session_id)?;
-    let path = find_session_file(config_dir, session_id, directory).ok_or_else(|| {
-        Error::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("session {session_id} not found"),
-        ))
-    })?;
-    fs::remove_file(&path)?;
-    // Sibling subagents directory - best-effort cleanup. NotFound is
-    // fine (no subagents ran); other errors leave orphaned transcripts
-    // on disk and warrant a visible log so the user knows why
-    // `list_subagents` will keep returning phantom entries.
-    if let Some(parent) = path.parent() {
-        let subagents = parent.join(session_id);
-        if let Err(e) = fs::remove_dir_all(&subagents)
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            tracing::warn!(
-                path = %subagents.display(),
-                error = %e,
-                "failed to clean up sibling subagents directory"
-            );
-        }
-    }
-    Ok(())
 }
 
 fn validate_uuid(s: &str) -> Result<(), Error> {
@@ -156,9 +115,4 @@ mod tests {
         assert!(matches!(r, Err(Error::MessageParse { .. })));
     }
 
-    #[test]
-    fn invalid_uuid_is_rejected_on_delete() {
-        let r = delete_session(&fake_config_dir(), "not-a-uuid", None);
-        assert!(matches!(r, Err(Error::MessageParse { .. })));
-    }
 }

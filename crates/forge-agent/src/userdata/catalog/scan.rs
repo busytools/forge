@@ -2,17 +2,11 @@
 //! transcripts from `<config_dir>/projects/<project_key>/*.jsonl`.
 //!
 //! - [`list_sessions`] - lists sessions, either for one project or all.
-//! - [`get_session_info`] - reads metadata for one session by ID.
 //! - [`get_session_messages`] - reads the full transcript for one session.
 //!
-//! Session metadata ([`list_sessions`], [`get_session_info`]) is
-//! extracted via an internal head + tail lite read so a 100 MiB
-//! transcript costs two 64 KiB reads rather than a full scan.
-//!
-//! Subagent helpers ([`list_subagents`], [`get_subagent_messages`])
-//! read `agent-<id>.jsonl` files under `<session_id>/subagents/` and
-//! recurse into nested subdirectories (e.g. `workflows/<run_id>/`)
-//! to match the CLI's on-disk layout.
+//! Session metadata ([`list_sessions`]) is extracted via an internal
+//! head + tail lite read so a 100 MiB transcript costs two 64 KiB
+//! reads rather than a full scan.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
@@ -92,119 +86,6 @@ fn canonicalize_path(path: &str) -> String {
         Err(_) => path.to_string(),
     };
     resolved.nfc().collect()
-}
-
-/// List subagent IDs for a session. Subagent transcripts live at
-/// `<projects_dir>/<project_key>/<session_id>/subagents/agent-<agent_id>.jsonl`
-/// and may be nested in further subdirectories (e.g.
-/// `subagents/workflows/<run_id>/agent-<agent_id>.jsonl`) - this
-/// function recursively walks the tree.
-///
-/// Returns an empty Vec when `session_id` is not a valid UUID, the
-/// session has no subagents directory, or no `agent-*.jsonl` files are
-/// present.
-pub fn list_subagents(config_dir: &Path, session_id: &str, directory: Option<&str>) -> Vec<String> {
-    if !is_valid_uuid(session_id) {
-        return Vec::new();
-    }
-    let Some(subagents_dir) = resolve_subagents_dir(config_dir, session_id, directory) else {
-        return Vec::new();
-    };
-    collect_agent_files(&subagents_dir).into_iter().map(|(agent_id, _)| agent_id).collect()
-}
-
-/// Read a subagent's transcript in chronological order.
-///
-/// `agent_id` is the id returned by [`list_subagents`] (the part between
-/// `agent-` and `.jsonl` in the on-disk filename). `limit` caps the
-/// number of messages returned; `offset` skips the first N.
-///
-/// Returns an empty Vec when `session_id` is not a valid UUID,
-/// `agent_id` is empty, the transcript can't be found, or the file
-/// contains no user/assistant entries.
-pub fn get_subagent_messages(
-    config_dir: &Path,
-    session_id: &str,
-    agent_id: &str,
-    directory: Option<&str>,
-    limit: Option<usize>,
-    offset: usize,
-) -> Vec<SessionMessage> {
-    if !is_valid_uuid(session_id) || agent_id.is_empty() {
-        return Vec::new();
-    }
-    let Some(subagents_dir) = resolve_subagents_dir(config_dir, session_id, directory) else {
-        return Vec::new();
-    };
-    // Walk the tree - the file may live directly under subagents/ or
-    // in a nested subdirectory (e.g. `workflows/<run_id>/`).
-    let Some((_, path)) =
-        collect_agent_files(&subagents_dir).into_iter().find(|(found, _)| found == agent_id)
-    else {
-        return Vec::new();
-    };
-    let Ok(file) = fs::File::open(&path) else {
-        return Vec::new();
-    };
-    let all = parse_session_messages(file);
-    apply_limit_offset(all, limit, offset)
-}
-
-/// Recursively walk `base_dir` and collect `(agent_id, file_path)`
-/// for every file named `agent-<agent_id>.jsonl`. Returned entries
-/// are sorted by filename within each directory (matches the CLI's
-/// on-disk traversal order so [`list_subagents`] is reproducible).
-fn collect_agent_files(base_dir: &Path) -> Vec<(String, PathBuf)> {
-    let mut out = Vec::new();
-    walk_agent_files(base_dir, &mut out);
-    out
-}
-
-fn walk_agent_files(dir: &Path, out: &mut Vec<(String, PathBuf)>) {
-    let Some(iter) = try_read_dir(dir) else {
-        return;
-    };
-    let mut entries: Vec<_> = iter.flatten().collect();
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    for entry in entries {
-        let path = entry.path();
-        let Ok(ty) = entry.file_type() else { continue };
-        if ty.is_file() {
-            if let Some(name) = path.file_name().and_then(|n| n.to_str())
-                && let Some(stripped) = name.strip_prefix("agent-")
-                && let Some(id) = stripped.strip_suffix(".jsonl")
-            {
-                out.push((id.to_string(), path));
-            }
-        } else if ty.is_dir() {
-            walk_agent_files(&path, out);
-        }
-    }
-}
-
-fn apply_limit_offset(
-    messages: Vec<SessionMessage>,
-    limit: Option<usize>,
-    offset: usize,
-) -> Vec<SessionMessage> {
-    let end = limit.map_or(messages.len(), |l| offset.saturating_add(l));
-    messages.into_iter().skip(offset).take(end.saturating_sub(offset)).collect()
-}
-
-fn resolve_subagents_dir(
-    config_dir: &Path,
-    session_id: &str,
-    directory: Option<&str>,
-) -> Option<PathBuf> {
-    let project_dir = if let Some(dir) = directory {
-        project_dir_for(config_dir, dir)
-    } else {
-        let iter = try_read_dir(&projects_dir_for(config_dir))?;
-        iter.flatten()
-            .map(|e| e.path())
-            .find(|p| p.join(format!("{session_id}.jsonl")).is_file())?
-    };
-    Some(project_dir.join(session_id).join("subagents"))
 }
 
 fn parse_session_messages<R: std::io::Read>(reader: R) -> Vec<SessionMessage> {
@@ -429,32 +310,6 @@ pub async fn list_sessions(
     };
     let end = limit.map_or(entries.len(), |l| offset.saturating_add(l));
     entries.into_iter().skip(offset).take(end.saturating_sub(offset)).collect()
-}
-
-/// Read metadata for one session. When `directory` is `None`, every
-/// project directory under `<config_dir>/projects/` is searched for
-/// a matching `<session_id>.jsonl`.
-pub fn get_session_info(
-    config_dir: &Path,
-    session_id: &str,
-    directory: Option<&str>,
-) -> Option<SDKSessionInfo> {
-    if !is_valid_uuid(session_id) {
-        return None;
-    }
-    let file_name = format!("{session_id}.jsonl");
-    if let Some(dir) = directory {
-        return read_session_info(&project_dir_for(config_dir, dir).join(&file_name));
-    }
-    let projects = projects_dir_for(config_dir);
-    let iter = try_read_dir(&projects)?;
-    for entry in iter.flatten() {
-        let candidate = entry.path().join(&file_name);
-        if candidate.is_file() {
-            return read_session_info(&candidate);
-        }
-    }
-    None
 }
 
 /// Read the full transcript for one session. Returns an empty Vec when
@@ -1069,53 +924,6 @@ mod tests {
         assert_eq!(info.custom_title.as_deref(), Some("Curated"));
     }
 
-    // ---------------------------------------------------------------------
-    // Subagent-listing helpers - the recursive walk + filename filter
-    //
-    //.
-    // ---------------------------------------------------------------------
-
-    fn write_tmp_file(path: &Path, body: &str) {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).unwrap();
-        }
-        fs::write(path, body).unwrap();
-    }
-
-    #[test]
-    fn collect_agent_files_picks_agent_prefixed_jsonl_only() {
-        let tmp = tempfile::tempdir().unwrap();
-        let base = tmp.path();
-        write_tmp_file(&base.join("agent-aaa.jsonl"), "{}\n");
-        write_tmp_file(&base.join("random.jsonl"), "{}\n"); // decoy
-        write_tmp_file(&base.join("agent-bbb.txt"), "{}\n"); // wrong ext
-
-        let collected = collect_agent_files(base);
-        let ids: Vec<&str> = collected.iter().map(|(id, _)| id.as_str()).collect();
-        assert!(ids.contains(&"aaa"), "agent-aaa.jsonl must be collected");
-        assert!(!ids.contains(&"bbb"), "agent-bbb.txt must be ignored (wrong extension)");
-        assert!(!ids.contains(&"random"), "random.jsonl must be ignored (missing `agent-` prefix)");
-    }
-
-    #[test]
-    fn collect_agent_files_recurses_into_nested_subdirs() {
-        // The CLI writes subagents at `workflows/<run_id>/agent-<id>.jsonl`
-        //. Walk must find them.
-        let tmp = tempfile::tempdir().unwrap();
-        let base = tmp.path();
-        write_tmp_file(&base.join("workflows").join("run1").join("agent-nested.jsonl"), "{}\n");
-        let collected = collect_agent_files(base);
-        assert_eq!(collected.len(), 1);
-        assert_eq!(collected[0].0, "nested");
-        assert!(collected[0].1.ends_with("agent-nested.jsonl"));
-    }
-
-    #[test]
-    fn collect_agent_files_returns_empty_for_missing_dir() {
-        let collected = collect_agent_files(Path::new("/nonexistent/path/xyz"));
-        assert!(collected.is_empty());
-    }
-
     #[test]
     fn parse_session_messages_hoists_attachment_queued_command_to_user() {
         // claude persists mid-turn queued inputs as
@@ -1201,23 +1009,6 @@ mod tests {
         let untagged = session_info_with_tag("s2", None);
         assert!(!should_exclude_worker_tag(&lead));
         assert!(!should_exclude_worker_tag(&untagged));
-    }
-
-    #[test]
-    fn apply_limit_offset_slices() {
-        let make = |n: usize| SessionMessage {
-            kind: SessionMessageKind::User,
-            uuid: format!("u-{n}"),
-            session_id: "s".into(),
-            message: Value::Null,
-            parent_tool_use_id: None,
-        };
-        let msgs = vec![make(0), make(1), make(2), make(3)];
-        assert_eq!(apply_limit_offset(msgs.clone(), None, 0).len(), 4);
-        assert_eq!(apply_limit_offset(msgs.clone(), Some(2), 0).len(), 2);
-        assert_eq!(apply_limit_offset(msgs.clone(), Some(2), 1).len(), 2);
-        assert_eq!(apply_limit_offset(msgs.clone(), Some(10), 3).len(), 1);
-        assert_eq!(apply_limit_offset(msgs, Some(0), 0).len(), 0);
     }
 
     // -----------------------------------------------------------------
