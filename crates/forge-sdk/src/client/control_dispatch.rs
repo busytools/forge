@@ -106,12 +106,37 @@ impl ControlDispatchHandle {
     /// [`SharedWriter`]. Safe to call from a `tokio::spawn`'d task -
     /// runs to completion regardless of caller cancellation.
     ///
+    /// On handler failure the CLI is best-effort answered with an
+    /// error `control_response` before the error surfaces - an
+    /// unanswered request hangs the subprocess's in-flight tool call.
+    ///
     /// # Errors
     ///
     /// Same shape as `Client::handle_control`: encode/serialise
     /// failures from [`Error::message_parse`] / [`Error::encode`],
     /// and write failures from the underlying writer.
     pub(crate) async fn dispatch(&self, req: ControlRequest) -> Result<(), Error> {
+        let request_id = req.request_id.clone();
+        let result = self.dispatch_inner(req).await;
+        if let Err(err) = &result {
+            let resp = ControlResponse {
+                ty: ControlResponseType::ControlResponse,
+                response: ControlResponseKind::Error {
+                    request_id,
+                    error: err.to_string(),
+                },
+            };
+            if let Ok(mut line) = serde_json::to_string(&resp) {
+                line.push('\n');
+                if let Err(write_err) = self.writer.write_line(&line).await {
+                    tracing::debug!(%write_err, "error control_response write failed");
+                }
+            }
+        }
+        result
+    }
+
+    async fn dispatch_inner(&self, req: ControlRequest) -> Result<(), Error> {
         let original_input = req.original_tool_input().cloned();
 
         if let ControlRequestKind::Unknown { subtype, raw } = &req.request {
@@ -387,5 +412,51 @@ impl ControlDispatchHandle {
         line.push('\n');
         self.writer.write_line(&line).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::control::ControlRequestType;
+    use crate::mcp::McpServerBuilder;
+
+    /// A handler failure (here: unparseable JSON-RPC envelope for a
+    /// registered MCP server) must still answer the CLI with an error
+    /// control_response - an unanswered request_id hangs the
+    /// subprocess's in-flight tool call forever.
+    #[tokio::test]
+    async fn dispatch_answers_with_error_response_on_handler_failure() {
+        let (writer, mut lines) = SharedWriter::test_stub();
+        let hosts = McpHosts::new(
+            vec![("forge".to_owned(), McpServerBuilder::new("forge", "1.0").build())],
+            HashMap::new(),
+        );
+        let handle = ControlDispatchHandle::new(
+            Arc::new(writer),
+            None,
+            None,
+            hosts,
+            HashMap::new(),
+            Arc::new(parking_lot::RwLock::new(String::new())),
+        );
+
+        let req = ControlRequest {
+            ty: ControlRequestType::ControlRequest,
+            request_id: "req-err-1".to_owned(),
+            request: ControlRequestKind::McpMessage {
+                server_name: "forge".to_owned(),
+                message: serde_json::Value::String("not a jsonrpc envelope".to_owned()),
+            },
+        };
+
+        let result = handle.dispatch(req).await;
+        assert!(result.is_err(), "parse failure still surfaces to the caller");
+
+        let line = lines.recv().await.expect("an error control_response was written");
+        let v: serde_json::Value = serde_json::from_str(&line).expect("valid json line");
+        assert_eq!(v["type"], "control_response");
+        assert_eq!(v["response"]["subtype"], "error");
+        assert_eq!(v["response"]["request_id"], "req-err-1");
     }
 }

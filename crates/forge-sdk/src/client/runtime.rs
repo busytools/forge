@@ -151,7 +151,7 @@ async fn handle_line(
                 let result = dispatch_clone.dispatch(req).await;
                 inflight_clone.lock().await.remove(&request_id_for_task);
                 if let Err(e) = result {
-                    tracing::warn!(
+                    tracing::error!(
                         target: crate::logging::targets::SDK_READER,
                         error = %e,
                         "control_dispatch failed",

@@ -460,6 +460,30 @@ pub(crate) struct SharedWriter {
     writer_tx: mpsc::UnboundedSender<WriterCmd>,
 }
 
+#[cfg(test)]
+impl SharedWriter {
+    /// Test stub: written lines land on the returned receiver; every
+    /// write is acked `Ok`.
+    pub(crate) fn test_stub() -> (Self, mpsc::UnboundedReceiver<String>) {
+        let (writer_tx, mut cmd_rx) = mpsc::unbounded_channel();
+        let (line_tx, line_rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(cmd) = cmd_rx.recv().await {
+                match cmd {
+                    WriterCmd::Write(line, ack) => {
+                        let _ = line_tx.send(line);
+                        let _ = ack.send(Ok(()));
+                    }
+                    WriterCmd::EndInput(ack) => {
+                        let _ = ack.send(Ok(()));
+                    }
+                }
+            }
+        });
+        (Self { writer_tx }, line_rx)
+    }
+}
+
 impl SharedWriter {
     /// Write one line of stream-json to the transport. Caller supplies
     /// the trailing `\n`.
