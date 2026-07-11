@@ -247,6 +247,12 @@ pub trait WorkerFacade: Send + Sync {
     ///   `(session_id, "worker in <project_key> (detached)")`
     fn caller_identity(&self, caller: &SessionKey) -> WorkerIdentity;
 
+    /// The caller's ambient inbound hop, stamped on its `DomainSession`
+    /// when it received the message it's now relaying. `Tell`/`Ask`
+    /// forward `hop + 1` so the `HOP_LIMIT` guard can break relay
+    /// cycles - mirrors `WorkspaceFacade::peek_current_inbound_hop`.
+    fn peek_current_inbound_hop(&self, caller: &SessionKey) -> Option<u8>;
+
     /// Dispatch a `Command::SpawnWorker` and await its synchronous
     /// reply. Gating (lead-only, non-empty label) happens before
     /// dispatch. `charter`: `Some` inline mission, or `None` to load
@@ -397,6 +403,14 @@ impl WorkerFacade for ProdWorkerFacade {
         let ws = self.workspace.upgrade()?;
         let cx = crate::mcp::caller_context::caller_context(&ws, caller)?;
         cx.lead_session_view.map(|v| v.session)
+    }
+
+    fn peek_current_inbound_hop(&self, caller: &SessionKey) -> Option<u8> {
+        let ws = self.workspace.upgrade()?;
+        let handles = ws.domain_handles.lock();
+        let domain = handles.get(caller)?;
+        let guard = domain.lock();
+        guard.current_inbound_hop
     }
 
     fn caller_identity(&self, caller: &SessionKey) -> WorkerIdentity {
@@ -735,6 +749,10 @@ pub struct MockWorkerFacade {
     /// Pre-loaded outcome for `despawn_worker` on a known label. When
     /// `None`, defaults to `Despawned { worktree_cleanup_warning: None }`.
     pub despawn_outcome: parking_lot::Mutex<Option<DespawnOutcome>>,
+    /// Caller's ambient inbound hop returned by
+    /// `peek_current_inbound_hop`. `None` (the default) mimics a
+    /// top-level caller with no inbound context.
+    pub current_inbound_hop: parking_lot::Mutex<Option<u8>>,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -764,6 +782,10 @@ impl WorkerFacade for MockWorkerFacade {
     fn lead_session_for_caller(&self, caller: &SessionKey) -> Option<SessionKey> {
         let cp = self.caller_project(caller)?;
         self.leads.lock().get(&cp.project_key).cloned()
+    }
+
+    fn peek_current_inbound_hop(&self, _caller: &SessionKey) -> Option<u8> {
+        *self.current_inbound_hop.lock()
     }
 
     fn caller_identity(&self, caller: &SessionKey) -> WorkerIdentity {
