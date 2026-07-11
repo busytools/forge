@@ -2015,17 +2015,14 @@ mod tests {
     }
 
     fn inbound_peer_block(from: &str, kind: &str) -> MessageBlock {
-        // `kind` is "Question" | "Message" | "Reply" | "LateReply". Use
-        // the wrapper-prose shape `peer_block::detect_inbound` matches.
+        // `kind` is "Question" | "Message" | "Reply". Use the
+        // wrapper-prose shape `peer_block::detect_inbound` matches.
         let id = "t-test1234";
         let header = match kind {
             "Question" => format!("[Question id={id} hop=1/10 from agent '{from}' (org 'forge')]"),
             "Message" => format!("[Message id={id} hop=1/10 from agent '{from}' (org 'forge')]"),
             "Reply" => {
                 format!("[Reply id={id} from agent '{from}' (org 'forge')]")
-            }
-            "LateReply" => {
-                format!("[Late reply id={id} from agent '{from}' (org 'forge')]")
             }
             other => panic!("unknown inbound kind {other:?}"),
         };

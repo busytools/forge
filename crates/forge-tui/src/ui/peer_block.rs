@@ -7,10 +7,9 @@
 //!    into user-turn text (e.g. `[Question id=q-... hop=1/10 from
 //!    agent 'forge' (org 'Personal') - reply with tell_agent
 //!    in_reply_to=q-...]\n\n<body>`) and render a styled block in
-//!    place of the default user-message bubble. Catches the eight
+//!    place of the default user-message bubble. Catches the five
 //!    peer/worker kinds the workspace produces (`Question`, `Message`,
-//!    `Reply`, `LateReply`, caller-side `CallerTimeout`, recipient-side
-//!    `RecipientExpired`, `DeliveryFailure`, `WorkerSpawnFailed`) plus
+//!    `Reply`, `DeliveryFailure`, `WorkerSpawnFailed`) plus
 //!    the inbound `Gotify` external-notification block, which renders
 //!    with distinct chrome (the ◈ gotify glyph + a `Gotify` source label).
 //!
@@ -53,25 +52,6 @@ pub(crate) enum PeerInboundKind {
         body: String,
     },
     Reply {
-        from: String,
-        org: String,
-        body: String,
-    },
-    LateReply {
-        from: String,
-        org: String,
-        body: String,
-    },
-    /// `[Ask id=... to agent 'X' (org 'Y') timed out after 30 minutes - no reply received.]`
-    /// Caller-side notice that their own ask hit the 30-min timer.
-    CallerTimeout {
-        target: String,
-        org: String,
-        body: String,
-    },
-    /// `[Ask id=... from agent 'A' (org 'O') has expired - any reply you produce will be tagged late.]`
-    /// Recipient-side notice that the caller's ask has been abandoned.
-    RecipientExpired {
         from: String,
         org: String,
         body: String,
@@ -129,9 +109,6 @@ impl PeerInboundKind {
             Self::Question { org, .. }
             | Self::Message { org, .. }
             | Self::Reply { org, .. }
-            | Self::LateReply { org, .. }
-            | Self::CallerTimeout { org, .. }
-            | Self::RecipientExpired { org, .. }
             | Self::DeliveryFailure { org, .. } => org,
             Self::WorkerSpawnFailed { .. } | Self::Gotify { .. } | Self::Cron { .. } => "",
         }
@@ -146,12 +123,8 @@ impl PeerInboundKind {
         match self {
             Self::Question { from, .. }
             | Self::Message { from, .. }
-            | Self::Reply { from, .. }
-            | Self::LateReply { from, .. }
-            | Self::RecipientExpired { from, .. } => Some(from),
-            Self::CallerTimeout { target, .. } | Self::DeliveryFailure { target, .. } => {
-                Some(target)
-            }
+            | Self::Reply { from, .. } => Some(from),
+            Self::DeliveryFailure { target, .. } => Some(target),
             Self::WorkerSpawnFailed { label, .. } => Some(label),
             Self::Gotify { .. } | Self::Cron { .. } => None,
         }
@@ -169,23 +142,17 @@ pub(crate) enum PeerOutboundKind {
 }
 
 /// Modifier suffix surfaced inline after the `Verb name` header when
-/// the envelope is a notice variant (timeout / undeliverable / late /
-/// expired). Renders as ` - ⚠ <label>` in `STATUS_WARNING`.
+/// the envelope is a notice variant. Renders as ` - ⚠ <label>` in
+/// `STATUS_WARNING`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NoticeModifier {
-    TimedOut,
     Undeliverable,
-    Late,
-    Expired,
 }
 
 impl NoticeModifier {
     const fn label(self) -> &'static str {
         match self {
-            Self::TimedOut => "timed out",
             Self::Undeliverable => "undeliverable",
-            Self::Late => "late",
-            Self::Expired => "expired",
         }
     }
 }
@@ -225,20 +192,7 @@ pub(crate) fn detect_inbound(text: &str) -> Option<PeerInboundKind> {
         return Some(PeerInboundKind::Reply { from, org, body });
     }
 
-    if let Some(rest) = header.strip_prefix("Late reply id=") {
-        let (_id, rest) = take_until(rest, " from agent ")?;
-        let (from, org) = extract_from_agent_after(rest)?;
-        return Some(PeerInboundKind::LateReply { from, org, body });
-    }
-
     if let Some(rest) = header.strip_prefix("Ask id=") {
-        // Caller-side timeout - `to agent 'X' (org 'Y') timed out ...`
-        if let Some(rest_to) = rest_after_id(rest, " to agent ")
-            && header.contains("timed out after 30 minutes")
-        {
-            let (target, org) = extract_from_agent_after(rest_to)?;
-            return Some(PeerInboundKind::CallerTimeout { target, org, body });
-        }
         // Caller-side delivery failure - `to agent 'X' (org 'Y') failed to deliver: <reason>`
         if let Some(rest_to) = rest_after_id(rest, " to agent ")
             && header.contains("failed to deliver:")
@@ -249,13 +203,6 @@ pub(crate) fn detect_inbound(text: &str) -> Option<PeerInboundKind> {
                 .map(|(_, after)| after.trim().to_owned())
                 .unwrap_or_default();
             return Some(PeerInboundKind::DeliveryFailure { target, org, reason });
-        }
-        // Recipient-side expired - `from agent 'A' (org 'O') has expired ...`
-        if let Some(rest_from) = rest_after_id(rest, " from agent ")
-            && header.contains("has expired")
-        {
-            let (from, org) = extract_from_agent_after(rest_from)?;
-            return Some(PeerInboundKind::RecipientExpired { from, org, body });
         }
     }
 
@@ -343,33 +290,6 @@ pub(crate) fn render_inbound(
         PeerInboundKind::Reply { from, body, .. } => {
             render_block("Reply", from, None, body, INBOUND_GLYPH, suppress_header, collapsed)
         }
-        PeerInboundKind::LateReply { from, body, .. } => render_block(
-            "Reply",
-            from,
-            Some(NoticeModifier::Late),
-            body,
-            INBOUND_GLYPH,
-            suppress_header,
-            collapsed,
-        ),
-        PeerInboundKind::CallerTimeout { target, body, .. } => render_block(
-            "Ask",
-            target,
-            Some(NoticeModifier::TimedOut),
-            body,
-            INBOUND_GLYPH,
-            suppress_header,
-            collapsed,
-        ),
-        PeerInboundKind::RecipientExpired { from, body, .. } => render_block(
-            "Question",
-            from,
-            Some(NoticeModifier::Expired),
-            body,
-            INBOUND_GLYPH,
-            suppress_header,
-            collapsed,
-        ),
         PeerInboundKind::DeliveryFailure { target, reason, .. } => render_block(
             "Ask",
             target,
@@ -411,9 +331,8 @@ const ROW_GLYPH: &str = "\u{25B6}"; // ▶
 const OUTBOUND_GLYPH: &str = "\u{2934}";
 
 /// Directional kind-icon for inbound rows (Question / Message /
-/// Reply / LateReply / CallerTimeout / RecipientExpired /
-/// DeliveryFailure). U+2935 CURVED ARROW POINTING RIGHTWARDS AND
-/// CURVING DOWNWARDS.
+/// Reply / DeliveryFailure). U+2935 CURVED ARROW POINTING RIGHTWARDS
+/// AND CURVING DOWNWARDS.
 const INBOUND_GLYPH: &str = "\u{2935}";
 
 /// Kind-icon for an inbound Gotify notification. U+25C8 - the shared
@@ -784,39 +703,6 @@ mod tests {
     }
 
     #[test]
-    fn detect_late_reply_inbound() {
-        let text = "[Late reply id=q-7f3a92e0 from agent 'granite-backend' (org 'Granite') ...]\n\nSorry for the delay.";
-        let kind = detect_inbound(text).expect("late reply");
-        assert!(matches!(kind, PeerInboundKind::LateReply { .. }));
-    }
-
-    #[test]
-    fn detect_caller_timeout_inbound() {
-        let text = "[Ask id=q-7f3a92e0 to agent 'granite-backend' (org 'Granite') timed out after 30 minutes - no reply received. ...]\n\nwas: \"...\"";
-        let kind = detect_inbound(text).expect("timeout");
-        match kind {
-            PeerInboundKind::CallerTimeout { target, org, .. } => {
-                assert_eq!(target, "granite-backend");
-                assert_eq!(org, "Granite");
-            }
-            other => panic!("expected CallerTimeout, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn detect_recipient_expired_inbound() {
-        let text = "[Ask id=q-7f3a92e0 from agent 'forge' (org 'Personal') has expired - any reply you produce will be tagged late.]\n\n";
-        let kind = detect_inbound(text).expect("expired");
-        match kind {
-            PeerInboundKind::RecipientExpired { from, org, .. } => {
-                assert_eq!(from, "forge");
-                assert_eq!(org, "Personal");
-            }
-            other => panic!("expected RecipientExpired, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn detect_delivery_failure_inbound() {
         let text = "[Ask id=q-d31fa8a3 to agent 'granite-liq-bot' (org 'Granite') failed to deliver: target spawn failed: all pinned accounts are rate-limited]\n\n";
         let kind = detect_inbound(text).expect("delivery failure");
@@ -870,32 +756,6 @@ mod tests {
         assert!(s[0].contains("Question planner"), "verb + name: {:?}", s[0]);
         assert!(!s[0].contains("Personal"), "org suppressed: {:?}", s[0]);
         assert!(s.last().unwrap().contains("Is the seam plan ready?"));
-    }
-
-    #[test]
-    fn render_inbound_late_reply_shows_modifier() {
-        let kind = PeerInboundKind::LateReply {
-            from: "granite-backend".into(),
-            org: "Granite".into(),
-            body: "Sorry for the delay.".into(),
-        };
-        let lines = render_inbound(&kind, false, false);
-        let s = render_lines_to_strings(&lines);
-        assert!(s[0].contains("Reply granite-backend"));
-        assert!(s[0].contains("\u{26a0} late"), "modifier ⚠ late: {:?}", s[0]);
-    }
-
-    #[test]
-    fn render_inbound_caller_timeout_shows_ask_with_modifier() {
-        let kind = PeerInboundKind::CallerTimeout {
-            target: "planner".into(),
-            org: "Personal".into(),
-            body: "was: \"is the seam plan ready?\"".into(),
-        };
-        let lines = render_inbound(&kind, false, false);
-        let s = render_lines_to_strings(&lines);
-        assert!(s[0].contains("Ask planner"), "verb + target: {:?}", s[0]);
-        assert!(s[0].contains("\u{26a0} timed out"), "modifier ⚠ timed out: {:?}", s[0]);
     }
 
     #[test]
@@ -1027,17 +887,17 @@ mod tests {
     }
 
     #[test]
-    fn render_inbound_caller_timeout_carries_inbound_glyph() {
-        let kind = PeerInboundKind::CallerTimeout {
+    fn render_inbound_delivery_failure_carries_inbound_glyph() {
+        let kind = PeerInboundKind::DeliveryFailure {
             target: "planner".into(),
             org: "Personal".into(),
-            body: "was: \"is the seam plan ready?\"".into(),
+            reason: "target spawn failed".into(),
         };
         let lines = render_inbound(&kind, false, false);
         let s = render_lines_to_strings(&lines);
         assert!(
             s[0].contains('\u{2935}'),
-            "CallerTimeout routes through render_inbound and carries ⤵: {:?}",
+            "DeliveryFailure routes through render_inbound and carries ⤵: {:?}",
             s[0]
         );
     }
