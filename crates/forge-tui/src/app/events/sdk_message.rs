@@ -42,10 +42,19 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         Message::Result { .. } => handle_result(app, msg),
         Message::BackgroundTasksChanged { .. } => handle_background_tasks_changed(app, msg),
         Message::CommandsChanged { .. } => handle_commands_changed(app, msg),
+        // The CLI's last-gasp fatal transport error before teardown.
+        // Route it through the turn-error path so the session leaves
+        // the pinned-spinner state, in-flight tool calls finalize as
+        // Failed, and the CLI's error string surfaces.
+        Message::Error { error } => {
+            if let Some(key) = app.active_session_key.clone() {
+                super::turn::handle_turn_error_event(app, &key, &error, None, None);
+            }
+        }
         // No-op arms:
-        // - `StreamEvent` (partial-message streaming) + `Error` /
-        //   `Unknown` (transport / forward-compat) - re-add a handler
-        //   if a downstream consumer needs to react.
+        // - `StreamEvent` (partial-message streaming) + `Unknown`
+        //   (forward-compat) - re-add a handler if a downstream
+        //   consumer needs to react.
         // - `TurnDuration` (#279): decoder variant retained for
         //   wire-conformance (Hard Rule #9). CLI 2.1.156 never emits
         //   the event in forge's flow (30+ scenario baselines + 14
@@ -56,7 +65,6 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         //   wire-conformance; no UI surface yet (hook-activity is a
         //   separate feature).
         Message::StreamEvent { .. }
-        | Message::Error { .. }
         | Message::Unknown { .. }
         | Message::TurnDuration { .. }
         | Message::HookStarted { .. }
@@ -2869,5 +2877,42 @@ mod commands_changed_tests {
         *app.available_commands_mut() = vec![AvailableCommand::new("gone", "")];
         handle_sdk_message(&mut app, commands_event(Vec::new()));
         assert!(app.available_commands().is_empty(), "empty commands_changed clears the list");
+    }
+}
+
+#[cfg(test)]
+mod error_message_tests {
+    //! `Message::Error` is the CLI's fatal transport signal. It must
+    //! route through the turn-error path (surface the error, leave the
+    //! pinned-spinner state), not fall into a no-op arm.
+    use super::handle_sdk_message;
+    use crate::app::{App, ChatMessage, MessageBlock, MessageRole, TextBlock};
+    use forge_primitives::Message;
+
+    #[test]
+    fn error_message_surfaces_and_drops_the_stuck_spinner() {
+        let mut app = App::test_default();
+        app.status = crate::app::AppStatus::Thinking;
+        app.active_messages_mut().push(ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete("hi"))],
+            None,
+        ));
+        app.active_messages_mut().push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+
+        handle_sdk_message(
+            &mut app,
+            Message::Error { error: "read loop died".to_owned() },
+        );
+
+        // The empty tail assistant is replaced by a surfaced system
+        // error - proof the frame took the turn-error path, not the
+        // old no-op arm that left it stuck.
+        let last = app.messages().last().expect("a message remains");
+        assert!(
+            matches!(last.role, MessageRole::System(None)),
+            "fatal error surfaces as a system message, got {:?}",
+            last.role,
+        );
     }
 }
