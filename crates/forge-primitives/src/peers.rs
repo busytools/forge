@@ -25,9 +25,6 @@ pub struct PeerInflightStats {
     pub outgoing: usize,
     /// Asks this session has received from peers, awaiting our reply.
     pub incoming: usize,
-    /// Asks this session sent that timed out without a reply
-    /// (visible briefly in the sidebar badge before fading).
-    pub timed_out: usize,
     /// Asks this session sent that failed to deliver
     /// (visible briefly in the sidebar badge before fading).
     pub delivery_failed: usize,
@@ -42,7 +39,6 @@ mod tests {
         let s = PeerInflightStats::default();
         assert_eq!(s.outgoing, 0);
         assert_eq!(s.incoming, 0);
-        assert_eq!(s.timed_out, 0);
         assert_eq!(s.delivery_failed, 0);
     }
 }

@@ -1,4 +1,4 @@
-//! Pure-data option enums lifted from forge-sdk's `options.rs`.
+//! Pure-data option enums shared across forge-* crates.
 //!
 //! `Options` itself stays in forge-sdk because it carries callback
 //! `Arc<dyn …>` fields - but every wire-shape enum it embeds is data

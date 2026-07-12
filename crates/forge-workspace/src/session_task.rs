@@ -218,7 +218,7 @@ impl SessionTask {
                 // (permission denied, disk full, etc.) DO roll back:
                 // release session + emit Removed.
                 //
-                // TODO: lead sessions are currently never tagged
+                // TODO(ved): lead sessions are currently never tagged
                 // with `forge:lead`. The resolver falls back to
                 // latest untagged so existing behaviour works, but
                 // explicit lead tagging is a spec gap we should
@@ -319,12 +319,10 @@ impl SessionTask {
                     // the project was asleep.
                     self.drain_pending_gotify_prompts();
                 }
-                // Fire worker re-tag for both first-Connected and
-                // post-/new Connected paths. #166: the previous
-                // shape only called this in the else branch, so a
-                // /new on a worker session wrote the new session's
-                // JSONL but never tagged it - the resume scan then
-                // picked the pre-/new orphan.
+                // Re-tag must fire on BOTH first-Connected and
+                // post-/new Connected paths: a /new writes a fresh
+                // JSONL, and if it isn't re-tagged the resume scan
+                // picks the stale pre-/new orphan instead.
                 if let Some(workspace) = self.workspace.upgrade() {
                     workspace.apply_worker_tag_or_rollback(&real_key, &cwd_for_tag);
                 }
@@ -343,6 +341,14 @@ impl SessionTask {
                 // we know the target is gone.
                 if let Some(workspace) = self.workspace.upgrade() {
                     workspace.expire_target_inflight(
+                        &key,
+                        crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+                    );
+                    // A project-spawn that never connected still holds
+                    // its buffered peer asks on the synth key - those
+                    // were never delivered, so the target_session match
+                    // above can't reach them.
+                    workspace.expire_buffered_peer_prompts(
                         &key,
                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                     );

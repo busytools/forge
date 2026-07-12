@@ -8,7 +8,7 @@
 //! Module map:
 //!
 //! - [`command`] - `Command` enum (UI → agent channel envelope) + IDs.
-//! - [`ids`] - `SessionId`, `ToolUseId`, `MessageId`.
+//! - [`ids`] - `SessionId`, `ToolUseId`.
 //! - [`image`] - `ImageAttachment` + clipboard validation helpers.
 //! - [`messages`] - top-level stream-json shapes (`Message`,
 //!   `AssistantEnvelope`, `Usage`, `RateLimit*`, `StopReason`,
@@ -17,7 +17,7 @@
 //!   ToolResult, server-tool, Image).
 //! - [`public_types`] - public wire types: `AccountInfo`,
 //!   `McpServer*`, `McpStatusResponse`, `ContextUsage*`,
-//!   `SDKSessionInfo`, `SessionMessage*`, `Sandbox*`, `SettingSource`,
+//!   `SDKSessionInfo`, `SessionMessage*`, `Sandbox*`,
 //!   `StreamEvent`.
 //! - [`hooks`] - hook event data (`HookKind`, `HookContext`, all 12
 //!   `*Input` structs, all 9 `*HookSpecificOutput` types).
@@ -87,7 +87,7 @@ pub use hooks::{
     SubagentStartHookSpecificOutput, SubagentStartInput, SubagentStopInput,
     UserPromptSubmitHookSpecificOutput, UserPromptSubmitInput,
 };
-pub use ids::{MessageId, SessionId, ToolUseId};
+pub use ids::{SessionId, ToolUseId};
 pub use image::{
     ImageAttachment, SUPPORTED_IMAGE_MIME_TYPES, is_supported_image_type, is_valid_base64,
     validate_image,
@@ -113,7 +113,7 @@ pub use public_types::{
     AccountInfo, ContextUsageCategory, ContextUsageResponse, ForgeAccountIdentity, McpServerConfig,
     McpServerConnectionStatus, McpServerInfo, McpServerStatus, McpStatusResponse,
     McpToolAnnotations, McpToolInfo, SDKSessionInfo, SandboxIgnoreViolations, SandboxNetworkConfig,
-    SandboxSettings, SessionMessage, SessionMessageKind, SettingSource, StreamEvent,
+    SandboxSettings, SessionMessage, SessionMessageKind, StreamEvent,
 };
 pub use question::{
     QuestionAnnotation, QuestionOption, QuestionOutcome, QuestionPrompt, QuestionRequest,

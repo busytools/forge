@@ -6,38 +6,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Which settings scope to load. Wire shape:
-/// `Literal["user", "project", "local"]`.
-///
-/// Combinations are expressed by passing multiple variants - see
-/// `forge_sdk::OptionsBuilder::setting_sources`.
-/// The CLI resolves the actual on-disk paths from whichever
-/// `CLAUDE_CONFIG_DIR` is active (env var wins, else `$HOME/.claude`);
-/// the paths below describe the layout, not hardcoded locations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SettingSource {
-    /// User-scope settings at `<config_dir>/settings.json`
-    /// (`<config_dir>` = `$CLAUDE_CONFIG_DIR` if set, else `~/.claude`).
-    User,
-    /// Project-scope settings at `<repo>/.claude/settings.json`.
-    Project,
-    /// Project-local (gitignored) settings at
-    /// `<repo>/.claude/settings.local.json`.
-    Local,
-}
-
-impl SettingSource {
-    /// String form for `--setting-sources=<csv>`.
-    pub fn as_cli_arg(self) -> &'static str {
-        match self {
-            Self::User => "user",
-            Self::Project => "project",
-            Self::Local => "local",
-        }
-    }
-}
-
 /// Account / subscription info the CLI emits in the session-init
 /// payload. Mirrors the shape `client.initial_session_data()["account"]`
 /// would deserialize to. All fields are optional because the CLI omits

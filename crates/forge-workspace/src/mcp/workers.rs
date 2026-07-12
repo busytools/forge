@@ -511,12 +511,14 @@ impl Tool for Tell {
 
         let correlation_id = CorrelationId::new_tell();
         let identity = self.facade.caller_identity(&caller_key);
+        let outgoing_hop =
+            self.facade.peek_current_inbound_hop(&caller_key).unwrap_or(0).saturating_add(1);
         let wrapped = WrappedPrompt {
             correlation_id: correlation_id.clone(),
             kind,
             sender_name: identity.name,
             sender_org: identity.org,
-            hop: 1,
+            hop: outgoing_hop,
             hop_limit: HOP_LIMIT,
             body: args.message,
         };
@@ -782,12 +784,14 @@ impl Tool for Ask {
         let correlation_id = CorrelationId::new_ask();
 
         let identity = self.facade.caller_identity(&caller_key);
+        let outgoing_hop =
+            self.facade.peek_current_inbound_hop(&caller_key).unwrap_or(0).saturating_add(1);
         let wrapped = WrappedPrompt {
             correlation_id: correlation_id.clone(),
             kind: WrappedKind::Question,
             sender_name: identity.name,
             sender_org: identity.org,
-            hop: 1,
+            hop: outgoing_hop,
             hop_limit: HOP_LIMIT,
             body: args.question,
         };
@@ -1679,6 +1683,44 @@ mod tests {
         assert_eq!(dispatched.len(), 1, "exactly one deliver dispatch");
         assert_eq!(dispatched[0].1, "reviewer");
         assert!(matches!(dispatched[0].2.kind, WrappedKind::Message));
+    }
+
+    #[tokio::test]
+    async fn tell_forwards_incoming_hop_plus_one() {
+        // A worker relaying a message it received at hop 3 must send at
+        // hop 4 - otherwise the HOP_LIMIT relay-cycle guard never fires.
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("worker-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        mock.workers.lock().insert("forge".into(), vec![fake_worker("reviewer", "charter")]);
+        *mock.current_inbound_hop.lock() = Some(3);
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({ "label": "reviewer", "message": "relayed" }),
+            })
+            .await;
+        assert!(!output.is_error);
+        assert_eq!(mock.deliver_calls.lock()[0].2.hop, 4, "hop must be inbound + 1");
+    }
+
+    #[tokio::test]
+    async fn ask_forwards_incoming_hop_plus_one() {
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("worker-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        mock.workers.lock().insert("forge".into(), vec![fake_worker("reviewer", "charter")]);
+        *mock.current_inbound_hop.lock() = Some(5);
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Ask { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({ "label": "reviewer", "question": "status?" }),
+            })
+            .await;
+        assert!(!output.is_error);
+        assert_eq!(mock.deliver_calls.lock()[0].2.hop, 6, "hop must be inbound + 1");
     }
 
     #[tokio::test]

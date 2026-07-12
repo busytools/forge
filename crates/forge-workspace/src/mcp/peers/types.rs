@@ -2,10 +2,9 @@
 //!
 //! These types are workspace-internal - only `forge-workspace`
 //! (the tool impls, the workspace's inflight tracking, the spawn-
-//! routing handlers) references them. Per the audit's I7 finding,
-//! they used to live in `forge-primitives::peers` but never actually
-//! crossed crate boundaries; relocating here honours the
-//! "primitives = cross-crate wire types only" placement rule.
+//! routing handlers) references them. Kept out of `forge-primitives`
+//! because they never cross a crate boundary (primitives is for
+//! cross-crate wire types only).
 //!
 //! The one truly cross-crate peer type - `PeerInflightStats` -
 //! stays in `forge-primitives` because the TUI reads it through
@@ -171,6 +170,13 @@ pub struct WrappedPrompt {
 }
 
 impl WrappedPrompt {
+    /// True when this envelope has been relayed past its hop limit -
+    /// the anti-relay-cycle guard every delivery path checks before
+    /// forwarding.
+    pub(crate) fn exceeds_hop_limit(&self) -> bool {
+        self.hop > self.hop_limit
+    }
+
     /// Build the exact prose string that gets injected into the
     /// recipient's chat as a `Command::Prompt` text. The format MUST
     /// match the prefix patterns `forge-tui::ui::peer_block::detect_inbound`

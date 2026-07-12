@@ -2,8 +2,6 @@
 //! `initialize` `control_request`'s `agents` field. Pure data - no
 //! callbacks.
 
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -175,7 +173,3 @@ pub enum EffortPreset {
     /// Maximum reasoning (may be slow).
     Max,
 }
-
-/// Map of subagent-name → [`SubagentDefinition`] attached to
-/// `forge_sdk::Options`. Empty by default.
-pub type SubagentMap = HashMap<String, SubagentDefinition>;

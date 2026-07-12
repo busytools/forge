@@ -6,9 +6,9 @@
 //! an `input` payload whose `hook_event_name` discriminates concrete types.
 //!
 //! Wire-shape data (`HookKind`, `HookContext`, all `*Input`/`*Output`
-//! structs) lifted to forge-primitives in 2026-05-05; re-exported here
-//! for back-compat. The callback machinery (`HookCallback` trait,
-//! `ErasedHookCallback`, `Hooks`/`HooksBuilder` registry) stays SDK-side.
+//! structs) lives in forge-primitives, re-exported here. The callback
+//! machinery (`HookCallback` trait, `ErasedHookCallback`,
+//! `Hooks`/`HooksBuilder` registry) stays SDK-side.
 
 pub mod callback;
 pub mod registry;

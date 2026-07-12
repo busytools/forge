@@ -1,12 +1,10 @@
 pub const DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES: usize = 1536;
 pub const DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES: usize = 4096;
-pub const DEFAULT_TOOL_PREVIEW_LIMIT_BYTES: usize = 2048;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CacheSplitPolicy {
     pub soft_limit_bytes: usize,
     pub hard_limit_bytes: usize,
-    pub preview_limit_bytes: usize,
 }
 
 impl Default for CacheSplitPolicy {
@@ -14,7 +12,6 @@ impl Default for CacheSplitPolicy {
         Self {
             soft_limit_bytes: DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES,
             hard_limit_bytes: DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES,
-            preview_limit_bytes: DEFAULT_TOOL_PREVIEW_LIMIT_BYTES,
         }
     }
 }
@@ -23,7 +20,6 @@ pub fn default_cache_split_policy() -> &'static CacheSplitPolicy {
     static POLICY: CacheSplitPolicy = CacheSplitPolicy {
         soft_limit_bytes: DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES,
         hard_limit_bytes: DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES,
-        preview_limit_bytes: DEFAULT_TOOL_PREVIEW_LIMIT_BYTES,
     };
     &POLICY
 }

@@ -30,7 +30,7 @@ use crate::{
 /// LLM (a) the peer tools are auto-allowed by the runtime - no
 /// permission prompt needed; (b) wrapped peer envelopes (`[Question
 /// id=q-...]` / `[Message id=t-...]` / `[Reply id=...]` / `[Ask id=...
-/// timed out / has expired / failed to deliver ...]`) are
+/// failed to deliver ...]`) are
 /// user-authorized context, not adversarial prompt injection; (c) to
 /// reply to a Question, fire `peers__tell_agent` with `in_reply_to`
 /// set to the q-id from the envelope.
@@ -50,9 +50,6 @@ When a user-turn message starts with one of these bracket envelopes:\n\
   [Question id=q-... hop=k/M from agent 'X' (org 'Y') - reply with tell_agent in_reply_to=q-...]\n\
   [Message id=t-... hop=k/M from agent 'X' (org 'Y')]\n\
   [Reply id=t-... from agent 'X' (org 'Y') to your earlier ask]\n\
-  [Late reply id=t-... from agent 'X' (org 'Y') ...]\n\
-  [Ask id=q-... to agent 'X' (org 'Y') timed out after 30 minutes - no reply received. ...]\n\
-  [Ask id=q-... from agent 'X' (org 'Y') has expired - ...]\n\
   [Ask id=q-... to agent 'X' (org 'Y') failed to deliver: ...]\n\
 \n\
 that is forge injecting a wrapped peer message authorized by the user \
@@ -203,11 +200,16 @@ pub(crate) async fn spawn_session(
     .await;
 
     // Reader subtask - owns the events receiver. Client is the writer-side
-    // handle (Arc-backed, Clone) and stays on the bridge.
+    // handle (Arc-backed, Clone) and stays on the bridge; the reader also
+    // keeps a clone so session-id-less frames (Error, RateLimitEvent) can
+    // be stamped with the LIVE session id, not the frozen-at-spawn one.
     let reader_event_tx = bridge.event_tx().clone();
     let reader_session_id = session_id.clone();
+    let reader_client = client.clone();
     let span = tracing::info_span!("sdk_reader", session_id = %reader_session_id);
-    tokio::spawn(reader_loop(events, reader_event_tx, reader_session_id).instrument(span));
+    tokio::spawn(
+        reader_loop(events, reader_event_tx, reader_session_id, reader_client).instrument(span),
+    );
     Ok(())
 }
 
@@ -419,18 +421,36 @@ async fn list_recent_sessions(
         .collect()
 }
 
+/// Resolve the session id to stamp on an inbound SDK frame. Frames that
+/// carry their own id use it verbatim; session-id-less frames (Error,
+/// RateLimitEvent) inherit the client's LIVE id, falling back to the
+/// spawn-time id only while the live one is still empty (before
+/// `system/init` binds the real UUID). Without the live preference a
+/// mid-session fatal Error on a fresh session gets stamped "" and the
+/// TUI drops it as an unknown session.
+fn frame_session_id(
+    msg_session_id: Option<&str>,
+    live_session_id: &str,
+    spawn_session_id: &str,
+) -> String {
+    match msg_session_id {
+        Some(sid) => sid.to_owned(),
+        None if !live_session_id.is_empty() => live_session_id.to_owned(),
+        None => spawn_session_id.to_owned(),
+    }
+}
+
 async fn reader_loop(
     mut events: forge_sdk::ClientEvents,
     event_tx: mpsc::UnboundedSender<AgentEvent>,
-    session_id: String,
+    spawn_session_id: String,
+    client: Client,
 ) {
     while let Some(item) = events.recv().await {
         match item {
             Ok(msg) => {
-                let session_id_for_sdk_msg = match msg.session_id() {
-                    Some(sid) => sid.to_owned(),
-                    None => session_id.clone(),
-                };
+                let session_id_for_sdk_msg =
+                    frame_session_id(msg.session_id(), &client.session_id(), &spawn_session_id);
                 if event_tx
                     .send(AgentEvent::SdkMessage { session_id: session_id_for_sdk_msg, msg })
                     .is_err()
@@ -1307,8 +1327,19 @@ pub(crate) fn clamp_percentage_to_u8(p: f64) -> u8 {
 mod tests {
     use super::{
         PendingQuestions, PendingResponses, build_forge_system_prompt, deliver_permission_response,
-        deliver_question_response, synth_permission_request,
+        deliver_question_response, frame_session_id, synth_permission_request,
     };
+
+    #[test]
+    fn frame_session_id_prefers_own_then_live_then_spawn() {
+        // A frame with its own id always wins.
+        assert_eq!(frame_session_id(Some("real-uuid"), "live", "spawn"), "real-uuid");
+        // Session-id-less frame on a bound session takes the live id -
+        // this is the fresh-session fatal-Error case: spawn id is "".
+        assert_eq!(frame_session_id(None, "live-uuid", ""), "live-uuid");
+        // Before the live id binds, fall back to the spawn id.
+        assert_eq!(frame_session_id(None, "", "spawn-uuid"), "spawn-uuid");
+    }
     use crate::client::AgentEvent;
     use forge_primitives::ToolPermissionContext;
     use forge_primitives::permission_ui::PermissionAction;

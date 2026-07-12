@@ -42,8 +42,8 @@ pub(crate) mod view;
 // Re-export all public types so `crate::app::App`, `crate::app::BlockCache`, etc. still work.
 pub use cache_policy::{
     CacheSplitPolicy, DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES, DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES,
-    DEFAULT_TOOL_PREVIEW_LIMIT_BYTES, TextSplitDecision, TextSplitKind, default_cache_split_policy,
-    find_text_split, find_text_split_index,
+    TextSplitDecision, TextSplitKind, default_cache_split_policy, find_text_split,
+    find_text_split_index,
 };
 pub use config::ConfigState;
 pub use connect::{create_app, start_connection};
@@ -70,9 +70,9 @@ pub use state::{
     SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState, SubagentChildEntry,
     SubagentEntry, SystemSeverity, TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem,
     TodoStatus, ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UsageSnapshot,
-    UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, WelcomeBlock, WorkflowEntry,
-    WorkflowStatus, compute_scrollbar_geometry, hash_text_block_content,
-    hash_welcome_block_content, is_execute_tool_name, is_monitor_tool_name,
+    UsageSourceKind, UsageState, UsageWindow, WelcomeBlock, WorkflowEntry, WorkflowStatus,
+    compute_scrollbar_geometry, hash_text_block_content, hash_welcome_block_content,
+    is_execute_tool_name, is_monitor_tool_name,
 };
 pub use view::ActiveView;
 

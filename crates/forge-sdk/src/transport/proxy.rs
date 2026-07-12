@@ -553,11 +553,21 @@ async fn rewrite_request(req: Request<Body>) -> Result<Request<Body>, String> {
 
     // Defensive scan - flag anything sdk-* that slipped through. The
     // proxy logs at warn; the test harness asserts emptiness.
-    if needs_inspection
-        && !new_body.is_empty()
-        && let Ok(v) = serde_json::from_slice::<Value>(&new_body)
-    {
-        scan_and_warn(&v, &path);
+    if needs_inspection && !new_body.is_empty() {
+        if let Ok(v) = serde_json::from_slice::<Value>(&new_body) {
+            scan_and_warn(&v, &path);
+        } else {
+            // A non-JSON body on an inspected host (e.g. the CLI
+            // starts compressing telemetry) silently disables both
+            // the rewrite and the scan - make that drift loud.
+            warn!(
+                %host,
+                %path,
+                content_type = ?parts.headers.get(header::CONTENT_TYPE),
+                content_encoding = ?parts.headers.get(header::CONTENT_ENCODING),
+                "wire-rewriter: inspection skipped - body is not parseable JSON",
+            );
+        }
     }
 
     // Recompute Content-Length after any body mutation.

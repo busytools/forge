@@ -741,7 +741,6 @@ mod tests {
             name: name.to_owned(),
             command: command.to_owned(),
             memory_bytes,
-            started_at_unix: None,
         }
     }
 
@@ -828,7 +827,6 @@ mod tests {
                     name: "npm".to_owned(),
                     command: "npm exec @upstash/context7-mcp".to_owned(),
                     memory_bytes: 81 * 1024 * 1024,
-                    started_at_unix: None,
                 },
                 ProcessEntry {
                     pid: 101,
@@ -837,7 +835,6 @@ mod tests {
                     command: "node /Users/x/.npm/_npx/abc/node_modules/.bin/context7-mcp"
                         .to_owned(),
                     memory_bytes: 81 * 1024 * 1024,
-                    started_at_unix: None,
                 },
             ],
         };
@@ -976,7 +973,6 @@ mod tests {
                     name: "zsh".to_owned(),
                     command: "/bin/zsh -c source /x/snap.sh 2>/dev/null || true && eval 'cargo nextest run' < /dev/null && pwd -P >| /tmp/claude-a-cwd".to_owned(),
                     memory_bytes: 8 * 1024 * 1024,
-                    started_at_unix: None,
                 },
                 // cargo - child of zsh.
                 ProcessEntry {
@@ -985,7 +981,6 @@ mod tests {
                     name: "cargo".to_owned(),
                     command: "cargo nextest run".to_owned(),
                     memory_bytes: 256 * 1024 * 1024,
-                    started_at_unix: None,
                 },
                 // Two rustc workers - children of cargo.
                 ProcessEntry {
@@ -994,7 +989,6 @@ mod tests {
                     name: "rustc".to_owned(),
                     command: "rustc --crate-name forge_tui".to_owned(),
                     memory_bytes: 512 * 1024 * 1024,
-                    started_at_unix: None,
                 },
                 ProcessEntry {
                     pid: 31,
@@ -1002,7 +996,6 @@ mod tests {
                     name: "rustc".to_owned(),
                     command: "rustc --crate-name forge_workspace".to_owned(),
                     memory_bytes: 384 * 1024 * 1024,
-                    started_at_unix: None,
                 },
             ],
         }
@@ -1061,7 +1054,6 @@ mod tests {
                     name: "node".to_owned(),
                     command: "node /path/to/build-helper.js".to_owned(),
                     memory_bytes: 128 * 1024 * 1024,
-                    started_at_unix: None,
                 },
                 ProcessEntry {
                     pid: 200,
@@ -1069,7 +1061,6 @@ mod tests {
                     name: "zsh".to_owned(),
                     command: "/bin/zsh -c source /x/snap.sh 2>/dev/null || true && eval 'cargo nextest run' < /dev/null && pwd -P >| /tmp/claude-b-cwd".to_owned(),
                     memory_bytes: 8 * 1024 * 1024,
-                    started_at_unix: None,
                 },
             ],
         };
@@ -1099,7 +1090,6 @@ mod tests {
                     name: "zsh".to_owned(),
                     command: real_wrapper("run the build"),
                     memory_bytes: 2 * 1024 * 1024,
-                    started_at_unix: None,
                 },
                 ProcessEntry {
                     pid: 11,
@@ -1107,7 +1097,6 @@ mod tests {
                     name: "cargo".to_owned(),
                     command: "cargo build".to_owned(),
                     memory_bytes: 1000 * 1024 * 1024,
-                    started_at_unix: None,
                 },
                 ProcessEntry {
                     pid: 20,
@@ -1115,7 +1104,6 @@ mod tests {
                     name: "node".to_owned(),
                     command: "node server.mjs".to_owned(),
                     memory_bytes: 500 * 1024 * 1024,
-                    started_at_unix: None,
                 },
             ],
         };
@@ -1293,7 +1281,6 @@ mod tests {
                 name: "cargo".to_owned(),
                 command: "cargo build".to_owned(),
                 memory_bytes: 64 * 1024 * 1024,
-                started_at_unix: None,
             },
         ];
         // 8 rustc worker children with PIDs 2000..2008.
@@ -1304,7 +1291,6 @@ mod tests {
                 name: "rustc".to_owned(),
                 command: format!("rustc --crate-name worker_{i}"),
                 memory_bytes: 100 * 1024 * 1024,
-                started_at_unix: None,
             });
         }
         let snapshot = ProcessSnapshot { processes, scanned_at: std::time::SystemTime::now() };
@@ -1333,7 +1319,6 @@ mod tests {
             name: "cargo".to_owned(),
             command: "cargo build".to_owned(),
             memory_bytes: 64 * 1024 * 1024,
-            started_at_unix: None,
         }];
         for i in 0..5u32 {
             processes.push(ProcessEntry {
@@ -1342,7 +1327,6 @@ mod tests {
                 name: "rustc".to_owned(),
                 command: format!("rustc --crate-name w_{i}"),
                 memory_bytes: 100 * 1024 * 1024,
-                started_at_unix: None,
             });
         }
         let snapshot = ProcessSnapshot { processes, scanned_at: std::time::SystemTime::now() };
@@ -1534,7 +1518,6 @@ mod tests {
                 name: "zsh".to_owned(),
                 command: "/bin/zsh -c -l eval 'sleep 60 && echo done' < /dev/null".to_owned(),
                 memory_bytes: 4 * 1024 * 1024,
-                started_at_unix: None,
             }],
         });
 
@@ -1601,7 +1584,6 @@ mod tests {
                 name: "zsh".to_owned(),
                 command: "/bin/zsh -c -l eval 'sleep 60 && echo done' < /dev/null".to_owned(),
                 memory_bytes: 4 * 1024 * 1024,
-                started_at_unix: None,
             }],
         });
 
@@ -1673,7 +1655,6 @@ mod tests {
                 name: "zsh".to_owned(),
                 command: real_wrapper(r#"echo '"'"'sq-marker'"'"'; sleep 40"#),
                 memory_bytes: 4 * 1024 * 1024,
-                started_at_unix: None,
             }],
         });
 
@@ -1734,7 +1715,6 @@ mod tests {
                 name: "npm".to_owned(),
                 command: "npm exec @upstash/context7-mcp".to_owned(),
                 memory_bytes: 200 * 1024 * 1024,
-                started_at_unix: None,
             }],
         });
 
@@ -1791,7 +1771,6 @@ mod tests {
                 name: "worker".to_owned(),
                 command: format!("worker{i} --serve"),
                 memory_bytes: 10 * 1024 * 1024,
-                started_at_unix: None,
             })
             .collect();
         app.set_active_process_snapshot_for_test(ProcessSnapshot {
