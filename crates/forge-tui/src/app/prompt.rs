@@ -272,7 +272,7 @@ pub fn handle_key_option_picker(prompt: &mut PromptState, key: KeyEvent) -> Prom
 /// Esc returns to OptionPicker; Enter submits (with `edited_input`
 /// still `None`, which the dispatcher falls back to plain `allow()`).
 /// Any other key is consumed so it can't leak through.
-// TODO: inline tool-args editor for AllowWithInput.
+// TODO(ved): inline tool-args editor for AllowWithInput.
 pub fn handle_key_editing_input(prompt: &mut PromptState, key: KeyEvent) -> PromptKeyOutcome {
     match key.code {
         KeyCode::Esc => {

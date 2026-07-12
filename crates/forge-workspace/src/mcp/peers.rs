@@ -220,9 +220,8 @@ impl Tool for ListAgents {
 /// `target_status` (delivered / queued_for_spawn).
 ///
 /// `in_reply_to` semantics (best-effort with degradation):
-/// - Found + Pending + caller-target match → wrapper kind = Reply,
-///   the original ask gets resolved
-/// - Found + TimedOut + caller-target match → wrapper kind = LateReply
+/// - Found + caller-target match → wrapper kind = Reply, the original
+///   ask gets resolved
 /// - Found + mismatched caller/target → wrapper kind = Message
 ///   (log warn; LLM hallucinated the wrong target)
 /// - Not found → wrapper kind = Message (log warn; LLM hallucinated
@@ -344,9 +343,9 @@ impl Tool for TellAgent {
         // in the tool result so the replier's LLM can retry.
         let degraded_note = match (in_reply_to_id.as_ref(), &kind) {
             (Some(id), WrappedKind::Message) => Some(format!(
-                "in_reply_to {id} did not match an open ask (it may be stale, \
-                 already answered, or timed out), so this was delivered as a \
-                 plain message rather than a reply. Re-check the correlation \
+                "in_reply_to {id} did not match an open ask (it may be stale \
+                 or already answered), so this was delivered as a plain \
+                 message rather than a reply. Re-check the correlation \
                  id if you meant to reply."
             )),
             _ => None,
@@ -608,11 +607,9 @@ impl Tool for AskAgent {
         // `tell_agent { in_reply_to: q-X }` reply that hits
         // `resolve_correlation` before the ask is in the map. Without
         // this order, the reply degrades silently to
-        // `WrappedKind::Message`, the original ask is never marked
-        // Replied, and the 30-min timer eventually fires
-        // `CallerTimeoutNotice` for an ask that DID get answered.
-        // On dispatch failure we roll back the registration so the
-        // sidebar outgoing-counter / inflight map don't leak.
+        // `WrappedKind::Message` and the original ask is never marked
+        // Replied. On dispatch failure we roll back the registration
+        // so the sidebar outgoing-counter / inflight map don't leak.
         self.facade.register_inflight_ask(InflightAsk {
             correlation_id: correlation_id.clone(),
             caller: caller_key.clone(),

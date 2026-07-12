@@ -205,22 +205,19 @@ pub trait WorkspaceFacade: Send + Sync {
     ) -> Result<TargetStatus, DeliverError>;
 
     /// Register an outgoing ask in the workspace's `inflight_asks`
-    /// map. The 30-min timer that expires this entry is armed in C12.
+    /// map. Expired only when the target session is lost
+    /// (`expire_target_inflight`) or the reply lands.
     fn register_inflight_ask(&self, ask: InflightAsk);
 
     /// Look up an `InflightAsk` by correlation_id. Used by `tell_agent`
-    /// to classify replies (Pending → Reply, TimedOut → LateReply,
-    /// not-found → Message). Read-only - does NOT remove the ask
-    /// from the inflight map.
+    /// to classify replies (found → Reply, not-found → Message).
+    /// Read-only - does NOT remove the ask from the inflight map.
     fn resolve_correlation(&self, id: &CorrelationId) -> Option<InflightAsk>;
 
-    /// Atomically remove an `InflightAsk` from the inflight map AND
-    /// abort its 30-min timer. Called by `tell_agent` after a
-    /// successful Reply / LateReply dispatch so the timer doesn't
-    /// fire a stale timeout notification minutes after the reply
-    /// landed. Returns the removed ask so the caller can inspect
-    /// status / caller / etc., or `None` when the entry was already
-    /// gone (timer beat the reply by milliseconds - rare).
+    /// Remove an `InflightAsk` from the inflight map. Called by
+    /// `tell_agent` after a successful Reply dispatch. Returns the
+    /// removed ask so the caller can inspect status / caller / etc.,
+    /// or `None` when the entry was already gone.
     fn complete_inflight_ask(&self, id: &CorrelationId) -> Option<InflightAsk>;
 
     /// Read the caller's ambient `current_inbound_hop` from its
@@ -344,7 +341,7 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         target_project: &str,
         wrapped: WrappedPrompt,
     ) -> Result<TargetStatus, DeliverError> {
-        if wrapped.hop > wrapped.hop_limit {
+        if wrapped.exceeds_hop_limit() {
             return Err(DeliverError::HopLimitExceeded {
                 hop: wrapped.hop,
                 limit: wrapped.hop_limit,
@@ -514,7 +511,7 @@ impl WorkspaceFacade for MockWorkspaceFacade {
         if let Some(err) = self.force_deliver_error.lock().clone() {
             return Err(err);
         }
-        if wrapped.hop > wrapped.hop_limit {
+        if wrapped.exceeds_hop_limit() {
             return Err(DeliverError::HopLimitExceeded {
                 hop: wrapped.hop,
                 limit: wrapped.hop_limit,

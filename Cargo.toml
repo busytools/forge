@@ -36,6 +36,7 @@ toml = "0.8"
 dirs = "6"
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 crossterm = "0.29"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Tier A primitives lifted from claude-code-rust
 ansi-to-tui = "8"

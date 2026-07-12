@@ -222,9 +222,6 @@ pub fn build_updated_input(
 // + `UiSession.workflows` from.
 // ----------------------------------------------------------------
 
-pub const MONITOR_TOOL_NAME: &str = "Monitor";
-pub const WORKFLOW_TOOL_NAME: &str = "Workflow";
-
 /// `Monitor` tool's `tool_use.input` payload. The renderer consumes
 /// `description` for the chat one-liner + the MONITORS-section
 /// header; `command` is informational; `persistent` toggles the

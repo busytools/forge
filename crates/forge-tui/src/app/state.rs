@@ -28,8 +28,8 @@ pub use types::{
     PhaseStatus, RecentSessionInfo, RenderCacheBudget, SUBAGENT_TAIL_CAP, ScheduleEntry,
     ScheduleKind, ScrollbarDragState, SelectionKind, SelectionPoint, SelectionState,
     SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState, SubagentChildEntry,
-    SubagentEntry, TodoItem, TodoStatus, ToolCallScope, UsageSnapshot, UsageSourceKind,
-    UsageSourceMode, UsageState, UsageWindow, WorkflowEntry, WorkflowStatus,
+    SubagentEntry, TodoItem, TodoStatus, ToolCallScope, UsageSnapshot, UsageSourceKind, UsageState,
+    UsageWindow, WorkflowEntry, WorkflowStatus,
 };
 pub use viewport::{
     ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,
@@ -996,17 +996,6 @@ impl App {
         workspace.install_testing_stub(&key)
     }
 
-    /// Detach the testing-stub agent from the active session's
-    /// `DomainSession` (no-op when none is installed).
-    #[cfg(any(test, feature = "testing"))]
-    pub fn clear_active_conn(&mut self) {
-        let Some(key) = self.active_session_key.clone() else { return };
-        let Some(workspace) = self.workspace.as_ref() else { return };
-        if let Some(domain) = workspace.domain_session_for(&key) {
-            domain.lock().conn = None;
-        }
-    }
-
     /// Active session's monotonic scope epoch.
     pub fn session_scope_epoch(&self) -> u64 {
         self.active_session().map_or(0, |s| s.session_scope_epoch)
@@ -1228,11 +1217,6 @@ impl App {
         self.active_bucket_mut().current_model = value;
     }
 
-    /// Mutable borrow of the active session's current model.
-    pub fn current_model_mut(&mut self) -> Option<&mut model::CurrentModel> {
-        self.active_bucket_mut().current_model.as_mut()
-    }
-
     /// Borrow the active session's available-models list.
     pub fn available_models(&self) -> &[model::AvailableModel] {
         self.active_session().map_or(&[], |s| s.available_models.as_slice())
@@ -1374,16 +1358,6 @@ impl App {
     /// before spawning the fetch task.
     pub fn usage_mut(&mut self) -> &mut UsageState {
         &mut self.active_bucket_mut().usage
-    }
-
-    /// Mutable borrow of a specific session's usage state by key.
-    /// Used by the `Usage*` reducers in `events/client.rs` to route
-    /// a fetch result onto the bucket that requested it, even if
-    /// the user has switched active session mid-fetch. Returns
-    /// `None` when the target bucket no longer exists (session
-    /// closed before the result landed - drop the result silently).
-    pub fn usage_mut_for(&mut self, key: &forge_workspace::SessionKey) -> Option<&mut UsageState> {
-        self.sessions.get_mut(key).map(|s| &mut s.usage)
     }
 
     /// Active session's catalog of resumable sessions. The
@@ -2125,31 +2099,17 @@ impl App {
         }
     }
 
-    /// Transition the matching Monitor entry to a
-    /// terminal status. The all-completed predicate is no longer
-    /// run here; #277 Bug 5a deferred that trigger to
-    /// `handle_task_notification` so the
+    /// Transition the matching Monitor entry to a terminal status,
+    /// keyed by the wire `task_id`. Used by lifecycle event handlers
+    /// that carry the task_id (e.g. wire `TaskUpdated`). The
+    /// all-completed predicate is no longer run here; #277 Bug 5a
+    /// deferred that trigger to `handle_task_notification` so the
     /// `task_updated terminal -> task_notification with output_file`
     /// wire ordering can stamp the tail before the entry gets
     /// drained. Callers that mutate status without going through
-    /// `handle_task_notification` (e.g. test scaffolding,
-    /// hypothetical future event types) should call
+    /// `handle_task_notification` should call
     /// `clear_monitors_if_all_terminal` themselves if they need
     /// the auto-clear behaviour.
-    pub fn set_monitor_status_by_tool_use_id(
-        &mut self,
-        tool_use_id: &str,
-        status: crate::app::state::types::MonitorStatus,
-    ) {
-        if let Some(entry) = self.monitors_mut().iter_mut().find(|m| m.tool_use_id == tool_use_id) {
-            entry.status = status;
-        }
-    }
-
-    /// Same as `set_monitor_status_by_tool_use_id` but
-    /// keyed by the wire `task_id`. Used by lifecycle event handlers
-    /// that only carry the task_id (e.g. wire `TaskUpdated`). #277
-    /// Bug 5a: auto-clear deferred (see the sibling helper above).
     pub fn set_monitor_status_by_task_id(
         &mut self,
         task_id: &str,
@@ -2699,14 +2659,6 @@ impl App {
 
     pub fn frame_fps(&self) -> Option<f32> {
         self.fps_ema
-    }
-
-    /// Ensure the synthetic welcome message exists at index 0.
-    pub fn ensure_welcome_message(&mut self) {
-        if self.messages().first().is_some_and(|m| matches!(m.role, MessageRole::Welcome)) {
-            return;
-        }
-        self.insert_message_tracked(0, self.build_welcome_message());
     }
 
     /// Returns `(label, value)` for the welcome message's account
@@ -3417,10 +3369,6 @@ impl App {
         self.mention().is_some_and(mention::MentionState::has_selectable_candidates)
             || self.slash().is_some()
             || self.subagent().is_some()
-    }
-
-    pub fn has_draft_input_for_focus(&self) -> bool {
-        !self.input().is_empty()
     }
 
     pub fn rebuild_chat_focus_from_state(&mut self) {

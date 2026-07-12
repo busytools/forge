@@ -125,10 +125,6 @@ impl ToolCallInfo {
         self.hidden
     }
 
-    pub fn is_subagent_root_tool(&self) -> bool {
-        !self.hidden && matches!(self.sdk_tool_name.as_str(), "Task" | "Agent")
-    }
-
     /// Mark render cache for this tool call as stale.
     pub fn mark_tool_call_render_dirty(&mut self) {
         crate::perf::mark("tc_invalidations_requested");

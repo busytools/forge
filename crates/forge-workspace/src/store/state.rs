@@ -102,8 +102,10 @@ pub fn replace_account_usage(
     let txn = db.database().begin_write()?;
     {
         let mut table = txn.open_table(ACCOUNT_USAGE)?;
-        let existing: Vec<String> =
-            table.iter()?.filter_map(Result::ok).map(|(k, _)| k.value().to_owned()).collect();
+        let existing: Vec<String> = table
+            .iter()?
+            .map(|entry| entry.map(|(k, _)| k.value().to_owned()))
+            .collect::<Result<_, _>>()?;
         for key in existing {
             table.remove(key.as_str())?;
         }

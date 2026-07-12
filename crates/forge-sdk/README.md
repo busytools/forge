@@ -51,7 +51,7 @@ Core types and functions exposed from the crate root:
   context types live in `forge_primitives::permissions`.
 - **MCP hosting** - `mcp::{McpServer, McpServerBuilder, Tool,
   ToolInput, ToolOutput}` + `tool!` declarative macro.
-- **Subagents** - `SubagentDefinition`, `SubagentMap` (populated
+- **Subagents** - `SubagentDefinition` (populated
   by setting struct fields directly; the `::new` + `with_*` builder
   family was removed pending re-add when subagent registration
   becomes a runtime feature).

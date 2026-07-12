@@ -6,9 +6,8 @@ use serde_json::Value;
 
 /// Render-side chunk payload for streaming session updates
 /// (`SessionUpdate::AgentMessageChunk` etc.). Distinct from the
-/// wire-side `ContentBlock` (which carries `ToolUse`, `ToolResult`,
-/// `Thinking`, server-tool variants, …) lifted from forge-sdk into
-/// `crate::content::ContentBlock`.
+/// wire-side `crate::content::ContentBlock`, which carries `ToolUse`,
+/// `ToolResult`, `Thinking`, and server-tool variants.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ChunkContent {

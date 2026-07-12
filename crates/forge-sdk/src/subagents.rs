@@ -2,6 +2,5 @@
 //! in forge-primitives.
 
 pub use forge_primitives::subagents::{
-    EffortPreset, SubagentDefinition, SubagentEffort, SubagentMap, SubagentMcpServerRef,
-    SubagentMemory,
+    EffortPreset, SubagentDefinition, SubagentEffort, SubagentMcpServerRef, SubagentMemory,
 };

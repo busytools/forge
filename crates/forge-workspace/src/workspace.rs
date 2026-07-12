@@ -736,19 +736,6 @@ impl Workspace {
         })
     }
 
-    /// Handle to the workspace-owned wire-classification rewriter
-    /// proxy, when one is bound. `None` only in `testing_stub` paths.
-    pub fn proxy_handle(&self) -> Option<&forge_agent::proxy::ProxyHandle> {
-        self.proxy.as_ref()
-    }
-
-    /// Return the names of all orgs in declaration order, paired
-    /// with their pinned account list. The Projects pane uses this
-    /// to drive the org-grouped tree render.
-    pub fn list_orgs(&self) -> Vec<(String, Vec<String>)> {
-        self.config.orgs.iter().map(|org| (org.name.clone(), org.accounts.clone())).collect()
-    }
-
     /// Effective `[ui]` settings. All fields have defaults so callers
     /// can use the result without worrying about whether the section
     /// was present in the config file. `spinner` carries the resolved
@@ -3926,6 +3913,10 @@ impl Workspace {
         let Some((project_key, entry)) = lookup else {
             return false;
         };
+        // Any ask already routed at this worker dies with the spawn -
+        // buffered asks were never delivered, so the target_session
+        // predicate in expire_target_inflight can't catch them.
+        self.expire_inflight_for_closed_worker(&project_key, &entry.label);
         // Classify against the entry's recorded is_git_repo_at_spawn
         // flag - same heuristic the sync workers__spawn path uses.
         let classified = crate::mcp::workers::facade::classify_worker_spawn_failure(
@@ -4606,7 +4597,6 @@ impl Workspace {
                 let entry = stats.entry(to.clone()).or_default();
                 entry.outgoing = entry.outgoing.saturating_add(from_stats.outgoing);
                 entry.incoming = entry.incoming.saturating_add(from_stats.incoming);
-                entry.timed_out = entry.timed_out.saturating_add(from_stats.timed_out);
                 entry.delivery_failed =
                     entry.delivery_failed.saturating_add(from_stats.delivery_failed);
             }
@@ -4642,11 +4632,13 @@ impl Workspace {
     /// - A `SessionTask::drop` fires (target's session was closed by
     ///   any reason - user close, lifecycle terminate, panic)
     ///
-    /// Maps the closing `SessionKey` to its project name via
-    /// `list_projects`, then walks `inflight_asks` for entries whose
-    /// `target_project` matches and dispatches the failure dual-path
-    /// notification for each (PeerAskFailed UI state + Command::Prompt
-    /// with DeliveryFailureNotice wrapper to caller).
+    /// Walks `inflight_asks` for entries stamped with the closing
+    /// session (`target_session`, set at delivery - covers workers,
+    /// whose composite `target_project` never matches a plain project
+    /// name) or whose `target_project` matches the closing session's
+    /// project, and dispatches the failure dual-path notification for
+    /// each (PeerAskFailed UI state + Command::Prompt with
+    /// DeliveryFailureNotice wrapper to caller).
     ///
     /// Idempotent. Safe to call from a Drop impl via Weak<Workspace>.
     pub(crate) fn expire_target_inflight(
@@ -4654,17 +4646,15 @@ impl Workspace {
         closing_key: &SessionKey,
         reason: crate::mcp::peers::types::PeerFailureReason,
     ) {
-        // Find the project this closing session belongs to. If we can't
-        // (caller raced with config-reload; defensive only), there's
-        // nothing to do.
+        // Find the project this closing session belongs to. Workers
+        // never enter the catalog mirror, so this lookup can miss for
+        // them; the target_session predicate below still catches
+        // their delivered asks.
         let project_name = self
             .list_projects()
             .into_iter()
             .find(|v| v.sessions.iter().any(|s| s.session == *closing_key))
             .map(|v| v.name);
-        let Some(project_name) = project_name else {
-            return;
-        };
 
         // Snapshot the IDs to expire. Holding the inflight_asks lock
         // across the dispatch loop below would risk re-entrancy via
@@ -4672,7 +4662,10 @@ impl Workspace {
         let ids_to_expire: Vec<CorrelationId> = {
             let asks = self.inflight_asks.lock();
             asks.iter()
-                .filter(|(_, ask)| ask.target_project == project_name)
+                .filter(|(_, ask)| {
+                    ask.target_session.as_ref() == Some(closing_key)
+                        || project_name.as_ref().is_some_and(|name| ask.target_project == *name)
+                })
                 .map(|(id, _)| id.clone())
                 .collect()
         };
@@ -4795,10 +4788,50 @@ impl Workspace {
             );
         }
     }
+
+    /// Fail every peer ask buffered against a project-spawn synth key
+    /// that never connected. The sleeping-target delivery path parks
+    /// wrapped prompts on the `__spawn_<project>__` `DomainSession`
+    /// and kicks a spawn; if that spawn never reaches `Connected`, the
+    /// buffered asks were never delivered (no `target_session` stamp)
+    /// and the synth key resolves to no catalog project, so
+    /// `expire_target_inflight` can't reach them. Drain and fail each
+    /// so the caller's LLM gets its `DeliveryFailureNotice`. No-op for
+    /// a key with no buffered prompts (any non-synth or already-drained
+    /// session).
+    pub(crate) fn expire_buffered_peer_prompts(
+        self: &Arc<Self>,
+        synth_key: &SessionKey,
+        reason: crate::mcp::peers::types::PeerFailureReason,
+    ) {
+        let buffered = {
+            let domain = self.domain_handles.lock().get(synth_key).cloned();
+            let Some(domain) = domain else {
+                return;
+            };
+            std::mem::take(&mut domain.lock().pending_peer_prompts)
+        };
+        for wrapped in buffered {
+            self.expire_inflight_ask_failed(&wrapped.correlation_id, reason);
+        }
+    }
 }
 
 #[cfg(any(test, feature = "testing"))]
 impl Workspace {
+    /// Mark a session as having completed its Connected handshake by
+    /// stamping `session_id` on its `DomainSession` (registering one if
+    /// absent). Delivery paths gate dispatch-vs-buffer on this, so tests
+    /// that assert a live worker/lead receives a prompt need it set -
+    /// in production every Running session has it stamped by `Connected`.
+    #[cfg(test)]
+    pub(crate) fn mark_session_connected_for_test(&self, key: &SessionKey, session_id: &str) {
+        let domain = self
+            .domain_session_for(key)
+            .unwrap_or_else(|| self.register_domain_session(key.clone(), None));
+        domain.lock().session_id = Some(forge_primitives::SessionId::new(session_id));
+    }
+
     /// Construct a stub `AgentHandle` plus the matching
     /// `Receiver<forge_primitives::AgentCommand>` that drains every command
     /// dispatched to it. Tests use this to wire `App.set_active_conn`
@@ -6428,6 +6461,7 @@ config_dir = "/tmp/wt-acct-cfg/stargate"
             },
         );
 
+        ws.mark_session_connected_for_test(&worker_key, "worker-reviewer");
         let notif = gotify_notif("Backups", "Nightly backup", "done", 5);
         ws.enable_test_dispatch_intercept();
         crate::spawn::deliver_gotify_message(&ws, "forge", Some("reviewer"), notif.clone());
@@ -6491,6 +6525,48 @@ config_dir = "/tmp/wt-acct-cfg/stargate"
             .pending_gotify_prompts
             .clone();
         assert_eq!(buffered, vec![notif], "the notification was buffered");
+    }
+
+    /// A team-worker subscription whose worker is a live entry but still
+    /// Spawning (session_id None) must buffer on the worker's own
+    /// DomainSession for its Connected drain - not dispatch a bare
+    /// Command::Prompt (dropped) and not fall through to the lead.
+    #[test]
+    fn deliver_gotify_message_to_spawning_team_worker_buffers_on_its_domain() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_static_workers(
+            "forge",
+            "/tmp/gotify-spawning",
+            &["reviewer".to_owned()],
+        );
+        let view_key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .map(|v| v.key)
+            .expect("seeded project view");
+        let worker_key = SessionKey::from_session_id("worker-spawning");
+        ws.insert_live_worker(&view_key, live_worker_entry("reviewer", "worker-spawning"));
+        // Register the domain WITHOUT stamping session_id: still Spawning.
+        ws.register_domain_session(worker_key.clone(), None);
+
+        let notif = gotify_notif("Backups", "backup", "env", 5);
+        ws.enable_test_dispatch_intercept();
+        crate::spawn::deliver_gotify_message(&ws, "forge", Some("reviewer"), notif.clone());
+        let dispatched = ws.drain_test_dispatch_buffer();
+
+        assert!(
+            dispatched.is_empty(),
+            "no bare Prompt (dropped) and no lead fallback for a spawning worker",
+        );
+        let buffered = ws
+            .domain_session_for(&worker_key)
+            .expect("worker domain")
+            .lock()
+            .pending_gotify_prompts
+            .clone();
+        assert_eq!(buffered, vec![notif], "buffered on the worker's own domain for its drain");
     }
 
     #[test]
@@ -6725,6 +6801,7 @@ config_dir = "/tmp/wt-acct-cfg/stargate"
             },
         );
 
+        ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
         ws.enable_test_dispatch_intercept();
         let outcome =
             crate::spawn::deliver_cron_prompt(&ws, "cronlead", None, "morning".to_owned(), false);
@@ -6757,6 +6834,7 @@ config_dir = "/tmp/wt-acct-cfg/stargate"
         let key = ws.list_projects().into_iter().find(|v| v.name == "proj").expect("view").key;
         ws.insert_live_worker(&key, live_worker_entry("reviewer", "worker-uuid"));
         let worker_key = SessionKey::from_session_id("worker-uuid");
+        ws.mark_session_connected_for_test(&worker_key, "worker-uuid");
 
         ws.enable_test_dispatch_intercept();
         let outcome = crate::spawn::deliver_cron_prompt(
@@ -6810,6 +6888,53 @@ config_dir = "/tmp/wt-acct-cfg/stargate"
             .map(|v| v.iter().map(|p| p.text.clone()).collect())
             .unwrap_or_default();
         assert_eq!(buffered, vec!["nightly".to_owned()], "buffered for the worker owner");
+    }
+
+    /// A cron for a worker that's a live entry but still Spawning
+    /// (session_id None) must NOT dispatch a bare Command::Prompt
+    /// (dropped) - the session_id gate in live_cron_owner routes it to
+    /// the owner-keyed buffer, drained on the worker's own Connected.
+    #[test]
+    fn deliver_cron_to_spawning_worker_buffers_via_owner() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project_with_static_workers(
+            "proj",
+            "/tmp/wc-spawning",
+            &["reviewer".to_owned()],
+        );
+        let key = ws.list_projects().into_iter().find(|v| v.name == "proj").expect("view").key;
+        let worker_key = SessionKey::from_session_id("worker-spawning-cron");
+        ws.insert_live_worker(&key, live_worker_entry("reviewer", "worker-spawning-cron"));
+        // Registered but not connected: session_id stays None.
+        ws.register_domain_session(worker_key.clone(), None);
+
+        ws.enable_test_dispatch_intercept();
+        let outcome = crate::spawn::deliver_cron_prompt(
+            &ws,
+            "proj",
+            Some("reviewer"),
+            "nightly".to_owned(),
+            false,
+        );
+        assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
+        let dispatched = ws.drain_test_dispatch_buffer();
+        assert!(
+            !dispatched.iter().any(|c| matches!(
+                c, Command::Prompt { key, .. } if key == &worker_key
+            )),
+            "no bare Prompt to the still-spawning worker (would be dropped)",
+        );
+        let buffered: Vec<String> = ws
+            .pending_cron_by_owner
+            .lock()
+            .get(&("proj".to_owned(), Some("reviewer".to_owned())))
+            .map(|v| v.iter().map(|p| p.text.clone()).collect())
+            .unwrap_or_default();
+        assert_eq!(
+            buffered,
+            vec!["nightly".to_owned()],
+            "buffered for the worker's Connected drain"
+        );
     }
 
     #[tokio::test]
@@ -6899,6 +7024,7 @@ config_dir = "/tmp/wt-acct-cfg/stargate"
             },
         );
 
+        ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
         ws.enable_test_dispatch_intercept();
         crate::spawn::deliver_cron_prompt(&ws, "proj", None, "standup".to_owned(), true);
         crate::spawn::deliver_cron_prompt(&ws, "proj", None, "standup".to_owned(), false);
@@ -6935,6 +7061,7 @@ config_dir = "/tmp/wt-acct-cfg/stargate"
                 account: AccountKey("test".to_owned()),
             },
         );
+        ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
 
         let now = std::time::SystemTime::now();
         let cron = |id: &str, prompt: &str, next_fire| CronEntry {
@@ -7791,11 +7918,9 @@ config_dir = "~/.claude-stargate"
 
     /// expire_inflight_ask_failed dispatches `PeerInflightStatsChanged`
     /// for the delivery-failed bookkeeping and removes the entry.
-    /// expire_target_inflight is a thin loop over this per-id path; in
-    /// production it resolves the closing session's project via
-    /// `list_projects` (catalog-backed), so an in-memory test that
-    /// never writes to disk would early-return on project lookup. We
-    /// exercise the per-id unit instead.
+    /// expire_target_inflight is a thin loop over this per-id path
+    /// (its predicate is pinned separately by
+    /// `expire_target_inflight_matches_worker_asks_by_target_session`).
     #[tokio::test]
     async fn expire_inflight_ask_failed_dispatches_failure_notice() {
         use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
@@ -7827,6 +7952,95 @@ config_dir = "~/.claude-stargate"
         }
         assert!(saw_stats, "PeerInflightStatsChanged fires for delivery_failed bump");
         assert!(!workspace.inflight_asks.lock().contains_key(&id));
+    }
+
+    /// expire_target_inflight expires asks stamped with the closing
+    /// session key even when the closing session resolves to no
+    /// catalog project and target_project is a worker composite -
+    /// the crash path for a worker that dies mid-ask.
+    #[tokio::test]
+    async fn expire_target_inflight_matches_worker_asks_by_target_session() {
+        use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
+        let dir = forge_toml_with_two_projects();
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+
+        let worker_key = SessionKey::from_str_for_test("worker-sess-1");
+        let id = CorrelationId::new_ask();
+        workspace.inflight_asks.lock().insert(
+            id.clone(),
+            InflightAsk {
+                correlation_id: id.clone(),
+                caller: SessionKey::from_str_for_test("lead-1"),
+                caller_project: "forge".to_owned(),
+                target_project: crate::mcp::workers::worker_target_project_key("forge", "builder"),
+                target_session: Some(worker_key.clone()),
+            },
+        );
+
+        workspace.expire_target_inflight(&worker_key, PeerFailureReason::TargetConnectionFailed);
+        assert!(
+            !workspace.inflight_asks.lock().contains_key(&id),
+            "worker-bound ask expired via target_session match"
+        );
+    }
+
+    /// A peer ask buffered against a `__spawn_<project>__` synth key
+    /// whose spawn never connects must be failed: the ask was never
+    /// delivered (no target_session stamp) and the synth key resolves
+    /// to no catalog project, so only expire_buffered_peer_prompts
+    /// can reach it.
+    #[tokio::test]
+    async fn expire_buffered_peer_prompts_fails_undelivered_spawn_asks() {
+        use crate::domain_session::DomainSession;
+        use crate::mcp::peers::types::{
+            CorrelationId, InflightAsk, PeerFailureReason, WrappedKind, WrappedPrompt,
+        };
+        let (workspace, _rx) = Workspace::testing_stub();
+
+        let synth_key = SessionKey::from_session_id("__spawn_gateway-backend__");
+        let id = CorrelationId::new_ask();
+        let wrapped = WrappedPrompt {
+            correlation_id: id.clone(),
+            kind: WrappedKind::Question,
+            sender_name: "forge".to_owned(),
+            sender_org: "Personal".to_owned(),
+            hop: 1,
+            hop_limit: 10,
+            body: "are you up?".to_owned(),
+        };
+        let domain = Arc::new(Mutex::new(DomainSession::new(synth_key.clone(), None)));
+        domain.lock().pending_peer_prompts.push(wrapped);
+        workspace.domain_handles.lock().insert(synth_key.clone(), domain);
+        workspace.inflight_asks.lock().insert(
+            id.clone(),
+            InflightAsk {
+                correlation_id: id.clone(),
+                caller: SessionKey::from_str_for_test("asker"),
+                caller_project: "forge".to_owned(),
+                target_project: "gateway-backend".to_owned(),
+                target_session: None,
+            },
+        );
+
+        workspace
+            .expire_buffered_peer_prompts(&synth_key, PeerFailureReason::TargetConnectionFailed);
+
+        assert!(
+            !workspace.inflight_asks.lock().contains_key(&id),
+            "buffered ask failed when the spawn never connected"
+        );
+        assert!(
+            workspace
+                .domain_handles
+                .lock()
+                .get(&synth_key)
+                .unwrap()
+                .lock()
+                .pending_peer_prompts
+                .is_empty(),
+            "buffered prompts drained"
+        );
     }
 
     /// A failed/expired ask must clear the TARGET's incoming badge, not
@@ -9342,8 +9556,8 @@ mod build_resume_map_tests {
         }
     }
 
-    /// Regression for the reviewer-flagged miss on PR #164: workers
-    /// spawned with `--worktree=<label>` `chdir` into
+    /// Regression for the worktree-subdir resume miss on PR #164:
+    /// workers spawned with `--worktree=<label>` `chdir` into
     /// `<project>/.claude/worktrees/<label>/` which is indexed under
     /// a SIBLING `<config_dir>/projects/<sanitize(worktree_path)>/`
     /// subdir. A `directory=Some(<project>)` scan misses them. The
@@ -9915,6 +10129,38 @@ mod async_worker_spawn_failure_tests {
         assert!(third_event.is_ok(), "fresh diagnostic must re-emit");
         let entries = workspace.list_live_workers(&project_key);
         assert_eq!(entries[0].diagnostic.as_deref(), Some("more specific reason"));
+    }
+
+    /// handle_async_worker_spawn_failure expires worker-bound inflight
+    /// asks: an ask buffered against a worker whose spawn dies was
+    /// never delivered, so no target_session stamp exists and nothing
+    /// else clears it - the caller would wait forever.
+    #[tokio::test]
+    async fn async_worker_spawn_failure_expires_worker_bound_asks() {
+        use crate::mcp::peers::types::{CorrelationId, InflightAsk};
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let project_key = ProjectKey::new("proj-x");
+        let synth_key = "__spawn_worker_proj-x_builder_abc__";
+        let session_key = SessionKey::from_session_id(synth_key);
+        workspace.insert_live_worker(&project_key, fake_worker("builder", synth_key, "lead", true));
+
+        let id = CorrelationId::new_ask();
+        workspace.inflight_asks.lock().insert(
+            id.clone(),
+            InflightAsk {
+                correlation_id: id.clone(),
+                caller: SessionKey::from_str_for_test("lead-1"),
+                caller_project: "proj-x".to_owned(),
+                target_project: crate::mcp::workers::worker_target_project_key("proj-x", "builder"),
+                target_session: None,
+            },
+        );
+
+        workspace.handle_async_worker_spawn_failure(&session_key, "resume failed: boom");
+        assert!(
+            !workspace.inflight_asks.lock().contains_key(&id),
+            "buffered worker ask expired on spawn failure"
+        );
     }
 
     /// #245 Layer C test gap 11: a worker that flipped to Failed

@@ -919,10 +919,10 @@ fn glyph_for_lifecycle(
     }
 }
 
-/// Duration after which transient failure badges (`·N⌛` / `·N✕`)
-/// fade off the row. Counted from `peer_badges_last_failure_at`,
+/// Duration after which the transient delivery-failure badge (`·N✕`)
+/// fades off the row. Counted from `peer_badges_last_failure_at`,
 /// which is stamped each time the workspace reports a fresh
-/// `timed_out` or `delivery_failed` increment. Cumulative
+/// `delivery_failed` increment. Cumulative
 /// outgoing/incoming counts have no fade - they reflect live state
 /// while the in-flight asks are pending.
 const PEER_FAILURE_FADE: std::time::Duration = std::time::Duration::from_secs(60);
@@ -971,19 +971,11 @@ fn peer_badge_spans(
     let failures_fresh = last_failure_at.is_some_and(|when| {
         now.checked_duration_since(when).is_some_and(|d| d < PEER_FAILURE_FADE)
     });
-    if failures_fresh {
-        if stats.timed_out > 0 {
-            push(Span::styled(
-                format!("\u{00b7}{}\u{231b}", stats.timed_out),
-                Style::default().fg(theme::STATUS_WARNING),
-            ));
-        }
-        if stats.delivery_failed > 0 {
-            push(Span::styled(
-                format!("\u{00b7}{}\u{2715}", stats.delivery_failed),
-                Style::default().fg(theme::STATUS_ERROR),
-            ));
-        }
+    if failures_fresh && stats.delivery_failed > 0 {
+        push(Span::styled(
+            format!("\u{00b7}{}\u{2715}", stats.delivery_failed),
+            Style::default().fg(theme::STATUS_ERROR),
+        ));
     }
 
     (spans, width)
@@ -1801,8 +1793,7 @@ mod tests {
 
     #[test]
     fn peer_badge_spans_renders_outgoing_and_incoming() {
-        let stats =
-            PeerInflightStats { outgoing: 2, incoming: 1, timed_out: 0, delivery_failed: 0 };
+        let stats = PeerInflightStats { outgoing: 2, incoming: 1, delivery_failed: 0 };
         let (spans, width) = peer_badge_spans(&stats, None, Instant::now());
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("\u{2191}"), "outgoing arrow present: {text}");
@@ -1815,19 +1806,16 @@ mod tests {
 
     #[test]
     fn peer_badge_spans_shows_failures_when_fresh() {
-        let stats =
-            PeerInflightStats { outgoing: 0, incoming: 0, timed_out: 1, delivery_failed: 1 };
+        let stats = PeerInflightStats { outgoing: 0, incoming: 0, delivery_failed: 1 };
         let now = Instant::now();
         let (spans, _) = peer_badge_spans(&stats, Some(now), now);
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.contains("\u{231b}"), "timeout glyph present when fresh: {text}");
         assert!(text.contains("\u{2715}"), "failure glyph present when fresh: {text}");
     }
 
     #[test]
     fn peer_badge_spans_fades_failures_after_60s() {
-        let stats =
-            PeerInflightStats { outgoing: 0, incoming: 0, timed_out: 1, delivery_failed: 1 };
+        let stats = PeerInflightStats { outgoing: 0, incoming: 0, delivery_failed: 1 };
         // Simulate `now` being 61 s past the failure timestamp by
         // pinning `last_failure_at` to a synthetic Instant and using
         // a `now` that's just after the fade window. Instant doesn't
@@ -1842,7 +1830,6 @@ mod tests {
         };
         let (spans, _) = peer_badge_spans(&stats, Some(stamped), later);
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(!text.contains("\u{231b}"), "timeout glyph faded after 60 s: {text}");
         assert!(!text.contains("\u{2715}"), "failure glyph faded after 60 s: {text}");
     }
 
@@ -1882,7 +1869,7 @@ mod tests {
         // has a non-default stats value to surface.
         let mut worker_session = UiSession::new(worker_session_key.clone());
         worker_session.peer_badges =
-            PeerInflightStats { outgoing: 2, incoming: 1, timed_out: 0, delivery_failed: 0 };
+            PeerInflightStats { outgoing: 2, incoming: 1, delivery_failed: 0 };
         app.sessions.insert(worker_session_key.clone(), worker_session);
 
         let project = ProjectView::new_for_test(

@@ -48,7 +48,7 @@ arboard = { workspace = true }
 base64 = { workspace = true }
 dirs = { workspace = true }
 futures = { workspace = true }
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { workspace = true }
 # Startup-time RLIMIT_NOFILE bump (#251). macOS launchd hands us a
 # soft cap of 256 which multi-session forge runs through; the `rlimit`
 # crate wraps `setrlimit` without needing an `unsafe` block (workspace

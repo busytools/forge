@@ -2617,7 +2617,6 @@ mod tests {
                 name: "zsh".to_owned(),
                 command: "/bin/zsh -c -l eval 'cargo nextest run' < /dev/null".to_owned(),
                 memory_bytes: 32 * 1024 * 1024,
-                started_at_unix: None,
             }],
         });
 

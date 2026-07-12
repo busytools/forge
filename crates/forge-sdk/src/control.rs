@@ -34,9 +34,7 @@ pub enum ControlRequestType {
 /// ships that forge-sdk doesn't yet model lands here with the full
 /// payload captured. The dispatcher in `client/control_dispatch.rs`
 /// responds with a `control_response` error (since we have no handler)
-/// and logs a `tracing::warn!` so callers notice drift. Unlike the
-/// previous strict-enum behaviour, an unknown subtype no longer
-/// panics the session.
+/// and logs a `tracing::warn!` so callers notice drift.
 #[derive(Debug, Clone)]
 pub enum ControlRequestKind {
     /// A permission check for a tool call.

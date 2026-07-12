@@ -16,11 +16,6 @@ pub struct SessionId(pub String);
 #[serde(transparent)]
 pub struct ToolUseId(pub String);
 
-/// Per-message identifier (used by rewind / fork operations).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[serde(transparent)]
-pub struct MessageId(pub String);
-
 macro_rules! id_impls {
     ($name:ident) => {
         impl $name {
@@ -54,7 +49,6 @@ macro_rules! id_impls {
 
 id_impls!(SessionId);
 id_impls!(ToolUseId);
-id_impls!(MessageId);
 
 // Convenience comparisons so call sites can write `id == "literal"`
 // without unwrapping the newtype.
@@ -80,4 +74,3 @@ macro_rules! id_str_eq {
 
 id_str_eq!(SessionId);
 id_str_eq!(ToolUseId);
-id_str_eq!(MessageId);

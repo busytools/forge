@@ -133,6 +133,14 @@ pub(crate) fn handle_spawn_project(
                 error = %err,
                 "spawn_project: get_agent_handle failed"
             );
+            // No SessionTask exists to run its ConnectionFailed arm, so
+            // fail any peer asks buffered against this synth key here -
+            // otherwise the caller's LLM waits on a spawn that never
+            // happened.
+            workspace.expire_buffered_peer_prompts(
+                &synth_key,
+                crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+            );
             try_emit(
                 workspace,
                 "spawn_project::ConnectionFailed",
@@ -183,26 +191,11 @@ pub(crate) fn handle_deliver_peer_prompt(
         // dispatch so any tools the target's LLM fires on the resulting
         // turn read the correct ambient hop via peek_current_inbound_hop.
         stamp_inbound_hop(workspace, &target_key, wrapped.hop);
-        // Bump target's incoming counter (sidebar badge) - only for
-        // `Question` wrappers (an ask expecting a reply).
-        //
-        // Tells (Message kind) are intentionally NOT bumped here.
-        // Badges represent pending asks awaiting reply, NOT generic
-        // activity. A tell has no matching decrement path - no reply
-        // correlates back - so bumping `outgoing` on every tell would
-        // grow the counter without bound. Future reader: if you see
-        // `outgoing` not advancing on a `tell_agent` call, that's by
-        // design. See #308 Fix B (user picked Option 1, 2026-06-01):
-        // tells stay non-bumping, badges retain ask-correlation
-        // semantics. If a future design wants an "is anything
-        // happening" signal that includes tells, that's a separate
-        // counter (and a separate glyph) rather than reusing the
-        // ask-correlated `outgoing` / `incoming`.
-        //
-        // Replies / Late-replies / Caller-timeout / Recipient-expired
-        // / Delivery-failure also flow through this dispatch path,
-        // and they too don't bump for the same "no matching
-        // decrement" reason.
+        // Bump the target's incoming badge only for `Question`
+        // wrappers. Badges count pending asks awaiting reply; every
+        // other kind (tells, replies, delivery-failure notices) has no
+        // matching decrement, so bumping would grow the counter
+        // without bound.
         if matches!(wrapped.kind, crate::mcp::peers::types::WrappedKind::Question) {
             let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace);
             facade.bump_inflight_stats(&target_key, PeerStatsDelta::IncomingPlus1);
@@ -387,14 +380,22 @@ fn live_cron_owner(
     team_role: Option<&str>,
 ) -> Option<SessionKey> {
     let live = workspace.list_live_workers(&view.key);
-    if let Some(label) = team_role {
-        return live.into_iter().find(|w| w.label == label).map(|w| w.session_key);
-    }
-    let live_keys: std::collections::HashSet<_> = live.into_iter().map(|w| w.session_key).collect();
-    view.sessions
-        .iter()
-        .find(|s| s.is_open && !live_keys.contains(&s.session))
-        .map(|s| s.session.clone())
+    let candidate = if let Some(label) = team_role {
+        live.into_iter().find(|w| w.label == label).map(|w| w.session_key)
+    } else {
+        let live_keys: std::collections::HashSet<_> =
+            live.into_iter().map(|w| w.session_key).collect();
+        view.sessions
+            .iter()
+            .find(|s| s.is_open && !live_keys.contains(&s.session))
+            .map(|s| s.session.clone())
+    };
+    // Only treat the owner as a live dispatch target once it has stamped
+    // its session_id. A still-spawning owner (session_id None) would drop
+    // a bare Command::Prompt, so fall through to the buffer-and-wake path
+    // where its own Connected handler drains the owner-keyed buffer.
+    let key = candidate?;
+    workspace.domain_session_for(&key).filter(|d| d.lock().session_id.is_some()).map(|_| key)
 }
 
 /// Outcome of checking whether a cron's owner still exists to be woken.
@@ -439,34 +440,57 @@ fn cron_owner_exists(
 /// spawn-key's DomainSession and dispatch `Command::SpawnProject`
 /// (`SessionTask` drains + echoes on Connected via
 /// `drain_pending_gotify_prompts`). Mirrors [`deliver_cron_prompt`] plus
-/// the peer chat-echo; a team-worker subscription whose worker is asleep
+/// the peer chat-echo. A team-worker subscription with NO live entry
 /// falls through to lead delivery (spawning the project brings the team
-/// up). A project no longer in forge.toml is logged and skipped.
+/// up); a live-but-not-yet-connected worker buffers on its own domain
+/// instead. A project no longer in forge.toml is logged and skipped.
 pub(crate) fn deliver_gotify_message(
     workspace: &Arc<Workspace>,
     project: &str,
     team_role: Option<&str>,
     notification: GotifyNotification,
 ) {
-    // A team-worker subscription targets that worker when it's running.
+    // A team-worker subscription targets that worker. Once it's a live
+    // entry the notification belongs to it, never the lead - so handle
+    // both the connected case (dispatch now) and the still-spawning case
+    // (buffer on the worker's own DomainSession for its Connected drain)
+    // here, and never fall through to the lead below.
     if let Some(role) = team_role
-        && let Some(worker_key) = running_team_worker(workspace, project, role)
+        && let Some(worker_key) = team_worker_key(workspace, project, role)
     {
-        // Echo the notification block BEFORE the LLM-side dispatch so it
-        // renders in order regardless of which event the TUI reducer drains
-        // first (mirrors handle_deliver_peer_prompt).
-        push_gotify_notification_into_chat(workspace, &worker_key, &notification);
-        if let Err(err) = workspace.dispatch(Command::Prompt {
-            key: worker_key,
-            text: notification.to_prose(),
-            attachments: Vec::new(),
-        }) {
+        let connected = workspace
+            .domain_session_for(&worker_key)
+            .is_some_and(|d| d.lock().session_id.is_some());
+        if connected {
+            // Echo the notification block BEFORE the LLM-side dispatch so
+            // it renders in order regardless of which event the TUI reducer
+            // drains first (mirrors handle_deliver_peer_prompt).
+            push_gotify_notification_into_chat(workspace, &worker_key, &notification);
+            if let Err(err) = workspace.dispatch(Command::Prompt {
+                key: worker_key,
+                text: notification.to_prose(),
+                attachments: Vec::new(),
+            }) {
+                tracing::warn!(
+                    target: "forge_workspace::spawn",
+                    project = %project,
+                    role = %role,
+                    error = ?err,
+                    "gotify deliver to running team worker failed",
+                );
+            }
+        } else if let Some(domain) = workspace.domain_session_for(&worker_key) {
+            domain.lock().pending_gotify_prompts.push(notification);
+        } else {
+            // Live entry exists but its DomainSession isn't registered yet
+            // (the sub-second window between insert_live_worker and the
+            // spawn's handle registration). Nowhere to buffer; warn so the
+            // drop isn't silent rather than mis-routing to the lead.
             tracing::warn!(
                 target: "forge_workspace::spawn",
                 project = %project,
                 role = %role,
-                error = ?err,
-                "gotify deliver to running team worker failed",
+                "gotify notification dropped: worker entry present but no DomainSession yet",
             );
         }
         return;
@@ -534,12 +558,10 @@ pub(crate) fn deliver_gotify_message(
     }
 }
 
-/// The running team worker of role `label` in `project`, if any.
-fn running_team_worker(
-    workspace: &Arc<Workspace>,
-    project: &str,
-    label: &str,
-) -> Option<SessionKey> {
+/// The team worker of role `label` in `project`, if a live entry
+/// exists - regardless of whether it has finished connecting. The
+/// caller checks connectedness to decide dispatch-vs-buffer.
+fn team_worker_key(workspace: &Arc<Workspace>, project: &str, label: &str) -> Option<SessionKey> {
     let view = workspace.list_projects().into_iter().find(|v| v.name == project)?;
     workspace
         .list_live_workers(&view.key)
@@ -1230,6 +1252,33 @@ pub(crate) fn handle_despawn_worker(
 /// target label vanished between the dispatch and the handler firing
 /// (worker closed, lead cascade fired), the prompt is dropped with a
 /// warn log.
+/// Buffer `wrapped` on `target_key`'s `DomainSession` when the target
+/// hasn't finished its Connected handshake (no `session_id` yet). Returns
+/// `Some(wrapped)` when the target IS connected (caller delivers now), or
+/// `None` when it buffered (the target's Connected handler drains
+/// `pending_peer_prompts`, doing the bump + render + dispatch). Mirrors
+/// the sleeping-peer buffering in `handle_deliver_peer_prompt` so the
+/// bump/hop bookkeeping happens exactly once, at real delivery time.
+fn buffer_prompt_until_connected(
+    workspace: &Arc<Workspace>,
+    target_key: &SessionKey,
+    wrapped: WrappedPrompt,
+) -> Option<WrappedPrompt> {
+    let Some(domain) = workspace.domain_handles.lock().get(target_key).cloned() else {
+        // No DomainSession to buffer on (target vanished); let the caller
+        // proceed - its dispatch warns on the missing target.
+        return Some(wrapped);
+    };
+    let mut d = domain.lock();
+    if d.session_id.is_some() {
+        return Some(wrapped);
+    }
+    let current = d.current_inbound_hop.unwrap_or(0);
+    d.current_inbound_hop = Some(current.max(wrapped.hop));
+    d.pending_peer_prompts.push(wrapped);
+    None
+}
+
 pub(crate) fn handle_deliver_worker_prompt(
     workspace: &Arc<Workspace>,
     _caller: SessionKey,
@@ -1254,6 +1303,16 @@ pub(crate) fn handle_deliver_worker_prompt(
         return;
     };
     let target_key = entry.session_key.clone();
+
+    // A worker addressed before it finishes its Connected handshake has
+    // no session_id yet, so a bare Command::Prompt would be dropped by
+    // execute_command_via_handle. Buffer it on the worker's own
+    // DomainSession instead - its Connected handler drains
+    // pending_peer_prompts (bump + render + dispatch) exactly like the
+    // sleeping-peer path. Skips the tag retry / stamp / dispatch below.
+    let Some(wrapped) = buffer_prompt_until_connected(workspace, &target_key, wrapped) else {
+        return;
+    };
 
     // Opportunistic tag-write retry: if this worker was spawned idle
     // (no initial_prompt), the JSONL didn't exist at Connected and
@@ -1349,6 +1408,13 @@ pub(crate) fn handle_deliver_worker_prompt_to_lead(
         );
         return;
     }
+
+    // Same pre-Connect guard as the sibling-worker path: if the lead
+    // hasn't stamped its session_id yet, buffer for its Connected drain
+    // rather than dispatching a Command::Prompt that would be dropped.
+    let Some(wrapped) = buffer_prompt_until_connected(workspace, target_lead_key, wrapped) else {
+        return;
+    };
 
     stamp_inbound_hop(workspace, target_lead_key, wrapped.hop);
 
@@ -1996,6 +2062,50 @@ config_dir = "~/.claude-stargate"
         // panic + dropped channels is the test.)
     }
 
+    /// A worker addressed before it Connects (session_id still None)
+    /// must have the prompt buffered onto its DomainSession, not
+    /// dropped - its Connected handler drains pending_peer_prompts.
+    #[tokio::test]
+    async fn deliver_to_unconnected_worker_buffers_the_prompt() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        let worker_key = SessionKey::from_session_id("__spawn_worker_forge_builder_abc__");
+        workspace.insert_live_worker(
+            &project,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "builder".into(),
+                charter: "c".into(),
+                session_key: worker_key.clone(),
+                status: forge_primitives::WorkerLiveness::Spawning,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".into(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        // Pre-Connect DomainSession: session_id is None.
+        let domain = std::sync::Arc::new(parking_lot::Mutex::new(
+            crate::domain_session::DomainSession::new(worker_key.clone(), None),
+        ));
+        workspace.domain_handles.lock().insert(worker_key.clone(), domain.clone());
+
+        handle_deliver_worker_prompt(
+            &workspace,
+            SessionKey::from_str_for_test("lead"),
+            &project,
+            "builder",
+            fixture_wrapped(),
+        );
+
+        assert_eq!(
+            domain.lock().pending_peer_prompts.len(),
+            1,
+            "prompt buffered for the worker's Connected drain, not dropped"
+        );
+    }
+
     /// Regression for C2: concurrent spawns of the same label must
     /// produce different synth_keys. The synth_key formula mixes a
     /// v4 uuid suffix into the label so collisions on the
@@ -2082,6 +2192,13 @@ config_dir = "~/.claude-stargate"
         // Install the testing stub so config_dir_for resolves (to
         // /tmp/forge-testing-stub via the bridge's default config_dir).
         let _agent_rx = workspace.install_testing_stub(&session_key);
+        // A Running worker has completed its Connected handshake, so
+        // stamp session_id - otherwise the pre-Connect buffer guard in
+        // handle_deliver_worker_prompt would park the prompt and the
+        // tag retry (asserted below) would never fire.
+        if let Some(domain) = workspace.domain_session_for(&session_key) {
+            domain.lock().session_id = Some(forge_primitives::SessionId::new(&session_id));
+        }
 
         // Pre-seed the worker entry: Running but needs_tag = true,
         // matching the post-deferred-NotFound state from the

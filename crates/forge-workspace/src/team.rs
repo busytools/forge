@@ -1,9 +1,7 @@
 //! Engineering team feature - per-project pre-configured worker teams.
 //!
 //! Roles live as file-driven labels at
-//! `~/.claude/forge-team/<label>/{charter,kick}.md`. See
-//! `docs/superpowers/specs/2026-05-25-engineering-team-design.md` for
-//! the closed-enum predecessor design.
+//! `~/.claude/forge-team/<label>/{charter,kick}.md`.
 
 pub mod catalog;
 pub mod roles;

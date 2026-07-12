@@ -8,9 +8,6 @@
 //! Users copy from there on first setup; Syncthing distributes the
 //! files across the user's machines after that. No runtime bootstrap;
 //! spawn fails fast when a referenced label's files don't exist.
-//!
-//! See `docs/superpowers/specs/2026-05-25-engineering-team-design.md`
-//! for the closed-enum predecessor of this design.
 
 use std::io;
 use std::path::PathBuf;

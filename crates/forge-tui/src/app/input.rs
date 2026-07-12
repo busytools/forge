@@ -117,10 +117,6 @@ impl InputState {
         self.bump_content_version();
     }
 
-    pub fn clear_custom_highlights(&mut self) {
-        self.editor.clear_custom_highlight();
-    }
-
     pub fn mutate_lines(&mut self, edit: impl FnOnce(&mut Vec<String>)) {
         let mut lines = self.lines().to_vec();
         edit(&mut lines);
