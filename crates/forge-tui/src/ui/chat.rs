@@ -154,6 +154,10 @@ fn update_visual_heights(
     // `sync_message_count` / resize, which already ran above.
     let mode_id_owned = app.mode().map(|mode| mode.current_mode_id.clone());
     let mode_id = mode_id_owned.as_deref();
+    // Hoisted once (like `mode_id`) so the remeasure loops don't clone
+    // the session cwd per message - the read-path relativization base.
+    let cwd_raw_owned = app.cwd_raw();
+    let project_root = (!cwd_raw_owned.is_empty()).then_some(cwd_raw_owned.as_str());
     let layout_generation = app.viewport().layout_generation;
     let tools_collapsed = app.tools_collapsed;
 
@@ -206,6 +210,7 @@ fn update_visual_heights(
             width,
             i,
             mode_id,
+            project_root,
             layout_generation,
             tools_collapsed,
             &mut stats,
@@ -233,6 +238,7 @@ fn update_visual_heights(
             width,
             i,
             mode_id,
+            project_root,
             layout_generation,
             tools_collapsed,
             &mut stats,
@@ -249,6 +255,7 @@ fn update_visual_heights(
                 width,
                 last,
                 mode_id,
+                project_root,
                 layout_generation,
                 tools_collapsed,
                 &mut stats,
@@ -287,6 +294,7 @@ fn update_visual_heights(
             width,
             i,
             mode_id,
+            project_root,
             layout_generation,
             tools_collapsed,
             &mut stats,
@@ -345,10 +353,10 @@ fn sync_active_turn_height_state(
     app.set_last_active_turn_height_state(next);
 }
 
-// `mode_id`, `layout_generation`, `tools_collapsed` are loop-invariant
-// across `update_visual_heights`'s remeasure loops; callers snapshot
-// them once above the loop and pass references / Copy values in. This
-// avoids N String allocations on remeasure-heavy frames.
+// `mode_id`, `project_root`, `layout_generation`, `tools_collapsed` are
+// loop-invariant across `update_visual_heights`'s remeasure loops;
+// callers snapshot them once above the loop and pass references / Copy
+// values in. This avoids N String allocations on remeasure-heavy frames.
 fn measure_message_height_at(
     app: &mut App,
     base: &SpinnerState,
@@ -356,6 +364,7 @@ fn measure_message_height_at(
     width: u16,
     idx: usize,
     mode_id: Option<&str>,
+    project_root: Option<&str>,
     layout_generation: u64,
     tools_collapsed: bool,
     stats: &mut HeightUpdateStats,
@@ -382,25 +391,35 @@ fn measure_message_height_at(
     // would desync.
     let session_units = message::grouping::partition_session_into_render_units(app.messages());
     let owned_session_units = session_units.get(idx).cloned().unwrap_or_default();
-    let (h, rendered_lines) = measure_message_height(
-        &mut app.active_messages_mut()[idx],
-        &sp,
-        mode_id,
-        width,
-        layout_generation,
-        message::MessageRenderOptions {
-            tools_collapsed,
-            include_trailing_separator: !is_last_message,
-            suppress_group_header,
-            envelope_streak_position,
-            stop_hook_summary_actions: stop_hook_snapshot.actions,
-            stop_hook_summary_expanded: stop_hook_snapshot.expanded,
-        },
-        stop_hook_snapshot.hooks.as_slice(),
-        &group_collapse_levels,
-        &messaging_group_collapse_levels,
-        &owned_session_units,
-    );
+    let options = message::MessageRenderOptions {
+        tools_collapsed,
+        include_trailing_separator: !is_last_message,
+        suppress_group_header,
+        envelope_streak_position,
+        stop_hook_summary_actions: stop_hook_snapshot.actions,
+        stop_hook_summary_expanded: stop_hook_snapshot.expanded,
+    };
+    // Build the render context from the owned locals (no `app` borrow),
+    // then take the mutable message borrow for the measure call. Ground
+    // truth: same context the render pass builds, so heights can't
+    // diverge from what paints.
+    let render_context =
+        message::MessageRenderContext::new(mode_id, width, layout_generation, options)
+            .with_stop_hook_hooks(stop_hook_snapshot.hooks.as_slice())
+            .with_group_collapse_levels(&group_collapse_levels)
+            .with_messaging_group_collapse_levels(&messaging_group_collapse_levels)
+            .with_session_message_units(&owned_session_units)
+            .with_project_root(project_root.unwrap_or(""));
+    // Scope the perf span to the measure call only - the cache-sync +
+    // viewport writes below are not part of the measure timing.
+    let (h, rendered_lines) = {
+        let msg = &mut app.active_messages_mut()[idx];
+        let _t = crate::perf::start_with("chat::measure_msg", "blocks", msg.blocks.len());
+        let measured =
+            message::measure_message_height_cached_with_context(msg, &sp, render_context);
+        crate::perf::mark_with("chat::measure_msg_wrapped_lines", "lines", measured.1);
+        measured
+    };
     app.sync_render_cache_message(idx);
     stats.measured_msgs += 1;
     stats.measured_lines += rendered_lines;
@@ -433,45 +452,6 @@ fn stop_hook_summary_for(app: &App, idx: usize) -> StopHookSnapshot {
         expanded: app.stop_hook_summary_expanded(idx),
         hooks: summary.hooks.clone(),
     }
-}
-
-/// Measure message height using ground truth: render the message into a scratch
-/// buffer and call `Paragraph::line_count(width)`.
-///
-/// This uses the exact same code path as actual rendering (`render_message()`),
-/// so heights can never diverge from what appears on screen. The scratch vec is
-/// temporary and discarded after measurement. Block-level caches are still
-/// populated as a side effect (via `render_text_cached` / `render_tool_call_cached`),
-/// so completed blocks remain O(1) on subsequent calls.
-fn measure_message_height(
-    msg: &mut crate::app::ChatMessage,
-    spinner: &SpinnerState,
-    current_mode_id: Option<&str>,
-    width: u16,
-    layout_generation: u64,
-    options: message::MessageRenderOptions,
-    stop_hook_hooks: &[crate::app::StopHookEntry],
-    group_collapse_levels: &std::collections::HashMap<
-        crate::ui::message::grouping::GroupId,
-        crate::ui::message::grouping::GroupCollapseLevel,
-    >,
-    messaging_group_collapse_levels: &std::collections::HashMap<
-        crate::ui::message::grouping::GroupId,
-        crate::ui::message::grouping::GroupCollapseLevel,
-    >,
-    session_message_units: &[crate::ui::message::grouping::RenderUnit],
-) -> (usize, usize) {
-    let _t = crate::perf::start_with("chat::measure_msg", "blocks", msg.blocks.len());
-    let render_context =
-        message::MessageRenderContext::new(current_mode_id, width, layout_generation, options)
-            .with_stop_hook_hooks(stop_hook_hooks)
-            .with_group_collapse_levels(group_collapse_levels)
-            .with_messaging_group_collapse_levels(messaging_group_collapse_levels)
-            .with_session_message_units(session_message_units);
-    let (h, wrapped_lines) =
-        message::measure_message_height_cached_with_context(msg, spinner, render_context);
-    crate::perf::mark_with("chat::measure_msg_wrapped_lines", "lines", wrapped_lines);
-    (h, wrapped_lines)
 }
 
 fn build_base_spinner(app: &App) -> SpinnerState {
@@ -878,6 +858,7 @@ fn render_culled_messages(
         app.active_session().map(|s| s.group_collapse_levels.clone()).unwrap_or_default();
     let messaging_group_collapse_levels =
         app.active_session().map(|s| s.messaging_group_collapse_levels.clone()).unwrap_or_default();
+    let cwd_raw = app.cwd_raw();
     // Cross-message peer/worker run state: compute the session-level
     // partition once per render pass. Each per-message render call
     // reads its own slice via the context's
@@ -905,7 +886,8 @@ fn render_culled_messages(
             .with_stop_hook_hooks(stop_hook.hooks.as_slice())
             .with_group_collapse_levels(&group_collapse_levels)
             .with_messaging_group_collapse_levels(&messaging_group_collapse_levels)
-            .with_session_message_units(session_message_units);
+            .with_session_message_units(session_message_units)
+            .with_project_root(&cwd_raw);
         if structural_skip > 0 {
             let remaining_skip = message::render_message_from_offset_internal_with_mode(
                 &mut app.active_messages_mut()[i],

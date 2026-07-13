@@ -101,41 +101,25 @@ fn is_peer_block_render_tool(sdk_tool_name: &str) -> bool {
     )
 }
 
-/// Per-kind tally for a group's summary line. `Read` counts as a
-/// read; `Grep` / `Glob` / `WebSearch` count as searches; `Bash`
-/// counts as a command. Everything else (`WebFetch`, `LSP`, plain
-/// `mcp__*` calls) tallies into the generic `calls` bucket.
-///
-/// Alongside the per-kind counter, the struct collects up to
-/// [`MAX_TARGETS_PER_KIND`] representative target strings per kind
-/// (file basenames for reads, command strings for ran, query /
-/// pattern for searches). [`KindCount::format_summary`] uses those
-/// targets to render the richer L2 summary line that surfaces the
-/// actual files / commands / queries the user is curious about
-/// without expanding the group.
+/// One kind-line in a group's L2 summary: a glyph-family (or MCP
+/// server) with its count and up to [`MAX_TARGETS_PER_KIND`]
+/// representative targets. Same-glyph tools (Grep / Glob / LS) share
+/// one line; each `mcp__<server>__*` server gets its own.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct KindLine {
+    pub glyph: &'static str,
+    pub label: String,
+    pub count: usize,
+    pub targets: Vec<String>,
+}
+
+/// Per-group L2 summary: one [`KindLine`] per glyph-family / MCP
+/// server, in first-appearance order across the run. Replaces the old
+/// four-bucket count so `WebFetch` / `LSP` / `mcp__*` read as their
+/// own kinds instead of an opaque `N calls`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
-pub struct KindCount {
-    pub reads: usize,
-    pub searches: usize,
-    pub commands: usize,
-    /// Generic bucket for tools that fold but don't fit reads /
-    /// searches / commands. Renders last in the summary as
-    /// `<n> call` / `<n> calls`. No target list because the generic
-    /// bucket has no obvious natural representative (each call's
-    /// tool name differs; the count alone is the most honest signal).
-    pub calls: usize,
-    /// Up to [`MAX_TARGETS_PER_KIND`] file basenames for Read calls
-    /// in order of first appearance. Empty when no Read carried a
-    /// recognisable `file_path` (in which case `format_summary`
-    /// falls back to the count-only shape for the read kind).
-    pub read_targets: Vec<String>,
-    /// Up to [`MAX_TARGETS_PER_KIND`] command strings for Bash calls
-    /// in order of first appearance, individually clipped to
-    /// [`MAX_TARGET_DISPLAY_WIDTH`] characters.
-    pub command_targets: Vec<String>,
-    /// Up to [`MAX_TARGETS_PER_KIND`] pattern / query strings for
-    /// Grep / Glob / WebSearch calls in order of first appearance.
-    pub search_targets: Vec<String>,
+pub struct KindSummary {
+    pub lines: Vec<KindLine>,
 }
 
 /// Maximum number of representative target strings carried per kind
@@ -143,90 +127,127 @@ pub struct KindCount {
 /// `+N` overflow suffix.
 pub const MAX_TARGETS_PER_KIND: usize = 3;
 
-/// Per-target character cap. Bash commands routinely run long; the
-/// L2 summary line is meant to fit on a single chat-width row, so
-/// individual targets clip to this width and trailing whitespace is
-/// stripped. The clip uses character count (not display cells)
-/// since command / path strings are virtually always ASCII; the
-/// outer truncation in `render_group_summary_line` is the
-/// cell-aware fence.
+/// Per-target character cap for the capped file-list kinds (search).
+/// Those targets are short names meant to sit on one row; the clip uses
+/// character count (not display cells) since the names are virtually
+/// always ASCII, and the outer `render_group_summary_line` cell-fence
+/// is the display-cell backstop. Wrap kinds (bash / web / lsp / ...)
+/// carry their full target and word-wrap instead - see
+/// [`kind_target_wraps`].
 pub const MAX_TARGET_DISPLAY_WIDTH: usize = 30;
 
-/// Per-description character cap for the Bash group-summary headline.
-/// Wider than [`MAX_TARGET_DISPLAY_WIDTH`] because the description IS
-/// the headline (the readable hint that replaces the raw command); the
-/// outer `render_group_summary_line` cell-fence still bounds the whole
-/// line, so a single wide description can't overflow - the larger cap
-/// just keeps multi-target groups fair.
-pub const DESCRIPTION_DISPLAY_WIDTH: usize = 48;
+/// L2 marker glyph for `mcp__<server>__*` lines - distinct from the
+/// generic `\u{25cb}` so a server call reads apart from local tools.
+pub const MCP_GLYPH: &str = "\u{25c8}";
 
-impl KindCount {
+impl KindSummary {
+    /// Total tool calls across every kind line.
+    pub fn total(&self) -> usize {
+        self.lines.iter().map(|l| l.count).sum()
+    }
+
+    /// Fold one groupable tool call into its glyph-family / MCP-server
+    /// line, creating the line on first appearance.
     pub fn tally(&mut self, tc: &crate::app::ToolCallInfo) {
-        match tc.sdk_tool_name.as_str() {
-            "Read" => {
-                self.reads += 1;
-                push_target_if_room(&mut self.read_targets, read_target(tc));
-            }
-            "Grep" | "Glob" | "WebSearch" => {
-                self.searches += 1;
-                push_target_if_room(&mut self.search_targets, search_target(tc));
-            }
-            "Bash" => {
-                self.commands += 1;
-                push_target_if_room(&mut self.command_targets, command_target(tc));
-            }
-            _ => self.calls += 1,
+        let (glyph, label) = family_glyph_label(&tc.sdk_tool_name);
+        let target = family_target(tc);
+        // Read shows every file as its own nested child, so it keeps
+        // every path; other kinds keep a bounded set of representative
+        // targets and roll the rest into a `+N` overflow.
+        let cap = if glyph == READ_GLYPH { usize::MAX } else { MAX_TARGETS_PER_KIND };
+        if let Some(line) = self.lines.iter_mut().find(|l| l.glyph == glyph && l.label == label) {
+            line.count += 1;
+            push_target_if_room(&mut line.targets, target, cap);
+        } else {
+            let mut targets = Vec::new();
+            push_target_if_room(&mut targets, target, cap);
+            self.lines.push(KindLine { glyph, label, count: 1, targets });
         }
-    }
-
-    /// Render the per-group summary as one string. Per-kind segments
-    /// join with ` \u{b7} ` (middle dot). When targets are
-    /// available for a kind, that kind renders as
-    /// `<verb> <t1>, <t2>, <t3> +<overflow>` (the command segment
-    /// omits the verb - its description is already an action phrase);
-    /// otherwise the kind falls back to `<n> <kind-noun>` (e.g.
-    /// `5 reads`). The generic `calls` bucket has no target list and
-    /// always renders `<n> calls`. Order: reads, commands, searches,
-    /// calls.
-    pub fn format_summary(&self) -> String {
-        let mut parts: Vec<String> = Vec::with_capacity(4);
-        if self.reads > 0 {
-            parts.push(format_kind_segment(
-                Some("read"),
-                &self.read_targets,
-                self.reads,
-                ("read", "reads"),
-            ));
-        }
-        if self.commands > 0 {
-            parts.push(format_kind_segment(
-                None,
-                &self.command_targets,
-                self.commands,
-                ("command", "commands"),
-            ));
-        }
-        if self.searches > 0 {
-            parts.push(format_kind_segment(
-                Some("search"),
-                &self.search_targets,
-                self.searches,
-                ("search", "searches"),
-            ));
-        }
-        if self.calls > 0 {
-            parts.push(format!("{} {}", self.calls, plural(self.calls, "call", "calls")));
-        }
-        parts.join(" \u{b7} ")
     }
 }
 
-fn plural(n: usize, one: &'static str, many: &'static str) -> &'static str {
-    if n == 1 { one } else { many }
+/// The read glyph (`⬚`), keyed by the theme's `tool_name_label`. Read
+/// is the one kind that nests each file as a child row rather than
+/// showing a capped inline target, so both the tally (target cap) and
+/// the render (nested layout) special-case it on this glyph.
+pub const READ_GLYPH: &str = "\u{2b1a}";
+
+/// The search glyph (`⌕`, Grep / Glob / LS). Together with [`READ_GLYPH`]
+/// these are the file-list kinds that stay a single capped line;
+/// [`kind_target_wraps`] keys off the glyph so the wrap-vs-cap decision
+/// and the read nest/inline decision share one source of truth.
+pub const SEARCH_GLYPH: &str = "\u{2315}";
+
+/// A tool's L2 glyph-family + label. Local tools key by the
+/// [`crate::ui::theme::tool_name_label`] glyph so same-glyph tools
+/// (Grep / Glob / LS) merge into one line; `mcp__<server>__*` keys by
+/// server so each server gets its own line under [`MCP_GLYPH`].
+fn family_glyph_label(sdk_tool_name: &str) -> (&'static str, String) {
+    if let Some((server, _)) = mcp_parts(sdk_tool_name) {
+        return (MCP_GLYPH, server.to_owned());
+    }
+    let (glyph, tool_label) = crate::ui::theme::tool_name_label(sdk_tool_name);
+    let family = match glyph {
+        "\u{2b1a}" => "read",
+        "\u{2315}" => "search",
+        "\u{25b6}" => "bash",
+        "\u{2295}" => "web",
+        "\u{2699}" => "lsp",
+        "\u{2726}" => "skill",
+        "\u{2316}" => "toolsearch",
+        "\u{2299}" => "config",
+        "\u{21c4}" => "worktree",
+        "\u{25cb}" => "tool",
+        _ => tool_label,
+    };
+    (glyph, family.to_owned())
 }
 
-fn push_target_if_room(targets: &mut Vec<String>, candidate: Option<String>) {
-    if targets.len() >= MAX_TARGETS_PER_KIND {
+/// Whether a kind's L2 target WRAPS across continuation rows
+/// (word-wrapped, spine held) rather than staying a single capped line.
+/// Keyed on the GLYPH, not the label, so it shares one predicate with
+/// the render's read nest/inline check (an MCP server literally named
+/// `read` keeps the `◈` glyph and still wraps). The file-list kinds
+/// ([`READ_GLYPH`] / [`SEARCH_GLYPH`]) stay capped because their targets
+/// are short names; every other kind (bash / web / lsp / skill /
+/// toolsearch / config / worktree / generic tool / MCP-server) carries a
+/// description-style target that reads better wrapped whole than clipped.
+pub fn kind_target_wraps(glyph: &str) -> bool {
+    glyph != READ_GLYPH && glyph != SEARCH_GLYPH
+}
+
+/// Split an `mcp__<server>__<tool>` name into (server, tool). `None`
+/// for non-MCP names or an empty server. Peer/worker MCP tools never
+/// reach here - they are run-breakers.
+fn mcp_parts(sdk_tool_name: &str) -> Option<(&str, &str)> {
+    let rest = sdk_tool_name.strip_prefix("mcp__")?;
+    let (server, tool) = rest.split_once("__")?;
+    (!server.is_empty()).then_some((server, tool))
+}
+
+/// Representative target for a kind line: MCP → the tool sub-name;
+/// local tools → their per-kind extractor, falling back to the title
+/// with the kind-label prefix stripped.
+fn family_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
+    if let Some((_, tool)) = mcp_parts(&tc.sdk_tool_name)
+        && !tool.is_empty()
+    {
+        return Some(tool.to_owned());
+    }
+    let (glyph, _) = crate::ui::theme::tool_name_label(&tc.sdk_tool_name);
+    let bespoke = match glyph {
+        "\u{2b1a}" => read_target(tc),
+        "\u{2315}" => search_target(tc),
+        "\u{25b6}" => command_target(tc),
+        "\u{2295}" => web_target(tc),
+        "\u{2316}" => query_target(tc),
+        _ => None,
+    };
+    bespoke.or_else(|| strip_title_prefix(tc))
+}
+
+fn push_target_if_room(targets: &mut Vec<String>, candidate: Option<String>, cap: usize) {
+    if targets.len() >= cap {
         return;
     }
     if let Some(value) = candidate.filter(|s| !s.is_empty()) {
@@ -234,27 +255,16 @@ fn push_target_if_room(targets: &mut Vec<String>, candidate: Option<String>) {
     }
 }
 
-fn format_kind_segment(
-    verb: Option<&'static str>,
-    targets: &[String],
-    total: usize,
-    noun_forms: (&'static str, &'static str),
-) -> String {
-    if targets.is_empty() {
-        return format!("{} {}", total, plural(total, noun_forms.0, noun_forms.1));
-    }
-    let names = targets.join(", ");
-    let overflow = total.saturating_sub(targets.len());
-    let prefix = verb.map_or_else(String::new, |v| format!("{v} "));
-    if overflow > 0 { format!("{prefix}{names} +{overflow}") } else { format!("{prefix}{names}") }
-}
-
+/// Read target: the full `file_path` (absolute as Claude sends it).
+/// The render relativizes it against the session project root and shows
+/// each file as a nested child, so the full path is kept here - not the
+/// basename.
 fn read_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
     let raw = tc.raw_input.as_ref().and_then(|v| v.as_object());
     let path =
-        raw.and_then(|r| r.get("file_path")).and_then(serde_json::Value::as_str).map(str::to_owned);
-    if let Some(p) = path {
-        return Some(basename(&p));
+        raw.and_then(|r| r.get("file_path")).and_then(serde_json::Value::as_str).map(str::trim);
+    if let Some(p) = path.filter(|s| !s.is_empty()) {
+        return Some(p.to_owned());
     }
     // raw_input absent (a defensive code path the renderer can hit
     // pre-result; the test fixtures also pass raw_input: None).
@@ -262,14 +272,14 @@ fn read_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
     // for Read it's `"Read /path/to/file"`, for Edit `"Edit ..."`.
     let title = tc.title.trim();
     let stripped = title.strip_prefix("Read ").or_else(|| title.strip_prefix("Edit "));
-    stripped.map(|p| basename(p.trim()))
+    stripped.map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned)
 }
 
 fn search_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
     let raw = tc.raw_input.as_ref().and_then(|v| v.as_object())?;
     let value = match tc.sdk_tool_name.as_str() {
         "Grep" | "Glob" => raw.get("pattern"),
-        "WebSearch" => raw.get("query"),
+        "LS" => raw.get("path"),
         _ => None,
     };
     value
@@ -279,19 +289,66 @@ fn search_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
         .map(clip_to_target_width)
 }
 
+/// Web family (`⊕`): WebFetch shows its URL (scheme stripped),
+/// WebSearch its query. A wrap kind - the full value reaches the render
+/// and word-wraps rather than clipping.
+fn web_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
+    let raw = tc.raw_input.as_ref().and_then(|v| v.as_object())?;
+    let value = match tc.sdk_tool_name.as_str() {
+        "WebFetch" | "web_fetch" => raw.get("url"),
+        "WebSearch" | "web_search" => raw.get("query"),
+        _ => None,
+    };
+    value
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| strip_scheme(s).to_owned())
+}
+
+/// ToolSearch (`⌖`): the search query. A wrap kind - full query reaches
+/// the render.
+fn query_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
+    let raw = tc.raw_input.as_ref().and_then(|v| v.as_object())?;
+    raw.get("query")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+fn strip_scheme(url: &str) -> &str {
+    url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")).unwrap_or(url)
+}
+
+/// Fallback target for a kind with no bespoke extractor: `tc.title`
+/// with a leading kind-label prefix stripped (claude sends titles like
+/// `"Skill code-review"` / `"LSP hover"`).
+fn strip_title_prefix(tc: &crate::app::ToolCallInfo) -> Option<String> {
+    let (_, label) = crate::ui::theme::tool_name_label(&tc.sdk_tool_name);
+    let title = tc.title.trim();
+    if title.is_empty() {
+        return None;
+    }
+    let stripped =
+        title.strip_prefix(label).and_then(|r| r.strip_prefix(' ')).unwrap_or(title).trim();
+    (!stripped.is_empty()).then(|| stripped.to_owned())
+}
+
 fn command_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
     let raw = tc.raw_input.as_ref().and_then(|v| v.as_object());
     // Prefer Claude's human-readable description (the collapsed
     // headline) - it rides the same raw_input object as the command,
     // and the raw command often starts with a long `cd <path>` that
-    // clips to nothing useful. Headline cap is wider than the command
-    // cap; falls back to the command when no description was sent.
+    // reads as nothing useful. A wrap kind: the full description reaches
+    // the render and word-wraps; falls back to the command when no
+    // description was sent.
     let description = raw
         .and_then(|r| r.get("description"))
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|s| clip_to_width(s, DESCRIPTION_DISPLAY_WIDTH));
+        .map(str::to_owned);
     if let Some(desc) = description {
         return Some(desc);
     }
@@ -300,7 +357,7 @@ fn command_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(clip_to_target_width);
+        .map(str::to_owned);
     if let Some(cmd) = command {
         return Some(cmd);
     }
@@ -308,13 +365,7 @@ fn command_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
     // emits the bare command as `tc.title`. Use it directly (without
     // a kind-label strip since Bash has no prefix).
     let title = tc.title.trim();
-    if title.is_empty() { None } else { Some(clip_to_target_width(title)) }
-}
-
-fn basename(path: &str) -> String {
-    let trimmed = path.trim_end_matches('/');
-    let last = trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed);
-    last.to_owned()
+    if title.is_empty() { None } else { Some(title.to_owned()) }
 }
 
 fn clip_to_target_width(s: &str) -> String {
@@ -470,7 +521,7 @@ pub enum RenderUnit {
     Group {
         range: Range<usize>,
         leader_id: GroupId,
-        kind_count: KindCount,
+        summary: KindSummary,
         /// Aggregate status across the run (see `aggregate_run_status`)
         /// so the L2 summary's status_icon stays in sync as tools flip
         /// through the InProgress -> Completed lifecycle.
@@ -534,7 +585,7 @@ pub fn messaging_group_leader_at(
 /// Hidden tools render nothing in the chat stream; the partitioner
 /// emits them as `RenderUnit::Individual` (to preserve their block
 /// index for hit-test consistency) but never includes them as the
-/// leader of a Group, and they neither tally into KindCount nor
+/// leader of a Group, and they neither tally into KindSummary nor
 /// contribute to the aggregate run status.
 fn is_hidden_tool_call(block: &MessageBlock) -> bool {
     matches!(block, MessageBlock::ToolCall(tc) if tc.hidden)
@@ -735,19 +786,19 @@ fn partition_tool_call_groups(blocks: &[MessageBlock]) -> Vec<RenderUnit> {
             continue;
         };
         let leader_id = GroupId::from_leader_id(leader_tc.id.clone());
-        let mut kind_count = KindCount::default();
+        let mut summary = KindSummary::default();
         for block in &blocks[run_start..run_end_exclusive] {
             if let MessageBlock::ToolCall(tc) = block
                 && !tc.hidden
             {
-                kind_count.tally(tc);
+                summary.tally(tc);
             }
         }
         let aggregate_status = aggregate_run_status(&blocks[run_start..run_end_exclusive]);
         units.push(RenderUnit::Group {
             range: run_start..run_end_exclusive,
             leader_id,
-            kind_count,
+            summary,
             aggregate_status,
         });
         i = run_end_exclusive;
@@ -1133,10 +1184,10 @@ fn find_segment_leader(drafts: &[SessionDraftSegment], segment: &MessagingGroupS
 fn shift_unit(unit: RenderUnit, offset: usize) -> RenderUnit {
     match unit {
         RenderUnit::Individual(i) => RenderUnit::Individual(i + offset),
-        RenderUnit::Group { range, leader_id, kind_count, aggregate_status } => RenderUnit::Group {
+        RenderUnit::Group { range, leader_id, summary, aggregate_status } => RenderUnit::Group {
             range: (range.start + offset)..(range.end + offset),
             leader_id,
-            kind_count,
+            summary,
             aggregate_status,
         },
         RenderUnit::MessagingGroup { segments, group_leader_id } => RenderUnit::MessagingGroup {
@@ -1344,6 +1395,28 @@ mod tests {
         );
     }
 
+    /// Keyed on the GLYPH: the two file-list glyphs stay capped; every
+    /// description-style glyph wraps - including the MCP marker, so an
+    /// MCP server literally named `read` (glyph `◈`) still wraps.
+    #[test]
+    fn kind_target_wraps_caps_only_file_list_glyphs() {
+        assert!(!kind_target_wraps(READ_GLYPH));
+        assert!(!kind_target_wraps(SEARCH_GLYPH));
+        for glyph in [
+            "\u{25b6}", // bash
+            "\u{2295}", // web
+            "\u{2699}", // lsp
+            "\u{2726}", // skill
+            "\u{2316}", // toolsearch
+            "\u{2299}", // config
+            "\u{21c4}", // worktree
+            "\u{25cb}", // generic tool
+            MCP_GLYPH,  // any MCP server
+        ] {
+            assert!(kind_target_wraps(glyph), "{glyph} should wrap");
+        }
+    }
+
     #[test]
     fn group_collapse_level_cycles_l2_l1_l0() {
         let l = GroupCollapseLevel::default();
@@ -1356,15 +1429,24 @@ mod tests {
         assert_eq!(l, GroupCollapseLevel::L2Summary);
     }
 
+    fn kind_line<'a>(k: &'a KindSummary, label: &str) -> Option<&'a KindLine> {
+        k.lines.iter().find(|l| l.label == label)
+    }
+
+    fn count_of(k: &KindSummary, label: &str) -> usize {
+        kind_line(k, label).map_or(0, |l| l.count)
+    }
+
     #[test]
-    fn kind_count_format_summary_drops_zero_kinds_and_handles_singulars() {
-        let k = KindCount { reads: 5, searches: 3, commands: 2, calls: 0, ..KindCount::default() };
-        assert_eq!(k.format_summary(), "5 reads \u{b7} 2 commands \u{b7} 3 searches");
-
-        let k = KindCount { reads: 1, commands: 1, ..KindCount::default() };
-        assert_eq!(k.format_summary(), "1 read \u{b7} 1 command");
-
-        assert_eq!(KindCount::default().format_summary(), "");
+    fn tally_orders_kinds_by_first_appearance() {
+        let mut k = KindSummary::default();
+        tally_block(&mut k, &tool_call_block("a", "Bash"));
+        tally_block(&mut k, &tool_call_block("b", "Read"));
+        tally_block(&mut k, &tool_call_block("c", "Read"));
+        let labels: Vec<&str> = k.lines.iter().map(|l| l.label.as_str()).collect();
+        assert_eq!(labels, vec!["bash", "read"], "kinds keep first-appearance order");
+        assert_eq!(count_of(&k, "read"), 2);
+        assert_eq!(k.total(), 3);
     }
 
     fn tool_call_block_with_input(
@@ -1381,46 +1463,60 @@ mod tests {
         block
     }
 
-    fn tally_block(k: &mut KindCount, block: &MessageBlock) {
+    fn tally_block(k: &mut KindSummary, block: &MessageBlock) {
         if let MessageBlock::ToolCall(tc) = block {
             k.tally(tc);
         }
     }
 
+    /// Glyph-family grouping: Grep/Glob/LS collapse to one `search`
+    /// line, WebFetch/WebSearch to one `web`, LSP to `lsp`, and each
+    /// `mcp__<server>__*` to a per-server line - no opaque `calls`
+    /// grab-bag. LS moving out of the old catch-all is the headline fix.
     #[test]
-    fn kind_count_tallies_websearch_as_search_and_other_tools_as_calls() {
-        let mut k = KindCount::default();
-        tally_block(&mut k, &tool_call_block("a", "Read"));
-        tally_block(&mut k, &tool_call_block("b", "Grep"));
-        tally_block(&mut k, &tool_call_block("c", "Glob"));
-        tally_block(&mut k, &tool_call_block("d", "WebSearch"));
-        tally_block(&mut k, &tool_call_block("e", "Bash"));
-        tally_block(&mut k, &tool_call_block("f", "WebFetch"));
-        tally_block(&mut k, &tool_call_block("g", "LSP"));
-        tally_block(&mut k, &tool_call_block("h", "mcp__forge__some_other_tool"));
-        assert_eq!(k.reads, 1);
-        assert_eq!(k.searches, 3); // Grep + Glob + WebSearch
-        assert_eq!(k.commands, 1);
-        assert_eq!(k.calls, 3); // WebFetch + LSP + mcp__*
+    fn tally_groups_by_glyph_family_and_mcp_by_server() {
+        let mut k = KindSummary::default();
+        for (id, name) in [
+            ("a", "Read"),
+            ("b", "Grep"),
+            ("c", "Glob"),
+            ("d", "LS"),
+            ("e", "WebSearch"),
+            ("f", "WebFetch"),
+            ("g", "Bash"),
+            ("h", "LSP"),
+            ("i", "mcp__context7__query-docs"),
+            ("j", "mcp__context7__resolve-library-id"),
+            ("k", "mcp__playwright__browser_click"),
+        ] {
+            tally_block(&mut k, &tool_call_block(id, name));
+        }
+        assert_eq!(count_of(&k, "read"), 1);
+        assert_eq!(count_of(&k, "search"), 3, "Grep + Glob + LS");
+        assert_eq!(count_of(&k, "web"), 2, "WebFetch + WebSearch");
+        assert_eq!(count_of(&k, "bash"), 1);
+        assert_eq!(count_of(&k, "lsp"), 1);
+        assert_eq!(count_of(&k, "context7"), 2, "same server merges");
+        assert_eq!(count_of(&k, "playwright"), 1);
+        assert!(kind_line(&k, "calls").is_none(), "no generic calls grab-bag");
+        assert_eq!(kind_line(&k, "context7").unwrap().glyph, MCP_GLYPH);
     }
 
     #[test]
-    fn kind_count_format_summary_includes_calls_bucket() {
-        let k = KindCount { reads: 3, searches: 2, commands: 1, calls: 4, ..KindCount::default() };
-        assert_eq!(k.format_summary(), "3 reads \u{b7} 1 command \u{b7} 2 searches \u{b7} 4 calls",);
-
-        let k = KindCount { calls: 1, ..KindCount::default() };
-        assert_eq!(k.format_summary(), "1 call");
+    fn tally_mcp_target_is_the_tool_subname() {
+        let mut k = KindSummary::default();
+        tally_block(&mut k, &tool_call_block("a", "mcp__context7__query-docs"));
+        let line = kind_line(&k, "context7").expect("context7 line");
+        assert_eq!(line.targets, vec!["query-docs".to_owned()]);
     }
 
-    /// The plan's headline requirement: the L2 summary line MUST show
-    /// what the group actually did (filenames / commands / queries),
-    /// not just counts. Reads pull file_path from raw_input (basename
-    /// only); Bash pulls `command`; Grep / Glob pull `pattern`;
-    /// WebSearch pulls `query`. Targets render in order of appearance.
+    /// Each kind line collects representative targets: Reads pull the
+    /// full file_path (relativized + nested at render), Bash its
+    /// `command`, Grep/Glob the `pattern`, WebSearch its `query` (now on
+    /// the `web` line). Targets render in order of appearance.
     #[test]
-    fn kind_count_tally_collects_representative_targets() {
-        let mut k = KindCount::default();
+    fn tally_collects_representative_targets() {
+        let mut k = KindSummary::default();
         tally_block(
             &mut k,
             &tool_call_block_with_input(
@@ -1467,18 +1563,21 @@ mod tests {
             ),
         );
 
-        assert_eq!(k.read_targets, vec!["foo.rs".to_owned(), "bar.rs".to_owned()]);
-        assert_eq!(k.command_targets, vec!["cargo check".to_owned()]);
-        assert_eq!(k.search_targets, vec!["FooBar".to_owned(), "rust async".to_owned()]);
+        assert_eq!(
+            kind_line(&k, "read").unwrap().targets,
+            vec!["/repo/src/foo.rs", "/repo/src/bar.rs"]
+        );
+        assert_eq!(kind_line(&k, "bash").unwrap().targets, vec!["cargo check"]);
+        assert_eq!(kind_line(&k, "search").unwrap().targets, vec!["FooBar"]);
+        assert_eq!(kind_line(&k, "web").unwrap().targets, vec!["rust async"]);
     }
 
-    /// A Bash call with a `description` summarizes by the description
-    /// (the readable headline) shown directly, with no verb. The raw
-    /// command starts with a long `cd <path>` that would clip to
-    /// nothing useful.
+    /// A Bash call with a `description` uses the readable headline
+    /// directly (the raw command often starts with a long `cd <path>`
+    /// that clips to nothing useful).
     #[test]
-    fn bash_group_summary_uses_description() {
-        let mut k = KindCount::default();
+    fn bash_line_uses_description() {
+        let mut k = KindSummary::default();
         tally_block(
             &mut k,
             &tool_call_block_with_input(
@@ -1491,16 +1590,17 @@ mod tests {
                 })),
             ),
         );
-        // 35 chars < DESCRIPTION_DISPLAY_WIDTH (48) -> shown in full.
-        assert_eq!(k.command_targets, vec!["Squash-merge PR and confirm on main".to_owned()]);
-        assert_eq!(k.format_summary(), "Squash-merge PR and confirm on main");
+        assert_eq!(
+            kind_line(&k, "bash").unwrap().targets,
+            vec!["Squash-merge PR and confirm on main".to_owned()]
+        );
     }
 
-    /// No description -> falls back to the raw command at the existing
-    /// 30-char cap (byte-identical to today, no regression).
+    /// No description -> falls back to the full raw command (a wrap
+    /// kind, no pre-render cap).
     #[test]
-    fn bash_group_summary_falls_back_to_command_without_description() {
-        let mut k = KindCount::default();
+    fn bash_line_falls_back_to_command_without_description() {
+        let mut k = KindSummary::default();
         tally_block(
             &mut k,
             &tool_call_block_with_input(
@@ -1510,16 +1610,18 @@ mod tests {
                 Some(serde_json::json!({"command": "cargo nextest run -p forge-tui"})),
             ),
         );
-        assert_eq!(k.command_targets, vec!["cargo nextest run -p forge-tui".to_owned()]);
-        assert!(k.format_summary().starts_with("cargo nextest"));
+        assert_eq!(
+            kind_line(&k, "bash").unwrap().targets,
+            vec!["cargo nextest run -p forge-tui".to_owned()]
+        );
     }
 
-    /// A description longer than the headline cap clips to 48 chars
-    /// with a trailing ellipsis (the full command is still on expand).
+    /// A long description is kept in FULL - bash is a wrap kind, so the
+    /// render word-wraps it rather than the tally clipping it.
     #[test]
-    fn bash_group_summary_clips_long_description() {
+    fn bash_line_keeps_full_description() {
         let long = "Regenerate every baseline fixture and re-run the conformance suite twice";
-        let mut k = KindCount::default();
+        let mut k = KindSummary::default();
         tally_block(
             &mut k,
             &tool_call_block_with_input(
@@ -1529,71 +1631,88 @@ mod tests {
                 Some(serde_json::json!({"command": "x", "description": long})),
             ),
         );
-        let target = &k.command_targets[0];
-        assert_eq!(target.chars().count(), DESCRIPTION_DISPLAY_WIDTH);
-        assert!(
-            target.ends_with("..."),
-            "long description should clip with an ellipsis: {target:?}"
+        assert_eq!(kind_line(&k, "bash").unwrap().targets, vec![long.to_owned()]);
+    }
+
+    /// Non-read kinds cap targets at MAX_TARGETS_PER_KIND; extra calls
+    /// only bump the count (the render turns the remainder into a `+N`
+    /// overflow).
+    #[test]
+    fn tally_caps_non_read_targets_per_kind() {
+        let mut k = KindSummary::default();
+        for i in 0..5 {
+            tally_block(
+                &mut k,
+                &tool_call_block_with_input(
+                    &format!("g{i}"),
+                    "Grep",
+                    "Grep",
+                    Some(serde_json::json!({ "pattern": format!("pat{i}") })),
+                ),
+            );
+        }
+        let search = kind_line(&k, "search").unwrap();
+        assert_eq!(search.count, 5);
+        assert_eq!(search.targets.len(), MAX_TARGETS_PER_KIND);
+    }
+
+    /// Read is the exception: it keeps EVERY file (uncapped) so the
+    /// render can show one nested child per file.
+    #[test]
+    fn tally_keeps_every_read_file() {
+        let mut k = KindSummary::default();
+        for (i, path) in ["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"].iter().enumerate() {
+            tally_block(
+                &mut k,
+                &tool_call_block_with_input(
+                    &format!("r{i}"),
+                    "Read",
+                    "Read",
+                    Some(serde_json::json!({ "file_path": path })),
+                ),
+            );
+        }
+        let read = kind_line(&k, "read").unwrap();
+        assert_eq!(read.count, 5);
+        assert_eq!(read.targets.len(), 5, "read keeps every file, uncapped");
+    }
+
+    /// `read_target` guards an empty / whitespace `file_path`: the
+    /// primary path yields None (so the render never nests a blank child
+    /// row), while a real path resolves to the full string.
+    #[test]
+    fn read_target_guards_empty_file_path() {
+        let read_target_of = |file_path: &str| {
+            let block = tool_call_block_with_input(
+                "r",
+                "Read",
+                "Read",
+                Some(serde_json::json!({ "file_path": file_path })),
+            );
+            let MessageBlock::ToolCall(tc) = &block else { unreachable!() };
+            read_target(tc)
+        };
+        assert_eq!(read_target_of(""), None, "empty path -> no target");
+        assert_eq!(read_target_of("   "), None, "whitespace path -> no target");
+        assert_eq!(
+            read_target_of("/repo/src/main.rs"),
+            Some("/repo/src/main.rs".to_owned()),
+            "a real path resolves in full",
         );
     }
 
-    /// `format_summary` MUST surface the collected targets, not just
-    /// `<N> reads`. Counts above the per-kind cap drop into a `+N`
-    /// overflow suffix. The command segment carries no verb; read and
-    /// search keep theirs. Example shape:
-    ///   `read foo.rs, bar.rs +2  ·  cargo check  ·  search "Foo"`
     #[test]
-    fn kind_count_format_summary_renders_targets_with_overflow() {
-        let k = KindCount {
-            reads: 5,
-            commands: 1,
-            searches: 1,
-            calls: 0,
-            read_targets: vec!["foo.rs".to_owned(), "bar.rs".to_owned(), "baz.rs".to_owned()],
-            command_targets: vec!["cargo check".to_owned()],
-            search_targets: vec!["FooBar".to_owned()],
-        };
-        let s = k.format_summary();
-        assert!(s.contains("read foo.rs, bar.rs, baz.rs +2"), "rich read line missing in {s:?}");
-        assert!(s.contains("cargo check"), "command line missing in {s:?}");
-        assert!(!s.contains("ran "), "command segment must not carry the ran verb in {s:?}");
-        assert!(s.contains("search FooBar"), "search line missing in {s:?}");
-        // bare counts must NOT appear when targets are present.
-        assert!(!s.contains("5 reads"), "bare count must not appear alongside targets in {s:?}");
-    }
-
-    /// Per-kind singular form when the run is a single hit with no
-    /// overflow: `read foo.rs` (no overflow suffix), not `read foo.rs +0`.
-    #[test]
-    fn kind_count_format_summary_omits_zero_overflow_suffix() {
-        let k =
-            KindCount { reads: 1, read_targets: vec!["foo.rs".to_owned()], ..KindCount::default() };
-        let s = k.format_summary();
-        assert!(s.contains("read foo.rs"), "expected `read foo.rs` in {s:?}");
-        assert!(!s.contains("+0"), "must not show `+0` overflow in {s:?}");
-    }
-
-    /// Defensive fallback: when targets weren't extracted (e.g.
-    /// raw_input was None and the title parse failed), the summary
-    /// drops back to the count-only shape (`5 reads`). Better than
-    /// rendering a bare verb with no info.
-    #[test]
-    fn kind_count_format_summary_falls_back_to_count_when_no_targets() {
-        let k = KindCount { reads: 5, ..KindCount::default() };
-        assert_eq!(k.format_summary(), "5 reads");
-    }
-
-    #[test]
-    fn partition_mixed_kind_run_with_v2_tools_tallies_calls_bucket() {
+    fn partition_mixed_kind_run_tallies_per_family() {
         let blocks =
             make(&[("tool", "Read"), ("tool", "WebSearch"), ("tool", "WebFetch"), ("tool", "LSP")]);
         let units = partition_blocks_into_render_units(&blocks);
         assert_eq!(units.len(), 1);
         match &units[0] {
-            RenderUnit::Group { kind_count, .. } => {
-                assert_eq!(kind_count.reads, 1);
-                assert_eq!(kind_count.searches, 1); // WebSearch
-                assert_eq!(kind_count.calls, 2); // WebFetch + LSP
+            RenderUnit::Group { summary, .. } => {
+                assert_eq!(count_of(summary, "read"), 1);
+                assert_eq!(count_of(summary, "web"), 2); // WebSearch + WebFetch
+                assert_eq!(count_of(summary, "lsp"), 1);
+                assert!(kind_line(summary, "calls").is_none(), "no generic calls grab-bag");
             }
             RenderUnit::Individual(_) => panic!("expected Group"),
             RenderUnit::MessagingGroup { .. } => {
@@ -1608,9 +1727,9 @@ mod tests {
         let units = partition_blocks_into_render_units(&blocks);
         assert_eq!(units.len(), 1);
         match &units[0] {
-            RenderUnit::Group { range, kind_count, leader_id, .. } => {
+            RenderUnit::Group { range, summary, leader_id, .. } => {
                 assert_eq!(*range, 0..1);
-                assert_eq!(kind_count.reads, 1);
+                assert_eq!(count_of(summary, "read"), 1);
                 assert_eq!(leader_id.as_str(), "tu-0");
             }
             RenderUnit::Individual(_) => panic!("expected Group, got Individual"),
@@ -1626,10 +1745,10 @@ mod tests {
         let units = partition_blocks_into_render_units(&blocks);
         assert_eq!(units.len(), 1);
         match &units[0] {
-            RenderUnit::Group { range, kind_count, leader_id, .. } => {
+            RenderUnit::Group { range, summary, leader_id, .. } => {
                 assert_eq!(*range, 0..2);
-                assert_eq!(kind_count.reads, 2);
-                assert_eq!(kind_count.reads + kind_count.searches + kind_count.commands, 2);
+                assert_eq!(count_of(summary, "read"), 2);
+                assert_eq!(summary.total(), 2);
                 assert_eq!(leader_id.as_str(), "tu-0");
             }
             RenderUnit::Individual(_) => panic!("expected Group"),
@@ -1656,8 +1775,8 @@ mod tests {
         let units = partition_blocks_into_render_units(&blocks);
         assert_eq!(units.len(), 3);
         match &units[0] {
-            RenderUnit::Group { kind_count, range, .. } => {
-                assert_eq!(kind_count.reads, 3);
+            RenderUnit::Group { summary, range, .. } => {
+                assert_eq!(count_of(summary, "read"), 3);
                 assert_eq!(*range, 0..3);
             }
             RenderUnit::Individual(_) => panic!("expected first Group"),
@@ -1667,8 +1786,8 @@ mod tests {
         }
         assert!(matches!(units[1], RenderUnit::Individual(3)));
         match &units[2] {
-            RenderUnit::Group { kind_count, range, .. } => {
-                assert_eq!(kind_count.commands, 2);
+            RenderUnit::Group { summary, range, .. } => {
+                assert_eq!(count_of(summary, "bash"), 2);
                 assert_eq!(*range, 4..6);
             }
             RenderUnit::Individual(_) => panic!("expected second Group"),
@@ -1693,9 +1812,9 @@ mod tests {
         let units = partition_blocks_into_render_units(&blocks);
         assert_eq!(units.len(), 3);
         match &units[0] {
-            RenderUnit::Group { range, kind_count, .. } => {
+            RenderUnit::Group { range, summary, .. } => {
                 assert_eq!(*range, 0..1);
-                assert_eq!(kind_count.reads, 1);
+                assert_eq!(count_of(summary, "read"), 1);
             }
             RenderUnit::Individual(_) => panic!("expected first Group"),
             RenderUnit::MessagingGroup { .. } => {
@@ -1704,9 +1823,9 @@ mod tests {
         }
         assert!(matches!(units[1], RenderUnit::Individual(1)));
         match &units[2] {
-            RenderUnit::Group { range, kind_count, .. } => {
+            RenderUnit::Group { range, summary, .. } => {
                 assert_eq!(*range, 2..3);
-                assert_eq!(kind_count.reads, 1);
+                assert_eq!(count_of(summary, "read"), 1);
             }
             RenderUnit::Individual(_) => panic!("expected third Group"),
             RenderUnit::MessagingGroup { .. } => {
@@ -1727,11 +1846,11 @@ mod tests {
         let units = partition_blocks_into_render_units(&blocks);
         assert_eq!(units.len(), 1);
         match &units[0] {
-            RenderUnit::Group { kind_count, .. } => {
-                assert_eq!(kind_count.reads, 1);
-                assert_eq!(kind_count.searches, 2);
-                assert_eq!(kind_count.commands, 2);
-                assert_eq!(kind_count.reads + kind_count.searches + kind_count.commands, 5);
+            RenderUnit::Group { summary, .. } => {
+                assert_eq!(count_of(summary, "read"), 1);
+                assert_eq!(count_of(summary, "search"), 2);
+                assert_eq!(count_of(summary, "bash"), 2);
+                assert_eq!(summary.total(), 5);
             }
             RenderUnit::Individual(_) => panic!("expected Group"),
             RenderUnit::MessagingGroup { .. } => {
@@ -1978,10 +2097,8 @@ mod tests {
             "trailing hidden block must not produce a spurious second group",
         );
         for u in &groups {
-            if let RenderUnit::Group { kind_count, .. } = u {
-                let total =
-                    kind_count.reads + kind_count.searches + kind_count.commands + kind_count.calls;
-                assert!(total > 0, "no empty group should be produced");
+            if let RenderUnit::Group { summary, .. } = u {
+                assert!(summary.total() > 0, "no empty group should be produced");
             }
         }
     }
