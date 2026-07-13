@@ -718,17 +718,30 @@ fn apply_tool_call_update(
 /// to `Completed` here would visually mark a still-running monitor
 /// as done in both the chat-stream card and the Inspector PROCESSES
 /// section.
+///
+/// Backgrounded tasks still in the session roster are skipped for the same
+/// reason: a `run_in_background` Bash or Task/Agent root outlives its
+/// spawning turn, so its card must not flip terminal until `task_updated`.
 fn finalize_open_tool_calls(app: &mut App, status: forge_primitives::ToolCallStatus) {
     use crate::app::state::tool_call_info::is_monitor_tool_name;
     use forge_primitives::{ToolCallStatus, ToolCallUpdateFields};
 
+    // Backgrounded tasks the CLI still lists as running outlive the turn;
+    // their tool_use_ids resolve from the session roster so the sweep leaves
+    // them alone (their terminal status arrives later via `task_updated`).
+    let backgrounded_alive: std::collections::HashSet<String> = app
+        .active_session()
+        .map(|session| {
+            session.backgrounded_alive_tool_use_ids().into_iter().map(str::to_owned).collect()
+        })
+        .unwrap_or_default();
     let pending: Vec<String> = app.with_turn_state(|ts| {
         ts.tool_calls
             .iter()
             .filter(|(_, t)| {
                 matches!(t.status, ToolCallStatus::Pending | ToolCallStatus::InProgress)
             })
-            .filter(|(_, t)| {
+            .filter(|(id, t)| {
                 // Skip explicit persistent monitors - the docs and
                 // wire shape both say these outlive the turn that
                 // started them.
@@ -749,6 +762,11 @@ fn finalize_open_tool_calls(app: &mut App, status: forge_primitives::ToolCallSta
                 // a separate `sdk_tool_name`, but it's not on the
                 // wire-level struct stored here.
                 if t.raw_input.is_none() && is_monitor_tool_name(&t.title) {
+                    return false;
+                }
+                // Still-running backgrounded work (bash / Task root) settles
+                // via its own task_updated, not the turn boundary.
+                if backgrounded_alive.contains(id.as_str()) {
                     return false;
                 }
                 true
@@ -1140,16 +1158,8 @@ fn handle_task_started(app: &mut App, msg: Message) {
     apply_tool_progress_update(app, id, "Task");
     if !task_id.is_empty() {
         let id_owned = id.to_owned();
-        let task_id_owned = task_id.clone();
         let _: () = app.with_turn_state_mut(|ts| {
             ts.task_tool_use_ids.insert(task_id.clone(), id_owned);
-            // Mark the task alive - drained by handle_task_updated
-            // when patch.status is terminal. This drives PROCESSES
-            // visibility: a backgrounded Bash whose tool_result has
-            // already arrived (flipping tc.status to Completed) is
-            // still alive here until its task_updated terminal
-            // patch lands.
-            ts.alive_task_ids.insert(task_id_owned);
         });
         // Session-scoped mirror that survives turn finalisation - the
         // cross-turn resolver for backgrounded agents (SUBAGENTS) and
@@ -1249,12 +1259,8 @@ fn handle_task_updated(app: &mut App, msg: Message) {
         // the workflow row to its summarised one-liner. Idempotent
         // when the entry is already Completed.
         app.set_workflow_completed_by_task_id(&task_id);
-        let task_id_owned = task_id.clone();
-        let _: () = app.with_turn_state_mut(|ts| {
-            ts.alive_task_ids.remove(&task_id_owned);
-        });
-        // Drop the session-scoped mirror too; keyed by task_id, so it
-        // runs even post-turn when the tool_use_id lookup below is empty.
+        // Drop the session-scoped mirror; keyed by task_id, so it runs
+        // even post-turn when the tool_use_id lookup below is empty.
         app.remove_session_task_mapping(&task_id);
     }
 
@@ -2916,6 +2922,102 @@ mod error_message_tests {
             matches!(last.role, MessageRole::System(None)),
             "fatal error surfaces as a system message, got {:?}",
             last.role,
+        );
+    }
+}
+
+#[cfg(test)]
+mod finalize_open_tool_calls_tests {
+    //! The turn-end sweep force-completes lingering tool calls, EXCEPT
+    //! persistent monitors and backgrounded tasks the CLI still lists as
+    //! running - both outlive the turn and settle via their own lifecycle
+    //! events, so flipping their cards terminal here paints an unearned
+    //! checkmark.
+    use super::finalize_open_tool_calls;
+    use crate::app::App;
+    use crate::app::state::types::BackgroundTask;
+    use forge_primitives::ToolCallStatus;
+    use forge_primitives::session_update::{ToolCall, ToolKind};
+    use serde_json::json;
+
+    fn turn_tool(id: &str, title: &str, raw_input: serde_json::Value) -> ToolCall {
+        ToolCall {
+            tool_call_id: id.to_owned(),
+            title: title.to_owned(),
+            kind: ToolKind::Other,
+            status: ToolCallStatus::InProgress,
+            content: Vec::new(),
+            raw_input: Some(raw_input),
+            raw_output: None,
+            output_metadata: None,
+            task_metadata: None,
+            locations: Vec::new(),
+            meta: None,
+        }
+    }
+
+    #[test]
+    fn exempts_persistent_monitor_and_roster_backgrounded_but_sweeps_ordinary() {
+        let mut app = App::test_default();
+        let _: () = app.with_turn_state_mut(|ts| {
+            ts.tool_calls.insert(
+                "tu-monitor".to_owned(),
+                turn_tool("tu-monitor", "Monitor", json!({ "persistent": true })),
+            );
+            ts.tool_calls.insert(
+                "tu-bash".to_owned(),
+                turn_tool(
+                    "tu-bash",
+                    "Bash",
+                    json!({ "command": "sleep 60", "run_in_background": true }),
+                ),
+            );
+            ts.tool_calls.insert(
+                "tu-agent".to_owned(),
+                turn_tool("tu-agent", "Task", json!({ "subagent_type": "Explore" })),
+            );
+            ts.tool_calls
+                .insert("tu-read".to_owned(), turn_tool("tu-read", "Read", json!({ "file": "x" })));
+        });
+        // Roster lists the bash + agent as still running; the session map
+        // resolves each task_id back to its tool_use_id.
+        app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
+        app.insert_session_task_mapping("task-agent".to_owned(), "tu-agent".to_owned());
+        *app.background_tasks_mut() = vec![
+            BackgroundTask {
+                task_id: "task-bash".to_owned(),
+                task_type: "local_bash".to_owned(),
+                description: String::new(),
+            },
+            BackgroundTask {
+                task_id: "task-agent".to_owned(),
+                task_type: "local_agent".to_owned(),
+                description: String::new(),
+            },
+        ];
+
+        finalize_open_tool_calls(&mut app, ToolCallStatus::Completed);
+
+        let status = |id: &str| app.with_turn_state(|ts| ts.tool_calls.get(id).map(|t| t.status));
+        assert_eq!(
+            status("tu-monitor"),
+            Some(ToolCallStatus::InProgress),
+            "persistent monitor is left running",
+        );
+        assert_eq!(
+            status("tu-bash"),
+            Some(ToolCallStatus::InProgress),
+            "roster-backgrounded bash is left running",
+        );
+        assert_eq!(
+            status("tu-agent"),
+            Some(ToolCallStatus::InProgress),
+            "roster-backgrounded agent root is left running",
+        );
+        assert_eq!(
+            status("tu-read"),
+            Some(ToolCallStatus::Completed),
+            "an ordinary in-flight tool is still swept to terminal",
         );
     }
 }

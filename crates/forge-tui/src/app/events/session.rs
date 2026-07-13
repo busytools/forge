@@ -205,8 +205,10 @@ pub(super) fn handle_auth_required_event(
         session.cancelled_turn_pending_hint = false;
         session.pending_cancel = false;
         session.mcp = super::super::McpState::default();
-        super::turn::finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
+        // Teardown is a hard terminal - clear the roster first so the sweep
+        // has nothing to exempt and every open card fails.
         session.clear_background_task_registry();
+        super::turn::finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
         let _ = session;
@@ -242,8 +244,10 @@ pub(super) fn handle_auth_required_event(
     app.set_account_info(None);
     *app.mcp_mut() = super::super::McpState::default();
     crate::app::usage::reset_for_session_change(app);
-    app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
+    // Teardown is a hard terminal - clear the roster first so the sweep
+    // has nothing to exempt and every open card fails.
     app.clear_active_session_background_task_registry();
+    app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
     super::notices::clear_turn_notice_tracking(app);
     // Flip the active bucket's lifecycle state too - if the user
@@ -300,8 +304,10 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         session.pending_cancel = false;
         session.last_rate_limit_update = None;
         session.mcp = super::super::McpState::default();
-        super::turn::finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
+        // Teardown is a hard terminal - clear the roster first so the sweep
+        // has nothing to exempt and every open card fails.
         session.clear_background_task_registry();
+        super::turn::finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
         let next_state = if is_rate_limited {
@@ -367,8 +373,10 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
     *app.resuming_session_id_mut() = None;
     *app.pending_command_label_mut() = None;
     *app.pending_command_ack_mut() = None;
-    app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
+    // Teardown is a hard terminal - clear the roster first so the sweep
+    // has nothing to exempt and every open card fails.
     app.clear_active_session_background_task_registry();
+    app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.input_mut().clear();
     *app.pending_submit_mut() = None;
     app.status = AppStatus::Error;

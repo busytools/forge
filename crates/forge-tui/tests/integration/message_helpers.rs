@@ -65,6 +65,33 @@ pub fn user_message(content: Vec<forge_primitives::ContentBlock>) -> forge_primi
     }
 }
 
+/// Build a wire `Message::Result` for a successful turn end.
+/// Dispatching it drives the real turn-complete path
+/// (`apply_result_finalize`): the finalize sweep runs and
+/// `SessionTurnState` resets - exactly the boundary a cross-turn
+/// liveness test needs to reproduce.
+pub fn result_success_message() -> forge_primitives::Message {
+    forge_primitives::Message::Result {
+        subtype: "success".to_owned(),
+        session_id: "test-session".to_owned(),
+        is_error: false,
+        num_turns: 1,
+        duration_ms: 0,
+        duration_api_ms: 0,
+        stop_reason: Some("end_turn".to_owned()),
+        total_cost_usd: None,
+        usage: None,
+        result: None,
+        structured_output: None,
+        model_usage: None,
+        permission_denials: None,
+        errors: None,
+        uuid: None,
+        terminal_reason: None,
+        fast_mode_state: None,
+    }
+}
+
 /// Build a wire `Message::System` envelope (`status` / `init` /
 /// etc.).
 pub fn system_message(subtype: &str, data: serde_json::Value) -> forge_primitives::Message {

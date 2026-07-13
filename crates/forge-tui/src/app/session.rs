@@ -473,6 +473,23 @@ impl UiSession {
         self.background_tasks.clear();
         self.session_task_tool_use_ids.clear();
     }
+
+    /// The `tool_use_id`s of every currently-backgrounded task the CLI still
+    /// lists as running, across all task kinds. Intersecting the
+    /// `background_tasks` roster (the authoritative liveness gate) with the
+    /// session task map (`task_id` -> `tool_use_id`) is the signal that
+    /// survives turn finalisation; a map entry whose task already left the
+    /// roster is excluded, so a leaked mapping never resurrects a phantom
+    /// live row.
+    pub fn backgrounded_alive_tool_use_ids(&self) -> HashSet<&str> {
+        let task_ids: HashSet<&str> =
+            self.background_tasks.iter().map(|task| task.task_id.as_str()).collect();
+        self.session_task_tool_use_ids
+            .iter()
+            .filter(|(task_id, _)| task_ids.contains(task_id.as_str()))
+            .map(|(_, tool_use_id)| tool_use_id.as_str())
+            .collect()
+    }
 }
 
 /// Whether a session's Projects-pane row shows the activity spinner: an
@@ -645,5 +662,43 @@ mod tests {
             description: "cargo build".to_owned(),
         });
         assert!(session.has_live_background_work(), "a live backgrounded task is live work");
+    }
+
+    /// The backgrounded-alive set resolves every task kind (bash, agent,
+    /// workflow) through the session map, and the registry gates it: a
+    /// roster row with no map entry is unresolvable, and a map entry with
+    /// no roster row is already drained - both excluded.
+    #[test]
+    fn backgrounded_alive_tool_use_ids_resolves_all_task_types() {
+        use crate::app::state::types::BackgroundTask;
+
+        let mut session = super::UiSession::new(forge_workspace::SessionKey::from_session_id("bg"));
+        for (task_id, task_type) in
+            [("task-bash", "local_bash"), ("task-agent", "agent"), ("task-wf", "local_workflow")]
+        {
+            session.background_tasks.push(BackgroundTask {
+                task_id: task_id.to_owned(),
+                task_type: task_type.to_owned(),
+                description: String::new(),
+            });
+            session.session_task_tool_use_ids.insert(task_id.to_owned(), format!("tu-{task_id}"));
+        }
+        // Roster row with no session-map entry: excluded (unresolvable).
+        session.background_tasks.push(BackgroundTask {
+            task_id: "task-unmapped".to_owned(),
+            task_type: "local_bash".to_owned(),
+            description: String::new(),
+        });
+        // Session-map entry with no roster row: excluded (already drained).
+        session.session_task_tool_use_ids.insert("task-stale".to_owned(), "tu-stale".to_owned());
+
+        let mut got: Vec<&str> = session.backgrounded_alive_tool_use_ids().into_iter().collect();
+        got.sort_unstable();
+        assert_eq!(
+            got,
+            vec!["tu-task-agent", "tu-task-bash", "tu-task-wf"],
+            "every mapped roster task resolves regardless of kind; unmapped roster rows \
+             and stale map entries are excluded",
+        );
     }
 }

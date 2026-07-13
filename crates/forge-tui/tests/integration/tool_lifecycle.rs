@@ -1,5 +1,5 @@
 // =====
-// TESTS: 14
+// TESTS: 21
 // =====
 //
 // Tool call lifecycle integration tests.
@@ -7,14 +7,19 @@
 // over the wire-message dispatch path.
 
 use forge_tui::agent::model;
-use forge_tui::app::{App, AppStatus, MessageBlock, ToolCallInfo, ToolCallScope};
+use forge_tui::app::session::UiSession;
+use forge_tui::app::{
+    App, AppStatus, BackgroundTask, BlockCache, ChatMessage, MessageBlock, MessageRole,
+    TerminalSnapshotMode, ToolCallInfo, ToolCallScope,
+};
 use pretty_assertions::assert_eq;
 
-use crate::helpers::test_app;
+use crate::helpers::{active_session_key, send_client_event, test_app};
 use crate::message_helpers::{
-    assistant_message, assistant_message_with_parent, send_msg, text_block, tool_result_block,
-    tool_result_error_block, tool_use_block, user_message,
+    assistant_message, assistant_message_with_parent, result_success_message, send_msg, text_block,
+    tool_result_block, tool_result_error_block, tool_use_block, user_message,
 };
+use forge_workspace::{SessionKey, SessionUpdate};
 
 fn tool_call_block<'a>(app: &'a App, id: &str) -> &'a ToolCallInfo {
     let (message_index, block_index) = app.lookup_tool_call(id).expect("missing tool index");
@@ -475,15 +480,15 @@ async fn subagent_root_via_real_wire_surfaces_in_subagents_view() {
     assert!(tool_call_block(&app, "toolu_child").hidden, "SubagentChild stays hidden as before");
 }
 
-/// Drain-to-hidden: a backgrounded SubagentRoot stays visible while its
-/// task_id is in `alive_task_ids`, then the section clears once the
-/// terminal `task_updated` drains it. Guards against a regression that
-/// stopped draining `alive_task_ids` for subagents, which would leave a
-/// completed subagent stuck-visible. Mirrors the MONITORS
+/// Drain-to-hidden: a subagent root stays visible while its status is
+/// in-flight, then the section clears once the terminal `task_updated`
+/// flips the root card terminal. Guards against a regression that stopped
+/// applying the terminal status, which would leave a completed subagent
+/// stuck-visible. Mirrors the MONITORS
 /// `two_monitors_completing_in_order_clears_section` contract, driven
 /// over the real wire path.
 #[tokio::test]
-async fn subagent_section_clears_when_terminal_task_updated_drains_alive_task() {
+async fn subagent_section_clears_when_terminal_task_updated_flips_root() {
     let mut app = test_app();
 
     send_msg(
@@ -498,7 +503,7 @@ async fn subagent_section_clears_when_terminal_task_updated_drains_alive_task() 
             }),
         )]),
     );
-    // task_started maps the task_id to the root and marks it alive.
+    // task_started maps the task_id to the root.
     send_msg(
         &mut app,
         forge_primitives::Message::TaskStarted {
@@ -513,11 +518,11 @@ async fn subagent_section_clears_when_terminal_task_updated_drains_alive_task() 
     assert_eq!(
         app.subagents_view().len(),
         1,
-        "backgrounded subagent is visible while its task is alive; got {:?}",
+        "backgrounded subagent is visible while its root is in-flight; got {:?}",
         app.subagents_view(),
     );
 
-    // Terminal task_updated drains alive_task_ids and flips the card.
+    // Terminal task_updated flips the root card terminal.
     send_msg(
         &mut app,
         forge_primitives::Message::TaskUpdated {
@@ -532,7 +537,7 @@ async fn subagent_section_clears_when_terminal_task_updated_drains_alive_task() 
     );
     assert!(
         app.subagents_view().is_empty(),
-        "section clears once the terminal task_updated drains the alive task; got {:?}",
+        "section clears once the terminal task_updated flips the root terminal; got {:?}",
         app.subagents_view(),
     );
 }
@@ -618,7 +623,6 @@ async fn backgrounded_agent_survives_turn_reset_over_real_wire_path() {
     // must carry the root across.
     let _: () = app.with_turn_state_mut(|ts| {
         ts.task_tool_use_ids.clear();
-        ts.alive_task_ids.clear();
     });
 
     let view = app.subagents_view();
@@ -702,7 +706,6 @@ async fn backgrounded_bash_survives_turn_reset_over_real_wire_path() {
     // Turn finalisation wipes the turn-scoped liveness.
     let _: () = app.with_turn_state_mut(|ts| {
         ts.task_tool_use_ids.clear();
-        ts.alive_task_ids.clear();
     });
 
     let session = app.active_session().expect("active session");
@@ -718,6 +721,501 @@ async fn backgrounded_bash_survives_turn_reset_over_real_wire_path() {
             .any(|task| task.task_id == "task-bash" && task.task_type == "local_bash"),
         "registry still lists it as local_bash; got {:?}",
         session.background_tasks,
+    );
+}
+
+/// Sibling of `backgrounded_agent_survives_turn_reset_over_real_wire_path`
+/// that drives the REAL turn-complete (`Message::Result`) rather than
+/// hand-clearing the turn state: the same `apply_result_finalize` the CLI
+/// triggers resets `SessionTurnState` AND runs the finalize sweep. With no
+/// terminal `task_updated` yet, the backgrounded agent must stay active in
+/// SUBAGENTS across that real boundary; a terminal `task_updated` then
+/// clears the section.
+#[tokio::test]
+async fn backgrounded_agent_survives_real_turn_complete() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_root",
+            "Agent",
+            serde_json::json!({
+                "subagent_type": "Explore",
+                "description": "long-running background agent",
+                "prompt": "long-running background agent",
+            }),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block(
+                "toolu_child",
+                "Read",
+                serde_json::json!({"file": "conv-row.tsx"}),
+            )],
+            "toolu_root",
+        ),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-root".to_owned(),
+            description: "long-running background agent".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_root".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+        },
+    );
+    // Backgrounding sentinel flips the root card terminal while it runs.
+    send_msg(
+        &mut app,
+        user_message(vec![tool_result_block(
+            "toolu_root",
+            serde_json::json!("Agent launched in background. Task ID: task-root"),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![serde_json::json!({
+                "task_id": "task-root",
+                "task_type": "local_agent",
+                "description": "long-running background agent",
+            })],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+
+    // Drive the REAL turn-complete: SessionTurnState resets and the finalize
+    // sweep runs, with no terminal task_updated seen yet.
+    send_msg(&mut app, result_success_message());
+
+    let view = app.subagents_view();
+    assert_eq!(
+        view.len(),
+        1,
+        "backgrounded agent stays in SUBAGENTS across the real turn-complete; got {view:?}",
+    );
+    assert_eq!(view[0].status, model::ToolCallStatus::InProgress);
+    assert_eq!(view[0].tail.len(), 1, "its live tool tail survives; got {:?}", view[0].tail);
+
+    // Terminal task_updated drains the session map - the section clears.
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskUpdated {
+            task_id: "task-root".to_owned(),
+            patch: forge_primitives::messages::TaskUpdatePatch {
+                status: Some("completed".to_owned()),
+                end_time: None,
+            },
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+    assert!(
+        app.subagents_view().is_empty(),
+        "terminal task_updated clears the section; got {:?}",
+        app.subagents_view(),
+    );
+}
+
+/// The turn boundary must not force-complete a backgrounded tool call whose
+/// card is still open. Driving the REAL `Message::Result` runs the finalize
+/// sweep, but a `run_in_background` Bash still in the session roster is
+/// exempt, so its chat card stays `InProgress` instead of getting an
+/// unearned checkmark. Without the exemption the sweep flips it `Completed`.
+#[tokio::test]
+async fn turn_end_does_not_force_complete_a_backgrounded_bash_card() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_bash",
+            "Bash",
+            serde_json::json!({
+                "command": "sleep 60 && echo done",
+                "description": "Wait then print",
+                "run_in_background": true,
+            }),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-bash".to_owned(),
+            description: "Wait then print".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_bash".to_owned()),
+            task_type: Some("local_bash".to_owned()),
+        },
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![serde_json::json!({
+                "task_id": "task-bash",
+                "task_type": "local_bash",
+                "description": "Wait then print",
+            })],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+    // No backgrounding sentinel: the card is still InProgress at turn end -
+    // the window the finalize sweep would otherwise force to Completed.
+    assert_eq!(
+        tool_call_block(&app, "toolu_bash").status,
+        model::ToolCallStatus::InProgress,
+        "precondition: the card is open before the turn ends",
+    );
+
+    // Drive the REAL turn-complete: finalize sweep + SessionTurnState reset.
+    send_msg(&mut app, result_success_message());
+
+    assert_eq!(
+        tool_call_block(&app, "toolu_bash").status,
+        model::ToolCallStatus::InProgress,
+        "a roster-backed backgrounded card is exempt from the turn-end sweep",
+    );
+    // The session-scoped roster the PROCESSES enrichment reads survived.
+    let session = app.active_session().expect("active session");
+    assert!(
+        session.background_tasks.iter().any(|task| task.task_id == "task-bash"),
+        "the CLI registry still lists it as live; got {:?}",
+        session.background_tasks,
+    );
+    assert_eq!(
+        session.session_task_tool_use_ids.get("task-bash").map(String::as_str),
+        Some("toolu_bash"),
+        "the session task map still resolves it across the boundary",
+    );
+}
+
+/// An InProgress backgrounded Bash card (no sentinel), for teardown tests.
+fn backgrounded_bash_card(id: &str) -> ToolCallInfo {
+    ToolCallInfo {
+        id: id.to_owned(),
+        title: format!("tool {id}"),
+        sdk_tool_name: "Bash".to_owned(),
+        raw_input: None,
+        raw_input_bytes: 0,
+        output_metadata: None,
+        task_metadata: None,
+        status: model::ToolCallStatus::InProgress,
+        content: Vec::new(),
+        hidden: false,
+        terminal_id: None,
+        terminal_command: None,
+        terminal_output: None,
+        terminal_output_len: 0,
+        terminal_bytes_seen: 0,
+        terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+        monitor_output_tail: Vec::default(),
+        render_epoch: 0,
+        layout_epoch: 0,
+        last_measured_width: 0,
+        last_measured_height: 0,
+        last_measured_layout_epoch: 0,
+        last_measured_layout_generation: 0,
+        cache: BlockCache::default(),
+        collapsed_override: None,
+        last_measured_y_in_msg: 0,
+        answered_questions: Vec::new(),
+    }
+}
+
+/// Seed the ACTIVE session over the wire with a mapped, still-open
+/// backgrounded bash (tool_use + task_started + registry).
+fn seed_active_backgrounded_bash(app: &mut App) {
+    send_msg(
+        app,
+        assistant_message(vec![tool_use_block(
+            "toolu_bash",
+            "Bash",
+            serde_json::json!({
+                "command": "sleep 60 && echo done",
+                "description": "Wait then print",
+                "run_in_background": true,
+            }),
+        )]),
+    );
+    send_msg(
+        app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-bash".to_owned(),
+            description: "Wait then print".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_bash".to_owned()),
+            task_type: Some("local_bash".to_owned()),
+        },
+    );
+    send_msg(
+        app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![serde_json::json!({
+                "task_id": "task-bash",
+                "task_type": "local_bash",
+                "description": "Wait then print",
+            })],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+}
+
+/// A non-active bucket carrying a mapped, still-open backgrounded bash card.
+fn bg_bucket_with_backgrounded_bash(key: &SessionKey) -> UiSession {
+    let mut session = UiSession::new(key.clone());
+    session.messages.push(ChatMessage::new(
+        MessageRole::Assistant,
+        vec![MessageBlock::ToolCall(Box::new(backgrounded_bash_card("toolu_bash")))],
+        None,
+    ));
+    session.session_task_tool_use_ids.insert("task-bash".to_owned(), "toolu_bash".to_owned());
+    session.background_tasks.push(BackgroundTask {
+        task_id: "task-bash".to_owned(),
+        task_type: "local_bash".to_owned(),
+        description: "Wait then print".to_owned(),
+    });
+    session
+}
+
+fn bucket_card_status(session: &UiSession, id: &str) -> Option<model::ToolCallStatus> {
+    session.messages.iter().flat_map(|m| &m.blocks).find_map(|b| match b {
+        MessageBlock::ToolCall(tc) if tc.id == id => Some(tc.status),
+        _ => None,
+    })
+}
+
+// Teardown is a hard terminal: a session that dies must NOT keep a
+// backgrounded card exempt from the sweep - the task can't complete on a dead
+// session, so its card belongs at Failed, not stranded InProgress. The roster
+// is cleared before the sweep at all four teardown sites (connection-failed +
+// auth-required, active + background); each gets its own guard so a future
+// revert of any one reorder fails loudly.
+
+#[tokio::test]
+async fn connection_failed_active_teardown_fails_a_backgrounded_card() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+    seed_active_backgrounded_bash(&mut app);
+    assert_eq!(
+        tool_call_block(&app, "toolu_bash").status,
+        model::ToolCallStatus::InProgress,
+        "precondition: the backgrounded card is open before the session dies",
+    );
+
+    let key = active_session_key(&app);
+    send_client_event(
+        &mut app,
+        SessionUpdate::ConnectionFailed {
+            key,
+            message: "connection lost".to_owned(),
+            fatal: false,
+        },
+    );
+
+    assert_eq!(
+        tool_call_block(&app, "toolu_bash").status,
+        model::ToolCallStatus::Failed,
+        "a dead active session's backgrounded card is failed, not stranded",
+    );
+}
+
+#[tokio::test]
+async fn auth_required_active_teardown_fails_a_backgrounded_card() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+    seed_active_backgrounded_bash(&mut app);
+
+    let key = active_session_key(&app);
+    send_client_event(
+        &mut app,
+        SessionUpdate::AuthRequired {
+            key,
+            method_name: "claude.ai".to_owned(),
+            method_description: String::new(),
+        },
+    );
+
+    assert_eq!(
+        tool_call_block(&app, "toolu_bash").status,
+        model::ToolCallStatus::Failed,
+        "an auth-blocked active session's backgrounded card is failed, not stranded",
+    );
+}
+
+#[tokio::test]
+async fn connection_failed_background_teardown_fails_a_backgrounded_card() {
+    let mut app = test_app();
+    // Establish a different active session so the target is genuinely non-active.
+    send_msg(&mut app, assistant_message(vec![text_block("active")]));
+    let bg_key = SessionKey::from_str_for_test("bg-session");
+    app.sessions.insert(bg_key.clone(), bg_bucket_with_backgrounded_bash(&bg_key));
+
+    send_client_event(
+        &mut app,
+        SessionUpdate::ConnectionFailed {
+            key: bg_key.clone(),
+            message: "connection lost".to_owned(),
+            fatal: false,
+        },
+    );
+
+    let bg = app.sessions.get(&bg_key).expect("bg bucket");
+    assert_eq!(
+        bucket_card_status(bg, "toolu_bash"),
+        Some(model::ToolCallStatus::Failed),
+        "a dead background session's backgrounded card is failed, not stranded",
+    );
+}
+
+#[tokio::test]
+async fn auth_required_background_teardown_fails_a_backgrounded_card() {
+    let mut app = test_app();
+    send_msg(&mut app, assistant_message(vec![text_block("active")]));
+    let bg_key = SessionKey::from_str_for_test("bg-session");
+    app.sessions.insert(bg_key.clone(), bg_bucket_with_backgrounded_bash(&bg_key));
+
+    send_client_event(
+        &mut app,
+        SessionUpdate::AuthRequired {
+            key: bg_key.clone(),
+            method_name: "claude.ai".to_owned(),
+            method_description: String::new(),
+        },
+    );
+
+    let bg = app.sessions.get(&bg_key).expect("bg bucket");
+    assert_eq!(
+        bucket_card_status(bg, "toolu_bash"),
+        Some(model::ToolCallStatus::Failed),
+        "an auth-blocked background session's backgrounded card is failed, not stranded",
+    );
+}
+
+/// No-leak lock for the backgrounded-bash card on genuine completion. With
+/// the realistic sentinel flow the backgrounding tool_result flips the card
+/// `Completed` before `result`, so it is already terminal at turn-end and
+/// the post-turn `task_updated` mapping loss is harmless. After the real
+/// Result the card + roster survive; a terminal `task_updated` plus empty
+/// `background_tasks` then leave the card terminal and drain the roster +
+/// session map (the inputs the PROCESSES synthetic feed reads), so no
+/// backgrounded row can linger.
+#[tokio::test]
+async fn backgrounded_bash_card_and_roster_clear_on_genuine_completion() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_bash",
+            "Bash",
+            serde_json::json!({
+                "command": "sleep 60 && echo done",
+                "description": "Wait then print",
+                "run_in_background": true,
+            }),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-bash".to_owned(),
+            description: "Wait then print".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_bash".to_owned()),
+            task_type: Some("local_bash".to_owned()),
+        },
+    );
+    // Backgrounding sentinel flips the card terminal while the process runs.
+    send_msg(
+        &mut app,
+        user_message(vec![tool_result_block(
+            "toolu_bash",
+            serde_json::json!("Command running in background. Task ID: task-bash"),
+        )]),
+    );
+    assert_eq!(
+        tool_call_block(&app, "toolu_bash").status,
+        model::ToolCallStatus::Completed,
+        "the sentinel flips the card terminal before the turn ends",
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![serde_json::json!({
+                "task_id": "task-bash",
+                "task_type": "local_bash",
+                "description": "Wait then print",
+            })],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+
+    // Real turn-complete: card + roster survive across it.
+    send_msg(&mut app, result_success_message());
+    assert_eq!(tool_call_block(&app, "toolu_bash").status, model::ToolCallStatus::Completed);
+    assert!(
+        app.active_session()
+            .expect("session")
+            .background_tasks
+            .iter()
+            .any(|t| t.task_id == "task-bash"),
+        "roster still lists the task after the real Result",
+    );
+
+    // Genuine completion: terminal task_updated + empty background_tasks.
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskUpdated {
+            task_id: "task-bash".to_owned(),
+            patch: forge_primitives::messages::TaskUpdatePatch {
+                status: Some("killed".to_owned()),
+                end_time: None,
+            },
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: Vec::new(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+
+    // The card is terminal (settled by the pre-Result sentinel), and the
+    // roster + session map have drained - nothing feeds a lingering row.
+    assert_eq!(
+        tool_call_block(&app, "toolu_bash").status,
+        model::ToolCallStatus::Completed,
+        "card stays terminal on completion; got {:?}",
+        tool_call_block(&app, "toolu_bash").status,
+    );
+    let session = app.active_session().expect("session");
+    assert!(
+        session.background_tasks.is_empty(),
+        "roster drained; got {:?}",
+        session.background_tasks
+    );
+    assert!(
+        !session.session_task_tool_use_ids.contains_key("task-bash"),
+        "session map drained - the PROCESSES synthetic feed has no source",
     );
 }
 
