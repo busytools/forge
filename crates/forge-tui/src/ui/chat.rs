@@ -859,6 +859,7 @@ fn render_culled_messages(
             render_start,
             structural_skip,
             overscan: CULLING_OVERSCAN_ROWS,
+            cap_messages: true,
         },
         out,
     )
@@ -898,7 +899,13 @@ fn render_tail_anchored(
         base,
         width,
         viewport_height,
-        RenderWindow { first_visible: render_start, render_start, structural_skip, overscan: 0 },
+        RenderWindow {
+            first_visible: render_start,
+            render_start,
+            structural_skip,
+            overscan: 0,
+            cap_messages: false,
+        },
         out,
     )
 }
@@ -911,6 +918,10 @@ struct RenderWindow {
     render_start: usize,
     structural_skip: usize,
     overscan: usize,
+    /// Apply the hard message cap (manual path only); the tail path is already
+    /// bounded by its backward walk and must reach the last message even across
+    /// a 0-height run.
+    cap_messages: bool,
 }
 
 /// Emit messages from `window.render_start` into `out`, skipping
@@ -931,6 +942,7 @@ fn render_message_range(
         render_start,
         structural_skip: initial_structural_skip,
         overscan,
+        cap_messages,
     } = window;
     let msg_count = app.messages().len();
     let active_turn_assistant = app.active_turn_assistant_idx();
@@ -1006,7 +1018,8 @@ fn render_message_range(
             rendered_msgs += 1;
             last_rendered_idx = Some(i);
         }
-        if rendered_rows > rows_needed || (i - render_start) + 1 >= message_cap {
+        let cap_hit = cap_messages && (i - render_start) + 1 >= message_cap;
+        if rendered_rows > rows_needed || cap_hit {
             break;
         }
     }
@@ -1265,10 +1278,10 @@ fn render_lines_from_paragraph(
 #[cfg(test)]
 mod tests {
     use super::{
-        SCROLLBAR_MIN_THUMB_HEIGHT, build_scrolled_render_data, chat_content_area,
+        RenderWindow, SCROLLBAR_MIN_THUMB_HEIGHT, build_scrolled_render_data, chat_content_area,
         clamp_scroll_to_content, paragraph_scroll_offset, render_culled_messages,
-        render_lines_from_paragraph, render_scrolled, smooth_scrollbar_geometry, sync_chat_layout,
-        update_visual_heights,
+        render_lines_from_paragraph, render_message_range, render_scrolled, render_tail_anchored,
+        smooth_scrollbar_geometry, sync_chat_layout, update_visual_heights,
     };
     use crate::app::{
         App, AppStatus, ChatMessage, ChatViewport, InvalidationLevel, MessageBlock, MessageRole,
@@ -1304,6 +1317,12 @@ mod tests {
             vec![MessageBlock::Text(TextBlock::from_complete(text))],
             None,
         )
+    }
+
+    /// An empty non-active assistant placeholder. With no blocks, no spinner,
+    /// and no stop-hook chip it is chat-hidden and measures to a genuine 0 rows.
+    fn empty_placeholder_message() -> ChatMessage {
+        ChatMessage::new(MessageRole::Assistant, Vec::new(), None)
     }
 
     fn idle_spinner() -> SpinnerState {
@@ -1614,6 +1633,57 @@ mod tests {
         build_scrolled_render_data(app, &spinner, width, content_height, usize::from(height))
     }
 
+    /// Render EVERY message, then return the visible rows after scrolling the
+    /// paragraph to `scroll` - the ground-truth view an unculled render paints
+    /// at that offset. Used to prove the culled/tail windows are pixel-equal.
+    fn full_render_visible(
+        app: &mut App,
+        width: u16,
+        viewport_height: u16,
+        scroll: usize,
+    ) -> Vec<String> {
+        let spinner = idle_spinner();
+        let mut lines = Vec::new();
+        render_message_range(
+            app,
+            &spinner,
+            width,
+            usize::from(viewport_height),
+            RenderWindow {
+                first_visible: 0,
+                render_start: 0,
+                structural_skip: 0,
+                overscan: 1_000_000,
+                cap_messages: false,
+            },
+            &mut lines,
+        );
+        render_lines_from_paragraph(
+            &Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+            Rect::new(0, 0, width, viewport_height),
+            scroll,
+        )
+    }
+
+    /// Converge a session so every message height is exact.
+    fn converge(app: &mut App, width: u16, viewport_height: u16) {
+        let spinner = idle_spinner();
+        let area = Rect::new(0, 0, width, viewport_height);
+        for _ in 0..128 {
+            let content_height = sync_chat_layout(app, area, &spinner);
+            let _ = build_scrolled_render_data(
+                app,
+                &spinner,
+                width,
+                content_height,
+                usize::from(viewport_height),
+            );
+            if !app.active_viewport_mut().resize_remeasure_active() {
+                break;
+            }
+        }
+    }
+
     /// Core regression guard for the render-the-bottom-on-open fix. A
     /// resumed session opens pinned to the bottom (`auto_scroll`). Frame
     /// one must render the TAIL: `render_start` sits near the last
@@ -1653,6 +1723,202 @@ mod tests {
         );
     }
 
+    /// An empty non-active placeholder measures to a real 0 rows - the premise
+    /// the seed and tail-walk edge cases hinge on.
+    #[test]
+    fn empty_placeholder_measures_to_zero_rows() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        *app.active_messages_mut() =
+            vec![assistant_text_message("anchor"), empty_placeholder_message()];
+        let spinner = idle_spinner();
+        let _ = app.active_viewport_mut().on_frame(80, 8);
+        update_visual_heights(&mut app, &spinner, 80, 8);
+        assert_eq!(app.active_viewport_mut().message_height(1), 0);
+    }
+
+    /// Bug guard (coupled with the seed fix): a run of genuinely-0-height
+    /// messages in the tail widens the backward-walk window past the old tail
+    /// `message_cap`, which would truncate the forward render before the last
+    /// message and drop the newest visible content. The tail path must render
+    /// through to the last message. Fails on the capped tail path.
+    #[test]
+    fn tail_render_reaches_last_message_across_a_zero_height_run() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        let mut history: Vec<ChatMessage> =
+            (0..10).map(|i| assistant_text_message(&format!("visible {i}\nsecond line"))).collect();
+        history.extend((0..10).map(|_| empty_placeholder_message()));
+        history.push(assistant_text_message("newest visible\nsecond line"));
+        *app.active_messages_mut() = history;
+        let msg_count = app.messages().len();
+
+        let spinner = idle_spinner();
+        let area = Rect::new(0, 0, 80, 8);
+        for _ in 0..64 {
+            let content_height = sync_chat_layout(&mut app, area, &spinner);
+            let _ = build_scrolled_render_data(&mut app, &spinner, 80, content_height, 8);
+            if !app.active_viewport_mut().resize_remeasure_active() {
+                break;
+            }
+        }
+        assert_eq!(
+            app.active_viewport_mut().message_height(15),
+            0,
+            "the run must measure to a real 0, not an estimate",
+        );
+
+        app.active_viewport_mut().auto_scroll = true;
+        let content_height = sync_chat_layout(&mut app, area, &spinner);
+        let render_data = build_scrolled_render_data(&mut app, &spinner, 80, content_height, 8);
+        assert_eq!(
+            render_data.stats.last_rendered_idx,
+            Some(msg_count - 1),
+            "the tail render must reach the last message even when a 0-height run widens the window",
+        );
+    }
+
+    /// Integration guard for the seed fix: opening a fresh session whose tail
+    /// window holds genuinely-0-height messages must not overwrite their real 0
+    /// height with the estimate (which would inflate the total and desync
+    /// measure vs paint).
+    #[test]
+    fn bootstrap_does_not_seed_over_zero_height_tail_messages() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        let mut history: Vec<ChatMessage> =
+            (0..40).map(|i| assistant_text_message(&format!("visible {i}\nsecond line"))).collect();
+        history.extend((0..4).map(|_| empty_placeholder_message()));
+        *app.active_messages_mut() = history;
+        let zero_idx = app.messages().len() - 1;
+
+        let spinner = idle_spinner();
+        let area = Rect::new(0, 0, 80, 8);
+        let _ = sync_chat_layout(&mut app, area, &spinner);
+
+        assert!(
+            app.active_viewport_mut().message_height_is_current(zero_idx),
+            "a 0-height tail message is measured on the bootstrap frame",
+        );
+        assert_eq!(
+            app.active_viewport_mut().message_height(zero_idx),
+            0,
+            "the seed must leave a genuinely-measured 0-height message untouched",
+        );
+    }
+
+    /// Steady state: on a fully-measured session pinned to the bottom, the
+    /// tail-anchored render must be pixel-identical to a full render scrolled
+    /// to max_scroll. Ground-truths the tail path's `structural_skip` math.
+    #[test]
+    fn tail_render_matches_full_render_at_bottom_when_measured() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        let history: Vec<ChatMessage> = (0..40)
+            .map(|i| assistant_text_message(&format!("message {i}\nwith a second line of body")))
+            .collect();
+        *app.active_messages_mut() = history;
+
+        let (width, vh) = (80u16, 8u16);
+        converge(&mut app, width, vh);
+        let max_scroll =
+            app.active_viewport_mut().total_message_height().saturating_sub(usize::from(vh));
+        let reference = full_render_visible(&mut app, width, vh, max_scroll);
+
+        let spinner = idle_spinner();
+        let mut tail_lines = Vec::new();
+        let stats =
+            render_tail_anchored(&mut app, &spinner, width, usize::from(vh), &mut tail_lines);
+        let tail_visible = render_lines_from_paragraph(
+            &Paragraph::new(Text::from(tail_lines)).wrap(Wrap { trim: false }),
+            Rect::new(0, 0, width, vh),
+            stats.local_scroll,
+        );
+        assert_eq!(
+            tail_visible, reference,
+            "tail-anchored bottom view must match a full render at max_scroll",
+        );
+    }
+
+    /// A single message taller than the viewport: the tail path shows its
+    /// bottom slice, matching a full render scrolled to max_scroll.
+    #[test]
+    fn tail_render_shows_bottom_slice_of_a_tall_single_message() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        let body = (0..80).map(|i| format!("line {i:02}")).collect::<Vec<_>>().join("\n");
+        *app.active_messages_mut() = vec![assistant_text_message(&body)];
+
+        let (width, vh) = (40u16, 8u16);
+        converge(&mut app, width, vh);
+        let max_scroll =
+            app.active_viewport_mut().total_message_height().saturating_sub(usize::from(vh));
+        let reference = full_render_visible(&mut app, width, vh, max_scroll);
+
+        let spinner = idle_spinner();
+        let mut tail_lines = Vec::new();
+        let stats =
+            render_tail_anchored(&mut app, &spinner, width, usize::from(vh), &mut tail_lines);
+        let tail_visible = render_lines_from_paragraph(
+            &Paragraph::new(Text::from(tail_lines)).wrap(Wrap { trim: false }),
+            Rect::new(0, 0, width, vh),
+            stats.local_scroll,
+        );
+        assert_eq!(stats.last_rendered_idx, Some(0), "the single message is the tail");
+        assert_eq!(
+            tail_visible, reference,
+            "tall single-message tail view must match a full render at max_scroll",
+        );
+    }
+
+    /// The manual (not-pinned) path culled to the middle of a large session
+    /// must be pixel-identical to a full render at the same offset, and it must
+    /// cull (start past the top, not render the whole history).
+    #[test]
+    fn manual_scroll_middle_matches_full_render() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        let history: Vec<ChatMessage> = (0..60)
+            .map(|i| assistant_text_message(&format!("message {i}\nwith a second line of body")))
+            .collect();
+        *app.active_messages_mut() = history;
+        let msg_count = app.messages().len();
+
+        let (width, vh) = (80u16, 8u16);
+        converge(&mut app, width, vh);
+        let mid_scroll = app.active_viewport_mut().total_message_height() / 2;
+        {
+            let vp = app.active_viewport_mut();
+            vp.auto_scroll = false;
+            vp.scroll_offset = mid_scroll;
+            vp.scroll_target = mid_scroll;
+            vp.scroll_pos = mid_scroll as f32;
+        }
+        let reference = full_render_visible(&mut app, width, vh, mid_scroll);
+
+        let spinner = idle_spinner();
+        let mut culled_lines = Vec::new();
+        let stats = render_culled_messages(
+            &mut app,
+            &spinner,
+            width,
+            mid_scroll,
+            usize::from(vh),
+            &mut culled_lines,
+        );
+        let culled_visible = render_lines_from_paragraph(
+            &Paragraph::new(Text::from(culled_lines)).wrap(Wrap { trim: false }),
+            Rect::new(0, 0, width, vh),
+            stats.local_scroll,
+        );
+        assert_eq!(
+            culled_visible, reference,
+            "manual mid-scroll view must match a full render at that offset",
+        );
+        assert!(stats.render_start > 0, "manual cull must skip the messages above the viewport");
+        assert!(stats.rendered_msgs < msg_count, "manual cull must not render the whole history");
+    }
+
     /// The render stays bounded on EVERY frame while off-screen heights
     /// converge, not just frame one - the tail-anchored path renders a
     /// viewport-worth regardless of how much of the history is still
@@ -1667,14 +1933,15 @@ mod tests {
         *app.active_messages_mut() = history;
         let msg_count = app.messages().len();
 
+        let viewport_height = 8usize;
         let spinner = idle_spinner();
         let area = Rect::new(0, 0, 80, 8);
         for _ in 0..64 {
             let content_height = sync_chat_layout(&mut app, area, &spinner);
             let render_data = build_scrolled_render_data(&mut app, &spinner, 80, content_height, 8);
             assert!(
-                render_data.stats.rendered_msgs < msg_count / 2,
-                "convergence frames must render a bounded window; rendered_msgs={} of {msg_count}",
+                render_data.stats.rendered_msgs <= viewport_height + 4,
+                "convergence frames must render ~a viewport-worth; rendered_msgs={} of {msg_count}",
                 render_data.stats.rendered_msgs,
             );
             if !app.active_viewport_mut().resize_remeasure_active() {

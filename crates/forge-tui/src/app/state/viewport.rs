@@ -420,11 +420,9 @@ impl ChatViewport {
         }
     }
 
-    /// Seed a height estimate into every never-measured message so the
-    /// prefix sums and total height are approximately right on a fresh open,
-    /// before the background loop fills exact heights. The estimate is the
-    /// running average of the heights measured so far (the tail viewport-worth
-    /// on a bootstrap open); seeded messages stay stale and re-measure to exact.
+    /// Seed a running-average estimate into every never-measured message so the
+    /// prefix sums are approximately right on a fresh open; seeded slots stay
+    /// stale and re-measure to exact via the background loop.
     pub fn seed_unmeasured_height_estimates(&mut self) {
         let (sum, count) = self.message_heights.iter().enumerate().fold(
             (0usize, 0usize),
@@ -438,7 +436,11 @@ impl ChatViewport {
             sum.checked_div(count).map_or(DEFAULT_MESSAGE_HEIGHT_ESTIMATE, |avg| avg.max(1));
         let mut earliest = None;
         for idx in 0..self.message_heights.len() {
-            if self.message_heights[idx] == 0 {
+            // Never-measured means 0 AND stale: a chat-hidden message measures to
+            // a real 0 with its stale bit cleared, and seeding it would corrupt it.
+            let never_measured = self.message_heights[idx] == 0
+                && self.stale_message_heights.get(idx).copied().unwrap_or(false);
+            if never_measured {
                 self.message_heights[idx] = estimate;
                 earliest.get_or_insert(idx);
             }
@@ -941,5 +943,63 @@ impl ChatViewport {
 impl Default for ChatViewport {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ChatViewport, DEFAULT_MESSAGE_HEIGHT_ESTIMATE};
+
+    fn viewport_with(width: u16, heights: &[usize], stale: &[bool]) -> ChatViewport {
+        let mut vp = ChatViewport::new();
+        vp.width = width;
+        vp.message_heights = heights.to_vec();
+        vp.stale_message_heights = stale.to_vec();
+        vp.measured_message_widths = stale.iter().map(|&s| if s { 0 } else { width }).collect();
+        vp
+    }
+
+    #[test]
+    fn seed_leaves_a_genuinely_measured_zero_height_message_untouched() {
+        // idx 1 is a chat-hidden message (completed subagent child / suppressed
+        // tool): measured to a real 0 with its stale bit already cleared. The
+        // seed must not mistake it for a never-measured slot and overwrite it.
+        let mut vp = viewport_with(80, &[4, 0, 6], &[false, false, false]);
+        vp.seed_unmeasured_height_estimates();
+        assert_eq!(vp.message_heights, vec![4, 0, 6], "measured-0 must not be overwritten");
+    }
+
+    #[test]
+    fn seed_fills_never_measured_slots_with_the_running_average() {
+        let mut vp = viewport_with(80, &[4, 0, 6, 0], &[false, true, false, true]);
+        vp.seed_unmeasured_height_estimates();
+        assert_eq!(vp.message_heights, vec![4, 5, 6, 5], "never-measured slots get the average");
+    }
+
+    #[test]
+    fn seed_defaults_when_nothing_measured_yet() {
+        let mut vp = viewport_with(80, &[0, 0, 0], &[true, true, true]);
+        vp.seed_unmeasured_height_estimates();
+        assert_eq!(vp.message_heights, vec![DEFAULT_MESSAGE_HEIGHT_ESTIMATE; 3]);
+    }
+
+    #[test]
+    fn seed_is_a_noop_when_all_measured() {
+        let mut vp = viewport_with(80, &[3, 5, 2], &[false, false, false]);
+        vp.seed_unmeasured_height_estimates();
+        assert_eq!(vp.message_heights, vec![3, 5, 2]);
+    }
+
+    #[test]
+    fn seed_excludes_prior_estimates_from_the_average() {
+        // idx 1 is a prior estimate (height > 0 but still stale) - excluded from
+        // the average, which comes only from the measured 4 and 8, and left as-is.
+        let mut vp = viewport_with(80, &[4, 99, 8, 0], &[false, true, false, true]);
+        vp.seed_unmeasured_height_estimates();
+        assert_eq!(
+            vp.message_heights[3], 6,
+            "average of measured {{4, 8}} excludes the 99 estimate"
+        );
+        assert_eq!(vp.message_heights[1], 99, "prior estimate is left untouched, not re-seeded");
     }
 }
