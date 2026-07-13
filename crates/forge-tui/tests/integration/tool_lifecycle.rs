@@ -1,5 +1,5 @@
 // =====
-// TESTS: 18
+// TESTS: 21
 // =====
 //
 // Tool call lifecycle integration tests.
@@ -7,7 +7,11 @@
 // over the wire-message dispatch path.
 
 use forge_tui::agent::model;
-use forge_tui::app::{App, AppStatus, MessageBlock, ToolCallInfo, ToolCallScope};
+use forge_tui::app::session::UiSession;
+use forge_tui::app::{
+    App, AppStatus, BackgroundTask, BlockCache, ChatMessage, MessageBlock, MessageRole,
+    TerminalSnapshotMode, ToolCallInfo, ToolCallScope,
+};
 use pretty_assertions::assert_eq;
 
 use crate::helpers::{active_session_key, send_client_event, test_app};
@@ -15,7 +19,7 @@ use crate::message_helpers::{
     assistant_message, assistant_message_with_parent, result_success_message, send_msg, text_block,
     tool_result_block, tool_result_error_block, tool_use_block, user_message,
 };
-use forge_workspace::SessionUpdate;
+use forge_workspace::{SessionKey, SessionUpdate};
 
 fn tool_call_block<'a>(app: &'a App, id: &str) -> &'a ToolCallInfo {
     let (message_index, block_index) = app.lookup_tool_call(id).expect("missing tool index");
@@ -895,18 +899,44 @@ async fn turn_end_does_not_force_complete_a_backgrounded_bash_card() {
     );
 }
 
-/// Teardown is a hard terminal: a session that dies (connection failure,
-/// auth-required) must NOT keep a backgrounded card exempt from the sweep -
-/// the task can't complete on a dead session, so its card belongs at Failed,
-/// not stranded InProgress. The roster is cleared before the sweep at each
-/// teardown site; without that ordering the exemption strands the card.
-#[tokio::test]
-async fn active_teardown_fails_a_backgrounded_card_not_stranded_in_progress() {
-    let mut app = test_app();
-    app.status = AppStatus::Thinking;
+/// An InProgress backgrounded Bash card (no sentinel), for teardown tests.
+fn backgrounded_bash_card(id: &str) -> ToolCallInfo {
+    ToolCallInfo {
+        id: id.to_owned(),
+        title: format!("tool {id}"),
+        sdk_tool_name: "Bash".to_owned(),
+        raw_input: None,
+        raw_input_bytes: 0,
+        output_metadata: None,
+        task_metadata: None,
+        status: model::ToolCallStatus::InProgress,
+        content: Vec::new(),
+        hidden: false,
+        terminal_id: None,
+        terminal_command: None,
+        terminal_output: None,
+        terminal_output_len: 0,
+        terminal_bytes_seen: 0,
+        terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+        monitor_output_tail: Vec::default(),
+        render_epoch: 0,
+        layout_epoch: 0,
+        last_measured_width: 0,
+        last_measured_height: 0,
+        last_measured_layout_epoch: 0,
+        last_measured_layout_generation: 0,
+        cache: BlockCache::default(),
+        collapsed_override: None,
+        last_measured_y_in_msg: 0,
+        answered_questions: Vec::new(),
+    }
+}
 
+/// Seed the ACTIVE session over the wire with a mapped, still-open
+/// backgrounded bash (tool_use + task_started + registry).
+fn seed_active_backgrounded_bash(app: &mut App) {
     send_msg(
-        &mut app,
+        app,
         assistant_message(vec![tool_use_block(
             "toolu_bash",
             "Bash",
@@ -918,7 +948,7 @@ async fn active_teardown_fails_a_backgrounded_card_not_stranded_in_progress() {
         )]),
     );
     send_msg(
-        &mut app,
+        app,
         forge_primitives::Message::TaskStarted {
             task_id: "task-bash".to_owned(),
             description: "Wait then print".to_owned(),
@@ -929,7 +959,7 @@ async fn active_teardown_fails_a_backgrounded_card_not_stranded_in_progress() {
         },
     );
     send_msg(
-        &mut app,
+        app,
         forge_primitives::Message::BackgroundTasksChanged {
             tasks: vec![serde_json::json!({
                 "task_id": "task-bash",
@@ -940,13 +970,50 @@ async fn active_teardown_fails_a_backgrounded_card_not_stranded_in_progress() {
             session_id: "test-session".to_owned(),
         },
     );
+}
+
+/// A non-active bucket carrying a mapped, still-open backgrounded bash card.
+fn bg_bucket_with_backgrounded_bash(key: &SessionKey) -> UiSession {
+    let mut session = UiSession::new(key.clone());
+    session.messages.push(ChatMessage::new(
+        MessageRole::Assistant,
+        vec![MessageBlock::ToolCall(Box::new(backgrounded_bash_card("toolu_bash")))],
+        None,
+    ));
+    session.session_task_tool_use_ids.insert("task-bash".to_owned(), "toolu_bash".to_owned());
+    session.background_tasks.push(BackgroundTask {
+        task_id: "task-bash".to_owned(),
+        task_type: "local_bash".to_owned(),
+        description: "Wait then print".to_owned(),
+    });
+    session
+}
+
+fn bucket_card_status(session: &UiSession, id: &str) -> Option<model::ToolCallStatus> {
+    session.messages.iter().flat_map(|m| &m.blocks).find_map(|b| match b {
+        MessageBlock::ToolCall(tc) if tc.id == id => Some(tc.status),
+        _ => None,
+    })
+}
+
+// Teardown is a hard terminal: a session that dies must NOT keep a
+// backgrounded card exempt from the sweep - the task can't complete on a dead
+// session, so its card belongs at Failed, not stranded InProgress. The roster
+// is cleared before the sweep at all four teardown sites (connection-failed +
+// auth-required, active + background); each gets its own guard so a future
+// revert of any one reorder fails loudly.
+
+#[tokio::test]
+async fn connection_failed_active_teardown_fails_a_backgrounded_card() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+    seed_active_backgrounded_bash(&mut app);
     assert_eq!(
         tool_call_block(&app, "toolu_bash").status,
         model::ToolCallStatus::InProgress,
         "precondition: the backgrounded card is open before the session dies",
     );
 
-    // The session's connection dies mid-flight (non-rate-limited -> teardown).
     let key = active_session_key(&app);
     send_client_event(
         &mut app,
@@ -960,7 +1027,79 @@ async fn active_teardown_fails_a_backgrounded_card_not_stranded_in_progress() {
     assert_eq!(
         tool_call_block(&app, "toolu_bash").status,
         model::ToolCallStatus::Failed,
-        "a dead session's backgrounded card is failed, not stranded InProgress",
+        "a dead active session's backgrounded card is failed, not stranded",
+    );
+}
+
+#[tokio::test]
+async fn auth_required_active_teardown_fails_a_backgrounded_card() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+    seed_active_backgrounded_bash(&mut app);
+
+    let key = active_session_key(&app);
+    send_client_event(
+        &mut app,
+        SessionUpdate::AuthRequired {
+            key,
+            method_name: "claude.ai".to_owned(),
+            method_description: String::new(),
+        },
+    );
+
+    assert_eq!(
+        tool_call_block(&app, "toolu_bash").status,
+        model::ToolCallStatus::Failed,
+        "an auth-blocked active session's backgrounded card is failed, not stranded",
+    );
+}
+
+#[tokio::test]
+async fn connection_failed_background_teardown_fails_a_backgrounded_card() {
+    let mut app = test_app();
+    // Establish a different active session so the target is genuinely non-active.
+    send_msg(&mut app, assistant_message(vec![text_block("active")]));
+    let bg_key = SessionKey::from_str_for_test("bg-session");
+    app.sessions.insert(bg_key.clone(), bg_bucket_with_backgrounded_bash(&bg_key));
+
+    send_client_event(
+        &mut app,
+        SessionUpdate::ConnectionFailed {
+            key: bg_key.clone(),
+            message: "connection lost".to_owned(),
+            fatal: false,
+        },
+    );
+
+    let bg = app.sessions.get(&bg_key).expect("bg bucket");
+    assert_eq!(
+        bucket_card_status(bg, "toolu_bash"),
+        Some(model::ToolCallStatus::Failed),
+        "a dead background session's backgrounded card is failed, not stranded",
+    );
+}
+
+#[tokio::test]
+async fn auth_required_background_teardown_fails_a_backgrounded_card() {
+    let mut app = test_app();
+    send_msg(&mut app, assistant_message(vec![text_block("active")]));
+    let bg_key = SessionKey::from_str_for_test("bg-session");
+    app.sessions.insert(bg_key.clone(), bg_bucket_with_backgrounded_bash(&bg_key));
+
+    send_client_event(
+        &mut app,
+        SessionUpdate::AuthRequired {
+            key: bg_key.clone(),
+            method_name: "claude.ai".to_owned(),
+            method_description: String::new(),
+        },
+    );
+
+    let bg = app.sessions.get(&bg_key).expect("bg bucket");
+    assert_eq!(
+        bucket_card_status(bg, "toolu_bash"),
+        Some(model::ToolCallStatus::Failed),
+        "an auth-blocked background session's backgrounded card is failed, not stranded",
     );
 }
 
