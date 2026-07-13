@@ -1,5 +1,5 @@
 // =====
-// TESTS: 16
+// TESTS: 18
 // =====
 //
 // Tool call lifecycle integration tests.
@@ -961,6 +961,122 @@ async fn active_teardown_fails_a_backgrounded_card_not_stranded_in_progress() {
         tool_call_block(&app, "toolu_bash").status,
         model::ToolCallStatus::Failed,
         "a dead session's backgrounded card is failed, not stranded InProgress",
+    );
+}
+
+/// No-leak lock for the backgrounded-bash card on genuine completion. With
+/// the realistic sentinel flow the backgrounding tool_result flips the card
+/// `Completed` before `result`, so it is already terminal at turn-end and
+/// the post-turn `task_updated` mapping loss is harmless. After the real
+/// Result the card + roster survive; a terminal `task_updated` plus empty
+/// `background_tasks` then leave the card terminal and drain the roster +
+/// session map (the inputs the PROCESSES synthetic feed reads), so no
+/// backgrounded row can linger.
+#[tokio::test]
+async fn backgrounded_bash_card_and_roster_clear_on_genuine_completion() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_bash",
+            "Bash",
+            serde_json::json!({
+                "command": "sleep 60 && echo done",
+                "description": "Wait then print",
+                "run_in_background": true,
+            }),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-bash".to_owned(),
+            description: "Wait then print".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_bash".to_owned()),
+            task_type: Some("local_bash".to_owned()),
+        },
+    );
+    // Backgrounding sentinel flips the card terminal while the process runs.
+    send_msg(
+        &mut app,
+        user_message(vec![tool_result_block(
+            "toolu_bash",
+            serde_json::json!("Command running in background. Task ID: task-bash"),
+        )]),
+    );
+    assert_eq!(
+        tool_call_block(&app, "toolu_bash").status,
+        model::ToolCallStatus::Completed,
+        "the sentinel flips the card terminal before the turn ends",
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![serde_json::json!({
+                "task_id": "task-bash",
+                "task_type": "local_bash",
+                "description": "Wait then print",
+            })],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+
+    // Real turn-complete: card + roster survive across it.
+    send_msg(&mut app, result_success_message());
+    assert_eq!(tool_call_block(&app, "toolu_bash").status, model::ToolCallStatus::Completed);
+    assert!(
+        app.active_session()
+            .expect("session")
+            .background_tasks
+            .iter()
+            .any(|t| t.task_id == "task-bash"),
+        "roster still lists the task after the real Result",
+    );
+
+    // Genuine completion: terminal task_updated + empty background_tasks.
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskUpdated {
+            task_id: "task-bash".to_owned(),
+            patch: forge_primitives::messages::TaskUpdatePatch {
+                status: Some("killed".to_owned()),
+                end_time: None,
+            },
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: Vec::new(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+
+    // The card is terminal (settled by the pre-Result sentinel), and the
+    // roster + session map have drained - nothing feeds a lingering row.
+    assert_eq!(
+        tool_call_block(&app, "toolu_bash").status,
+        model::ToolCallStatus::Completed,
+        "card stays terminal on completion; got {:?}",
+        tool_call_block(&app, "toolu_bash").status,
+    );
+    let session = app.active_session().expect("session");
+    assert!(
+        session.background_tasks.is_empty(),
+        "roster drained; got {:?}",
+        session.background_tasks
+    );
+    assert!(
+        !session.session_task_tool_use_ids.contains_key("task-bash"),
+        "session map drained - the PROCESSES synthetic feed has no source",
     );
 }
 
