@@ -170,17 +170,21 @@ fn update_visual_heights(
     // re-measure (the lazy contract this PR enforces). The plan's
     // anchor still drives the resize loop's outward growth (below).
     //
-    // Bootstrap degenerate case: with all heights == 0,
-    // `current_visible_window` returns `(N-1, N-1)` because no
-    // prefix-sum entry strictly exceeds scroll = 0. Fall back to
-    // `(0, min(viewport_height - 1, msg_count - 1))` so the visible
-    // loop measures roughly a viewport-worth of messages from the
-    // TOP, including idx 0. The off-screen tail stays stale and is
-    // converged by the budgeted resize loop over subsequent frames.
+    // Bootstrap degenerate case: with all heights == 0, prefix sums can't
+    // locate the viewport. A resumed session opens pinned to the bottom
+    // (`auto_scroll`), so anchor the frame-1 measure window at the TAIL - the
+    // last viewport-worth of messages - and let the budgeted background loop
+    // converge the rest upward over later frames. Only fall back to the TOP
+    // when the user is not pinned to the bottom. Stays bounded to one
+    // viewport-worth either way.
     let bootstrap = app.viewport().total_message_height() == 0 && msg_count > 0;
     let (visible_start, visible_end) = if bootstrap {
         let last = msg_count.saturating_sub(1);
-        (0_usize, viewport_height.saturating_sub(1).min(last))
+        if app.viewport().auto_scroll {
+            (msg_count.saturating_sub(viewport_height.max(1)), last)
+        } else {
+            (0_usize, viewport_height.saturating_sub(1).min(last))
+        }
     } else {
         app.active_viewport_mut()
             .current_visible_window(viewport_height)
@@ -300,6 +304,13 @@ fn update_visual_heights(
             &mut stats,
         );
         budget.consume(stats.measured_lines.saturating_sub(measured_lines_before));
+    }
+
+    // Fresh open: seed a running-average estimate into the still-unmeasured
+    // off-screen messages so the scroll geometry is approximately right on
+    // frame 1 and converges to exact as the background loop measures them.
+    if bootstrap {
+        app.active_viewport_mut().seed_unmeasured_height_estimates();
     }
 
     app.active_viewport_mut().finalize_remeasure_if_clean();
@@ -578,12 +589,17 @@ fn build_scrolled_render_data(
     crate::perf::mark_with("chat::scroll_offset", "rows", scroll_offset);
 
     let mut all_lines = Vec::new();
+    let auto_scroll = app.viewport().auto_scroll;
     let stats = {
         let _t = app
             .perf
             .as_ref()
             .map(|p| p.start_with("chat::render_msgs", "msgs", app.messages().len()));
-        render_culled_messages(app, base, width, scroll_offset, viewport_height, &mut all_lines)
+        if auto_scroll {
+            render_tail_anchored(app, base, width, viewport_height, &mut all_lines)
+        } else {
+            render_culled_messages(app, base, width, scroll_offset, viewport_height, &mut all_lines)
+        }
     };
     crate::perf::mark_with("chat::render_scrolled_lines", "lines", all_lines.len());
     crate::perf::mark_with("chat::render_scrolled_msgs", "msgs", stats.rendered_msgs);
@@ -817,8 +833,9 @@ fn render_scrollbar_overlay(
         }
     }
 }
-/// Render only the visible message range into out (viewport culling).
-/// Returns the local scroll offset to pass to `Paragraph::scroll()`.
+/// Render the visible message range into `out` for the manual-scroll path
+/// (viewport culling). Returns the local scroll offset to pass to
+/// `Paragraph::scroll()`.
 fn render_culled_messages(
     app: &mut App,
     base: &SpinnerState,
@@ -827,26 +844,105 @@ fn render_culled_messages(
     viewport_height: usize,
     out: &mut Vec<Line<'static>>,
 ) -> CulledRenderStats {
-    let msg_count = app.messages().len();
-    let active_turn_assistant = app.active_turn_assistant_idx();
-
     // O(log n) binary search via prefix sums to find first visible message.
     let first_visible = app.active_viewport_mut().find_first_visible(scroll);
-
-    // Apply margin: render a few extra messages above/below for safety
     let render_start = first_visible.saturating_sub(CULLING_MARGIN);
-
-    // O(1) cumulative height lookup via prefix sums
     let height_before_start = app.active_viewport_mut().cumulative_height_before(render_start);
+    let structural_skip = scroll.saturating_sub(height_before_start);
+    render_message_range(
+        app,
+        base,
+        width,
+        viewport_height,
+        RenderWindow {
+            first_visible,
+            render_start,
+            structural_skip,
+            overscan: CULLING_OVERSCAN_ROWS,
+        },
+        out,
+    )
+}
 
-    // Render messages from render_start onward, stopping once the exact wrapped
-    // height in the output buffer covers the viewport plus a small overscan.
-    let mut structural_skip = scroll.saturating_sub(height_before_start);
-    let rows_needed = structural_skip + viewport_height + CULLING_OVERSCAN_ROWS;
+/// Render the bottom viewport-worth by walking BACKWARD from the last message
+/// until a viewport of rows is covered, then rendering forward from there. Used
+/// while pinned to the bottom (`auto_scroll`) so the visible content is correct
+/// on the very first frame without depending on `total_message_height`, which
+/// under-counts while off-screen heights are still converging.
+fn render_tail_anchored(
+    app: &mut App,
+    base: &SpinnerState,
+    width: u16,
+    viewport_height: usize,
+    out: &mut Vec<Line<'static>>,
+) -> CulledRenderStats {
+    let msg_count = app.messages().len();
+    if msg_count == 0 {
+        return CulledRenderStats::default();
+    }
+    let (render_start, structural_skip) = {
+        let vp = app.viewport();
+        let mut covered = 0usize;
+        let mut start = msg_count - 1;
+        loop {
+            covered = covered.saturating_add(vp.message_height(start));
+            if covered >= viewport_height || start == 0 {
+                break;
+            }
+            start -= 1;
+        }
+        (start, covered.saturating_sub(viewport_height))
+    };
+    render_message_range(
+        app,
+        base,
+        width,
+        viewport_height,
+        RenderWindow { first_visible: render_start, render_start, structural_skip, overscan: 0 },
+        out,
+    )
+}
+
+/// The message window a render pass draws: where to start, how many rows to skip
+/// at the top of the first message, and the overscan margin below the viewport.
+#[derive(Clone, Copy)]
+struct RenderWindow {
+    first_visible: usize,
+    render_start: usize,
+    structural_skip: usize,
+    overscan: usize,
+}
+
+/// Emit messages from `window.render_start` into `out`, skipping
+/// `window.structural_skip` rows at the top of the first message, and stop once
+/// the rendered block covers the viewport plus `window.overscan` rows. A hard
+/// message cap backs the row budget so a run of unmeasured / mis-estimated cached
+/// heights during convergence can't walk the loop all the way to the last message.
+fn render_message_range(
+    app: &mut App,
+    base: &SpinnerState,
+    width: u16,
+    viewport_height: usize,
+    window: RenderWindow,
+    out: &mut Vec<Line<'static>>,
+) -> CulledRenderStats {
+    let RenderWindow {
+        first_visible,
+        render_start,
+        structural_skip: initial_structural_skip,
+        overscan,
+    } = window;
+    let msg_count = app.messages().len();
+    let active_turn_assistant = app.active_turn_assistant_idx();
+    let rows_needed = initial_structural_skip + viewport_height + overscan;
+    // Even at one row per message this many messages cover `rows_needed`, so
+    // walking past it means the cached-height sum is lying (0 or a bad estimate).
+    let message_cap = viewport_height + overscan + 1;
     crate::perf::mark_with("chat::cull_lines_needed", "lines", rows_needed);
+    let mut structural_skip = initial_structural_skip;
+    let mut rendered_rows = 0usize;
     let mut rendered_msgs = 0usize;
     let mut local_scroll = 0usize;
-    let mut rendered_rows = 0usize;
     let mut last_rendered_idx = None;
     // Snapshot loop-invariant fields once - hoisting avoids N
     // String allocations on remeasure-heavy frames.
@@ -910,7 +1006,7 @@ fn render_culled_messages(
             rendered_msgs += 1;
             last_rendered_idx = Some(i);
         }
-        if rendered_rows > rows_needed {
+        if rendered_rows > rows_needed || (i - render_start) + 1 >= message_cap {
             break;
         }
     }
@@ -1169,9 +1265,10 @@ fn render_lines_from_paragraph(
 #[cfg(test)]
 mod tests {
     use super::{
-        SCROLLBAR_MIN_THUMB_HEIGHT, chat_content_area, clamp_scroll_to_content,
-        paragraph_scroll_offset, render_culled_messages, render_lines_from_paragraph,
-        render_scrolled, smooth_scrollbar_geometry, update_visual_heights,
+        SCROLLBAR_MIN_THUMB_HEIGHT, build_scrolled_render_data, chat_content_area,
+        clamp_scroll_to_content, paragraph_scroll_offset, render_culled_messages,
+        render_lines_from_paragraph, render_scrolled, smooth_scrollbar_geometry, sync_chat_layout,
+        update_visual_heights,
     };
     use crate::app::{
         App, AppStatus, ChatMessage, ChatViewport, InvalidationLevel, MessageBlock, MessageRole,
@@ -1505,6 +1602,193 @@ mod tests {
             "bootstrap must be visible-first; expected fewer than half the history measured on frame 1, got {} of 60",
             stats.measured_msgs,
         );
+    }
+
+    /// Drive one real frame (layout + build render data) for a resumed
+    /// session pinned to the bottom, returning the render stats plus the
+    /// scroll geometry the frame settled on.
+    fn first_frame_render(app: &mut App, width: u16, height: u16) -> super::ScrolledRenderData {
+        let spinner = idle_spinner();
+        let area = Rect::new(0, 0, width, height);
+        let content_height = sync_chat_layout(app, area, &spinner);
+        build_scrolled_render_data(app, &spinner, width, content_height, usize::from(height))
+    }
+
+    /// Core regression guard for the render-the-bottom-on-open fix. A
+    /// resumed session opens pinned to the bottom (`auto_scroll`). Frame
+    /// one must render the TAIL: `render_start` sits near the last
+    /// message and the render is bounded to roughly a viewport-worth,
+    /// never a full top-to-tail walk. On the old top-anchored path
+    /// `render_start` lands near 0 and `render_message` fires on every
+    /// message between the top and the tail.
+    #[test]
+    fn open_at_bottom_renders_tail_bounded_on_first_frame() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        let history: Vec<ChatMessage> = (0..200)
+            .map(|i| assistant_text_message(&format!("msg {i}\nsecond line for height")))
+            .collect();
+        *app.active_messages_mut() = history;
+        assert!(app.viewport().auto_scroll, "resumed session opens pinned to the bottom");
+
+        let viewport_height = 8usize;
+        let render_data = first_frame_render(&mut app, 80, 8);
+        let stats = render_data.stats;
+        let msg_count = app.messages().len();
+
+        assert_eq!(
+            stats.last_rendered_idx,
+            Some(msg_count - 1),
+            "the tail message must be part of the rendered window",
+        );
+        assert!(
+            stats.render_start >= msg_count - viewport_height - 4,
+            "frame one must anchor the render near the tail; render_start={} of {msg_count}",
+            stats.render_start,
+        );
+        assert!(
+            stats.rendered_msgs <= viewport_height + 8,
+            "frame one must render a bounded tail window, not a full walk; rendered_msgs={} of {msg_count}",
+            stats.rendered_msgs,
+        );
+    }
+
+    /// The render stays bounded on EVERY frame while off-screen heights
+    /// converge, not just frame one - the tail-anchored path renders a
+    /// viewport-worth regardless of how much of the history is still
+    /// unmeasured.
+    #[test]
+    fn render_stays_bounded_across_convergence_frames() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        let history: Vec<ChatMessage> = (0..200)
+            .map(|i| assistant_text_message(&format!("msg {i}\nsecond line for height")))
+            .collect();
+        *app.active_messages_mut() = history;
+        let msg_count = app.messages().len();
+
+        let spinner = idle_spinner();
+        let area = Rect::new(0, 0, 80, 8);
+        for _ in 0..64 {
+            let content_height = sync_chat_layout(&mut app, area, &spinner);
+            let render_data = build_scrolled_render_data(&mut app, &spinner, 80, content_height, 8);
+            assert!(
+                render_data.stats.rendered_msgs < msg_count / 2,
+                "convergence frames must render a bounded window; rendered_msgs={} of {msg_count}",
+                render_data.stats.rendered_msgs,
+            );
+            if !app.active_viewport_mut().resize_remeasure_active() {
+                break;
+            }
+        }
+    }
+
+    /// B1: a fresh open seeds a height estimate into the off-screen messages
+    /// so `total_message_height` is usable on frame one, while those messages
+    /// stay stale so the background loop still re-measures them to exact.
+    #[test]
+    fn bootstrap_seeds_estimate_into_offscreen_messages() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        let history: Vec<ChatMessage> = (0..200)
+            .map(|i| assistant_text_message(&format!("msg {i}\nsecond line for height")))
+            .collect();
+        *app.active_messages_mut() = history;
+
+        let spinner = idle_spinner();
+        let area = Rect::new(0, 0, 80, 8);
+        let _ = sync_chat_layout(&mut app, area, &spinner);
+
+        assert!(
+            !app.active_viewport_mut().message_height_is_current(0),
+            "off-screen top stays stale on frame one",
+        );
+        assert!(
+            app.active_viewport_mut().message_height(0) > 0,
+            "off-screen top carries a seeded height estimate on frame one",
+        );
+        assert!(
+            app.active_viewport_mut().total_message_height() > 100,
+            "total height reflects the seeded estimates, not just the measured tail",
+        );
+    }
+
+    /// B1: on a fresh open pinned to the bottom, the frame-one scroll offset
+    /// lands near the converged bottom (from the seeded estimate), not pinned
+    /// near 0 as it would be with only the tail measured.
+    #[test]
+    fn open_at_bottom_scroll_offset_is_approximately_right_on_first_frame() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        let history: Vec<ChatMessage> = (0..200)
+            .map(|i| assistant_text_message(&format!("msg {i}\nsecond line for height")))
+            .collect();
+        *app.active_messages_mut() = history;
+
+        let frame1 = first_frame_render(&mut app, 80, 8);
+
+        let spinner = idle_spinner();
+        let area = Rect::new(0, 0, 80, 8);
+        for _ in 0..64 {
+            let content_height = sync_chat_layout(&mut app, area, &spinner);
+            let _ = build_scrolled_render_data(&mut app, &spinner, 80, content_height, 8);
+            if !app.active_viewport_mut().resize_remeasure_active() {
+                break;
+            }
+        }
+        let content_height = sync_chat_layout(&mut app, area, &spinner);
+        let converged = build_scrolled_render_data(&mut app, &spinner, 80, content_height, 8);
+
+        assert!(converged.max_scroll > 0, "a large session must overflow the viewport");
+        assert!(
+            frame1.scroll_offset * 2 >= converged.max_scroll,
+            "frame-one scroll must be seeded near the bottom, not near 0; frame1={} converged_max={}",
+            frame1.scroll_offset,
+            converged.max_scroll,
+        );
+        assert!(
+            frame1.scroll_offset <= converged.max_scroll + 4,
+            "frame-one scroll must not overshoot the converged bottom; frame1={} converged_max={}",
+            frame1.scroll_offset,
+            converged.max_scroll,
+        );
+    }
+
+    /// The seeded estimate leaves no permanent error: after the background
+    /// loop finishes, every message is measured exactly and no remeasurement
+    /// remains queued.
+    #[test]
+    fn open_at_bottom_converges_to_exact_heights() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        let history: Vec<ChatMessage> = (0..120)
+            .map(|i| {
+                let body = "wrapping content ".repeat(i % 7 + 1);
+                assistant_text_message(&format!("msg {i}\n{body}"))
+            })
+            .collect();
+        *app.active_messages_mut() = history;
+
+        let spinner = idle_spinner();
+        let area = Rect::new(0, 0, 80, 8);
+        for _ in 0..200 {
+            let content_height = sync_chat_layout(&mut app, area, &spinner);
+            let _ = build_scrolled_render_data(&mut app, &spinner, 80, content_height, 8);
+            if !app.active_viewport_mut().resize_remeasure_active() {
+                break;
+            }
+        }
+
+        assert!(
+            !app.active_viewport_mut().resize_remeasure_active(),
+            "the background loop must finish converging",
+        );
+        for i in 0..app.messages().len() {
+            assert!(
+                app.active_viewport_mut().message_height_is_current(i),
+                "message {i} must be measured exactly after convergence (no residual estimate)",
+            );
+        }
     }
 
     #[test]

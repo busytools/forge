@@ -238,6 +238,10 @@ pub struct ChatViewport {
     pub prefix_dirty_from: Option<usize>,
 }
 
+/// Rough per-message height (role label plus a content line) used to seed the
+/// estimate when a fresh open has not yet measured any message.
+const DEFAULT_MESSAGE_HEIGHT_ESTIMATE: usize = 2;
+
 impl ChatViewport {
     /// Create a new viewport with default scroll state (auto-scroll enabled).
     pub fn new() -> Self {
@@ -412,6 +416,34 @@ impl ChatViewport {
         }
         if self.message_heights.get(idx).copied().unwrap_or(0) != h {
             self.message_heights[idx] = h;
+            self.mark_prefix_sums_dirty_from(idx);
+        }
+    }
+
+    /// Seed a height estimate into every never-measured message so the
+    /// prefix sums and total height are approximately right on a fresh open,
+    /// before the background loop fills exact heights. The estimate is the
+    /// running average of the heights measured so far (the tail viewport-worth
+    /// on a bootstrap open); seeded messages stay stale and re-measure to exact.
+    pub fn seed_unmeasured_height_estimates(&mut self) {
+        let (sum, count) = self.message_heights.iter().enumerate().fold(
+            (0usize, 0usize),
+            |(sum, count), (idx, &height)| {
+                let measured =
+                    height > 0 && !self.stale_message_heights.get(idx).copied().unwrap_or(false);
+                if measured { (sum + height, count + 1) } else { (sum, count) }
+            },
+        );
+        let estimate =
+            sum.checked_div(count).map_or(DEFAULT_MESSAGE_HEIGHT_ESTIMATE, |avg| avg.max(1));
+        let mut earliest = None;
+        for idx in 0..self.message_heights.len() {
+            if self.message_heights[idx] == 0 {
+                self.message_heights[idx] = estimate;
+                earliest.get_or_insert(idx);
+            }
+        }
+        if let Some(idx) = earliest {
             self.mark_prefix_sums_dirty_from(idx);
         }
     }
