@@ -10,11 +10,12 @@ use forge_tui::agent::model;
 use forge_tui::app::{App, AppStatus, MessageBlock, ToolCallInfo, ToolCallScope};
 use pretty_assertions::assert_eq;
 
-use crate::helpers::test_app;
+use crate::helpers::{active_session_key, send_client_event, test_app};
 use crate::message_helpers::{
     assistant_message, assistant_message_with_parent, result_success_message, send_msg, text_block,
     tool_result_block, tool_result_error_block, tool_use_block, user_message,
 };
+use forge_workspace::SessionUpdate;
 
 fn tool_call_block<'a>(app: &'a App, id: &str) -> &'a ToolCallInfo {
     let (message_index, block_index) = app.lookup_tool_call(id).expect("missing tool index");
@@ -891,6 +892,75 @@ async fn turn_end_does_not_force_complete_a_backgrounded_bash_card() {
         session.session_task_tool_use_ids.get("task-bash").map(String::as_str),
         Some("toolu_bash"),
         "the session task map still resolves it across the boundary",
+    );
+}
+
+/// Teardown is a hard terminal: a session that dies (connection failure,
+/// auth-required) must NOT keep a backgrounded card exempt from the sweep -
+/// the task can't complete on a dead session, so its card belongs at Failed,
+/// not stranded InProgress. The roster is cleared before the sweep at each
+/// teardown site; without that ordering the exemption strands the card.
+#[tokio::test]
+async fn active_teardown_fails_a_backgrounded_card_not_stranded_in_progress() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_bash",
+            "Bash",
+            serde_json::json!({
+                "command": "sleep 60 && echo done",
+                "description": "Wait then print",
+                "run_in_background": true,
+            }),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-bash".to_owned(),
+            description: "Wait then print".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_bash".to_owned()),
+            task_type: Some("local_bash".to_owned()),
+        },
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![serde_json::json!({
+                "task_id": "task-bash",
+                "task_type": "local_bash",
+                "description": "Wait then print",
+            })],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+    assert_eq!(
+        tool_call_block(&app, "toolu_bash").status,
+        model::ToolCallStatus::InProgress,
+        "precondition: the backgrounded card is open before the session dies",
+    );
+
+    // The session's connection dies mid-flight (non-rate-limited -> teardown).
+    let key = active_session_key(&app);
+    send_client_event(
+        &mut app,
+        SessionUpdate::ConnectionFailed {
+            key,
+            message: "connection lost".to_owned(),
+            fatal: false,
+        },
+    );
+
+    assert_eq!(
+        tool_call_block(&app, "toolu_bash").status,
+        model::ToolCallStatus::Failed,
+        "a dead session's backgrounded card is failed, not stranded InProgress",
     );
 }
 
