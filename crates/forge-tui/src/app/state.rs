@@ -2940,11 +2940,20 @@ impl App {
 
     /// Force-finish any lingering in-progress tool calls.
     /// Returns the number of tool calls that were transitioned.
+    ///
+    /// Backgrounded tasks still in the session roster are exempt: they
+    /// outlive the turn and settle via their own `task_updated`.
     pub fn finalize_in_progress_tool_calls(&mut self, new_status: model::ToolCallStatus) -> usize {
         let mut changed = 0usize;
         let mut changed_message_indices = Vec::new();
         let mut changed_slots = Vec::new();
         let mut detached_terminal = false;
+        let exempt: std::collections::HashSet<String> = self
+            .active_session()
+            .map(|session| {
+                session.backgrounded_alive_tool_use_ids().into_iter().map(str::to_owned).collect()
+            })
+            .unwrap_or_default();
 
         for (msg_idx, msg) in self.active_messages_mut().iter_mut().enumerate() {
             for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
@@ -2953,7 +2962,8 @@ impl App {
                     if matches!(
                         tc.status,
                         model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending
-                    ) {
+                    ) && !exempt.contains(tc.id.as_str())
+                    {
                         tc.status = new_status;
                         tc.mark_tool_call_layout_dirty();
                         changed_slots.push((msg_idx, block_idx));

@@ -246,10 +246,15 @@ fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionKey) {
 /// Pending tool calls to `new_status`, dropping pending interactions.
 /// No layout invalidation, no terminal detach handling - the bucket
 /// will rebuild its layout state when it next becomes active.
+///
+/// Mirrors the active sweep's exemption: a backgrounded task still in the
+/// bucket's session roster outlives the turn and settles via `task_updated`.
 pub(super) fn finalize_background_tool_calls(
     session: &mut crate::app::session::UiSession,
     new_status: model::ToolCallStatus,
 ) {
+    let exempt: std::collections::HashSet<String> =
+        session.backgrounded_alive_tool_use_ids().into_iter().map(str::to_owned).collect();
     for msg in &mut session.messages {
         for block in &mut msg.blocks {
             if let MessageBlock::ToolCall(tc) = block {
@@ -257,7 +262,8 @@ pub(super) fn finalize_background_tool_calls(
                 if matches!(
                     tc.status,
                     model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending
-                ) {
+                ) && !exempt.contains(tc.id.as_str())
+                {
                     tc.status = new_status;
                     let _ = tc.terminal_id.take();
                 }
