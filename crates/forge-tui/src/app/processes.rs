@@ -1499,7 +1499,6 @@ mod tests {
         // registry must carry the enrichment across.
         let _: () = app.with_turn_state_mut(|ts| {
             ts.task_tool_use_ids.clear();
-            ts.alive_task_ids.clear();
         });
 
         let coll = collect_active_processes(&app);
@@ -1563,7 +1562,6 @@ mod tests {
 
         let _: () = app.with_turn_state_mut(|ts| {
             ts.task_tool_use_ids.clear();
-            ts.alive_task_ids.clear();
         });
 
         let coll = collect_active_processes(&app);

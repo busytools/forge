@@ -1270,7 +1270,8 @@ mod tests {
         // A subagent the CLI backgrounds returns an immediate sentinel
         // tool_result carrying `backgroundTaskId` while it keeps
         // running. The card must not be stamped Completed mid-run;
-        // liveness is tracked separately (alive_task_ids).
+        // liveness is tracked separately by the renderer's background-task
+        // roster.
         let base = make_base("Agent", &json!({"subagent_type": "Explore"}));
         let raw_result = json!({"backgroundTaskId": "bg-agent-1"});
         let f = build_tool_result_fields(

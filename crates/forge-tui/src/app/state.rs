@@ -2241,7 +2241,7 @@ impl App {
     /// the last `SUBAGENT_TAIL_CAP` `SubagentChild` tool calls under
     /// each root, identified via `parent_tool_use_id` on the
     /// scope-registered map. Returns an empty Vec when every root is
-    /// terminal AND drained from `alive_task_ids` - mirrors
+    /// terminal AND absent from the session roster - mirrors
     /// `clear_workflows_if_all_terminal` so the section auto-clears.
     /// Pure derive over `UiSession` state; no mutation, no new wire
     /// surface.
@@ -7514,10 +7514,10 @@ mod tests {
 
     /// Regression: a subagent the CLI backgrounds gets an immediate
     /// sentinel tool_result that flips its root card to terminal while
-    /// the subagent keeps running. Liveness is tracked by
-    /// `alive_task_ids` (populated by `task_started`, drained only by a
-    /// terminal `task_updated`), so the section must stay visible for
-    /// the task's true lifetime even though the card status reads
+    /// the subagent keeps running. Liveness comes from the session roster
+    /// (`background_tasks` intersected with the session task map), so the
+    /// section must stay visible for the task's true lifetime even though
+    /// the card status reads
     /// terminal - mirroring the PROCESSES section.
     #[test]
     fn subagents_view_keeps_backgrounded_root_alive_via_session_roster() {
@@ -7633,7 +7633,6 @@ mod tests {
         // Turn finalisation wiped the turn-scoped liveness.
         let _: () = app.with_turn_state_mut(|ts| {
             ts.task_tool_use_ids.clear();
-            ts.alive_task_ids.clear();
         });
 
         let view = app.subagents_view();
@@ -7678,7 +7677,6 @@ mod tests {
         app.insert_session_task_mapping("task-gate".to_owned(), "tu-root-gate".to_owned());
         let _: () = app.with_turn_state_mut(|ts| {
             ts.task_tool_use_ids.clear();
-            ts.alive_task_ids.clear();
         });
 
         assert!(

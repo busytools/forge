@@ -1158,16 +1158,8 @@ fn handle_task_started(app: &mut App, msg: Message) {
     apply_tool_progress_update(app, id, "Task");
     if !task_id.is_empty() {
         let id_owned = id.to_owned();
-        let task_id_owned = task_id.clone();
         let _: () = app.with_turn_state_mut(|ts| {
             ts.task_tool_use_ids.insert(task_id.clone(), id_owned);
-            // Mark the task alive - drained by handle_task_updated
-            // when patch.status is terminal. This drives PROCESSES
-            // visibility: a backgrounded Bash whose tool_result has
-            // already arrived (flipping tc.status to Completed) is
-            // still alive here until its task_updated terminal
-            // patch lands.
-            ts.alive_task_ids.insert(task_id_owned);
         });
         // Session-scoped mirror that survives turn finalisation - the
         // cross-turn resolver for backgrounded agents (SUBAGENTS) and
@@ -1267,12 +1259,8 @@ fn handle_task_updated(app: &mut App, msg: Message) {
         // the workflow row to its summarised one-liner. Idempotent
         // when the entry is already Completed.
         app.set_workflow_completed_by_task_id(&task_id);
-        let task_id_owned = task_id.clone();
-        let _: () = app.with_turn_state_mut(|ts| {
-            ts.alive_task_ids.remove(&task_id_owned);
-        });
-        // Drop the session-scoped mirror too; keyed by task_id, so it
-        // runs even post-turn when the tool_use_id lookup below is empty.
+        // Drop the session-scoped mirror; keyed by task_id, so it runs
+        // even post-turn when the tool_use_id lookup below is empty.
         app.remove_session_task_mapping(&task_id);
     }
 

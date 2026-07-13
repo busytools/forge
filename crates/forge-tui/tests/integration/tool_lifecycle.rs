@@ -475,15 +475,15 @@ async fn subagent_root_via_real_wire_surfaces_in_subagents_view() {
     assert!(tool_call_block(&app, "toolu_child").hidden, "SubagentChild stays hidden as before");
 }
 
-/// Drain-to-hidden: a backgrounded SubagentRoot stays visible while its
-/// task_id is in `alive_task_ids`, then the section clears once the
-/// terminal `task_updated` drains it. Guards against a regression that
-/// stopped draining `alive_task_ids` for subagents, which would leave a
-/// completed subagent stuck-visible. Mirrors the MONITORS
+/// Drain-to-hidden: a subagent root stays visible while its status is
+/// in-flight, then the section clears once the terminal `task_updated`
+/// flips the root card terminal. Guards against a regression that stopped
+/// applying the terminal status, which would leave a completed subagent
+/// stuck-visible. Mirrors the MONITORS
 /// `two_monitors_completing_in_order_clears_section` contract, driven
 /// over the real wire path.
 #[tokio::test]
-async fn subagent_section_clears_when_terminal_task_updated_drains_alive_task() {
+async fn subagent_section_clears_when_terminal_task_updated_flips_root() {
     let mut app = test_app();
 
     send_msg(
@@ -498,7 +498,7 @@ async fn subagent_section_clears_when_terminal_task_updated_drains_alive_task() 
             }),
         )]),
     );
-    // task_started maps the task_id to the root and marks it alive.
+    // task_started maps the task_id to the root.
     send_msg(
         &mut app,
         forge_primitives::Message::TaskStarted {
@@ -513,11 +513,11 @@ async fn subagent_section_clears_when_terminal_task_updated_drains_alive_task() 
     assert_eq!(
         app.subagents_view().len(),
         1,
-        "backgrounded subagent is visible while its task is alive; got {:?}",
+        "backgrounded subagent is visible while its root is in-flight; got {:?}",
         app.subagents_view(),
     );
 
-    // Terminal task_updated drains alive_task_ids and flips the card.
+    // Terminal task_updated flips the root card terminal.
     send_msg(
         &mut app,
         forge_primitives::Message::TaskUpdated {
@@ -532,7 +532,7 @@ async fn subagent_section_clears_when_terminal_task_updated_drains_alive_task() 
     );
     assert!(
         app.subagents_view().is_empty(),
-        "section clears once the terminal task_updated drains the alive task; got {:?}",
+        "section clears once the terminal task_updated flips the root terminal; got {:?}",
         app.subagents_view(),
     );
 }
@@ -618,7 +618,6 @@ async fn backgrounded_agent_survives_turn_reset_over_real_wire_path() {
     // must carry the root across.
     let _: () = app.with_turn_state_mut(|ts| {
         ts.task_tool_use_ids.clear();
-        ts.alive_task_ids.clear();
     });
 
     let view = app.subagents_view();
@@ -702,7 +701,6 @@ async fn backgrounded_bash_survives_turn_reset_over_real_wire_path() {
     // Turn finalisation wipes the turn-scoped liveness.
     let _: () = app.with_turn_state_mut(|ts| {
         ts.task_tool_use_ids.clear();
-        ts.alive_task_ids.clear();
     });
 
     let session = app.active_session().expect("active session");
