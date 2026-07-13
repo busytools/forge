@@ -428,26 +428,22 @@ fn render_scrollable_body(frame: &mut Frame, body_area: Rect, app: &mut App) {
 }
 
 /// Frame index for the inspector thumb's breathing pulse. Wraps to
-/// `None` when the active session has no observable work (alive
-/// task IDs empty AND no in-progress Bash/Monitor on the wire), so
-/// the thumb sits still during idle periods and only pulses while
-/// something is actually running.
+/// `None` when the active session has no observable work (no
+/// backgrounded task in the session roster AND no in-progress tool
+/// call), so the thumb sits still during idle periods and only pulses
+/// while something is actually running.
 fn inspector_thumb_pulse(app: &App) -> Option<usize> {
-    let has_alive_task = app.with_turn_state(|ts| !ts.alive_task_ids.is_empty());
-    if has_alive_task {
-        return Some(app.spinner_frame);
-    }
-    let has_in_progress_tool = app.active_session().is_some_and(|session| {
-        session.messages.iter().any(|msg| {
-            msg.blocks.iter().any(|block| {
-                matches!(
-                    block,
-                    MessageBlock::ToolCall(tc) if tc.status == ToolCallStatus::InProgress
-                )
-            })
+    let session = app.active_session()?;
+    // Session-scoped so the pulse keeps animating for backgrounded work
+    // that outlives its spawning turn; the turn-scoped alive set is wiped
+    // at the turn boundary while the task keeps running.
+    let has_background_work = session.has_live_background_work();
+    let has_in_progress_tool = session.messages.iter().any(|msg| {
+        msg.blocks.iter().any(|block| {
+            matches!(block, MessageBlock::ToolCall(tc) if tc.status == ToolCallStatus::InProgress)
         })
     });
-    has_in_progress_tool.then_some(app.spinner_frame)
+    (has_background_work || has_in_progress_tool).then_some(app.spinner_frame)
 }
 
 /// Paint the inspector body's scroll thumb. Mirrors
@@ -4332,5 +4328,31 @@ mod tests {
         };
         let earlier = SystemTime::UNIX_EPOCH + Duration::from_secs(500);
         assert_eq!(attention_detail(&entry, earlier), "question \u{00B7} 0s");
+    }
+
+    #[test]
+    fn inspector_thumb_pulse_animates_on_backgrounded_roster_without_turn_state() {
+        let mut app = App::test_default();
+        // No turn-scoped alive task and no in-progress tool - only the
+        // session-scoped roster lists live backgrounded work, exactly the
+        // post-turn-reset state where the pulse used to freeze.
+        *app.background_tasks_mut() = vec![crate::app::BackgroundTask {
+            task_id: "task-bg".to_owned(),
+            task_type: "local_bash".to_owned(),
+            description: "sleep 60".to_owned(),
+        }];
+        assert!(
+            inspector_thumb_pulse(&app).is_some(),
+            "pulse keeps animating while a backgrounded task is in the session roster",
+        );
+    }
+
+    #[test]
+    fn inspector_thumb_pulse_still_when_idle() {
+        let app = App::test_default();
+        assert!(
+            inspector_thumb_pulse(&app).is_none(),
+            "no backgrounded work and no in-progress tool - the thumb sits still",
+        );
     }
 }
