@@ -160,6 +160,17 @@ fn update_visual_heights(
     let project_root = (!cwd_raw_owned.is_empty()).then_some(cwd_raw_owned.as_str());
     let layout_generation = app.viewport().layout_generation;
     let tools_collapsed = app.tools_collapsed;
+    // Frame-stable session partition (peer/worker cross-turn grouping)
+    // computed once and threaded into each measure call, mirroring the
+    // render path so measure and render group identically.
+    let session_units = message::grouping::partition_session_into_render_units(app.messages());
+    let invariants = MeasureInvariants {
+        mode_id,
+        project_root,
+        layout_generation,
+        tools_collapsed,
+        session_units: &session_units,
+    };
 
     // The visible window for the priority + visible loops follows
     // the CURRENT scroll position, not the frozen scroll_anchor on
@@ -213,10 +224,7 @@ fn update_visual_heights(
             active_turn_assistant,
             width,
             i,
-            mode_id,
-            project_root,
-            layout_generation,
-            tools_collapsed,
+            &invariants,
             &mut stats,
         );
     }
@@ -241,10 +249,7 @@ fn update_visual_heights(
             active_turn_assistant,
             width,
             i,
-            mode_id,
-            project_root,
-            layout_generation,
-            tools_collapsed,
+            &invariants,
             &mut stats,
         );
     }
@@ -258,10 +263,7 @@ fn update_visual_heights(
                 active_turn_assistant,
                 width,
                 last,
-                mode_id,
-                project_root,
-                layout_generation,
-                tools_collapsed,
+                &invariants,
                 &mut stats,
             );
         }
@@ -297,10 +299,7 @@ fn update_visual_heights(
             active_turn_assistant,
             width,
             i,
-            mode_id,
-            project_root,
-            layout_generation,
-            tools_collapsed,
+            &invariants,
             &mut stats,
         );
         budget.consume(stats.measured_lines.saturating_sub(measured_lines_before));
@@ -364,20 +363,25 @@ fn sync_active_turn_height_state(
     app.set_last_active_turn_height_state(next);
 }
 
-// `mode_id`, `project_root`, `layout_generation`, `tools_collapsed` are
-// loop-invariant across `update_visual_heights`'s remeasure loops;
-// callers snapshot them once above the loop and pass references / Copy
-// values in. This avoids N String allocations on remeasure-heavy frames.
+/// Loop-invariant snapshot for `update_visual_heights`'s remeasure
+/// loops: computed once above the loops so each measured message reuses
+/// them instead of recomputing (N String clones and N whole-session
+/// partition walks avoided).
+struct MeasureInvariants<'a> {
+    mode_id: Option<&'a str>,
+    project_root: Option<&'a str>,
+    layout_generation: u64,
+    tools_collapsed: bool,
+    session_units: &'a [Vec<message::grouping::RenderUnit>],
+}
+
 fn measure_message_height_at(
     app: &mut App,
     base: &SpinnerState,
     active_turn_assistant: Option<usize>,
     width: u16,
     idx: usize,
-    mode_id: Option<&str>,
-    project_root: Option<&str>,
-    layout_generation: u64,
-    tools_collapsed: bool,
+    invariants: &MeasureInvariants<'_>,
     stats: &mut HeightUpdateStats,
 ) {
     let msg_count = app.messages().len();
@@ -395,15 +399,10 @@ fn measure_message_height_at(
         app.active_session().map(|s| s.group_collapse_levels.clone()).unwrap_or_default();
     let messaging_group_collapse_levels =
         app.active_session().map(|s| s.messaging_group_collapse_levels.clone()).unwrap_or_default();
-    // Cross-message peer/worker run state: compute the session-level
-    // partition once and lift this message's slice. Without this the
-    // measure path's per-message partition wouldn't see segments that
-    // continue from a sibling turn, and the measure-vs-render layout
-    // would desync.
-    let session_units = message::grouping::partition_session_into_render_units(app.messages());
-    let owned_session_units = session_units.get(idx).cloned().unwrap_or_default();
+    let empty_session_units: Vec<message::grouping::RenderUnit> = Vec::new();
+    let session_message_units = invariants.session_units.get(idx).unwrap_or(&empty_session_units);
     let options = message::MessageRenderOptions {
-        tools_collapsed,
+        tools_collapsed: invariants.tools_collapsed,
         include_trailing_separator: !is_last_message,
         suppress_group_header,
         envelope_streak_position,
@@ -414,13 +413,17 @@ fn measure_message_height_at(
     // then take the mutable message borrow for the measure call. Ground
     // truth: same context the render pass builds, so heights can't
     // diverge from what paints.
-    let render_context =
-        message::MessageRenderContext::new(mode_id, width, layout_generation, options)
-            .with_stop_hook_hooks(stop_hook_snapshot.hooks.as_slice())
-            .with_group_collapse_levels(&group_collapse_levels)
-            .with_messaging_group_collapse_levels(&messaging_group_collapse_levels)
-            .with_session_message_units(&owned_session_units)
-            .with_project_root(project_root.unwrap_or(""));
+    let render_context = message::MessageRenderContext::new(
+        invariants.mode_id,
+        width,
+        invariants.layout_generation,
+        options,
+    )
+    .with_stop_hook_hooks(stop_hook_snapshot.hooks.as_slice())
+    .with_group_collapse_levels(&group_collapse_levels)
+    .with_messaging_group_collapse_levels(&messaging_group_collapse_levels)
+    .with_session_message_units(session_message_units)
+    .with_project_root(invariants.project_root.unwrap_or(""));
     // Scope the perf span to the measure call only - the cache-sync +
     // viewport writes below are not part of the measure timing.
     let (h, rendered_lines) = {
@@ -1325,6 +1328,14 @@ mod tests {
         ChatMessage::new(MessageRole::Assistant, Vec::new(), None)
     }
 
+    fn multi_block_assistant_message(texts: &[&str]) -> ChatMessage {
+        ChatMessage::new(
+            MessageRole::Assistant,
+            texts.iter().map(|t| MessageBlock::Text(TextBlock::from_complete(t))).collect(),
+            None,
+        )
+    }
+
     fn idle_spinner() -> SpinnerState {
         SpinnerState {
             glyph: '\u{280B}',
@@ -2158,6 +2169,54 @@ mod tests {
         assert!(
             app.active_viewport_mut().message_height(0) > base_h,
             "dirty non-tail message should be remeasured"
+        );
+    }
+
+    /// Measure threads each message's slice of the once-per-pass session
+    /// partition; render slices the same partition per message. With varied
+    /// per-message block counts a mis-threaded slice would measure a different
+    /// block set than the render paints, splitting the measured total from the
+    /// fully rendered line count. They must stay equal.
+    #[test]
+    fn measured_total_matches_full_render_across_varied_block_counts() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        *app.active_messages_mut() = vec![
+            multi_block_assistant_message(&["alpha one\nalpha two", "beta only"]),
+            user_message("short user turn"),
+            assistant_text_message("gamma one\ngamma two\ngamma three"),
+            multi_block_assistant_message(&["delta", "epsilon one\nepsilon two", "zeta"]),
+        ];
+
+        let width = 80u16;
+        let height = 60u16;
+        let spinner = idle_spinner();
+        let _ = app.active_viewport_mut().on_frame(width, height);
+        update_visual_heights(&mut app, &spinner, width, usize::from(height));
+        app.active_viewport_mut().rebuild_prefix_sums();
+        let measured_total = app.viewport().total_message_height();
+        assert!(measured_total > 0, "the session must measure to a non-zero height");
+
+        let mut lines = Vec::new();
+        render_message_range(
+            &mut app,
+            &spinner,
+            width,
+            usize::from(height),
+            RenderWindow {
+                first_visible: 0,
+                render_start: 0,
+                structural_skip: 0,
+                overscan: 1_000_000,
+                cap_messages: false,
+            },
+            &mut lines,
+        );
+
+        assert_eq!(
+            measured_total,
+            lines.len(),
+            "measured total height must equal the fully rendered line count",
         );
     }
 
