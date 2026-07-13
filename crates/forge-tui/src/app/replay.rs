@@ -445,6 +445,41 @@ mod tests {
         insta::assert_snapshot!(snapshot);
     }
 
+    /// End-to-end: reads carrying an ABSOLUTE `file_path` render
+    /// relative to the session cwd through the real chat render path
+    /// (the unit tests exercise relative titles + empty cwd, so this is
+    /// the only place relativization actually runs against a cwd - a
+    /// measure/render desync or a broken cache-fold would surface here).
+    #[test]
+    fn render_grouped_reads_relativized_against_cwd() {
+        let mut app = build_app_with_consecutive_reads(3);
+        // Give each read an absolute path under /repo, then point cwd at
+        // /repo so relativization has a real prefix to strip.
+        if let Some(bucket) = app.try_active_bucket_mut()
+            && let Some(msg) = bucket.messages.last_mut()
+        {
+            for (i, block) in msg.blocks.iter_mut().enumerate() {
+                if let crate::app::MessageBlock::ToolCall(tc) = block {
+                    tc.raw_input = Some(serde_json::json!({
+                        "file_path": format!("/repo/crates/forge-tui/src/{i}.rs")
+                    }));
+                }
+            }
+        }
+        app.set_cwd_raw("/repo");
+        let mut harness = ReplayHarness::from_app(app);
+        let snapshot = harness.snapshot_chat(80, 20);
+        assert!(
+            snapshot.contains("crates/forge-tui/src/0.rs"),
+            "read paths relativize against cwd; got:\n{snapshot}",
+        );
+        assert!(
+            !snapshot.contains("/repo/"),
+            "the absolute root prefix must be stripped; got:\n{snapshot}",
+        );
+        insta::assert_snapshot!(snapshot);
+    }
+
     /// L1: cycling the group lifts the summary into per-tool title
     /// rows (bodies still closed). All five Read rows surface with
     /// their titles.
@@ -473,10 +508,10 @@ mod tests {
 
     /// v2 regression-lock: single-item groups behave IDENTICALLY to
     /// multi-item - no `len == 1` special-casing anywhere in the
-    /// render dispatch. A lone Read at default L2 renders the "1 read"
-    /// summary line just like a 5-Read group renders "5 reads"; the
-    /// cycle walks L2 (summary) -> L1 (title) -> L0 (title + body).
-    /// Decision 3 lock from the brainstorm: UI consistency wins
+    /// render dispatch. A lone Read at default L2 renders the tree
+    /// summary (parent count row + inline read row) just like a 5-Read
+    /// group; the cycle walks L2 (summary) -> L1 (title) -> L0 (title +
+    /// body). Decision 3 lock from the brainstorm: UI consistency wins
     /// over body-visible-by-default; failed lone tools sit collapsed
     /// at L2 and need one ctrl+x to expand.
     #[test]
@@ -486,15 +521,16 @@ mod tests {
 
         let mut harness = ReplayHarness::from_app(build_app_with_consecutive_reads(1));
         let snap_l2 = harness.snapshot_chat(80, 10);
-        // Summary shape (post-enrichment):
-        // `<status_icon> = read <basename>   ctrl+x to expand`.
+        // Read always nests: a lone read renders the tree parent count
+        // row + the read row with the sole file inline (project-relative
+        // path, lowercase `read`), NOT the full `Read <path>` title row.
         assert!(
-            snap_l2.contains("read 0.rs"),
-            "single-item L2 must surface the target via the rich summary; got:\n{snap_l2}",
+            snap_l2.contains("1 tool call"),
+            "single-item L2 must carry the tree parent count row; got:\n{snap_l2}",
         );
         assert!(
-            snap_l2.contains("= "),
-            "single-item L2 must carry the `=` group-icon; got:\n{snap_l2}",
+            snap_l2.contains("read crates/forge-tui/src/0.rs"),
+            "single-item L2 must surface the file inline on the read row; got:\n{snap_l2}",
         );
         assert!(
             !snap_l2.contains("Read crates/forge-tui/src/0.rs"),
@@ -549,9 +585,10 @@ mod tests {
             snap.chars().any(|c| ('\u{2800}'..='\u{28FF}').contains(&c)),
             "in-flight group L2 must show a braille spinner glyph; got:\n{snap}",
         );
+        // Pure-read nests: the spinner rides the tree parent count row.
         assert!(
-            snap.contains("= "),
-            "in-flight group L2 must carry the `=` group-icon; got:\n{snap}",
+            snap.contains("tool calls"),
+            "in-flight group L2 must carry the tree parent count row; got:\n{snap}",
         );
         insta::assert_snapshot!(snap);
     }

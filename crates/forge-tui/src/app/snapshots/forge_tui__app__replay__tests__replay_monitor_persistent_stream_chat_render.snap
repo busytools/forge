@@ -3,7 +3,8 @@ source: crates/forge-tui/src/app/replay.rs
 expression: snapshot
 ---
 Forge · 15.0s
-  ✓ = 1 call   ctrl+x to expand
+  ✓ 1 tool call   ctrl+x to expand
+  └─ ⌖ toolsearch select:Monitor,TaskStop
 
 I'll wait for the three event notifications to arrive.
 

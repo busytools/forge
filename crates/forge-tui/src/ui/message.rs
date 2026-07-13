@@ -176,6 +176,10 @@ pub(crate) struct MessageRenderContext<'a> {
     /// messages. `None` falls back to the per-message partition,
     /// which only sees within-message runs.
     session_message_units: Option<&'a [grouping::RenderUnit]>,
+    /// Active session's raw cwd (project root), used to relativize the
+    /// read-kind file paths in the chat tool-group L2 tree. `None`
+    /// (default / empty cwd) renders read paths as-is (absolute).
+    project_root: Option<&'a str>,
 }
 
 impl<'a> MessageRenderContext<'a> {
@@ -194,7 +198,16 @@ impl<'a> MessageRenderContext<'a> {
             group_collapse_levels: None,
             messaging_group_collapse_levels: None,
             session_message_units: None,
+            project_root: None,
         }
+    }
+
+    /// Attach the active session's project root (raw cwd) so the chat
+    /// tool-group tree can relativize read-kind file paths. An empty
+    /// root leaves paths absolute.
+    pub(crate) fn with_project_root(mut self, root: &'a str) -> Self {
+        self.project_root = (!root.is_empty()).then_some(root);
+        self
     }
 
     /// Attach a pre-computed render-unit list for THIS message
@@ -545,7 +558,7 @@ fn append_assistant_blocks(
                     &mut state,
                 );
             }
-            grouping::RenderUnit::Group { range, leader_id, kind_count, aggregate_status } => {
+            grouping::RenderUnit::Group { range, leader_id, summary, aggregate_status } => {
                 match render_context.group_level(&leader_id) {
                     grouping::GroupCollapseLevel::L2Summary => {
                         if state.has_body_content {
@@ -559,10 +572,11 @@ fn append_assistant_blocks(
                         // and dispatches as a group-summary click when
                         // the position matches a group at L2.
                         let summary_lines = tool_call::render_group_summary_line(
-                            &kind_count,
+                            &summary,
                             aggregate_status,
                             spinner.glyph,
                             render_context.width as usize,
+                            render_context.project_root,
                         );
                         let y_in_msg = layout.height;
                         let height = rendered_lines_height(&summary_lines, render_context.width);
@@ -1534,6 +1548,10 @@ fn build_message_render_signature(
     // peer/worker continuation state too - segment counts, group
     // totals, leader ids - so a downstream turn's extension of an
     // in-flight messaging run invalidates this message's cache.
+    // Read-kind paths render relative to the project root; fold it so a
+    // cwd change (account switch / worktree) invalidates the cached
+    // layout even when the blocks themselves are unchanged.
+    render_context.project_root.hash(&mut hasher);
     let owned_units: Vec<grouping::RenderUnit> =
         if let Some(slice) = render_context.session_message_units {
             slice.to_vec()
@@ -4638,6 +4656,54 @@ mod tests {
         assert!(
             expanded_height > collapsed_height,
             "expanded ({expanded_height}) must be taller than collapsed ({collapsed_height})",
+        );
+    }
+
+    /// The render signature folds `project_root`, so re-rendering the
+    /// same grouped-read message under a different root rebuilds the
+    /// cached layout: the paths relativize against the new root instead
+    /// of returning the stale (absolute) first render. Guards the
+    /// signature fold that keeps the read tree honest after an account
+    /// switch / worktree cwd change.
+    #[test]
+    fn project_root_change_invalidates_render_cache() {
+        use crate::agent::model::ToolCallStatus;
+        fn read_block(id: &str, abs_path: &str) -> MessageBlock {
+            let mut tc = make_tool_call_info(id, "Read", ToolCallStatus::Completed, "");
+            tc.raw_input = Some(serde_json::json!({ "file_path": abs_path }));
+            MessageBlock::ToolCall(Box::new(tc))
+        }
+        fn render_under_root(msg: &mut ChatMessage, spinner: &SpinnerState, root: &str) -> String {
+            let ctx =
+                MessageRenderContext::new(None, 80, 0, default_options()).with_project_root(root);
+            let mut out: Vec<Line<'static>> = Vec::new();
+            render_message_from_offset_internal_with_mode(msg, spinner, ctx, 0, &mut out);
+            render_lines_to_strings(&out).join("\n")
+        }
+        let spinner = idle_spinner();
+        let mut msg = ChatMessage::new(
+            MessageRole::Assistant,
+            vec![
+                read_block("r0", "/repo/crates/forge-tui/src/0.rs"),
+                read_block("r1", "/repo/crates/forge-tui/src/1.rs"),
+            ],
+            None,
+        );
+        // An unrelated root leaves the paths absolute (nothing to strip).
+        let under_other = render_under_root(&mut msg, &spinner, "/elsewhere");
+        assert!(
+            under_other.contains("/repo/crates/forge-tui/src/0.rs"),
+            "under an unrelated root the path stays absolute; got:\n{under_other}",
+        );
+        // Switching to the real root must rebuild (not reuse the cache).
+        let under_repo = render_under_root(&mut msg, &spinner, "/repo");
+        assert!(
+            under_repo.contains("crates/forge-tui/src/0.rs"),
+            "under the real root the path relativizes; got:\n{under_repo}",
+        );
+        assert!(
+            !under_repo.contains("/repo/crates"),
+            "the cache rebuilt on the root change - no stale absolute prefix; got:\n{under_repo}",
         );
     }
 
