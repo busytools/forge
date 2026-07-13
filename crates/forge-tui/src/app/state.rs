@@ -5210,6 +5210,87 @@ mod tests {
     }
 
     #[test]
+    fn push_path_defers_render_cache_rebuild_until_read() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Ready;
+
+        for i in 0..8 {
+            let mut msg = assistant_bash_tool_message(
+                &format!("t{i}"),
+                model::ToolCallStatus::Completed,
+                &format!("term{i}"),
+            );
+            if let MessageBlock::ToolCall(tc) = &mut msg.blocks[0] {
+                tc.cache.store(vec![Line::from("x".repeat(2048))]);
+            }
+            app.push_message_tracked(msg);
+        }
+
+        // Deferred to the lazy guard, the append path never rebuilds, so an
+        // empty slot grid after 8 appends proves no per-append rebuild fired.
+        assert_eq!(app.messages().len(), 8);
+        assert_eq!(app.render_cache_slots().len(), 0);
+
+        app.ensure_render_cache_accounting();
+        assert_eq!(app.render_cache_slots().len(), app.messages().len());
+    }
+
+    #[test]
+    fn push_path_accounting_matches_full_rebuild() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Running;
+
+        for i in 0..3 {
+            let mut text = ChatMessage::new(
+                MessageRole::Assistant,
+                vec![assistant_text_block(&format!("row {i}"))],
+                None,
+            );
+            if let MessageBlock::Text(block) = &mut text.blocks[0] {
+                block.cache.store(vec![Line::from("t".repeat(1500 + i * 200))]);
+                if i % 2 == 0 {
+                    let _ = block.cache.get();
+                }
+            }
+            app.push_message_tracked(text);
+
+            let mut tool = assistant_bash_tool_message(
+                &format!("done{i}"),
+                model::ToolCallStatus::Completed,
+                &format!("term{i}"),
+            );
+            if let MessageBlock::ToolCall(tc) = &mut tool.blocks[0] {
+                tc.cache.store(vec![Line::from("o".repeat(2200 + i * 100))]);
+            }
+            app.push_message_tracked(tool);
+        }
+
+        let mut trailing = assistant_tool_message("live", model::ToolCallStatus::InProgress);
+        if let MessageBlock::ToolCall(tc) = &mut trailing.blocks[0] {
+            tc.cache.store(vec![Line::from("p".repeat(3000))]);
+        }
+        app.push_message_tracked(trailing);
+
+        app.ensure_render_cache_accounting();
+        let slots = app.render_cache_slots().to_vec();
+        let total = app.render_cache_total_bytes();
+        let protected = app.render_cache_protected_bytes();
+        let evictable = app.render_cache_evictable().cloned().unwrap_or_default();
+        let tail = app.render_cache_tail_msg_idx();
+
+        assert!(total > 0);
+        assert!(protected > 0);
+        assert!(!evictable.is_empty());
+
+        app.rebuild_render_cache_accounting();
+        assert_eq!(app.render_cache_slots().to_vec(), slots);
+        assert_eq!(app.render_cache_total_bytes(), total);
+        assert_eq!(app.render_cache_protected_bytes(), protected);
+        assert_eq!(app.render_cache_evictable().cloned().unwrap_or_default(), evictable);
+        assert_eq!(app.render_cache_tail_msg_idx(), tail);
+    }
+
+    #[test]
     fn enforce_history_retention_noop_under_budget() {
         let mut app = make_test_app();
         *app.active_messages_mut() = vec![

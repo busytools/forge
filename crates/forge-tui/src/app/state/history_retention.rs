@@ -233,7 +233,8 @@ impl super::App {
         self.message_retained_bytes_mut().push(bytes);
         let updated = self.retained_history_bytes().saturating_add(bytes);
         *self.retained_history_bytes_mut() = updated;
-        self.rebuild_render_cache_accounting();
+        // Defer render-cache accounting to the lazy guard; rebuilding per
+        // append is O(n^2) as a session's history replays on resume.
         self.invalidate_tail_transition(previous_tail, self.messages().len().checked_sub(1));
         self.needs_redraw = true;
     }
@@ -252,7 +253,6 @@ impl super::App {
         self.message_retained_bytes_mut().insert(insert_idx, bytes);
         let updated = self.retained_history_bytes().saturating_add(bytes);
         *self.retained_history_bytes_mut() = updated;
-        self.rebuild_render_cache_accounting();
         if appended_at_tail {
             let new_tail = self.messages().len().checked_sub(1);
             self.invalidate_tail_transition(
@@ -260,6 +260,7 @@ impl super::App {
                 new_tail,
             );
         } else {
+            self.rebuild_render_cache_accounting();
             self.sync_after_message_topology_change(insert_idx);
         }
         self.needs_redraw = true;
