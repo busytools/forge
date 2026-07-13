@@ -149,50 +149,24 @@ pub fn collect_active_processes(app: &App) -> ProcessCollection {
         return ProcessCollection { rows: Vec::new() };
     };
 
-    // Snapshot wire-alive tool calls. Two paths into the alive set:
+    // Wire-alive tool calls to overlay onto the OS scan. Two paths in:
     //
-    // 1. **Backgrounded Bash / Monitor.** `task_started` fired on
-    //    the wire and the terminal `task_updated` has NOT - so the
-    //    tool_use_id is in `alive_task_ids`'s mapped set. Note the
-    //    per-tool `tc.status` is unreliable here: claude's
-    //    `backgroundTaskId` `tool_result` arrives almost immediately
-    //    and flips status to `Completed` while the underlying
-    //    process keeps running. Trust `alive_task_ids`, not `status`.
+    // 1. **Backgrounded work (any kind).** The CLI's `backgroundTaskId`
+    //    tool_result flips `tc.status` to `Completed` almost immediately
+    //    while the process keeps running, and the spawning turn Results
+    //    before it finishes - so status is unreliable and the turn-scoped
+    //    alive set is wiped underneath it. The durable signal is the session
+    //    roster (`background_tasks` INTERSECT the session task map), which
+    //    survives turn finalisation. Only bash carries a `command` field, so
+    //    a resolved agent in this set simply never matches an OS row.
     //
-    // 2. **Foreground Bash.** Claude blocks on the call; no
-    //    `task_started` ever fires, so path 1 misses it entirely.
-    //    The signal here IS `tc.status == InProgress` - the
-    //    `tool_result` hasn't arrived because the command is still
-    //    running. Including these in the alive set is what lets
-    //    foreground `cargo build` / `git status` / `ls` rows pick
-    //    up the wire's `description` as a headline instead of
-    //    falling through to the generic OS row.
-    let mut alive_tool_use_ids: HashSet<String> = app.with_turn_state(|ts| {
-        ts.task_tool_use_ids
-            .iter()
-            .filter(|(task_id, _)| ts.alive_task_ids.contains(*task_id))
-            .map(|(_, tool_use_id)| tool_use_id.clone())
-            .collect()
-    });
-    // Session-scoped backstop for a backgrounded `local_bash` that outlived
-    // its turn: the turn-scoped set above is wiped at turn-complete and the
-    // backgrounding sentinel already flipped its card terminal, so resolve it
-    // through the `background_tasks` (local_bash) INTERSECT session-task-map
-    // signal to keep its OS row enriched. Mirrors `subagents_view`'s
-    // `backgrounded_agent_roots`.
-    let bash_task_ids: HashSet<&str> = session
-        .background_tasks
-        .iter()
-        .filter(|task| task.task_type == "local_bash")
-        .map(|task| task.task_id.as_str())
-        .collect();
-    alive_tool_use_ids.extend(
-        session
-            .session_task_tool_use_ids
-            .iter()
-            .filter(|(task_id, _)| bash_task_ids.contains(task_id.as_str()))
-            .map(|(_, tool_use_id)| tool_use_id.clone()),
-    );
+    // 2. **Foreground Bash.** Claude blocks on the call; no `task_started`
+    //    ever fires, so path 1 misses it entirely. The signal here IS
+    //    `tc.status == InProgress` - the `tool_result` hasn't arrived because
+    //    the command is still running - which lets a foreground `cargo build`
+    //    / `git status` / `ls` row pick up the wire's `description` as a
+    //    headline instead of falling through to the generic OS row.
+    let backgrounded_alive = session.backgrounded_alive_tool_use_ids();
     let wire_alive: Vec<&ToolCallInfo> = session
         .messages
         .iter()
@@ -200,7 +174,7 @@ pub fn collect_active_processes(app: &App) -> ProcessCollection {
         .flat_map(|m| &m.blocks)
         .filter_map(|b| match b {
             MessageBlock::ToolCall(tc)
-                if alive_tool_use_ids.contains(&tc.id)
+                if backgrounded_alive.contains(tc.id.as_str())
                     || tc.status == ToolCallStatus::InProgress =>
             {
                 Some(tc.as_ref())
