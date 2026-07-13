@@ -1,6 +1,7 @@
 pub(crate) mod account_picker;
 mod autocomplete;
 pub(crate) mod chat;
+pub(crate) mod chat_tree;
 mod chat_view;
 pub(crate) mod collapse;
 mod config;

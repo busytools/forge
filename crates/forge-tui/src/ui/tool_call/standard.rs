@@ -3,6 +3,7 @@
 
 use crate::agent::model;
 use crate::app::ToolCallInfo;
+use crate::ui::chat_tree;
 use crate::ui::diff::{is_markdown_file, lang_from_title, render_diff, strip_outer_code_fence};
 use crate::ui::highlight;
 use crate::ui::markdown;
@@ -114,7 +115,7 @@ pub(super) fn render_collapsed_tool_call_summary(
 ) {
     let pipe_style = Style::default().fg(theme::DIM);
     lines.push(Line::from(vec![
-        Span::styled("  \u{2514}\u{2500} ", pipe_style),
+        Span::styled(format!("  {}", chat_tree::LAST), pipe_style),
         Span::styled(content_summary(tc), Style::default().fg(theme::DIM)),
         Span::styled("  click or ctrl+x to expand", Style::default().fg(theme::DIM)),
     ]));
@@ -136,11 +137,11 @@ fn render_standard_body(tc: &ToolCallInfo, width: u16, lines: &mut Vec<Line<'sta
     let last_idx = content_lines.len().saturating_sub(1);
     for (i, content_line) in content_lines.into_iter().enumerate() {
         let prefix = if i == last_idx {
-            "  \u{2514}\u{2500} " // corner
+            format!("  {}", chat_tree::LAST)
         } else {
-            "  \u{2502}  " // pipe
+            format!("  {}  ", chat_tree::SPINE)
         };
-        let mut spans = vec![Span::styled(prefix.to_owned(), pipe_style)];
+        let mut spans = vec![Span::styled(prefix, pipe_style)];
         spans.extend(content_line.spans);
         lines.push(Line::from(spans));
     }
