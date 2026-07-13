@@ -89,6 +89,9 @@ impl super::App {
         })
     }
 
+    // Compares only lengths, so a deferred mutation is caught only when a
+    // message or block count changes; a same-count in-place byte change must
+    // go through sync_render_cache_slot, not defer to this guard.
     fn render_cache_slots_match_messages(&self) -> bool {
         self.render_cache_slots().len() == self.messages().len()
             && self
