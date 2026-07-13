@@ -246,10 +246,15 @@ fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionKey) {
 /// Pending tool calls to `new_status`, dropping pending interactions.
 /// No layout invalidation, no terminal detach handling - the bucket
 /// will rebuild its layout state when it next becomes active.
+///
+/// Mirrors the active sweep's exemption: a backgrounded task still in the
+/// bucket's session roster outlives the turn and settles via `task_updated`.
 pub(super) fn finalize_background_tool_calls(
     session: &mut crate::app::session::UiSession,
     new_status: model::ToolCallStatus,
 ) {
+    let exempt: std::collections::HashSet<String> =
+        session.backgrounded_alive_tool_use_ids().into_iter().map(str::to_owned).collect();
     for msg in &mut session.messages {
         for block in &mut msg.blocks {
             if let MessageBlock::ToolCall(tc) = block {
@@ -257,7 +262,8 @@ pub(super) fn finalize_background_tool_calls(
                 if matches!(
                     tc.status,
                     model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending
-                ) {
+                ) && !exempt.contains(tc.id.as_str())
+                {
                     tc.status = new_status;
                     let _ = tc.terminal_id.take();
                 }
@@ -940,5 +946,84 @@ mod tests {
 
         assert!(!app.should_quit);
         assert!(app.exit_error.is_none());
+    }
+
+    fn bg_tool_message(id: &str, status: model::ToolCallStatus) -> ChatMessage {
+        ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(crate::app::ToolCallInfo {
+                id: id.to_owned(),
+                title: format!("tool {id}"),
+                sdk_tool_name: "Bash".to_owned(),
+                raw_input: None,
+                raw_input_bytes: 0,
+                output_metadata: None,
+                task_metadata: None,
+                status,
+                content: Vec::new(),
+                hidden: false,
+                terminal_id: None,
+                terminal_command: None,
+                terminal_output: None,
+                terminal_output_len: 0,
+                terminal_bytes_seen: 0,
+                terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+                monitor_output_tail: Vec::default(),
+                render_epoch: 0,
+                layout_epoch: 0,
+                last_measured_width: 0,
+                last_measured_height: 0,
+                last_measured_layout_epoch: 0,
+                last_measured_layout_generation: 0,
+                cache: crate::app::BlockCache::default(),
+                collapsed_override: None,
+                last_measured_y_in_msg: 0,
+                answered_questions: Vec::new(),
+            }))],
+            None,
+        )
+    }
+
+    /// Non-active-path sibling of the active exemption: a background
+    /// session's turn-complete sweep leaves a still-running backgrounded
+    /// card (in the bucket's own roster) InProgress while an ordinary
+    /// in-flight card is swept to terminal.
+    #[test]
+    fn background_turn_complete_exempts_roster_card_but_sweeps_ordinary() {
+        use crate::app::session::UiSession;
+        use crate::app::state::types::BackgroundTask;
+
+        let mut app = App::test_default();
+        let bg_key = SessionKey::from_str_for_test("background-session");
+        let mut bg_session = UiSession::new(bg_key.clone());
+        bg_session.messages.push(bg_tool_message("tu-bg", model::ToolCallStatus::InProgress));
+        bg_session.messages.push(bg_tool_message("tu-ord", model::ToolCallStatus::InProgress));
+        bg_session.session_task_tool_use_ids.insert("task-bg".to_owned(), "tu-bg".to_owned());
+        bg_session.background_tasks.push(BackgroundTask {
+            task_id: "task-bg".to_owned(),
+            task_type: "local_bash".to_owned(),
+            description: "sleep 60".to_owned(),
+        });
+        app.sessions.insert(bg_key.clone(), bg_session);
+
+        apply_session_update_turn_complete(&mut app, &bg_key, None);
+
+        let bg = app.sessions.get(&bg_key).expect("bg present");
+        let status = |id: &str| {
+            bg.messages.iter().flat_map(|m| &m.blocks).find_map(|b| match b {
+                MessageBlock::ToolCall(tc) if tc.id == id => Some(tc.status),
+                _ => None,
+            })
+        };
+        assert_eq!(
+            status("tu-bg"),
+            Some(model::ToolCallStatus::InProgress),
+            "a roster-backed backgrounded card is exempt from the background sweep",
+        );
+        assert_eq!(
+            status("tu-ord"),
+            Some(model::ToolCallStatus::Completed),
+            "an ordinary in-flight card is still swept to terminal",
+        );
     }
 }

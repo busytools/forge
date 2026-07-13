@@ -2241,7 +2241,7 @@ impl App {
     /// the last `SUBAGENT_TAIL_CAP` `SubagentChild` tool calls under
     /// each root, identified via `parent_tool_use_id` on the
     /// scope-registered map. Returns an empty Vec when every root is
-    /// terminal AND drained from `alive_task_ids` - mirrors
+    /// terminal AND absent from the session roster - mirrors
     /// `clear_workflows_if_all_terminal` so the section auto-clears.
     /// Pure derive over `UiSession` state; no mutation, no new wire
     /// surface.
@@ -2294,43 +2294,18 @@ impl App {
             }
         }
 
-        // Liveness: a subagent the CLI backgrounds gets an immediate
-        // sentinel tool_result that flips its root card terminal while
-        // the task keeps running, so `status` alone is unreliable - the
-        // same failure the PROCESSES section handles. Trust
-        // `alive_task_ids` (populated by `task_started`, drained only by
-        // a terminal `task_updated`), mapped back to tool_use_ids.
-        let alive_tool_use_ids: std::collections::HashSet<String> = self.with_turn_state(|ts| {
-            ts.task_tool_use_ids
-                .iter()
-                .filter(|(task_id, _)| ts.alive_task_ids.contains(*task_id))
-                .map(|(_, tool_use_id)| tool_use_id.clone())
-                .collect()
-        });
-        // Session-scoped backstop: a backgrounded agent keeps running
-        // after its spawning turn Results, but the turn-scoped set above
-        // is wiped at turn-complete and the sentinel flipped its root
-        // terminal - and an agent has no OS process to fall back to. Mark
-        // a root active while its task_id is still in the session-scoped
-        // `background_tasks` registry under an agent kind (resolved via the
-        // session-scoped task map). Mirrors WORKFLOWS' cross-turn survival.
-        let backgrounded_agent_roots: std::collections::HashSet<&str> = {
-            let agent_task_ids: std::collections::HashSet<&str> = session
-                .background_tasks
-                .iter()
-                .filter(|task| matches!(task.task_type.as_str(), "agent" | "local_agent"))
-                .map(|task| task.task_id.as_str())
-                .collect();
-            session
-                .session_task_tool_use_ids
-                .iter()
-                .filter(|(task_id, _)| agent_task_ids.contains(task_id.as_str()))
-                .map(|(_, tool_use_id)| tool_use_id.as_str())
-                .collect()
-        };
+        // Liveness follows the task's real lifecycle, not the turn. The CLI
+        // backgrounds a subagent with an immediate sentinel tool_result that
+        // flips its root card terminal while the task keeps running, and its
+        // spawning turn Results before it finishes - so `status` alone is
+        // unreliable and the turn-scoped alive set is wiped underneath it.
+        // The durable signal is the session roster (`background_tasks`
+        // INTERSECT the session task map), which survives turn finalisation
+        // and covers every backgrounded kind. A genuinely running
+        // non-backgrounded root still surfaces via its own in-flight status.
+        let backgrounded_alive = session.backgrounded_alive_tool_use_ids();
         let root_is_active = |root: &&crate::app::ToolCallInfo| {
-            alive_tool_use_ids.contains(root.id.as_str())
-                || backgrounded_agent_roots.contains(root.id.as_str())
+            backgrounded_alive.contains(root.id.as_str())
                 || matches!(
                     root.status,
                     crate::agent::model::ToolCallStatus::InProgress
@@ -2809,7 +2784,23 @@ impl App {
     }
 
     pub fn clear_tool_scope_tracking(&mut self) {
-        self.tool_call_scopes_mut().clear();
+        // Preserve scope tracking for still-running backgrounded roots and
+        // their children so a backgrounded subagent stays identifiable in
+        // SUBAGENTS across turn boundaries; a blanket clear made it vanish
+        // until its next child re-registered the scope.
+        let alive: HashSet<String> = self
+            .active_session()
+            .map(|session| {
+                session.backgrounded_alive_tool_use_ids().into_iter().map(str::to_owned).collect()
+            })
+            .unwrap_or_default();
+        self.tool_call_scopes_mut().retain(|id, scope| match scope {
+            crate::app::state::types::ToolCallScope::SubagentRoot => alive.contains(id.as_str()),
+            crate::app::state::types::ToolCallScope::SubagentChild { parent_tool_use_id } => {
+                alive.contains(parent_tool_use_id.as_str())
+            }
+            crate::app::state::types::ToolCallScope::MainAgent => false,
+        });
         self.active_task_ids_mut().clear();
     }
 
@@ -2965,11 +2956,20 @@ impl App {
 
     /// Force-finish any lingering in-progress tool calls.
     /// Returns the number of tool calls that were transitioned.
+    ///
+    /// Backgrounded tasks still in the session roster are exempt: they
+    /// outlive the turn and settle via their own `task_updated`.
     pub fn finalize_in_progress_tool_calls(&mut self, new_status: model::ToolCallStatus) -> usize {
         let mut changed = 0usize;
         let mut changed_message_indices = Vec::new();
         let mut changed_slots = Vec::new();
         let mut detached_terminal = false;
+        let exempt: std::collections::HashSet<String> = self
+            .active_session()
+            .map(|session| {
+                session.backgrounded_alive_tool_use_ids().into_iter().map(str::to_owned).collect()
+            })
+            .unwrap_or_default();
 
         for (msg_idx, msg) in self.active_messages_mut().iter_mut().enumerate() {
             for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
@@ -2978,7 +2978,8 @@ impl App {
                     if matches!(
                         tc.status,
                         model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending
-                    ) {
+                    ) && !exempt.contains(tc.id.as_str())
+                    {
                         tc.status = new_status;
                         tc.mark_tool_call_layout_dirty();
                         changed_slots.push((msg_idx, block_idx));
@@ -5538,6 +5539,42 @@ mod tests {
         assert!(app.active_task_ids().is_empty(), "active_task_ids must be cleared at turn end");
     }
 
+    /// Identity-layer sibling of the finalize exemption: a still-running
+    /// backgrounded root and its children keep their scope across
+    /// turn-complete so SUBAGENTS can still identify them; a main-agent
+    /// scope always clears, and a completed root's scope drops on the next
+    /// clear once it leaves the roster - so nothing leaks.
+    #[test]
+    fn clear_tool_scope_tracking_retains_live_backgrounded_scopes_then_drops_them() {
+        use crate::app::state::types::{BackgroundTask, ToolCallScope};
+
+        let mut app = make_test_app();
+        app.tool_call_scopes_mut().insert("toolu_root".to_owned(), ToolCallScope::SubagentRoot);
+        app.tool_call_scopes_mut().insert(
+            "toolu_child".to_owned(),
+            ToolCallScope::SubagentChild { parent_tool_use_id: "toolu_root".to_owned() },
+        );
+        app.tool_call_scopes_mut().insert("toolu_main".to_owned(), ToolCallScope::MainAgent);
+        app.insert_session_task_mapping("task-root".to_owned(), "toolu_root".to_owned());
+        *app.background_tasks_mut() = vec![BackgroundTask {
+            task_id: "task-root".to_owned(),
+            task_type: "local_agent".to_owned(),
+            description: String::new(),
+        }];
+
+        // Turn-complete while the agent is still backgrounded.
+        app.clear_tool_scope_tracking();
+        assert!(app.tool_call_scope("toolu_root").is_some(), "live backgrounded root retained");
+        assert!(app.tool_call_scope("toolu_child").is_some(), "its child retained");
+        assert!(app.tool_call_scope("toolu_main").is_none(), "main-agent scope always cleared");
+
+        // The task completes + drops from the roster; the next clear drops it.
+        app.remove_session_task_mapping("task-root");
+        app.clear_tool_scope_tracking();
+        assert!(app.tool_call_scope("toolu_root").is_none(), "completed root scope dropped");
+        assert!(app.tool_call_scope("toolu_child").is_none(), "orphaned child scope dropped");
+    }
+
     #[test]
     fn finalize_in_progress_tool_calls_detaches_execute_terminal_refs() {
         let mut app = make_test_app();
@@ -7477,13 +7514,13 @@ mod tests {
 
     /// Regression: a subagent the CLI backgrounds gets an immediate
     /// sentinel tool_result that flips its root card to terminal while
-    /// the subagent keeps running. Liveness is tracked by
-    /// `alive_task_ids` (populated by `task_started`, drained only by a
-    /// terminal `task_updated`), so the section must stay visible for
-    /// the task's true lifetime even though the card status reads
+    /// the subagent keeps running. Liveness comes from the session roster
+    /// (`background_tasks` intersected with the session task map), so the
+    /// section must stay visible for the task's true lifetime even though
+    /// the card status reads
     /// terminal - mirroring the PROCESSES section.
     #[test]
-    fn subagents_view_keeps_backgrounded_root_alive_via_task_ids() {
+    fn subagents_view_keeps_backgrounded_root_alive_via_session_roster() {
         let mut app = App::test_default();
         let root = make_subagent_root_tc(
             "tu-root-bg",
@@ -7492,12 +7529,15 @@ mod tests {
             model::ToolCallStatus::Completed,
         );
         push_subagent_session(&mut app, root, Vec::new());
-        // task_started mapped the task_id to the root and marked it
-        // alive; no terminal task_updated has drained it yet.
-        let _: () = app.with_turn_state_mut(|ts| {
-            ts.task_tool_use_ids.insert("task-bg".to_owned(), "tu-root-bg".to_owned());
-            ts.alive_task_ids.insert("task-bg".to_owned());
-        });
+        // task_started recorded the session-scoped mapping and the CLI
+        // registry lists it as live; no terminal task_updated has drained
+        // it yet.
+        app.insert_session_task_mapping("task-bg".to_owned(), "tu-root-bg".to_owned());
+        *app.background_tasks_mut() = vec![crate::app::state::types::BackgroundTask {
+            task_id: "task-bg".to_owned(),
+            task_type: "local_agent".to_owned(),
+            description: "long-running background scan".to_owned(),
+        }];
 
         let view = app.subagents_view();
         assert_eq!(
@@ -7509,11 +7549,11 @@ mod tests {
     }
 
     /// Companion to the keeps-alive test: a backgrounded root whose
-    /// sentinel status reads terminal but that is still in
-    /// `alive_task_ids` must render as *running* - InProgress status
+    /// sentinel status reads terminal but that is still live in the
+    /// session roster must render as *running* - InProgress status
     /// (spinner, no `· N tools` summary) AND its live tool tail
-    /// preserved. Deriving the row from `root.status` alone painted a
-    /// ✓ and dropped the tail even though the task kept working.
+    /// preserved. Deriving the row from `root.status` alone would mark a
+    /// still-working task done and drop its tail.
     #[test]
     fn subagents_view_backgrounded_alive_root_shows_running_with_tail() {
         let mut app = App::test_default();
@@ -7524,7 +7564,7 @@ mod tests {
             model::ToolCallStatus::Completed,
         );
         // More children than the cap so this also exercises the tail cap
-        // on the alive-via-task_ids path (the existing cap test drives an
+        // on the alive-via-registry path (the existing cap test drives an
         // InProgress-status root instead).
         let child_count = SUBAGENT_TAIL_CAP + 2;
         let mut children = Vec::new();
@@ -7536,10 +7576,12 @@ mod tests {
             ));
         }
         push_subagent_session(&mut app, root, children);
-        let _: () = app.with_turn_state_mut(|ts| {
-            ts.task_tool_use_ids.insert("task-bg2".to_owned(), "tu-root-bg2".to_owned());
-            ts.alive_task_ids.insert("task-bg2".to_owned());
-        });
+        app.insert_session_task_mapping("task-bg2".to_owned(), "tu-root-bg2".to_owned());
+        *app.background_tasks_mut() = vec![crate::app::state::types::BackgroundTask {
+            task_id: "task-bg2".to_owned(),
+            task_type: "local_agent".to_owned(),
+            description: "long-running background scan".to_owned(),
+        }];
 
         let view = app.subagents_view();
         assert_eq!(view.len(), 1, "alive backgrounded root stays; got {view:?}");
@@ -7591,7 +7633,6 @@ mod tests {
         // Turn finalisation wiped the turn-scoped liveness.
         let _: () = app.with_turn_state_mut(|ts| {
             ts.task_tool_use_ids.clear();
-            ts.alive_task_ids.clear();
         });
 
         let view = app.subagents_view();
@@ -7636,7 +7677,6 @@ mod tests {
         app.insert_session_task_mapping("task-gate".to_owned(), "tu-root-gate".to_owned());
         let _: () = app.with_turn_state_mut(|ts| {
             ts.task_tool_use_ids.clear();
-            ts.alive_task_ids.clear();
         });
 
         assert!(

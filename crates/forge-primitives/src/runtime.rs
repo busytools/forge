@@ -410,16 +410,6 @@ pub struct SessionTurnState {
     /// `TaskNotification` messages can resolve back to the originating
     /// tool call for `ToolCallUpdate` emission.
     pub task_tool_use_ids: std::collections::HashMap<String, String>,
-    /// Currently-alive long-running task ids. Populated by
-    /// `task_started`, drained by `task_updated` with a terminal
-    /// `patch.status` (`completed` / `failed` / `killed` / `stopped`).
-    /// Decoupled from the per-`ToolCall` status field because
-    /// backgrounded Bash tool_results arrive immediately (flipping
-    /// the tool call to `Completed`) while the underlying process
-    /// continues running - only the task-lifecycle wire events
-    /// describe true liveness. Inspector's PROCESSES section
-    /// renders based on this set.
-    pub alive_task_ids: std::collections::HashSet<String>,
 
     /// Raw model id from the CLI's session-init payload.
     pub model_id: String,
