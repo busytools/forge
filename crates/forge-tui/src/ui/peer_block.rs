@@ -28,6 +28,7 @@
 //! Visual reference: `docs/forge-map.html#peer-block`.
 
 use crate::app::ToolCallInfo;
+use crate::ui::chat_tree;
 use crate::ui::theme;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -524,7 +525,7 @@ fn push_collapsed_summary(lines: &mut Vec<Line<'static>>, body: &str) {
 
     let dim = Style::default().fg(theme::DIM);
     let mut line = Line::default();
-    line.spans.push(Span::styled("  \u{2514}\u{2500} ".to_owned(), dim));
+    line.spans.push(Span::styled(format!("  {}", chat_tree::LAST), dim));
     line.spans.push(Span::styled(summary, dim));
     line.spans.push(Span::styled("  click or ctrl+x to expand".to_owned(), dim));
     lines.push(line);
@@ -549,12 +550,12 @@ fn push_tree_body_lines(lines: &mut Vec<Line<'static>>, body: &str) {
     let last_idx = body_lines.len().saturating_sub(1);
     for (idx, raw_line) in body_lines.iter().enumerate() {
         let prefix = if idx == last_idx {
-            "  \u{2514}\u{2500} " // └─
+            format!("  {}", chat_tree::LAST)
         } else {
-            "  \u{2502}  " // │
+            format!("  {}  ", chat_tree::SPINE)
         };
         lines.push(Line::from(vec![
-            Span::styled(prefix.to_owned(), pipe_style),
+            Span::styled(prefix, pipe_style),
             Span::styled((*raw_line).to_owned(), body_text_style),
         ]));
     }

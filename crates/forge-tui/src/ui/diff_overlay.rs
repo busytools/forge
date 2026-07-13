@@ -43,6 +43,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::App;
 use crate::app::diff_overlay::DiffOverlayState;
+use crate::ui::chat_tree;
 use crate::ui::highlight::LineHighlighter;
 use crate::ui::theme;
 
@@ -674,9 +675,9 @@ fn emit_rail_node(
     let connector = if is_top_level {
         ""
     } else if is_last {
-        "\u{2514}\u{2500} "
+        chat_tree::LAST
     } else {
-        "\u{251c}\u{2500} "
+        chat_tree::BRANCH
     };
     let line_prefix = format!("{prefix}{connector}");
     match node.leaf.as_ref() {
@@ -708,7 +709,7 @@ fn emit_rail_node(
     } else if is_last {
         format!("{prefix}   ")
     } else {
-        format!("{prefix}\u{2502}  ")
+        format!("{prefix}{}  ", chat_tree::SPINE)
     };
     let count = node.children.len();
     for (idx, child) in node.children.iter().enumerate() {

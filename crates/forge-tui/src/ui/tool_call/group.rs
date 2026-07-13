@@ -20,6 +20,7 @@ use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::agent::model::ToolCallStatus;
+use crate::ui::chat_tree;
 use crate::ui::message::grouping::{KindSummary, READ_GLYPH, kind_target_wraps};
 use crate::ui::theme;
 use crate::ui::tool_call::status_icon;
@@ -67,10 +68,10 @@ pub fn render_group_summary_line(
     let label_w = summary.lines.iter().map(|l| cells(&l.label)).max().unwrap_or(0);
     for (i, line) in summary.lines.iter().enumerate() {
         let last = i + 1 == n;
-        let connector = if last { "\u{2514}\u{2500} " } else { "\u{251c}\u{2500} " };
+        let connector = chat_tree::connector(last);
         // The spine under a kind holds `│` while a later kind follows,
         // blank on the last kind (matches the projects-pane tree).
-        let spine = if last { " " } else { "\u{2502}" };
+        let spine = if last { " " } else { chat_tree::SPINE };
 
         // Read nests one child row per file (project-root-relative)
         // rather than an inline target. Paths middle-ellipsis when wider
@@ -114,7 +115,7 @@ pub fn render_group_summary_line(
             let child_n = read_paths.len();
             for (ci, path) in read_paths.iter().enumerate() {
                 let child_last = ci + 1 == child_n;
-                let child_conn = if child_last { "\u{2514}\u{2500} " } else { "\u{251c}\u{2500} " };
+                let child_conn = chat_tree::connector(child_last);
                 lines.push(Line::from(vec![
                     Span::raw("  ".to_owned()),
                     Span::styled(spine.to_owned(), mark),
