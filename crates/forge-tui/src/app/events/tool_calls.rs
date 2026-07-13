@@ -316,7 +316,10 @@ fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &To
         changed |= sync_if_changed(&mut existing.content, &tool_info.content);
         changed |= sync_if_changed(&mut existing.sdk_tool_name, &tool_info.sdk_tool_name);
         changed |= sync_if_changed(&mut existing.hidden, &tool_info.hidden);
-        changed |= existing.set_raw_input(tool_info.raw_input.clone());
+        // Input is fixed at dispatch; a later input-less update must preserve it.
+        if tool_info.raw_input.is_some() {
+            changed |= existing.set_raw_input(tool_info.raw_input.clone());
+        }
         changed |= sync_if_changed(&mut existing.output_metadata, &tool_info.output_metadata);
         changed |= sync_if_changed(&mut existing.task_metadata, &tool_info.task_metadata);
         if tool_info.terminal_id.is_some() {
@@ -598,5 +601,83 @@ pub(super) fn tool_kind_name(kind: model::ToolKind) -> &'static str {
         model::ToolKind::Fetch => "fetch",
         model::ToolKind::SwitchMode => "switch_mode",
         model::ToolKind::Other => "other",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn subagent_root(id: &str, raw_input: Option<serde_json::Value>) -> ToolCallInfo {
+        ToolCallInfo {
+            id: id.to_owned(),
+            title: "Task".to_owned(),
+            sdk_tool_name: "Task".to_owned(),
+            raw_input,
+            raw_input_bytes: 0,
+            output_metadata: None,
+            task_metadata: None,
+            status: model::ToolCallStatus::InProgress,
+            content: Vec::new(),
+            hidden: false,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+            monitor_output_tail: Vec::new(),
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: BlockCache::default(),
+            collapsed_override: None,
+            last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
+        }
+    }
+
+    // A subagent root's descriptive raw_input feeds its SUBAGENTS label; a
+    // later input-less wire update must preserve it, not collapse to "Task".
+    #[test]
+    fn subagent_root_raw_input_survives_later_input_less_update() {
+        let mut app = App::test_default();
+        let id = "toolu_subagent_root";
+        let descriptive = serde_json::json!({
+            "subagent_type": "Explore",
+            "description": "map hidden tool calls",
+        });
+
+        app.register_tool_call_scope(id.to_owned(), ToolCallScope::SubagentRoot);
+        upsert_tool_call_into_assistant_message(
+            &mut app,
+            subagent_root(id, Some(descriptive.clone())),
+        );
+        assert_eq!(
+            app.subagents_view()[0].label,
+            "Explore · map hidden tool calls",
+            "label is descriptive after the initial dispatch",
+        );
+
+        // The CLI's follow-up update refines status only and carries no input.
+        upsert_tool_call_into_assistant_message(&mut app, subagent_root(id, None));
+
+        let (mi, bi) = app.lookup_tool_call(id).expect("root stays indexed");
+        let MessageBlock::ToolCall(root) = &app.messages()[mi].blocks[bi] else {
+            panic!("expected ToolCall block");
+        };
+        assert_eq!(
+            root.raw_input.as_ref(),
+            Some(&descriptive),
+            "input-less update preserves the dispatch raw_input",
+        );
+        assert_eq!(
+            app.subagents_view()[0].label,
+            "Explore · map hidden tool calls",
+            "label stays descriptive, never collapses to the bare tool name",
+        );
     }
 }
