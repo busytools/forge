@@ -2784,7 +2784,23 @@ impl App {
     }
 
     pub fn clear_tool_scope_tracking(&mut self) {
-        self.tool_call_scopes_mut().clear();
+        // Preserve scope tracking for still-running backgrounded roots and
+        // their children so a backgrounded subagent stays identifiable in
+        // SUBAGENTS across turn boundaries; a blanket clear made it vanish
+        // until its next child re-registered the scope.
+        let alive: HashSet<String> = self
+            .active_session()
+            .map(|session| {
+                session.backgrounded_alive_tool_use_ids().into_iter().map(str::to_owned).collect()
+            })
+            .unwrap_or_default();
+        self.tool_call_scopes_mut().retain(|id, scope| match scope {
+            crate::app::state::types::ToolCallScope::SubagentRoot => alive.contains(id.as_str()),
+            crate::app::state::types::ToolCallScope::SubagentChild { parent_tool_use_id } => {
+                alive.contains(parent_tool_use_id.as_str())
+            }
+            crate::app::state::types::ToolCallScope::MainAgent => false,
+        });
         self.active_task_ids_mut().clear();
     }
 
@@ -5521,6 +5537,42 @@ mod tests {
         assert!(!app.active_task_ids().is_empty());
         app.clear_tool_scope_tracking();
         assert!(app.active_task_ids().is_empty(), "active_task_ids must be cleared at turn end");
+    }
+
+    /// Identity-layer sibling of the finalize exemption: a still-running
+    /// backgrounded root and its children keep their scope across
+    /// turn-complete so SUBAGENTS can still identify them; a main-agent
+    /// scope always clears, and a completed root's scope drops on the next
+    /// clear once it leaves the roster - so nothing leaks.
+    #[test]
+    fn clear_tool_scope_tracking_retains_live_backgrounded_scopes_then_drops_them() {
+        use crate::app::state::types::{BackgroundTask, ToolCallScope};
+
+        let mut app = make_test_app();
+        app.tool_call_scopes_mut().insert("toolu_root".to_owned(), ToolCallScope::SubagentRoot);
+        app.tool_call_scopes_mut().insert(
+            "toolu_child".to_owned(),
+            ToolCallScope::SubagentChild { parent_tool_use_id: "toolu_root".to_owned() },
+        );
+        app.tool_call_scopes_mut().insert("toolu_main".to_owned(), ToolCallScope::MainAgent);
+        app.insert_session_task_mapping("task-root".to_owned(), "toolu_root".to_owned());
+        *app.background_tasks_mut() = vec![BackgroundTask {
+            task_id: "task-root".to_owned(),
+            task_type: "local_agent".to_owned(),
+            description: String::new(),
+        }];
+
+        // Turn-complete while the agent is still backgrounded.
+        app.clear_tool_scope_tracking();
+        assert!(app.tool_call_scope("toolu_root").is_some(), "live backgrounded root retained");
+        assert!(app.tool_call_scope("toolu_child").is_some(), "its child retained");
+        assert!(app.tool_call_scope("toolu_main").is_none(), "main-agent scope always cleared");
+
+        // The task completes + drops from the roster; the next clear drops it.
+        app.remove_session_task_mapping("task-root");
+        app.clear_tool_scope_tracking();
+        assert!(app.tool_call_scope("toolu_root").is_none(), "completed root scope dropped");
+        assert!(app.tool_call_scope("toolu_child").is_none(), "orphaned child scope dropped");
     }
 
     #[test]
