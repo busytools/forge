@@ -265,9 +265,9 @@ pub(crate) fn live_local_bash_commands(session: &crate::app::session::UiSession)
 
 /// Synthesise PROCESSES rows for CLI-registry backgrounded `local_bash`
 /// the OS scan hasn't surfaced. Skips a task whose command already
-/// substring-matches a scanned process (the OS walk covers it) or is
-/// unresolvable (terminal-cleared from the session map); non-`local_bash`
-/// kinds route to SUBAGENTS / WORKFLOWS.
+/// substring-matches a scanned process (the OS walk covers it) or whose
+/// command is unresolvable from the session map (no `task_started` mapping
+/// recorded); non-`local_bash` kinds route to SUBAGENTS / WORKFLOWS.
 fn background_bash_rows(
     background_tasks: &[BackgroundTask],
     command_by_task_id: &HashMap<String, String>,

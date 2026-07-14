@@ -804,7 +804,8 @@ async fn backgrounded_agent_survives_real_turn_complete() {
     assert_eq!(view[0].status, model::ToolCallStatus::InProgress);
     assert_eq!(view[0].tail.len(), 1, "its live tool tail survives; got {:?}", view[0].tail);
 
-    // Terminal task_updated drains the session map - the section clears.
+    // The terminal task_updated is a backgrounding sentinel, not the true
+    // completion - the roster-alive agent stays visible across it.
     send_msg(
         &mut app,
         forge_primitives::Message::TaskUpdated {
@@ -817,9 +818,26 @@ async fn backgrounded_agent_survives_real_turn_complete() {
             session_id: "test-session".to_owned(),
         },
     );
+    assert_eq!(
+        app.subagents_view().len(),
+        1,
+        "the sentinel terminal task_updated keeps the roster-alive agent visible; got {:?}",
+        app.subagents_view(),
+    );
+
+    // True completion: the CLI drops the task from the roster, which clears
+    // the section.
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: Vec::new(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
     assert!(
         app.subagents_view().is_empty(),
-        "terminal task_updated clears the section; got {:?}",
+        "the roster drop clears the section; got {:?}",
         app.subagents_view(),
     );
 }
