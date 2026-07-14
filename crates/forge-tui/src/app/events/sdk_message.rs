@@ -1259,9 +1259,6 @@ fn handle_task_updated(app: &mut App, msg: Message) {
         // the workflow row to its summarised one-liner. Idempotent
         // when the entry is already Completed.
         app.set_workflow_completed_by_task_id(&task_id);
-        // Drop the session-scoped mirror; keyed by task_id, so it runs
-        // even post-turn when the tool_use_id lookup below is empty.
-        app.remove_session_task_mapping(&task_id);
     }
 
     // The standard tool-call card update still requires the
@@ -1462,6 +1459,28 @@ fn handle_background_tasks_changed(app: &mut App, msg: Message) {
                 task_type = %task.task_type,
             );
         }
+    }
+    // The roster is the sole authority for the session task-map lifecycle: a
+    // task_id in the previous snapshot but absent from this one has left the
+    // roster, so its `task_id -> tool_use_id` resolver is dropped here.
+    // Diffing old-vs-new (not pruning every unrostered entry) spares a
+    // resolver whose `task_started` preceded the task's first roster event.
+    let departed: Vec<String> = {
+        let new_ids: std::collections::HashSet<&str> =
+            parsed.iter().map(|task| task.task_id.as_str()).collect();
+        app.active_session()
+            .map(|session| {
+                session
+                    .background_tasks
+                    .iter()
+                    .filter(|task| !new_ids.contains(task.task_id.as_str()))
+                    .map(|task| task.task_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    for task_id in &departed {
+        app.remove_session_task_mapping(task_id);
     }
     *app.background_tasks_mut() = parsed;
 }
@@ -2795,6 +2814,236 @@ mod background_tasks_changed_tests {
         let tasks = background_tasks(&app);
         assert_eq!(tasks.len(), 1, "malformed entries dropped, valid one kept");
         assert_eq!(tasks[0].task_id, "ok");
+    }
+
+    fn map_has(app: &App, task_id: &str) -> bool {
+        app.active_session().is_some_and(|s| s.session_task_tool_use_ids.contains_key(task_id))
+    }
+
+    #[test]
+    fn task_leaving_roster_drops_its_session_map_entry() {
+        let mut app = App::test_default();
+        // task_started recorded the resolver; the task is then listed in the
+        // roster.
+        app.insert_session_task_mapping("task-x".to_owned(), "tu-x".to_owned());
+        handle_sdk_message(
+            &mut app,
+            background_event(vec![json!({
+                "task_id": "task-x",
+                "task_type": "local_agent",
+                "description": "x",
+            })]),
+        );
+        assert!(map_has(&app, "task-x"), "still rostered -> resolver kept");
+
+        // The task leaves the roster - its resolver is dropped in the same
+        // event, so the registry stays the sole liveness authority.
+        handle_sdk_message(&mut app, background_event(Vec::new()));
+        assert!(!map_has(&app, "task-x"), "a task_id that left the roster loses its map entry");
+    }
+
+    #[test]
+    fn session_map_entry_before_first_roster_event_survives() {
+        let mut app = App::test_default();
+        // task_started can precede a task's first roster event, so a snapshot
+        // that doesn't list it yet must NOT drop the resolver (diff old-vs-new,
+        // not prune-all).
+        app.insert_session_task_mapping("task-y".to_owned(), "tu-y".to_owned());
+        handle_sdk_message(
+            &mut app,
+            background_event(vec![json!({
+                "task_id": "task-other",
+                "task_type": "local_bash",
+                "description": "o",
+            })]),
+        );
+        assert!(map_has(&app, "task-y"), "a not-yet-rostered task keeps its resolver");
+    }
+}
+
+#[cfg(test)]
+mod subagent_sentinel_tests {
+    //! A backgrounded subagent gets a terminal `task_updated` (the
+    //! backgrounding sentinel) that flips its root card `Completed`
+    //! seconds before its true completion (`task_notification`). The
+    //! session roster - the `background_tasks` registry intersected with
+    //! the session task map - is the liveness gate, so the SUBAGENTS row
+    //! must survive the sentinel while the registry still lists the task
+    //! and clear only when the CLI drops the task from the roster.
+    use super::handle_sdk_message;
+    use crate::agent::model::ToolCallStatus;
+    use crate::app::TerminalSnapshotMode;
+    use crate::app::state::types::{BackgroundTask, ToolCallScope};
+    use crate::app::{App, BlockCache, ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
+    use forge_primitives::messages::TaskUpdatePatch;
+    use forge_primitives::{Message, TaskNotificationStatus};
+
+    fn subagent_tool_call(
+        id: &str,
+        sdk_tool_name: &str,
+        title: &str,
+        raw_input: Option<serde_json::Value>,
+        hidden: bool,
+        status: ToolCallStatus,
+    ) -> ToolCallInfo {
+        ToolCallInfo {
+            id: id.to_owned(),
+            title: title.to_owned(),
+            sdk_tool_name: sdk_tool_name.to_owned(),
+            raw_input,
+            raw_input_bytes: 0,
+            output_metadata: None,
+            task_metadata: None,
+            status,
+            content: Vec::new(),
+            hidden,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+            monitor_output_tail: Vec::default(),
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: BlockCache::default(),
+            collapsed_override: None,
+            last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
+        }
+    }
+
+    /// Seed a backgrounded subagent whose spawning turn already Result'd:
+    /// root + one child in the message list, plus the session task map and
+    /// the CLI `background_tasks` registry both holding the task. The
+    /// root's card reads `Completed` because the backgrounding sentinel
+    /// already flipped it.
+    fn seed_backgrounded_subagent(app: &mut App, task_id: &str, root_id: &str) {
+        let root = subagent_tool_call(
+            root_id,
+            "Task",
+            "Task",
+            Some(serde_json::json!({
+                "subagent_type": "Explore",
+                "description": "long-running background scan",
+                "prompt": "long-running background scan",
+            })),
+            false,
+            ToolCallStatus::Completed,
+        );
+        let child = subagent_tool_call(
+            "tu-child-1",
+            "Read",
+            "conv-row.tsx",
+            None,
+            true,
+            ToolCallStatus::Completed,
+        );
+        app.register_tool_call_scope(root_id.to_owned(), ToolCallScope::SubagentRoot);
+        app.register_tool_call_scope(
+            child.id.clone(),
+            ToolCallScope::SubagentChild { parent_tool_use_id: root_id.to_owned() },
+        );
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(root)), MessageBlock::ToolCall(Box::new(child))],
+            None,
+        ));
+        app.insert_session_task_mapping(task_id.to_owned(), root_id.to_owned());
+        *app.background_tasks_mut() = vec![BackgroundTask {
+            task_id: task_id.to_owned(),
+            task_type: "local_agent".to_owned(),
+            description: "long-running background scan".to_owned(),
+        }];
+    }
+
+    fn terminal_task_updated(task_id: &str) -> Message {
+        Message::TaskUpdated {
+            task_id: task_id.to_owned(),
+            patch: TaskUpdatePatch { status: Some("completed".to_owned()), end_time: None },
+            uuid: String::new(),
+            session_id: String::new(),
+        }
+    }
+
+    fn task_notification(task_id: &str, root_id: &str) -> Message {
+        Message::TaskNotification {
+            task_id: task_id.to_owned(),
+            status: TaskNotificationStatus::Completed,
+            output_file: String::new(),
+            summary: "done".to_owned(),
+            uuid: String::new(),
+            session_id: String::new(),
+            tool_use_id: Some(root_id.to_owned()),
+            usage: None,
+        }
+    }
+
+    fn empty_roster() -> Message {
+        Message::BackgroundTasksChanged {
+            tasks: Vec::new(),
+            uuid: String::new(),
+            session_id: String::new(),
+        }
+    }
+
+    #[test]
+    fn sentinel_keeps_subagent_until_roster_drop() {
+        let mut app = App::test_default();
+        let task_id = "task-sub";
+        let root_id = "tu-root-sub";
+        seed_backgrounded_subagent(&mut app, task_id, root_id);
+
+        let view = app.subagents_view();
+        assert_eq!(view.len(), 1, "baseline: backgrounded subagent visible; got {view:?}");
+        assert_eq!(view[0].status, ToolCallStatus::InProgress);
+        assert_eq!(view[0].label, "Explore \u{b7} long-running background scan");
+
+        // The sentinel arrives while the registry still lists the task.
+        handle_sdk_message(&mut app, terminal_task_updated(task_id));
+
+        let view = app.subagents_view();
+        assert_eq!(
+            view.len(),
+            1,
+            "the terminal task_updated sentinel must not evict a still-registered subagent; got {view:?}",
+        );
+        assert_eq!(
+            view[0].status,
+            ToolCallStatus::InProgress,
+            "subagent still renders running through the sentinel; got {:?}",
+            view[0].status,
+        );
+        assert_eq!(view[0].label, "Explore \u{b7} long-running background scan");
+        assert_eq!(
+            view[0].tail.len(),
+            1,
+            "its live tool tail is preserved; got {:?}",
+            view[0].tail
+        );
+
+        // The true-completion notification alone must NOT clear the row: the
+        // roster is the sole liveness authority.
+        handle_sdk_message(&mut app, task_notification(task_id, root_id));
+        assert_eq!(
+            app.subagents_view().len(),
+            1,
+            "task_notification alone does not clear the row while the roster still lists the task; got {:?}",
+            app.subagents_view(),
+        );
+
+        // The CLI drops the task from the roster at true completion, which
+        // drains the section.
+        handle_sdk_message(&mut app, empty_roster());
+        assert!(
+            app.subagents_view().is_empty(),
+            "dropping the task from the roster clears the SUBAGENTS row; got {:?}",
+            app.subagents_view(),
+        );
     }
 }
 
