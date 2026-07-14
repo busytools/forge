@@ -211,6 +211,20 @@ fn push_queued_group(app: &mut App, prompts: &[String]) {
     );
 }
 
+/// True when a user-role turn's text is harness-injected scaffolding
+/// never meant for the chat buffer: `<task-notification>` completion
+/// notices and Claude Code's slash-command wrappers. Live sessions
+/// drop these as input echoes, so only resume re-renders them; both
+/// replay filter sites route through here to stay in sync.
+fn is_suppressed_user_scaffolding(text: &str) -> bool {
+    let t = text.trim_start();
+    t.starts_with("<task-notification>")
+        || t.starts_with("<local-command-caveat>")
+        || t.starts_with("<local-command-stdout>")
+        || t.starts_with("<command-name>")
+        || t.starts_with("<command-message>")
+}
+
 pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primitives::Message]) {
     let preserved_tip_seed = app.current_welcome_tip_seed();
     app.clear_messages_tracked();
@@ -262,7 +276,7 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
                     }
                     _ => None,
                 })
-                .filter(|p| !p.trim_start().starts_with("<task-notification>"))
+                .filter(|p| !is_suppressed_user_scaffolding(p))
                 .collect();
             i += run_len;
             match prompts.len() {
@@ -295,21 +309,7 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
                     if text.is_empty() {
                         continue;
                     }
-                    // Drop Claude Code's local-command scaffolding -
-                    // `<local-command-caveat>…</local-command-caveat>`,
-                    // `<command-name>/x</command-name>…`, and the
-                    // matching `<local-command-stdout>` wrappers. These
-                    // are metadata the LLM uses to distinguish "this is
-                    // a slash-command invocation, not user input"; they
-                    // were never meant for chat-buffer rendering. The
-                    // live-session input handler never produces them
-                    // (slash commands take a different path), so replay
-                    // is the only surface that surfaces them.
-                    let trimmed = text.trim_start();
-                    if trimmed.starts_with("<local-command-caveat>")
-                        || trimmed.starts_with("<command-name>")
-                        || trimmed.starts_with("<local-command-stdout>")
-                    {
+                    if is_suppressed_user_scaffolding(text) {
                         continue;
                     }
                     if !rendered_user_text {
@@ -395,6 +395,31 @@ mod tests {
             uuid: None,
             tool_use_result: None,
         }
+    }
+
+    fn historical_user_text(text: &str) -> Message {
+        Message::User {
+            message: UserEnvelope {
+                role: "user".to_owned(),
+                content: vec![ContentBlock::Text { text: text.to_owned() }],
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            uuid: None,
+            tool_use_result: None,
+        }
+    }
+
+    fn user_bubble_texts(app: &App) -> Vec<String> {
+        app.messages()
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::User))
+            .flat_map(|m| m.blocks.iter())
+            .filter_map(|b| match b {
+                MessageBlock::Text(t) => Some(t.text.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
@@ -523,6 +548,127 @@ mod tests {
             panic!("should be a Text block");
         };
         assert_eq!(text_block.text, "real user prompt");
+    }
+
+    /// A historical `<task-notification>` user turn (the harness's
+    /// background-task / subagent completion notice) must not render as
+    /// a chat bubble on resume - it leaks the task id, output path, and
+    /// status. The genuine user turn beside it still renders.
+    #[test]
+    fn resume_suppresses_task_notification_user_turns() {
+        let mut app = App::test_default();
+        let notification = "<task-notification>\n\
+             <task-id>task-abc123</task-id>\n\
+             <tool-use-id>toolu_xyz</tool-use-id>\n\
+             <output-path>/tmp/forge/tasks/task-abc123.output</output-path>\n\
+             <status>completed</status>\n\
+             </task-notification>";
+        let history = vec![
+            historical_user_text("do the thing"),
+            historical_user_text(notification),
+            historical_assistant("done"),
+        ];
+        load_resume_history(&mut app, &history);
+
+        let texts = user_bubble_texts(&app);
+        assert!(
+            texts.iter().any(|t| t.contains("do the thing")),
+            "the genuine user turn must still render: {texts:?}",
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("task-notification")),
+            "task-notification scaffolding must not render: {texts:?}",
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("task-abc123")),
+            "task id must not leak into chat: {texts:?}",
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("/tmp/forge/tasks")),
+            "output path must not leak into chat: {texts:?}",
+        );
+    }
+
+    /// A historical `<command-message>` slash-command wrapper is
+    /// likewise suppressed on resume.
+    #[test]
+    fn resume_suppresses_command_message_wrapper() {
+        let mut app = App::test_default();
+        let history = vec![
+            historical_user_text("<command-message>compact</command-message>"),
+            historical_assistant("ack"),
+        ];
+        load_resume_history(&mut app, &history);
+
+        let texts = user_bubble_texts(&app);
+        assert!(
+            !texts.iter().any(|t| t.contains("command-message")),
+            "command-message wrapper must not render: {texts:?}",
+        );
+        assert!(
+            app.messages().iter().all(|m| !matches!(m.role, MessageRole::User)),
+            "no user bubble should survive the lone wrapper turn",
+        );
+    }
+
+    /// The three wrappers already filtered before this predicate
+    /// existed must keep dropping on resume - the shared predicate
+    /// cannot regress them.
+    #[test]
+    fn resume_still_suppresses_local_command_wrappers() {
+        let mut app = App::test_default();
+        let history = vec![
+            historical_user_text("<local-command-caveat>caveat text</local-command-caveat>"),
+            historical_assistant("a1"),
+            historical_user_text("<command-name>/clear</command-name>"),
+            historical_assistant("a2"),
+            historical_user_text("<local-command-stdout>stdout text</local-command-stdout>"),
+            historical_assistant("a3"),
+        ];
+        load_resume_history(&mut app, &history);
+
+        let texts = user_bubble_texts(&app);
+        assert!(
+            !texts.iter().any(|t| t.contains("local-command-caveat")),
+            "local-command-caveat must stay suppressed: {texts:?}",
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("command-name")),
+            "command-name must stay suppressed: {texts:?}",
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("local-command-stdout")),
+            "local-command-stdout must stay suppressed: {texts:?}",
+        );
+        assert!(
+            app.messages().iter().all(|m| !matches!(m.role, MessageRole::User)),
+            "every user turn was a wrapper; none should render",
+        );
+    }
+
+    /// The predicate anchors on `trim_start().starts_with(...)`, so a
+    /// genuine user message that merely mentions a wrapper mid-sentence
+    /// still renders.
+    #[test]
+    fn resume_renders_user_text_that_merely_mentions_wrappers() {
+        let mut app = App::test_default();
+        let history = vec![
+            historical_user_text("please explain the <task-notification> tag to me"),
+            historical_assistant("sure"),
+            historical_user_text("what does <command-name> mean mid-sentence"),
+            historical_assistant("it means a slash-command"),
+        ];
+        load_resume_history(&mut app, &history);
+
+        let texts = user_bubble_texts(&app);
+        assert!(
+            texts.iter().any(|t| t.contains("please explain the <task-notification> tag")),
+            "a message mentioning the tag mid-text must render: {texts:?}",
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("what does <command-name> mean")),
+            "a message mentioning the wrapper mid-text must render: {texts:?}",
+        );
     }
 
     // ---------------------------------------------------------------
