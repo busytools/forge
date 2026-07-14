@@ -341,6 +341,32 @@ mod tests {
         assert!(text[1].contains("\u{2514}\u{2500} \u{2b1a} read src/main.rs"), "inline: {text:?}");
     }
 
+    /// A lone read (count 1, one file) whose path is wider than the row
+    /// rides the read row inline AND middle-ellipsis-clips, so the
+    /// filename stays visible. Direct coverage for the inline-read clip
+    /// branch: the nest tests exercise the child-row clip, and the
+    /// short-path inline test never fires the clip.
+    #[test]
+    fn single_read_long_path_inlines_middle_ellipsis() {
+        let s = summary(vec![kl(
+            "\u{2b1a}",
+            "read",
+            1,
+            &["/repo/crates/forge-tui/src/ui/tool_call/group.rs"],
+        )]);
+        let lines = render_rooted(&s, ToolCallStatus::Completed, 40, "/repo");
+        let text: Vec<String> = lines.iter().map(line_text).collect();
+        assert_eq!(lines.len(), 2, "parent + one inline read row, no child: {text:?}");
+        assert!(text[1].contains("\u{2514}\u{2500} \u{2b1a} read "), "read inlines: {:?}", text[1]);
+        // Middle-ellipsis keeps a head fragment AND the filename tail.
+        assert!(text[1].contains("crates/"), "head fragment kept: {:?}", text[1]);
+        assert!(text[1].contains("..."), "middle ellipsis present: {:?}", text[1]);
+        assert!(text[1].contains("group.rs"), "filename tail kept: {:?}", text[1]);
+        for t in &text {
+            assert!(cells(t) <= 40, "row must fit width 40: {t:?}");
+        }
+    }
+
     /// A read with more CALLS than resolved paths (3 calls, one path
     /// extracted) must NOT inline as a single file - it nests, so the
     /// row never implies "1 file" for what was an N-call read.
