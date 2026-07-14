@@ -102,9 +102,9 @@ fn is_peer_block_render_tool(sdk_tool_name: &str) -> bool {
 }
 
 /// One kind-line in a group's L2 summary: a glyph-family (or MCP
-/// server) with its count and up to [`MAX_TARGETS_PER_KIND`]
-/// representative targets. Same-glyph tools (Grep / Glob / LS) share
-/// one line; each `mcp__<server>__*` server gets its own.
+/// server) with its count and one resolved target per call (uncapped -
+/// the render nests one child row per target). Same-glyph tools (Grep /
+/// Glob / LS) share one line; each `mcp__<server>__*` server gets its own.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct KindLine {
     pub glyph: &'static str,
@@ -122,20 +122,6 @@ pub struct KindSummary {
     pub lines: Vec<KindLine>,
 }
 
-/// Maximum number of representative target strings carried per kind
-/// in the L2 summary. Anything beyond this count rolls into the
-/// `+N` overflow suffix.
-pub const MAX_TARGETS_PER_KIND: usize = 3;
-
-/// Per-target character cap for the capped file-list kinds (search).
-/// Those targets are short names meant to sit on one row; the clip uses
-/// character count (not display cells) since the names are virtually
-/// always ASCII, and the outer `render_group_summary_line` cell-fence
-/// is the display-cell backstop. Wrap kinds (bash / web / lsp / ...)
-/// carry their full target and word-wrap instead - see
-/// [`kind_target_wraps`].
-pub const MAX_TARGET_DISPLAY_WIDTH: usize = 30;
-
 /// L2 marker glyph for `mcp__<server>__*` lines - distinct from the
 /// generic `\u{25cb}` so a server call reads apart from local tools.
 pub const MCP_GLYPH: &str = "\u{25c8}";
@@ -147,36 +133,28 @@ impl KindSummary {
     }
 
     /// Fold one groupable tool call into its glyph-family / MCP-server
-    /// line, creating the line on first appearance.
+    /// line, creating the line on first appearance. Every kind keeps one
+    /// resolved target per call (uncapped) so the render can nest one
+    /// child row per instance.
     pub fn tally(&mut self, tc: &crate::app::ToolCallInfo) {
         let (glyph, label) = family_glyph_label(&tc.sdk_tool_name);
         let target = family_target(tc);
-        // Read shows every file as its own nested child, so it keeps
-        // every path; other kinds keep a bounded set of representative
-        // targets and roll the rest into a `+N` overflow.
-        let cap = if glyph == READ_GLYPH { usize::MAX } else { MAX_TARGETS_PER_KIND };
         if let Some(line) = self.lines.iter_mut().find(|l| l.glyph == glyph && l.label == label) {
             line.count += 1;
-            push_target_if_room(&mut line.targets, target, cap);
+            push_target(&mut line.targets, target);
         } else {
             let mut targets = Vec::new();
-            push_target_if_room(&mut targets, target, cap);
+            push_target(&mut targets, target);
             self.lines.push(KindLine { glyph, label, count: 1, targets });
         }
     }
 }
 
-/// The read glyph (`⬚`), keyed by the theme's `tool_name_label`. Read
-/// is the one kind that nests each file as a child row rather than
-/// showing a capped inline target, so both the tally (target cap) and
-/// the render (nested layout) special-case it on this glyph.
+/// The read glyph (`⬚`), keyed by the theme's `tool_name_label`. The
+/// render special-cases read on this glyph: it relativizes each path
+/// against the project root and clips with a middle-ellipsis (keeping
+/// the filename), where every other kind clips end-first.
 pub const READ_GLYPH: &str = "\u{2b1a}";
-
-/// The search glyph (`⌕`, Grep / Glob / LS). Together with [`READ_GLYPH`]
-/// these are the file-list kinds that stay a single capped line;
-/// [`kind_target_wraps`] keys off the glyph so the wrap-vs-cap decision
-/// and the read nest/inline decision share one source of truth.
-pub const SEARCH_GLYPH: &str = "\u{2315}";
 
 /// A tool's L2 glyph-family + label. Local tools key by the
 /// [`crate::ui::theme::tool_name_label`] glyph so same-glyph tools
@@ -201,19 +179,6 @@ fn family_glyph_label(sdk_tool_name: &str) -> (&'static str, String) {
         _ => tool_label,
     };
     (glyph, family.to_owned())
-}
-
-/// Whether a kind's L2 target WRAPS across continuation rows
-/// (word-wrapped, spine held) rather than staying a single capped line.
-/// Keyed on the GLYPH, not the label, so it shares one predicate with
-/// the render's read nest/inline check (an MCP server literally named
-/// `read` keeps the `◈` glyph and still wraps). The file-list kinds
-/// ([`READ_GLYPH`] / [`SEARCH_GLYPH`]) stay capped because their targets
-/// are short names; every other kind (bash / web / lsp / skill /
-/// toolsearch / config / worktree / generic tool / MCP-server) carries a
-/// description-style target that reads better wrapped whole than clipped.
-pub fn kind_target_wraps(glyph: &str) -> bool {
-    glyph != READ_GLYPH && glyph != SEARCH_GLYPH
 }
 
 /// Split an `mcp__<server>__<tool>` name into (server, tool). `None`
@@ -246,10 +211,7 @@ fn family_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
     bespoke.or_else(|| strip_title_prefix(tc))
 }
 
-fn push_target_if_room(targets: &mut Vec<String>, candidate: Option<String>, cap: usize) {
-    if targets.len() >= cap {
-        return;
-    }
+fn push_target(targets: &mut Vec<String>, candidate: Option<String>) {
     if let Some(value) = candidate.filter(|s| !s.is_empty()) {
         targets.push(value);
     }
@@ -286,12 +248,12 @@ fn search_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(clip_to_target_width)
+        .map(str::to_owned)
 }
 
 /// Web family (`⊕`): WebFetch shows its URL (scheme stripped),
-/// WebSearch its query. A wrap kind - the full value reaches the render
-/// and word-wraps rather than clipping.
+/// WebSearch its query. The full value reaches the render, which clips
+/// it per row.
 fn web_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
     let raw = tc.raw_input.as_ref().and_then(|v| v.as_object())?;
     let value = match tc.sdk_tool_name.as_str() {
@@ -306,8 +268,8 @@ fn web_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
         .map(|s| strip_scheme(s).to_owned())
 }
 
-/// ToolSearch (`⌖`): the search query. A wrap kind - full query reaches
-/// the render.
+/// ToolSearch (`⌖`): the search query. The full query reaches the
+/// render, which clips it per row.
 fn query_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
     let raw = tc.raw_input.as_ref().and_then(|v| v.as_object())?;
     raw.get("query")
@@ -340,8 +302,8 @@ fn command_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
     // Prefer Claude's human-readable description (the collapsed
     // headline) - it rides the same raw_input object as the command,
     // and the raw command often starts with a long `cd <path>` that
-    // reads as nothing useful. A wrap kind: the full description reaches
-    // the render and word-wraps; falls back to the command when no
+    // reads as nothing useful. The full description reaches the render,
+    // which clips it per row; falls back to the command when no
     // description was sent.
     let description = raw
         .and_then(|r| r.get("description"))
@@ -366,22 +328,6 @@ fn command_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
     // a kind-label strip since Bash has no prefix).
     let title = tc.title.trim();
     if title.is_empty() { None } else { Some(title.to_owned()) }
-}
-
-fn clip_to_target_width(s: &str) -> String {
-    clip_to_width(s, MAX_TARGET_DISPLAY_WIDTH)
-}
-
-fn clip_to_width(s: &str, width: usize) -> String {
-    if s.chars().count() <= width {
-        return s.to_owned();
-    }
-    // Reserve 3 chars for `...` so the clipped form still fits in
-    // the cap.
-    let keep = width.saturating_sub(3);
-    let mut out: String = s.chars().take(keep).collect();
-    out.push_str("...");
-    out
 }
 
 /// Group expand level. ctrl+x cycles L2 -> L1 -> L0 -> L2.
@@ -1395,28 +1341,6 @@ mod tests {
         );
     }
 
-    /// Keyed on the GLYPH: the two file-list glyphs stay capped; every
-    /// description-style glyph wraps - including the MCP marker, so an
-    /// MCP server literally named `read` (glyph `◈`) still wraps.
-    #[test]
-    fn kind_target_wraps_caps_only_file_list_glyphs() {
-        assert!(!kind_target_wraps(READ_GLYPH));
-        assert!(!kind_target_wraps(SEARCH_GLYPH));
-        for glyph in [
-            "\u{25b6}", // bash
-            "\u{2295}", // web
-            "\u{2699}", // lsp
-            "\u{2726}", // skill
-            "\u{2316}", // toolsearch
-            "\u{2299}", // config
-            "\u{21c4}", // worktree
-            "\u{25cb}", // generic tool
-            MCP_GLYPH,  // any MCP server
-        ] {
-            assert!(kind_target_wraps(glyph), "{glyph} should wrap");
-        }
-    }
-
     #[test]
     fn group_collapse_level_cycles_l2_l1_l0() {
         let l = GroupCollapseLevel::default();
@@ -1596,8 +1520,8 @@ mod tests {
         );
     }
 
-    /// No description -> falls back to the full raw command (a wrap
-    /// kind, no pre-render cap).
+    /// No description -> falls back to the full raw command (kept in
+    /// full; the render clips per row).
     #[test]
     fn bash_line_falls_back_to_command_without_description() {
         let mut k = KindSummary::default();
@@ -1616,8 +1540,8 @@ mod tests {
         );
     }
 
-    /// A long description is kept in FULL - bash is a wrap kind, so the
-    /// render word-wraps it rather than the tally clipping it.
+    /// A long description is kept in FULL by the tally - the render
+    /// clips it per row rather than the tally truncating it.
     #[test]
     fn bash_line_keeps_full_description() {
         let long = "Regenerate every baseline fixture and re-run the conformance suite twice";
@@ -1634,11 +1558,11 @@ mod tests {
         assert_eq!(kind_line(&k, "bash").unwrap().targets, vec![long.to_owned()]);
     }
 
-    /// Non-read kinds cap targets at MAX_TARGETS_PER_KIND; extra calls
-    /// only bump the count (the render turns the remainder into a `+N`
-    /// overflow).
+    /// Every kind keeps EVERY target now (uncapped, like read) so the
+    /// render can nest one child row per instance. Five Greps keep all
+    /// five patterns - no cap, no overflow.
     #[test]
-    fn tally_caps_non_read_targets_per_kind() {
+    fn tally_keeps_every_target_uncapped() {
         let mut k = KindSummary::default();
         for i in 0..5 {
             tally_block(
@@ -1653,10 +1577,10 @@ mod tests {
         }
         let search = kind_line(&k, "search").unwrap();
         assert_eq!(search.count, 5);
-        assert_eq!(search.targets.len(), MAX_TARGETS_PER_KIND);
+        assert_eq!(search.targets.len(), 5, "every kind keeps every target, uncapped");
     }
 
-    /// Read is the exception: it keeps EVERY file (uncapped) so the
+    /// Read keeps EVERY file (uncapped, like every kind now) so the
     /// render can show one nested child per file.
     #[test]
     fn tally_keeps_every_read_file() {
