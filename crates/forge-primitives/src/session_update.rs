@@ -81,6 +81,12 @@ pub struct ToolCallUpdateFields {
     pub meta: Option<Value>,
 }
 
+/// A tool's input is fixed at dispatch; a later update that carries no
+/// input (`None`) or an empty object `{}` must not clobber it.
+fn raw_input_carries_content(v: &Value) -> bool {
+    !v.as_object().is_some_and(serde_json::Map::is_empty)
+}
+
 impl ToolCall {
     /// Apply a `ToolCallUpdateFields` patch in-place: any `Some` field
     /// overrides the corresponding field on `self`; `None` leaves it
@@ -113,7 +119,7 @@ impl ToolCall {
         if let Some(content) = content {
             self.content = content;
         }
-        if raw_input.is_some() {
+        if raw_input.as_ref().is_some_and(raw_input_carries_content) {
             self.raw_input = raw_input;
         }
         if raw_output.is_some() {
@@ -337,6 +343,25 @@ mod tests {
         assert_eq!(tc.raw_input, Some(json!({"cmd": "ls"})));
         assert_eq!(tc.raw_output.as_deref(), Some("old stdout"));
         assert_eq!(tc.meta, Some(json!({"old": true})));
+    }
+
+    #[test]
+    fn merge_empty_object_raw_input_preserves_existing_input() {
+        // Input is fixed at dispatch; an empty-object `{}` update
+        // carries no content and must not clobber the populated input.
+        let mut tc = sample_tool_call();
+        tc.merge(ToolCallUpdateFields { raw_input: Some(json!({})), ..Default::default() });
+        assert_eq!(tc.raw_input, Some(json!({"cmd": "ls"})));
+    }
+
+    #[test]
+    fn merge_content_bearing_raw_input_overwrites_existing_input() {
+        let mut tc = sample_tool_call();
+        tc.merge(ToolCallUpdateFields {
+            raw_input: Some(json!({"cmd": "pwd"})),
+            ..Default::default()
+        });
+        assert_eq!(tc.raw_input, Some(json!({"cmd": "pwd"})));
     }
 
     #[test]

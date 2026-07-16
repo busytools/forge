@@ -1,8 +1,8 @@
 use super::super::{App, AppStatus, InvalidationLevel, MessageBlock, ToolCallInfo, ToolCallScope};
 use super::tool_calls::{
     current_session_id, has_in_progress_tool_calls, json_value_size, log_terminal_spawned,
-    parent_tool_use_id_from_meta, sdk_tool_name_from_meta, should_jump_on_large_write,
-    tool_scope_name,
+    parent_tool_use_id_from_meta, raw_input_carries_content, sdk_tool_name_from_meta,
+    should_jump_on_large_write, tool_scope_name,
 };
 use crate::agent::model;
 use crate::app::todos::{
@@ -291,6 +291,9 @@ fn apply_tool_call_raw_input_update(
     let Some(raw_input) = raw_input else {
         return false;
     };
+    if !raw_input_carries_content(raw_input) {
+        return false;
+    }
     tc.set_raw_input(Some(raw_input.clone()))
 }
 
@@ -862,6 +865,40 @@ mod tests {
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),
         }
+    }
+
+    #[test]
+    fn empty_object_raw_input_update_preserves_subagent_label() {
+        let mut app = App::test_default();
+        let root_id = "tu-root-empty-input";
+        let mut root = make_task_tool_call(root_id, model::ToolCallStatus::InProgress);
+        root.sdk_tool_name = "Task".to_owned();
+        root.raw_input = Some(serde_json::json!({
+            "subagent_type": "Explore",
+            "description": "Map the pipeline",
+            "prompt": "map the render pipeline",
+        }));
+        app.active_messages_mut().push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(root))],
+            None,
+        ));
+        app.index_tool_call(root_id.to_owned(), 0, 0);
+        app.register_tool_call_scope(root_id.to_owned(), ToolCallScope::SubagentRoot);
+
+        assert_eq!(app.subagents_view()[0].label, "Explore \u{b7} Map the pipeline");
+
+        let update = model::ToolCallUpdate::new(
+            root_id,
+            model::ToolCallUpdateFields::new().raw_input(serde_json::json!({})),
+        );
+        handle_tool_call_update_session(&mut app, &update);
+
+        assert_eq!(
+            app.subagents_view()[0].label,
+            "Explore \u{b7} Map the pipeline",
+            "empty-object update must not clobber the subagent dispatch input",
+        );
     }
 
     #[test]
