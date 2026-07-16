@@ -7464,6 +7464,31 @@ mod tests {
         assert_eq!(entry.tail[2].title, "git log --oneline -3");
     }
 
+    #[test]
+    fn subagent_label_from_root_combines_type_and_description() {
+        let root = make_subagent_root_tc(
+            "tu-label-1",
+            "Explore",
+            "Map the pipeline",
+            model::ToolCallStatus::InProgress,
+        );
+        assert_eq!(subagent_label_from_root(&root), "Explore · Map the pipeline");
+    }
+
+    /// With neither `subagent_type` nor `description`, the label falls
+    /// back to `sdk_tool_name` (here `"Task"`).
+    #[test]
+    fn subagent_label_from_root_falls_back_to_tool_name_on_empty_input() {
+        let mut root = make_subagent_root_tc(
+            "tu-label-2",
+            "Explore",
+            "Map the pipeline",
+            model::ToolCallStatus::InProgress,
+        );
+        root.raw_input = Some(serde_json::json!({}));
+        assert_eq!(subagent_label_from_root(&root), "Task");
+    }
+
     /// Tail cap: more than [`SUBAGENT_TAIL_CAP`] children -> tail
     /// surfaces only the LAST N (most recent), total_count counts
     /// every child registered under the root.
