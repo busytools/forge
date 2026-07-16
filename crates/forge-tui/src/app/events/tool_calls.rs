@@ -303,6 +303,12 @@ pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: 
     }
 }
 
+/// A tool's input is fixed at dispatch; a later update that carries no
+/// input (`None`) or an empty object `{}` must not clobber it.
+pub(super) fn raw_input_carries_content(v: &serde_json::Value) -> bool {
+    !v.as_object().is_some_and(serde_json::Map::is_empty)
+}
+
 fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &ToolCallInfo) {
     let mut layout_dirty = false;
     let mut terminal_tracking = None;
@@ -316,8 +322,9 @@ fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &To
         changed |= sync_if_changed(&mut existing.content, &tool_info.content);
         changed |= sync_if_changed(&mut existing.sdk_tool_name, &tool_info.sdk_tool_name);
         changed |= sync_if_changed(&mut existing.hidden, &tool_info.hidden);
-        // Input is fixed at dispatch; a later input-less update must preserve it.
-        if tool_info.raw_input.is_some() {
+        // Input is fixed at dispatch; a later input-less OR empty-`{}`
+        // update must preserve it.
+        if tool_info.raw_input.as_ref().is_some_and(raw_input_carries_content) {
             changed |= existing.set_raw_input(tool_info.raw_input.clone());
         }
         changed |= sync_if_changed(&mut existing.output_metadata, &tool_info.output_metadata);
@@ -679,5 +686,50 @@ mod tests {
             "Explore · map hidden tool calls",
             "label stays descriptive, never collapses to the bare tool name",
         );
+    }
+
+    // An empty-object `{}` update is `is_some()` yet carries no content;
+    // it must preserve the dispatch input just like an input-less one.
+    #[test]
+    fn subagent_root_raw_input_survives_later_empty_object_update() {
+        let mut app = App::test_default();
+        let id = "toolu_subagent_root_empty";
+        let descriptive = serde_json::json!({
+            "subagent_type": "Explore",
+            "description": "map hidden tool calls",
+        });
+
+        app.register_tool_call_scope(id.to_owned(), ToolCallScope::SubagentRoot);
+        upsert_tool_call_into_assistant_message(
+            &mut app,
+            subagent_root(id, Some(descriptive.clone())),
+        );
+
+        upsert_tool_call_into_assistant_message(
+            &mut app,
+            subagent_root(id, Some(serde_json::json!({}))),
+        );
+
+        let (mi, bi) = app.lookup_tool_call(id).expect("root stays indexed");
+        let MessageBlock::ToolCall(root) = &app.messages()[mi].blocks[bi] else {
+            panic!("expected ToolCall block");
+        };
+        assert_eq!(
+            root.raw_input.as_ref(),
+            Some(&descriptive),
+            "empty-object update preserves the dispatch raw_input",
+        );
+        assert_eq!(app.subagents_view()[0].label, "Explore · map hidden tool calls");
+    }
+
+    // The guard is UPDATE-only: a genuinely no-arg tool still captures
+    // its `{}` input at first sight (the creation path is unguarded).
+    #[test]
+    fn initial_empty_object_raw_input_is_captured_at_creation() {
+        let app = App::test_default();
+        let tc = model::ToolCall::new("toolu_no_arg", "NoArg").raw_input(serde_json::json!({}));
+        let info =
+            build_tool_info_from_tool_call(&app, tc, "NoArg".to_owned(), &ToolCallScope::MainAgent);
+        assert_eq!(info.raw_input, Some(serde_json::json!({})));
     }
 }
