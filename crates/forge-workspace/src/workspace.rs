@@ -4736,7 +4736,7 @@ impl Workspace {
         let caller_notice = WrappedPrompt {
             correlation_id: id.clone(),
             kind: WrappedKind::DeliveryFailureNotice,
-            channel: AskChannel::Peers,
+            channel: ask.channel,
             sender_name: ask.target_project.clone(),
             sender_org: target_org,
             hop: 0,
