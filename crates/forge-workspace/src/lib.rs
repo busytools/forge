@@ -92,7 +92,7 @@ pub use workspace::{SessionChipInfo, SessionChipState, Workspace, resolve_lead_s
 // the `forge-test-harness` integration tests need (MCP server
 // builders, mock facades, the caller-key resolver).
 pub use mcp::gotify::types::GotifyNotification;
-pub use mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
+pub use mcp::peers::types::{AskChannel, CorrelationId, WrappedKind, WrappedPrompt};
 pub use mcp::workers::types::WorkerEntry;
 
 #[cfg(any(test, feature = "testing"))]

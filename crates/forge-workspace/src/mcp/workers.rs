@@ -12,7 +12,9 @@ use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 
 use crate::mcp::peers::facade::{CallerKeyResolver, PeerStatsDelta};
-use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
+use crate::mcp::peers::types::{
+    AskChannel, CorrelationId, InflightAsk, ReplyRouting, WrappedKind, WrappedPrompt,
+};
 use crate::mcp::workers::facade::{
     DespawnOutcome, LEAD_LABEL, WorkerDeliverError, WorkerDespawnError, WorkerFacade,
     WorkerLeadDeliverError, WorkerSpawnError,
@@ -501,164 +503,127 @@ impl Tool for Tell {
             },
         };
 
-        // Classify the tell. If `in_reply_to` resolves to an
-        // InflightAsk whose `caller` matches the resolved target
-        // session, this is a clean reply - kind=Reply, and we'll
-        // close the ask + decrement stats post-dispatch. Otherwise
-        // it degrades to Message (or stays Message for unsolicited).
-        let (kind, reply_target_session) =
-            classify_workers_tell(&*self.facade, &caller_key, &args.label, in_reply_to_id.as_ref());
-
-        let correlation_id = CorrelationId::new_tell();
         let identity = self.facade.caller_identity(&caller_key);
         let outgoing_hop =
             self.facade.peek_current_inbound_hop(&caller_key).unwrap_or(0).saturating_add(1);
-        let wrapped = WrappedPrompt {
-            correlation_id: correlation_id.clone(),
-            kind,
-            sender_name: identity.name,
-            sender_org: identity.org,
-            hop: outgoing_hop,
-            hop_limit: HOP_LIMIT,
-            body: args.message,
-        };
+        let correlation_id = CorrelationId::new_tell();
 
-        // Reserved keyword: `label="lead"` routes back to the caller's
-        // lead session (resolved from the worker's
-        // `spawned_by_session_id`). Lead callers get a clear error -
-        // leads don't have a lead. See `LEAD_LABEL` in
-        // `mcp::workers::facade`.
-        let delivery_ok = if args.label == LEAD_LABEL {
-            match self.facade.deliver_prompt_to_lead(&caller_key, wrapped) {
-                Ok(_) => true,
-                Err(err) => return tool_error(format_lead_deliver_error(&err)),
+        match classify_workers_tell(&*self.facade, in_reply_to_id.as_ref()) {
+            ReplyRouting::WrongChannel { correct_tool } => {
+                let id = in_reply_to_id.as_ref().map(CorrelationId::as_str).unwrap_or_default();
+                tool_error(format!(
+                    "this question arrived over the peers channel (from another project). Reply \
+                     with `{correct_tool}(target='<project>', in_reply_to={id})`, not \
+                     workers__tell - that tool is for your own lead or a worker on your team."
+                ))
             }
-        } else {
-            match self.facade.deliver_worker_prompt(&caller_key, &args.label, wrapped) {
-                Ok(_) => true,
-                Err(err) => return tool_error(format_deliver_error(&args.label, &err)),
+            ReplyRouting::Reply { caller, correlation } => {
+                let wrapped = WrappedPrompt {
+                    correlation_id: correlation_id.clone(),
+                    kind: WrappedKind::Reply,
+                    channel: AskChannel::Workers,
+                    sender_name: identity.name,
+                    sender_org: identity.org,
+                    hop: outgoing_hop,
+                    hop_limit: HOP_LIMIT,
+                    body: args.message,
+                };
+                if let Err(err) = self.facade.deliver_reply_to_caller(&caller, &wrapped) {
+                    return tool_error(err.user_message());
+                }
+                // Reply resolved cleanly: close the ask + decrement the
+                // replier's incoming and the original asker's outgoing.
+                self.facade.complete_inflight_ask(&correlation);
+                self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::IncomingMinus1);
+                self.facade.bump_inflight_stats(&caller, PeerStatsDelta::OutgoingMinus1);
+                deliver_ok_response(&correlation_id, None)
             }
-        };
-
-        // Post-dispatch close-out for clean replies. Mirrors peers
-        // `tell_agent` behaviour: remove the inflight entry + bump
-        // both sides' counters so the asker's outgoing balances
-        // their original ask and the replier's incoming balances
-        // their inbound question. Skip when the tell was unsolicited
-        // or degraded.
-        if delivery_ok
-            && matches!(kind, WrappedKind::Reply)
-            && let (Some(id), Some(target)) =
-                (in_reply_to_id.as_ref(), reply_target_session.as_ref())
-        {
-            self.facade.complete_inflight_ask(id);
-            self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::IncomingMinus1);
-            self.facade.bump_inflight_stats(target, PeerStatsDelta::OutgoingMinus1);
+            ReplyRouting::Message => {
+                let wrapped = WrappedPrompt {
+                    correlation_id: correlation_id.clone(),
+                    kind: WrappedKind::Message,
+                    channel: AskChannel::Workers,
+                    sender_name: identity.name,
+                    sender_org: identity.org,
+                    hop: outgoing_hop,
+                    hop_limit: HOP_LIMIT,
+                    body: args.message,
+                };
+                // An unknown/stale in_reply_to fell through to a plain
+                // Message; note it so the replier's LLM can retry.
+                let note = in_reply_to_id.as_ref().map(|id| {
+                    format!(
+                        "in_reply_to {id} did not match an open ask (it may be stale \
+                         or already answered), so this was delivered as a plain \
+                         message rather than a reply. Re-check the correlation \
+                         id if you meant to reply."
+                    )
+                });
+                // Reserved keyword: `label="lead"` routes back to the
+                // caller's lead session; other labels address a worker.
+                // Lead callers using `lead` get a clear error - leads
+                // have no lead. See `LEAD_LABEL` in `mcp::workers::facade`.
+                let delivery = if args.label == LEAD_LABEL {
+                    self.facade
+                        .deliver_prompt_to_lead(&caller_key, wrapped)
+                        .map_err(|err| format_lead_deliver_error(&err))
+                } else {
+                    self.facade
+                        .deliver_worker_prompt(&caller_key, &args.label, wrapped)
+                        .map_err(|err| format_deliver_error(&args.label, &err))
+                };
+                match delivery {
+                    Ok(_) => deliver_ok_response(&correlation_id, note),
+                    Err(msg) => tool_error(msg),
+                }
+            }
         }
-
-        deliver_ok_response(&correlation_id)
     }
 }
 
-/// Classify a `workers__tell` based on the optional `in_reply_to`.
-///
-/// - No `in_reply_to` → `(Message, None)` - unsolicited.
-/// - `in_reply_to` resolves to an InflightAsk AND the resolved
-///   target session of this tell == the original ask's caller →
-///   `(Reply, Some(asker_session))` - clean reply.
-/// - `in_reply_to` provided but resolves to nothing, or resolves to
-///   an ask whose caller doesn't match this tell's target →
-///   `(Message, None)` with a warn log (degraded reply). Same
-///   semantics as peers `classify_tell`.
+/// Classify a `workers__tell` from its optional `in_reply_to`. A
+/// resolved same-channel id routes the Reply to the asker's session
+/// (the `label` arg is irrelevant once the correlation resolves); a
+/// resolved other-channel id is a `WrongChannel` steer; no/unknown id
+/// is an unsolicited `Message`.
 fn classify_workers_tell(
     facade: &dyn WorkerFacade,
-    caller_key: &crate::SessionKey,
-    target_label: &str,
     in_reply_to: Option<&CorrelationId>,
-) -> (WrappedKind, Option<crate::SessionKey>) {
+) -> ReplyRouting {
     let Some(id) = in_reply_to else {
-        return (WrappedKind::Message, None);
+        return ReplyRouting::Message;
     };
     let Some(ask) = facade.resolve_correlation(id) else {
         tracing::warn!(
             target: "forge_workspace::mcp::workers",
             correlation_id = id.as_str(),
-            target_label,
-            "tell in_reply_to references unknown correlation_id; degrading to Message"
+            "workers__tell in_reply_to references unknown correlation_id; treating as unsolicited Message"
         );
-        return (WrappedKind::Message, None);
+        return ReplyRouting::Message;
     };
-    // Resolve the tell's target to a session_key and compare with
-    // the original ask's caller. For label="lead": resolve via the
-    // caller's spawned_by_session_id. For other labels: live-workers
-    // lookup in the caller's project.
-    let target_session = resolve_target_session(facade, caller_key, target_label);
-    match target_session {
-        Some(target) if target == ask.caller => (WrappedKind::Reply, Some(target)),
-        Some(target) => {
-            tracing::warn!(
-                target: "forge_workspace::mcp::workers",
-                correlation_id = id.as_str(),
-                target_label,
-                target_session = %target.as_str(),
-                ask_caller = %ask.caller.as_str(),
-                "tell in_reply_to target mismatch (label resolves to a different session than the original asker); degrading to Message"
-            );
-            (WrappedKind::Message, None)
-        }
-        None => {
-            tracing::warn!(
-                target: "forge_workspace::mcp::workers",
-                correlation_id = id.as_str(),
-                target_label,
-                "tell in_reply_to could not resolve target label to a session; degrading to Message"
-            );
-            (WrappedKind::Message, None)
+    match ask.channel {
+        AskChannel::Workers => ReplyRouting::Reply { caller: ask.caller, correlation: id.clone() },
+        AskChannel::Peers => {
+            ReplyRouting::WrongChannel { correct_tool: AskChannel::Peers.reply_tool() }
         }
     }
-}
-
-/// Resolve a `workers__tell` target label to a concrete session key.
-/// `LEAD_LABEL` → the caller's project's currently-registered lead
-/// (re-resolved each call so a lead-resume rekey routes correctly;
-/// the previous snapshot of `spawned_by_session_id` taken at worker-
-/// spawn-time stayed stale across resumes - #298 Cause 2). Other
-/// labels → look up the latest-spawned live worker in the caller's
-/// project matching the label. Returns `None` when the lookup fails
-/// (caller has no worker entry, label not live, etc.).
-fn resolve_target_session(
-    facade: &dyn WorkerFacade,
-    caller_key: &crate::SessionKey,
-    target_label: &str,
-) -> Option<crate::SessionKey> {
-    let cp = facade.caller_project(caller_key)?;
-    if target_label == LEAD_LABEL {
-        // Caller must be a worker for "lead" addressing to mean
-        // anything; for leads, this target is undefined and the
-        // deliver path will reject the call anyway.
-        if cp.is_lead {
-            return None;
-        }
-        return facade.lead_session_for_caller(caller_key);
-    }
-    // Sibling-worker / cross-worker addressing. Use the same
-    // latest-spawned-wins rule as the dispatcher.
-    facade
-        .list_workers(caller_key)
-        .into_iter()
-        .rev()
-        .find(|w| w.label == target_label)
-        .map(|w| crate::SessionKey::from_session_id(w.session_id))
 }
 
 /// Helper: build the standard `{ correlation_id, status: "delivered" }`
 /// response body. Pulled out so both Tell + Ask + lead-delivery paths
-/// emit a single canonical shape.
-fn deliver_ok_response(correlation_id: &CorrelationId) -> ToolOutput {
-    let body = serde_json::json!({
+/// emit a single canonical shape. `note` carries an optional
+/// degraded-reply explanation surfaced when an unknown `in_reply_to`
+/// fell through to a plain Message.
+fn deliver_ok_response(correlation_id: &CorrelationId, note: Option<String>) -> ToolOutput {
+    let mut body = serde_json::json!({
         "correlation_id": correlation_id.as_str(),
         "status": "delivered",
     });
+    if let Some(note) = note
+        && let Some(obj) = body.as_object_mut()
+    {
+        obj.insert("note".to_owned(), serde_json::Value::String(note));
+    }
     match serde_json::to_string_pretty(&body) {
         Ok(json) => ToolOutput::text(json),
         Err(err) => tool_error(format!("response serialization failed: {err}")),
@@ -679,10 +644,10 @@ fn format_lead_deliver_error(err: &WorkerLeadDeliverError) -> String {
              workers__tell/ask with a real worker label."
                 .to_owned()
         }
-        WorkerLeadDeliverError::LeadGone { lead_session_id } => format!(
-            "lead session '{lead_session_id}' is no longer live. The lead closed since this \
-             worker was spawned; the worker pool will cascade-close shortly."
-        ),
+        WorkerLeadDeliverError::LeadGone => {
+            "your lead is not available (its session closed since this worker was spawned)."
+                .to_owned()
+        }
         WorkerLeadDeliverError::HopLimitExceeded { hop, limit } => format!(
             "hop limit exceeded forwarding to lead ({hop}/{limit}). The chain has reached \
              its maximum depth - your message will not be forwarded."
@@ -693,8 +658,8 @@ fn format_lead_deliver_error(err: &WorkerLeadDeliverError) -> String {
 fn format_deliver_error(label: &str, err: &WorkerDeliverError) -> String {
     match err {
         WorkerDeliverError::UnknownLabel { project_key, .. } => format!(
-            "no live worker with label '{label}' in project '{project_key}'. Call \
-             workers__list to discover the current worker pool."
+            "worker '{label}' is not available (no live worker by that label in \
+             '{project_key}'); call workers__list to see the current pool."
         ),
         WorkerDeliverError::HopLimitExceeded { hop, limit } => format!(
             "hop limit exceeded forwarding to worker '{label}' ({hop}/{limit}). The \
@@ -789,6 +754,7 @@ impl Tool for Ask {
         let wrapped = WrappedPrompt {
             correlation_id: correlation_id.clone(),
             kind: WrappedKind::Question,
+            channel: AskChannel::Workers,
             sender_name: identity.name,
             sender_org: identity.org,
             hop: outgoing_hop,
@@ -821,8 +787,8 @@ impl Tool for Ask {
         // peer-MCP's AskAgent.
         self.facade.register_inflight_ask(InflightAsk {
             correlation_id: correlation_id.clone(),
+            channel: AskChannel::Workers,
             caller: caller_key.clone(),
-            caller_project: caller_project_key,
             target_project: target_project_composite,
             target_session: None,
         });
@@ -839,7 +805,7 @@ impl Tool for Ask {
         // (no lead above them).
         if args.label == LEAD_LABEL {
             return match self.facade.deliver_prompt_to_lead(&caller_key, wrapped) {
-                Ok(_) => deliver_ok_response(&correlation_id),
+                Ok(_) => deliver_ok_response(&correlation_id, None),
                 Err(err) => {
                     // Rollback: delivery never landed. Counter +
                     // inflight both rewind so the map / badge stay
@@ -852,7 +818,7 @@ impl Tool for Ask {
         }
 
         match self.facade.deliver_worker_prompt(&caller_key, &args.label, wrapped) {
-            Ok(_) => deliver_ok_response(&correlation_id),
+            Ok(_) => deliver_ok_response(&correlation_id, None),
             Err(err) => {
                 // Rollback: the dispatch never reached the worker so
                 // the inflight_asks entry + outgoing bump would
@@ -1741,6 +1707,11 @@ mod tests {
             .await;
         assert!(output.is_error);
         assert!(output.blocks[0].text.contains("missing"));
+        assert!(
+            output.blocks[0].text.contains("not available"),
+            "unknown worker label should read as not available: {}",
+            output.blocks[0].text,
+        );
         assert_eq!(mock.deliver_calls.lock().len(), 0, "no dispatch when label unknown");
     }
 
@@ -2139,6 +2110,32 @@ mod tests {
         assert_eq!(mock.deliver_calls.lock().len(), 0);
     }
 
+    #[tokio::test]
+    async fn tell_lead_gone_says_lead_not_available() {
+        // Worker caller whose recorded lead session has closed (the
+        // mock treats an empty spawned_by as LeadGone). The error must
+        // read as the lead being not available.
+        let mock = Arc::new(MockWorkerFacade::new());
+        let worker_key = fake_key("worker-uuid");
+        mock.callers.lock().insert(worker_key.clone(), worker_caller("forge"));
+        mock.workers
+            .lock()
+            .insert("forge".into(), vec![worker_with_lead("probe", "worker-uuid", "")]);
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(worker_key) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({ "label": "lead", "message": "any news?" }),
+            })
+            .await;
+        assert!(output.is_error);
+        assert!(
+            output.blocks[0].text.contains("lead is not available"),
+            "lead-gone should read as the lead not being available: {}",
+            output.blocks[0].text,
+        );
+    }
+
     // ---------------------------------------------------------------
     // `in_reply_to` closes the inflight ask + decrements counters
     // ---------------------------------------------------------------
@@ -2149,7 +2146,6 @@ mod tests {
         mock: &MockWorkerFacade,
         correlation_id: &str,
         caller: SessionKey,
-        caller_project: &str,
         target_composite: &str,
     ) -> CorrelationId {
         let id = CorrelationId(correlation_id.to_owned());
@@ -2157,8 +2153,8 @@ mod tests {
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
+                channel: AskChannel::Workers,
                 caller,
-                caller_project: caller_project.to_owned(),
                 target_project: target_composite.to_owned(),
                 target_session: None,
             },
@@ -2212,7 +2208,7 @@ mod tests {
             .lock()
             .insert("forge".into(), vec![worker_with_lead("worker-A", "worker-uuid", "lead-uuid")]);
         // Pre-register: an inflight ask from worker-A → lead.
-        let ask_id = register_ask(&mock, "q-deadbeef", worker_key.clone(), "forge", "forge::lead");
+        let ask_id = register_ask(&mock, "q-deadbeef", worker_key.clone(), "forge::lead");
 
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(lead_key.clone()) };
@@ -2267,6 +2263,16 @@ mod tests {
             })
             .await;
         assert!(!output.is_error, "degraded path still delivers");
+        // A degraded reply carries a note so the replier's LLM learns
+        // it landed as a plain message and can retry with the right id.
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
+        let note = parsed["note"].as_str().expect("degraded reply carries a note");
+        assert!(note.contains("q-00000000"), "note names the unresolved id: {note}");
+        assert!(
+            note.contains("plain message") && note.contains("open ask"),
+            "note explains it landed as a plain message and the ask was not open: {note}",
+        );
         // No Incoming/Outgoing Minus1 bumps on the degraded path.
         let bumps = mock.bumps.lock();
         let has_decrement = bumps.iter().any(|(_, d)| {
@@ -2295,6 +2301,131 @@ mod tests {
             .await;
         assert!(output.is_error);
         assert!(output.blocks[0].text.contains("in_reply_to"));
+    }
+
+    #[tokio::test]
+    async fn tell_reply_worker_to_lead_routes_to_asker_by_correlation() {
+        // The lead asked a worker via workers__ask (inflight caller =
+        // lead). The worker replies with workers__tell(target="lead",
+        // in_reply_to=q-y). The reply must route by correlation
+        // straight to the asking lead's session and close the ask -
+        // the exact airmail scenario, now via the right tool.
+        let mock = Arc::new(MockWorkerFacade::new());
+        let lead_key = fake_key("lead-uuid");
+        let worker_key = fake_key("worker-uuid");
+        mock.callers.lock().insert(worker_key.clone(), worker_caller("forge"));
+        let ask_id = register_ask(&mock, "q-33334444", lead_key.clone(), "forge::worker-A");
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(worker_key.clone()) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "lead",
+                    "message": "done, here's the result",
+                    "in_reply_to": ask_id.as_str(),
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "worker->lead reply must not error: {:?}", output.blocks);
+        let replies = mock.reply_to_caller_calls.lock();
+        assert_eq!(replies.len(), 1, "reply delivered by session exactly once");
+        assert_eq!(replies[0].0, lead_key, "reply routed to the asking lead's session");
+        assert!(matches!(replies[0].1.kind, WrappedKind::Reply), "delivered as a Reply");
+        drop(replies);
+        assert!(mock.inflight.lock().get(&ask_id).is_none(), "inflight ask closed");
+        assert_eq!(
+            mock.deliver_calls.lock().len(),
+            0,
+            "a resolved reply must not also fall through to worker/lead delivery",
+        );
+        let bumps = mock.bumps.lock();
+        assert!(
+            bumps.iter().any(|(k, d)| *k == worker_key && *d == PeerStatsDelta::IncomingMinus1),
+            "replier's incoming decrements: {bumps:?}",
+        );
+        assert!(
+            bumps.iter().any(|(k, d)| *k == lead_key && *d == PeerStatsDelta::OutgoingMinus1),
+            "asking lead's outgoing decrements: {bumps:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn tell_reply_from_peers_channel_is_steered_to_peers_tell() {
+        // A peers-channel ask is open. Replying to it via workers__tell
+        // must be rejected with a steer to peers__tell_agent, never
+        // delivered as a worker message.
+        let mock = Arc::new(MockWorkerFacade::new());
+        let lead_key = fake_key("lead-uuid");
+        mock.callers.lock().insert(lead_key.clone(), lead_caller("forge"));
+        mock.inflight.lock().insert(
+            CorrelationId("q-77778888".to_owned()),
+            InflightAsk {
+                correlation_id: CorrelationId("q-77778888".to_owned()),
+                channel: AskChannel::Peers,
+                caller: fake_key("some-peer"),
+                target_project: "forge".to_owned(),
+                target_session: None,
+            },
+        );
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(lead_key) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "worker-A",
+                    "message": "reply via the wrong tool",
+                    "in_reply_to": "q-77778888",
+                }),
+            })
+            .await;
+        assert!(output.is_error, "wrong-channel reply must be a steered error");
+        let text = &output.blocks[0].text;
+        assert!(text.contains("peers__tell_agent"), "steer names the right tool: {text}");
+        assert!(text.contains("q-77778888"), "steer names the correlation id: {text}");
+        assert_eq!(mock.reply_to_caller_calls.lock().len(), 0, "no reply delivered");
+        assert_eq!(mock.deliver_calls.lock().len(), 0, "no unsolicited delivery");
+        assert!(
+            mock.inflight.lock().get(&CorrelationId("q-77778888".to_owned())).is_some(),
+            "ask stays open",
+        );
+    }
+
+    #[tokio::test]
+    async fn tell_reply_delivery_failure_keeps_ask_open() {
+        // A worker->lead reply whose by-session delivery fails (asker's
+        // session gone) must surface the error, leave the ask OPEN, and
+        // not decrement either counter.
+        let mock = Arc::new(MockWorkerFacade::new());
+        let lead_key = fake_key("lead-uuid");
+        let worker_key = fake_key("worker-uuid");
+        mock.callers.lock().insert(worker_key.clone(), worker_caller("forge"));
+        let ask_id = register_ask(&mock, "q-99990000", lead_key.clone(), "forge::worker-A");
+        *mock.force_reply_error.lock() =
+            Some(crate::mcp::peers::facade::ReplyDeliverError::CallerSessionGone);
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(worker_key) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "lead",
+                    "message": "reply that can't land",
+                    "in_reply_to": ask_id.as_str(),
+                }),
+            })
+            .await;
+        assert!(output.is_error, "a failed reply must surface as an error");
+        assert!(
+            output.blocks[0].text.contains("no longer available"),
+            "error carries the not-available reply message: {}",
+            output.blocks[0].text,
+        );
+        assert!(mock.inflight.lock().get(&ask_id).is_some(), "the ask must stay open");
+        let bumps = mock.bumps.lock();
+        assert!(
+            !bumps.iter().any(|(_, d)| *d == PeerStatsDelta::IncomingMinus1
+                || *d == PeerStatsDelta::OutgoingMinus1),
+            "no counters decrement on a failed reply: {bumps:?}",
+        );
     }
 
     /// RAII guard that restores the prior `forge_team_root` override
@@ -2506,45 +2637,5 @@ mod tests {
         let kept =
             std::fs::read_to_string(role_dir.join("resume-kick.md")).expect("prior content kept");
         assert_eq!(kept, "prior content");
-    }
-
-    /// #298 Cause 2: `workers__tell("lead")` must re-resolve the lead
-    /// each call so a lead-resume rekey routes correctly. The old impl
-    /// snapshotted `spawned_by_session_id` at spawn time and never
-    /// rewrote it; tells routed to the dead pre-resume session id.
-    ///
-    /// `resolve_target_session` now reads through
-    /// `WorkerFacade::lead_session_for_caller`; the mock's `leads` map
-    /// is the test's source of truth for "who's the lead?". Two
-    /// fixture states (pre-resume `L1`, post-resume `L2`) exercise the
-    /// re-resolution: the prod facade implements the same trait method
-    /// against `caller_context`, which walks live catalog + worker
-    /// state on every call. A regression that re-introduced the
-    /// `spawned_by_session_id` snapshot would not see the `leads`-map
-    /// swap and the post-resume assertion would fail.
-    #[test]
-    fn workers_tell_lead_routes_to_current_lead_after_resume() {
-        let worker_key = fake_key("worker-uuid");
-        let project_key = crate::ProjectKey::new("forge");
-
-        let pre_mock = MockWorkerFacade::new();
-        pre_mock.callers.lock().insert(worker_key.clone(), worker_caller("forge"));
-        pre_mock.leads.lock().insert(project_key.clone(), fake_key("L1"));
-        let pre_facade: Arc<dyn WorkerFacade> = Arc::new(pre_mock);
-        let pre = resolve_target_session(&*pre_facade, &worker_key, LEAD_LABEL)
-            .expect("resolves pre-resume");
-        assert_eq!(pre.as_str(), "L1", "pre-resume target is the initial lead");
-
-        // Post-resume: a fresh facade with the new lead simulates the
-        // state migrate_session_task leaves behind (workers' static
-        // snapshot would still say L1; the lookup-through-the-trait
-        // returns L2).
-        let post_mock = MockWorkerFacade::new();
-        post_mock.callers.lock().insert(worker_key.clone(), worker_caller("forge"));
-        post_mock.leads.lock().insert(project_key, fake_key("L2"));
-        let post_facade: Arc<dyn WorkerFacade> = Arc::new(post_mock);
-        let post = resolve_target_session(&*post_facade, &worker_key, LEAD_LABEL)
-            .expect("resolves post-resume");
-        assert_eq!(post.as_str(), "L2", "post-resume target is the current lead");
     }
 }

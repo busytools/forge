@@ -5,7 +5,7 @@
 //! 1. **Inbound detection + rendering**. Pattern-match the bracket-
 //!    wrapped prose `forge_workspace::deliver_peer_prompt` injects
 //!    into user-turn text (e.g. `[Question id=q-... hop=1/10 from
-//!    agent 'forge' (org 'Personal') - reply with tell_agent
+//!    agent 'forge' (org 'Personal') - reply with peers__tell_agent
 //!    in_reply_to=q-...]\n\n<body>`) and render a styled block in
 //!    place of the default user-message bubble. Catches the five
 //!    peer/worker kinds the workspace produces (`Question`, `Message`,
@@ -663,7 +663,7 @@ mod tests {
 
     #[test]
     fn detect_question_inbound() {
-        let text = "[Question id=q-7f3a92e0 hop=1/10 from agent 'forge' (org 'Personal') - reply with tell_agent in_reply_to=q-7f3a92e0]\n\nWhat's the test setup?";
+        let text = "[Question id=q-7f3a92e0 hop=1/10 from agent 'forge' (org 'Personal') - reply with peers__tell_agent in_reply_to=q-7f3a92e0]\n\nWhat's the test setup?";
         let kind = detect_inbound(text).expect("question");
         match kind {
             PeerInboundKind::Question { from, org, body } => {

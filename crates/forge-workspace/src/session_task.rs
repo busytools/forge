@@ -1696,7 +1696,7 @@ mod tests {
     /// method directly).
     #[tokio::test]
     async fn first_connected_drains_pending_peer_prompts_in_fifo_order() {
-        use crate::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
+        use crate::mcp::peers::types::{AskChannel, CorrelationId, WrappedKind, WrappedPrompt};
 
         let (workspace, _update_rx) = crate::Workspace::testing_stub();
 
@@ -1714,6 +1714,7 @@ mod tests {
                 d.pending_peer_prompts.push(WrappedPrompt {
                     correlation_id: CorrelationId::new_tell(),
                     kind: WrappedKind::Message,
+                    channel: AskChannel::Peers,
                     sender_name: "forge".to_owned(),
                     sender_org: "Default".to_owned(),
                     hop: 1,
