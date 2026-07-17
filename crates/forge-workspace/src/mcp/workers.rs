@@ -12,7 +12,9 @@ use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 
 use crate::mcp::peers::facade::{CallerKeyResolver, PeerStatsDelta};
-use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
+use crate::mcp::peers::types::{
+    AskChannel, CorrelationId, InflightAsk, WrappedKind, WrappedPrompt,
+};
 use crate::mcp::workers::facade::{
     DespawnOutcome, LEAD_LABEL, WorkerDeliverError, WorkerDespawnError, WorkerFacade,
     WorkerLeadDeliverError, WorkerSpawnError,
@@ -516,6 +518,7 @@ impl Tool for Tell {
         let wrapped = WrappedPrompt {
             correlation_id: correlation_id.clone(),
             kind,
+            channel: AskChannel::Workers,
             sender_name: identity.name,
             sender_org: identity.org,
             hop: outgoing_hop,
@@ -789,6 +792,7 @@ impl Tool for Ask {
         let wrapped = WrappedPrompt {
             correlation_id: correlation_id.clone(),
             kind: WrappedKind::Question,
+            channel: AskChannel::Workers,
             sender_name: identity.name,
             sender_org: identity.org,
             hop: outgoing_hop,

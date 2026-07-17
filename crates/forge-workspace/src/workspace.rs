@@ -10,7 +10,9 @@ use forge_agent::AgentHandle;
 use forge_agent::client::SessionLaunchSettings;
 use forge_primitives::{PeerInflightStats, SDKSessionInfo};
 
-use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
+use crate::mcp::peers::types::{
+    AskChannel, CorrelationId, InflightAsk, WrappedKind, WrappedPrompt,
+};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::Instrument;
@@ -3952,6 +3954,7 @@ impl Workspace {
                 let wrapped = WrappedPrompt {
                     correlation_id: CorrelationId::new_tell(),
                     kind: WrappedKind::WorkerSpawnFailedNotice,
+                    channel: AskChannel::Workers,
                     sender_name: entry.label.clone(),
                     sender_org: String::new(),
                     hop: 1,
@@ -4733,6 +4736,7 @@ impl Workspace {
         let caller_notice = WrappedPrompt {
             correlation_id: id.clone(),
             kind: WrappedKind::DeliveryFailureNotice,
+            channel: AskChannel::Peers,
             sender_name: ask.target_project.clone(),
             sender_org: target_org,
             hop: 0,
@@ -7994,7 +7998,7 @@ config_dir = "~/.claude-subspace"
     async fn expire_buffered_peer_prompts_fails_undelivered_spawn_asks() {
         use crate::domain_session::DomainSession;
         use crate::mcp::peers::types::{
-            CorrelationId, InflightAsk, PeerFailureReason, WrappedKind, WrappedPrompt,
+            AskChannel, CorrelationId, InflightAsk, PeerFailureReason, WrappedKind, WrappedPrompt,
         };
         let (workspace, _rx) = Workspace::testing_stub();
 
@@ -8003,6 +8007,7 @@ config_dir = "~/.claude-subspace"
         let wrapped = WrappedPrompt {
             correlation_id: id.clone(),
             kind: WrappedKind::Question,
+            channel: AskChannel::Peers,
             sender_name: "forge".to_owned(),
             sender_org: "Personal".to_owned(),
             hop: 1,
@@ -8124,7 +8129,7 @@ config_dir = "~/.claude-subspace"
     /// is exercised in the spawn::handle_deliver_peer_prompt test.
     #[tokio::test]
     async fn dispatch_command_deliver_peer_prompt_routes_cleanly() {
-        use crate::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
+        use crate::mcp::peers::types::{AskChannel, CorrelationId, WrappedKind, WrappedPrompt};
         let dir = forge_toml_with_two_projects();
         let workspace =
             Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
@@ -8133,6 +8138,7 @@ config_dir = "~/.claude-subspace"
         let wrapped = WrappedPrompt {
             correlation_id: CorrelationId::new_tell(),
             kind: WrappedKind::Message,
+            channel: AskChannel::Peers,
             sender_name: "forge".to_owned(),
             sender_org: "Default".to_owned(),
             hop: 1,

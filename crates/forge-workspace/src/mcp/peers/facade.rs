@@ -558,7 +558,7 @@ impl WorkspaceFacade for MockWorkspaceFacade {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::peers::types::WrappedKind;
+    use crate::mcp::peers::types::{AskChannel, WrappedKind};
     use std::path::PathBuf;
 
     fn fake_key(s: &str) -> SessionKey {
@@ -584,6 +584,7 @@ mod tests {
         WrappedPrompt {
             correlation_id: CorrelationId::new_ask(),
             kind: WrappedKind::Question,
+            channel: AskChannel::Peers,
             sender_name: "forge".to_owned(),
             sender_org: "Personal".to_owned(),
             hop,
@@ -751,7 +752,7 @@ mod tests {
 #[cfg(all(test, feature = "test-helpers"))]
 mod lead_resolution_tests {
     use super::{DeliverError, ProdWorkspaceFacade, lead_session_view};
-    use crate::mcp::peers::types::WrappedKind;
+    use crate::mcp::peers::types::{AskChannel, WrappedKind};
     use crate::target::ProjectKey;
     use crate::views::{ProjectView, SessionView};
     use crate::workspace::Workspace;
@@ -827,6 +828,7 @@ mod lead_resolution_tests {
         WrappedPrompt {
             correlation_id: CorrelationId::new_ask(),
             kind: WrappedKind::Question,
+            channel: AskChannel::Peers,
             sender_name: "forge".to_owned(),
             sender_org: "Personal".to_owned(),
             hop,

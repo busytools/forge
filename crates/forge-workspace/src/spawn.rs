@@ -1594,6 +1594,7 @@ config_dir = "~/.claude-subspace"
         WrappedPrompt {
             correlation_id: crate::mcp::peers::types::CorrelationId::new_tell(),
             kind: crate::mcp::peers::types::WrappedKind::Message,
+            channel: crate::mcp::peers::types::AskChannel::Peers,
             sender_name: "forge".to_owned(),
             sender_org: "Default".to_owned(),
             hop: 1,

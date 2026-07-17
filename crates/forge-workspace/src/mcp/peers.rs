@@ -28,7 +28,9 @@ use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
 
 use crate::SessionKey;
 use crate::mcp::peers::facade::{CallerKeyResolver, PeerStatsDelta, WorkspaceFacade};
-use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
+use crate::mcp::peers::types::{
+    AskChannel, CorrelationId, InflightAsk, WrappedKind, WrappedPrompt,
+};
 
 pub mod facade;
 pub mod types;
@@ -355,6 +357,7 @@ impl Tool for TellAgent {
         let wrapped = WrappedPrompt {
             correlation_id: correlation_id.clone(),
             kind,
+            channel: AskChannel::Peers,
             sender_name: identity.name,
             sender_org: identity.org,
             hop: outgoing_hop,
@@ -594,6 +597,7 @@ impl Tool for AskAgent {
         let wrapped = WrappedPrompt {
             correlation_id: correlation_id.clone(),
             kind: WrappedKind::Question,
+            channel: AskChannel::Peers,
             sender_name: identity.name.clone(),
             sender_org: identity.org.clone(),
             hop: outgoing_hop,
