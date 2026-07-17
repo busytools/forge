@@ -9,7 +9,7 @@ use std::sync::{Arc, Weak};
 use forge_primitives::WorkerStatus;
 
 use crate::SessionKey;
-use crate::mcp::peers::facade::PeerStatsDelta;
+use crate::mcp::peers::facade::{PeerStatsDelta, ReplyDeliverError};
 use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedPrompt};
 use crate::mcp::workers::types::WorkerEntry;
 use crate::protocol::{Command, WorkerSpawnReply};
@@ -226,15 +226,6 @@ pub trait WorkerFacade: Send + Sync {
     /// known project.
     fn caller_namespace(&self, caller: &SessionKey) -> Option<String>;
 
-    /// Resolve the current lead session for `caller`'s project.
-    /// Re-walks live state on every call so a `migrate_session_task`
-    /// rekey on lead-resume is reflected immediately (the previous
-    /// `spawned_by_session_id` snapshot taken at worker-spawn-time
-    /// stayed stale across resumes - #298 Cause 2). Returns `None`
-    /// when the caller doesn't belong to any project or the project
-    /// has no currently-registered lead.
-    fn lead_session_for_caller(&self, caller: &SessionKey) -> Option<SessionKey>;
-
     /// Resolve a display identity for `caller`. Always returns a value
     /// (no `Option`); the production impl falls back to the raw
     /// session id for genuinely unresolvable callers so the envelope
@@ -304,6 +295,16 @@ pub trait WorkerFacade: Send + Sync {
         caller: &SessionKey,
         wrapped: WrappedPrompt,
     ) -> Result<WorkerTargetStatus, WorkerLeadDeliverError>;
+
+    /// Deliver a Reply straight to the asker's session, bypassing
+    /// label resolution (the asker is addressed by `SessionKey`).
+    /// Shares the peer-MCP by-session delivery path. Returns `Err`
+    /// only on hop-limit or a closed caller session.
+    fn deliver_reply_to_caller(
+        &self,
+        caller: &SessionKey,
+        reply: &WrappedPrompt,
+    ) -> Result<(), ReplyDeliverError>;
 
     /// Register an outgoing ask in the workspace's `inflight_asks`
     /// map. Same map the peer-MCP uses; correlation ids never
@@ -397,12 +398,6 @@ impl WorkerFacade for ProdWorkerFacade {
         let ws = self.workspace.upgrade()?;
         let cp = self.caller_project(caller)?;
         ws.list_projects().into_iter().find(|v| v.key == cp.project_key).map(|v| v.name)
-    }
-
-    fn lead_session_for_caller(&self, caller: &SessionKey) -> Option<SessionKey> {
-        let ws = self.workspace.upgrade()?;
-        let cx = crate::mcp::caller_context::caller_context(&ws, caller)?;
-        cx.lead_session_view.map(|v| v.session)
     }
 
     fn peek_current_inbound_hop(&self, caller: &SessionKey) -> Option<u8> {
@@ -682,6 +677,17 @@ impl WorkerFacade for ProdWorkerFacade {
         Ok(WorkerTargetStatus::Delivered)
     }
 
+    fn deliver_reply_to_caller(
+        &self,
+        caller: &SessionKey,
+        reply: &WrappedPrompt,
+    ) -> Result<(), ReplyDeliverError> {
+        let Some(ws) = self.workspace.upgrade() else {
+            return Err(ReplyDeliverError::CallerSessionGone);
+        };
+        ws.deliver_reply_to_caller(caller, reply)
+    }
+
     fn register_inflight_ask(&self, ask: InflightAsk) {
         let Some(ws) = self.workspace.upgrade() else { return };
         let id = ask.correlation_id.clone();
@@ -729,11 +735,6 @@ pub struct MockWorkerFacade {
     /// Pre-loaded caller -> project mapping. Tests insert entries
     /// before invoking the tool.
     pub callers: parking_lot::Mutex<std::collections::HashMap<SessionKey, CallerProject>>,
-    /// Pre-loaded per-project lead session. `lead_session_for_caller`
-    /// resolves the caller's project_key via `callers` then looks up
-    /// the matching entry here. Tests that exercise the LEAD_LABEL
-    /// branch insert into this map.
-    pub leads: parking_lot::Mutex<std::collections::HashMap<crate::ProjectKey, SessionKey>>,
     /// Pre-loaded `live_workers` snapshot per project_key string.
     /// `list_workers` and `deliver_worker_prompt` both read from
     /// this.
@@ -745,6 +746,9 @@ pub struct MockWorkerFacade {
     pub spawn_reply: parking_lot::Mutex<Option<Result<WorkerSpawnReply, WorkerSpawnError>>>,
     /// Captured `deliver_worker_prompt` calls.
     pub deliver_calls: parking_lot::Mutex<Vec<(SessionKey, String, WrappedPrompt)>>,
+    /// Captured `deliver_reply_to_caller` calls so tests can assert
+    /// the reply's target + kind.
+    pub reply_to_caller_calls: parking_lot::Mutex<Vec<(SessionKey, WrappedPrompt)>>,
     /// Inflight asks the mock has registered.
     pub inflight: parking_lot::Mutex<std::collections::HashMap<CorrelationId, InflightAsk>>,
     /// Captured `bump_inflight_stats` calls so tests can assert the
@@ -784,11 +788,6 @@ impl WorkerFacade for MockWorkerFacade {
         // Tests set `project_key` to the project name they want, so the
         // mock namespace is the key string.
         self.caller_project(caller).map(|cp| cp.project_key.as_str().to_owned())
-    }
-
-    fn lead_session_for_caller(&self, caller: &SessionKey) -> Option<SessionKey> {
-        let cp = self.caller_project(caller)?;
-        self.leads.lock().get(&cp.project_key).cloned()
     }
 
     fn peek_current_inbound_hop(&self, _caller: &SessionKey) -> Option<u8> {
@@ -941,6 +940,15 @@ impl WorkerFacade for MockWorkerFacade {
         // with a real worker label.
         self.deliver_calls.lock().push((caller.clone(), "<lead>".to_owned(), wrapped));
         Ok(WorkerTargetStatus::Delivered)
+    }
+
+    fn deliver_reply_to_caller(
+        &self,
+        caller: &SessionKey,
+        reply: &WrappedPrompt,
+    ) -> Result<(), ReplyDeliverError> {
+        self.reply_to_caller_calls.lock().push((caller.clone(), reply.clone()));
+        Ok(())
     }
 
     fn register_inflight_ask(&self, ask: InflightAsk) {

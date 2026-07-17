@@ -168,6 +168,11 @@ pub enum WrappedKind {
 #[derive(Clone, Debug)]
 pub struct InflightAsk {
     pub correlation_id: CorrelationId,
+    /// Which MCP this ask travelled over. A reply's `in_reply_to`
+    /// routes by this channel: a same-channel reply goes straight to
+    /// `caller`; a reply arriving on the other channel is rejected
+    /// with a steer to the right tool.
+    pub channel: AskChannel,
     pub caller: SessionKey,
     pub caller_project: String,
     pub target_project: String,
@@ -175,6 +180,21 @@ pub struct InflightAsk {
     /// (`None` until delivered) so expiry can clear the target's
     /// incoming badge, not just the caller's outgoing.
     pub target_session: Option<SessionKey>,
+}
+
+/// Outcome of classifying a `tell` with an optional `in_reply_to`
+/// against the shared inflight-ask map. Drives the three-way routing
+/// decision in both MCP tell handlers.
+pub(crate) enum ReplyRouting {
+    /// `in_reply_to` resolved to an ask on THIS channel: route the
+    /// Reply straight to `caller`'s session, closing `correlation`.
+    Reply { caller: SessionKey, correlation: CorrelationId },
+    /// No `in_reply_to`, or one that resolved to no open ask: deliver
+    /// as an unsolicited Message to the tell's declared target.
+    Message,
+    /// `in_reply_to` resolved to an ask on the OTHER channel: reject
+    /// with a steer naming `correct_tool`.
+    WrongChannel { correct_tool: &'static str },
 }
 
 /// The complete content of an outgoing or inbound peer message.

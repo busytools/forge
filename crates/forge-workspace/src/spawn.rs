@@ -2353,7 +2353,7 @@ config_dir = "~/.claude-subspace"
     /// `<project_key>::<label>` covers worker-bound traffic.
     #[tokio::test]
     async fn close_worker_expires_inflight_asks_addressed_to_it() {
-        use crate::mcp::peers::types::{CorrelationId, InflightAsk};
+        use crate::mcp::peers::types::{AskChannel, CorrelationId, InflightAsk};
         let (workspace, _rx) = Workspace::testing_stub();
         let project = ProjectKey::new("forge");
         workspace.insert_live_worker(&project, fake_worker_entry("reviewer", "worker-1"));
@@ -2367,6 +2367,7 @@ config_dir = "~/.claude-subspace"
             cid.clone(),
             InflightAsk {
                 correlation_id: cid.clone(),
+                channel: AskChannel::Workers,
                 caller: SessionKey::from_session_id("lead-uuid"),
                 caller_project: project.as_str().to_owned(),
                 target_project: composite,

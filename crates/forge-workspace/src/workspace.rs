@@ -4757,6 +4757,43 @@ impl Workspace {
         }
     }
 
+    /// Deliver a Reply straight to the asker's session, bypassing
+    /// name/label resolution. The asker is identified by `SessionKey`
+    /// (a worker asker has no addressable project name), so this
+    /// by-session path is load-bearing for closing a cross-agent ask.
+    /// Guards the hop limit and confirms the caller session is still
+    /// live before dispatching. Shared by the peers + workers facades.
+    pub(crate) fn deliver_reply_to_caller(
+        self: &Arc<Self>,
+        caller: &SessionKey,
+        reply: &WrappedPrompt,
+    ) -> Result<(), crate::mcp::peers::facade::ReplyDeliverError> {
+        use crate::mcp::peers::facade::ReplyDeliverError;
+        if reply.exceeds_hop_limit() {
+            return Err(ReplyDeliverError::HopLimitExceeded {
+                hop: reply.hop,
+                limit: reply.hop_limit,
+            });
+        }
+        if !self.pool.lock().contains_key(caller) {
+            return Err(ReplyDeliverError::CallerSessionGone);
+        }
+        if let Err(err) = self.dispatch(crate::protocol::Command::Prompt {
+            key: caller.clone(),
+            text: reply.to_prose(),
+            attachments: Vec::new(),
+        }) {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                correlation_id = %reply.correlation_id,
+                error = ?err,
+                "deliver_reply_to_caller: dispatch failed (caller closed?)"
+            );
+            return Err(ReplyDeliverError::CallerSessionGone);
+        }
+        Ok(())
+    }
+
     /// Expire every in-flight ask whose `target_project` matches the
     /// `<project_key>::<label>` composite for a closed worker.
     ///
@@ -7738,6 +7775,7 @@ config_dir = "~/.claude-personal"
                 as_caller.clone(),
                 InflightAsk {
                     correlation_id: as_caller.clone(),
+                    channel: crate::mcp::peers::types::AskChannel::Peers,
                     caller: from.clone(),
                     caller_project: "forge".to_owned(),
                     target_project: "granite-backend".to_owned(),
@@ -7748,6 +7786,7 @@ config_dir = "~/.claude-personal"
                 as_target.clone(),
                 InflightAsk {
                     correlation_id: as_target.clone(),
+                    channel: crate::mcp::peers::types::AskChannel::Peers,
                     caller: SessionKey::from_str_for_test("someone-else"),
                     caller_project: "granite-backend".to_owned(),
                     target_project: "forge".to_owned(),
@@ -7904,6 +7943,7 @@ config_dir = "~/.claude-subspace"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
+                channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: caller.clone(),
                 caller_project: "forge".to_owned(),
                 target_project: "granite-backend".to_owned(),
@@ -7939,6 +7979,7 @@ config_dir = "~/.claude-subspace"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
+                channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: caller.clone(),
                 caller_project: "forge".to_owned(),
                 target_project: "granite-backend".to_owned(),
@@ -7975,6 +8016,7 @@ config_dir = "~/.claude-subspace"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
+                channel: crate::mcp::peers::types::AskChannel::Workers,
                 caller: SessionKey::from_str_for_test("lead-1"),
                 caller_project: "forge".to_owned(),
                 target_project: crate::mcp::workers::worker_target_project_key("forge", "builder"),
@@ -8021,6 +8063,7 @@ config_dir = "~/.claude-subspace"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
+                channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: SessionKey::from_str_for_test("asker"),
                 caller_project: "forge".to_owned(),
                 target_project: "granite-backend".to_owned(),
@@ -8066,6 +8109,7 @@ config_dir = "~/.claude-subspace"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
+                channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: caller.clone(),
                 caller_project: "forge".to_owned(),
                 target_project: "granite-backend".to_owned(),
@@ -8108,6 +8152,7 @@ config_dir = "~/.claude-subspace"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
+                channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: SessionKey::from_str_for_test("asker"),
                 caller_project: "forge".to_owned(),
                 target_project: "granite-backend".to_owned(),
@@ -8219,6 +8264,7 @@ config_dir = "~/.claude-subspace"
                 id_a.clone(),
                 InflightAsk {
                     correlation_id: id_a.clone(),
+                    channel: crate::mcp::peers::types::AskChannel::Peers,
                     caller: caller_a.clone(),
                     caller_project: "forge".to_owned(),
                     target_project: "granite-backend".to_owned(),
@@ -8229,6 +8275,7 @@ config_dir = "~/.claude-subspace"
                 id_b.clone(),
                 InflightAsk {
                     correlation_id: id_b.clone(),
+                    channel: crate::mcp::peers::types::AskChannel::Peers,
                     caller: caller_b.clone(),
                     caller_project: "forge".to_owned(),
                     target_project: "granite-backend".to_owned(),
@@ -8239,6 +8286,7 @@ config_dir = "~/.claude-subspace"
                 id_c.clone(),
                 InflightAsk {
                     correlation_id: id_c.clone(),
+                    channel: crate::mcp::peers::types::AskChannel::Peers,
                     caller: caller_c.clone(),
                     caller_project: "granite-backend".to_owned(),
                     target_project: "forge".to_owned(),
@@ -10155,6 +10203,7 @@ mod async_worker_spawn_failure_tests {
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
+                channel: crate::mcp::peers::types::AskChannel::Workers,
                 caller: SessionKey::from_str_for_test("lead-1"),
                 caller_project: "proj-x".to_owned(),
                 target_project: crate::mcp::workers::worker_target_project_key("proj-x", "builder"),
