@@ -1067,6 +1067,44 @@ mod tests {
         assert_eq!(mock.deliver_calls.lock().len(), 0, "no unsolicited delivery either");
     }
 
+    #[tokio::test]
+    async fn tell_reply_delivery_failure_keeps_ask_open() {
+        // A same-channel reply whose by-session delivery fails (asker's
+        // session gone) must surface the error, leave the ask OPEN, and
+        // not decrement either counter.
+        let mock = Arc::new(MockWorkspaceFacade::new());
+        mock.peers.lock().push(fake_peer("B"));
+        mock.inflight
+            .lock()
+            .insert(CorrelationId("q-99990000".to_owned()), fake_inflight("q-99990000", "A", "B"));
+        *mock.force_reply_error.lock() =
+            Some(crate::mcp::peers::facade::ReplyDeliverError::CallerSessionGone);
+        let facade: Arc<dyn WorkspaceFacade> = mock.clone();
+        let tool = TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("B")) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "target": "A",
+                    "message": "reply that can't land",
+                    "in_reply_to": "q-99990000",
+                }),
+            })
+            .await;
+        assert!(output.is_error, "a failed reply must surface as an error");
+        assert!(
+            output.blocks[0].text.contains("no longer available"),
+            "error carries the not-available reply message: {}",
+            output.blocks[0].text,
+        );
+        assert_eq!(mock.complete_calls.lock().len(), 0, "the ask must stay open");
+        let bumps = mock.bump_calls.lock();
+        assert!(
+            !bumps.iter().any(|(_, d)| *d == PeerStatsDelta::IncomingMinus1
+                || *d == PeerStatsDelta::OutgoingMinus1),
+            "no counters decrement on a failed reply: {bumps:?}",
+        );
+    }
+
     #[test]
     fn tell_agent_metadata_shape() {
         let mock = MockWorkspaceFacade::new();

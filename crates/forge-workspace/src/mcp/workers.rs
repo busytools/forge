@@ -2390,6 +2390,44 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn tell_reply_delivery_failure_keeps_ask_open() {
+        // A worker->lead reply whose by-session delivery fails (asker's
+        // session gone) must surface the error, leave the ask OPEN, and
+        // not decrement either counter.
+        let mock = Arc::new(MockWorkerFacade::new());
+        let lead_key = fake_key("lead-uuid");
+        let worker_key = fake_key("worker-uuid");
+        mock.callers.lock().insert(worker_key.clone(), worker_caller("forge"));
+        let ask_id = register_ask(&mock, "q-99990000", lead_key.clone(), "forge::worker-A");
+        *mock.force_reply_error.lock() =
+            Some(crate::mcp::peers::facade::ReplyDeliverError::CallerSessionGone);
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(worker_key) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "lead",
+                    "message": "reply that can't land",
+                    "in_reply_to": ask_id.as_str(),
+                }),
+            })
+            .await;
+        assert!(output.is_error, "a failed reply must surface as an error");
+        assert!(
+            output.blocks[0].text.contains("no longer available"),
+            "error carries the not-available reply message: {}",
+            output.blocks[0].text,
+        );
+        assert!(mock.inflight.lock().get(&ask_id).is_some(), "the ask must stay open");
+        let bumps = mock.bumps.lock();
+        assert!(
+            !bumps.iter().any(|(_, d)| *d == PeerStatsDelta::IncomingMinus1
+                || *d == PeerStatsDelta::OutgoingMinus1),
+            "no counters decrement on a failed reply: {bumps:?}",
+        );
+    }
+
     /// RAII guard that restores the prior `forge_team_root` override
     /// on drop so a panicking test doesn't leak a stale tempdir
     /// override onto its neighbours. The Mutex inside

@@ -8193,6 +8193,61 @@ config_dir = "~/.claude-subspace"
         assert!(result.is_ok(), "dispatch routed cleanly: {result:?}");
     }
 
+    #[tokio::test]
+    async fn deliver_reply_to_caller_routes_by_session_and_guards() {
+        use crate::mcp::peers::facade::ReplyDeliverError;
+        use crate::mcp::peers::types::{AskChannel, CorrelationId, WrappedKind, WrappedPrompt};
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.enable_test_dispatch_intercept();
+
+        let caller = SessionKey::from_str_for_test("asker");
+        let reply = WrappedPrompt {
+            correlation_id: CorrelationId::new_tell(),
+            kind: WrappedKind::Reply,
+            channel: AskChannel::Workers,
+            sender_name: "worker".to_owned(),
+            sender_org: "worker in forge".to_owned(),
+            hop: 1,
+            hop_limit: 10,
+            body: "here's the answer".to_owned(),
+        };
+
+        // Happy path: caller live in the pool, hop within limit -> Ok
+        // plus exactly one Command::Prompt to the caller carrying the prose.
+        let (handle, _hrx) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            caller.clone(),
+            PooledAgent { handle: Arc::new(handle), account: AccountKey("acct".to_owned()) },
+        );
+        assert_eq!(ws.deliver_reply_to_caller(&caller, &reply), Ok(()));
+        let dispatched = ws.drain_test_dispatch_buffer();
+        assert_eq!(dispatched.len(), 1, "exactly one command dispatched");
+        match &dispatched[0] {
+            Command::Prompt { key, text, .. } => {
+                assert_eq!(*key, caller, "prompt routed to the asker's session");
+                assert_eq!(*text, reply.to_prose(), "prompt carries the reply prose");
+            }
+            other => panic!("expected Command::Prompt, got {other:?}"),
+        }
+
+        // Pool-miss: unknown caller -> CallerSessionGone, nothing dispatched.
+        let ghost = SessionKey::from_str_for_test("ghost");
+        assert_eq!(
+            ws.deliver_reply_to_caller(&ghost, &reply),
+            Err(ReplyDeliverError::CallerSessionGone),
+        );
+        assert!(ws.drain_test_dispatch_buffer().is_empty(), "no dispatch on pool-miss");
+
+        // Hop over the limit -> HopLimitExceeded, nothing dispatched
+        // (the guard fires before the pool check).
+        let over = WrappedPrompt { hop: 11, ..reply.clone() };
+        assert_eq!(
+            ws.deliver_reply_to_caller(&caller, &over),
+            Err(ReplyDeliverError::HopLimitExceeded { hop: 11, limit: 10 }),
+        );
+        assert!(ws.drain_test_dispatch_buffer().is_empty(), "no dispatch on hop-limit");
+    }
+
     /// Disk-backed workspace fixture shared by the per-project loop
     /// tests below. Returns the `Arc<Workspace>` plus the `TempDir`
     /// that holds the on-disk `forge.toml`; the caller must keep the

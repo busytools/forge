@@ -528,6 +528,10 @@ pub struct MockWorkspaceFacade {
     /// running the normal lookup path. Lets tests force-test the
     /// failure surface.
     pub force_deliver_error: parking_lot::Mutex<Option<DeliverError>>,
+    /// If set, `deliver_reply_to_caller` returns this error instead of
+    /// recording + Ok, so tests can exercise the failed-reply path
+    /// (the ask must stay open and no counters decrement).
+    pub force_reply_error: parking_lot::Mutex<Option<ReplyDeliverError>>,
 }
 
 #[cfg(test)]
@@ -593,6 +597,9 @@ impl WorkspaceFacade for MockWorkspaceFacade {
         caller: &SessionKey,
         reply: &WrappedPrompt,
     ) -> Result<(), ReplyDeliverError> {
+        if let Some(err) = self.force_reply_error.lock().clone() {
+            return Err(err);
+        }
         self.reply_to_caller_calls.lock().push((caller.clone(), reply.clone()));
         Ok(())
     }

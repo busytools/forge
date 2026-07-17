@@ -748,6 +748,10 @@ pub struct MockWorkerFacade {
     /// Captured `deliver_reply_to_caller` calls so tests can assert
     /// the reply's target + kind.
     pub reply_to_caller_calls: parking_lot::Mutex<Vec<(SessionKey, WrappedPrompt)>>,
+    /// If set, `deliver_reply_to_caller` returns this error instead of
+    /// recording + Ok, so tests can exercise the failed-reply path
+    /// (the ask must stay open and no counters decrement).
+    pub force_reply_error: parking_lot::Mutex<Option<ReplyDeliverError>>,
     /// Inflight asks the mock has registered.
     pub inflight: parking_lot::Mutex<std::collections::HashMap<CorrelationId, InflightAsk>>,
     /// Captured `bump_inflight_stats` calls so tests can assert the
@@ -946,6 +950,9 @@ impl WorkerFacade for MockWorkerFacade {
         caller: &SessionKey,
         reply: &WrappedPrompt,
     ) -> Result<(), ReplyDeliverError> {
+        if let Some(err) = self.force_reply_error.lock().clone() {
+            return Err(err);
+        }
         self.reply_to_caller_calls.lock().push((caller.clone(), reply.clone()));
         Ok(())
     }
