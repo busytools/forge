@@ -627,7 +627,6 @@ impl Tool for AskAgent {
             correlation_id: correlation_id.clone(),
             channel: AskChannel::Peers,
             caller: caller_key.clone(),
-            caller_project: identity.name.clone(),
             target_project: args.target.clone(),
             target_session: None,
         });
@@ -797,14 +796,12 @@ mod tests {
     fn fake_inflight(
         correlation_id: &str,
         caller_key_str: &str,
-        caller_project: &str,
         target_project: &str,
     ) -> InflightAsk {
         InflightAsk {
             correlation_id: CorrelationId(correlation_id.to_owned()),
             channel: AskChannel::Peers,
             caller: fake_key(caller_key_str),
-            caller_project: caller_project.to_owned(),
             target_project: target_project.to_owned(),
             target_session: None,
         }
@@ -890,7 +887,6 @@ mod tests {
             fake_inflight(
                 "q-7f3a92e0",
                 "granite-backend", // original caller's session key
-                "granite-backend", // original caller's project
                 "forge",           // target the original ask went to (now the replying agent)
             ),
         );
@@ -996,10 +992,9 @@ mod tests {
         // session, not degrade on the mismatched label.
         let mock = Arc::new(MockWorkspaceFacade::new());
         mock.peers.lock().push(fake_peer("B")); // the replier's identity
-        mock.inflight.lock().insert(
-            CorrelationId("q-11112222".to_owned()),
-            fake_inflight("q-11112222", "A", "A", "B"),
-        );
+        mock.inflight
+            .lock()
+            .insert(CorrelationId("q-11112222".to_owned()), fake_inflight("q-11112222", "A", "B"));
         let facade: Arc<dyn WorkspaceFacade> = mock.clone();
         let tool = TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("B")) };
         let output = tool
@@ -1048,7 +1043,6 @@ mod tests {
                 correlation_id: CorrelationId("q-55556666".to_owned()),
                 channel: AskChannel::Workers,
                 caller: fake_key("A"),
-                caller_project: "A".to_owned(),
                 target_project: "B".to_owned(),
                 target_session: None,
             },
@@ -1139,7 +1133,6 @@ mod tests {
         let registered = &mock.register_calls.lock()[0];
         assert!(registered.correlation_id.as_str().starts_with("q-"));
         assert_eq!(registered.target_project, "granite-backend");
-        assert_eq!(registered.caller_project, "forge");
 
         let bumps = mock.bump_calls.lock();
         assert_eq!(bumps.len(), 1, "exactly one stats bump per ask");

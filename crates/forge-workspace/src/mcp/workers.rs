@@ -627,7 +627,7 @@ fn format_lead_deliver_error(err: &WorkerLeadDeliverError) -> String {
              workers__tell/ask with a real worker label."
                 .to_owned()
         }
-        WorkerLeadDeliverError::LeadGone { .. } => {
+        WorkerLeadDeliverError::LeadGone => {
             "your lead is not available (its session closed since this worker was spawned)."
                 .to_owned()
         }
@@ -772,7 +772,6 @@ impl Tool for Ask {
             correlation_id: correlation_id.clone(),
             channel: AskChannel::Workers,
             caller: caller_key.clone(),
-            caller_project: caller_project_key,
             target_project: target_project_composite,
             target_session: None,
         });
@@ -2130,7 +2129,6 @@ mod tests {
         mock: &MockWorkerFacade,
         correlation_id: &str,
         caller: SessionKey,
-        caller_project: &str,
         target_composite: &str,
     ) -> CorrelationId {
         let id = CorrelationId(correlation_id.to_owned());
@@ -2140,7 +2138,6 @@ mod tests {
                 correlation_id: id.clone(),
                 channel: AskChannel::Workers,
                 caller,
-                caller_project: caller_project.to_owned(),
                 target_project: target_composite.to_owned(),
                 target_session: None,
             },
@@ -2194,7 +2191,7 @@ mod tests {
             .lock()
             .insert("forge".into(), vec![worker_with_lead("worker-A", "worker-uuid", "lead-uuid")]);
         // Pre-register: an inflight ask from worker-A → lead.
-        let ask_id = register_ask(&mock, "q-deadbeef", worker_key.clone(), "forge", "forge::lead");
+        let ask_id = register_ask(&mock, "q-deadbeef", worker_key.clone(), "forge::lead");
 
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(lead_key.clone()) };
@@ -2290,8 +2287,7 @@ mod tests {
         let lead_key = fake_key("lead-uuid");
         let worker_key = fake_key("worker-uuid");
         mock.callers.lock().insert(worker_key.clone(), worker_caller("forge"));
-        let ask_id =
-            register_ask(&mock, "q-33334444", lead_key.clone(), "forge", "forge::worker-A");
+        let ask_id = register_ask(&mock, "q-33334444", lead_key.clone(), "forge::worker-A");
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(worker_key.clone()) };
         let output = tool
@@ -2335,7 +2331,6 @@ mod tests {
                 correlation_id: CorrelationId("q-77778888".to_owned()),
                 channel: AskChannel::Peers,
                 caller: fake_key("some-peer"),
-                caller_project: "granite-backend".to_owned(),
                 target_project: "forge".to_owned(),
                 target_session: None,
             },

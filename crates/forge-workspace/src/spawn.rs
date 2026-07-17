@@ -2369,7 +2369,6 @@ config_dir = "~/.claude-subspace"
                 correlation_id: cid.clone(),
                 channel: AskChannel::Workers,
                 caller: SessionKey::from_session_id("lead-uuid"),
-                caller_project: project.as_str().to_owned(),
                 target_project: composite,
                 target_session: None,
             },

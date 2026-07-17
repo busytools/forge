@@ -174,7 +174,6 @@ pub struct InflightAsk {
     /// with a steer to the right tool.
     pub channel: AskChannel,
     pub caller: SessionKey,
-    pub caller_project: String,
     pub target_project: String,
     /// Session stamped with this ask's `IncomingPlus1` at delivery
     /// (`None` until delivered) so expiry can clear the target's

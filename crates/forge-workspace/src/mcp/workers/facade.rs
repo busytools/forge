@@ -46,10 +46,10 @@ pub enum WorkerLeadDeliverError {
     /// Caller is a project lead - leads have no lead to talk back
     /// to. The `"lead"` keyword is worker-only.
     LeadCallerHasNoLead,
-    /// Worker's recorded `spawned_by_session_id` no longer resolves
-    /// to a session in the pool (lead session ended). The worker
-    /// can't reach its lead anymore.
-    LeadGone { lead_session_id: String },
+    /// Worker's recorded lead session no longer resolves to a session
+    /// in the pool (lead session ended). The worker can't reach its
+    /// lead anymore.
+    LeadGone,
     /// Outgoing hop exceeds the limit (default 10).
     HopLimitExceeded { hop: u8, limit: u8 },
 }
@@ -656,12 +656,11 @@ impl WorkerFacade for ProdWorkerFacade {
             return Err(WorkerLeadDeliverError::UnknownCaller);
         };
         let target_lead_key = lead.session.clone();
-        let lead_session_id = target_lead_key.as_str().to_owned();
         // Defensive: confirm the lead's session is still in the pool
         // before dispatching. If it closed since the worker was
         // spawned, surface a clear error so the worker LLM can adapt.
         if !ws.pool.lock().contains_key(&target_lead_key) {
-            return Err(WorkerLeadDeliverError::LeadGone { lead_session_id });
+            return Err(WorkerLeadDeliverError::LeadGone);
         }
         if let Err(err) = ws.dispatch(Command::DeliverWorkerPromptToLead {
             caller: caller.clone(),
@@ -933,7 +932,7 @@ impl WorkerFacade for MockWorkerFacade {
         // Mock has no pool to consult; treat empty `spawned_by` as
         // "lead gone" so tests can exercise that path explicitly.
         if lead_session_id.is_empty() {
-            return Err(WorkerLeadDeliverError::LeadGone { lead_session_id });
+            return Err(WorkerLeadDeliverError::LeadGone);
         }
         // Record under the synthetic label `<lead>` so tests can
         // assert "the lead-bound delivery happened" without colliding

@@ -737,7 +737,6 @@ mod tests {
             correlation_id: CorrelationId("q-deadbeef".to_owned()),
             channel: AskChannel::Peers,
             caller: fake_key("alpha"),
-            caller_project: "alpha".to_owned(),
             target_project: "beta".to_owned(),
             target_session: None,
         };
