@@ -536,7 +536,7 @@ impl Tool for Tell {
                 self.facade.complete_inflight_ask(&correlation);
                 self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::IncomingMinus1);
                 self.facade.bump_inflight_stats(&caller, PeerStatsDelta::OutgoingMinus1);
-                deliver_ok_response(&correlation_id)
+                deliver_ok_response(&correlation_id, None)
             }
             ReplyRouting::Message => {
                 let wrapped = WrappedPrompt {
@@ -549,6 +549,16 @@ impl Tool for Tell {
                     hop_limit: HOP_LIMIT,
                     body: args.message,
                 };
+                // An unknown/stale in_reply_to fell through to a plain
+                // Message; note it so the replier's LLM can retry.
+                let note = in_reply_to_id.as_ref().map(|id| {
+                    format!(
+                        "in_reply_to {id} did not match an open ask (it may be stale \
+                         or already answered), so this was delivered as a plain \
+                         message rather than a reply. Re-check the correlation \
+                         id if you meant to reply."
+                    )
+                });
                 // Reserved keyword: `label="lead"` routes back to the
                 // caller's lead session; other labels address a worker.
                 // Lead callers using `lead` get a clear error - leads
@@ -563,7 +573,7 @@ impl Tool for Tell {
                         .map_err(|err| format_deliver_error(&args.label, &err))
                 };
                 match delivery {
-                    Ok(_) => deliver_ok_response(&correlation_id),
+                    Ok(_) => deliver_ok_response(&correlation_id, note),
                     Err(msg) => tool_error(msg),
                 }
             }
@@ -601,12 +611,19 @@ fn classify_workers_tell(
 
 /// Helper: build the standard `{ correlation_id, status: "delivered" }`
 /// response body. Pulled out so both Tell + Ask + lead-delivery paths
-/// emit a single canonical shape.
-fn deliver_ok_response(correlation_id: &CorrelationId) -> ToolOutput {
-    let body = serde_json::json!({
+/// emit a single canonical shape. `note` carries an optional
+/// degraded-reply explanation surfaced when an unknown `in_reply_to`
+/// fell through to a plain Message.
+fn deliver_ok_response(correlation_id: &CorrelationId, note: Option<String>) -> ToolOutput {
+    let mut body = serde_json::json!({
         "correlation_id": correlation_id.as_str(),
         "status": "delivered",
     });
+    if let Some(note) = note
+        && let Some(obj) = body.as_object_mut()
+    {
+        obj.insert("note".to_owned(), serde_json::Value::String(note));
+    }
     match serde_json::to_string_pretty(&body) {
         Ok(json) => ToolOutput::text(json),
         Err(err) => tool_error(format!("response serialization failed: {err}")),
@@ -788,7 +805,7 @@ impl Tool for Ask {
         // (no lead above them).
         if args.label == LEAD_LABEL {
             return match self.facade.deliver_prompt_to_lead(&caller_key, wrapped) {
-                Ok(_) => deliver_ok_response(&correlation_id),
+                Ok(_) => deliver_ok_response(&correlation_id, None),
                 Err(err) => {
                     // Rollback: delivery never landed. Counter +
                     // inflight both rewind so the map / badge stay
@@ -801,7 +818,7 @@ impl Tool for Ask {
         }
 
         match self.facade.deliver_worker_prompt(&caller_key, &args.label, wrapped) {
-            Ok(_) => deliver_ok_response(&correlation_id),
+            Ok(_) => deliver_ok_response(&correlation_id, None),
             Err(err) => {
                 // Rollback: the dispatch never reached the worker so
                 // the inflight_asks entry + outgoing bump would
@@ -2246,6 +2263,16 @@ mod tests {
             })
             .await;
         assert!(!output.is_error, "degraded path still delivers");
+        // A degraded reply carries a note so the replier's LLM learns
+        // it landed as a plain message and can retry with the right id.
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
+        let note = parsed["note"].as_str().expect("degraded reply carries a note");
+        assert!(note.contains("q-00000000"), "note names the unresolved id: {note}");
+        assert!(
+            note.contains("plain message") && note.contains("open ask"),
+            "note explains it landed as a plain message and the ask was not open: {note}",
+        );
         // No Incoming/Outgoing Minus1 bumps on the degraded path.
         let bumps = mock.bumps.lock();
         let has_decrement = bumps.iter().any(|(_, d)| {
