@@ -164,4 +164,46 @@ mod tests {
         let cx = caller_context_in_view(&ws, &view, &SessionKey::from_session_id("ghost-uuid"));
         assert!(cx.is_none(), "caller not in the project must return None");
     }
+
+    /// The lead is re-resolved from live catalog state on every call,
+    /// so a lead-resume rekey (L1 -> L2) is followed rather than pinned
+    /// to a stale snapshot.
+    #[test]
+    fn caller_context_follows_lead_across_resume_rekey() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let key = ProjectKey::new("myproj".to_owned());
+        let worker = session("worker-uuid");
+        ws.insert_live_worker(&key, worker_entry(worker.session.clone()));
+
+        let view_with_lead = |lead_id: &str| {
+            ProjectView::new_for_test_with_org(
+                key.clone(),
+                "myproj",
+                "/tmp/myproj",
+                "me",
+                Vec::new(),
+                vec![session(lead_id), worker.clone()],
+            )
+        };
+
+        let pre = view_with_lead("L1");
+        let cx_pre =
+            caller_context_in_view(&ws, &pre, &worker.session).expect("worker resolves pre-resume");
+        assert_eq!(
+            cx_pre.lead_session_view.as_ref().map(|v| v.session.as_str().to_owned()),
+            Some("L1".to_owned()),
+            "pre-resume lead is L1",
+        );
+
+        // The lead session rekeyed to L2; the same worker caller must
+        // now resolve to L2, not the stale L1.
+        let post = view_with_lead("L2");
+        let cx_post = caller_context_in_view(&ws, &post, &worker.session)
+            .expect("worker resolves post-resume");
+        assert_eq!(
+            cx_post.lead_session_view.as_ref().map(|v| v.session.as_str().to_owned()),
+            Some("L2".to_owned()),
+            "post-resume lead follows to L2",
+        );
+    }
 }
