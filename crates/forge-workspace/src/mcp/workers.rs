@@ -627,10 +627,10 @@ fn format_lead_deliver_error(err: &WorkerLeadDeliverError) -> String {
              workers__tell/ask with a real worker label."
                 .to_owned()
         }
-        WorkerLeadDeliverError::LeadGone { lead_session_id } => format!(
-            "lead session '{lead_session_id}' is no longer live. The lead closed since this \
-             worker was spawned; the worker pool will cascade-close shortly."
-        ),
+        WorkerLeadDeliverError::LeadGone { .. } => {
+            "your lead is not available (its session closed since this worker was spawned)."
+                .to_owned()
+        }
         WorkerLeadDeliverError::HopLimitExceeded { hop, limit } => format!(
             "hop limit exceeded forwarding to lead ({hop}/{limit}). The chain has reached \
              its maximum depth - your message will not be forwarded."
@@ -641,8 +641,8 @@ fn format_lead_deliver_error(err: &WorkerLeadDeliverError) -> String {
 fn format_deliver_error(label: &str, err: &WorkerDeliverError) -> String {
     match err {
         WorkerDeliverError::UnknownLabel { project_key, .. } => format!(
-            "no live worker with label '{label}' in project '{project_key}'. Call \
-             workers__list to discover the current worker pool."
+            "worker '{label}' is not available (no live worker by that label in \
+             '{project_key}'); call workers__list to see the current pool."
         ),
         WorkerDeliverError::HopLimitExceeded { hop, limit } => format!(
             "hop limit exceeded forwarding to worker '{label}' ({hop}/{limit}). The \
@@ -1691,6 +1691,11 @@ mod tests {
             .await;
         assert!(output.is_error);
         assert!(output.blocks[0].text.contains("missing"));
+        assert!(
+            output.blocks[0].text.contains("not available"),
+            "unknown worker label should read as not available: {}",
+            output.blocks[0].text,
+        );
         assert_eq!(mock.deliver_calls.lock().len(), 0, "no dispatch when label unknown");
     }
 
@@ -2087,6 +2092,32 @@ mod tests {
             .await;
         assert!(output.is_error);
         assert_eq!(mock.deliver_calls.lock().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn tell_lead_gone_says_lead_not_available() {
+        // Worker caller whose recorded lead session has closed (the
+        // mock treats an empty spawned_by as LeadGone). The error must
+        // read as the lead being not available.
+        let mock = Arc::new(MockWorkerFacade::new());
+        let worker_key = fake_key("worker-uuid");
+        mock.callers.lock().insert(worker_key.clone(), worker_caller("forge"));
+        mock.workers
+            .lock()
+            .insert("forge".into(), vec![worker_with_lead("probe", "worker-uuid", "")]);
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(worker_key) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({ "label": "lead", "message": "any news?" }),
+            })
+            .await;
+        assert!(output.is_error);
+        assert!(
+            output.blocks[0].text.contains("lead is not available"),
+            "lead-gone should read as the lead not being available: {}",
+            output.blocks[0].text,
+        );
     }
 
     // ---------------------------------------------------------------

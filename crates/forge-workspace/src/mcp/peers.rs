@@ -439,8 +439,8 @@ fn tool_error(text: String) -> ToolOutput {
 fn format_deliver_error(target: &str, err: &facade::DeliverError) -> String {
     match err {
         facade::DeliverError::UnknownTarget { name } => format!(
-            "agent '{name}' not found in forge.toml. Call peers__list_agents to discover \
-             which agents you can talk to."
+            "peer '{name}' is not available (no such agent in forge.toml); call \
+             peers__list_agents to see who you can reach."
         ),
         facade::DeliverError::HopLimitExceeded { hop, limit } => format!(
             "hop limit exceeded forwarding to '{target}' ({hop}/{limit}). The peer chain \
@@ -852,6 +852,11 @@ mod tests {
             .await;
         assert!(output.is_error);
         assert!(output.blocks[0].text.contains("missing"));
+        assert!(
+            output.blocks[0].text.contains("not available"),
+            "unknown target should read as not available: {}",
+            output.blocks[0].text,
+        );
     }
 
     #[tokio::test]
