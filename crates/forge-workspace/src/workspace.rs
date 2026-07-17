@@ -10,7 +10,9 @@ use forge_agent::AgentHandle;
 use forge_agent::client::SessionLaunchSettings;
 use forge_primitives::{PeerInflightStats, SDKSessionInfo};
 
-use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
+use crate::mcp::peers::types::{
+    AskChannel, CorrelationId, InflightAsk, WrappedKind, WrappedPrompt,
+};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::Instrument;
@@ -3952,6 +3954,7 @@ impl Workspace {
                 let wrapped = WrappedPrompt {
                     correlation_id: CorrelationId::new_tell(),
                     kind: WrappedKind::WorkerSpawnFailedNotice,
+                    channel: AskChannel::Workers,
                     sender_name: entry.label.clone(),
                     sender_org: String::new(),
                     hop: 1,
@@ -4733,6 +4736,7 @@ impl Workspace {
         let caller_notice = WrappedPrompt {
             correlation_id: id.clone(),
             kind: WrappedKind::DeliveryFailureNotice,
+            channel: ask.channel,
             sender_name: ask.target_project.clone(),
             sender_org: target_org,
             hop: 0,
@@ -4751,6 +4755,43 @@ impl Workspace {
                 "expire_inflight_ask_failed: caller notice dispatch failed (caller closed?)"
             );
         }
+    }
+
+    /// Deliver a Reply straight to the asker's session, bypassing
+    /// name/label resolution. The asker is identified by `SessionKey`
+    /// (a worker asker has no addressable project name), so this
+    /// by-session path is load-bearing for closing a cross-agent ask.
+    /// Guards the hop limit and confirms the caller session is still
+    /// live before dispatching. Shared by the peers + workers facades.
+    pub(crate) fn deliver_reply_to_caller(
+        self: &Arc<Self>,
+        caller: &SessionKey,
+        reply: &WrappedPrompt,
+    ) -> Result<(), crate::mcp::peers::facade::ReplyDeliverError> {
+        use crate::mcp::peers::facade::ReplyDeliverError;
+        if reply.exceeds_hop_limit() {
+            return Err(ReplyDeliverError::HopLimitExceeded {
+                hop: reply.hop,
+                limit: reply.hop_limit,
+            });
+        }
+        if !self.pool.lock().contains_key(caller) {
+            return Err(ReplyDeliverError::CallerSessionGone);
+        }
+        if let Err(err) = self.dispatch(crate::protocol::Command::Prompt {
+            key: caller.clone(),
+            text: reply.to_prose(),
+            attachments: Vec::new(),
+        }) {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                correlation_id = %reply.correlation_id,
+                error = ?err,
+                "deliver_reply_to_caller: dispatch failed (caller closed?)"
+            );
+            return Err(ReplyDeliverError::CallerSessionGone);
+        }
+        Ok(())
     }
 
     /// Expire every in-flight ask whose `target_project` matches the
@@ -7734,8 +7775,8 @@ config_dir = "~/.claude-personal"
                 as_caller.clone(),
                 InflightAsk {
                     correlation_id: as_caller.clone(),
+                    channel: crate::mcp::peers::types::AskChannel::Peers,
                     caller: from.clone(),
-                    caller_project: "forge".to_owned(),
                     target_project: "granite-backend".to_owned(),
                     target_session: None,
                 },
@@ -7744,8 +7785,8 @@ config_dir = "~/.claude-personal"
                 as_target.clone(),
                 InflightAsk {
                     correlation_id: as_target.clone(),
+                    channel: crate::mcp::peers::types::AskChannel::Peers,
                     caller: SessionKey::from_str_for_test("someone-else"),
-                    caller_project: "granite-backend".to_owned(),
                     target_project: "forge".to_owned(),
                     target_session: Some(from.clone()),
                 },
@@ -7900,8 +7941,8 @@ config_dir = "~/.claude-subspace"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
+                channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: caller.clone(),
-                caller_project: "forge".to_owned(),
                 target_project: "granite-backend".to_owned(),
                 target_session: None,
             },
@@ -7935,8 +7976,8 @@ config_dir = "~/.claude-subspace"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
+                channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: caller.clone(),
-                caller_project: "forge".to_owned(),
                 target_project: "granite-backend".to_owned(),
                 target_session: None,
             },
@@ -7971,8 +8012,8 @@ config_dir = "~/.claude-subspace"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
+                channel: crate::mcp::peers::types::AskChannel::Workers,
                 caller: SessionKey::from_str_for_test("lead-1"),
-                caller_project: "forge".to_owned(),
                 target_project: crate::mcp::workers::worker_target_project_key("forge", "builder"),
                 target_session: Some(worker_key.clone()),
             },
@@ -7994,7 +8035,7 @@ config_dir = "~/.claude-subspace"
     async fn expire_buffered_peer_prompts_fails_undelivered_spawn_asks() {
         use crate::domain_session::DomainSession;
         use crate::mcp::peers::types::{
-            CorrelationId, InflightAsk, PeerFailureReason, WrappedKind, WrappedPrompt,
+            AskChannel, CorrelationId, InflightAsk, PeerFailureReason, WrappedKind, WrappedPrompt,
         };
         let (workspace, _rx) = Workspace::testing_stub();
 
@@ -8003,6 +8044,7 @@ config_dir = "~/.claude-subspace"
         let wrapped = WrappedPrompt {
             correlation_id: id.clone(),
             kind: WrappedKind::Question,
+            channel: AskChannel::Peers,
             sender_name: "forge".to_owned(),
             sender_org: "Personal".to_owned(),
             hop: 1,
@@ -8016,8 +8058,8 @@ config_dir = "~/.claude-subspace"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
+                channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: SessionKey::from_str_for_test("asker"),
-                caller_project: "forge".to_owned(),
                 target_project: "granite-backend".to_owned(),
                 target_session: None,
             },
@@ -8061,8 +8103,8 @@ config_dir = "~/.claude-subspace"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
+                channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: caller.clone(),
-                caller_project: "forge".to_owned(),
                 target_project: "granite-backend".to_owned(),
                 target_session: Some(target.clone()),
             },
@@ -8103,8 +8145,8 @@ config_dir = "~/.claude-subspace"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
+                channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: SessionKey::from_str_for_test("asker"),
-                caller_project: "forge".to_owned(),
                 target_project: "granite-backend".to_owned(),
                 target_session: None,
             },
@@ -8124,7 +8166,7 @@ config_dir = "~/.claude-subspace"
     /// is exercised in the spawn::handle_deliver_peer_prompt test.
     #[tokio::test]
     async fn dispatch_command_deliver_peer_prompt_routes_cleanly() {
-        use crate::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
+        use crate::mcp::peers::types::{AskChannel, CorrelationId, WrappedKind, WrappedPrompt};
         let dir = forge_toml_with_two_projects();
         let workspace =
             Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
@@ -8133,6 +8175,7 @@ config_dir = "~/.claude-subspace"
         let wrapped = WrappedPrompt {
             correlation_id: CorrelationId::new_tell(),
             kind: WrappedKind::Message,
+            channel: AskChannel::Peers,
             sender_name: "forge".to_owned(),
             sender_org: "Default".to_owned(),
             hop: 1,
@@ -8148,6 +8191,61 @@ config_dir = "~/.claude-subspace"
             wrapped,
         });
         assert!(result.is_ok(), "dispatch routed cleanly: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn deliver_reply_to_caller_routes_by_session_and_guards() {
+        use crate::mcp::peers::facade::ReplyDeliverError;
+        use crate::mcp::peers::types::{AskChannel, CorrelationId, WrappedKind, WrappedPrompt};
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.enable_test_dispatch_intercept();
+
+        let caller = SessionKey::from_str_for_test("asker");
+        let reply = WrappedPrompt {
+            correlation_id: CorrelationId::new_tell(),
+            kind: WrappedKind::Reply,
+            channel: AskChannel::Workers,
+            sender_name: "worker".to_owned(),
+            sender_org: "worker in forge".to_owned(),
+            hop: 1,
+            hop_limit: 10,
+            body: "here's the answer".to_owned(),
+        };
+
+        // Happy path: caller live in the pool, hop within limit -> Ok
+        // plus exactly one Command::Prompt to the caller carrying the prose.
+        let (handle, _hrx) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            caller.clone(),
+            PooledAgent { handle: Arc::new(handle), account: AccountKey("acct".to_owned()) },
+        );
+        assert_eq!(ws.deliver_reply_to_caller(&caller, &reply), Ok(()));
+        let dispatched = ws.drain_test_dispatch_buffer();
+        assert_eq!(dispatched.len(), 1, "exactly one command dispatched");
+        match &dispatched[0] {
+            Command::Prompt { key, text, .. } => {
+                assert_eq!(*key, caller, "prompt routed to the asker's session");
+                assert_eq!(*text, reply.to_prose(), "prompt carries the reply prose");
+            }
+            other => panic!("expected Command::Prompt, got {other:?}"),
+        }
+
+        // Pool-miss: unknown caller -> CallerSessionGone, nothing dispatched.
+        let ghost = SessionKey::from_str_for_test("ghost");
+        assert_eq!(
+            ws.deliver_reply_to_caller(&ghost, &reply),
+            Err(ReplyDeliverError::CallerSessionGone),
+        );
+        assert!(ws.drain_test_dispatch_buffer().is_empty(), "no dispatch on pool-miss");
+
+        // Hop over the limit -> HopLimitExceeded, nothing dispatched
+        // (the guard fires before the pool check).
+        let over = WrappedPrompt { hop: 11, ..reply.clone() };
+        assert_eq!(
+            ws.deliver_reply_to_caller(&caller, &over),
+            Err(ReplyDeliverError::HopLimitExceeded { hop: 11, limit: 10 }),
+        );
+        assert!(ws.drain_test_dispatch_buffer().is_empty(), "no dispatch on hop-limit");
     }
 
     /// Disk-backed workspace fixture shared by the per-project loop
@@ -8213,8 +8311,8 @@ config_dir = "~/.claude-subspace"
                 id_a.clone(),
                 InflightAsk {
                     correlation_id: id_a.clone(),
+                    channel: crate::mcp::peers::types::AskChannel::Peers,
                     caller: caller_a.clone(),
-                    caller_project: "forge".to_owned(),
                     target_project: "granite-backend".to_owned(),
                     target_session: None,
                 },
@@ -8223,8 +8321,8 @@ config_dir = "~/.claude-subspace"
                 id_b.clone(),
                 InflightAsk {
                     correlation_id: id_b.clone(),
+                    channel: crate::mcp::peers::types::AskChannel::Peers,
                     caller: caller_b.clone(),
-                    caller_project: "forge".to_owned(),
                     target_project: "granite-backend".to_owned(),
                     target_session: None,
                 },
@@ -8233,8 +8331,8 @@ config_dir = "~/.claude-subspace"
                 id_c.clone(),
                 InflightAsk {
                     correlation_id: id_c.clone(),
+                    channel: crate::mcp::peers::types::AskChannel::Peers,
                     caller: caller_c.clone(),
-                    caller_project: "granite-backend".to_owned(),
                     target_project: "forge".to_owned(),
                     target_session: None,
                 },
@@ -10149,8 +10247,8 @@ mod async_worker_spawn_failure_tests {
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
+                channel: crate::mcp::peers::types::AskChannel::Workers,
                 caller: SessionKey::from_str_for_test("lead-1"),
-                caller_project: "proj-x".to_owned(),
                 target_project: crate::mcp::workers::worker_target_project_key("proj-x", "builder"),
                 target_session: None,
             },

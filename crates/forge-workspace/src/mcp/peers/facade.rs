@@ -156,6 +156,37 @@ pub enum DeliverError {
     HopLimitExceeded { hop: u8, limit: u8 },
 }
 
+/// Why delivering a Reply straight to the asker's session failed.
+/// Reply delivery bypasses name/label resolution (the asker is
+/// addressed by `SessionKey`), so the only failure modes are the
+/// hop-limit guard and a caller session that closed before the reply
+/// could land.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReplyDeliverError {
+    /// Outgoing hop exceeds the limit (default 10).
+    HopLimitExceeded { hop: u8, limit: u8 },
+    /// The asker's session closed before its reply could be delivered.
+    CallerSessionGone,
+}
+
+impl ReplyDeliverError {
+    /// LLM-facing sentence explaining why the reply could not land.
+    /// Shared by the peers + workers tell handlers.
+    pub(crate) fn user_message(&self) -> String {
+        match self {
+            ReplyDeliverError::HopLimitExceeded { hop, limit } => format!(
+                "hop limit exceeded delivering this reply ({hop}/{limit}); the reply chain has \
+                 reached its maximum depth and was not forwarded."
+            ),
+            ReplyDeliverError::CallerSessionGone => {
+                "the original asker's session is no longer available, so your reply could not be \
+                 delivered."
+                    .to_owned()
+            }
+        }
+    }
+}
+
 /// Per-session counter delta the tools push into the workspace's
 /// `peer_stats` map. The workspace then emits
 /// `SessionUpdate::PeerInflightStatsChanged` so the TUI reducer can
@@ -203,6 +234,17 @@ pub trait WorkspaceFacade: Send + Sync {
         target_project: &str,
         wrapped: WrappedPrompt,
     ) -> Result<TargetStatus, DeliverError>;
+
+    /// Deliver a Reply straight to the asker's session (identified
+    /// from the resolved `InflightAsk`), bypassing name/label
+    /// resolution. The asker may be a worker with no addressable
+    /// project name, so by-session delivery is load-bearing. Returns
+    /// `Err` only on hop-limit or a closed caller session.
+    fn deliver_reply_to_caller(
+        &self,
+        caller: &SessionKey,
+        reply: &WrappedPrompt,
+    ) -> Result<(), ReplyDeliverError>;
 
     /// Register an outgoing ask in the workspace's `inflight_asks`
     /// map. Expired only when the target session is lost
@@ -375,6 +417,17 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         Ok(target_status)
     }
 
+    fn deliver_reply_to_caller(
+        &self,
+        caller: &SessionKey,
+        reply: &WrappedPrompt,
+    ) -> Result<(), ReplyDeliverError> {
+        let Some(ws) = self.0.upgrade() else {
+            return Err(ReplyDeliverError::CallerSessionGone);
+        };
+        ws.deliver_reply_to_caller(caller, reply)
+    }
+
     fn register_inflight_ask(&self, ask: InflightAsk) {
         let Some(ws) = self.0.upgrade() else { return };
         let id = ask.correlation_id.clone();
@@ -460,6 +513,9 @@ pub struct MockWorkspaceFacade {
     pub current_inbound_hop: parking_lot::Mutex<Option<u8>>,
     /// Captured calls to `deliver_peer_prompt`.
     pub deliver_calls: parking_lot::Mutex<Vec<(SessionKey, String, WrappedPrompt)>>,
+    /// Captured calls to `deliver_reply_to_caller` (by-session reply
+    /// delivery) so tests can assert the reply's target + kind.
+    pub reply_to_caller_calls: parking_lot::Mutex<Vec<(SessionKey, WrappedPrompt)>>,
     /// Captured calls to `register_inflight_ask`.
     pub register_calls: parking_lot::Mutex<Vec<InflightAsk>>,
     /// Captured calls to `complete_inflight_ask`.
@@ -472,6 +528,10 @@ pub struct MockWorkspaceFacade {
     /// running the normal lookup path. Lets tests force-test the
     /// failure surface.
     pub force_deliver_error: parking_lot::Mutex<Option<DeliverError>>,
+    /// If set, `deliver_reply_to_caller` returns this error instead of
+    /// recording + Ok, so tests can exercise the failed-reply path
+    /// (the ask must stay open and no counters decrement).
+    pub force_reply_error: parking_lot::Mutex<Option<ReplyDeliverError>>,
 }
 
 #[cfg(test)]
@@ -532,6 +592,18 @@ impl WorkspaceFacade for MockWorkspaceFacade {
         Ok(target_status)
     }
 
+    fn deliver_reply_to_caller(
+        &self,
+        caller: &SessionKey,
+        reply: &WrappedPrompt,
+    ) -> Result<(), ReplyDeliverError> {
+        if let Some(err) = self.force_reply_error.lock().clone() {
+            return Err(err);
+        }
+        self.reply_to_caller_calls.lock().push((caller.clone(), reply.clone()));
+        Ok(())
+    }
+
     fn register_inflight_ask(&self, ask: InflightAsk) {
         self.inflight.lock().insert(ask.correlation_id.clone(), ask.clone());
         self.register_calls.lock().push(ask);
@@ -558,7 +630,7 @@ impl WorkspaceFacade for MockWorkspaceFacade {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::peers::types::WrappedKind;
+    use crate::mcp::peers::types::{AskChannel, WrappedKind};
     use std::path::PathBuf;
 
     fn fake_key(s: &str) -> SessionKey {
@@ -584,6 +656,7 @@ mod tests {
         WrappedPrompt {
             correlation_id: CorrelationId::new_ask(),
             kind: WrappedKind::Question,
+            channel: AskChannel::Peers,
             sender_name: "forge".to_owned(),
             sender_org: "Personal".to_owned(),
             hop,
@@ -669,8 +742,8 @@ mod tests {
         let mock = MockWorkspaceFacade::new();
         let ask = InflightAsk {
             correlation_id: CorrelationId("q-deadbeef".to_owned()),
+            channel: AskChannel::Peers,
             caller: fake_key("alpha"),
-            caller_project: "alpha".to_owned(),
             target_project: "beta".to_owned(),
             target_session: None,
         };
@@ -751,7 +824,7 @@ mod tests {
 #[cfg(all(test, feature = "test-helpers"))]
 mod lead_resolution_tests {
     use super::{DeliverError, ProdWorkspaceFacade, lead_session_view};
-    use crate::mcp::peers::types::WrappedKind;
+    use crate::mcp::peers::types::{AskChannel, WrappedKind};
     use crate::target::ProjectKey;
     use crate::views::{ProjectView, SessionView};
     use crate::workspace::Workspace;
@@ -827,6 +900,7 @@ mod lead_resolution_tests {
         WrappedPrompt {
             correlation_id: CorrelationId::new_ask(),
             kind: WrappedKind::Question,
+            channel: AskChannel::Peers,
             sender_name: "forge".to_owned(),
             sender_org: "Personal".to_owned(),
             hop,

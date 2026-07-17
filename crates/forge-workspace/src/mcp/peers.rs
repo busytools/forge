@@ -26,9 +26,10 @@ use forge_sdk::mcp::server::McpServer;
 use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
 
-use crate::SessionKey;
 use crate::mcp::peers::facade::{CallerKeyResolver, PeerStatsDelta, WorkspaceFacade};
-use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
+use crate::mcp::peers::types::{
+    AskChannel, CorrelationId, InflightAsk, ReplyRouting, WrappedKind, WrappedPrompt,
+};
 
 pub mod facade;
 pub mod types;
@@ -335,113 +336,100 @@ impl Tool for TellAgent {
                 }
             },
         };
-        let (kind, reply_target_key) =
-            classify_tell(&*self.facade, &args.target, in_reply_to_id.as_ref());
-        let is_reply = matches!(kind, WrappedKind::Reply);
-        // Surface a degraded in_reply_to (classify_tell downgraded it
-        // to a plain Message on an unknown/stale id or target mismatch)
-        // in the tool result so the replier's LLM can retry.
-        let degraded_note = match (in_reply_to_id.as_ref(), &kind) {
-            (Some(id), WrappedKind::Message) => Some(format!(
-                "in_reply_to {id} did not match an open ask (it may be stale \
-                 or already answered), so this was delivered as a plain \
-                 message rather than a reply. Re-check the correlation \
-                 id if you meant to reply."
-            )),
-            _ => None,
-        };
-
         let correlation_id = CorrelationId::new_tell();
-        let wrapped = WrappedPrompt {
-            correlation_id: correlation_id.clone(),
-            kind,
-            sender_name: identity.name,
-            sender_org: identity.org,
-            hop: outgoing_hop,
-            hop_limit: HOP_LIMIT,
-            body: args.message,
-        };
-
-        let target_status =
-            match self.facade.deliver_peer_prompt(&caller_key, &args.target, wrapped) {
-                Ok(s) => s,
-                Err(err) => return tool_error(format_deliver_error(&args.target, &err)),
-            };
-
-        // For replies that resolved cleanly:
-        //   1. Remove the InflightAsk from the workspace map (and
-        //      abort its 30-min timer) so we don't see a stale
-        //      timeout notification minutes later for an ask that
-        //      was actually replied to.
-        //   2. Decrement the caller's incoming counter (this incoming
-        //      ask is now closed) and the original asker's outgoing
-        //      counter (their ask got a reply).
-        if let Some(target_session_key) = reply_target_key {
-            if is_reply && let Some(id) = in_reply_to_id.as_ref() {
-                self.facade.complete_inflight_ask(id);
+        match classify_tell(&*self.facade, in_reply_to_id.as_ref()) {
+            ReplyRouting::WrongChannel { correct_tool } => {
+                let id = in_reply_to_id.as_ref().map(CorrelationId::as_str).unwrap_or_default();
+                tool_error(format!(
+                    "this question arrived over the workers channel (from your lead or a worker \
+                     on your team). Reply with `{correct_tool}(in_reply_to={id})`, not \
+                     peers__tell_agent - that tool is for other projects, addressed by project \
+                     name."
+                ))
             }
-            self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::IncomingMinus1);
-            self.facade.bump_inflight_stats(&target_session_key, PeerStatsDelta::OutgoingMinus1);
-        }
-
-        let mut body = serde_json::json!({
-            "correlation_id": correlation_id.as_str(),
-            "queued_at": chrono_rfc3339_now(),
-            "target_status": match target_status {
-                crate::mcp::peers::facade::TargetStatus::Delivered => "delivered",
-                crate::mcp::peers::facade::TargetStatus::QueuedForSpawn => "queued_for_spawn",
-            },
-        });
-        if let Some(note) = degraded_note
-            && let Some(obj) = body.as_object_mut()
-        {
-            obj.insert("note".to_owned(), serde_json::Value::String(note));
-        }
-        match serde_json::to_string_pretty(&body) {
-            Ok(json) => ToolOutput::text(json),
-            Err(err) => tool_error(format!("response serialization failed: {err}")),
+            ReplyRouting::Reply { caller, correlation } => {
+                let wrapped = WrappedPrompt {
+                    correlation_id: correlation_id.clone(),
+                    kind: WrappedKind::Reply,
+                    channel: AskChannel::Peers,
+                    sender_name: identity.name,
+                    sender_org: identity.org,
+                    hop: outgoing_hop,
+                    hop_limit: HOP_LIMIT,
+                    body: args.message,
+                };
+                if let Err(err) = self.facade.deliver_reply_to_caller(&caller, &wrapped) {
+                    return tool_error(err.user_message());
+                }
+                // Reply resolved cleanly: close the ask (aborting its
+                // timeout timer) and decrement the replier's incoming +
+                // the original asker's outgoing counters.
+                self.facade.complete_inflight_ask(&correlation);
+                self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::IncomingMinus1);
+                self.facade.bump_inflight_stats(&caller, PeerStatsDelta::OutgoingMinus1);
+                tell_ok_response(&correlation_id, "delivered", None)
+            }
+            ReplyRouting::Message => {
+                // An unknown/stale in_reply_to fell through to a plain
+                // Message; note it so the replier's LLM can retry.
+                let note = in_reply_to_id.as_ref().map(|id| {
+                    format!(
+                        "in_reply_to {id} did not match an open ask (it may be stale \
+                         or already answered), so this was delivered as a plain \
+                         message rather than a reply. Re-check the correlation \
+                         id if you meant to reply."
+                    )
+                });
+                let wrapped = WrappedPrompt {
+                    correlation_id: correlation_id.clone(),
+                    kind: WrappedKind::Message,
+                    channel: AskChannel::Peers,
+                    sender_name: identity.name,
+                    sender_org: identity.org,
+                    hop: outgoing_hop,
+                    hop_limit: HOP_LIMIT,
+                    body: args.message,
+                };
+                let status =
+                    match self.facade.deliver_peer_prompt(&caller_key, &args.target, wrapped) {
+                        Ok(crate::mcp::peers::facade::TargetStatus::Delivered) => "delivered",
+                        Ok(crate::mcp::peers::facade::TargetStatus::QueuedForSpawn) => {
+                            "queued_for_spawn"
+                        }
+                        Err(err) => return tool_error(format_deliver_error(&args.target, &err)),
+                    };
+                tell_ok_response(&correlation_id, status, note)
+            }
         }
     }
 }
 
-/// Decide the wrapper kind for a tell based on in_reply_to lookup.
-/// Returns `(kind, Some(target_session_key))` for clean replies (so
-/// the caller can bump stats), or `(Message, None)` for unsolicited
-/// or degraded cases.
+/// Classify a `tell` from its optional `in_reply_to`. A resolved
+/// same-channel id routes the Reply to the asker's session (the tell's
+/// `target` label is irrelevant once the correlation resolves); a
+/// resolved other-channel id is a `WrongChannel` steer; no/unknown id
+/// is an unsolicited `Message`.
 fn classify_tell(
     facade: &dyn WorkspaceFacade,
-    target_project: &str,
     in_reply_to: Option<&CorrelationId>,
-) -> (WrappedKind, Option<SessionKey>) {
+) -> ReplyRouting {
     let Some(id) = in_reply_to else {
-        return (WrappedKind::Message, None);
+        return ReplyRouting::Message;
     };
     let Some(ask) = facade.resolve_correlation(id) else {
         tracing::warn!(
             target: "forge_workspace::mcp::peers",
             correlation_id = id.as_str(),
-            target = target_project,
-            "tell_agent in_reply_to references unknown correlation_id; degrading to Message"
+            "tell_agent in_reply_to references unknown correlation_id; treating as unsolicited Message"
         );
-        return (WrappedKind::Message, None);
+        return ReplyRouting::Message;
     };
-    // Caller of the original ask should be the target of this reply.
-    // If the LLM points at a different project, treat as degraded.
-    if ask.caller_project != target_project {
-        tracing::warn!(
-            target: "forge_workspace::mcp::peers",
-            correlation_id = id.as_str(),
-            target = target_project,
-            expected = ask.caller_project,
-            "tell_agent in_reply_to target mismatch; degrading to Message"
-        );
-        return (WrappedKind::Message, None);
+    match ask.channel {
+        AskChannel::Peers => ReplyRouting::Reply { caller: ask.caller, correlation: id.clone() },
+        AskChannel::Workers => {
+            ReplyRouting::WrongChannel { correct_tool: AskChannel::Workers.reply_tool() }
+        }
     }
-    // Presence in inflight_asks is the lifecycle signal - entry
-    // exists ⇒ ask is open. Timeout / target-failure paths remove
-    // the entry; late replies after that lookup-miss fall through
-    // to the WrappedKind::Message degraded path at the call site.
-    (WrappedKind::Reply, Some(ask.caller))
 }
 
 fn tool_error(text: String) -> ToolOutput {
@@ -451,13 +439,37 @@ fn tool_error(text: String) -> ToolOutput {
 fn format_deliver_error(target: &str, err: &facade::DeliverError) -> String {
     match err {
         facade::DeliverError::UnknownTarget { name } => format!(
-            "agent '{name}' not found in forge.toml. Call peers__list_agents to discover \
-             which agents you can talk to."
+            "peer '{name}' is not available (no such agent in forge.toml); call \
+             peers__list_agents to see who you can reach."
         ),
         facade::DeliverError::HopLimitExceeded { hop, limit } => format!(
             "hop limit exceeded forwarding to '{target}' ({hop}/{limit}). The peer chain \
              has reached its maximum depth - your message will not be forwarded."
         ),
+    }
+}
+
+/// Build the standard `tell` success body. `note` carries an optional
+/// degraded-reply explanation surfaced when an unknown `in_reply_to`
+/// fell through to a plain Message.
+fn tell_ok_response(
+    correlation_id: &CorrelationId,
+    target_status: &str,
+    note: Option<String>,
+) -> ToolOutput {
+    let mut body = serde_json::json!({
+        "correlation_id": correlation_id.as_str(),
+        "queued_at": chrono_rfc3339_now(),
+        "target_status": target_status,
+    });
+    if let Some(note) = note
+        && let Some(obj) = body.as_object_mut()
+    {
+        obj.insert("note".to_owned(), serde_json::Value::String(note));
+    }
+    match serde_json::to_string_pretty(&body) {
+        Ok(json) => ToolOutput::text(json),
+        Err(err) => tool_error(format!("response serialization failed: {err}")),
     }
 }
 
@@ -594,6 +606,7 @@ impl Tool for AskAgent {
         let wrapped = WrappedPrompt {
             correlation_id: correlation_id.clone(),
             kind: WrappedKind::Question,
+            channel: AskChannel::Peers,
             sender_name: identity.name.clone(),
             sender_org: identity.org.clone(),
             hop: outgoing_hop,
@@ -612,8 +625,8 @@ impl Tool for AskAgent {
         // so the sidebar outgoing-counter / inflight map don't leak.
         self.facade.register_inflight_ask(InflightAsk {
             correlation_id: correlation_id.clone(),
+            channel: AskChannel::Peers,
             caller: caller_key.clone(),
-            caller_project: identity.name.clone(),
             target_project: args.target.clone(),
             target_session: None,
         });
@@ -649,6 +662,7 @@ impl Tool for AskAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SessionKey;
     use crate::mcp::peers::facade::MockWorkspaceFacade;
     use crate::mcp::peers::types::{InflightAsk, PeerLiveness, PeerStatus};
 
@@ -782,13 +796,12 @@ mod tests {
     fn fake_inflight(
         correlation_id: &str,
         caller_key_str: &str,
-        caller_project: &str,
         target_project: &str,
     ) -> InflightAsk {
         InflightAsk {
             correlation_id: CorrelationId(correlation_id.to_owned()),
+            channel: AskChannel::Peers,
             caller: fake_key(caller_key_str),
-            caller_project: caller_project.to_owned(),
             target_project: target_project.to_owned(),
             target_session: None,
         }
@@ -836,6 +849,11 @@ mod tests {
             .await;
         assert!(output.is_error);
         assert!(output.blocks[0].text.contains("missing"));
+        assert!(
+            output.blocks[0].text.contains("not available"),
+            "unknown target should read as not available: {}",
+            output.blocks[0].text,
+        );
     }
 
     #[tokio::test]
@@ -869,7 +887,6 @@ mod tests {
             fake_inflight(
                 "q-7f3a92e0",
                 "granite-backend", // original caller's session key
-                "granite-backend", // original caller's project
                 "forge",           // target the original ask went to (now the replying agent)
             ),
         );
@@ -967,6 +984,127 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn tell_reply_same_channel_routes_to_asker_ignoring_target_label() {
+        // A peers-channel ask from A is open. B replies via
+        // peers__tell_agent with in_reply_to=q-x but a bogus target
+        // label. The reply must route by correlation straight to A's
+        // session, not degrade on the mismatched label.
+        let mock = Arc::new(MockWorkspaceFacade::new());
+        mock.peers.lock().push(fake_peer("B")); // the replier's identity
+        mock.inflight
+            .lock()
+            .insert(CorrelationId("q-11112222".to_owned()), fake_inflight("q-11112222", "A", "B"));
+        let facade: Arc<dyn WorkspaceFacade> = mock.clone();
+        let tool = TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("B")) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "target": "lead",
+                    "message": "here's your answer",
+                    "in_reply_to": "q-11112222",
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "same-channel reply must not error: {:?}", output.blocks);
+        let replies = mock.reply_to_caller_calls.lock();
+        assert_eq!(replies.len(), 1, "reply delivered by session exactly once");
+        assert_eq!(replies[0].0, fake_key("A"), "reply routed to the asker's session");
+        assert!(matches!(replies[0].1.kind, WrappedKind::Reply), "delivered as a Reply");
+        drop(replies);
+        assert_eq!(mock.complete_calls.lock().len(), 1, "inflight ask closed");
+        assert_eq!(mock.complete_calls.lock()[0].as_str(), "q-11112222");
+        let bumps = mock.bump_calls.lock();
+        assert!(
+            bumps.iter().any(|(k, d)| *k == fake_key("B") && *d == PeerStatsDelta::IncomingMinus1),
+            "replier's incoming decrements: {bumps:?}",
+        );
+        assert!(
+            bumps.iter().any(|(k, d)| *k == fake_key("A") && *d == PeerStatsDelta::OutgoingMinus1),
+            "asker's outgoing decrements: {bumps:?}",
+        );
+        assert_eq!(
+            mock.deliver_calls.lock().len(),
+            0,
+            "a resolved reply must not fall through to deliver_peer_prompt",
+        );
+    }
+
+    #[tokio::test]
+    async fn tell_reply_from_workers_channel_is_steered_to_workers_tell() {
+        // A workers-channel ask is open. Replying to it via
+        // peers__tell_agent must be rejected with a steer to
+        // workers__tell, never delivered as a peer message.
+        let mock = Arc::new(MockWorkspaceFacade::new());
+        mock.peers.lock().push(fake_peer("B"));
+        mock.inflight.lock().insert(
+            CorrelationId("q-55556666".to_owned()),
+            InflightAsk {
+                correlation_id: CorrelationId("q-55556666".to_owned()),
+                channel: AskChannel::Workers,
+                caller: fake_key("A"),
+                target_project: "B".to_owned(),
+                target_session: None,
+            },
+        );
+        let facade: Arc<dyn WorkspaceFacade> = mock.clone();
+        let tool = TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("B")) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "target": "A",
+                    "message": "reply via the wrong tool",
+                    "in_reply_to": "q-55556666",
+                }),
+            })
+            .await;
+        assert!(output.is_error, "wrong-channel reply must be a steered error");
+        let text = &output.blocks[0].text;
+        assert!(text.contains("workers__tell"), "steer names the right tool: {text}");
+        assert!(text.contains("q-55556666"), "steer names the correlation id: {text}");
+        assert_eq!(mock.reply_to_caller_calls.lock().len(), 0, "no reply delivered");
+        assert_eq!(mock.complete_calls.lock().len(), 0, "ask not closed");
+        assert_eq!(mock.deliver_calls.lock().len(), 0, "no unsolicited delivery either");
+    }
+
+    #[tokio::test]
+    async fn tell_reply_delivery_failure_keeps_ask_open() {
+        // A same-channel reply whose by-session delivery fails (asker's
+        // session gone) must surface the error, leave the ask OPEN, and
+        // not decrement either counter.
+        let mock = Arc::new(MockWorkspaceFacade::new());
+        mock.peers.lock().push(fake_peer("B"));
+        mock.inflight
+            .lock()
+            .insert(CorrelationId("q-99990000".to_owned()), fake_inflight("q-99990000", "A", "B"));
+        *mock.force_reply_error.lock() =
+            Some(crate::mcp::peers::facade::ReplyDeliverError::CallerSessionGone);
+        let facade: Arc<dyn WorkspaceFacade> = mock.clone();
+        let tool = TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("B")) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "target": "A",
+                    "message": "reply that can't land",
+                    "in_reply_to": "q-99990000",
+                }),
+            })
+            .await;
+        assert!(output.is_error, "a failed reply must surface as an error");
+        assert!(
+            output.blocks[0].text.contains("no longer available"),
+            "error carries the not-available reply message: {}",
+            output.blocks[0].text,
+        );
+        assert_eq!(mock.complete_calls.lock().len(), 0, "the ask must stay open");
+        let bumps = mock.bump_calls.lock();
+        assert!(
+            !bumps.iter().any(|(_, d)| *d == PeerStatsDelta::IncomingMinus1
+                || *d == PeerStatsDelta::OutgoingMinus1),
+            "no counters decrement on a failed reply: {bumps:?}",
+        );
+    }
+
     #[test]
     fn tell_agent_metadata_shape() {
         let mock = MockWorkspaceFacade::new();
@@ -1033,7 +1171,6 @@ mod tests {
         let registered = &mock.register_calls.lock()[0];
         assert!(registered.correlation_id.as_str().starts_with("q-"));
         assert_eq!(registered.target_project, "granite-backend");
-        assert_eq!(registered.caller_project, "forge");
 
         let bumps = mock.bump_calls.lock();
         assert_eq!(bumps.len(), 1, "exactly one stats bump per ask");

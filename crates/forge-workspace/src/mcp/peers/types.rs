@@ -116,12 +116,32 @@ pub enum PeerFailureReason {
     TargetConnectionFailed,
 }
 
+/// Which MCP a cross-agent ask/message travelled over. Drives the
+/// reply-tool named in the Question envelope and the same-channel /
+/// wrong-channel reply-routing decision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AskChannel {
+    Peers,
+    Workers,
+}
+
+impl AskChannel {
+    /// The tell-tool an inbound Question on this channel expects a reply through.
+    pub fn reply_tool(self) -> &'static str {
+        match self {
+            AskChannel::Peers => "peers__tell_agent",
+            AskChannel::Workers => "workers__tell",
+        }
+    }
+}
+
 /// Wire kind of a peer message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WrappedKind {
-    /// `ask_agent` from sender. Recipient's LLM is expected to reply
-    /// via `tell_agent` with `in_reply_to` set to this id.
+    /// `ask_agent` from sender. Recipient replies via the channel's
+    /// tell-tool with `in_reply_to` set to this id.
     Question,
     /// Unsolicited `tell_agent` from sender (no reply expected),
     /// OR a degraded reply where `in_reply_to` didn't resolve.
@@ -148,8 +168,12 @@ pub enum WrappedKind {
 #[derive(Clone, Debug)]
 pub struct InflightAsk {
     pub correlation_id: CorrelationId,
+    /// Which MCP this ask travelled over. A reply's `in_reply_to`
+    /// routes by this channel: a same-channel reply goes straight to
+    /// `caller`; a reply arriving on the other channel is rejected
+    /// with a steer to the right tool.
+    pub channel: AskChannel,
     pub caller: SessionKey,
-    pub caller_project: String,
     pub target_project: String,
     /// Session stamped with this ask's `IncomingPlus1` at delivery
     /// (`None` until delivered) so expiry can clear the target's
@@ -157,11 +181,30 @@ pub struct InflightAsk {
     pub target_session: Option<SessionKey>,
 }
 
+/// Outcome of classifying a `tell` with an optional `in_reply_to`
+/// against the shared inflight-ask map. Drives the three-way routing
+/// decision in both MCP tell handlers.
+pub(crate) enum ReplyRouting {
+    /// `in_reply_to` resolved to an ask on THIS channel: route the
+    /// Reply straight to `caller`'s session, closing `correlation`.
+    Reply { caller: SessionKey, correlation: CorrelationId },
+    /// No `in_reply_to`, or one that resolved to no open ask: deliver
+    /// as an unsolicited Message to the tell's declared target.
+    Message,
+    /// `in_reply_to` resolved to an ask on the OTHER channel: reject
+    /// with a steer naming `correct_tool`.
+    WrongChannel { correct_tool: &'static str },
+}
+
 /// The complete content of an outgoing or inbound peer message.
 #[derive(Clone, Debug)]
 pub struct WrappedPrompt {
     pub correlation_id: CorrelationId,
     pub kind: WrappedKind,
+    /// Channel this message travelled over. The Question envelope
+    /// names the matching reply-tool so the recipient replies through
+    /// the same MCP the ask arrived on.
+    pub channel: AskChannel,
     pub sender_name: String,
     pub sender_org: String,
     pub hop: u8,
@@ -184,12 +227,13 @@ impl WrappedPrompt {
     pub fn to_prose(&self) -> String {
         match self.kind {
             WrappedKind::Question => format!(
-                "[Question id={} hop={}/{} from agent '{}' (org '{}') - reply with tell_agent in_reply_to={}]\n\n{}",
+                "[Question id={} hop={}/{} from agent '{}' (org '{}') - reply with {} in_reply_to={}]\n\n{}",
                 self.correlation_id,
                 self.hop,
                 self.hop_limit,
                 self.sender_name,
                 self.sender_org,
+                self.channel.reply_tool(),
                 self.correlation_id,
                 self.body,
             ),
@@ -301,7 +345,13 @@ mod tests {
         }
     }
 
-    fn wrapper(kind: WrappedKind, sender: &str, org: &str, body: &str) -> WrappedPrompt {
+    fn wrapper(
+        kind: WrappedKind,
+        channel: AskChannel,
+        sender: &str,
+        org: &str,
+        body: &str,
+    ) -> WrappedPrompt {
         WrappedPrompt {
             correlation_id: CorrelationId(match kind {
                 WrappedKind::Question
@@ -311,6 +361,7 @@ mod tests {
                 WrappedKind::Message => "t-c45a8f12".to_owned(),
             }),
             kind,
+            channel,
             sender_name: sender.to_owned(),
             sender_org: org.to_owned(),
             hop: 1,
@@ -320,20 +371,42 @@ mod tests {
     }
 
     #[test]
-    fn wrapped_prompt_question_prose_matches_mockup() {
-        let w =
-            wrapper(WrappedKind::Question, "forge", "Personal", "What's the test setup look like?");
+    fn wrapped_prompt_question_prose_names_peers_reply_tool() {
+        let w = wrapper(
+            WrappedKind::Question,
+            AskChannel::Peers,
+            "forge",
+            "Personal",
+            "What's the test setup look like?",
+        );
         let prose = w.to_prose();
         assert!(prose.starts_with(
-            "[Question id=q-7f3a92e0 hop=1/10 from agent 'forge' (org 'Personal') - reply with tell_agent in_reply_to=q-7f3a92e0]",
+            "[Question id=q-7f3a92e0 hop=1/10 from agent 'forge' (org 'Personal') - reply with peers__tell_agent in_reply_to=q-7f3a92e0]",
         ));
         assert!(prose.ends_with("What's the test setup look like?"));
+    }
+
+    #[test]
+    fn wrapped_prompt_question_prose_names_workers_reply_tool() {
+        let w = wrapper(
+            WrappedKind::Question,
+            AskChannel::Workers,
+            "lead",
+            "Personal",
+            "Status on the failing test?",
+        );
+        let prose = w.to_prose();
+        assert!(prose.starts_with(
+            "[Question id=q-7f3a92e0 hop=1/10 from agent 'lead' (org 'Personal') - reply with workers__tell in_reply_to=q-7f3a92e0]",
+        ));
+        assert!(prose.ends_with("Status on the failing test?"));
     }
 
     #[test]
     fn wrapped_prompt_message_prose_matches_mockup() {
         let w = wrapper(
             WrappedKind::Message,
+            AskChannel::Peers,
             "forge",
             "Personal",
             "FYI I just pushed the rewriter cleanup.",
@@ -350,6 +423,7 @@ mod tests {
     fn wrapped_prompt_reply_prose_matches_mockup() {
         let w = wrapper(
             WrappedKind::Reply,
+            AskChannel::Peers,
             "granite-backend",
             "Granite",
             "We use pgtemp for postgres fixtures.",
@@ -364,6 +438,7 @@ mod tests {
     fn wrapped_prompt_delivery_failure_notice_prose() {
         let w = wrapper(
             WrappedKind::DeliveryFailureNotice,
+            AskChannel::Peers,
             "granite-liq-bot",
             "Granite",
             "target session connection lost",
@@ -381,6 +456,7 @@ mod tests {
     fn wrapped_prompt_worker_spawn_failed_notice_prose() {
         let w = wrapper(
             WrappedKind::WorkerSpawnFailedNotice,
+            AskChannel::Workers,
             "reviewer",
             "",
             "Failed to resolve base branch \"HEAD\": git rev-parse failed",
