@@ -2306,6 +2306,11 @@ mod tests {
         assert!(matches!(replies[0].1.kind, WrappedKind::Reply), "delivered as a Reply");
         drop(replies);
         assert!(mock.inflight.lock().get(&ask_id).is_none(), "inflight ask closed");
+        assert_eq!(
+            mock.deliver_calls.lock().len(),
+            0,
+            "a resolved reply must not also fall through to worker/lead delivery",
+        );
         let bumps = mock.bumps.lock();
         assert!(
             bumps.iter().any(|(k, d)| *k == worker_key && *d == PeerStatsDelta::IncomingMinus1),
