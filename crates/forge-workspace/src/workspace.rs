@@ -4743,6 +4743,9 @@ impl Workspace {
             hop_limit: 10,
             body,
         };
+        // The CLI never echoes stdin-injected prompts back, so paint the
+        // visible notice block ourselves before the LLM-side dispatch.
+        crate::spawn::push_peer_user_turn_into_chat(self, &ask.caller, &caller_notice);
         if let Err(err) = self.dispatch(crate::protocol::Command::Prompt {
             key: ask.caller.clone(),
             text: caller_notice.to_prose(),
@@ -7996,6 +7999,50 @@ config_dir = "~/.claude-subspace"
         }
         assert!(saw_stats, "PeerInflightStatsChanged fires for delivery_failed bump");
         assert!(!workspace.inflight_asks.lock().contains_key(&id));
+    }
+
+    /// expire_inflight_ask_failed paints the delivery-failure notice as
+    /// a visible chat block: it emits a `PeerEnvelopeAppended` carrying
+    /// the `DeliveryFailureNotice` for the caller's session, so a
+    /// dead-target ask surfaces in the caller's chat, not just to its LLM.
+    #[tokio::test]
+    async fn expire_inflight_ask_failed_emits_peer_envelope_echo() {
+        use crate::mcp::peers::types::{
+            AskChannel, CorrelationId, InflightAsk, PeerFailureReason, WrappedKind,
+        };
+        let dir = forge_toml_with_two_projects();
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let mut rx = workspace.subscribe().expect("subscribe");
+
+        let caller = SessionKey::from_str_for_test("caller-notice-echo");
+        let id = CorrelationId::new_ask();
+        workspace.inflight_asks.lock().insert(
+            id.clone(),
+            InflightAsk {
+                correlation_id: id.clone(),
+                channel: AskChannel::Peers,
+                caller: caller.clone(),
+                target_project: "granite-backend".to_owned(),
+                target_session: None,
+            },
+        );
+
+        workspace.expire_inflight_ask_failed(&id, PeerFailureReason::TargetConnectionFailed);
+
+        let mut echo = None;
+        while let Ok(update) = rx.try_recv() {
+            if let SessionUpdate::PeerEnvelopeAppended { session_id, wrapped } = update {
+                echo = Some((session_id, wrapped));
+            }
+        }
+        let (session_id, wrapped) = echo.expect("PeerEnvelopeAppended painted for the caller");
+        assert_eq!(session_id, caller.as_str(), "notice echo targets the caller's session");
+        assert_eq!(wrapped.correlation_id, id, "notice echo carries the ask id");
+        assert!(
+            matches!(wrapped.kind, WrappedKind::DeliveryFailureNotice),
+            "notice echo carries the DeliveryFailureNotice kind",
+        );
     }
 
     /// expire_target_inflight expires asks stamped with the closing
