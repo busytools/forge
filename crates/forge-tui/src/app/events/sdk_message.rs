@@ -350,15 +350,12 @@ fn handle_user(app: &mut App, msg: Message) {
         app.set_latest_thinking_tokens(None);
     }
     walk_user_tool_results(app, &message.content, tool_use_result.as_ref());
-    // Peer-coordination user-turn echoes (#114). `Command::Prompt`
-    // dispatched via `Workspace::deliver_peer_prompt` injects the
-    // wrapped envelope into the target session's CLI as a user turn.
-    // The CLI echoes it back as `Message::User`, but the input-submit
-    // local-push convention (the typed-user case already pushed the
-    // bubble) doesn't apply here - no local typing happened, so the
-    // chat buffer never sees the user-turn unless we push it from
-    // the SDK echo. Detected via the peer-wrapper prefix so non-peer
-    // user echoes (the existing pattern) keep their no-push behavior.
+    // The CLI never echoes stdin-injected prompts live on stream-json
+    // (live peer/worker turns are painted workspace-side via
+    // `PeerEnvelopeAppended`); this is the resume path, where
+    // `load_resume_history` replays the persisted envelope through here
+    // as a `Message::User` the peer-wrapper prefix detects, so the
+    // reconstructed bubble matches what live delivery rendered.
     push_peer_envelope_user_turn_if_present(app, &message.content);
     // Sub-agent tool_use_result envelopes carry parent_tool_use_id at
     // the message level - wire the implicit parent linkage so the
