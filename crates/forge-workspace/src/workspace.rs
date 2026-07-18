@@ -4778,6 +4778,9 @@ impl Workspace {
         if !self.pool.lock().contains_key(caller) {
             return Err(ReplyDeliverError::CallerSessionGone);
         }
+        // The CLI never echoes stdin-injected prompts back, so paint the
+        // visible reply block ourselves before the LLM-side dispatch.
+        crate::spawn::push_peer_user_turn_into_chat(self, caller, reply);
         if let Err(err) = self.dispatch(crate::protocol::Command::Prompt {
             key: caller.clone(),
             text: reply.to_prose(),
@@ -8246,6 +8249,49 @@ config_dir = "~/.claude-subspace"
             Err(ReplyDeliverError::HopLimitExceeded { hop: 11, limit: 10 }),
         );
         assert!(ws.drain_test_dispatch_buffer().is_empty(), "no dispatch on hop-limit");
+    }
+
+    /// deliver_reply_to_caller paints the visible peer block: it emits
+    /// a `PeerEnvelopeAppended` for the caller's session carrying the
+    /// reply, not merely the LLM-side `Command::Prompt`. The CLI never
+    /// echoes stdin-injected prompts back, so this echo is the only
+    /// signal that renders the inbound `[Reply ...]` chat block.
+    #[tokio::test]
+    async fn deliver_reply_to_caller_emits_peer_envelope_echo() {
+        use crate::mcp::peers::types::{AskChannel, CorrelationId, WrappedKind, WrappedPrompt};
+        let (ws, mut rx) = Workspace::testing_stub();
+        ws.enable_test_dispatch_intercept();
+
+        let caller = SessionKey::from_str_for_test("asker");
+        let reply = WrappedPrompt {
+            correlation_id: CorrelationId::new_tell(),
+            kind: WrappedKind::Reply,
+            channel: AskChannel::Workers,
+            sender_name: "worker".to_owned(),
+            sender_org: "worker in forge".to_owned(),
+            hop: 1,
+            hop_limit: 10,
+            body: "here's the answer".to_owned(),
+        };
+
+        let (handle, _hrx) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            caller.clone(),
+            PooledAgent { handle: Arc::new(handle), account: AccountKey("acct".to_owned()) },
+        );
+        assert_eq!(ws.deliver_reply_to_caller(&caller, &reply), Ok(()));
+
+        let mut echo = None;
+        while let Ok(update) = rx.try_recv() {
+            if let SessionUpdate::PeerEnvelopeAppended { session_id, wrapped } = update {
+                echo = Some((session_id, wrapped));
+            }
+        }
+        let (session_id, wrapped) = echo.expect("PeerEnvelopeAppended painted for the caller");
+        assert_eq!(session_id, caller.as_str(), "echo targets the caller's session");
+        assert_eq!(wrapped.correlation_id, reply.correlation_id, "echo carries the reply id");
+        assert_eq!(wrapped.kind, reply.kind, "echo carries the Reply kind");
+        assert_eq!(wrapped.body, reply.body, "echo carries the reply body");
     }
 
     /// Disk-backed workspace fixture shared by the per-project loop
