@@ -1266,6 +1266,30 @@ fn detached_key() -> LineKey {
     LineKey { file_idx: usize::MAX, hunk_idx: usize::MAX, line_idx: usize::MAX }
 }
 
+/// Find the line at `line` on `side` in `path`, ignoring content -
+/// used to place an outdated thread inline against the current line
+/// bearing its last-known number even though the content changed.
+fn find_line_by_number(
+    files: &[FileHunks],
+    path: &str,
+    side: ReviewSide,
+    line: u32,
+) -> Option<(LineKey, DiffLine)> {
+    let file_idx = files.iter().position(|f| f.path == path)?;
+    for (hunk_idx, hunk) in files[file_idx].hunks.iter().enumerate() {
+        for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
+            let number = match side {
+                ReviewSide::Old => diff_line.old_line,
+                ReviewSide::New => diff_line.new_line,
+            };
+            if number == Some(line) {
+                return Some((LineKey { file_idx, hunk_idx, line_idx }, diff_line.clone()));
+            }
+        }
+    }
+    None
+}
+
 /// The user-authored text of a thread (first user comment), for the
 /// existing chip/box render path.
 fn thread_text(thread: &forge_primitives::ReviewThread) -> String {
@@ -1347,11 +1371,25 @@ fn hydrate_threads(app: &mut App) {
                     thread.status = ReviewStatus::Outdated;
                     changed = true;
                 }
+                // Best-effort inline placement at the same line number on
+                // the same side (content changed, so it renders in the
+                // outdated tint against the captured context). Detaches
+                // only when the line is gone entirely.
+                let placed = find_line_by_number(
+                    &overlay.files,
+                    &thread.anchor.path,
+                    thread.anchor.side,
+                    thread.anchor.line,
+                );
+                let (key, hunk_context) = match placed {
+                    Some((key, line)) => (key, vec![line]),
+                    None => (detached_key(), Vec::new()),
+                };
                 HunkComment {
-                    key: detached_key(),
+                    key,
                     path: thread.anchor.path.clone(),
                     line: thread.anchor.line,
-                    hunk_context: Vec::new(),
+                    hunk_context,
                     comment_text: thread_text(&thread),
                     commit: None,
                     thread: Some(thread.clone()),
@@ -4085,7 +4123,8 @@ mod tests {
             &[
                 seed("keep", 5, "let a = 1;"),
                 seed("move", 6, "let b = 2;"),
-                seed("gone", 20, "let c = 3;"),
+                seed("changed", 20, "let c = 3;"),
+                seed("vanished", 99, "let d = 4;"),
             ],
         );
 
@@ -4122,15 +4161,26 @@ mod tests {
         let moved = by_id("move");
         assert_eq!(moved.key, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 3 }, "re-anchored");
         assert_eq!(moved.line, 8, "display line follows the move");
-        let gone = by_id("gone");
-        assert_eq!(gone.key, detached_key(), "outdated thread is detached");
-        assert_eq!(gone.thread.as_ref().expect("thread").status, ReviewStatus::Outdated);
+        // Content changed but the line number survives: placed inline
+        // (line 20 = line_idx 4) and flagged Outdated.
+        let changed = by_id("changed");
+        assert_eq!(
+            changed.key,
+            LineKey { file_idx: 0, hunk_idx: 0, line_idx: 4 },
+            "inline outdated"
+        );
+        assert_eq!(changed.thread.as_ref().expect("thread").status, ReviewStatus::Outdated);
+        // Line gone entirely: detached (persisted, not drawn inline).
+        let vanished = by_id("vanished");
+        assert_eq!(vanished.key, detached_key(), "vanished thread is detached");
+        assert_eq!(vanished.thread.as_ref().expect("thread").status, ReviewStatus::Outdated);
 
-        // The move + outdated flip are written back to redb.
+        // The move + outdated flips are written back to redb.
         let reloaded = ws.load_review_threads("forge", "feat");
         let find = |id: &str| reloaded.iter().find(|t| t.id == id).expect("thread");
         assert_eq!(find("move").anchor.line, 8, "moved line persisted");
-        assert_eq!(find("gone").status, ReviewStatus::Outdated, "outdated flip persisted");
+        assert_eq!(find("changed").status, ReviewStatus::Outdated, "outdated flip persisted");
+        assert_eq!(find("vanished").status, ReviewStatus::Outdated, "outdated flip persisted");
         assert_eq!(find("keep").anchor.line, 5, "in-place line unchanged");
     }
 
