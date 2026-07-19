@@ -98,6 +98,11 @@ pub fn worktree_dirty_reason(path: &Path) -> Option<String> {
 pub fn remove_worktree(path: &Path, force: bool) -> Result<(), WorktreeError> {
     let parent =
         path.parent().ok_or_else(|| WorktreeError::NoParent(path.display().to_string()))?;
+    // The worktree carries the claude session's own lock, which git
+    // won't remove even with --force; unlock first, ignoring the result
+    // since a not-locked worktree errors harmlessly.
+    let _ =
+        Command::new("git").arg("worktree").arg("unlock").arg(path).current_dir(parent).output();
     let mut cmd = Command::new("git");
     cmd.arg("worktree").arg("remove");
     if force {
@@ -213,6 +218,15 @@ mod tests {
         assert!(wt.exists());
         remove_worktree(&wt, false).expect("clean worktree removes");
         assert!(!wt.exists(), "worktree dir gone after remove");
+    }
+
+    #[test]
+    fn remove_worktree_removes_locked_clean() {
+        let (dir, wt) = init_repo_with_worktree();
+        run_git(dir.path(), &["worktree", "lock", wt.to_str().expect("utf8 path")]);
+        assert!(wt.exists());
+        remove_worktree(&wt, false).expect("locked clean worktree removes");
+        assert!(!wt.exists(), "locked worktree dir gone after remove");
     }
 
     #[test]
