@@ -25,6 +25,24 @@ pub fn is_git_repo(path: &Path) -> bool {
         .is_ok_and(|out| out.status.success())
 }
 
+/// The branch checked out at `path`, via `git rev-parse --abbrev-ref
+/// HEAD`. `None` on detached HEAD, a git error, or non-utf8 output.
+/// Read before a worktree is removed so its per-branch review threads
+/// clean up under the same `(project, branch)` key the overlay saved
+/// them with.
+pub fn worktree_branch(path: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(path)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if branch.is_empty() || branch == "HEAD" { None } else { Some(branch) }
+}
+
 /// Errors from [`remove_worktree`].
 #[derive(Debug, thiserror::Error)]
 pub enum WorktreeError {
@@ -210,6 +228,22 @@ mod tests {
         run_git(&wt, &["commit", "-q", "-m", "ahead of upstream"]);
         let reason = worktree_dirty_reason(&wt).expect("unpushed commit reports dirty");
         assert!(reason.contains("unpushed"), "reason names unpushed commits: {reason:?}");
+    }
+
+    #[test]
+    fn worktree_branch_reports_checked_out_branch() {
+        let (dir, wt) = init_repo_with_worktree();
+        // The main worktree is on its init branch; the added worktree
+        // gets its own detached-or-named branch. Name one explicitly.
+        run_git(&wt, &["checkout", "-q", "-b", "review-loop/feat"]);
+        assert_eq!(worktree_branch(&wt).as_deref(), Some("review-loop/feat"));
+        assert!(worktree_branch(dir.path()).is_some(), "main worktree also reports a branch");
+    }
+
+    #[test]
+    fn worktree_branch_none_for_non_repo() {
+        let dir = tempdir().expect("tempdir");
+        assert!(worktree_branch(dir.path()).is_none());
     }
 
     #[test]
