@@ -47,8 +47,18 @@ pub fn save(db: &Db, project: &str, branch: &str, threads: &[ReviewThread]) -> a
 }
 
 /// Insert `thread`, replacing any existing thread with the same id in
-/// the branch's set; appends when the id is new.
-pub fn upsert(db: &Db, project: &str, branch: &str, thread: ReviewThread) -> anyhow::Result<()> {
+/// the branch's set; appends when the id is new. Stamps `updated_at` to
+/// now and fills `created_at` (preserved from the existing row on
+/// replace, set to now when the caller left it empty) so the TUI need
+/// not carry a clock.
+pub fn upsert(
+    db: &Db,
+    project: &str,
+    branch: &str,
+    mut thread: ReviewThread,
+) -> anyhow::Result<()> {
+    let now = rfc3339_now();
+    thread.updated_at.clone_from(&now);
     let txn = db.database().begin_write()?;
     {
         let mut table = txn.open_table(REVIEW_THREADS)?;
@@ -56,9 +66,14 @@ pub fn upsert(db: &Db, project: &str, branch: &str, thread: ReviewThread) -> any
             Some(value) => decode(value.value(), project, branch)?,
             None => Vec::new(),
         };
-        match threads.iter_mut().find(|t| t.id == thread.id) {
-            Some(existing) => *existing = thread,
-            None => threads.push(thread),
+        if let Some(existing) = threads.iter_mut().find(|t| t.id == thread.id) {
+            thread.created_at.clone_from(&existing.created_at);
+            *existing = thread;
+        } else {
+            if thread.created_at.is_empty() {
+                thread.created_at = now;
+            }
+            threads.push(thread);
         }
         let value = serde_json::to_vec(&threads).context("serialize review threads")?;
         table.insert((project, branch), value.as_slice())?;
