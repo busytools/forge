@@ -6,15 +6,15 @@
 //! [`GotifyEvent`]s it emits, which is a legal agent->workspace flow.
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use forge_primitives::{GotifyConfig, GotifyMessage};
-use futures::StreamExt;
+use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{Bytes, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 use crate::logging::targets::GOTIFY;
@@ -35,6 +35,18 @@ const MIN_HEALTHY_UPTIME: Duration = Duration::from_secs(5);
 /// hang the loop; the dial is also raced against shutdown so a signal is
 /// observed promptly rather than bounded by the OS TCP timeout.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Send a WebSocket keepalive ping this often on an established stream, so a
+/// half-open path surfaces as an unanswered ping (write error or no returning
+/// pong) instead of a silently blocked read that never wakes.
+const PING_INTERVAL: Duration = Duration::from_secs(22);
+
+/// Treat an established stream's path as dead when no frame (message, server
+/// ping, or pong) arrives within this window. Sits comfortably past both 2x
+/// [`PING_INTERVAL`] and Gotify's own ~45s server-ping period, so a healthy
+/// but quiet stream never trips it; a half-open socket left by a silent
+/// network drop does, which breaks the read loop into a reconnect.
+const IDLE_DEADLINE: Duration = Duration::from_secs(80);
 
 /// Per-request timeout for the read-only REST lookups (`/application`,
 /// `/message`) - keep a slow or unreachable server from stalling
@@ -211,6 +223,15 @@ pub struct GotifyStream {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
 }
 
+/// How a pumped stream ended, steering the reconnect loop.
+enum PumpOutcome {
+    /// Shutdown fired or the event receiver went away - stop the run loop.
+    Stop,
+    /// The stream ended, errored, or went idle past the deadline - fall
+    /// through to the reconnect backoff.
+    Reconnect,
+}
+
 impl GotifyStream {
     /// Open `{ws,wss}://<host>/stream?token=<client_token>` - `wss` for
     /// an `https` url, `ws` for `http`.
@@ -220,26 +241,61 @@ impl GotifyStream {
         Ok(Self { ws })
     }
 
-    /// The next decoded message, or `None` when the stream ends or
-    /// errors. Ping/Pong/Binary/Close frames are skipped; a Text frame
-    /// that fails to parse is skipped with a warn.
-    pub async fn recv(&mut self) -> Option<GotifyMessage> {
-        while let Some(frame) = self.ws.next().await {
-            match frame {
-                Ok(Message::Text(text)) => match normalize(text.as_str()) {
-                    Ok(msg) => return Some(msg),
-                    Err(error) => {
-                        tracing::warn!(target: GOTIFY, %error, "skipping unparseable stream frame");
+    /// Forward frames to `tx` until shutdown, a read error/close, or a dead
+    /// path (no frame within [`IDLE_DEADLINE`]). Splits the socket so a
+    /// keepalive ping and the read run concurrently: any inbound frame counts
+    /// as liveness, so a healthy-but-quiet stream stays up while a half-open
+    /// one is detected and dropped for the reconnect loop to redial. Text
+    /// frames forward as messages; an unparseable one is skipped with a warn.
+    async fn pump(
+        self,
+        tx: &mpsc::Sender<GotifyEvent>,
+        shutdown: &mut oneshot::Receiver<()>,
+    ) -> PumpOutcome {
+        let (mut sink, mut frames) = self.ws.split();
+        let mut ping = tokio::time::interval(PING_INTERVAL);
+        // The first tick fires immediately; drop it so pings pace from now.
+        ping.tick().await;
+        let mut last_activity = Instant::now();
+        loop {
+            tokio::select! {
+                _ = &mut *shutdown => return PumpOutcome::Stop,
+                _ = ping.tick() => {
+                    if sink.send(Message::Ping(Bytes::new())).await.is_err() {
+                        return PumpOutcome::Reconnect;
                     }
-                },
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::warn!(target: GOTIFY, %error, "Gotify stream read error");
-                    return None;
+                    if idle_past_deadline(last_activity, Instant::now()) {
+                        tracing::warn!(
+                            target: GOTIFY,
+                            idle_secs = IDLE_DEADLINE.as_secs(),
+                            "Gotify stream idle past deadline; treating path as dead",
+                        );
+                        return PumpOutcome::Reconnect;
+                    }
+                }
+                frame = frames.next() => match frame {
+                    Some(Ok(Message::Text(text))) => {
+                        last_activity = Instant::now();
+                        match normalize(text.as_str()) {
+                            Ok(msg) => {
+                                if tx.send(GotifyEvent::Message(msg)).await.is_err() {
+                                    return PumpOutcome::Stop;
+                                }
+                            }
+                            Err(error) => {
+                                tracing::warn!(target: GOTIFY, %error, "skipping unparseable stream frame");
+                            }
+                        }
+                    }
+                    Some(Ok(_)) => last_activity = Instant::now(),
+                    Some(Err(error)) => {
+                        tracing::warn!(target: GOTIFY, %error, "Gotify stream read error");
+                        return PumpOutcome::Reconnect;
+                    }
+                    None => return PumpOutcome::Reconnect,
                 }
             }
         }
-        None
     }
 }
 
@@ -262,6 +318,13 @@ fn next_backoff(current: Duration, healthy: bool) -> Duration {
     if healthy { BACKOFF_START } else { (current * 2).min(BACKOFF_CAP) }
 }
 
+/// Whether the stream has gone silent past [`IDLE_DEADLINE`] as of `now` -
+/// no inbound frame refreshed `last_activity` in time, so the path is treated
+/// as dead. Any frame resets `last_activity`, which resets this.
+fn idle_past_deadline(last_activity: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(last_activity) > IDLE_DEADLINE
+}
+
 /// Long-lived reconnect loop: connect (emit [`GotifyEvent::Connected`]),
 /// forward each message as [`GotifyEvent::Message`], and on drop/error
 /// emit [`GotifyEvent::Disconnected`] then retry with exponential backoff.
@@ -282,23 +345,13 @@ pub async fn run(
             result = tokio::time::timeout(CONNECT_TIMEOUT, GotifyStream::connect(&cfg)) => result,
         };
         let healthy = match dial {
-            Ok(Ok(mut stream)) => {
+            Ok(Ok(stream)) => {
                 let connected_at = tokio::time::Instant::now();
                 if tx.send(GotifyEvent::Connected).await.is_err() {
                     return;
                 }
-                loop {
-                    tokio::select! {
-                        _ = &mut shutdown => return,
-                        msg = stream.recv() => match msg {
-                            Some(m) => {
-                                if tx.send(GotifyEvent::Message(m)).await.is_err() {
-                                    return;
-                                }
-                            }
-                            None => break,
-                        }
-                    }
+                if let PumpOutcome::Stop = stream.pump(&tx, &mut shutdown).await {
+                    return;
                 }
                 let _ = tx.send(GotifyEvent::Disconnected).await;
                 connected_at.elapsed() >= MIN_HEALTHY_UPTIME
@@ -347,6 +400,25 @@ mod tests {
         assert_eq!(next_backoff(BACKOFF_START, false), BACKOFF_START * 2);
         assert_eq!(next_backoff(Duration::from_secs(20), false), BACKOFF_CAP);
         assert_eq!(next_backoff(BACKOFF_CAP, false), BACKOFF_CAP);
+    }
+
+    #[test]
+    fn idle_past_deadline_trips_only_after_the_deadline() {
+        let base = Instant::now();
+        // At or before the deadline the stream is still considered live.
+        assert!(!idle_past_deadline(base, base + Duration::from_secs(1)));
+        assert!(!idle_past_deadline(base, base + IDLE_DEADLINE));
+        // Strictly past the deadline the path is treated as dead.
+        assert!(idle_past_deadline(base, base + IDLE_DEADLINE + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn fresh_activity_resets_the_idle_clock() {
+        let base = Instant::now();
+        // Long after connect, a frame moves last_activity forward; measured
+        // from that fresh timestamp the stream is nowhere near the deadline.
+        let refreshed = base + Duration::from_secs(10_000);
+        assert!(!idle_past_deadline(refreshed, refreshed + Duration::from_secs(1)));
     }
 
     #[test]
