@@ -64,6 +64,7 @@ pub mod permissions;
 pub mod plugins;
 pub mod public_types;
 pub mod question;
+pub mod review;
 pub mod runtime;
 pub mod session_key;
 pub mod session_meta;
@@ -117,6 +118,9 @@ pub use public_types::{
 };
 pub use question::{
     QuestionAnnotation, QuestionOption, QuestionOutcome, QuestionPrompt, QuestionRequest,
+};
+pub use review::{
+    ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
 };
 pub use runtime::{
     ApiRetryError, ApiRetryUpdate, AvailableAgent, AvailableCommand, AvailableModel,
