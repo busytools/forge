@@ -850,6 +850,10 @@ pub struct DiffOverlayState {
     /// a click on it into "open the dropdown". `None` until the first
     /// commit-mode render.
     pub jump_hint_span: Option<(u16, u16, u16)>,
+    /// The durable review thread the `r` / `o` keys act on: the
+    /// `LineKey` of the comment whose box was last opened (chip click)
+    /// or saved. `None` until the user touches a comment.
+    pub focused_thread: Option<LineKey>,
 }
 
 impl DiffOverlayState {
@@ -1156,6 +1160,7 @@ impl DiffOverlayState {
             jump_open: false,
             jump_selected: 0,
             jump_hint_span: None,
+            focused_thread: None,
         }
     }
 
@@ -1235,6 +1240,7 @@ impl DiffOverlayState {
             jump_open: false,
             jump_selected: 0,
             jump_hint_span: None,
+            focused_thread: None,
         }
     }
 }
@@ -1462,7 +1468,55 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char(']') | KeyCode::Right => step_commit(app, true),
         KeyCode::Char('a') => toggle_all_changes(app),
         KeyCode::Char('j') => open_jump(app),
+        KeyCode::Char('r') => resolve_focused_thread(app),
+        KeyCode::Char('o') => reopen_focused_thread(app),
         _ => {}
+    }
+}
+
+/// `r`: resolve the focused thread (Open / Addressed / Outdated →
+/// Resolved). Only the user resolves.
+fn resolve_focused_thread(app: &mut App) {
+    set_focused_thread_status(
+        app,
+        ReviewStatus::Resolved,
+        &[ReviewStatus::Open, ReviewStatus::Addressed, ReviewStatus::Outdated],
+    );
+}
+
+/// `o`: reopen the focused thread (Resolved → Open).
+fn reopen_focused_thread(app: &mut App) {
+    set_focused_thread_status(app, ReviewStatus::Open, &[ReviewStatus::Resolved]);
+}
+
+/// Flip the focused thread's status when it is currently in one of
+/// `allowed_from`, updating the in-memory box and persisting the change.
+/// No-op when nothing is focused, the focused comment has no durable
+/// thread, or its status isn't a legal source for this transition.
+fn set_focused_thread_status(app: &mut App, next: ReviewStatus, allowed_from: &[ReviewStatus]) {
+    let project = app.active_session().and_then(|s| s.project.clone());
+    let Some(overlay) = app.diff_overlay.as_mut() else {
+        return;
+    };
+    let (Some(key), Some(branch)) = (overlay.focused_thread, overlay.branch.clone()) else {
+        return;
+    };
+    let Some(thread) = overlay
+        .comments
+        .iter_mut()
+        .find(|c| c.key == key)
+        .and_then(|c| c.thread.as_mut())
+        .filter(|t| allowed_from.contains(&t.status))
+    else {
+        return;
+    };
+    thread.status = next;
+    let id = thread.id.clone();
+    app.needs_redraw = true;
+    if let Some(project) = project
+        && let Some(workspace) = app.workspace.as_ref()
+    {
+        workspace.set_review_thread_status(&project, &branch, &id, next);
     }
 }
 
@@ -1804,6 +1858,8 @@ fn save_active_input(app: &mut App) {
     let persist = comment.thread.clone().map(|t| (overlay.branch.clone(), t));
     overlay.comments.push(comment);
     overlay.recompute_comment_counts();
+    // Focus the just-saved comment so `r` / `o` act on it next.
+    overlay.focused_thread = Some(key);
     app.needs_redraw = true;
     if let Some((Some(branch), thread)) = persist
         && let Some(project) = project
@@ -2144,6 +2200,8 @@ fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> Mouse
     // TextArea::insert_str respects newlines correctly so the
     // multi-line shape of the saved comment is preserved.
     editor.insert_str(&comment.comment_text);
+    // Touching a comment focuses it for the r / o keys after the editor closes.
+    overlay.focused_thread = Some(key);
     overlay.active_input =
         Some(ActiveCommentInput { key: comment.key, editor, prior_comment: Some(comment) });
     MouseEffect { redraw: true }
@@ -4205,5 +4263,83 @@ mod tests {
         assert_eq!(state.commits.len(), 2, "the stepper stays available");
         assert!(state.whole_diff_cache.is_some(), "whole-diff files cached");
         assert!(state.commit_cache.iter().all(Option::is_none), "commits scanned lazily");
+    }
+
+    fn focused_status(app: &App) -> ReviewStatus {
+        app.diff_overlay
+            .as_ref()
+            .expect("overlay")
+            .comments
+            .iter()
+            .find_map(|c| c.thread.as_ref().map(|t| t.status))
+            .expect("a durable thread")
+    }
+
+    #[test]
+    fn resolve_and_reopen_focused_thread_persist() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        with_editor(
+            &mut overlay,
+            LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            "needs a bound",
+        );
+        app.diff_overlay = Some(overlay);
+        // Save focuses the new thread (Open) and persists it.
+        save_active_input(&mut app);
+        let ws = app.workspace.clone().expect("ws");
+
+        resolve_focused_thread(&mut app);
+        assert_eq!(focused_status(&app), ReviewStatus::Resolved, "in-memory resolves");
+        assert_eq!(
+            ws.load_review_threads("forge", "feat")[0].status,
+            ReviewStatus::Resolved,
+            "persisted"
+        );
+
+        reopen_focused_thread(&mut app);
+        assert_eq!(focused_status(&app), ReviewStatus::Open, "in-memory reopens");
+        assert_eq!(
+            ws.load_review_threads("forge", "feat")[0].status,
+            ReviewStatus::Open,
+            "persisted"
+        );
+    }
+
+    #[test]
+    fn reopen_is_noop_on_an_open_thread() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("z", 3)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        with_editor(&mut overlay, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }, "note");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+
+        // `o` only reopens a Resolved thread; an Open one is left alone.
+        reopen_focused_thread(&mut app);
+        assert_eq!(
+            focused_status(&app),
+            ReviewStatus::Open,
+            "reopen does not touch an open thread"
+        );
+    }
+
+    #[test]
+    fn resolve_is_noop_without_a_focused_thread() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("z", 3)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+        // Nothing focused, nothing saved: must not panic or write.
+        resolve_focused_thread(&mut app);
+        let ws = app.workspace.clone().expect("ws");
+        assert!(ws.load_review_threads("forge", "feat").is_empty());
     }
 }

@@ -832,6 +832,8 @@ fn render_footer(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState, mode
         }
         hints.push(("t", "split/unified"));
         hints.push(("click line", "comment"));
+        hints.push(("r", "resolve"));
+        hints.push(("o", "reopen"));
         if !commit_mode {
             hints.push(("click file", "jump"));
         }
