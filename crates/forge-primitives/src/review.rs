@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// Lifecycle state of a review thread. `Addressed` is the agent's
 /// reply-and-flag (only the user ever `Resolved`s); `Outdated` marks a
 /// thread whose anchored line drifted out from under it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReviewStatus {
     Open,
     Addressed,
@@ -20,7 +20,7 @@ pub enum ReviewStatus {
 }
 
 /// Which side of the diff the anchored line sits on.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReviewSide {
     Old,
     New,
