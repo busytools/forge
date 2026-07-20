@@ -88,4 +88,18 @@ mod tests {
         store(&db, &second).expect("store again");
         assert_eq!(load(&db).expect("load").expect("present").json, r#"{"n":{}}"#);
     }
+
+    #[test]
+    fn load_surfaces_a_corrupt_blob_as_error() {
+        let (_dir, db) = open_db();
+        let txn = db.database().begin_write().expect("begin");
+        {
+            let mut table = txn.open_table(PRICING_CACHE).expect("open table");
+            table.insert(KEY, b"not json".as_slice()).expect("insert corrupt");
+        }
+        txn.commit().expect("commit");
+        // A decode failure is a diagnosable error the caller can warn on,
+        // not a silent cache miss.
+        assert!(load(&db).is_err(), "a corrupt row surfaces as an error");
+    }
 }

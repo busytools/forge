@@ -3614,26 +3614,30 @@ impl Workspace {
     /// until then).
     fn load_pricing(&self) -> forge_agent::env::token_usage::pricing::PricingTable {
         use forge_agent::env::token_usage::pricing::PricingTable;
-        let json = self
-            .db
-            .lock()
-            .as_ref()
-            .and_then(|db| crate::store::pricing::load(db).ok().flatten())
-            .map(|cached| cached.json);
+        let json = self.load_cached_pricing().map(|cached| cached.json);
         PricingTable::from_litellm_json(json.as_deref().unwrap_or("{}"))
+    }
+
+    /// Read the cached pricing snapshot, warning (not swallowing) on a
+    /// redb or decode error so a corrupt cache is diagnosable.
+    fn load_cached_pricing(&self) -> Option<crate::store::pricing::CachedPricing> {
+        let guard = self.db.lock();
+        let db = guard.as_ref()?;
+        crate::store::pricing::load(db).unwrap_or_else(|error| {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                "loading the pricing cache failed",
+            );
+            None
+        })
     }
 
     /// Whether the cached pricing is younger than the daily refresh
     /// window; a missing or older cache is stale and re-fetched.
     fn pricing_is_fresh(&self) -> bool {
         const REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
-        let guard = self.db.lock();
-        let Some(db) = guard.as_ref() else {
-            return false;
-        };
-        crate::store::pricing::load(db)
-            .ok()
-            .flatten()
+        self.load_cached_pricing()
             .and_then(|cached| cached.fetched_at.elapsed().ok())
             .is_some_and(|age| age < REFRESH_INTERVAL)
     }
