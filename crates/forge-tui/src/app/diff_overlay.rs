@@ -1275,23 +1275,25 @@ pub(crate) fn close(app: &mut App) {
     app.needs_redraw = true;
 }
 
-/// Placement for an outdated thread whose exact line may be gone: the
-/// same line number on the same side (content changed), else the nearest
-/// surviving line in the file, else the file's first line, else the
-/// document's first line. Returns the key plus the anchored line's
-/// context (empty on a fallback line). `None` only when the diff has no
-/// lines at all, so the thread renders somewhere and stays actionable.
+/// Placement for an outdated thread whose exact line may be gone,
+/// avoiding any `occupied` key so it never lands on a line a live thread
+/// already holds. Preference: the same line number on the same side,
+/// else the nearest FREE surviving line in the file, else the file's
+/// first free line, else the document's first free line; only when no
+/// free line remains does it stack on the nearest occupied line. Returns
+/// the key plus the anchored line's context (empty on a fallback line).
+/// `None` only when the diff has no lines at all.
 fn outdated_placement(
     files: &[FileHunks],
     path: &str,
     side: ReviewSide,
     line: u32,
+    occupied: &std::collections::HashSet<LineKey>,
 ) -> Option<(LineKey, Vec<DiffLine>)> {
-    if let Some((key, diff_line)) = find_line_by_number(files, path, side, line) {
-        return Some((key, vec![diff_line]));
-    }
     if let Some(file_idx) = files.iter().position(|f| f.path == path) {
-        let mut best: Option<(LineKey, u32, DiffLine)> = None;
+        // Same-side candidates, nearest first (stable, so equal distances
+        // keep document order).
+        let mut candidates: Vec<(u32, LineKey, DiffLine)> = Vec::new();
         for (hunk_idx, hunk) in files[file_idx].hunks.iter().enumerate() {
             for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
                 let number = match side {
@@ -1299,65 +1301,68 @@ fn outdated_placement(
                     ReviewSide::New => diff_line.new_line,
                 };
                 if let Some(number) = number {
-                    let dist = number.abs_diff(line);
-                    if best.as_ref().is_none_or(|(_, best_dist, _)| dist < *best_dist) {
-                        best = Some((
-                            LineKey { file_idx, hunk_idx, line_idx },
-                            dist,
-                            diff_line.clone(),
-                        ));
-                    }
+                    candidates.push((
+                        number.abs_diff(line),
+                        LineKey { file_idx, hunk_idx, line_idx },
+                        diff_line.clone(),
+                    ));
                 }
             }
         }
-        if let Some((key, _, diff_line)) = best {
-            return Some((key, vec![diff_line]));
+        candidates.sort_by_key(|(dist, _, _)| *dist);
+        if let Some((_, key, diff_line)) =
+            candidates.iter().find(|(_, key, _)| !occupied.contains(key))
+        {
+            return Some((*key, vec![diff_line.clone()]));
         }
-        if let Some(key) = first_line_key_in_file(&files[file_idx], file_idx) {
+        // Same-side lines all taken: a free line anywhere in the file.
+        if let Some(key) = first_free_line_in_file(&files[file_idx], file_idx, occupied) {
             return Some((key, Vec::new()));
         }
+        // Genuinely no free line in the file: stack on the nearest.
+        if let Some((_, key, diff_line)) = candidates.first() {
+            return Some((*key, vec![diff_line.clone()]));
+        }
     }
-    first_line_key(files).map(|key| (key, Vec::new()))
+    // File absent: the document's first free line, else stack on its first.
+    first_free_line(files, occupied).or_else(|| first_line_key(files)).map(|key| (key, Vec::new()))
 }
 
-/// The first line's key in `file` (skipping empty hunks), or `None` when
-/// the file has no lines.
-fn first_line_key_in_file(file: &FileHunks, file_idx: usize) -> Option<LineKey> {
-    file.hunks
+/// The first line's key in `file` not already in `occupied` (skipping
+/// empty hunks), or `None` when every line is taken or absent.
+fn first_free_line_in_file(
+    file: &FileHunks,
+    file_idx: usize,
+    occupied: &std::collections::HashSet<LineKey>,
+) -> Option<LineKey> {
+    file.hunks.iter().enumerate().find_map(|(hunk_idx, hunk)| {
+        (0..hunk.lines.len())
+            .map(|line_idx| LineKey { file_idx, hunk_idx, line_idx })
+            .find(|key| !occupied.contains(key))
+    })
+}
+
+/// The first free line's key across the whole document.
+fn first_free_line(
+    files: &[FileHunks],
+    occupied: &std::collections::HashSet<LineKey>,
+) -> Option<LineKey> {
+    files
         .iter()
         .enumerate()
-        .find(|(_, hunk)| !hunk.lines.is_empty())
-        .map(|(hunk_idx, _)| LineKey { file_idx, hunk_idx, line_idx: 0 })
+        .find_map(|(file_idx, file)| first_free_line_in_file(file, file_idx, occupied))
 }
 
 /// The first line's key across the whole document, or `None` when the
-/// diff has no lines.
+/// diff has no lines. The last-resort stack anchor when no line is free.
 fn first_line_key(files: &[FileHunks]) -> Option<LineKey> {
-    files.iter().enumerate().find_map(|(file_idx, file)| first_line_key_in_file(file, file_idx))
-}
-
-/// Find the line at `line` on `side` in `path`, ignoring content -
-/// used to place an outdated thread inline against the current line
-/// bearing its last-known number even though the content changed.
-fn find_line_by_number(
-    files: &[FileHunks],
-    path: &str,
-    side: ReviewSide,
-    line: u32,
-) -> Option<(LineKey, DiffLine)> {
-    let file_idx = files.iter().position(|f| f.path == path)?;
-    for (hunk_idx, hunk) in files[file_idx].hunks.iter().enumerate() {
-        for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
-            let number = match side {
-                ReviewSide::Old => diff_line.old_line,
-                ReviewSide::New => diff_line.new_line,
-            };
-            if number == Some(line) {
-                return Some((LineKey { file_idx, hunk_idx, line_idx }, diff_line.clone()));
-            }
-        }
-    }
-    None
+    files.iter().enumerate().find_map(|(file_idx, file)| {
+        file.hunks
+            .iter()
+            .enumerate()
+            .find(|(_, hunk)| !hunk.lines.is_empty())
+            .map(|(hunk_idx, _)| LineKey { file_idx, hunk_idx, line_idx: 0 })
+    })
 }
 
 /// The user-authored text of a thread (first user comment), for the
@@ -1409,8 +1414,14 @@ fn hydrate_threads(app: &mut App) {
     let mut rebuilt = Vec::with_capacity(mine.len());
     let mut persist = others;
     let mut changed = false;
+    // Live (in-place / moved) threads claim their real line in pass 1;
+    // outdated fallbacks fill the remaining free lines in pass 2, so an
+    // outdated box never lands on a key a live thread already holds
+    // (which would route a click / edit to the wrong thread).
+    let mut occupied: std::collections::HashSet<LineKey> = std::collections::HashSet::new();
+    let mut deferred_outdated = Vec::new();
     for mut thread in mine {
-        let comment = match resolver::resolve_anchor(&thread.anchor, &overlay.files) {
+        match resolver::resolve_anchor(&thread.anchor, &overlay.files) {
             AnchorResolution::InPlace { file_idx, hunk_idx, line_idx }
             | AnchorResolution::Moved { file_idx, hunk_idx, line_idx } => {
                 let resolved = overlay
@@ -1433,8 +1444,10 @@ fn hydrate_threads(app: &mut App) {
                     thread.status = ReviewStatus::Open;
                     changed = true;
                 }
-                HunkComment {
-                    key: LineKey { file_idx, hunk_idx, line_idx },
+                let key = LineKey { file_idx, hunk_idx, line_idx };
+                occupied.insert(key);
+                rebuilt.push(HunkComment {
+                    key,
                     path: thread.anchor.path.clone(),
                     line,
                     hunk_context: resolved.map(|dl| vec![dl.clone()]).unwrap_or_default(),
@@ -1443,43 +1456,47 @@ fn hydrate_threads(app: &mut App) {
                     thread: Some(thread.clone()),
                     authored_this_session: false,
                     persisted: true,
-                }
+                });
+                persist.push(thread);
             }
             AnchorResolution::Outdated => {
                 if !matches!(thread.status, ReviewStatus::Resolved | ReviewStatus::Outdated) {
                     thread.status = ReviewStatus::Outdated;
                     changed = true;
                 }
-                // Place the outdated box on a surviving line so it renders
-                // (yellow, against its captured context) and stays
-                // actionable: the same line number if it survives, else
-                // the nearest line, else a document fallback.
-                let Some((key, hunk_context)) = outdated_placement(
-                    &overlay.files,
-                    &thread.anchor.path,
-                    thread.anchor.side,
-                    thread.anchor.line,
-                ) else {
-                    // Empty diff this open: keep the thread durable (it
-                    // re-anchors when the diff returns) but skip rendering.
-                    persist.push(thread);
-                    continue;
-                };
-                HunkComment {
-                    key,
-                    path: thread.anchor.path.clone(),
-                    line: thread.anchor.line,
-                    hunk_context,
-                    comment_text: thread_text(&thread),
-                    commit: None,
-                    thread: Some(thread.clone()),
-                    authored_this_session: false,
-                    persisted: true,
-                }
+                deferred_outdated.push(thread);
             }
+        }
+    }
+    // Pass 2: place outdated threads on a surviving FREE line so they
+    // render (yellow, against their captured context) without clobbering
+    // a co-located live thread.
+    for thread in deferred_outdated {
+        let Some((key, hunk_context)) = outdated_placement(
+            &overlay.files,
+            &thread.anchor.path,
+            thread.anchor.side,
+            thread.anchor.line,
+            &occupied,
+        ) else {
+            // Empty diff this open: keep the thread durable (it re-anchors
+            // when the diff returns) but skip rendering.
+            persist.push(thread);
+            continue;
         };
+        occupied.insert(key);
+        rebuilt.push(HunkComment {
+            key,
+            path: thread.anchor.path.clone(),
+            line: thread.anchor.line,
+            hunk_context,
+            comment_text: thread_text(&thread),
+            commit: None,
+            thread: Some(thread.clone()),
+            authored_this_session: false,
+            persisted: true,
+        });
         persist.push(thread);
-        rebuilt.push(comment);
     }
 
     overlay.comments.retain(|c| c.commit.is_some());
@@ -4414,15 +4431,17 @@ mod tests {
             "inline outdated"
         );
         assert_eq!(changed.thread.as_ref().expect("thread").status, ReviewStatus::Outdated);
-        // Line number gone (99): placed on the nearest surviving line
-        // (20 = line_idx 4) so it still renders, flagged Outdated.
+        // Line number gone (99): the nearest line (20 = line_idx 4) is
+        // already taken by "changed", so it falls to the next free line
+        // (line_idx 2), still rendered and flagged Outdated.
         let vanished = by_id("vanished");
         assert_eq!(
             vanished.key,
-            LineKey { file_idx: 0, hunk_idx: 0, line_idx: 4 },
-            "nearest fallback"
+            LineKey { file_idx: 0, hunk_idx: 0, line_idx: 2 },
+            "next free line"
         );
         assert_eq!(vanished.thread.as_ref().expect("thread").status, ReviewStatus::Outdated);
+        assert_ne!(vanished.key, changed.key, "outdated threads do not collide");
 
         // The move + outdated flips are written back to redb.
         let reloaded = ws.load_review_threads("forge", "feat");
@@ -4431,6 +4450,66 @@ mod tests {
         assert_eq!(find("changed").status, ReviewStatus::Outdated, "outdated flip persisted");
         assert_eq!(find("vanished").status, ReviewStatus::Outdated, "outdated flip persisted");
         assert_eq!(find("keep").anchor.line, 5, "in-place line unchanged");
+    }
+
+    #[test]
+    fn outdated_placement_avoids_a_live_thread_key() {
+        // A live thread holds line 10; an outdated thread whose content
+        // was also at line 10 (now gone) must land on a DIFFERENT key so
+        // clicking / editing one can't overwrite the other.
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        let seed = |id: &str, text: &str| forge_primitives::ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 10,
+                content_hash: resolver::content_hash(text),
+                context: Vec::new(),
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: text.to_owned(),
+                at: String::new(),
+            }],
+            status: ReviewStatus::Open,
+            created_at: "t0".to_owned(),
+            updated_at: "t0".to_owned(),
+        };
+        ws.save_review_threads("forge", "feat", &[seed("live", "keep"), seed("stale", "old_body")]);
+        // "keep" is live at line 10; "old_body" is gone.
+        let files = vec![single_hunk_file(
+            "src/x.rs",
+            vec![added_line("keep", 10), added_line("neighbor", 11)],
+        )];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+        hydrate_threads(&mut app);
+
+        let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
+        let by_id = |id: &str| {
+            comments
+                .iter()
+                .find(|c| c.thread.as_ref().map(|t| t.id.as_str()) == Some(id))
+                .expect("comment")
+        };
+        let live = by_id("live");
+        let stale = by_id("stale");
+        assert_eq!(
+            live.key,
+            LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            "live holds line 10"
+        );
+        assert_eq!(
+            stale.key,
+            LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 },
+            "outdated thread avoids the live key, taking the next free line",
+        );
+        assert_eq!(stale.thread.as_ref().expect("thread").status, ReviewStatus::Outdated);
     }
 
     #[test]
@@ -4780,6 +4859,81 @@ mod tests {
         }
         resolve_focused_thread(&mut app);
         assert_eq!(focused_status(&app), ReviewStatus::Resolved, "outdated resolves to resolved");
+    }
+
+    #[test]
+    fn write_failure_with_all_present_keeps_comment_at_risk() {
+        // Workspace + project + branch all present, but its store isn't
+        // open, so upsert returns false - the comment must stay at-risk
+        // (persisted = false), not be marked durable on scope alone.
+        let mut app = App::test_default();
+        let key = forge_workspace::SessionKey::from_session_id("review-session");
+        let mut session = crate::app::session::UiSession::new(key.clone());
+        session.project = Some("forge".to_owned());
+        session.cwd_raw = "/tmp/repo".into();
+        app.sessions.insert(key.clone(), session);
+        app.active_session_key = Some(key);
+        // Deliberately NO install_db_for_test: the write will fail.
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = 1;", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        with_editor(&mut overlay, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }, "note");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+
+        let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
+        assert!(comment.authored_this_session);
+        assert!(!comment.persisted, "a failed write with all present stays at-risk");
+        assert!(comment.thread.is_some(), "still a whole-diff thread");
+    }
+
+    #[test]
+    fn reopen_then_cancel_keeps_a_hydrated_chip_unbundled() {
+        // A read-only view of a prior review (hydrated threads) that the
+        // user clicks then Esc-cancels must not become session-authored,
+        // so closing the overlay re-prompts the agent with nothing.
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads(
+            "forge",
+            "feat",
+            &[forge_primitives::ReviewThread {
+                id: "h".to_owned(),
+                anchor: ReviewAnchor {
+                    path: "src/x.rs".to_owned(),
+                    side: ReviewSide::New,
+                    line: 10,
+                    content_hash: resolver::content_hash("keep"),
+                    context: Vec::new(),
+                    base_ref: "main".to_owned(),
+                },
+                comments: vec![ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "prior".to_owned(),
+                    at: "t0".to_owned(),
+                }],
+                status: ReviewStatus::Open,
+                created_at: "t0".to_owned(),
+                updated_at: "t0".to_owned(),
+            }],
+        );
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("keep", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+        hydrate_threads(&mut app);
+
+        let key = app.diff_overlay.as_ref().expect("overlay").comments[0].key;
+        if let Some(o) = app.diff_overlay.as_mut() {
+            reopen_comment_for_key(o, key);
+        }
+        cancel_active_input(&mut app);
+
+        let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
+        assert!(!comment.authored_this_session, "reopen + cancel keeps the chip hydrated");
+        assert!(!is_bundle_eligible(comment), "and never enters the agent bundle");
     }
 
     #[test]
