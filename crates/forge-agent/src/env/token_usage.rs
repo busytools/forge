@@ -70,7 +70,11 @@ fn fold_project_in(slug: &str, projects_prefix: &str, projects_root: &Path) -> S
 /// directory under `projects_root`; when nothing resolves (the repo
 /// was removed) the first component is the best-effort label.
 fn resolve_project_name(remainder: &str, projects_root: &Path) -> String {
-    let tokens: Vec<&str> = remainder.split('-').collect();
+    // Drop empty tokens: a `.`/`/` in the original path encodes as a
+    // dash, so a dotted or double-slashed segment leaves an empty token
+    // that would otherwise resolve to `projects_root` itself (empty
+    // candidate) or become an empty fallback label.
+    let tokens: Vec<&str> = remainder.split('-').filter(|token| !token.is_empty()).collect();
     for run_len in (1..=tokens.len()).rev() {
         let candidate = tokens[..run_len].join("-");
         if projects_root.join(&candidate).is_dir() {
@@ -488,6 +492,22 @@ mod tests {
         assert_eq!(fold_project_in(slug, PREFIX, root.path()), "ghostrepo");
     }
 
+    #[test]
+    fn dotted_path_does_not_yield_an_empty_label() {
+        let root = projects_root_with(&["forge"]);
+        // `~/Projects/.hidden` (dir gone) encodes the `.` as a second
+        // dash; the empty candidate must not match projects_root itself.
+        assert_eq!(
+            fold_project_in("-Users-vedhavyas-Projects--hidden", PREFIX, root.path()),
+            "hidden",
+        );
+        // `~/Projects/forge/.config` still folds to the repo.
+        assert_eq!(
+            fold_project_in("-Users-vedhavyas-Projects-forge--config", PREFIX, root.path()),
+            "forge",
+        );
+    }
+
     fn write_session(td: &TempDir, slug: &str, file: &str, lines: &[&str]) -> PathBuf {
         let dir = td.path().join(slug);
         std::fs::create_dir_all(&dir).expect("mkdir slug");
@@ -619,8 +639,11 @@ mod tests {
     #[test]
     fn roll_up_flags_pricing_availability() {
         let summary = summary_of("forge", &[("m", "2026-07-15", counts_out(1))]);
-        let empty =
-            roll_up(&[summary.clone()], &PricingTable::from_litellm_json("{}"), wednesday());
+        let empty = roll_up(
+            std::slice::from_ref(&summary),
+            &PricingTable::from_litellm_json("{}"),
+            wednesday(),
+        );
         assert!(!empty.pricing_available, "an empty table means pricing is unavailable");
         let priced = PricingTable::from_litellm_json(
             r#"{"m":{"input_cost_per_token":0.001,"output_cost_per_token":0.002}}"#,
