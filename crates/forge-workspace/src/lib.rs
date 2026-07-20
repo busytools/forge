@@ -134,6 +134,9 @@ pub mod env {
     pub mod processes {
         pub use forge_agent::env::processes::*;
     }
+    pub mod token_usage {
+        pub use forge_agent::env::token_usage::*;
+    }
 }
 pub mod session_lifecycle {
     pub use forge_agent::session_lifecycle::*;

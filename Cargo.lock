@@ -1272,6 +1272,8 @@ dependencies = [
  "similar 3.1.0",
  "syntect",
  "tempfile",
+ "time",
+ "time-tz",
  "tokio",
  "tracing",
  "tracing-appender",

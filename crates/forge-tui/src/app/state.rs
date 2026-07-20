@@ -1923,6 +1923,8 @@ impl App {
             cron_id: None,
             kind: crate::app::state::types::ScheduleKind::Wakeup,
             label: if reason.is_empty() { "wakeup".to_owned() } else { reason.to_owned() },
+            description: None,
+            schedule: String::new(),
             fire_at: Some(fire_at),
             created_at: now,
         });
@@ -1952,21 +1954,27 @@ impl App {
         if self.replay_in_progress && !durable {
             return;
         }
+        let schedule = if cron_expr.is_empty() {
+            "(unknown schedule)".to_owned()
+        } else {
+            crate::ui::schedule_format::humanize_cron(cron_expr)
+        };
         let schedules = self.schedules_mut();
         if let Some(e) = schedules.iter_mut().find(|e| e.key == tool_use_id) {
-            cron_expr.clone_into(&mut e.label);
+            e.schedule = schedule;
             e.kind = crate::app::state::types::ScheduleKind::Cron { recurring, durable };
             return;
         }
+        // A cloud CronCreate carries no description or prompt, so its
+        // headline is empty and the row shows the humanized schedule
+        // on a single line.
         schedules.push(crate::app::state::types::ScheduleEntry {
             key: tool_use_id.to_owned(),
             cron_id: None,
             kind: crate::app::state::types::ScheduleKind::Cron { recurring, durable },
-            label: if cron_expr.is_empty() {
-                "(unknown schedule)".to_owned()
-            } else {
-                cron_expr.to_owned()
-            },
+            label: String::new(),
+            description: None,
+            schedule,
             fire_at: None,
             created_at,
         });
@@ -3852,6 +3860,12 @@ mod tests {
         app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", true, false, t0);
         assert_eq!(app.schedules().len(), 1);
         assert!(matches!(app.schedules()[0].kind, ScheduleKind::Cron { recurring: true, .. }));
+        assert_eq!(
+            app.schedules()[0].schedule,
+            "every 5 minutes",
+            "a cloud cron humanizes its expression",
+        );
+        assert_eq!(app.schedules()[0].label, "", "a cloud cron carries no headline");
         // Stamp the job id discovered from the CronCreate result.
         app.stamp_cron_id_from_result("tu1", "job-abc");
         assert_eq!(app.schedules()[0].cron_id.as_deref(), Some("job-abc"));

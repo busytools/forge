@@ -166,8 +166,17 @@ pub struct ScheduleEntry {
     /// later `CronDelete`. `None` for wakeups and un-stamped crons.
     pub cron_id: Option<String>,
     pub kind: ScheduleKind,
-    /// Wakeup: the `reason`. Cron: the raw cron expression.
+    /// Wakeup: the `reason`. Cron: the headline candidate - a forge
+    /// cron's prompt first line, empty for a cloud cron whose only text
+    /// is its expression.
     pub label: String,
+    /// Cron only: the human "what/why" from `cron__create`, preferred
+    /// over `label` as the row headline. `None` for wakeups and crons
+    /// without one.
+    pub description: Option<String>,
+    /// Cron only: the humanized schedule (`daily at 09:00`, `today
+    /// 14:30`). Empty for wakeups.
+    pub schedule: String,
     /// Wakeup: when it fires (now + delaySeconds). Cron: `None`.
     pub fire_at: Option<std::time::SystemTime>,
     /// When the entry was created. Recurring-cron 7-day-expiry
@@ -641,6 +650,8 @@ mod tests {
             cron_id: None,
             kind: ScheduleKind::Wakeup,
             label: "poll".into(),
+            description: None,
+            schedule: String::new(),
             fire_at: Some(fire),
             created_at: t0,
         };
@@ -657,6 +668,8 @@ mod tests {
             cron_id: Some("job1".into()),
             kind: ScheduleKind::Cron { recurring: true, durable: false },
             label: "*/5 * * * *".into(),
+            description: None,
+            schedule: "every 5 minutes".into(),
             fire_at: None,
             created_at: t0,
         };
@@ -674,6 +687,8 @@ mod tests {
             cron_id: Some("job2".into()),
             kind: ScheduleKind::Cron { recurring: false, durable: true },
             label: "0 9 1 1 *".into(),
+            description: None,
+            schedule: "monthly on the 1st at 09:00".into(),
             fire_at: None,
             created_at: t0,
         };
