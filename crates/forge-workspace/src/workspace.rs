@@ -3452,7 +3452,7 @@ impl Workspace {
             return false;
         };
         match crate::store::review::remove_thread(db, project, branch, id) {
-            Ok(_) => true,
+            Ok(removed) => removed,
             Err(error) => {
                 tracing::warn!(
                     target: "forge_workspace::workspace",
