@@ -3506,7 +3506,7 @@ impl Workspace {
         }
     }
 
-    /// Scan the shared session-JSONL pool into a [`UsageReport`] for the
+    /// Scan the shared session-JSONL pool into a `UsageReport` for the
     /// `/usage` overlay. Query-style (a direct method, not a Command):
     /// reads the one real `projects` dir, refreshes the incremental
     /// per-file cache, and rolls the deduped summaries up into the four
