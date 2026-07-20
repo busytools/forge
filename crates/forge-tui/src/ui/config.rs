@@ -9,7 +9,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::Color;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 
 use super::theme;
 use input::{add_marketplace_example_lines, render_text_input_field};
@@ -40,20 +40,26 @@ fn render_view(
     let frame_area = frame.area();
     app.cached_frame_area = frame_area;
 
-    let outer = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .border_style(Style::default().fg(theme::DIM));
-    frame.render_widget(outer, frame_area);
+    let (message, is_error) = if let Some(error) = app.config.last_error.clone() {
+        (error, true)
+    } else if let Some(status) = app.config.status_message.clone() {
+        (status, false)
+    } else {
+        (String::new(), false)
+    };
+    let status = Line::from(Span::styled(
+        message,
+        Style::default().fg(if is_error { theme::STATUS_ERROR } else { theme::DIM }),
+    ));
 
-    let inner = frame_area.inner(Margin { vertical: 1, horizontal: 1 });
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(1), Constraint::Length(1)])
-        .split(inner);
+    let help_text = if app.config.overlay.is_some() { String::new() } else { help(app) };
+    let footer = Line::from(Span::styled(help_text, Style::default().fg(theme::RUST_ORANGE)));
 
-    body(frame, chunks[0], app);
+    super::page::render_page(frame, title, Some(status), footer, |frame, body_rect| {
+        body(frame, body_rect, app);
+    });
 
+    // Modal overlays paint over the full frame, above the scaffold.
     if app.config.installed_plugin_actions_overlay().is_some() {
         render_installed_plugin_actions_overlay(frame, frame_area, app);
     } else if app.config.plugin_install_overlay().is_some() {
@@ -65,30 +71,6 @@ fn render_view(
     } else if app.config.mcp_details_overlay().is_some() {
         mcp::render_details_overlay(frame, frame_area, app);
     }
-
-    let (message, is_error) = if let Some(error) = app.config.last_error.clone() {
-        (error, true)
-    } else if let Some(status) = app.config.status_message.clone() {
-        (status, false)
-    } else {
-        (String::new(), false)
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            message,
-            Style::default().fg(if is_error { theme::STATUS_ERROR } else { theme::DIM }),
-        ))),
-        chunks[1],
-    );
-
-    let help_text = if app.config.overlay.is_some() { String::new() } else { help(app) };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            help_text,
-            Style::default().fg(theme::RUST_ORANGE),
-        ))),
-        chunks[2],
-    );
 }
 
 fn plugins_help_text(app: &App) -> String {
