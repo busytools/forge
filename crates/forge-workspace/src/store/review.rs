@@ -257,6 +257,16 @@ mod tests {
     }
 
     #[test]
+    fn upsert_stamps_an_empty_comment_at() {
+        let (_dir, db) = open_db();
+        let mut t = thread("a", 10);
+        t.comments[0].at = String::new();
+        upsert(&db, "forge", "feat", t).expect("upsert");
+        let loaded = load(&db, "forge", "feat").expect("load");
+        assert!(!loaded[0].comments[0].at.is_empty(), "upsert stamps an empty comment `at`");
+    }
+
+    #[test]
     fn remove_thread_drops_one_and_reports_missing() {
         let (_dir, db) = open_db();
         save(&db, "forge", "feat", &[thread("a", 10), thread("b", 20)]).expect("save");
