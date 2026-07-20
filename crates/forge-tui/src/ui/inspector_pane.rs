@@ -1492,9 +1492,13 @@ fn append_schedules_section(lines: &mut Vec<Line<'static>>, app: &App, width: u1
     // the cached `app.forge_crons` snapshot). Forge crons carry a
     // concrete `next_fire`, so they render with a live countdown.
     let now = std::time::SystemTime::now();
-    let tz = forge_workspace::env::token_usage::system_timezone();
     let mut entries: Vec<crate::app::ScheduleEntry> = app.schedules().to_vec();
-    entries.extend(app.forge_crons.iter().map(|c| forge_cron_to_schedule_entry(c, now, tz)));
+    // Resolve the local zone (a per-frame syscall) only when there are
+    // forge crons to humanize - most sessions have none.
+    if !app.forge_crons.is_empty() {
+        let tz = forge_workspace::env::token_usage::system_timezone();
+        entries.extend(app.forge_crons.iter().map(|c| forge_cron_to_schedule_entry(c, now, tz)));
+    }
     if entries.is_empty() {
         return;
     }
