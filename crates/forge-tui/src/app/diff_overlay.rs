@@ -786,6 +786,12 @@ pub struct DiffOverlayState {
     /// the renderer to wrap the TextArea and by the click handler
     /// for column bound checks.
     pub pane_width: u16,
+    /// Left screen column of the diff content (rail or body) inside the
+    /// page border; the rail/body column hit-test is relative to it.
+    pub content_origin_col: u16,
+    /// Top screen row of the FILES rail (below the page border and any
+    /// commit stepper); the rail row hit-test is relative to it.
+    pub rail_origin_row: u16,
     /// Cached comment count per file index, indexed by file position
     /// in [`Self::files`]. Recomputed on every comment mutation via
     /// [`Self::recompute_comment_counts`]. Renderer reads it directly
@@ -1154,6 +1160,8 @@ impl DiffOverlayState {
             pane_origin_row: 0,
             pane_origin_col: 0,
             pane_width: 0,
+            content_origin_col: 0,
+            rail_origin_row: 0,
             comment_counts: vec![0; file_count],
             rail_keys: Vec::new(),
             body_head_rows: 0,
@@ -1234,6 +1242,8 @@ impl DiffOverlayState {
             pane_origin_row: 0,
             pane_origin_col: 0,
             pane_width: 0,
+            content_origin_col: 0,
+            rail_origin_row: 0,
             comment_counts: vec![0; file_count],
             rail_keys: Vec::new(),
             body_head_rows: 0,
@@ -2102,15 +2112,15 @@ struct MouseEffect {
 ///   editing.
 /// - Left click on a collapsed deleted file's header → expand it.
 pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
-    let terminal_width = app.cached_frame_area.width;
+    // The diff renders inside the page border, so its content width is
+    // the frame minus the two border columns.
+    let content_width = app.cached_frame_area.width.saturating_sub(2);
     let effect = if let Some(overlay) = app.diff_overlay.as_mut() {
         match mouse.kind {
-            MouseEventKind::ScrollUp => handle_scroll(overlay, mouse.column, terminal_width, false),
-            MouseEventKind::ScrollDown => {
-                handle_scroll(overlay, mouse.column, terminal_width, true)
-            }
+            MouseEventKind::ScrollUp => handle_scroll(overlay, mouse.column, content_width, false),
+            MouseEventKind::ScrollDown => handle_scroll(overlay, mouse.column, content_width, true),
             MouseEventKind::Down(MouseButton::Left) => {
-                handle_left_click(overlay, mouse.column, mouse.row, terminal_width)
+                handle_left_click(overlay, mouse.column, mouse.row, content_width)
             }
             // Drags, other buttons, and horizontal-wheel events have no
             // binding in the overlay.
@@ -2124,14 +2134,22 @@ pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
     }
 }
 
+/// Whether a click column lands in the FILES rail: the rail spans
+/// `[content_origin_col, content_origin_col + rail_width)` when shown.
+fn column_in_rail(overlay: &DiffOverlayState, column: u16, content_width: u16) -> bool {
+    let rail_width = rail_width_for(content_width);
+    rail_width > 0
+        && column >= overlay.content_origin_col
+        && column < overlay.content_origin_col.saturating_add(rail_width)
+}
+
 fn handle_scroll(
     overlay: &mut DiffOverlayState,
     column: u16,
-    terminal_width: u16,
+    content_width: u16,
     down: bool,
 ) -> MouseEffect {
-    let rail_width = rail_width_for(terminal_width);
-    let in_rail = rail_width > 0 && column < rail_width;
+    let in_rail = column_in_rail(overlay, column, content_width);
     if in_rail {
         if down {
             overlay.rail_scroll = overlay.rail_scroll.saturating_add(SCROLL_LINES_PER_NOTCH);
@@ -2154,7 +2172,7 @@ fn handle_left_click(
     overlay: &mut DiffOverlayState,
     column: u16,
     row: u16,
-    terminal_width: u16,
+    content_width: u16,
 ) -> MouseEffect {
     // `⌄ jump` control on the stepper row → toggle the dropdown.
     if let Some((jr, c0, c1)) = overlay.jump_hint_span
@@ -2174,9 +2192,8 @@ fn handle_left_click(
         overlay.jump_open = false;
         return MouseEffect { redraw: true };
     }
-    let rail_width = rail_width_for(terminal_width);
-    // Rail click: column < rail_width → rail row hit-test.
-    if rail_width > 0 && column < rail_width {
+    // Rail click: column inside the rail → rail row hit-test.
+    if column_in_rail(overlay, column, content_width) {
         return handle_rail_click(overlay, row);
     }
     // Body click: column past rail+separator. Resolve via body_keys.
@@ -2187,12 +2204,15 @@ fn handle_left_click(
 }
 
 fn handle_rail_click(overlay: &mut DiffOverlayState, row: u16) -> MouseEffect {
+    // Rows are relative to the rail's top (below the page border and
+    // any commit stepper).
+    let row = row.saturating_sub(overlay.rail_origin_row);
     // The tree rail mixes directory headers (non-clickable) with
     // file leaves. We resolve the click by walking `rail_keys`
     // (parallel to the rendered rows) at offset `rail_scroll`.
     // The banner / rule / blank rows live at the head of the list
-    // and don't scroll - they're always at the absolute screen
-    // rows 0, 1, 2. The scrollable portion starts at row 3
+    // and don't scroll - they're at rows 0, 1, 2 relative to the
+    // rail's top. The scrollable portion starts at row 3
     // (== FIRST_FILE_ROW_Y).
     let row_idx_in_keys = if row < FIRST_FILE_ROW_Y {
         usize::from(row)
@@ -2811,6 +2831,37 @@ mod tests {
         let effect = handle_left_click(&mut state, 5, 4, 160); // rail row 4 = file idx 1
         assert!(effect.redraw);
         assert_eq!(state.doc_scroll, 10, "rail click jumps to the file's document offset");
+    }
+
+    #[test]
+    fn handle_mouse_hit_tests_the_rail_at_the_inner_content_width() {
+        // handle_mouse derives the rail width from the page's INNER width
+        // (frame minus the two border columns), so a rail click resolves
+        // against the same geometry the renderer stashed. Simulate a
+        // rendered 160-wide frame: 158-wide content, rail at column 1.
+        let mut state = sample_state(); // 2 files, flat rail_keys
+        state.measured_heights = vec![Some(10), Some(4)];
+        state.content_origin_col = 1;
+        state.rail_origin_row = 1;
+        let mut app = App::test_default();
+        app.diff_overlay = Some(state);
+        app.cached_frame_area = ratatui::layout::Rect::new(0, 0, 160, 40);
+
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 5,  // inside the rail (spans col 1..1+rail_width)
+                row: 1 + 4, // rail top (1) + banner/rule/blank + file 1
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+        );
+
+        assert_eq!(
+            app.diff_overlay.as_ref().expect("overlay").doc_scroll,
+            10,
+            "the inner-width rail hit-test resolves file 1",
+        );
     }
 
     #[test]
