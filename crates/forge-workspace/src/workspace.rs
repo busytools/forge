@@ -3514,24 +3514,30 @@ impl Workspace {
     /// callers run it off the UI thread.
     pub fn scan_usage(&self) -> forge_primitives::token_usage::UsageReport {
         use forge_agent::env::token_usage;
+        use time_tz::OffsetDateTimeExt;
         // Per-account config dirs symlink their `projects` to one shared
         // pool; canonicalize so the scan reads it once, not once each.
         let projects_dir = forge_sdk::projects_dir_for(&self.config_dir);
         let projects_dir = std::fs::canonicalize(&projects_dir).unwrap_or(projects_dir);
+        // Resolve the system timezone once so days bucket on the user's
+        // wall clock, and derive "now" in the same zone for the windows.
+        let tz = token_usage::system_timezone();
         let summaries: Vec<_> = token_usage::usage_files(&projects_dir)
             .iter()
-            .filter_map(|path| self.usage_summary_for(path))
+            .filter_map(|path| self.usage_summary_for(path, tz))
             .collect();
         let pricing = self.load_pricing();
-        token_usage::roll_up(&summaries, &pricing, time::OffsetDateTime::now_utc())
+        let now = time::OffsetDateTime::now_utc().to_timezone(tz);
+        token_usage::roll_up(&summaries, &pricing, now)
     }
 
     /// Cached summary for `path` when its mtime and size still match,
-    /// otherwise re-parse and refresh the cache. `None` when the file
-    /// vanished between listing and parsing.
+    /// otherwise re-parse (bucketing by `tz`) and refresh the cache.
+    /// `None` when the file vanished between listing and parsing.
     fn usage_summary_for(
         &self,
         path: &Path,
+        tz: &time_tz::Tz,
     ) -> Option<forge_agent::env::token_usage::FileUsageSummary> {
         let key = path.to_string_lossy();
         let signature =
@@ -3541,7 +3547,7 @@ impl Workspace {
         {
             return Some(cached);
         }
-        let parsed = forge_agent::env::token_usage::parse_file(path)?;
+        let parsed = forge_agent::env::token_usage::parse_file(path, tz)?;
         self.store_usage_summary(&key, &parsed);
         Some(parsed)
     }

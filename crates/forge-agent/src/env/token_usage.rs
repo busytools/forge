@@ -12,7 +12,9 @@ use std::time::SystemTime;
 
 use forge_primitives::token_usage::{UsageReport, UsageRow, WindowUsage};
 use serde::{Deserialize, Serialize};
+use time::format_description::well_known::Rfc3339;
 use time::{Date, Duration, Month, OffsetDateTime};
+use time_tz::{OffsetDateTimeExt, Tz, timezones};
 
 use self::pricing::PricingTable;
 
@@ -100,6 +102,32 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").filter(|s| !s.is_empty()).map(PathBuf::from)
 }
 
+/// The OS-configured IANA timezone, read dynamically. Uses
+/// `iana-time-zone` (multithread-safe on Unix, unlike
+/// `time::UtcOffset::current_local_offset`, which errors in a threaded
+/// process). Falls back to UTC with a warn only when the zone can't be
+/// resolved - the rare exception, so "today" tracks the user's wall clock.
+pub fn system_timezone() -> &'static Tz {
+    match iana_time_zone::get_timezone() {
+        Ok(name) => timezones::get_by_name(&name).unwrap_or_else(|| {
+            tracing::warn!(
+                target: "forge_agent::env::token_usage",
+                %name,
+                "unknown system timezone; bucketing usage by UTC day",
+            );
+            timezones::db::UTC
+        }),
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_agent::env::token_usage",
+                %error,
+                "system timezone unavailable; bucketing usage by UTC day",
+            );
+            timezones::db::UTC
+        }
+    }
+}
+
 /// The five-way token split accumulated for one `(model, day)` bucket.
 /// Cache-write is kept split by TTL tier so pricing can apply the 1h /
 /// 5m rates independently.
@@ -165,9 +193,10 @@ pub fn usage_files(projects_dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// Parse one session file into its per-file usage summary. `None` when
-/// the file can't be stat'd or opened; a malformed line is skipped.
-pub fn parse_file(path: &Path) -> Option<FileUsageSummary> {
+/// Parse one session file into its per-file usage summary, bucketing
+/// each record by its calendar day in `tz`. `None` when the file can't
+/// be stat'd or opened; a malformed line is skipped.
+pub fn parse_file(path: &Path, tz: &Tz) -> Option<FileUsageSummary> {
     let metadata = std::fs::metadata(path).ok()?;
     let mtime = metadata.modified().ok()?;
     let size = metadata.len();
@@ -216,7 +245,7 @@ pub fn parse_file(path: &Path) -> Option<FileUsageSummary> {
         if !seen.insert(id) {
             continue;
         }
-        let Some(day) = calendar_day(&timestamp) else {
+        let Some(day) = calendar_day(&timestamp, tz) else {
             continue;
         };
         by_model_day.entry(model).or_default().entry(day).or_default().add(&usage.into_counts());
@@ -224,17 +253,12 @@ pub fn parse_file(path: &Path) -> Option<FileUsageSummary> {
     Some(FileUsageSummary { mtime, size, folded_project, by_model_day })
 }
 
-/// The `YYYY-MM-DD` calendar day (UTC) from an rfc3339 timestamp, or
-/// `None` when the leading 10 chars aren't a valid date.
-fn calendar_day(timestamp: &str) -> Option<String> {
-    let day = timestamp.get(..10)?;
-    let bytes = day.as_bytes();
-    let ok = bytes[4] == b'-'
-        && bytes[7] == b'-'
-        && day[..4].bytes().all(|b| b.is_ascii_digit())
-        && day[5..7].bytes().all(|b| b.is_ascii_digit())
-        && day[8..10].bytes().all(|b| b.is_ascii_digit());
-    ok.then(|| day.to_owned())
+/// The `YYYY-MM-DD` calendar day in `tz` for an rfc3339 timestamp, or
+/// `None` when it doesn't parse. DST-correct: the offset is resolved at
+/// the instant, so a late-evening UTC time lands on the next local day.
+fn calendar_day(timestamp: &str, tz: &Tz) -> Option<String> {
+    let date = OffsetDateTime::parse(timestamp, &Rfc3339).ok()?.to_timezone(tz).date();
+    Some(format!("{:04}-{:02}-{:02}", date.year(), u8::from(date.month()), date.day()))
 }
 
 /// Minimal view of a transcript record: only the fields usage
@@ -455,6 +479,19 @@ mod tests {
 
     const PREFIX: &str = "-Users-vedhavyas-Projects-";
 
+    fn utc() -> &'static Tz {
+        timezones::db::UTC
+    }
+
+    #[test]
+    fn calendar_day_uses_the_injected_timezone() {
+        let kolkata = timezones::get_by_name("Asia/Kolkata").expect("kolkata zone");
+        // 2026-07-19T20:00Z is still 07-19 in UTC but 07-20 at +5:30 (01:30 local).
+        assert_eq!(calendar_day("2026-07-19T20:00:00Z", utc()).as_deref(), Some("2026-07-19"));
+        assert_eq!(calendar_day("2026-07-19T20:00:00Z", kolkata).as_deref(), Some("2026-07-20"));
+        assert_eq!(calendar_day("not-a-timestamp", utc()), None);
+    }
+
     fn projects_root_with(dirs: &[&str]) -> TempDir {
         let td = tempfile::tempdir().expect("tempdir");
         for dir in dirs {
@@ -552,7 +589,7 @@ mod tests {
             "s.jsonl",
             &[&rec("2026-07-08T09:30:34.184Z"), &rec("2026-07-08T10:00:00.000Z")],
         );
-        let summary = parse_file(&path).expect("parse");
+        let summary = parse_file(&path, utc()).expect("parse");
         let counts = day(&summary, "claude-opus-4-8", "2026-07-08");
         assert_eq!(counts.input, 10, "the re-logged duplicate id is not added twice");
         assert_eq!(counts.output, 5);
@@ -563,7 +600,7 @@ mod tests {
         let td = tempfile::tempdir().expect("tempdir");
         let line = r#"{"type":"assistant","timestamp":"2026-07-08T09:30:34.184Z","isSidechain":true,"message":{"id":"msg_S","model":"claude-opus-4-8","usage":{"input_tokens":7,"output_tokens":2}}}"#;
         let path = write_session(&td, "-slug", "s.jsonl", &[line]);
-        let summary = parse_file(&path).expect("parse");
+        let summary = parse_file(&path, utc()).expect("parse");
         assert_eq!(day(&summary, "claude-opus-4-8", "2026-07-08").input, 7);
     }
 
@@ -573,7 +610,7 @@ mod tests {
         let a = r#"{"type":"assistant","timestamp":"2026-07-08T23:59:00.000Z","message":{"id":"a","model":"m","usage":{"output_tokens":1}}}"#;
         let b = r#"{"type":"assistant","timestamp":"2026-07-09T00:01:00.000Z","message":{"id":"b","model":"m","usage":{"output_tokens":3}}}"#;
         let path = write_session(&td, "-slug", "s.jsonl", &[a, b]);
-        let summary = parse_file(&path).expect("parse");
+        let summary = parse_file(&path, utc()).expect("parse");
         assert_eq!(day(&summary, "m", "2026-07-08").output, 1);
         assert_eq!(day(&summary, "m", "2026-07-09").output, 3);
     }
@@ -584,7 +621,7 @@ mod tests {
         let split = r#"{"type":"assistant","timestamp":"2026-07-08T00:00:00Z","message":{"id":"a","model":"m","usage":{"cache_read_input_tokens":100,"cache_creation_input_tokens":23,"cache_creation":{"ephemeral_1h_input_tokens":20,"ephemeral_5m_input_tokens":3}}}}"#;
         let flat = r#"{"type":"assistant","timestamp":"2026-07-09T00:00:00Z","message":{"id":"b","model":"m","usage":{"cache_creation_input_tokens":50}}}"#;
         let path = write_session(&td, "-slug", "s.jsonl", &[split, flat]);
-        let summary = parse_file(&path).expect("parse");
+        let summary = parse_file(&path, utc()).expect("parse");
 
         let with_split = day(&summary, "m", "2026-07-08");
         assert_eq!(with_split.cache_write_1h, 20);
@@ -615,7 +652,7 @@ mod tests {
         let path = dir.join("s.jsonl");
         std::fs::write(&path, bytes).expect("write");
 
-        let summary = parse_file(&path).expect("parse");
+        let summary = parse_file(&path, utc()).expect("parse");
         // The unreadable middle line is skipped, not treated as EOF, so
         // the record after it still counts.
         assert_eq!(day(&summary, "m", "2026-07-08").output, 15);
