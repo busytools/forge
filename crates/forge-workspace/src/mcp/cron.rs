@@ -70,13 +70,17 @@ fn cron_to_json(entry: &CronEntry) -> serde_json::Value {
         CronKind::Recurring(expr) => serde_json::json!({ "recurring": expr }),
         CronKind::Once(at) => serde_json::json!({ "once_at": fmt_rfc3339(*at) }),
     };
-    serde_json::json!({
+    let mut obj = serde_json::json!({
         "id": entry.id.as_str(),
         "project": entry.project_name,
         "schedule": schedule,
         "prompt": entry.prompt,
         "next_fire": fmt_rfc3339(entry.next_fire),
-    })
+    });
+    if let (Some(desc), Some(map)) = (&entry.description, obj.as_object_mut()) {
+        map.insert("description".to_owned(), serde_json::Value::String(desc.clone()));
+    }
+    obj
 }
 
 fn format_create_error(err: &CronCreateError) -> String {
@@ -106,6 +110,8 @@ struct CreateArgs {
     #[serde(default)]
     run_once_at: Option<String>,
     prompt: String,
+    #[serde(default)]
+    description: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -121,10 +127,11 @@ impl Tool for Create {
          restarts. Provide EXACTLY ONE of `schedule` (a 5-field cron expression like \"0 9 * * *\" \
          for 9am daily, evaluated in your local timezone) or `run_once_at` (an RFC3339 timestamp \
          like \"2026-07-01T09:00:00Z\" for a single fire), plus `prompt` (the text delivered as a \
-         user turn when it fires). If the project's session isn't open at fire time, forge spawns \
-         it first. Returns the cron's id (use it with cron__delete). Recurring crons repeat; \
-         run-once crons delete themselves after firing. Any session in the project may create \
-         crons."
+         user turn when it fires). Optionally pass `description` - a short human summary of what \
+         the job does and why - which the UI shows as the schedule's headline. If the project's \
+         session isn't open at fire time, forge spawns it first. Returns the cron's id (use it \
+         with cron__delete). Recurring crons repeat; run-once crons delete themselves after \
+         firing. Any session in the project may create crons."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -145,6 +152,13 @@ impl Tool for Create {
                 "prompt": {
                     "type": "string",
                     "description": "The prompt delivered as a user turn when the cron fires.",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Optional short human summary of what this job does and why \
+                                    (e.g. \"Morning hub summary\"). Shown as the schedule's \
+                                    headline in the UI; falls back to the prompt's first line \
+                                    when omitted.",
                 },
             },
             "required": ["prompt"],
@@ -185,7 +199,11 @@ impl Tool for Create {
             Ok(k) => k,
             Err(err) => return tool_error(err.to_string()),
         };
-        match self.facade.create_cron(&caller, kind, args.prompt) {
+        let description = args.description.and_then(|d| {
+            let trimmed = d.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_owned())
+        });
+        match self.facade.create_cron(&caller, kind, args.prompt, description) {
             Ok(entry) => match serde_json::to_string_pretty(&cron_to_json(&entry)) {
                 Ok(json) => ToolOutput::text(json),
                 Err(err) => tool_error(format!("response serialization failed: {err}")),
@@ -333,6 +351,40 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert!(matches!(&calls[0].1, CronKind::Recurring(e) if e == "0 9 * * *"));
         assert_eq!(calls[0].2, "stand-up");
+        assert_eq!(calls[0].3, None, "no description arg reaches the facade as None");
+    }
+
+    #[tokio::test]
+    async fn create_threads_and_trims_description() {
+        let mock = Arc::new(MockCronFacade::new());
+        let tool = Create { facade: mock.clone(), caller_key: resolver() };
+
+        let out = tool
+            .call(input(serde_json::json!({
+                "schedule": "0 9 * * *",
+                "prompt": "stand-up",
+                "description": "  Morning hub summary  "
+            })))
+            .await;
+        assert!(!out.is_error, "create with description succeeds: {}", out.blocks[0].text);
+        assert_eq!(
+            mock.create_calls.lock()[0].3.as_deref(),
+            Some("Morning hub summary"),
+            "the description is trimmed and threaded to the facade",
+        );
+
+        let blank = tool
+            .call(input(serde_json::json!({
+                "schedule": "0 9 * * *",
+                "prompt": "stand-up",
+                "description": "   "
+            })))
+            .await;
+        assert!(!blank.is_error);
+        assert_eq!(
+            mock.create_calls.lock()[1].3, None,
+            "a whitespace-only description collapses to None",
+        );
     }
 
     #[tokio::test]
