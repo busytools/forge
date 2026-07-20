@@ -6023,6 +6023,31 @@ mod tests {
     }
 
     #[test]
+    fn scan_usage_reparses_a_changed_file() {
+        let (dir, ws) = usage_workspace();
+        let slug_dir = dir.path().join("projects").join("-slug");
+        std::fs::create_dir_all(&slug_dir).expect("mkdir");
+        let path = slug_dir.join("s.jsonl");
+        let rec = |id: &str, out: u64| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"2026-07-08T09:30:34.184Z","message":{{"id":"{id}","model":"m","usage":{{"output_tokens":{out}}}}}}}"#
+            )
+        };
+        std::fs::write(&path, rec("a", 10)).expect("write");
+        assert_eq!(ws.scan_usage().lifetime.total.output, 10);
+
+        // Appending a record grows the file, so the cached summary's size
+        // no longer matches and the file must be re-parsed - otherwise
+        // "usage never updates" until a restart.
+        std::fs::write(&path, [rec("a", 10), rec("b", 5)].join("\n")).expect("rewrite");
+        assert_eq!(
+            ws.scan_usage().lifetime.total.output,
+            15,
+            "a changed file is re-parsed, not served stale from the cache",
+        );
+    }
+
+    #[test]
     fn boot_load_reads_the_redb_spinner_override() {
         // Stands in for the removed connect.rs override test: a persisted
         // redb spinner override is what account_cache::load returns, so
