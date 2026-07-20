@@ -305,9 +305,44 @@ fn group_style(active: bool) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::App;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
 
     fn text(line: &Line) -> String {
         line.spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    fn buffer_text(buffer: &Buffer) -> String {
+        let width = usize::from(buffer.area.width);
+        buffer
+            .content
+            .chunks(width)
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn report_with(projects: &[&str]) -> UsageReport {
+        let window = || WindowUsage {
+            by_project: projects.iter().map(|p| row(p, 1_000_000, 500_000, 1.5)).collect(),
+            by_model: vec![row("opus-4.8", 2_000_000, 1_000_000, 3.0)],
+            total: row("TOTAL", 3_000_000, 1_500_000, 4.5),
+        };
+        UsageReport { today: window(), week: window(), month: window(), lifetime: window() }
+    }
+
+    fn app_with(report: Option<UsageReport>) -> App {
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Usage;
+        app.usage_overlay = Some(crate::app::UsageOverlayState {
+            report,
+            group: Grouping::Project,
+            window: Window::Lifetime,
+            scroll: 0,
+        });
+        app
     }
 
     fn row(label: &str, input: u64, output: u64, cost: f64) -> UsageRow {
@@ -360,5 +395,32 @@ mod tests {
             total: row("TOTAL", 0, 0, 0.0),
         };
         assert_eq!(body_lines(&table, Grouping::Project).len(), 2);
+    }
+
+    #[test]
+    fn render_shows_summary_and_total() {
+        let mut app = app_with(Some(report_with(&["forge", "trader-cc"])));
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("USAGE"), "{rendered}");
+        assert!(rendered.contains("TOTAL"), "{rendered}");
+        assert!(rendered.contains("forge"), "{rendered}");
+    }
+
+    #[test]
+    fn render_shows_scanning_before_the_first_report() {
+        let mut app = app_with(None);
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).expect("terminal");
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+        assert!(buffer_text(terminal.backend().buffer()).contains("scanning"));
+    }
+
+    #[test]
+    fn render_survives_a_tiny_area() {
+        let mut app = app_with(Some(report_with(&["forge"])));
+        let mut terminal = Terminal::new(TestBackend::new(30, 5)).expect("terminal");
+        // Must not panic when the area is smaller than the pinned chrome.
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
     }
 }
