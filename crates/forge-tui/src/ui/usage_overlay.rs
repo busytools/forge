@@ -497,6 +497,25 @@ mod tests {
     }
 
     #[test]
+    fn scroll_clamps_so_the_last_project_stays_reachable() {
+        let projects: Vec<String> = (0..20).map(|i| format!("p{i:02}")).collect();
+        let refs: Vec<&str> = projects.iter().map(String::as_str).collect();
+        let mut app = app_with(Some(report_with(&refs, true)));
+        if let Some(overlay) = app.usage_overlay.as_mut() {
+            overlay.scroll = 100; // far past the end
+        }
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).expect("terminal");
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+        // body = 20 - HEADER_ROWS(10) - FOOTER_ROWS(3) = 7; max scroll = 20 - 7 = 13.
+        let scroll = app.usage_overlay.as_ref().expect("overlay").scroll;
+        assert_eq!(scroll, 13, "scroll clamps to the last page, never past it");
+        assert!(
+            buffer_text(terminal.backend().buffer()).contains("p19"),
+            "the last project is reachable",
+        );
+    }
+
+    #[test]
     fn banner_shows_the_notional_caption_when_priced() {
         let mut app = app_with(Some(report_with(&["forge"], true)));
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).expect("terminal");
