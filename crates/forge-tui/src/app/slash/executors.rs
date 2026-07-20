@@ -44,6 +44,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         "/new" => handle_new_session_submit(app, &parsed.args),
         "/resume" => handle_resume_submit(app, &parsed.args),
         "/spinner" => handle_spinner_submit(app, &parsed.args),
+        "/usage" => handle_usage_submit(app, &parsed.args),
         _ => handle_unknown_submit(app, parsed.name),
     }
 }
@@ -124,6 +125,17 @@ fn handle_diff_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
     crate::app::diff_overlay::open_with_target(app, target);
+    true
+}
+
+/// `/usage` - open the full-screen token/cost overlay. No args; the
+/// scan runs off-thread and posts back via `app.usage_overlay_event_tx`.
+fn handle_usage_submit(app: &mut App, args: &[&str]) -> bool {
+    if !args.is_empty() {
+        push_system_message(app, "Usage: /usage");
+        return true;
+    }
+    crate::app::usage_overlay::open(app);
     true
 }
 

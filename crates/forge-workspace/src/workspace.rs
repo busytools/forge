@@ -3584,12 +3584,14 @@ impl Workspace {
     /// a day, re-fetching immediately on a missed day. Fire-and-forget
     /// from the TUI: it fetches through the proxy-aware client and is a
     /// no-op on any network failure, so the last-good cache is kept.
-    pub async fn refresh_pricing(&self) {
+    /// Returns whether a new price table was stored (so a caller can
+    /// re-price without a redundant scan when nothing changed).
+    pub async fn refresh_pricing(&self) -> bool {
         if self.pricing_is_fresh() {
-            return;
+            return false;
         }
         let Some(json) = forge_agent::env::token_usage::pricing::fetch_litellm().await else {
-            return;
+            return false;
         };
         // Guard against a 200-with-garbage response wiping a good cache.
         if forge_agent::env::token_usage::pricing::PricingTable::from_litellm_json(&json).is_empty()
@@ -3598,12 +3600,13 @@ impl Workspace {
                 target: "forge_workspace::workspace",
                 "fetched pricing parsed to an empty table; keeping the existing cache",
             );
-            return;
+            return false;
         }
         self.store_pricing(&crate::store::pricing::CachedPricing {
             fetched_at: std::time::SystemTime::now(),
             json,
         });
+        true
     }
 
     /// The cached pricing, or an empty table before the first fetch
