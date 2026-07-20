@@ -140,6 +140,10 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
             super::diff_overlay::handle_key(app, key);
             true
         }
+        ActiveView::Usage => {
+            super::usage_overlay::handle_key(app, key);
+            true
+        }
     }
 }
 
@@ -152,9 +156,9 @@ fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
         ActiveView::Diff => {
             super::diff_overlay::handle_mouse(app, mouse);
         }
-        // Plugins / MCP / Launchpad are keyboard-only - mouse
+        // Plugins / MCP / Launchpad / Usage are keyboard-only - mouse
         // events are intentionally dropped.
-        ActiveView::Plugins | ActiveView::Mcp | ActiveView::Launchpad => {}
+        ActiveView::Plugins | ActiveView::Mcp | ActiveView::Launchpad | ActiveView::Usage => {}
     }
 }
 
@@ -174,7 +178,7 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
         ActiveView::Plugins => super::config::handle_plugins_paste(app, text),
         ActiveView::Mcp => super::config::handle_mcp_paste(app, text),
         ActiveView::Diff => super::diff_overlay::handle_paste(app, text),
-        ActiveView::Launchpad => false,
+        ActiveView::Launchpad | ActiveView::Usage => false,
     }
 }
 

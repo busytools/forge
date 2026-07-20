@@ -24,6 +24,8 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4", "serde"] }
 time = { version = "0.3", features = ["parsing", "formatting"] }
+time-tz = "2"
+iana-time-zone = "0.1"
 unicode-normalization = "0.1"
 regex = "1"
 parking_lot = "0.12"

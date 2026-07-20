@@ -3506,6 +3506,191 @@ impl Workspace {
         }
     }
 
+    /// Scan the shared session-JSONL pool into a `UsageReport` for the
+    /// `/usage` overlay. Query-style (a direct method, not a Command):
+    /// reads the one real `projects` dir, refreshes the incremental
+    /// per-file cache, and rolls the deduped summaries up into the four
+    /// windows priced from the bundled table. Does blocking file IO, so
+    /// callers run it off the UI thread.
+    pub fn scan_usage(&self) -> forge_primitives::token_usage::UsageReport {
+        use forge_agent::env::token_usage;
+        use time_tz::OffsetDateTimeExt;
+        // Per-account config dirs symlink their `projects` to one shared
+        // pool; canonicalize so the scan reads it once, not once each.
+        let projects_dir = forge_sdk::projects_dir_for(&self.config_dir);
+        let projects_dir = std::fs::canonicalize(&projects_dir).unwrap_or(projects_dir);
+        // Resolve the system timezone once so days bucket on the user's
+        // wall clock, and derive "now" in the same zone for the windows.
+        let tz = token_usage::system_timezone();
+        let summaries: Vec<_> = token_usage::usage_files(&projects_dir)
+            .iter()
+            .filter_map(|path| self.usage_summary_for(path, tz))
+            .collect();
+        let pricing = self.load_pricing();
+        let now = time::OffsetDateTime::now_utc().to_timezone(tz);
+        token_usage::roll_up(&summaries, &pricing, now)
+    }
+
+    /// Cached summary for `path` when its mtime and size still match,
+    /// otherwise re-parse (bucketing by `tz`) and refresh the cache.
+    /// `None` when the file vanished between listing and parsing.
+    fn usage_summary_for(
+        &self,
+        path: &Path,
+        tz: &time_tz::Tz,
+    ) -> Option<forge_agent::env::token_usage::FileUsageSummary> {
+        let key = path.to_string_lossy();
+        let signature =
+            std::fs::metadata(path).ok().and_then(|m| Some((m.modified().ok()?, m.len())));
+        if let Some(cached) = self.load_usage_summary(&key)
+            && signature.is_some_and(|(mtime, size)| cached.mtime == mtime && cached.size == size)
+        {
+            return Some(cached);
+        }
+        let parsed = forge_agent::env::token_usage::parse_file(path, tz)?;
+        self.store_usage_summary(&key, &parsed);
+        Some(parsed)
+    }
+
+    fn load_usage_summary(
+        &self,
+        path: &str,
+    ) -> Option<forge_agent::env::token_usage::FileUsageSummary> {
+        let guard = self.db.lock();
+        let db = guard.as_ref()?;
+        crate::store::token_usage::load(db, path).unwrap_or_else(|error| {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                path = %path,
+                "loading a usage summary failed",
+            );
+            None
+        })
+    }
+
+    fn store_usage_summary(
+        &self,
+        path: &str,
+        summary: &forge_agent::env::token_usage::FileUsageSummary,
+    ) {
+        if let Some(db) = self.db.lock().as_ref()
+            && let Err(error) = crate::store::token_usage::store(db, path, summary)
+        {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                path = %path,
+                "storing a usage summary failed",
+            );
+        }
+    }
+
+    /// Refresh the LiteLLM pricing cache when it is absent or older than
+    /// a day, re-fetching immediately on a missed day. Fire-and-forget
+    /// from the TUI: it fetches through the proxy-aware client and is a
+    /// no-op on any network failure, so the last-good cache is kept.
+    /// Returns whether a new price table was stored (so a caller can
+    /// re-price without a redundant scan when nothing changed).
+    /// The redb read and the ~1.6 MB write run on the blocking pool so
+    /// the once-a-day fsync can't stall a UI frame.
+    pub async fn refresh_pricing(self: &Arc<Self>) -> bool {
+        let fresh = {
+            let workspace = Arc::clone(self);
+            tokio::task::spawn_blocking(move || workspace.pricing_is_fresh()).await.unwrap_or_else(
+                |error| {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        %error,
+                        "pricing freshness-check task failed; treating the cache as stale",
+                    );
+                    false
+                },
+            )
+        };
+        if fresh {
+            return false;
+        }
+        let Some(json) = forge_agent::env::token_usage::pricing::fetch_litellm().await else {
+            return false;
+        };
+        let workspace = Arc::clone(self);
+        tokio::task::spawn_blocking(move || workspace.store_fresh_pricing(json))
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    "pricing store task failed; the cache was not updated",
+                );
+                false
+            })
+    }
+
+    /// Store freshly-fetched pricing json unless it parses to an empty
+    /// table - a garbage 200 must not wipe a good cache. Returns whether
+    /// it stored.
+    fn store_fresh_pricing(&self, json: String) -> bool {
+        if forge_agent::env::token_usage::pricing::PricingTable::from_litellm_json(&json).is_empty()
+        {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                "fetched pricing parsed to an empty table; keeping the existing cache",
+            );
+            return false;
+        }
+        self.store_pricing(&crate::store::pricing::CachedPricing {
+            fetched_at: std::time::SystemTime::now(),
+            json,
+        });
+        true
+    }
+
+    /// The cached pricing, or an empty table before the first fetch
+    /// lands (the first `/usage` open renders tokens with a blank cost
+    /// until then).
+    fn load_pricing(&self) -> forge_agent::env::token_usage::pricing::PricingTable {
+        use forge_agent::env::token_usage::pricing::PricingTable;
+        let json = self.load_cached_pricing().map(|cached| cached.json);
+        PricingTable::from_litellm_json(json.as_deref().unwrap_or("{}"))
+    }
+
+    /// Read the cached pricing snapshot, warning (not swallowing) on a
+    /// redb or decode error so a corrupt cache is diagnosable.
+    fn load_cached_pricing(&self) -> Option<crate::store::pricing::CachedPricing> {
+        let guard = self.db.lock();
+        let db = guard.as_ref()?;
+        crate::store::pricing::load(db).unwrap_or_else(|error| {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                "loading the pricing cache failed",
+            );
+            None
+        })
+    }
+
+    /// Whether the cached pricing is younger than the daily refresh
+    /// window; a missing or older cache is stale and re-fetched.
+    fn pricing_is_fresh(&self) -> bool {
+        const REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+        self.load_cached_pricing()
+            .and_then(|cached| cached.fetched_at.elapsed().ok())
+            .is_some_and(|age| age < REFRESH_INTERVAL)
+    }
+
+    fn store_pricing(&self, entry: &crate::store::pricing::CachedPricing) {
+        if let Some(db) = self.db.lock().as_ref()
+            && let Err(error) = crate::store::pricing::store(db, entry)
+        {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                "storing the pricing cache failed",
+            );
+        }
+    }
+
     /// Install a redb store into a test workspace so the durable-vs-
     /// ephemeral persistence path is exercisable without `Workspace::new`.
     #[cfg(any(test, feature = "test-helpers"))]
@@ -5762,6 +5947,148 @@ mod tests {
         ws.delete_review_threads("forge", "feat");
         assert!(ws.load_review_threads("forge", "feat").is_empty(), "teardown clears the branch");
         assert_eq!(ws.load_review_threads("forge", "other").len(), 1, "delete is scoped");
+    }
+
+    fn usage_workspace() -> (tempfile::TempDir, Arc<Workspace>) {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        (dir, ws)
+    }
+
+    #[test]
+    fn scan_usage_rolls_up_lifetime_and_dedups() {
+        let (dir, ws) = usage_workspace();
+        let slug_dir = dir.path().join("projects").join("-slug");
+        std::fs::create_dir_all(&slug_dir).expect("mkdir");
+        let rec = |id: &str, model: &str, out: u64| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"2026-07-08T09:30:34.184Z","message":{{"id":"{id}","model":"{model}","usage":{{"output_tokens":{out}}}}}}}"#
+            )
+        };
+        // "a" appears twice (a resume re-log) and must count once; "b"
+        // lands on a second model in the same project.
+        std::fs::write(
+            slug_dir.join("s.jsonl"),
+            [rec("a", "m", 10), rec("a", "m", 10), rec("b", "n", 5)].join("\n"),
+        )
+        .expect("write");
+
+        let report = ws.scan_usage();
+        assert_eq!(report.lifetime.total.output, 15, "duplicate id counted once");
+        let m = report.lifetime.by_model.iter().find(|r| r.label == "m").expect("m row");
+        assert_eq!(m.output, 10, "the re-logged duplicate is not double-counted");
+        assert_eq!(
+            report.lifetime.by_model.iter().find(|r| r.label == "n").expect("n row").output,
+            5,
+        );
+        assert_eq!(report.lifetime.by_project.len(), 1, "one project folds from one slug");
+        assert_eq!(report.lifetime.by_project[0].output, 15);
+    }
+
+    #[test]
+    fn scan_usage_reuses_cached_summary_for_unchanged_file() {
+        let (dir, ws) = usage_workspace();
+        let slug_dir = dir.path().join("projects").join("-slug");
+        std::fs::create_dir_all(&slug_dir).expect("mkdir");
+        std::fs::write(
+            slug_dir.join("s.jsonl"),
+            r#"{"type":"assistant","timestamp":"2026-07-08T00:00:00Z","message":{"id":"a","model":"m","usage":{"output_tokens":10}}}"#,
+        )
+        .expect("write");
+
+        // First scan parses and caches the file.
+        let _ = ws.scan_usage();
+
+        // Poison the cache under the exact key scan_usage uses, keeping
+        // the file's real mtime/size so the reuse condition holds. A
+        // second scan returning the poison proves it did not re-parse.
+        let canonical = std::fs::canonicalize(dir.path().join("projects")).expect("canon");
+        let file = forge_agent::env::token_usage::usage_files(&canonical)
+            .into_iter()
+            .next()
+            .expect("one file");
+        let meta = std::fs::metadata(&file).expect("meta");
+        let mut days = std::collections::BTreeMap::new();
+        days.insert(
+            "2026-07-08".to_owned(),
+            forge_agent::env::token_usage::TokenCounts {
+                output: 999,
+                ..forge_agent::env::token_usage::TokenCounts::default()
+            },
+        );
+        let mut by_model_day = std::collections::BTreeMap::new();
+        by_model_day.insert("POISON".to_owned(), days);
+        ws.store_usage_summary(
+            &file.to_string_lossy(),
+            &forge_agent::env::token_usage::FileUsageSummary {
+                mtime: meta.modified().expect("mtime"),
+                size: meta.len(),
+                folded_project: "slug".to_owned(),
+                by_model_day,
+            },
+        );
+
+        let report = ws.scan_usage();
+        assert!(
+            report.lifetime.by_model.iter().any(|r| r.label == "POISON"),
+            "an unchanged file reuses the cached summary instead of re-parsing",
+        );
+    }
+
+    #[test]
+    fn scan_usage_reparses_a_changed_file() {
+        let (dir, ws) = usage_workspace();
+        let slug_dir = dir.path().join("projects").join("-slug");
+        std::fs::create_dir_all(&slug_dir).expect("mkdir");
+        let path = slug_dir.join("s.jsonl");
+        let rec = |id: &str, out: u64| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"2026-07-08T09:30:34.184Z","message":{{"id":"{id}","model":"m","usage":{{"output_tokens":{out}}}}}}}"#
+            )
+        };
+        std::fs::write(&path, rec("a", 10)).expect("write");
+        assert_eq!(ws.scan_usage().lifetime.total.output, 10);
+
+        // Appending a record grows the file, so the cached summary's size
+        // no longer matches and the file must be re-parsed - otherwise
+        // "usage never updates" until a restart.
+        std::fs::write(&path, [rec("a", 10), rec("b", 5)].join("\n")).expect("rewrite");
+        assert_eq!(
+            ws.scan_usage().lifetime.total.output,
+            15,
+            "a changed file is re-parsed, not served stale from the cache",
+        );
+    }
+
+    #[test]
+    fn pricing_is_fresh_only_within_the_daily_window() {
+        let (_dir, ws) = usage_workspace();
+        assert!(!ws.pricing_is_fresh(), "no cache is not fresh");
+        ws.store_pricing(&crate::store::pricing::CachedPricing {
+            fetched_at: std::time::SystemTime::now(),
+            json: r#"{"m":{"input_cost_per_token":1,"output_cost_per_token":1}}"#.to_owned(),
+        });
+        assert!(ws.pricing_is_fresh(), "a just-now fetch is within the window");
+        ws.store_pricing(&crate::store::pricing::CachedPricing {
+            fetched_at: std::time::SystemTime::now()
+                - std::time::Duration::from_secs(2 * 24 * 60 * 60),
+            json: "{}".to_owned(),
+        });
+        assert!(!ws.pricing_is_fresh(), "a two-day-old fetch is stale and re-fetched");
+    }
+
+    #[test]
+    fn store_fresh_pricing_keeps_a_good_cache_on_a_garbage_response() {
+        let (_dir, ws) = usage_workspace();
+        let good = r#"{"m":{"input_cost_per_token":0.001,"output_cost_per_token":0.002}}"#;
+        assert!(ws.store_fresh_pricing(good.to_owned()), "a valid table stores");
+        assert!(!ws.load_pricing().is_empty(), "the cache holds the priced model");
+        // A garbage 200 parses empty and must NOT wipe the good cache.
+        assert!(!ws.store_fresh_pricing("not json".to_owned()), "garbage is rejected");
+        assert!(!ws.load_pricing().is_empty(), "the good cache survives the garbage response");
     }
 
     #[test]

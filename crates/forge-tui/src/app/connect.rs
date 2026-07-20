@@ -76,6 +76,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     let (git_diff_event_tx, git_diff_event_rx) = std::sync::mpsc::channel();
     let (cli_version_event_tx, cli_version_event_rx) = std::sync::mpsc::channel();
     let (diff_overlay_event_tx, diff_overlay_event_rx) = std::sync::mpsc::channel();
+    let (usage_overlay_event_tx, usage_overlay_event_rx) = std::sync::mpsc::channel();
     let (process_scan_event_tx, process_scan_event_rx) = std::sync::mpsc::channel();
     crate::app::git_diff::spawn_periodic_timer(git_diff_event_tx.clone());
     crate::app::cli_version::spawn_fetch(cli_version_event_tx.clone());
@@ -208,6 +209,8 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         cli_version_event_rx,
         diff_overlay_event_tx,
         diff_overlay_event_rx,
+        usage_overlay_event_tx,
+        usage_overlay_event_rx,
         diff_scan_seq: 0,
         cli_version_info: None,
         process_scan_event_tx,
@@ -233,6 +236,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         plugins: PluginsState::default(),
         launchpad: initial_launchpad_state,
         diff_overlay: None,
+        usage_overlay: None,
         cached_frame_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         scrollbar_drag: None,
         rendered_chat_lines: Vec::new(),

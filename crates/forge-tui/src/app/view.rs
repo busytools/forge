@@ -21,6 +21,9 @@ pub enum ActiveView {
     /// Full-screen MCP server view. Opened by `/mcp`. `Esc` closes
     /// back to chat.
     Mcp,
+    /// Full-screen token/cost overlay. Opened by `/usage`. `g` toggles
+    /// grouping, `w` cycles the window, `↑↓` scroll, `Esc` closes.
+    Usage,
 }
 
 pub fn set_active_view(app: &mut App, next: ActiveView) {
@@ -76,6 +79,9 @@ fn clear_transient_view_state(app: &mut App) {
             );
         }
         app.diff_overlay = None;
+    }
+    if app.active_view == ActiveView::Usage {
+        app.usage_overlay = None;
     }
     app.release_focus_target(crate::app::FocusTarget::Help);
     app.release_focus_target(crate::app::FocusTarget::Mention);

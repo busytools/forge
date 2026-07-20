@@ -348,6 +348,8 @@ pub struct App {
     pub cli_version_event_rx: std_mpsc::Receiver<crate::app::cli_version::CliVersionEvent>,
     pub diff_overlay_event_tx: std_mpsc::Sender<crate::app::diff_overlay::DiffOverlayEvent>,
     pub diff_overlay_event_rx: std_mpsc::Receiver<crate::app::diff_overlay::DiffOverlayEvent>,
+    pub usage_overlay_event_tx: std_mpsc::Sender<crate::app::usage_overlay::UsageOverlayEvent>,
+    pub usage_overlay_event_rx: std_mpsc::Receiver<crate::app::usage_overlay::UsageOverlayEvent>,
     /// Monotonic counter bumped by every `/diff` invocation. Events
     /// arriving on `diff_overlay_event_rx` carry the seq they were
     /// spawned under; the drain pump only opens the overlay for
@@ -451,6 +453,10 @@ pub struct App {
     /// up, `None` otherwise. Dropped on overlay close so a stale
     /// snapshot can't leak into the next open.
     pub diff_overlay: Option<crate::app::DiffOverlayState>,
+    /// Usage overlay state - `Some` while [`ActiveView::Usage`] is up,
+    /// `None` otherwise. Dropped on close so a stale report can't leak
+    /// into the next open.
+    pub usage_overlay: Option<crate::app::UsageOverlayState>,
     /// Last known frame area (for mouse selection mapping).
     pub cached_frame_area: ratatui::layout::Rect,
     /// Active scrollbar drag state while left mouse button is held on the rail.
@@ -3038,6 +3044,7 @@ impl App {
         let (process_scan_tx, process_scan_rx) = std_mpsc::channel();
         let (cli_version_tx, cli_version_rx) = std_mpsc::channel();
         let (diff_overlay_tx, diff_overlay_rx) = std_mpsc::channel();
+        let (usage_overlay_tx, usage_overlay_rx) = std_mpsc::channel();
         let pending_key = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
         let mut pending_session = super::session::UiSession::new(pending_key.clone());
         // Seed a synthetic `current_model` so tests that depend on
@@ -3096,6 +3103,8 @@ impl App {
             cli_version_event_rx: cli_version_rx,
             diff_overlay_event_tx: diff_overlay_tx,
             diff_overlay_event_rx: diff_overlay_rx,
+            usage_overlay_event_tx: usage_overlay_tx,
+            usage_overlay_event_rx: usage_overlay_rx,
             diff_scan_seq: 0,
             cli_version_info: None,
             spinner_frame: 0,
@@ -3119,6 +3128,7 @@ impl App {
             plugins: PluginsState::default(),
             launchpad: crate::app::LaunchpadState::default(),
             diff_overlay: None,
+            usage_overlay: None,
             cached_frame_area: ratatui::layout::Rect::default(),
             scrollbar_drag: None,
             rendered_chat_lines: Vec::new(),

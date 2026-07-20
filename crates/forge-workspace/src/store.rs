@@ -8,8 +8,10 @@
 //! This wrapper is deliberately general - open plus the raw handle.
 //! Table logic lives per-tenant in the submodules: Gotify subscriptions
 //! ([`gotify`]), durable crons ([`cron`]), dynamic workers
-//! ([`dynamic_workers`]), review threads ([`review`]), and forge state
-//! ([`state`], the spinner override + usage cache).
+//! ([`dynamic_workers`]), review threads ([`review`]), forge state
+//! ([`state`], the spinner override + account-usage cache), and the
+//! `/usage` view's per-file token summaries ([`token_usage`]) and
+//! cached model pricing ([`pricing`]).
 
 use std::path::Path;
 
@@ -18,8 +20,10 @@ use anyhow::Context;
 pub mod cron;
 pub mod dynamic_workers;
 pub mod gotify;
+pub mod pricing;
 pub mod review;
 pub mod state;
+pub mod token_usage;
 
 /// Handle to the machine-local redb database.
 pub struct Db {

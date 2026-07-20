@@ -1161,6 +1161,7 @@ dependencies = [
  "futures",
  "hex",
  "httpdate",
+ "iana-time-zone",
  "ignore",
  "notify",
  "parking_lot",
@@ -1172,6 +1173,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "time",
+ "time-tz",
  "tokio",
  "tokio-tungstenite 0.29.0",
  "tracing",
@@ -1302,6 +1304,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "time",
+ "time-tz",
  "tokio",
  "toml",
  "tracing",
@@ -2740,6 +2743,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "parse-zoneinfo"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f2a05b18d44e2957b88f96ba460715e295bc1d7510468a2f3d3b44535d26c24"
+dependencies = [
+ "regex",
+]
+
+[[package]]
 name = "pem"
 version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3705,6 +3717,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-xml-rs"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65162e9059be2f6a3421ebbb4fef3e74b7d9e7c60c50a0e292c6239f19f1edfa"
+dependencies = [
+ "log",
+ "serde",
+ "thiserror 1.0.69",
+ "xml-rs",
+]
+
+[[package]]
 name = "serde_core"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4184,6 +4208,7 @@ checksum = "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c"
 dependencies = [
  "deranged",
  "itoa",
+ "js-sys",
  "libc",
  "num-conv",
  "num_threads",
@@ -4207,6 +4232,22 @@ checksum = "2e70e4c5a0e0a8a4823ad65dfe1a6930e4f4d756dcd9dd7939022b5e8c501215"
 dependencies = [
  "num-conv",
  "time-core",
+]
+
+[[package]]
+name = "time-tz"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "733bc522e97980eb421cbf381160ff225bd14262a48a739110f6653c6258d625"
+dependencies = [
+ "cfg-if",
+ "parse-zoneinfo",
+ "phf",
+ "phf_codegen",
+ "serde",
+ "serde-xml-rs",
+ "time",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -5544,6 +5585,12 @@ dependencies = [
  "thiserror 1.0.69",
  "time",
 ]
+
+[[package]]
+name = "xml-rs"
+version = "0.8.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
 
 [[package]]
 name = "yaml-rust"

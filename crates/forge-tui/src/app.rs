@@ -37,6 +37,7 @@ mod tab_title;
 mod terminal;
 mod todos;
 pub(crate) mod usage;
+pub(crate) mod usage_overlay;
 pub(crate) mod view;
 
 // Re-export all public types so `crate::app::App`, `crate::app::BlockCache`, etc. still work.
@@ -74,6 +75,7 @@ pub use state::{
     compute_scrollbar_geometry, hash_text_block_content, hash_welcome_block_content,
     is_execute_tool_name, is_monitor_tool_name,
 };
+pub use usage_overlay::UsageOverlayState;
 pub use view::ActiveView;
 
 use crossterm::event::{
@@ -245,6 +247,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         cli_version::drain_events(app);
         process_scanner::drain_events(app);
         diff_overlay::drain_events(app);
+        usage_overlay::drain_events(app);
 
         // If a prior turn ended in Error state because of a rate-limit
         // rejection, drop the input lock once the rate-limit window
