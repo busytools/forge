@@ -145,7 +145,14 @@ fn scan_event(
 ) -> UsageOverlayEvent {
     match joined {
         Ok(report) => UsageOverlayEvent::Report(Box::new(report)),
-        Err(_) => UsageOverlayEvent::ScanFailed,
+        Err(error) => {
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                %error,
+                "usage scan task failed; showing the retry hint",
+            );
+            UsageOverlayEvent::ScanFailed
+        }
     }
 }
 
