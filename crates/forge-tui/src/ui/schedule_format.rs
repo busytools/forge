@@ -113,7 +113,7 @@ fn weekday_name(dow: &str) -> Option<&'static str> {
 /// Render a one-shot fire instant as a local wall-clock string relative
 /// to `now`: `today 14:30`, `tomorrow 09:00`, or `Jul 25 09:00` further
 /// out. `tz` is the local zone (see
-/// `forge_workspace::env::token_usage::system_timezone`); injected so the
+/// `forge_workspace::env::timezone::system_timezone`); injected so the
 /// output is deterministic under test.
 pub(crate) fn humanize_once(at: SystemTime, now: SystemTime, tz: &Tz) -> String {
     let at_local = OffsetDateTime::from(at).to_timezone(tz);

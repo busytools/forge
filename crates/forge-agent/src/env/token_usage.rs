@@ -14,7 +14,7 @@ use forge_primitives::token_usage::{UsageReport, UsageRow, WindowUsage};
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
 use time::{Date, Duration, Month, OffsetDateTime};
-use time_tz::{OffsetDateTimeExt, Tz, timezones};
+use time_tz::{OffsetDateTimeExt, Tz};
 
 use self::pricing::PricingTable;
 
@@ -100,32 +100,6 @@ fn encoded_projects_prefix(projects_root: &Path) -> String {
 
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").filter(|s| !s.is_empty()).map(PathBuf::from)
-}
-
-/// The OS-configured IANA timezone, read dynamically. Uses
-/// `iana-time-zone` (multithread-safe on Unix, unlike
-/// `time::UtcOffset::current_local_offset`, which errors in a threaded
-/// process). Falls back to UTC with a warn only when the zone can't be
-/// resolved - the rare exception, so "today" tracks the user's wall clock.
-pub fn system_timezone() -> &'static Tz {
-    match iana_time_zone::get_timezone() {
-        Ok(name) => timezones::get_by_name(&name).unwrap_or_else(|| {
-            tracing::warn!(
-                target: "forge_agent::env::token_usage",
-                %name,
-                "unknown system timezone; bucketing usage by UTC day",
-            );
-            timezones::db::UTC
-        }),
-        Err(error) => {
-            tracing::warn!(
-                target: "forge_agent::env::token_usage",
-                %error,
-                "system timezone unavailable; bucketing usage by UTC day",
-            );
-            timezones::db::UTC
-        }
-    }
 }
 
 /// The five-way token split accumulated for one `(model, day)` bucket.
@@ -500,6 +474,7 @@ fn parse_date(day: &str) -> Option<Date> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use time_tz::timezones;
 
     const PREFIX: &str = "-Users-vedhavyas-Projects-";
 

@@ -1496,7 +1496,7 @@ fn append_schedules_section(lines: &mut Vec<Line<'static>>, app: &App, width: u1
     // Resolve the local zone (a per-frame syscall) only when there are
     // forge crons to humanize - most sessions have none.
     if !app.forge_crons.is_empty() {
-        let tz = forge_workspace::env::token_usage::system_timezone();
+        let tz = forge_workspace::env::timezone::system_timezone();
         entries.extend(app.forge_crons.iter().map(|c| forge_cron_to_schedule_entry(c, now, tz)));
     }
     if entries.is_empty() {
