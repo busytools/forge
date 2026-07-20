@@ -62,6 +62,11 @@ pub struct UsageReport {
     pub week: WindowUsage,
     pub month: WindowUsage,
     pub lifetime: WindowUsage,
+    /// Whether a pricing table was loaded when this report was built.
+    /// `false` (cold cache, failed or empty fetch) means every cost is
+    /// a placeholder 0, so the UI blanks costs rather than reading a
+    /// misleading `$0.00`.
+    pub pricing_available: bool,
 }
 
 #[cfg(test)]
@@ -97,6 +102,7 @@ mod tests {
             week: window.clone(),
             month: window.clone(),
             lifetime: window,
+            pricing_available: true,
         };
         let json = serde_json::to_string(&report).expect("serialize");
         let back: UsageReport = serde_json::from_str(&json).expect("deserialize");

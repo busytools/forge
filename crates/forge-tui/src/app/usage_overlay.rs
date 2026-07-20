@@ -277,6 +277,7 @@ mod tests {
             week: window("week-m", "week-p"),
             month: window("month-m", "month-p"),
             lifetime: window("life-m", "life-p"),
+            pricing_available: true,
         };
         let mut state = UsageOverlayState::new();
         state.report = Some(report);

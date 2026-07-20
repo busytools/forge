@@ -320,6 +320,7 @@ pub fn roll_up(
         week: week.finish(pricing),
         month: month.finish(pricing),
         lifetime: lifetime.finish(pricing),
+        pricing_available: !pricing.is_empty(),
     }
 }
 
@@ -613,6 +614,18 @@ mod tests {
         assert_eq!(report.week.total.output, 3);
         assert_eq!(report.month.total.output, 7);
         assert_eq!(report.lifetime.total.output, 15);
+    }
+
+    #[test]
+    fn roll_up_flags_pricing_availability() {
+        let summary = summary_of("forge", &[("m", "2026-07-15", counts_out(1))]);
+        let empty =
+            roll_up(&[summary.clone()], &PricingTable::from_litellm_json("{}"), wednesday());
+        assert!(!empty.pricing_available, "an empty table means pricing is unavailable");
+        let priced = PricingTable::from_litellm_json(
+            r#"{"m":{"input_cost_per_token":0.001,"output_cost_per_token":0.002}}"#,
+        );
+        assert!(roll_up(&[summary], &priced, wednesday()).pricing_available);
     }
 
     #[test]

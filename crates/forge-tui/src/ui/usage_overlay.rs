@@ -76,12 +76,19 @@ fn header_lines(
     let life = &report.lifetime.total;
     let rule = rule_line(rule_w);
 
-    // Summary headline: lifetime tokens + notional cost + counts.
+    // Summary headline: lifetime tokens + notional cost + counts. When
+    // no pricing table is loaded every cost is a placeholder 0, so the
+    // cost blanks to a dash rather than reading a misleading $0.00.
+    let headline_cost = if report.pricing_available {
+        span(format!("{}≈", fmt_cost_headline(life.cost_usd)), accent_bold())
+    } else {
+        span("-", dim())
+    };
     let headline = vec![
         span("  LIFETIME  ", bold()),
         span(format!("{} ", fmt_tokens(life.tokens())), bold()),
         span("tokens   ·   ", dim()),
-        span(format!("{}≈", fmt_cost_headline(life.cost_usd)), accent_bold()),
+        headline_cost,
         span(
             format!(
                 "        {} projects · {} models",
@@ -149,8 +156,25 @@ fn header_lines(
         dim(),
     )]);
 
+    // Right-justified caption: the notional disclaimer when priced, or
+    // a pending/failed signal when no pricing is loaded.
+    let (caption, caption_style) = if report.pricing_available {
+        ("notional · at API pricing · not a bill", dim())
+    } else {
+        ("pricing pending or failed", warning())
+    };
+    let banner_left = "  USAGE · all accounts";
+    let caption_pad =
+        (2 + rule_w).saturating_sub(banner_left.chars().count() + caption.chars().count());
+    let banner = Line::from(vec![
+        span("  USAGE", accent_bold()),
+        span(" · all accounts", dim()),
+        span(" ".repeat(caption_pad), dim()),
+        span(caption, caption_style),
+    ]);
+
     vec![
-        Line::from(vec![span("  USAGE", accent_bold()), span(" · all accounts", dim())]),
+        banner,
         rule.clone(),
         Line::from(headline),
         windows,
@@ -324,13 +348,21 @@ mod tests {
             .join("\n")
     }
 
-    fn report_with(projects: &[&str]) -> UsageReport {
+    fn report_with(projects: &[&str], priced: bool) -> UsageReport {
+        // An unpriced report mirrors reality: every cost is a placeholder 0.
+        let cost = |value: f64| if priced { value } else { 0.0 };
         let window = || WindowUsage {
-            by_project: projects.iter().map(|p| row(p, 1_000_000, 500_000, 1.5)).collect(),
-            by_model: vec![row("opus-4.8", 2_000_000, 1_000_000, 3.0)],
-            total: row("TOTAL", 3_000_000, 1_500_000, 4.5),
+            by_project: projects.iter().map(|p| row(p, 1_000_000, 500_000, cost(1.5))).collect(),
+            by_model: vec![row("opus-4.8", 2_000_000, 1_000_000, cost(3.0))],
+            total: row("TOTAL", 3_000_000, 1_500_000, cost(4.5)),
         };
-        UsageReport { today: window(), week: window(), month: window(), lifetime: window() }
+        UsageReport {
+            today: window(),
+            week: window(),
+            month: window(),
+            lifetime: window(),
+            pricing_available: priced,
+        }
     }
 
     fn app_with(report: Option<UsageReport>) -> App {
@@ -399,7 +431,7 @@ mod tests {
 
     #[test]
     fn render_shows_summary_and_total() {
-        let mut app = app_with(Some(report_with(&["forge", "trader-cc"])));
+        let mut app = app_with(Some(report_with(&["forge", "trader-cc"], true)));
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
         terminal.draw(|frame| render(frame, &mut app)).expect("draw");
         let rendered = buffer_text(terminal.backend().buffer());
@@ -418,9 +450,28 @@ mod tests {
 
     #[test]
     fn render_survives_a_tiny_area() {
-        let mut app = app_with(Some(report_with(&["forge"])));
+        let mut app = app_with(Some(report_with(&["forge"], true)));
         let mut terminal = Terminal::new(TestBackend::new(30, 5)).expect("terminal");
         // Must not panic when the area is smaller than the pinned chrome.
         terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+    }
+
+    #[test]
+    fn banner_shows_the_notional_caption_when_priced() {
+        let mut app = app_with(Some(report_with(&["forge"], true)));
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).expect("terminal");
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("notional · at API pricing · not a bill"), "{rendered}");
+    }
+
+    #[test]
+    fn missing_pricing_blanks_costs_instead_of_reading_zero() {
+        let mut app = app_with(Some(report_with(&["forge"], false)));
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).expect("terminal");
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("pricing pending or failed"), "caption signals it: {rendered}");
+        assert!(!rendered.contains("$0.00"), "no misleading $0.00 anywhere: {rendered}");
     }
 }
