@@ -3420,17 +3420,50 @@ impl Workspace {
     }
 
     /// Insert or replace one review thread by id in `(project, branch)`.
-    pub fn upsert_review_thread(&self, project: &str, branch: &str, thread: ReviewThread) {
-        if let Some(db) = self.db.lock().as_ref()
-            && let Err(error) = crate::store::review::upsert(db, project, branch, thread)
-        {
-            tracing::warn!(
-                target: "forge_workspace::workspace",
-                %error,
-                project = %project,
-                branch = %branch,
-                "upserting a review thread failed",
-            );
+    /// Returns whether the write was confirmed - `false` when the store
+    /// isn't open or the write failed, so the caller can leave the
+    /// comment in the at-risk (not-yet-durable) bucket.
+    pub fn upsert_review_thread(&self, project: &str, branch: &str, thread: ReviewThread) -> bool {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            return false;
+        };
+        match crate::store::review::upsert(db, project, branch, thread) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    project = %project,
+                    branch = %branch,
+                    "upserting a review thread failed",
+                );
+                false
+            }
+        }
+    }
+
+    /// Remove one review thread by id from `(project, branch)`, so a
+    /// deleted comment does not resurrect on the next hydrate. Returns
+    /// whether the removal was confirmed.
+    pub fn remove_review_thread(&self, project: &str, branch: &str, id: &str) -> bool {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            return false;
+        };
+        match crate::store::review::remove_thread(db, project, branch, id) {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    project = %project,
+                    branch = %branch,
+                    id = %id,
+                    "removing a review thread failed",
+                );
+                false
+            }
         }
     }
 

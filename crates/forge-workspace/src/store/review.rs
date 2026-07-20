@@ -59,6 +59,13 @@ pub fn upsert(
 ) -> anyhow::Result<()> {
     let now = rfc3339_now();
     thread.updated_at.clone_from(&now);
+    // Stamp any comment the caller left unstamped (the TUI carries no
+    // clock), so a persisted comment's `at` is a real rfc3339 time.
+    for comment in &mut thread.comments {
+        if comment.at.is_empty() {
+            comment.at.clone_from(&now);
+        }
+    }
     let txn = db.database().begin_write()?;
     {
         let mut table = txn.open_table(REVIEW_THREADS)?;
@@ -80,6 +87,35 @@ pub fn upsert(
     }
     txn.commit()?;
     Ok(())
+}
+
+/// Remove the single thread `id` from `(project, branch)`, dropping the
+/// row entirely when it was the last one. Returns whether a thread was
+/// removed. Used when the user clears a reopened comment's text to
+/// delete it, so it doesn't resurrect on the next hydrate.
+pub fn remove_thread(db: &Db, project: &str, branch: &str, id: &str) -> anyhow::Result<bool> {
+    let txn = db.database().begin_write()?;
+    let removed = {
+        let mut table = txn.open_table(REVIEW_THREADS)?;
+        let mut threads = match table.get((project, branch))? {
+            Some(value) => decode(value.value(), project, branch)?,
+            None => Vec::new(),
+        };
+        let before = threads.len();
+        threads.retain(|t| t.id != id);
+        let removed = threads.len() != before;
+        if removed {
+            if threads.is_empty() {
+                table.remove((project, branch))?;
+            } else {
+                let value = serde_json::to_vec(&threads).context("serialize review threads")?;
+                table.insert((project, branch), value.as_slice())?;
+            }
+        }
+        removed
+    };
+    txn.commit()?;
+    Ok(removed)
 }
 
 /// Set the status of the thread `id` in `(project, branch)`, bumping its
@@ -218,6 +254,20 @@ mod tests {
             !set_status(&db, "forge", "feat", "missing", ReviewStatus::Resolved).expect("set"),
             "an unknown id reports not-found",
         );
+    }
+
+    #[test]
+    fn remove_thread_drops_one_and_reports_missing() {
+        let (_dir, db) = open_db();
+        save(&db, "forge", "feat", &[thread("a", 10), thread("b", 20)]).expect("save");
+        assert!(remove_thread(&db, "forge", "feat", "a").expect("remove a"));
+        let loaded = load(&db, "forge", "feat").expect("load");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id, "b");
+        assert!(!remove_thread(&db, "forge", "feat", "a").expect("remove again"), "already gone");
+        // Removing the last thread clears the row.
+        assert!(remove_thread(&db, "forge", "feat", "b").expect("remove b"));
+        assert!(load(&db, "forge", "feat").expect("load").is_empty());
     }
 
     #[test]

@@ -54,24 +54,24 @@ fn clear_transient_view_state(app: &mut App) {
         app.config.overlay = None;
     }
     if app.active_view == ActiveView::Diff {
-        // Durable whole-diff review threads persist to redb on every
-        // mutation, so this forced transition (e.g. a session swap
-        // mid-review) can't lose them. Only an in-progress editor's
-        // unsent text and ephemeral commit-scoped comments drop here;
-        // warn so those stay greppable.
-        let dropped_ephemeral = app
-            .diff_overlay
-            .as_ref()
-            .map_or(0, |o| o.comments.iter().filter(|c| c.thread.is_none()).count());
+        // Confirmed-persisted review threads (and hydrated history) are
+        // durable in redb, so this forced transition (e.g. a session swap
+        // mid-review) can't lose them. At risk here: session-authored
+        // comments not yet confirmed-written (ephemeral commit-scoped
+        // ones, and durable ones whose write was skipped/failed) plus an
+        // in-progress editor's unsent text. Warn so those stay greppable.
+        let dropped_at_risk = app.diff_overlay.as_ref().map_or(0, |o| {
+            o.comments.iter().filter(|c| c.authored_this_session && !c.persisted).count()
+        });
         let had_in_progress_editor =
             app.diff_overlay.as_ref().is_some_and(|o| o.active_input.is_some());
-        if dropped_ephemeral > 0 || had_in_progress_editor {
+        if dropped_at_risk > 0 || had_in_progress_editor {
             tracing::warn!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "diff_overlay_force_cleared",
-                message = "diff overlay cleared via view transition; durable review threads persisted, ephemeral comments/editor dropped",
+                message = "diff overlay cleared via view transition; persisted review threads survive, unpersisted comments/editor dropped",
                 outcome = "dropped",
-                dropped_ephemeral,
+                dropped_at_risk,
                 had_in_progress_editor,
             );
         }

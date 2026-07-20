@@ -2581,6 +2581,8 @@ mod tests {
             comment_text: text.to_owned(),
             commit: None,
             thread,
+            authored_this_session: false,
+            persisted: true,
         }
     }
 
