@@ -10,7 +10,11 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use forge_primitives::token_usage::{UsageReport, UsageRow, WindowUsage};
 use serde::{Deserialize, Serialize};
+use time::{Date, Duration, Month, OffsetDateTime};
+
+use self::pricing::PricingTable;
 
 pub mod pricing;
 
@@ -272,6 +276,155 @@ struct CacheCreation {
     ephemeral_5m_input_tokens: u64,
 }
 
+/// Roll per-file summaries up into the four windows the `/usage`
+/// overlay renders. Windows are UTC calendar periods relative to `now`:
+/// today, the current week (from Monday), the current month (from the
+/// 1st), and all-time. Each window carries both groupings and a total
+/// row, priced via `pricing` (an unpriced model contributes 0 cost).
+pub fn roll_up(
+    summaries: &[FileUsageSummary],
+    pricing: &PricingTable,
+    now: OffsetDateTime,
+) -> UsageReport {
+    let today = now.date();
+    let week_start = today - Duration::days(i64::from(today.weekday().number_days_from_monday()));
+    let month_start = Date::from_calendar_date(today.year(), today.month(), 1).unwrap_or(today);
+
+    let mut day = WindowAcc::default();
+    let mut week = WindowAcc::default();
+    let mut month = WindowAcc::default();
+    let mut lifetime = WindowAcc::default();
+
+    for summary in summaries {
+        for (model, days) in &summary.by_model_day {
+            for (day_str, counts) in days {
+                let Some(date) = parse_date(day_str) else {
+                    continue;
+                };
+                lifetime.add(&summary.folded_project, model, counts);
+                if date >= month_start {
+                    month.add(&summary.folded_project, model, counts);
+                }
+                if date >= week_start {
+                    week.add(&summary.folded_project, model, counts);
+                }
+                if date == today {
+                    day.add(&summary.folded_project, model, counts);
+                }
+            }
+        }
+    }
+
+    UsageReport {
+        today: day.finish(pricing),
+        week: week.finish(pricing),
+        month: month.finish(pricing),
+        lifetime: lifetime.finish(pricing),
+    }
+}
+
+/// Per-window accumulator keyed `project -> model -> counts`. Keeping
+/// the model split under each project lets the by-project rows sum cost
+/// across a project's differently-priced models.
+#[derive(Default)]
+struct WindowAcc {
+    by_project_model: BTreeMap<String, BTreeMap<String, TokenCounts>>,
+}
+
+impl WindowAcc {
+    fn add(&mut self, project: &str, model: &str, counts: &TokenCounts) {
+        self.by_project_model
+            .entry(project.to_owned())
+            .or_default()
+            .entry(model.to_owned())
+            .or_default()
+            .add(counts);
+    }
+
+    fn finish(&self, pricing: &PricingTable) -> WindowUsage {
+        let mut model_totals: BTreeMap<String, TokenCounts> = BTreeMap::new();
+        for models in self.by_project_model.values() {
+            for (model, counts) in models {
+                model_totals.entry(model.clone()).or_default().add(counts);
+            }
+        }
+
+        let mut by_model: Vec<UsageRow> = model_totals
+            .iter()
+            .map(|(model, counts)| make_row(model.clone(), counts, cost_of(model, counts, pricing)))
+            .collect();
+        sort_by_cost_desc(&mut by_model);
+
+        let mut by_project: Vec<UsageRow> = self
+            .by_project_model
+            .iter()
+            .map(|(project, models)| {
+                let mut counts = TokenCounts::default();
+                let mut cost = 0.0;
+                for (model, model_counts) in models {
+                    counts.add(model_counts);
+                    cost += cost_of(model, model_counts, pricing);
+                }
+                make_row(project.clone(), &counts, cost)
+            })
+            .collect();
+        sort_by_cost_desc(&mut by_project);
+
+        let mut total_counts = TokenCounts::default();
+        let mut total_cost = 0.0;
+        for (model, counts) in &model_totals {
+            total_counts.add(counts);
+            total_cost += cost_of(model, counts, pricing);
+        }
+
+        WindowUsage {
+            by_model,
+            by_project,
+            total: make_row("TOTAL".to_owned(), &total_counts, total_cost),
+        }
+    }
+}
+
+fn make_row(label: String, counts: &TokenCounts, cost_usd: f64) -> UsageRow {
+    UsageRow {
+        label,
+        input: counts.input,
+        cache_write_1h: counts.cache_write_1h,
+        cache_write_5m: counts.cache_write_5m,
+        cache_read: counts.cache_read,
+        output: counts.output,
+        cost_usd,
+    }
+}
+
+/// Notional cost of `counts` at `model`'s price; 0 for an unpriced or
+/// `<synthetic>` model.
+#[allow(clippy::cast_precision_loss)]
+fn cost_of(model: &str, counts: &TokenCounts, pricing: &PricingTable) -> f64 {
+    // Token counts stay well under 2^53, so the f64 conversion is exact.
+    let Some(price) = pricing.price(model) else {
+        return 0.0;
+    };
+    counts.input as f64 * price.input
+        + counts.cache_write_1h as f64 * price.cache_write_1h
+        + counts.cache_write_5m as f64 * price.cache_write_5m
+        + counts.cache_read as f64 * price.cache_read
+        + counts.output as f64 * price.output
+}
+
+fn sort_by_cost_desc(rows: &mut [UsageRow]) {
+    rows.sort_by(|a, b| b.cost_usd.total_cmp(&a.cost_usd).then_with(|| a.label.cmp(&b.label)));
+}
+
+/// Parse a `YYYY-MM-DD` day key into a `Date`.
+fn parse_date(day: &str) -> Option<Date> {
+    let mut parts = day.split('-');
+    let year: i32 = parts.next()?.parse().ok()?;
+    let month: u8 = parts.next()?.parse().ok()?;
+    let day_of_month: u8 = parts.next()?.parse().ok()?;
+    Date::from_calendar_date(year, Month::try_from(month).ok()?, day_of_month).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,5 +565,104 @@ mod tests {
         let files = usage_files(td.path());
         assert_eq!(files.len(), 1, "the sync-conflict copy is excluded");
         assert!(files[0].file_name().and_then(|n| n.to_str()).is_some_and(|n| n == "real.jsonl"));
+    }
+
+    fn counts_out(output: u64) -> TokenCounts {
+        TokenCounts { output, ..TokenCounts::default() }
+    }
+
+    fn summary_of(project: &str, entries: &[(&str, &str, TokenCounts)]) -> FileUsageSummary {
+        let mut by_model_day: BTreeMap<String, BTreeMap<String, TokenCounts>> = BTreeMap::new();
+        for (model, day, counts) in entries {
+            by_model_day
+                .entry((*model).to_owned())
+                .or_default()
+                .insert((*day).to_owned(), counts.clone());
+        }
+        FileUsageSummary {
+            mtime: SystemTime::UNIX_EPOCH,
+            size: 0,
+            folded_project: project.to_owned(),
+            by_model_day,
+        }
+    }
+
+    /// A fixed `now` mid-week (Wednesday) so `today - 1` / `today - 2`
+    /// stay inside the current week regardless of the host clock.
+    fn wednesday() -> OffsetDateTime {
+        Date::from_calendar_date(2026, Month::July, 15).expect("valid date").midnight().assume_utc()
+    }
+
+    fn approx(actual: f64, expected: f64) {
+        assert!((actual - expected).abs() < 1e-9, "expected {expected}, got {actual}");
+    }
+
+    #[test]
+    fn roll_up_buckets_days_into_windows() {
+        let s = summary_of(
+            "forge",
+            &[
+                ("m", "2026-07-15", counts_out(1)), // today
+                ("m", "2026-07-14", counts_out(2)), // this week, not today
+                ("m", "2026-07-05", counts_out(4)), // this month, before this week
+                ("m", "2026-06-20", counts_out(8)), // last month
+            ],
+        );
+        let report = roll_up(&[s], &PricingTable::from_litellm_json("{}"), wednesday());
+        assert_eq!(report.today.total.output, 1);
+        assert_eq!(report.week.total.output, 3);
+        assert_eq!(report.month.total.output, 7);
+        assert_eq!(report.lifetime.total.output, 15);
+    }
+
+    #[test]
+    fn roll_up_prices_models_and_zeros_unpriced() {
+        let s = summary_of(
+            "forge",
+            &[
+                ("m", "2026-07-15", counts_out(1000)),
+                ("<synthetic>", "2026-07-15", counts_out(500)),
+            ],
+        );
+        let pricing = PricingTable::from_litellm_json(
+            r#"{"m":{"input_cost_per_token":0.001,"output_cost_per_token":0.002}}"#,
+        );
+        let report = roll_up(&[s], &pricing, wednesday());
+        let m = report.today.by_model.iter().find(|r| r.label == "m").expect("m row");
+        let syn =
+            report.today.by_model.iter().find(|r| r.label == "<synthetic>").expect("synthetic row");
+        approx(m.cost_usd, 1000.0 * 0.002);
+        approx(syn.cost_usd, 0.0);
+        approx(report.today.total.cost_usd, 1000.0 * 0.002);
+    }
+
+    #[test]
+    fn roll_up_project_cost_sums_across_models() {
+        let s = summary_of(
+            "forge",
+            &[("cheap", "2026-07-15", counts_out(100)), ("pricey", "2026-07-15", counts_out(100))],
+        );
+        let pricing = PricingTable::from_litellm_json(
+            r#"{"cheap":{"input_cost_per_token":0,"output_cost_per_token":0.001},
+                "pricey":{"input_cost_per_token":0,"output_cost_per_token":0.01}}"#,
+        );
+        let report = roll_up(&[s], &pricing, wednesday());
+        let forge = report.today.by_project.iter().find(|r| r.label == "forge").expect("forge row");
+        assert_eq!(forge.output, 200, "project tokens sum across its models");
+        approx(forge.cost_usd, 100.0 * 0.001 + 100.0 * 0.01);
+    }
+
+    #[test]
+    fn roll_up_sorts_rows_by_cost_desc() {
+        let s = summary_of(
+            "forge",
+            &[("lo", "2026-07-15", counts_out(10)), ("hi", "2026-07-15", counts_out(10))],
+        );
+        let pricing = PricingTable::from_litellm_json(
+            r#"{"lo":{"input_cost_per_token":0,"output_cost_per_token":0.001},
+                "hi":{"input_cost_per_token":0,"output_cost_per_token":0.05}}"#,
+        );
+        let report = roll_up(&[s], &pricing, wednesday());
+        assert_eq!(report.today.by_model.first().expect("a row").label, "hi", "priciest first");
     }
 }
