@@ -3904,6 +3904,18 @@ mod tests {
         assert_eq!(app.schedules().len(), 1, "re-decoded same tool_use_id stays one entry");
     }
 
+    #[test]
+    fn cron_upsert_empty_expr_shows_unknown_schedule() {
+        let mut app = App::test_default();
+        let t0 = std::time::SystemTime::UNIX_EPOCH;
+        app.upsert_cron_from_tool_input("tu1", "", true, false, t0);
+        assert_eq!(
+            app.schedules()[0].schedule,
+            "(unknown schedule)",
+            "an empty cloud cron expr renders a placeholder, not a blank schedule",
+        );
+    }
+
     /// FIX (4th attempt): the reported bug state is an active trader-cc
     /// tab where GIT / PROCESSES render and the projects pane + top bar
     /// highlight trader-cc, yet SCHEDULES is blank - because the
