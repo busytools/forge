@@ -1275,11 +1275,65 @@ pub(crate) fn close(app: &mut App) {
     app.needs_redraw = true;
 }
 
-/// Positional key for a thread whose line drifted out of the diff
-/// entirely (`Outdated` with no surviving position). Never matches a
-/// rendered line, so the renderer draws these in the detached block.
-fn detached_key() -> LineKey {
-    LineKey { file_idx: usize::MAX, hunk_idx: usize::MAX, line_idx: usize::MAX }
+/// Placement for an outdated thread whose exact line may be gone: the
+/// same line number on the same side (content changed), else the nearest
+/// surviving line in the file, else the file's first line, else the
+/// document's first line. Returns the key plus the anchored line's
+/// context (empty on a fallback line). `None` only when the diff has no
+/// lines at all, so the thread renders somewhere and stays actionable.
+fn outdated_placement(
+    files: &[FileHunks],
+    path: &str,
+    side: ReviewSide,
+    line: u32,
+) -> Option<(LineKey, Vec<DiffLine>)> {
+    if let Some((key, diff_line)) = find_line_by_number(files, path, side, line) {
+        return Some((key, vec![diff_line]));
+    }
+    if let Some(file_idx) = files.iter().position(|f| f.path == path) {
+        let mut best: Option<(LineKey, u32, DiffLine)> = None;
+        for (hunk_idx, hunk) in files[file_idx].hunks.iter().enumerate() {
+            for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
+                let number = match side {
+                    ReviewSide::Old => diff_line.old_line,
+                    ReviewSide::New => diff_line.new_line,
+                };
+                if let Some(number) = number {
+                    let dist = number.abs_diff(line);
+                    if best.as_ref().is_none_or(|(_, best_dist, _)| dist < *best_dist) {
+                        best = Some((
+                            LineKey { file_idx, hunk_idx, line_idx },
+                            dist,
+                            diff_line.clone(),
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some((key, _, diff_line)) = best {
+            return Some((key, vec![diff_line]));
+        }
+        if let Some(key) = first_line_key_in_file(&files[file_idx], file_idx) {
+            return Some((key, Vec::new()));
+        }
+    }
+    first_line_key(files).map(|key| (key, Vec::new()))
+}
+
+/// The first line's key in `file` (skipping empty hunks), or `None` when
+/// the file has no lines.
+fn first_line_key_in_file(file: &FileHunks, file_idx: usize) -> Option<LineKey> {
+    file.hunks
+        .iter()
+        .enumerate()
+        .find(|(_, hunk)| !hunk.lines.is_empty())
+        .map(|(hunk_idx, _)| LineKey { file_idx, hunk_idx, line_idx: 0 })
+}
+
+/// The first line's key across the whole document, or `None` when the
+/// diff has no lines.
+fn first_line_key(files: &[FileHunks]) -> Option<LineKey> {
+    files.iter().enumerate().find_map(|(file_idx, file)| first_line_key_in_file(file, file_idx))
 }
 
 /// Find the line at `line` on `side` in `path`, ignoring content -
@@ -1396,19 +1450,20 @@ fn hydrate_threads(app: &mut App) {
                     thread.status = ReviewStatus::Outdated;
                     changed = true;
                 }
-                // Best-effort inline placement at the same line number on
-                // the same side (content changed, so it renders in the
-                // outdated tint against the captured context). Detaches
-                // only when the line is gone entirely.
-                let placed = find_line_by_number(
+                // Place the outdated box on a surviving line so it renders
+                // (yellow, against its captured context) and stays
+                // actionable: the same line number if it survives, else
+                // the nearest line, else a document fallback.
+                let Some((key, hunk_context)) = outdated_placement(
                     &overlay.files,
                     &thread.anchor.path,
                     thread.anchor.side,
                     thread.anchor.line,
-                );
-                let (key, hunk_context) = match placed {
-                    Some((key, line)) => (key, vec![line]),
-                    None => (detached_key(), Vec::new()),
+                ) else {
+                    // Empty diff this open: keep the thread durable (it
+                    // re-anchors when the diff returns) but skip rendering.
+                    persist.push(thread);
+                    continue;
                 };
                 HunkComment {
                     key,
@@ -4359,9 +4414,14 @@ mod tests {
             "inline outdated"
         );
         assert_eq!(changed.thread.as_ref().expect("thread").status, ReviewStatus::Outdated);
-        // Line gone entirely: detached (persisted, not drawn inline).
+        // Line number gone (99): placed on the nearest surviving line
+        // (20 = line_idx 4) so it still renders, flagged Outdated.
         let vanished = by_id("vanished");
-        assert_eq!(vanished.key, detached_key(), "vanished thread is detached");
+        assert_eq!(
+            vanished.key,
+            LineKey { file_idx: 0, hunk_idx: 0, line_idx: 4 },
+            "nearest fallback"
+        );
         assert_eq!(vanished.thread.as_ref().expect("thread").status, ReviewStatus::Outdated);
 
         // The move + outdated flips are written back to redb.
@@ -4371,6 +4431,49 @@ mod tests {
         assert_eq!(find("changed").status, ReviewStatus::Outdated, "outdated flip persisted");
         assert_eq!(find("vanished").status, ReviewStatus::Outdated, "outdated flip persisted");
         assert_eq!(find("keep").anchor.line, 5, "in-place line unchanged");
+    }
+
+    #[test]
+    fn outdated_thread_with_absent_file_falls_back_to_document_start() {
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads(
+            "forge",
+            "feat",
+            &[forge_primitives::ReviewThread {
+                id: "gone".to_owned(),
+                anchor: ReviewAnchor {
+                    path: "removed.rs".to_owned(),
+                    side: ReviewSide::New,
+                    line: 5,
+                    content_hash: 1,
+                    context: Vec::new(),
+                    base_ref: "main".to_owned(),
+                },
+                comments: vec![ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "note".to_owned(),
+                    at: String::new(),
+                }],
+                status: ReviewStatus::Open,
+                created_at: "t0".to_owned(),
+                updated_at: "t0".to_owned(),
+            }],
+        );
+        // The commented file is no longer in the diff.
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("keep", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+        hydrate_threads(&mut app);
+        let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
+        assert_eq!(
+            comment.key,
+            LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            "absent file falls back to the document's first line",
+        );
+        assert_eq!(comment.thread.as_ref().expect("thread").status, ReviewStatus::Outdated);
     }
 
     #[test]

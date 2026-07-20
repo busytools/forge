@@ -1247,7 +1247,7 @@ fn push_file_body(
     file_idx: usize,
     include_header: bool,
     pane_width: u16,
-    comments_by_key: &std::collections::HashMap<LineKey, &HunkComment>,
+    comments_by_key: &std::collections::HashMap<LineKey, Vec<&HunkComment>>,
     lines: &mut Vec<Line<'static>>,
     keys: &mut Vec<BodyRowKey>,
 ) {
@@ -1325,7 +1325,7 @@ fn push_unified_body(
     gutter_width: usize,
     pane_width: u16,
     cache: Option<&FileHighlight>,
-    comments_by_key: &std::collections::HashMap<LineKey, &HunkComment>,
+    comments_by_key: &std::collections::HashMap<LineKey, Vec<&HunkComment>>,
     lines: &mut Vec<Line<'static>>,
     keys: &mut Vec<BodyRowKey>,
 ) {
@@ -1344,7 +1344,7 @@ fn push_unified_body(
                 let spans = line_key.map_or(&[][..], |key| cached_line_spans(cache, key));
                 push_unified_diff_rows(&row, spans, gutter_width, content_width, lines, keys);
                 if let Some(key) = line_key {
-                    if let Some(comment) = comments_by_key.get(&key) {
+                    for comment in comments_by_key.get(&key).into_iter().flatten() {
                         render_comment_chip(comment, key, gutter_width, pane_width, lines, keys);
                     }
                     if let Some(input) = overlay.active_input.as_ref().filter(|i| i.key == key) {
@@ -1426,7 +1426,7 @@ fn push_split_body(
     gutter_width: usize,
     pane_width: u16,
     cache: Option<&FileHighlight>,
-    comments_by_key: &std::collections::HashMap<LineKey, &HunkComment>,
+    comments_by_key: &std::collections::HashMap<LineKey, Vec<&HunkComment>>,
     lines: &mut Vec<Line<'static>>,
     keys: &mut Vec<BodyRowKey>,
 ) {
@@ -1448,7 +1448,7 @@ fn push_split_body(
                 sides.push(k);
             }
             for side_key in sides {
-                if let Some(comment) = comments_by_key.get(&side_key) {
+                for comment in comments_by_key.get(&side_key).into_iter().flatten() {
                     render_comment_chip(comment, side_key, gutter_width, pane_width, lines, keys);
                 }
                 if let Some(input) = overlay.active_input.as_ref().filter(|i| i.key == side_key) {
@@ -1520,16 +1520,16 @@ fn status_badge(status: FileStatus) -> (&'static str, Color) {
 }
 
 /// Index `comments` by `LineKey` for O(1) chip lookup during row
-/// emission. Used only inside `build_pane_lines`.
+/// emission. Multiple comments can share a key when an outdated thread
+/// is re-placed onto a surviving line that already carries one, so each
+/// key maps to a list rendered top-to-bottom in insertion order.
 fn index_comments_by_key<'a>(
     comments: &[&'a HunkComment],
-) -> std::collections::HashMap<LineKey, &'a HunkComment> {
-    let mut map = std::collections::HashMap::with_capacity(comments.len());
+) -> std::collections::HashMap<LineKey, Vec<&'a HunkComment>> {
+    let mut map: std::collections::HashMap<LineKey, Vec<&'a HunkComment>> =
+        std::collections::HashMap::with_capacity(comments.len());
     for c in comments {
-        // Last-write-wins on duplicate keys (which shouldn't happen -
-        // saving a comment on a line that already has one replaces
-        // the existing entry - but stay defensive).
-        map.insert(c.key, *c);
+        map.entry(c.key).or_default().push(*c);
     }
     map
 }
@@ -2637,6 +2637,18 @@ mod tests {
             "resolved one-liner; got: {text}"
         );
         assert!(text.contains("[o] reopen"), "reopen hint present");
+    }
+
+    #[test]
+    fn multiple_comments_on_one_line_all_index() {
+        // An outdated thread re-placed onto a line that already carries a
+        // comment must not clobber it - both live under the shared key.
+        let a = chip_comment(5, "first", Some(ReviewStatus::Open));
+        let b = chip_comment(5, "drifted here", Some(ReviewStatus::Outdated));
+        let refs = vec![&a, &b];
+        let map = index_comments_by_key(&refs);
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        assert_eq!(map.get(&key).map(Vec::len), Some(2), "both comments indexed at the shared key");
     }
 
     #[test]
