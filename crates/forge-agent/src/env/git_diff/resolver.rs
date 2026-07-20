@@ -250,6 +250,64 @@ mod tests {
     }
 
     #[test]
+    fn moved_at_window_boundary_is_moved_beyond_is_outdated() {
+        let a = anchor("src/x.rs", ReviewSide::New, 10, "moved_line", &[]);
+        // Distance 25 (10 -> 35): at the window edge, still re-anchors.
+        let at_edge = vec![file("src/x.rs", vec![new_line("moved_line", 35)])];
+        assert!(
+            matches!(resolve_anchor(&a, &at_edge), AnchorResolution::Moved { .. }),
+            "distance 25 (== REANCHOR_WINDOW) re-anchors",
+        );
+        // Distance 26 (10 -> 36): one past the edge, too far.
+        let past_edge = vec![file("src/x.rs", vec![new_line("moved_line", 36)])];
+        assert_eq!(
+            resolve_anchor(&a, &past_edge),
+            AnchorResolution::Outdated,
+            "distance 26 is too far"
+        );
+    }
+
+    #[test]
+    fn resolves_in_a_later_file_and_later_hunk() {
+        // file_idx 1: the target lives in the second file.
+        let files = vec![
+            file("a.rs", vec![new_line("other", 1)]),
+            file("b.rs", vec![new_line("target", 5)]),
+        ];
+        let a = anchor("b.rs", ReviewSide::New, 5, "target", &[]);
+        assert_eq!(
+            resolve_anchor(&a, &files),
+            AnchorResolution::InPlace { file_idx: 1, hunk_idx: 0, line_idx: 0 },
+        );
+        // hunk_idx 1: the target lives in the second hunk.
+        let two_hunk = vec![FileHunks {
+            path: "c.rs".to_owned(),
+            status: FileStatus::Modified,
+            hunks: vec![
+                Hunk {
+                    old_start: 1,
+                    old_count: 0,
+                    new_start: 1,
+                    new_count: 0,
+                    lines: vec![new_line("h0", 1)],
+                },
+                Hunk {
+                    old_start: 10,
+                    old_count: 0,
+                    new_start: 10,
+                    new_count: 0,
+                    lines: vec![new_line("h1", 10)],
+                },
+            ],
+        }];
+        let b = anchor("c.rs", ReviewSide::New, 10, "h1", &[]);
+        assert_eq!(
+            resolve_anchor(&b, &two_hunk),
+            AnchorResolution::InPlace { file_idx: 0, hunk_idx: 1, line_idx: 0 },
+        );
+    }
+
+    #[test]
     fn old_side_anchor_resolves_against_old_line_numbers() {
         let files = vec![file(
             "src/x.rs",

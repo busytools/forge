@@ -4744,4 +4744,65 @@ mod tests {
         );
         assert!(reloaded.iter().any(|t| t.id == "b"), "the HEAD-target thread is preserved");
     }
+
+    #[test]
+    fn r_and_o_keys_resolve_and_reopen_via_handle_key() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = 1;", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        with_editor(&mut overlay, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }, "note");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('r')));
+        assert_eq!(focused_status(&app), ReviewStatus::Resolved, "r resolves through handle_key");
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('o')));
+        assert_eq!(focused_status(&app), ReviewStatus::Open, "o reopens through handle_key");
+    }
+
+    #[test]
+    fn resolve_flips_an_outdated_thread_to_resolved() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = 1;", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        with_editor(&mut overlay, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }, "note");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+        // Simulate the thread having drifted to Outdated.
+        if let Some(o) = app.diff_overlay.as_mut()
+            && let Some(thread) = o.comments[0].thread.as_mut()
+        {
+            thread.status = ReviewStatus::Outdated;
+        }
+        resolve_focused_thread(&mut app);
+        assert_eq!(focused_status(&app), ReviewStatus::Resolved, "outdated resolves to resolved");
+    }
+
+    #[test]
+    fn force_clear_keeps_persisted_threads_in_redb() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = 1;", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        with_editor(&mut overlay, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }, "note");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+        app.active_view = crate::app::view::ActiveView::Diff;
+
+        // A session-swap force-clear drops the overlay without going
+        // through close_with_submit; the persisted thread must survive.
+        crate::app::view::set_active_view(&mut app, crate::app::view::ActiveView::Launchpad);
+        assert!(app.diff_overlay.is_none(), "overlay force-cleared");
+        let ws = app.workspace.clone().expect("ws");
+        assert_eq!(
+            ws.load_review_threads("forge", "feat").len(),
+            1,
+            "the persisted thread survives the force-clear",
+        );
+    }
 }
