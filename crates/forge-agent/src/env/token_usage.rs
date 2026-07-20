@@ -208,6 +208,7 @@ pub fn parse_file(path: &Path, tz: &Tz) -> Option<FileUsageSummary> {
     let mut by_model_day: BTreeMap<String, BTreeMap<String, TokenCounts>> = BTreeMap::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut read_error_logged = false;
+    let mut timestamp_error_logged = false;
     for line in reader.lines() {
         let line = match line {
             Ok(line) => line,
@@ -246,6 +247,17 @@ pub fn parse_file(path: &Path, tz: &Tz) -> Option<FileUsageSummary> {
             continue;
         }
         let Some(day) = calendar_day(&timestamp, tz) else {
+            // A strict rfc3339 parse drops off-spec timestamps; warn once
+            // per file so a systemic format drift is greppable rather than
+            // silently rendering /usage all-zero.
+            if !timestamp_error_logged {
+                tracing::warn!(
+                    target: "forge_agent::env::token_usage",
+                    path = %path.display(),
+                    "skipping a record with an unparseable timestamp; this file's usage may undercount",
+                );
+                timestamp_error_logged = true;
+            }
             continue;
         };
         by_model_day.entry(model).or_default().entry(day).or_default().add(&usage.into_counts());
@@ -657,6 +669,33 @@ mod tests {
         let summary = parse_file(&path, utc()).expect("parse");
         // The unreadable middle line is skipped, not treated as EOF, so
         // the record after it still counts.
+        assert_eq!(day(&summary, "m", "2026-07-08").output, 15);
+    }
+
+    #[test]
+    fn parse_file_skips_a_record_with_an_unparseable_timestamp() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let dir = td.path().join("-slug");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let rec = |id: &str, ts: &str, out: u64| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"{ts}","message":{{"id":"{id}","model":"m","usage":{{"output_tokens":{out}}}}}}}"#
+            )
+        };
+        let path = dir.join("s.jsonl");
+        std::fs::write(
+            &path,
+            [
+                rec("a", "2026-07-08T00:00:00Z", 10),
+                rec("b", "not-a-timestamp", 99),
+                rec("c", "2026-07-08T01:00:00Z", 5),
+            ]
+            .join("\n"),
+        )
+        .expect("write");
+
+        let summary = parse_file(&path, utc()).expect("parse");
+        // The off-spec-timestamp record is dropped; its siblings still count.
         assert_eq!(day(&summary, "m", "2026-07-08").output, 15);
     }
 
