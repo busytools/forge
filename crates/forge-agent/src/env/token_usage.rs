@@ -178,8 +178,26 @@ pub fn parse_file(path: &Path) -> Option<FileUsageSummary> {
     let reader = std::io::BufReader::new(file);
     let mut by_model_day: BTreeMap<String, BTreeMap<String, TokenCounts>> = BTreeMap::new();
     let mut seen: HashSet<String> = HashSet::new();
+    let mut read_error_logged = false;
     for line in reader.lines() {
-        let Ok(line) = line else { break };
+        let line = match line {
+            Ok(line) => line,
+            // A single bad line (e.g. invalid UTF-8) must not truncate the
+            // rest of the file - that would cache an undercount. Skip it
+            // and warn once per file so the loss is greppable.
+            Err(error) => {
+                if !read_error_logged {
+                    tracing::warn!(
+                        target: "forge_agent::env::token_usage",
+                        %error,
+                        path = %path.display(),
+                        "skipping an unreadable line; this file's usage may undercount",
+                    );
+                    read_error_logged = true;
+                }
+                continue;
+            }
+        };
         let Ok(record) = serde_json::from_str::<Record>(&line) else {
             continue;
         };
@@ -576,6 +594,31 @@ mod tests {
         let flat_fallback = day(&summary, "m", "2026-07-09");
         assert_eq!(flat_fallback.cache_write_1h, 0);
         assert_eq!(flat_fallback.cache_write_5m, 50, "flat total falls back to the 5m tier");
+    }
+
+    #[test]
+    fn parse_file_skips_an_unreadable_line_without_truncating() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let dir = td.path().join("-slug");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let record = |id: &str, out: u8| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"2026-07-08T00:00:00Z","message":{{"id":"{id}","model":"m","usage":{{"output_tokens":{out}}}}}}}"#
+            )
+            .into_bytes()
+        };
+        let mut bytes = record("a", 10);
+        bytes.push(b'\n');
+        bytes.extend_from_slice(&[0xff, 0xfe, 0xff]); // invalid UTF-8 line
+        bytes.push(b'\n');
+        bytes.extend_from_slice(&record("b", 5));
+        let path = dir.join("s.jsonl");
+        std::fs::write(&path, bytes).expect("write");
+
+        let summary = parse_file(&path).expect("parse");
+        // The unreadable middle line is skipped, not treated as EOF, so
+        // the record after it still counts.
+        assert_eq!(day(&summary, "m", "2026-07-08").output, 15);
     }
 
     #[test]
