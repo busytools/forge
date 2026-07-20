@@ -168,8 +168,17 @@ pub struct FileUsageSummary {
 /// per-file message-id dedup can't catch across files.
 pub fn usage_files(projects_dir: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    let Ok(project_dirs) = std::fs::read_dir(projects_dir) else {
-        return files;
+    let project_dirs = match std::fs::read_dir(projects_dir) {
+        Ok(dirs) => dirs,
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_agent::env::token_usage",
+                %error,
+                path = %projects_dir.display(),
+                "reading the projects dir failed; /usage renders empty",
+            );
+            return files;
+        }
     };
     for project in project_dirs.flatten() {
         if !project.file_type().is_ok_and(|t| t.is_dir()) {
