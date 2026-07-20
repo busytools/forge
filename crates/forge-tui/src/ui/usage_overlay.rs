@@ -229,7 +229,7 @@ fn data_row(row: &UsageRow, group: Grouping, is_total: bool) -> Line<'static> {
         accent_bold()
     } else if row.cost_usd <= 0.0 {
         dim()
-    } else if is_gpt(&row.label) {
+    } else if group == Grouping::Model && is_gpt(&row.label) {
         Style::default().fg(theme::EXPERIMENTAL)
     } else {
         accent()
@@ -422,6 +422,27 @@ mod tests {
     fn gpt_row_is_flagged_approx_in_model_view() {
         let line = data_row(&row("gpt-5-codex", 100, 100, 3.6), Grouping::Model, false);
         assert!(text(&line).contains("(GPT approx)"));
+    }
+
+    fn cost_color(line: &Line) -> Option<ratatui::style::Color> {
+        line.spans.iter().find(|span| span.content.contains('$')).and_then(|span| span.style.fg)
+    }
+
+    #[test]
+    fn gpt_amber_cost_is_model_view_only() {
+        let gpt = row("gpt-5-codex", 100, 100, 3.6);
+        assert_eq!(
+            cost_color(&data_row(&gpt, Grouping::Model, false)),
+            Some(theme::EXPERIMENTAL),
+            "GPT model rows are amber",
+        );
+        // A project that happens to be named like a GPT id must not go
+        // amber - the flag is a per-model approximation, not per-project.
+        assert_eq!(
+            cost_color(&data_row(&gpt, Grouping::Project, false)),
+            Some(theme::RUST_ORANGE),
+            "project rows keep the normal cost color",
+        );
     }
 
     #[test]
