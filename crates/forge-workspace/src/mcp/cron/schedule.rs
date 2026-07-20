@@ -92,6 +92,7 @@ mod tests {
             kind: CronKind::Recurring("0 9 * * *".to_owned()),
             prompt: "p".to_owned(),
             created_at: epoch(0),
+            description: None,
             last_fire: None,
             next_fire: epoch(next_fire),
             team_role: None,

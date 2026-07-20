@@ -21,6 +21,7 @@ pub(crate) mod page;
 pub(crate) mod peer_block;
 pub mod projects_pane;
 pub(crate) mod prompt;
+pub(crate) mod schedule_format;
 pub(crate) mod spinner;
 pub(crate) mod spinner_picker;
 pub(crate) mod theme;

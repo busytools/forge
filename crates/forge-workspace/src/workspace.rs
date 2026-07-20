@@ -3513,7 +3513,7 @@ impl Workspace {
     /// windows priced from the bundled table. Does blocking file IO, so
     /// callers run it off the UI thread.
     pub fn scan_usage(&self) -> forge_primitives::token_usage::UsageReport {
-        use forge_agent::env::token_usage;
+        use forge_agent::env::{timezone, token_usage};
         use time_tz::OffsetDateTimeExt;
         // Per-account config dirs symlink their `projects` to one shared
         // pool; canonicalize so the scan reads it once, not once each.
@@ -3521,7 +3521,7 @@ impl Workspace {
         let projects_dir = std::fs::canonicalize(&projects_dir).unwrap_or(projects_dir);
         // Resolve the system timezone once so days bucket on the user's
         // wall clock, and derive "now" in the same zone for the windows.
-        let tz = token_usage::system_timezone();
+        let tz = timezone::system_timezone();
         let summaries: Vec<_> = token_usage::usage_files(&projects_dir)
             .iter()
             .filter_map(|path| self.usage_summary_for(path, tz))
@@ -6130,6 +6130,7 @@ mod tests {
             kind: CronKind::Recurring("0 9 * * *".to_owned()),
             prompt: "stand-up".to_owned(),
             created_at: std::time::SystemTime::UNIX_EPOCH,
+            description: None,
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: None,
@@ -6536,6 +6537,7 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
             kind: forge_primitives::CronKind::Recurring("0 9 * * *".to_owned()),
             prompt: "p".to_owned(),
             created_at: std::time::SystemTime::UNIX_EPOCH,
+            description: None,
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: team_role.map(str::to_owned),
@@ -7134,6 +7136,7 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
             kind: CronKind::Recurring("*/5 * * * *".to_owned()),
             prompt: "p".to_owned(),
             created_at: fired,
+            description: None,
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: None,
@@ -7150,6 +7153,7 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
             kind: CronKind::Once(std::time::SystemTime::UNIX_EPOCH),
             prompt: "p".to_owned(),
             created_at: fired,
+            description: None,
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: None,
@@ -7181,6 +7185,7 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
             kind: CronKind::Recurring("*/5 * * * *".to_owned()),
             prompt: "morning".to_owned(),
             created_at: past,
+            description: None,
             last_fire: None,
             next_fire: past,
             team_role: None,
@@ -7191,6 +7196,7 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
             kind: CronKind::Recurring("*/5 * * * *".to_owned()),
             prompt: "later".to_owned(),
             created_at: past,
+            description: None,
             last_fire: None,
             next_fire: far_future,
             team_role: None,
@@ -7252,6 +7258,7 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
                 kind: CronKind::Recurring("*/5 * * * *".to_owned()),
                 prompt: "morning".to_owned(),
                 created_at: past,
+                description: None,
                 last_fire: None,
                 next_fire: past,
                 team_role: None,
@@ -7262,6 +7269,7 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
                 kind: CronKind::Once(past),
                 prompt: "deploy".to_owned(),
                 created_at: past,
+                description: None,
                 last_fire: None,
                 next_fire: past,
                 team_role: None,
@@ -7272,6 +7280,7 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
                 kind: CronKind::Recurring("*/5 * * * *".to_owned()),
                 prompt: "later".to_owned(),
                 created_at: past,
+                description: None,
                 last_fire: None,
                 next_fire: far_future,
                 team_role: None,
@@ -7622,6 +7631,7 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
             kind: CronKind::Recurring("*/5 * * * *".to_owned()),
             prompt: prompt.to_owned(),
             created_at: std::time::SystemTime::UNIX_EPOCH,
+            description: None,
             last_fire: None,
             next_fire,
             team_role: None,
@@ -7661,6 +7671,7 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
             kind: CronKind::Recurring("*/5 * * * *".to_owned()),
             prompt: "p".to_owned(),
             created_at: std::time::SystemTime::UNIX_EPOCH,
+            description: None,
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH, // overdue -> due now
             team_role: None,
@@ -7694,6 +7705,7 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
             kind: CronKind::Recurring("0 0 30 2 *".to_owned()),
             prompt: "p".to_owned(),
             created_at: std::time::SystemTime::UNIX_EPOCH,
+            description: None,
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: None,
