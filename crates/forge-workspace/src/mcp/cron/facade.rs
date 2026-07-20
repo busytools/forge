@@ -40,12 +40,15 @@ pub(crate) enum CronDeleteError {
 /// direct state writes with no async handler to await.
 pub(crate) trait CronFacade: Send + Sync {
     /// Validate + register a cron for the caller's project: compute
-    /// `next_fire`, persist, and return the new entry.
+    /// `next_fire`, persist, and return the new entry. `description` is
+    /// the caller-supplied human summary (already trimmed to `None` when
+    /// blank).
     fn create_cron(
         &self,
         caller: &SessionKey,
         kind: CronKind,
         prompt: String,
+        description: Option<String>,
     ) -> Result<CronEntry, CronCreateError>;
 
     /// The crons registered for the caller's project.
@@ -75,6 +78,7 @@ impl CronFacade for ProdCronFacade {
         caller: &SessionKey,
         kind: CronKind,
         prompt: String,
+        description: Option<String>,
     ) -> Result<CronEntry, CronCreateError> {
         let ws = self.workspace.upgrade().ok_or(CronCreateError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(CronCreateError::UnknownCallerProject)?;
@@ -91,6 +95,7 @@ impl CronFacade for ProdCronFacade {
             project_name: cx.project_name,
             kind,
             prompt,
+            description,
             created_at: now,
             last_fire: None,
             next_fire,
@@ -118,6 +123,10 @@ impl CronFacade for ProdCronFacade {
     }
 }
 
+/// One recorded `create_cron` call: caller, kind, prompt, description.
+#[cfg(test)]
+type CreateCall = (SessionKey, CronKind, String, Option<String>);
+
 /// Records calls + returns preloaded results so the tool tests can assert
 /// the tool correctly parses args, resolves the caller, and surfaces
 /// facade results/errors - without a real workspace.
@@ -125,7 +134,7 @@ impl CronFacade for ProdCronFacade {
 #[derive(Default)]
 pub(crate) struct MockCronFacade {
     pub crons: parking_lot::Mutex<Vec<CronEntry>>,
-    pub create_calls: parking_lot::Mutex<Vec<(SessionKey, CronKind, String)>>,
+    pub create_calls: parking_lot::Mutex<Vec<CreateCall>>,
     pub create_result: parking_lot::Mutex<Option<Result<CronEntry, CronCreateError>>>,
     pub delete_calls: parking_lot::Mutex<Vec<(SessionKey, CronId)>>,
     pub delete_result: parking_lot::Mutex<Option<Result<bool, CronDeleteError>>>,
@@ -148,8 +157,14 @@ impl CronFacade for MockCronFacade {
         caller: &SessionKey,
         kind: CronKind,
         prompt: String,
+        description: Option<String>,
     ) -> Result<CronEntry, CronCreateError> {
-        self.create_calls.lock().push((caller.clone(), kind.clone(), prompt.clone()));
+        self.create_calls.lock().push((
+            caller.clone(),
+            kind.clone(),
+            prompt.clone(),
+            description.clone(),
+        ));
         if let Some(preloaded) = self.create_result.lock().clone() {
             return preloaded;
         }
@@ -158,6 +173,7 @@ impl CronFacade for MockCronFacade {
             project_name: "mock".to_owned(),
             kind,
             prompt,
+            description,
             created_at: SystemTime::UNIX_EPOCH,
             last_fire: None,
             next_fire: SystemTime::UNIX_EPOCH,
@@ -224,10 +240,18 @@ mod prod_facade_tests {
         let (_ws, facade, lead, worker) = fixture();
 
         let (lk, lp) = daily("lead-standup");
-        let lead_cron = facade.create_cron(&lead, lk, lp).expect("lead create");
+        let lead_cron = facade
+            .create_cron(&lead, lk, lp, Some("Lead stand-up".to_owned()))
+            .expect("lead create");
         assert_eq!(lead_cron.team_role, None, "a lead cron is owner-less");
+        assert_eq!(
+            lead_cron.description.as_deref(),
+            Some("Lead stand-up"),
+            "the supplied description persists on the entry",
+        );
         let (wk, wp) = daily("worker-standup");
-        let worker_cron = facade.create_cron(&worker, wk, wp).expect("worker create");
+        let worker_cron = facade.create_cron(&worker, wk, wp, None).expect("worker create");
+        assert_eq!(worker_cron.description, None, "no description stays None");
         assert_eq!(
             worker_cron.team_role.as_deref(),
             Some("reviewer"),

@@ -193,6 +193,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         sessions,
         active_session_key: Some(pre_connect_key),
         forge_crons: Vec::new(),
+        forge_schedule_rows: Vec::new(),
         gotify_subs: Vec::new(),
         gotify_connected: false,
         help_view: HelpView::Keys,

@@ -584,7 +584,7 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // explicit `CronDelete`. The MONITORS section is gone; Monitor
     // tool calls now render their live tail directly in chat (see
     // `ui::message::render_lifecycle_one_liner`'s `"Monitor"` arm).
-    if !app.schedules().is_empty() || !app.forge_crons.is_empty() {
+    if !app.schedules().is_empty() || !app.forge_schedule_rows.is_empty() {
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
@@ -1488,11 +1488,13 @@ const TASKS_MAX: usize = 5;
 fn append_schedules_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // Two sources share this section: the chat-parsed cloud routines
     // (`ScheduleWakeup` / `CronCreate`, per-session) and the durable
-    // forge crons (`mcp__forge__cron`, sourced from the workspace via
-    // the cached `app.forge_crons` snapshot). Forge crons carry a
-    // concrete `next_fire`, so they render with a live countdown.
+    // forge crons (`mcp__forge__cron`). The forge-cron rows are humanized
+    // once per ~1s tick into `app.forge_schedule_rows`, so the render
+    // does no timezone syscall or humanize allocation per frame; the live
+    // countdown still recomputes from each row's `fire_at` below.
+    let now = std::time::SystemTime::now();
     let mut entries: Vec<crate::app::ScheduleEntry> = app.schedules().to_vec();
-    entries.extend(app.forge_crons.iter().map(forge_cron_to_schedule_entry));
+    entries.extend(app.forge_schedule_rows.iter().cloned());
     if entries.is_empty() {
         return;
     }
@@ -1503,7 +1505,6 @@ fn append_schedules_section(lines: &mut Vec<Line<'static>>, app: &App, width: u1
     )));
     lines.push(Line::default());
 
-    let now = std::time::SystemTime::now();
     let inner_width = usize::from(width);
     let last_idx = entries.len().saturating_sub(1);
     for (idx, entry) in entries.iter().enumerate() {
@@ -1654,31 +1655,46 @@ fn wrap_app_list(names: &[String], max_width: usize) -> Vec<String> {
     lines
 }
 
-/// Build a SCHEDULES row from a durable forge cron. Recurring crons show
-/// their expression; run-once crons show `once`. `fire_at` carries the
-/// concrete `next_fire` so [`append_schedule_row`] renders a live
-/// countdown, matching the wakeup rows.
-fn forge_cron_to_schedule_entry(cron: &forge_primitives::CronEntry) -> crate::app::ScheduleEntry {
+/// Build a SCHEDULES row from a durable forge cron. The headline is the
+/// cron's description (falling back to the prompt's first line); the
+/// schedule is humanized (`daily at 09:00` for recurring, a local
+/// wall-clock time for run-once). `fire_at` carries the concrete
+/// `next_fire` so [`append_schedule_row`] renders a live countdown.
+pub(crate) fn forge_cron_to_schedule_entry(
+    cron: &forge_primitives::CronEntry,
+    now: std::time::SystemTime,
+    tz: &time_tz::Tz,
+) -> crate::app::ScheduleEntry {
+    use crate::ui::schedule_format::{humanize_cron, humanize_once};
     use forge_primitives::cron::CronKind;
-    let (recurring, label) = match &cron.kind {
-        CronKind::Recurring(expr) => (true, expr.clone()),
-        CronKind::Once(_) => (false, "once".to_owned()),
+    let (recurring, schedule) = match &cron.kind {
+        CronKind::Recurring(expr) => (true, humanize_cron(expr)),
+        CronKind::Once(at) => (false, humanize_once(*at, now, tz)),
     };
     crate::app::ScheduleEntry {
         key: cron.id.as_str().to_owned(),
         cron_id: Some(cron.id.as_str().to_owned()),
         kind: crate::app::ScheduleKind::Cron { recurring, durable: true },
-        label,
+        label: first_line(&cron.prompt),
+        description: cron.description.clone(),
+        schedule,
         fire_at: Some(cron.next_fire),
         created_at: cron.created_at,
     }
 }
 
-/// Render one SCHEDULES row: glyph + label + trailing badge.
-/// Wakeups carry a live `in <countdown>` badge; crons carry their
-/// recurrence label (`recurring` / `one-shot`). Layout mirrors
-/// `append_workflow_row`'s chrome accounting + right-justified
-/// trailing badge (the #281 pad-spacer pattern).
+/// First non-blank line of a prompt, trimmed - the headline fallback
+/// when a cron carries no description.
+pub(crate) fn first_line(prompt: &str) -> String {
+    prompt.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default().to_owned()
+}
+
+/// Render a SCHEDULES row. A cron with a headline (its description, else
+/// the prompt's first line) renders TWO lines: the headline, then a dim
+/// `<humanized schedule> · <badge>` sub-line. Wakeups and headline-less
+/// crons render one line (text + trailing badge). The badge is the live
+/// `in <countdown>` for wakeups and one-shots, or `recurring` for a
+/// repeating cron whose schedule already conveys the timing.
 fn append_schedule_row(
     lines: &mut Vec<Line<'static>>,
     entry: &crate::app::ScheduleEntry,
@@ -1694,28 +1710,53 @@ fn append_schedule_row(
         ScheduleKind::Wakeup => "\u{23f0}",
         ScheduleKind::Cron { .. } => "\u{25f4}",
     };
-    // A concrete next-fire time renders as a live countdown (wakeups and
-    // durable forge crons); cloud crons carry no fire time, so they fall
-    // back to the recurrence label.
-    let trailing = match entry.fire_at.and_then(|t| t.duration_since(now).ok()) {
-        Some(d) => format!("in {}", fmt_countdown(d)),
-        None => match entry.kind {
-            ScheduleKind::Wakeup => "due".to_owned(),
-            ScheduleKind::Cron { recurring: true, .. } => "recurring".to_owned(),
-            ScheduleKind::Cron { recurring: false, .. } => "one-shot".to_owned(),
-        },
+    let countdown = entry.fire_at.and_then(|t| t.duration_since(now).ok());
+    let badge = match entry.kind {
+        // A recurring cron's schedule ("daily at 09:00") carries the
+        // timing, so the badge just marks it as repeating.
+        ScheduleKind::Cron { recurring: true, .. } => "recurring".to_owned(),
+        ScheduleKind::Cron { recurring: false, .. } => {
+            countdown.map_or_else(|| "one-shot".to_owned(), |d| format!("in {}", fmt_countdown(d)))
+        }
+        ScheduleKind::Wakeup => {
+            countdown.map_or_else(|| "due".to_owned(), |d| format!("in {}", fmt_countdown(d)))
+        }
     };
-    let header_chrome = usize::from(PANE_PAD)
-        + 1                                                  // glyph cell
-        + 1                                                  // space after glyph
-        + 3                                                  // " · " separator
-        + trailing.chars().count()                           // trailing badge
-        + usize::from(PANE_PAD); // 1-col right gutter
-    let header_budget = row_text_budget(inner_width, header_chrome);
-    let headline = truncate_or_pass(&entry.label, header_budget);
-    // Right-justify the trailing badge the same way MONITORS /
-    // WORKFLOWS do (#281's pad-spacer pattern).
-    let pad = header_budget.saturating_sub(headline.chars().count());
+
+    let headline = match entry.kind {
+        ScheduleKind::Cron { .. } => {
+            entry.description.as_deref().map(str::trim).filter(|s| !s.is_empty()).or_else(|| {
+                let l = entry.label.trim();
+                (!l.is_empty()).then_some(l)
+            })
+        }
+        ScheduleKind::Wakeup => None,
+    };
+
+    if let Some(head) = headline {
+        append_schedule_two_line(lines, glyph, head, &entry.schedule, &badge, inner_width);
+    } else {
+        let text = match entry.kind {
+            ScheduleKind::Wakeup => entry.label.as_str(),
+            ScheduleKind::Cron { .. } => entry.schedule.as_str(),
+        };
+        append_schedule_one_line(lines, glyph, text, &badge, inner_width);
+    }
+}
+
+/// One-line row: glyph + bold text + right-justified `· <badge>`
+/// (#281's pad-spacer pattern). Used for wakeups and headline-less crons.
+fn append_schedule_one_line(
+    lines: &mut Vec<Line<'static>>,
+    glyph: &str,
+    text: &str,
+    badge: &str,
+    inner_width: usize,
+) {
+    let chrome = usize::from(PANE_PAD) + 1 + 1 + 3 + badge.chars().count() + usize::from(PANE_PAD);
+    let budget = row_text_budget(inner_width, chrome);
+    let headline = truncate_or_pass(text, budget);
+    let pad = budget.saturating_sub(headline.chars().count());
     lines.push(Line::from(vec![
         Span::raw(" ".repeat(usize::from(PANE_PAD))),
         Span::styled(glyph.to_owned(), Style::default().fg(theme::RUST_ORANGE)),
@@ -1723,7 +1764,43 @@ fn append_schedule_row(
         Span::styled(headline, Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(" ".repeat(pad)),
         Span::styled(" \u{00B7} ".to_owned(), Style::default().fg(theme::DIM)),
-        Span::styled(trailing, Style::default().fg(theme::DIM)),
+        Span::styled(badge.to_owned(), Style::default().fg(theme::DIM)),
+    ]));
+}
+
+/// Two-line cron row: glyph + bold headline, then a dim indented
+/// `<schedule> · <badge>` sub-line with the badge right-justified.
+fn append_schedule_two_line(
+    lines: &mut Vec<Line<'static>>,
+    glyph: &str,
+    headline: &str,
+    schedule: &str,
+    badge: &str,
+    inner_width: usize,
+) {
+    let head_chrome = usize::from(PANE_PAD) + 1 + 1 + usize::from(PANE_PAD);
+    let head_budget = row_text_budget(inner_width, head_chrome);
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(usize::from(PANE_PAD))),
+        Span::styled(glyph.to_owned(), Style::default().fg(theme::RUST_ORANGE)),
+        Span::raw(" ".to_owned()),
+        Span::styled(
+            truncate_or_pass(headline, head_budget),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    let indent = usize::from(PANE_PAD) + 2;
+    let chrome = indent + 3 + badge.chars().count() + usize::from(PANE_PAD);
+    let budget = row_text_budget(inner_width, chrome);
+    let sched = truncate_or_pass(schedule, budget);
+    let pad = budget.saturating_sub(sched.chars().count());
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(indent)),
+        Span::styled(sched, Style::default().fg(theme::DIM)),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(" \u{00B7} ".to_owned(), Style::default().fg(theme::DIM)),
+        Span::styled(badge.to_owned(), Style::default().fg(theme::DIM)),
     ]));
 }
 
@@ -2395,12 +2472,15 @@ mod tests {
             kind: CronKind::Recurring("0 9 * * *".to_owned()),
             prompt: "p".to_owned(),
             created_at: created,
+            description: None,
             last_fire: None,
             next_fire: next,
             team_role: None,
         };
-        let entry = forge_cron_to_schedule_entry(&cron);
-        assert_eq!(entry.label, "0 9 * * *", "recurring cron shows its expression");
+        let entry = forge_cron_to_schedule_entry(&cron, next, time_tz::timezones::db::UTC);
+        assert_eq!(entry.schedule, "daily at 09:00", "recurring cron humanizes its expression");
+        assert_eq!(entry.label, "p", "the prompt first line is the headline fallback");
+        assert_eq!(entry.description, None, "no description on this cron");
         assert_eq!(entry.fire_at, Some(next), "next_fire carried for the countdown");
         assert!(matches!(
             entry.kind,
@@ -2410,67 +2490,207 @@ mod tests {
     }
 
     #[test]
-    fn forge_cron_to_schedule_entry_run_once_labels_once() {
+    fn forge_cron_to_schedule_entry_run_once_humanizes_the_time() {
         use forge_primitives::cron::{CronEntry, CronId, CronKind};
         use std::time::{Duration, SystemTime};
+        // 2000s past the epoch is 00:33 UTC on the epoch day.
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(2000);
         let cron = CronEntry {
             id: CronId::from("o1"),
             project_name: "forge".to_owned(),
             kind: CronKind::Once(at),
-            prompt: "p".to_owned(),
+            prompt: "deploy staging\nsecond line".to_owned(),
             created_at: SystemTime::UNIX_EPOCH,
+            description: Some("Staging deploy".to_owned()),
             last_fire: None,
             next_fire: at,
             team_role: None,
         };
-        let entry = forge_cron_to_schedule_entry(&cron);
-        assert_eq!(entry.label, "once", "run-once cron labels as `once`");
+        let entry = forge_cron_to_schedule_entry(&cron, at, time_tz::timezones::db::UTC);
+        assert_eq!(entry.schedule, "today 00:33", "run-once cron shows a local wall-clock time");
+        assert_eq!(entry.description.as_deref(), Some("Staging deploy"));
+        assert_eq!(entry.label, "deploy staging", "label is the prompt's first line");
         assert!(matches!(entry.kind, crate::app::ScheduleKind::Cron { recurring: false, .. }));
     }
 
+    fn cron_entry(
+        recurring: bool,
+        label: &str,
+        description: Option<&str>,
+        schedule: &str,
+        fire_at: Option<std::time::SystemTime>,
+    ) -> crate::app::ScheduleEntry {
+        crate::app::ScheduleEntry {
+            key: "c1".to_owned(),
+            cron_id: Some("c1".to_owned()),
+            kind: crate::app::ScheduleKind::Cron { recurring, durable: true },
+            label: label.to_owned(),
+            description: description.map(str::to_owned),
+            schedule: schedule.to_owned(),
+            fire_at,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+        }
+    }
+
     #[test]
-    fn forge_cron_row_renders_expr_and_live_countdown() {
+    fn recurring_cron_row_is_two_lines_headline_then_schedule_and_recurring_badge() {
+        use std::time::{Duration, SystemTime};
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        let entry = cron_entry(
+            true,
+            "stand-up",
+            Some("Morning hub summary"),
+            "daily at 09:00",
+            Some(now + Duration::from_secs(300)),
+        );
+        let mut lines = Vec::new();
+        append_schedule_row(&mut lines, &entry, now, 60);
+        assert_eq!(lines.len(), 2, "a described cron renders two lines");
+        let head = line_text(&lines[0]);
+        let sub = line_text(&lines[1]);
+        assert!(head.contains("Morning hub summary"), "line 1 is the description headline: {head}");
+        assert!(sub.contains("daily at 09:00"), "line 2 shows the humanized schedule: {sub}");
+        assert!(
+            sub.contains("recurring"),
+            "a recurring cron badges `recurring`, not a countdown: {sub}"
+        );
+        assert!(!sub.contains("in "), "no countdown on a recurring cron: {sub}");
+    }
+
+    #[test]
+    fn once_cron_row_shows_absolute_time_and_live_countdown() {
+        use std::time::{Duration, SystemTime};
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        let entry = cron_entry(
+            false,
+            "deploy",
+            Some("Staging deploy"),
+            "today 14:30",
+            Some(now + Duration::from_secs(300)),
+        );
+        let mut lines = Vec::new();
+        append_schedule_row(&mut lines, &entry, now, 60);
+        assert_eq!(lines.len(), 2);
+        assert!(line_text(&lines[0]).contains("Staging deploy"));
+        let sub = line_text(&lines[1]);
+        assert!(sub.contains("today 14:30"), "sub-line shows the absolute time: {sub}");
+        assert!(sub.contains("in 5m"), "a one-shot keeps its live countdown: {sub}");
+    }
+
+    #[test]
+    fn cron_row_without_description_falls_back_to_prompt_first_line() {
+        use std::time::{Duration, SystemTime};
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        let entry = cron_entry(
+            true,
+            "deploy staging",
+            None,
+            "weekdays at 09:00",
+            Some(now + Duration::from_secs(60)),
+        );
+        let mut lines = Vec::new();
+        append_schedule_row(&mut lines, &entry, now, 60);
+        assert_eq!(lines.len(), 2);
+        assert!(
+            line_text(&lines[0]).contains("deploy staging"),
+            "the prompt-derived label headlines when there is no description",
+        );
+        assert!(line_text(&lines[1]).contains("weekdays at 09:00"));
+    }
+
+    #[test]
+    fn wakeup_row_stays_one_line_with_reason_and_countdown() {
         use std::time::{Duration, SystemTime};
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
         let entry = crate::app::ScheduleEntry {
-            key: "c1".to_owned(),
-            cron_id: Some("c1".to_owned()),
-            kind: crate::app::ScheduleKind::Cron { recurring: true, durable: true },
-            label: "0 9 * * *".to_owned(),
-            fire_at: Some(now + Duration::from_secs(300)),
+            key: "w1".to_owned(),
+            cron_id: None,
+            kind: crate::app::ScheduleKind::Wakeup,
+            label: "watching CI run".to_owned(),
+            description: None,
+            schedule: String::new(),
+            fire_at: Some(now + Duration::from_secs(480)),
             created_at: now,
         };
         let mut lines = Vec::new();
         append_schedule_row(&mut lines, &entry, now, 60);
+        assert_eq!(lines.len(), 1, "wakeups remain a single line");
         let text = line_text(&lines[0]);
-        assert!(text.contains("0 9 * * *"), "row shows the cron expression: {text}");
-        assert!(text.contains("in 5m"), "row shows a live next-fire countdown: {text}");
+        assert!(text.contains("watching CI run"), "reason is the headline: {text}");
+        assert!(text.contains("in 8m"), "wakeup keeps its countdown: {text}");
     }
 
     #[test]
-    fn schedules_section_renders_forge_cron_row_with_countdown() {
+    fn headline_less_cloud_cron_renders_one_line_with_schedule() {
+        // A cloud CronCreate carries no description and no prompt, so the
+        // headline is empty and the row collapses to a single line showing
+        // the humanized schedule + badge.
+        use std::time::SystemTime;
+        let now = SystemTime::UNIX_EPOCH;
+        let entry = cron_entry(true, "", None, "every 5 minutes", None);
+        let mut lines = Vec::new();
+        append_schedule_row(&mut lines, &entry, now, 60);
+        assert_eq!(lines.len(), 1, "a headline-less cron is one line, not a blank headline");
+        let text = line_text(&lines[0]);
+        assert!(text.contains("every 5 minutes"), "the schedule is the row text: {text}");
+        assert!(text.contains("recurring"), "with its recurrence badge: {text}");
+    }
+
+    #[test]
+    fn two_line_cron_row_stays_within_a_narrow_pane() {
+        use std::time::{Duration, SystemTime};
+        let now = SystemTime::UNIX_EPOCH;
+        let entry = cron_entry(
+            false,
+            "prompt fallback headline that is far too long for the pane",
+            Some("An extremely long description headline that exceeds the pane budget"),
+            "an unusually long humanized schedule that also exceeds the width",
+            Some(now + Duration::from_secs(300)),
+        );
+        let width = 24usize;
+        let mut lines = Vec::new();
+        append_schedule_row(&mut lines, &entry, now, width);
+        assert_eq!(lines.len(), 2, "a described cron renders two lines");
+        for line in &lines {
+            let cols = line_text(line).chars().count();
+            assert!(
+                cols <= width,
+                "row overflows the {width}-col pane ({cols}): {:?}",
+                line_text(line)
+            );
+        }
+    }
+
+    #[test]
+    fn schedules_section_renders_forge_cron_row_humanized() {
         use forge_primitives::cron::{CronEntry, CronId, CronKind};
         use std::time::{Duration, SystemTime};
 
         let mut app = App::test_default();
-        app.forge_crons = vec![CronEntry {
+        let cron = CronEntry {
             id: CronId::from("c1"),
             project_name: "cronproj".to_owned(),
             kind: CronKind::Recurring("0 9 * * *".to_owned()),
             prompt: "stand-up".to_owned(),
             created_at: SystemTime::UNIX_EPOCH,
+            description: None,
             last_fire: None,
             next_fire: SystemTime::now() + Duration::from_secs(3600),
             team_role: None,
-        }];
+        };
+        app.forge_schedule_rows = vec![forge_cron_to_schedule_entry(
+            &cron,
+            SystemTime::now(),
+            time_tz::timezones::db::UTC,
+        )];
 
         let mut lines = Vec::new();
         append_schedules_section(&mut lines, &app, 60);
         let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(text.contains("SCHEDULES"), "section header renders: {text}");
-        assert!(text.contains("0 9 * * *"), "forge cron row shows its expression: {text}");
-        assert!(text.contains("in "), "forge cron row shows a live countdown: {text}");
+        assert!(text.contains("stand-up"), "the prompt-derived headline renders: {text}");
+        assert!(text.contains("daily at 09:00"), "forge cron row humanizes its schedule: {text}");
+        assert!(text.contains("recurring"), "a recurring cron badges recurring: {text}");
     }
 
     #[test]
@@ -2481,16 +2701,22 @@ mod tests {
         // Regression: the section gate must draw SCHEDULES from durable
         // forge crons even when the cloud-wakeup list is empty.
         let mut app = App::test_default();
-        app.forge_crons = vec![CronEntry {
+        let cron = CronEntry {
             id: CronId::from("c1"),
             project_name: "cronproj".to_owned(),
             kind: CronKind::Recurring("0 9 * * *".to_owned()),
             prompt: "stand-up".to_owned(),
             created_at: SystemTime::UNIX_EPOCH,
+            description: None,
             last_fire: None,
             next_fire: SystemTime::now() + Duration::from_secs(3600),
             team_role: None,
-        }];
+        };
+        app.forge_schedule_rows = vec![forge_cron_to_schedule_entry(
+            &cron,
+            SystemTime::now(),
+            time_tz::timezones::db::UTC,
+        )];
         assert!(app.schedules().is_empty(), "precondition: no cloud wakeups");
 
         let mut lines = Vec::new();
@@ -2500,7 +2726,7 @@ mod tests {
             text.contains("SCHEDULES"),
             "durable crons render SCHEDULES even with no cloud wakeups: {text}"
         );
-        assert!(text.contains("0 9 * * *"), "the cron row is present: {text}");
+        assert!(text.contains("daily at 09:00"), "the cron row is present: {text}");
     }
 
     #[test]

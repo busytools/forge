@@ -74,6 +74,11 @@ pub struct CronEntry {
     pub project_name: String,
     pub kind: CronKind,
     pub prompt: String,
+    /// Short human "what/why" for the job, supplied at `cron__create`.
+    /// `None` for legacy entries stored before this field existed; the
+    /// renderer falls back to the prompt's first line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub created_at: SystemTime,
     /// Last instant this cron actually fired. `None` until the first
     /// fire.
@@ -113,12 +118,14 @@ mod tests {
             project_name: "forge".to_owned(),
             kind: CronKind::Recurring("0 9 * * *".to_owned()),
             prompt: "stand-up summary".to_owned(),
+            description: Some("Morning hub summary".to_owned()),
             created_at: epoch(1_700_000_000),
             last_fire: None,
             next_fire: epoch(1_700_032_400),
             team_role: None,
         };
         let json = serde_json::to_string(&entry).expect("serialize");
+        assert!(json.contains("Morning hub summary"), "a set description serializes");
         let back: CronEntry = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(entry, back);
     }
@@ -130,13 +137,30 @@ mod tests {
             project_name: "airmail".to_owned(),
             kind: CronKind::Once(epoch(1_700_100_000)),
             prompt: "deploy".to_owned(),
+            description: None,
             created_at: epoch(1_700_000_000),
             last_fire: Some(epoch(1_700_050_000)),
             next_fire: epoch(1_700_100_000),
             team_role: None,
         };
         let json = serde_json::to_string(&entry).expect("serialize");
+        assert!(!json.contains("description"), "an absent description is skipped");
         let back: CronEntry = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(entry, back);
+    }
+
+    #[test]
+    fn legacy_entry_without_description_deserializes_to_none() {
+        // A cron persisted before `description` existed must still load.
+        let json = r#"{
+            "id": "legacy-1",
+            "project_name": "forge",
+            "kind": {"Recurring": "0 9 * * *"},
+            "prompt": "stand-up",
+            "created_at": {"secs_since_epoch": 1700000000, "nanos_since_epoch": 0},
+            "next_fire": {"secs_since_epoch": 1700032400, "nanos_since_epoch": 0}
+        }"#;
+        let back: CronEntry = serde_json::from_str(json).expect("legacy deserialize");
+        assert_eq!(back.description, None);
     }
 }
