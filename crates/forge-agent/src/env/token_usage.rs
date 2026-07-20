@@ -335,10 +335,11 @@ struct CacheCreation {
 }
 
 /// Roll per-file summaries up into the four windows the `/usage`
-/// overlay renders. Windows are UTC calendar periods relative to `now`:
-/// today, the current week (from Monday), the current month (from the
-/// 1st), and all-time. Each window carries both groupings and a total
-/// row, priced via `pricing` (an unpriced model contributes 0 cost).
+/// overlay renders. Windows are calendar periods relative to `now`, in
+/// the same local timezone the day buckets already use: today, the
+/// current week (from Monday), the current month (from the 1st), and
+/// all-time. Each window carries both groupings and a total row, priced
+/// via `pricing` (an unpriced model contributes 0 cost).
 pub fn roll_up(
     summaries: &[FileUsageSummary],
     pricing: &PricingTable,
