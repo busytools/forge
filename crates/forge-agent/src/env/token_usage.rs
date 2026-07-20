@@ -799,4 +799,20 @@ mod tests {
         assert_eq!(projects.iter().find(|r| r.label == "cheap-proj").expect("cheap").output, 100);
         assert_eq!(projects.iter().find(|r| r.label == "pricey-proj").expect("pricey").output, 1000);
     }
+
+    #[test]
+    fn roll_up_window_edges_are_inclusive_and_keep_unpriced_tokens() {
+        // now = Wed 2026-07-15 -> week_start = Mon 07-13, month_start = 07-01.
+        let summary = summary_of(
+            "forge",
+            &[("m", "2026-07-13", counts_out(1)), ("m", "2026-07-01", counts_out(2))],
+        );
+        let report = roll_up(&[summary], &PricingTable::from_litellm_json("{}"), wednesday());
+        assert_eq!(report.week.total.output, 1, "a record on Monday's week_start is in the week");
+        assert_eq!(report.month.total.output, 3, "records on/after the 1st are in the month");
+        // Empty pricing: the row keeps its full tokens, only the cost blanks.
+        let row = &report.month.by_model[0];
+        assert_eq!(row.output, 3, "an unpriced row keeps its full tokens");
+        approx(row.cost_usd, 0.0);
+    }
 }
