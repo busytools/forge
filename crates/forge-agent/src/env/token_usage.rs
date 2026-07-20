@@ -783,4 +783,20 @@ mod tests {
         let report = roll_up(&[s], &pricing, wednesday());
         assert_eq!(report.today.by_model.first().expect("a row").label, "hi", "priciest first");
     }
+
+    #[test]
+    fn roll_up_separates_projects_and_orders_by_cost_desc() {
+        let cheap = summary_of("cheap-proj", &[("m", "2026-07-15", counts_out(100))]);
+        let pricey = summary_of("pricey-proj", &[("m", "2026-07-15", counts_out(1000))]);
+        let pricing = PricingTable::from_litellm_json(
+            r#"{"m":{"input_cost_per_token":0,"output_cost_per_token":0.01}}"#,
+        );
+        let report = roll_up(&[cheap, pricey], &pricing, wednesday());
+        let projects = &report.lifetime.by_project;
+        assert_eq!(projects.len(), 2, "two projects stay separate");
+        assert_eq!(projects[0].label, "pricey-proj", "sorted by cost descending");
+        assert_eq!(projects[1].label, "cheap-proj");
+        assert_eq!(projects.iter().find(|r| r.label == "cheap-proj").expect("cheap").output, 100);
+        assert_eq!(projects.iter().find(|r| r.label == "pricey-proj").expect("pricey").output, 1000);
+    }
 }
