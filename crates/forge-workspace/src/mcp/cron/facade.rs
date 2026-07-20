@@ -123,6 +123,10 @@ impl CronFacade for ProdCronFacade {
     }
 }
 
+/// One recorded `create_cron` call: caller, kind, prompt, description.
+#[cfg(test)]
+type CreateCall = (SessionKey, CronKind, String, Option<String>);
+
 /// Records calls + returns preloaded results so the tool tests can assert
 /// the tool correctly parses args, resolves the caller, and surfaces
 /// facade results/errors - without a real workspace.
@@ -130,7 +134,7 @@ impl CronFacade for ProdCronFacade {
 #[derive(Default)]
 pub(crate) struct MockCronFacade {
     pub crons: parking_lot::Mutex<Vec<CronEntry>>,
-    pub create_calls: parking_lot::Mutex<Vec<(SessionKey, CronKind, String, Option<String>)>>,
+    pub create_calls: parking_lot::Mutex<Vec<CreateCall>>,
     pub create_result: parking_lot::Mutex<Option<Result<CronEntry, CronCreateError>>>,
     pub delete_calls: parking_lot::Mutex<Vec<(SessionKey, CronId)>>,
     pub delete_result: parking_lot::Mutex<Option<Result<bool, CronDeleteError>>>,
@@ -246,8 +250,7 @@ mod prod_facade_tests {
             "the supplied description persists on the entry",
         );
         let (wk, wp) = daily("worker-standup");
-        let worker_cron =
-            facade.create_cron(&worker, wk, wp, None).expect("worker create");
+        let worker_cron = facade.create_cron(&worker, wk, wp, None).expect("worker create");
         assert_eq!(worker_cron.description, None, "no description stays None");
         assert_eq!(
             worker_cron.team_role.as_deref(),

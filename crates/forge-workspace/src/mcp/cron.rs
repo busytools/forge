@@ -382,7 +382,8 @@ mod tests {
             .await;
         assert!(!blank.is_error);
         assert_eq!(
-            mock.create_calls.lock()[1].3, None,
+            mock.create_calls.lock()[1].3,
+            None,
             "a whitespace-only description collapses to None",
         );
     }
