@@ -3592,14 +3592,29 @@ impl Workspace {
     /// no-op on any network failure, so the last-good cache is kept.
     /// Returns whether a new price table was stored (so a caller can
     /// re-price without a redundant scan when nothing changed).
-    pub async fn refresh_pricing(&self) -> bool {
-        if self.pricing_is_fresh() {
+    /// The redb read and the ~1.6 MB write run on the blocking pool so
+    /// the once-a-day fsync can't stall a UI frame.
+    pub async fn refresh_pricing(self: &Arc<Self>) -> bool {
+        let fresh = {
+            let workspace = Arc::clone(self);
+            tokio::task::spawn_blocking(move || workspace.pricing_is_fresh()).await.unwrap_or(false)
+        };
+        if fresh {
             return false;
         }
         let Some(json) = forge_agent::env::token_usage::pricing::fetch_litellm().await else {
             return false;
         };
-        // Guard against a 200-with-garbage response wiping a good cache.
+        let workspace = Arc::clone(self);
+        tokio::task::spawn_blocking(move || workspace.store_fresh_pricing(json))
+            .await
+            .unwrap_or(false)
+    }
+
+    /// Store freshly-fetched pricing json unless it parses to an empty
+    /// table - a garbage 200 must not wipe a good cache. Returns whether
+    /// it stored.
+    fn store_fresh_pricing(&self, json: String) -> bool {
         if forge_agent::env::token_usage::pricing::PricingTable::from_litellm_json(&json).is_empty()
         {
             tracing::warn!(
