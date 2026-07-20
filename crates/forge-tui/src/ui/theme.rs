@@ -23,6 +23,10 @@ pub const STATUS_WARNING: Color = Color::Yellow;
 pub const SLASH_COMMAND: Color = Color::LightMagenta;
 pub const SUBAGENT_TOKEN: Color = Color::LightBlue;
 
+// Resolved review-thread accent - a muted green distinct from the diff
+// addition surface, for the collapsed "✓ RESOLVED" review-comment row.
+pub const REVIEW_RESOLVED: Color = Color::Rgb(130, 199, 107);
+
 // Amber accent for the `/account` picker's experimental tag. Distinct
 // from the yellow reset-ETA (STATUS_WARNING) so the two never blur.
 pub const EXPERIMENTAL: Color = Color::Rgb(201, 161, 59);

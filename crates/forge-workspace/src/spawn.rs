@@ -1216,12 +1216,45 @@ pub(crate) fn handle_despawn_worker(
         return;
     }
 
+    // Resolve the torn-down worktree's `(project name, branch)` while
+    // the path still exists, so its persisted review threads can be
+    // deleted once the worktree is gone. Keyed by the forge.toml project
+    // NAME to match what the diff overlay saved under.
+    let review_key = worktree_path.as_ref().and_then(|path| {
+        let Some(branch) = forge_agent::env::worktree::worktree_branch(path) else {
+            tracing::warn!(
+                target: "forge_workspace::spawn",
+                project = %project_key.as_str(),
+                label = %label,
+                "despawn: could not resolve the worktree branch (detached HEAD or git error); its review threads are not cleaned up and may resurrect on a later worktree reusing the branch",
+            );
+            return None;
+        };
+        let Some(name) = workspace.list_projects().into_iter().find(|v| v.key == *project_key).map(|v| v.name)
+        else {
+            tracing::warn!(
+                target: "forge_workspace::spawn",
+                project = %project_key.as_str(),
+                label = %label,
+                branch = %branch,
+                "despawn: could not resolve the project name; the branch's review threads are not cleaned up",
+            );
+            return None;
+        };
+        Some((name, branch))
+    });
+
     // Worktree cleanup runs AFTER teardown on a verified-clean (or
     // forced) worktree. A failure here is reported but never rolls
     // back the already-completed teardown.
     let worktree_cleanup_warning = match worktree_path.as_ref() {
         Some(path) => match forge_agent::env::worktree::remove_worktree(path, force) {
-            Ok(()) => None,
+            Ok(()) => {
+                if let Some((project, branch)) = review_key.as_ref() {
+                    workspace.delete_review_threads(project, branch);
+                }
+                None
+            }
             Err(err) => {
                 tracing::warn!(
                     target: "forge_workspace::spawn",
@@ -2008,6 +2041,97 @@ config_dir = "~/.claude-subspace"
         );
         assert!(workspace.list_live_workers(&project_key).is_empty(), "worker removed");
         assert!(!wt.exists(), "clean worktree removed");
+    }
+
+    /// Despawning a git worker deletes the review threads for the
+    /// torn-down worktree's branch, leaving other branches' threads.
+    #[tokio::test]
+    async fn despawn_deletes_that_branch_review_threads() {
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+        };
+        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer").await;
+        let branch = forge_agent::env::worktree::worktree_branch(&wt).expect("worktree branch");
+        let thread = |id: &str| ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 1,
+                content_hash: 1,
+                context: Vec::new(),
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: "note".to_owned(),
+                at: String::new(),
+            }],
+            status: ReviewStatus::Open,
+            created_at: "t".to_owned(),
+            updated_at: "t".to_owned(),
+        };
+        workspace.save_review_threads("forge", &branch, &[thread("a")]);
+        workspace.save_review_threads("forge", "survivor", &[thread("b")]);
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
+        let _ = rx.await.expect("result");
+
+        assert!(
+            workspace.load_review_threads("forge", &branch).is_empty(),
+            "the torn-down branch's threads are cleaned",
+        );
+        assert_eq!(
+            workspace.load_review_threads("forge", "survivor").len(),
+            1,
+            "another branch's threads survive",
+        );
+    }
+
+    /// A detached-HEAD worktree has no resolvable branch, so despawn skips
+    /// review-thread cleanup gracefully (warns, no panic) and leaves
+    /// unrelated branches' threads intact.
+    #[tokio::test]
+    async fn despawn_with_detached_head_skips_cleanup_gracefully() {
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+        };
+        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer").await;
+        run_git(&wt, &["checkout", "--detach"]);
+        workspace.save_review_threads(
+            "forge",
+            "survivor",
+            &[ReviewThread {
+                id: "a".to_owned(),
+                anchor: ReviewAnchor {
+                    path: "src/x.rs".to_owned(),
+                    side: ReviewSide::New,
+                    line: 1,
+                    content_hash: 1,
+                    context: Vec::new(),
+                    base_ref: "main".to_owned(),
+                },
+                comments: vec![ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "note".to_owned(),
+                    at: String::new(),
+                }],
+                status: ReviewStatus::Open,
+                created_at: "t0".to_owned(),
+                updated_at: "t0".to_owned(),
+            }],
+        );
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
+        let _ = rx.await.expect("result");
+
+        assert_eq!(
+            workspace.load_review_threads("forge", "survivor").len(),
+            1,
+            "cleanup skipped gracefully, unrelated threads intact",
+        );
     }
 
     /// A dirty worktree without `force` BLOCKS the despawn: nothing is

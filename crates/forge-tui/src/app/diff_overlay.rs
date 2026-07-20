@@ -23,10 +23,14 @@ use std::sync::mpsc as std_mpsc;
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use forge_primitives::git_diff::RepoGate;
+use forge_primitives::review::{
+    ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus,
+};
 use forge_workspace::env::git_diff::hunks::ScanOutcome;
 use forge_workspace::env::git_diff::hunks::{
     CommitMeta, DiffLine, DiffLineKind, FileHunks, FileStatus,
 };
+use forge_workspace::env::git_diff::resolver::{self, AnchorResolution, CONTEXT_RADIUS};
 use tui_textarea::TextArea;
 
 use super::App;
@@ -222,6 +226,22 @@ pub struct HunkComment {
     /// the comment: navigating between commits keeps every comment but
     /// only those matching the current scope render and count.
     pub commit: Option<String>,
+    /// Durable review-thread record when this is a whole-diff comment
+    /// persisted to redb; `None` for ephemeral commit-scoped comments.
+    /// The flat fields above carry the current-scan view (re-resolved
+    /// each open); `thread.anchor` carries the durable last-known
+    /// location and `thread.status` drives the box's state tint.
+    pub thread: Option<forge_primitives::ReviewThread>,
+    /// Whether the user authored or edited this comment in THIS overlay
+    /// session (vs a thread hydrated from redb for display). Only
+    /// session-authored comments are bundled to the agent on Esc, so a
+    /// read-only reopen of a branch's history never re-prompts.
+    pub authored_this_session: bool,
+    /// Whether a redb write for this comment's thread has been confirmed.
+    /// `false` for ephemeral comments and for durable comments whose
+    /// write was skipped (no branch / no db) or failed - those stay in
+    /// the at-risk bucket the force-clear path warns about.
+    pub persisted: bool,
 }
 
 /// Currently-active comment input. Mounts inline below the clicked
@@ -249,9 +269,11 @@ pub struct ActiveCommentInput {
 pub enum DiffScanKind {
     /// The overlay's initial open. `commits` empty ⇒ whole-diff mode
     /// (`files` is the whole-branch diff); non-empty ⇒ commit mode
-    /// (`files` is the first commit's diff). `branch` names the branch
-    /// under review for the stepper header.
-    Initial { commits: Vec<CommitMeta>, branch: Option<String> },
+    /// (`files` is the first commit's diff) unless `whole_diff` forces
+    /// the whole-branch view (`files` is the whole diff, scope opens on
+    /// "All changes") because the branch has persisted review threads.
+    /// `branch` names the branch under review for the stepper header.
+    Initial { commits: Vec<CommitMeta>, branch: Option<String>, whole_diff: bool },
     /// A lazily-scanned scope, installed into the open overlay's cache
     /// (and swapped into view if still current). `files` is that scope's
     /// diff.
@@ -296,6 +318,7 @@ pub fn spawn_fetch(
     cwd: PathBuf,
     target: String,
     branch: Option<String>,
+    prefer_whole_diff: bool,
     seq: u64,
     tx: std_mpsc::Sender<DiffOverlayEvent>,
 ) {
@@ -304,14 +327,22 @@ pub fn spawn_fetch(
         // Clone the first sha so `commits` isn't borrowed across the
         // scan (it moves into the event below).
         let first_sha = commits.first().map(|c| c.sha.clone());
-        let (files, scanner_ok, untracked_suppressed, commit_body) = if let Some(sha) = first_sha {
-            let o = forge_workspace::env::git_diff::hunks::scan_commit(&cwd, &sha).await;
-            let body = forge_workspace::env::git_diff::hunks::scan_commit_body(&cwd, &sha).await;
-            (o.files, o.scanner_ok, 0, Some(body))
-        } else {
-            let ScanOutcome { files, scanner_ok, untracked_suppressed } =
-                forge_workspace::env::git_diff::hunks::scan(&cwd, &target).await;
-            (files, scanner_ok, untracked_suppressed, None)
+        // `prefer_whole_diff` (the branch already has persisted review
+        // threads) opens on the whole-branch diff so a reopen lands on
+        // the durable-review surface; otherwise a branch with commits
+        // opens on the first commit as before.
+        let (files, scanner_ok, untracked_suppressed, commit_body, whole_diff) = match first_sha {
+            Some(sha) if !prefer_whole_diff => {
+                let o = forge_workspace::env::git_diff::hunks::scan_commit(&cwd, &sha).await;
+                let body =
+                    forge_workspace::env::git_diff::hunks::scan_commit_body(&cwd, &sha).await;
+                (o.files, o.scanner_ok, 0, Some(body), false)
+            }
+            _ => {
+                let ScanOutcome { files, scanner_ok, untracked_suppressed } =
+                    forge_workspace::env::git_diff::hunks::scan(&cwd, &target).await;
+                (files, scanner_ok, untracked_suppressed, None, true)
+            }
         };
         let _ = tx.send(DiffOverlayEvent {
             cwd,
@@ -320,7 +351,7 @@ pub fn spawn_fetch(
             scanner_ok,
             untracked_suppressed,
             seq,
-            kind: DiffScanKind::Initial { commits, branch },
+            kind: DiffScanKind::Initial { commits, branch, whole_diff },
             commit_body,
         });
     });
@@ -474,13 +505,25 @@ pub fn open_with_target(app: &mut App, target: String) {
                 _ => None,
             },
         );
+    // Open on the whole-branch diff when the branch already has
+    // persisted review threads, so a reopen lands on the durable-review
+    // surface instead of the first commit.
+    let prefer_whole_diff = if let (Some(project), Some(branch), Some(workspace)) = (
+        app.active_session().and_then(|s| s.project.clone()),
+        branch.clone(),
+        app.workspace.clone(),
+    ) {
+        !workspace.load_review_threads(&project, &branch).is_empty()
+    } else {
+        false
+    };
     // Bump the seq before spawning so the new scan's events
     // outrank anything still in flight from an earlier /diff call.
     // Old events arriving on the channel after this bump will be
     // dropped by drain_events as superseded.
     app.diff_scan_seq = app.diff_scan_seq.wrapping_add(1);
     let seq = app.diff_scan_seq;
-    spawn_fetch(cwd, target, branch, seq, app.diff_overlay_event_tx.clone());
+    spawn_fetch(cwd, target, branch, prefer_whole_diff, seq, app.diff_overlay_event_tx.clone());
 }
 
 /// Resolve the cwd a diff scan should run against for the active
@@ -645,12 +688,20 @@ pub fn drain_events(app: &mut App) {
             }
             let state = DiffOverlayState::new_initial(event);
             open(app, state);
+            // Load + re-anchor persisted threads when the initial open
+            // landed on the whole-diff scope (no-op otherwise).
+            hydrate_threads(app);
         } else if let DiffScanKind::Scope(scope) = event.kind {
             // A lazy per-scope scan lands into the already-open overlay
             // (view == Diff). If it closed while the scan ran, drop it.
             if let Some(overlay) = app.diff_overlay.as_mut() {
                 overlay.install_scan(scope, event.files, event.scanner_ok, event.commit_body);
                 app.needs_redraw = true;
+                // First navigation to the whole diff makes its files
+                // available; hydrate the persisted threads against them.
+                if scope == DiffScope::WholeDiff {
+                    hydrate_threads(app);
+                }
             } else {
                 tracing::debug!(
                     target: crate::logging::targets::APP_SESSION,
@@ -809,6 +860,10 @@ pub struct DiffOverlayState {
     /// a click on it into "open the dropdown". `None` until the first
     /// commit-mode render.
     pub jump_hint_span: Option<(u16, u16, u16)>,
+    /// The durable review thread the `r` / `o` keys act on: the
+    /// `LineKey` of the comment whose box was last opened (chip click)
+    /// or saved. `None` until the user touches a comment.
+    pub focused_thread: Option<LineKey>,
 }
 
 impl DiffOverlayState {
@@ -1115,6 +1170,7 @@ impl DiffOverlayState {
             jump_open: false,
             jump_selected: 0,
             jump_hint_span: None,
+            focused_thread: None,
         }
     }
 
@@ -1137,9 +1193,9 @@ impl DiffOverlayState {
         } = event;
         // drain_events only routes Initial events here; a Scope event
         // would be a bug, so fall back to whole-diff defensively.
-        let (mut commits, branch) = match kind {
-            DiffScanKind::Initial { commits, branch } => (commits, branch),
-            DiffScanKind::Scope(_) => (Vec::new(), None),
+        let (mut commits, branch, whole_diff) = match kind {
+            DiffScanKind::Initial { commits, branch, whole_diff } => (commits, branch, whole_diff),
+            DiffScanKind::Scope(_) => (Vec::new(), None, true),
         };
         // First commit's body arrives with its upfront-scanned diff.
         if let Some(body) = commit_body
@@ -1148,10 +1204,13 @@ impl DiffOverlayState {
             first.body = body;
         }
         let file_count = files.len();
-        let (scope, commit_cache, whole_diff_cache) = if commits.is_empty() {
+        // Open on the whole diff when there are no commits ahead OR the
+        // branch has persisted review threads (`whole_diff`); `files` is
+        // then the whole-branch diff. Otherwise open on the first commit.
+        let (scope, commit_cache, whole_diff_cache) = if commits.is_empty() || whole_diff {
             (
                 DiffScope::WholeDiff,
-                Vec::new(),
+                vec![None; commits.len()],
                 Some(CachedScan { files: files.clone(), scanner_ok }),
             )
         } else {
@@ -1191,6 +1250,7 @@ impl DiffOverlayState {
             jump_open: false,
             jump_selected: 0,
             jump_hint_span: None,
+            focused_thread: None,
         }
     }
 }
@@ -1212,6 +1272,239 @@ pub(crate) fn open(app: &mut App, state: DiffOverlayState) {
 pub(crate) fn close(app: &mut App) {
     app.diff_overlay = None;
     set_active_view(app, ActiveView::Chat);
+    app.needs_redraw = true;
+}
+
+/// Placement for an outdated thread whose exact line may be gone,
+/// avoiding any `occupied` key so it never lands on a line a live thread
+/// already holds. Preference: the same line number on the same side,
+/// else the nearest FREE surviving line in the file, else the file's
+/// first free line, else the document's first free line; only when no
+/// free line remains does it stack on the nearest occupied line. Returns
+/// the key plus the anchored line's context (empty on a fallback line).
+/// `None` only when the diff has no lines at all.
+fn outdated_placement(
+    files: &[FileHunks],
+    path: &str,
+    side: ReviewSide,
+    line: u32,
+    occupied: &std::collections::HashSet<LineKey>,
+) -> Option<(LineKey, Vec<DiffLine>)> {
+    if let Some(file_idx) = files.iter().position(|f| f.path == path) {
+        // Same-side candidates, nearest first (stable, so equal distances
+        // keep document order).
+        let mut candidates: Vec<(u32, LineKey, DiffLine)> = Vec::new();
+        for (hunk_idx, hunk) in files[file_idx].hunks.iter().enumerate() {
+            for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
+                let number = match side {
+                    ReviewSide::Old => diff_line.old_line,
+                    ReviewSide::New => diff_line.new_line,
+                };
+                if let Some(number) = number {
+                    candidates.push((
+                        number.abs_diff(line),
+                        LineKey { file_idx, hunk_idx, line_idx },
+                        diff_line.clone(),
+                    ));
+                }
+            }
+        }
+        candidates.sort_by_key(|(dist, _, _)| *dist);
+        if let Some((_, key, diff_line)) =
+            candidates.iter().find(|(_, key, _)| !occupied.contains(key))
+        {
+            return Some((*key, vec![diff_line.clone()]));
+        }
+        // Same-side lines all taken: a free line anywhere in the file.
+        if let Some(key) = first_free_line_in_file(&files[file_idx], file_idx, occupied) {
+            return Some((key, Vec::new()));
+        }
+        // Genuinely no free line in the file: stack on the nearest.
+        if let Some((_, key, diff_line)) = candidates.first() {
+            return Some((*key, vec![diff_line.clone()]));
+        }
+    }
+    // File absent: the document's first free line, else stack on its first.
+    first_free_line(files, occupied).or_else(|| first_line_key(files)).map(|key| (key, Vec::new()))
+}
+
+/// The first line's key in `file` not already in `occupied` (skipping
+/// empty hunks), or `None` when every line is taken or absent.
+fn first_free_line_in_file(
+    file: &FileHunks,
+    file_idx: usize,
+    occupied: &std::collections::HashSet<LineKey>,
+) -> Option<LineKey> {
+    file.hunks.iter().enumerate().find_map(|(hunk_idx, hunk)| {
+        (0..hunk.lines.len())
+            .map(|line_idx| LineKey { file_idx, hunk_idx, line_idx })
+            .find(|key| !occupied.contains(key))
+    })
+}
+
+/// The first free line's key across the whole document.
+fn first_free_line(
+    files: &[FileHunks],
+    occupied: &std::collections::HashSet<LineKey>,
+) -> Option<LineKey> {
+    files
+        .iter()
+        .enumerate()
+        .find_map(|(file_idx, file)| first_free_line_in_file(file, file_idx, occupied))
+}
+
+/// The first line's key across the whole document, or `None` when the
+/// diff has no lines. The last-resort stack anchor when no line is free.
+fn first_line_key(files: &[FileHunks]) -> Option<LineKey> {
+    files.iter().enumerate().find_map(|(file_idx, file)| {
+        file.hunks
+            .iter()
+            .enumerate()
+            .find(|(_, hunk)| !hunk.lines.is_empty())
+            .map(|(hunk_idx, _)| LineKey { file_idx, hunk_idx, line_idx: 0 })
+    })
+}
+
+/// The user-authored text of a thread (first user comment), for the
+/// existing chip/box render path.
+fn thread_text(thread: &forge_primitives::ReviewThread) -> String {
+    thread
+        .comments
+        .iter()
+        .find(|c| matches!(c.author, ReviewAuthor::User))
+        .or_else(|| thread.comments.first())
+        .map(|c| c.text.clone())
+        .unwrap_or_default()
+}
+
+/// Load persisted review threads for the current whole-diff scope,
+/// re-anchor each against the fresh scan, and install them as the
+/// overlay's whole-diff comments (replacing the prior whole-diff set,
+/// leaving commit-scoped comments untouched). Moved-line updates and
+/// drift-to-`Outdated` flips are written back to redb. No-op outside
+/// whole-diff scope or without a workspace / project / branch.
+fn hydrate_threads(app: &mut App) {
+    let project = app.active_session().and_then(|s| s.project.clone());
+    let workspace = app.workspace.clone();
+    let Some(overlay) = app.diff_overlay.as_mut() else {
+        return;
+    };
+    if overlay.scope != DiffScope::WholeDiff {
+        return;
+    }
+    let (Some(project), Some(branch), Some(workspace)) =
+        (project, overlay.branch.clone(), workspace)
+    else {
+        return;
+    };
+
+    let loaded = workspace.load_review_threads(&project, &branch);
+    // Threads are keyed by (project, branch) across every diff target;
+    // process only those authored against the current target, and keep
+    // the rest untouched so the whole-row writeback below preserves them
+    // instead of silently dropping other-target threads.
+    let target = overlay.target.clone();
+    let (mine, others): (Vec<_>, Vec<_>) =
+        loaded.into_iter().partition(|t| t.anchor.base_ref == target);
+    let had_whole_diff = overlay.comments.iter().any(|c| c.commit.is_none());
+    if mine.is_empty() && !had_whole_diff {
+        return;
+    }
+
+    let mut rebuilt = Vec::with_capacity(mine.len());
+    let mut persist = others;
+    let mut changed = false;
+    // Live (in-place / moved) threads claim their real line in pass 1;
+    // outdated fallbacks fill the remaining free lines in pass 2, so an
+    // outdated box never lands on a key a live thread already holds
+    // (which would route a click / edit to the wrong thread).
+    let mut occupied: std::collections::HashSet<LineKey> = std::collections::HashSet::new();
+    let mut deferred_outdated = Vec::new();
+    for mut thread in mine {
+        match resolver::resolve_anchor(&thread.anchor, &overlay.files) {
+            AnchorResolution::InPlace { file_idx, hunk_idx, line_idx }
+            | AnchorResolution::Moved { file_idx, hunk_idx, line_idx } => {
+                let resolved = overlay
+                    .files
+                    .get(file_idx)
+                    .and_then(|f| f.hunks.get(hunk_idx))
+                    .and_then(|h| h.lines.get(line_idx));
+                let line = resolved
+                    .and_then(|dl| match thread.anchor.side {
+                        ReviewSide::Old => dl.old_line,
+                        ReviewSide::New => dl.new_line,
+                    })
+                    .unwrap_or(thread.anchor.line);
+                if thread.anchor.line != line {
+                    thread.anchor.line = line;
+                    changed = true;
+                }
+                if thread.status == ReviewStatus::Outdated {
+                    // The line came back; drop the drift flag.
+                    thread.status = ReviewStatus::Open;
+                    changed = true;
+                }
+                let key = LineKey { file_idx, hunk_idx, line_idx };
+                occupied.insert(key);
+                rebuilt.push(HunkComment {
+                    key,
+                    path: thread.anchor.path.clone(),
+                    line,
+                    hunk_context: resolved.map(|dl| vec![dl.clone()]).unwrap_or_default(),
+                    comment_text: thread_text(&thread),
+                    commit: None,
+                    thread: Some(thread.clone()),
+                    authored_this_session: false,
+                    persisted: true,
+                });
+                persist.push(thread);
+            }
+            AnchorResolution::Outdated => {
+                if !matches!(thread.status, ReviewStatus::Resolved | ReviewStatus::Outdated) {
+                    thread.status = ReviewStatus::Outdated;
+                    changed = true;
+                }
+                deferred_outdated.push(thread);
+            }
+        }
+    }
+    // Pass 2: place outdated threads on a surviving FREE line so they
+    // render (yellow, against their captured context) without clobbering
+    // a co-located live thread.
+    for thread in deferred_outdated {
+        let Some((key, hunk_context)) = outdated_placement(
+            &overlay.files,
+            &thread.anchor.path,
+            thread.anchor.side,
+            thread.anchor.line,
+            &occupied,
+        ) else {
+            // Empty diff this open: keep the thread durable (it re-anchors
+            // when the diff returns) but skip rendering.
+            persist.push(thread);
+            continue;
+        };
+        occupied.insert(key);
+        rebuilt.push(HunkComment {
+            key,
+            path: thread.anchor.path.clone(),
+            line: thread.anchor.line,
+            hunk_context,
+            comment_text: thread_text(&thread),
+            commit: None,
+            thread: Some(thread.clone()),
+            authored_this_session: false,
+            persisted: true,
+        });
+        persist.push(thread);
+    }
+
+    overlay.comments.retain(|c| c.commit.is_some());
+    overlay.comments.extend(rebuilt);
+    overlay.recompute_comment_counts();
+    if changed {
+        workspace.save_review_threads(&project, &branch, &persist);
+    }
     app.needs_redraw = true;
 }
 
@@ -1268,7 +1561,55 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char(']') | KeyCode::Right => step_commit(app, true),
         KeyCode::Char('a') => toggle_all_changes(app),
         KeyCode::Char('j') => open_jump(app),
+        KeyCode::Char('r') => resolve_focused_thread(app),
+        KeyCode::Char('o') => reopen_focused_thread(app),
         _ => {}
+    }
+}
+
+/// `r`: resolve the focused thread (Open / Addressed / Outdated →
+/// Resolved). Only the user resolves.
+fn resolve_focused_thread(app: &mut App) {
+    set_focused_thread_status(
+        app,
+        ReviewStatus::Resolved,
+        &[ReviewStatus::Open, ReviewStatus::Addressed, ReviewStatus::Outdated],
+    );
+}
+
+/// `o`: reopen the focused thread (Resolved → Open).
+fn reopen_focused_thread(app: &mut App) {
+    set_focused_thread_status(app, ReviewStatus::Open, &[ReviewStatus::Resolved]);
+}
+
+/// Flip the focused thread's status when it is currently in one of
+/// `allowed_from`, updating the in-memory box and persisting the change.
+/// No-op when nothing is focused, the focused comment has no durable
+/// thread, or its status isn't a legal source for this transition.
+fn set_focused_thread_status(app: &mut App, next: ReviewStatus, allowed_from: &[ReviewStatus]) {
+    let project = app.active_session().and_then(|s| s.project.clone());
+    let Some(overlay) = app.diff_overlay.as_mut() else {
+        return;
+    };
+    let (Some(key), Some(branch)) = (overlay.focused_thread, overlay.branch.clone()) else {
+        return;
+    };
+    let Some(thread) = overlay
+        .comments
+        .iter_mut()
+        .find(|c| c.key == key)
+        .and_then(|c| c.thread.as_mut())
+        .filter(|t| allowed_from.contains(&t.status))
+    else {
+        return;
+    };
+    thread.status = next;
+    let id = thread.id.clone();
+    app.needs_redraw = true;
+    if let Some(project) = project
+        && let Some(workspace) = app.workspace.as_ref()
+    {
+        workspace.set_review_thread_status(&project, &branch, &id, next);
     }
 }
 
@@ -1506,13 +1847,26 @@ fn cancel_active_input(app: &mut App) {
 ///   delete - the user cleared all text and pressed Enter to
 ///   remove the saved comment. The prior is NOT restored.
 fn save_active_input(app: &mut App) {
+    // Project name is read before the overlay borrow so the persist call
+    // below can reach `app.workspace` without a borrow conflict.
+    let project = app.active_session().and_then(|s| s.project.clone());
+    let workspace = app.workspace.clone();
     let Some(overlay) = app.diff_overlay.as_mut() else { return };
+    let branch = overlay.branch.clone();
     let Some(input) = overlay.active_input.take() else { return };
     let text = input.editor.lines().join("\n");
     if text.trim().is_empty() {
-        // Empty-text branch: see docstring for fresh-vs-reopen
-        // semantics. `comment_counts` already excludes the prior
-        // (removed at reopen), so no recompute needed.
+        // Empty-text branch: cancel for a fresh editor, delete for a
+        // reopened chip. A reopened DURABLE thread must also be removed
+        // from redb, else hydrate resurrects it next open. `comment_counts`
+        // already excludes the prior (removed at reopen).
+        if let Some(prior) = input.prior_comment
+            && let Some(thread) = prior.thread
+            && let (Some(project), Some(branch), Some(workspace)) =
+                (project.as_deref(), branch.as_deref(), workspace.as_ref())
+        {
+            workspace.remove_review_thread(project, branch, &thread.id);
+        }
         app.needs_redraw = true;
         return;
     }
@@ -1573,20 +1927,119 @@ fn save_active_input(app: &mut App) {
     // per-line context. Matches GitHub's inline-review markdown
     // (quote just the line under the `**Line N**` heading).
     let commit = overlay.current_commit_sha();
+    // Snapshot everything off the anchored line into owned locals so the
+    // `overlay.files` borrows drop before the comment is pushed.
+    let target = overlay.target.clone();
+    let path = file.path.clone();
+    let hunk_context = vec![diff_line.clone()];
+    let side = anchor_side(diff_line.kind);
+    let content_hash = resolver::content_hash(&diff_line.text);
+    let context = resolver::capture_context(hunk, key.line_idx, CONTEXT_RADIUS);
+    let prior_thread = input.prior_comment.as_ref().and_then(|c| c.thread.clone());
+    // Durable review thread only in whole-diff scope (commit == None);
+    // commit sub-scopes keep today's ephemeral comments. Editing an
+    // existing chip reuses the prior thread's identity + comment chain.
+    let thread = commit.is_none().then(|| {
+        let anchor = ReviewAnchor {
+            path: path.clone(),
+            side,
+            line: line_no,
+            content_hash,
+            context,
+            base_ref: target,
+        };
+        build_thread(prior_thread, anchor, &text)
+    });
+    // Persist FIRST so `persisted` reflects a confirmed write. A durable
+    // comment whose write is skipped (no branch / project / store) or
+    // fails stays at-risk - view.rs counts it as droppable - rather than
+    // being marked durable on scope alone.
+    let persisted = match &thread {
+        Some(thread) => {
+            if let (Some(project), Some(branch), Some(workspace)) =
+                (project.as_deref(), branch.as_deref(), workspace.as_ref())
+            {
+                workspace.upsert_review_thread(project, branch, thread.clone())
+            } else {
+                tracing::warn!(
+                    target: crate::logging::targets::APP_SESSION,
+                    event_name = "diff_overlay_review_thread_not_persisted",
+                    message = "whole-diff review comment could not be persisted (no branch / project / store); kept in-memory only",
+                    outcome = "at_risk",
+                    has_branch = branch.is_some(),
+                    has_project = project.is_some(),
+                );
+                false
+            }
+        }
+        None => false,
+    };
     let comment = HunkComment {
         key,
-        path: file.path.clone(),
+        path,
         line: line_no,
-        hunk_context: vec![diff_line.clone()],
+        hunk_context,
         comment_text: text,
         commit,
+        thread,
+        authored_this_session: true,
+        persisted,
     };
-    // Replace any existing comment at the same key (saving an
-    // edited reopen).
+    // Replace any existing comment at the same key (saving an edited reopen).
     overlay.comments.retain(|c| c.key != key);
     overlay.comments.push(comment);
     overlay.recompute_comment_counts();
+    // Focus the just-saved comment so `r` / `o` act on it next.
+    overlay.focused_thread = Some(key);
     app.needs_redraw = true;
+}
+
+/// Map a diff line's kind to the review side its line number lives on:
+/// removed lines are the old side, added / context lines the new side.
+fn anchor_side(kind: DiffLineKind) -> ReviewSide {
+    match kind {
+        DiffLineKind::Removed => ReviewSide::Old,
+        DiffLineKind::Added | DiffLineKind::Context => ReviewSide::New,
+    }
+}
+
+/// Build (or update) a durable [`ReviewThread`] for a whole-diff
+/// comment. Reuses `prior`'s id / status / timestamps and comment chain
+/// when editing an existing thread - only the user's own comment text is
+/// replaced, so any agent replies survive the edit. Mints a fresh Open
+/// thread otherwise. The store stamps `created_at` / `updated_at` and any
+/// empty comment `at` on write, so they start empty here.
+fn build_thread(
+    prior: Option<forge_primitives::ReviewThread>,
+    anchor: ReviewAnchor,
+    text: &str,
+) -> forge_primitives::ReviewThread {
+    match prior {
+        Some(mut thread) => {
+            thread.anchor = anchor;
+            match thread.comments.iter_mut().find(|c| matches!(c.author, ReviewAuthor::User)) {
+                Some(existing) => text.clone_into(&mut existing.text),
+                None => thread.comments.push(ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: text.to_owned(),
+                    at: String::new(),
+                }),
+            }
+            thread
+        }
+        None => forge_primitives::ReviewThread {
+            id: uuid::Uuid::new_v4().to_string(),
+            anchor,
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: text.to_owned(),
+                at: String::new(),
+            }],
+            status: ReviewStatus::Open,
+            created_at: String::new(),
+            updated_at: String::new(),
+        },
+    }
 }
 
 /// Lines scrolled per wheel notch in the diff body. Same value as
@@ -1882,9 +2335,24 @@ fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> Mouse
     // TextArea::insert_str respects newlines correctly so the
     // multi-line shape of the saved comment is preserved.
     editor.insert_str(&comment.comment_text);
+    // Touching a comment focuses it for the r / o keys after the editor closes.
+    overlay.focused_thread = Some(key);
     overlay.active_input =
         Some(ActiveCommentInput { key: comment.key, editor, prior_comment: Some(comment) });
     MouseEffect { redraw: true }
+}
+
+/// Whether a comment belongs in the agent bundle on Esc: authored or
+/// edited THIS session (a hydrated thread from a prior review is never
+/// re-sent) and not already Resolved / Outdated. Ephemeral commit-scoped
+/// comments (no thread) are always authored this session, so they bundle
+/// as before.
+fn is_bundle_eligible(comment: &HunkComment) -> bool {
+    comment.authored_this_session
+        && comment
+            .thread
+            .as_ref()
+            .is_none_or(|t| !matches!(t.status, ReviewStatus::Resolved | ReviewStatus::Outdated))
 }
 
 /// Close the overlay; if there are pending comments, bundle them
@@ -1912,9 +2380,13 @@ pub(super) fn close_with_submit(app: &mut App) {
     if let Some(o) = app.diff_overlay.as_mut() {
         let _ = close_active_input_preserving_prior(o);
     }
-    let pending = app.diff_overlay.as_ref().is_some_and(|o| !o.comments.is_empty());
+    let pending =
+        app.diff_overlay.as_ref().is_some_and(|o| o.comments.iter().any(is_bundle_eligible));
     if pending && (!app.has_active_agent() || app.session_id().is_none()) {
-        let comment_count = app.diff_overlay.as_ref().map_or(0, |o| o.comments.len());
+        let comment_count = app
+            .diff_overlay
+            .as_ref()
+            .map_or(0, |o| o.comments.iter().filter(|c| is_bundle_eligible(c)).count());
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "diff_overlay_close_held_no_agent",
@@ -1942,14 +2414,13 @@ pub(super) fn close_with_submit(app: &mut App) {
     // relied on `unwrap_or_default()` for a value that's never None
     // in practice - confusing for future maintainers.
     let snapshot = app.diff_overlay.as_mut().map(|o| {
-        let comments = std::mem::take(&mut o.comments);
-        (
-            comments,
-            o.target.clone(),
-            o.cwd.display().to_string(),
-            o.branch.clone(),
-            o.commits.clone(),
-        )
+        // Take all comments (the overlay is closing), but bundle only the
+        // session-authored, still-open ones - hydrated history and
+        // resolved/outdated threads are durable in redb and must not be
+        // re-sent to the agent.
+        let bundle: Vec<HunkComment> =
+            std::mem::take(&mut o.comments).into_iter().filter(is_bundle_eligible).collect();
+        (bundle, o.target.clone(), o.cwd.display().to_string(), o.branch.clone(), o.commits.clone())
     });
     if let Some((comments, target, cwd_display, branch, commits)) = snapshot
         && !comments.is_empty()
@@ -2378,6 +2849,9 @@ mod tests {
             hunk_context: vec![],
             comment_text: "needs unwrap fix".into(),
             commit: None,
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
         });
         state.body_keys = vec![
             BodyRowKey::FileHeader { file_idx: 0 },
@@ -2411,6 +2885,9 @@ mod tests {
                 }],
                 comment_text: "use ? instead of unwrap_or_die".into(),
                 commit: None,
+                thread: None,
+                authored_this_session: true,
+                persisted: false,
             },
             HunkComment {
                 key: LineKey { file_idx: 1, hunk_idx: 0, line_idx: 1 },
@@ -2424,6 +2901,9 @@ mod tests {
                 }],
                 comment_text: "good, panic was unsafe".into(),
                 commit: None,
+                thread: None,
+                authored_this_session: true,
+                persisted: false,
             },
             HunkComment {
                 key: LineKey { file_idx: 0, hunk_idx: 1, line_idx: 0 },
@@ -2432,6 +2912,9 @@ mod tests {
                 hunk_context: vec![],
                 comment_text: "missing rationale".into(),
                 commit: None,
+                thread: None,
+                authored_this_session: true,
+                persisted: false,
             },
         ];
         let md = format_diff_comments("HEAD", None, "/tmp/repo", &[], &comments);
@@ -2474,6 +2957,9 @@ mod tests {
                 }],
                 comment_text: "name it _without_overage".into(),
                 commit: Some("a3f9c1e".into()),
+                thread: None,
+                authored_this_session: true,
+                persisted: false,
             },
             HunkComment {
                 key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
@@ -2487,6 +2973,9 @@ mod tests {
                 }],
                 comment_text: "hoist this".into(),
                 commit: Some("e55f210".into()),
+                thread: None,
+                authored_this_session: true,
+                persisted: false,
             },
         ];
         let md =
@@ -2520,6 +3009,9 @@ mod tests {
             hunk_context: vec![],
             comment_text: "x".into(),
             commit: Some("a3f9c1e".into()),
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
         }];
         let md = format_diff_comments("main", Some("feat"), "", &commits, &comments);
         assert!(
@@ -2539,6 +3031,9 @@ mod tests {
                 hunk_context: vec![],
                 comment_text: "on commit".into(),
                 commit: Some("a3f9c1e".into()),
+                thread: None,
+                authored_this_session: true,
+                persisted: false,
             },
             HunkComment {
                 key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
@@ -2547,6 +3042,9 @@ mod tests {
                 hunk_context: vec![],
                 comment_text: "on whole diff".into(),
                 commit: None,
+                thread: None,
+                authored_this_session: true,
+                persisted: false,
             },
         ];
         let md = format_diff_comments("main", Some("feat"), "", &commits, &comments);
@@ -2565,6 +3063,9 @@ mod tests {
             hunk_context: vec![],
             comment_text: "x".into(),
             commit: None,
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
         });
         state.comments.push(HunkComment {
             key: LineKey { file_idx: 0, hunk_idx: 1, line_idx: 0 },
@@ -2573,6 +3074,9 @@ mod tests {
             hunk_context: vec![],
             comment_text: "y".into(),
             commit: None,
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
         });
         state.comments.push(HunkComment {
             key: LineKey { file_idx: 1, hunk_idx: 0, line_idx: 0 },
@@ -2581,6 +3085,9 @@ mod tests {
             hunk_context: vec![],
             comment_text: "z".into(),
             commit: None,
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
         });
         state.recompute_comment_counts();
         assert_eq!(state.comment_counts, vec![2, 1]);
@@ -2616,6 +3123,9 @@ mod tests {
             hunk_context: vec![],
             comment_text: "needs unwrap fix".into(),
             commit: None,
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
         });
         app.diff_overlay = Some(state);
         set_active_view(&mut app, ActiveView::Diff);
@@ -2646,6 +3156,9 @@ mod tests {
             hunk_context: vec![],
             comment_text: "I want to keep this".into(),
             commit: None,
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
         });
         state.recompute_comment_counts();
         state.body_keys = vec![BodyRowKey::CommentChip(key)];
@@ -2690,6 +3203,9 @@ mod tests {
             hunk_context: vec![],
             comment_text: "saved".into(),
             commit: None,
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
         });
         state.recompute_comment_counts();
         // Body geometry: chip row at idx 0, hunk header at idx 1,
@@ -2727,6 +3243,9 @@ mod tests {
             hunk_context: vec![],
             comment_text: "A".into(),
             commit: None,
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
         });
         state.comments.push(HunkComment {
             key: key_b,
@@ -2735,6 +3254,9 @@ mod tests {
             hunk_context: vec![],
             comment_text: "B".into(),
             commit: None,
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
         });
         state.recompute_comment_counts();
         state.body_keys = vec![BodyRowKey::CommentChip(key_a), BodyRowKey::CommentChip(key_b)];
@@ -2761,6 +3283,9 @@ mod tests {
             hunk_context: vec![],
             comment_text: "A".into(),
             commit: None,
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
         });
         state.recompute_comment_counts();
         state.body_keys = vec![BodyRowKey::CommentChip(key_a)];
@@ -2795,6 +3320,9 @@ mod tests {
             hunk_context: vec![],
             comment_text: "original text".into(),
             commit: None,
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
         };
         let mut editor = TextArea::default();
         editor.insert_str("original text with user-typed edits");
@@ -2820,6 +3348,9 @@ mod tests {
             hunk_context: vec![],
             comment_text: "exactly this".into(),
             commit: None,
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
         };
         let mut editor = TextArea::default();
         editor.insert_str("exactly this");
@@ -2873,6 +3404,9 @@ mod tests {
             hunk_context: vec![],
             comment_text: "soon-to-be-deleted".into(),
             commit: None,
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
         };
         state.active_input = Some(ActiveCommentInput {
             key,
@@ -2906,6 +3440,9 @@ mod tests {
             hunk_context: vec![],
             comment_text: "important review note".into(),
             commit: None,
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
         };
         let mut editor = TextArea::default();
         editor.insert_str("important review note");
@@ -2953,6 +3490,9 @@ mod tests {
             hunk_context: vec![],
             comment_text: "to be preserved".into(),
             commit: None,
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
         };
         let mut editor = TextArea::default();
         editor.insert_str("to be preserved");
@@ -3332,6 +3872,9 @@ mod tests {
             hunk_context: vec![],
             comment_text: "on first".into(),
             commit: Some("aaa".into()),
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
         });
         state.recompute_comment_counts();
         assert_eq!(state.comment_counts, vec![1], "commit 0 shows its comment");
@@ -3353,6 +3896,9 @@ mod tests {
             hunk_context: vec![],
             comment_text: "a".into(),
             commit: Some("aaa".into()),
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
         });
         state.comments.push(HunkComment {
             key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
@@ -3361,6 +3907,9 @@ mod tests {
             hunk_context: vec![],
             comment_text: "b".into(),
             commit: Some("bbb".into()),
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
         });
         let scoped: Vec<&str> =
             state.scoped_comments().iter().map(|c| c.comment_text.as_str()).collect();
@@ -3647,6 +4196,7 @@ mod tests {
             kind: DiffScanKind::Initial {
                 commits: vec![commit_meta("aaa", "first"), commit_meta("bbb", "second")],
                 branch: Some("feat".into()),
+                whole_diff: false,
             },
             commit_body: Some("the first commit's body".to_owned()),
         };
@@ -3670,7 +4220,7 @@ mod tests {
             scanner_ok: true,
             untracked_suppressed: 2,
             seq: 1,
-            kind: DiffScanKind::Initial { commits: Vec::new(), branch: None },
+            kind: DiffScanKind::Initial { commits: Vec::new(), branch: None, whole_diff: false },
             commit_body: None,
         };
         let state = DiffOverlayState::new_initial(event);
@@ -3679,5 +4229,734 @@ mod tests {
         assert!(state.commit_cache.is_empty());
         assert!(state.whole_diff_cache.is_some());
         assert_eq!(state.untracked_suppressed, 2, "whole-diff keeps the untracked cap count");
+    }
+
+    // ---- durable review threads (persist / re-anchor / drift) ----
+
+    fn added_line(text: &str, new: u32) -> DiffLine {
+        DiffLine {
+            kind: DiffLineKind::Added,
+            text: text.to_owned(),
+            old_line: None,
+            new_line: Some(new),
+        }
+    }
+
+    fn single_hunk_file(path: &str, lines: Vec<DiffLine>) -> FileHunks {
+        FileHunks {
+            path: path.to_owned(),
+            status: FileStatus::Modified,
+            hunks: vec![forge_workspace::env::git_diff::hunks::Hunk {
+                old_start: 1,
+                old_count: 0,
+                new_start: 1,
+                new_count: 0,
+                lines,
+            }],
+        }
+    }
+
+    /// App wired with a workspace + redb + an active session under
+    /// project "forge", ready for review-thread persistence tests.
+    fn review_app() -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("test workspace");
+        workspace.install_db_for_test(
+            forge_workspace::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let key = forge_workspace::SessionKey::from_session_id("review-session");
+        let mut session = crate::app::session::UiSession::new(key.clone());
+        session.project = Some("forge".to_owned());
+        session.cwd_raw = "/tmp/repo".into();
+        app.sessions.insert(key.clone(), session);
+        app.active_session_key = Some(key);
+        (app, dir)
+    }
+
+    fn with_editor(overlay: &mut DiffOverlayState, key: LineKey, text: &str) {
+        let mut editor = TextArea::default();
+        editor.insert_str(text);
+        overlay.active_input = Some(ActiveCommentInput { key, editor, prior_comment: None });
+    }
+
+    #[test]
+    fn save_active_input_persists_a_whole_diff_thread() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        with_editor(
+            &mut overlay,
+            LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            "needs a bound check",
+        );
+        app.diff_overlay = Some(overlay);
+
+        save_active_input(&mut app);
+
+        let ws = app.workspace.clone().expect("ws");
+        let threads = ws.load_review_threads("forge", "feat");
+        assert_eq!(threads.len(), 1, "the whole-diff comment persisted a thread");
+        assert_eq!(threads[0].anchor.line, 10);
+        assert_eq!(threads[0].anchor.side, ReviewSide::New);
+        assert_eq!(threads[0].status, ReviewStatus::Open);
+        assert_eq!(threads[0].comments[0].text, "needs a bound check");
+        assert!(!threads[0].created_at.is_empty(), "store stamped created_at");
+        let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
+        assert!(comment.thread.is_some(), "the in-memory comment carries its durable thread");
+    }
+
+    #[test]
+    fn save_active_input_skips_persist_in_commit_scope() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("z", 3)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        overlay.commits = vec![commit_meta("aaa", "first")];
+        overlay.scope = DiffScope::Commit(0);
+        with_editor(&mut overlay, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }, "commit note");
+        app.diff_overlay = Some(overlay);
+
+        save_active_input(&mut app);
+
+        let ws = app.workspace.clone().expect("ws");
+        assert!(
+            ws.load_review_threads("forge", "feat").is_empty(),
+            "commit-scope comment is ephemeral"
+        );
+        assert_eq!(app.diff_overlay.as_ref().expect("overlay").comments.len(), 1, "still bundled");
+    }
+
+    #[test]
+    fn saved_thread_survives_overlay_drop() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        with_editor(
+            &mut overlay,
+            LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            "durable note",
+        );
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+
+        // The overlay drops (close / session-swap force-clear); redb keeps the thread.
+        app.diff_overlay = None;
+        let ws = app.workspace.clone().expect("ws");
+        assert_eq!(
+            ws.load_review_threads("forge", "feat").len(),
+            1,
+            "the thread outlives the overlay"
+        );
+    }
+
+    #[test]
+    fn hydrate_reanchors_in_place_moved_and_outdated() {
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        let seed = |id: &str, line: u32, text: &str| forge_primitives::ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line,
+                content_hash: resolver::content_hash(text),
+                context: Vec::new(),
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: text.to_owned(),
+                at: String::new(),
+            }],
+            status: ReviewStatus::Open,
+            created_at: "t0".to_owned(),
+            updated_at: "t0".to_owned(),
+        };
+        ws.save_review_threads(
+            "forge",
+            "feat",
+            &[
+                seed("keep", 5, "let a = 1;"),
+                seed("move", 6, "let b = 2;"),
+                seed("changed", 20, "let c = 3;"),
+                seed("vanished", 99, "let d = 4;"),
+            ],
+        );
+
+        // Fresh scan: "let a = 1;" in place at 5; "let b = 2;" shifted to 8;
+        // no "let c = 3;" anywhere (its content changed).
+        let files = vec![single_hunk_file(
+            "src/x.rs",
+            vec![
+                added_line("let a = 1;", 5),
+                added_line("inserted", 6),
+                added_line("inserted2", 7),
+                added_line("let b = 2;", 8),
+                added_line("let c = renamed();", 20),
+            ],
+        )];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+
+        hydrate_threads(&mut app);
+
+        let overlay = app.diff_overlay.as_ref().expect("overlay");
+        let by_id = |id: &str| {
+            overlay
+                .comments
+                .iter()
+                .find(|c| c.thread.as_ref().map(|t| t.id.as_str()) == Some(id))
+                .expect("comment for id")
+        };
+        let keep = by_id("keep");
+        assert_eq!(keep.key, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }, "in place");
+        assert_eq!(keep.line, 5);
+        let moved = by_id("move");
+        assert_eq!(moved.key, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 3 }, "re-anchored");
+        assert_eq!(moved.line, 8, "display line follows the move");
+        // Content changed but the line number survives: placed inline
+        // (line 20 = line_idx 4) and flagged Outdated.
+        let changed = by_id("changed");
+        assert_eq!(
+            changed.key,
+            LineKey { file_idx: 0, hunk_idx: 0, line_idx: 4 },
+            "inline outdated"
+        );
+        assert_eq!(changed.thread.as_ref().expect("thread").status, ReviewStatus::Outdated);
+        // Line number gone (99): the nearest line (20 = line_idx 4) is
+        // already taken by "changed", so it falls to the next free line
+        // (line_idx 2), still rendered and flagged Outdated.
+        let vanished = by_id("vanished");
+        assert_eq!(
+            vanished.key,
+            LineKey { file_idx: 0, hunk_idx: 0, line_idx: 2 },
+            "next free line"
+        );
+        assert_eq!(vanished.thread.as_ref().expect("thread").status, ReviewStatus::Outdated);
+        assert_ne!(vanished.key, changed.key, "outdated threads do not collide");
+
+        // The move + outdated flips are written back to redb.
+        let reloaded = ws.load_review_threads("forge", "feat");
+        let find = |id: &str| reloaded.iter().find(|t| t.id == id).expect("thread");
+        assert_eq!(find("move").anchor.line, 8, "moved line persisted");
+        assert_eq!(find("changed").status, ReviewStatus::Outdated, "outdated flip persisted");
+        assert_eq!(find("vanished").status, ReviewStatus::Outdated, "outdated flip persisted");
+        assert_eq!(find("keep").anchor.line, 5, "in-place line unchanged");
+    }
+
+    #[test]
+    fn outdated_placement_avoids_a_live_thread_key() {
+        // A live thread holds line 10; an outdated thread whose content
+        // was also at line 10 (now gone) must land on a DIFFERENT key so
+        // clicking / editing one can't overwrite the other.
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        let seed = |id: &str, text: &str| forge_primitives::ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 10,
+                content_hash: resolver::content_hash(text),
+                context: Vec::new(),
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: text.to_owned(),
+                at: String::new(),
+            }],
+            status: ReviewStatus::Open,
+            created_at: "t0".to_owned(),
+            updated_at: "t0".to_owned(),
+        };
+        ws.save_review_threads("forge", "feat", &[seed("live", "keep"), seed("stale", "old_body")]);
+        // "keep" is live at line 10; "old_body" is gone.
+        let files = vec![single_hunk_file(
+            "src/x.rs",
+            vec![added_line("keep", 10), added_line("neighbor", 11)],
+        )];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+        hydrate_threads(&mut app);
+
+        let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
+        let by_id = |id: &str| {
+            comments
+                .iter()
+                .find(|c| c.thread.as_ref().map(|t| t.id.as_str()) == Some(id))
+                .expect("comment")
+        };
+        let live = by_id("live");
+        let stale = by_id("stale");
+        assert_eq!(
+            live.key,
+            LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            "live holds line 10"
+        );
+        assert_eq!(
+            stale.key,
+            LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 },
+            "outdated thread avoids the live key, taking the next free line",
+        );
+        assert_eq!(stale.thread.as_ref().expect("thread").status, ReviewStatus::Outdated);
+    }
+
+    #[test]
+    fn outdated_thread_with_absent_file_falls_back_to_document_start() {
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads(
+            "forge",
+            "feat",
+            &[forge_primitives::ReviewThread {
+                id: "gone".to_owned(),
+                anchor: ReviewAnchor {
+                    path: "removed.rs".to_owned(),
+                    side: ReviewSide::New,
+                    line: 5,
+                    content_hash: 1,
+                    context: Vec::new(),
+                    base_ref: "main".to_owned(),
+                },
+                comments: vec![ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "note".to_owned(),
+                    at: String::new(),
+                }],
+                status: ReviewStatus::Open,
+                created_at: "t0".to_owned(),
+                updated_at: "t0".to_owned(),
+            }],
+        );
+        // The commented file is no longer in the diff.
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("keep", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+        hydrate_threads(&mut app);
+        let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
+        assert_eq!(
+            comment.key,
+            LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            "absent file falls back to the document's first line",
+        );
+        assert_eq!(comment.thread.as_ref().expect("thread").status, ReviewStatus::Outdated);
+    }
+
+    #[test]
+    fn new_initial_whole_diff_flag_opens_all_changes_with_commits() {
+        let event = DiffOverlayEvent {
+            cwd: PathBuf::from("/tmp"),
+            target: "main".into(),
+            files: vec![one_file("a.rs", FileStatus::Modified)],
+            scanner_ok: true,
+            untracked_suppressed: 0,
+            seq: 1,
+            kind: DiffScanKind::Initial {
+                commits: vec![commit_meta("aaa", "first"), commit_meta("bbb", "second")],
+                branch: Some("feat".into()),
+                whole_diff: true,
+            },
+            commit_body: None,
+        };
+        let state = DiffOverlayState::new_initial(event);
+        assert_eq!(state.scope, DiffScope::WholeDiff, "persisted threads open the whole diff");
+        assert_eq!(state.commits.len(), 2, "the stepper stays available");
+        assert!(state.whole_diff_cache.is_some(), "whole-diff files cached");
+        assert!(state.commit_cache.iter().all(Option::is_none), "commits scanned lazily");
+    }
+
+    fn focused_status(app: &App) -> ReviewStatus {
+        app.diff_overlay
+            .as_ref()
+            .expect("overlay")
+            .comments
+            .iter()
+            .find_map(|c| c.thread.as_ref().map(|t| t.status))
+            .expect("a durable thread")
+    }
+
+    #[test]
+    fn resolve_and_reopen_focused_thread_persist() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        with_editor(
+            &mut overlay,
+            LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            "needs a bound",
+        );
+        app.diff_overlay = Some(overlay);
+        // Save focuses the new thread (Open) and persists it.
+        save_active_input(&mut app);
+        let ws = app.workspace.clone().expect("ws");
+
+        resolve_focused_thread(&mut app);
+        assert_eq!(focused_status(&app), ReviewStatus::Resolved, "in-memory resolves");
+        assert_eq!(
+            ws.load_review_threads("forge", "feat")[0].status,
+            ReviewStatus::Resolved,
+            "persisted"
+        );
+
+        reopen_focused_thread(&mut app);
+        assert_eq!(focused_status(&app), ReviewStatus::Open, "in-memory reopens");
+        assert_eq!(
+            ws.load_review_threads("forge", "feat")[0].status,
+            ReviewStatus::Open,
+            "persisted"
+        );
+    }
+
+    #[test]
+    fn reopen_is_noop_on_an_open_thread() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("z", 3)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        with_editor(&mut overlay, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }, "note");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+
+        // `o` only reopens a Resolved thread; an Open one is left alone.
+        reopen_focused_thread(&mut app);
+        assert_eq!(
+            focused_status(&app),
+            ReviewStatus::Open,
+            "reopen does not touch an open thread"
+        );
+    }
+
+    #[test]
+    fn resolve_is_noop_without_a_focused_thread() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("z", 3)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+        // Nothing focused, nothing saved: must not panic or write.
+        resolve_focused_thread(&mut app);
+        let ws = app.workspace.clone().expect("ws");
+        assert!(ws.load_review_threads("forge", "feat").is_empty());
+    }
+
+    #[test]
+    fn save_then_hydrate_round_trips_in_place() {
+        // Save-side capture (hash / side / context) must round-trip: an
+        // unchanged file re-anchors the saved thread InPlace, Open, and
+        // as a hydrated (not-session-authored) comment.
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        with_editor(&mut overlay, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }, "bound check");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+
+        // Reopen: re-hydrate against the same (unchanged) files.
+        hydrate_threads(&mut app);
+
+        let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
+        assert_eq!(comment.key, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }, "InPlace");
+        assert_eq!(comment.thread.as_ref().expect("thread").status, ReviewStatus::Open);
+        assert!(!comment.authored_this_session, "hydrated, not authored this session");
+        assert!(comment.persisted, "hydrated comment is durable");
+    }
+
+    #[test]
+    fn empty_delete_removes_the_durable_thread_from_redb() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = 1;", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        with_editor(&mut overlay, key, "delete me");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+        let ws = app.workspace.clone().expect("ws");
+        assert_eq!(ws.load_review_threads("forge", "feat").len(), 1, "saved");
+
+        // Reopen the chip, clear the text, save empty -> delete.
+        if let Some(o) = app.diff_overlay.as_mut() {
+            reopen_comment_for_key(o, key);
+            if let Some(input) = o.active_input.as_mut() {
+                input.editor = TextArea::default();
+            }
+        }
+        save_active_input(&mut app);
+
+        assert!(ws.load_review_threads("forge", "feat").is_empty(), "delete removed it from redb");
+        // A subsequent hydrate must not resurrect it.
+        hydrate_threads(&mut app);
+        assert!(app.diff_overlay.as_ref().expect("overlay").comments.is_empty(), "not resurrected");
+    }
+
+    #[test]
+    fn unpersistable_whole_diff_comment_stays_at_risk() {
+        // No branch (detached HEAD): the write is skipped, so the comment
+        // is authored-this-session but NOT persisted - view.rs must count
+        // it as droppable, not log a false "durable" success.
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = 1;", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = None;
+        with_editor(&mut overlay, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }, "note");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+
+        let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
+        assert!(comment.authored_this_session);
+        assert!(!comment.persisted, "no branch -> write skipped -> at risk");
+        assert!(comment.thread.is_some(), "still a whole-diff thread, just not durable");
+    }
+
+    #[test]
+    fn bundle_excludes_hydrated_and_resolved_comments() {
+        let make = |authored: bool, status: Option<ReviewStatus>| {
+            let thread = status.map(|status| forge_primitives::ReviewThread {
+                id: "t".to_owned(),
+                anchor: ReviewAnchor {
+                    path: "a.rs".to_owned(),
+                    side: ReviewSide::New,
+                    line: 1,
+                    content_hash: 0,
+                    context: Vec::new(),
+                    base_ref: "main".to_owned(),
+                },
+                comments: Vec::new(),
+                status,
+                created_at: String::new(),
+                updated_at: String::new(),
+            });
+            HunkComment {
+                key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+                path: "a.rs".to_owned(),
+                line: 1,
+                hunk_context: Vec::new(),
+                comment_text: "c".to_owned(),
+                commit: None,
+                thread,
+                authored_this_session: authored,
+                persisted: true,
+            }
+        };
+        // Fresh open thread: bundled.
+        assert!(is_bundle_eligible(&make(true, Some(ReviewStatus::Open))));
+        // Ephemeral commit-scoped (no thread), authored: bundled.
+        assert!(is_bundle_eligible(&make(true, None)));
+        // Hydrated from a prior session: never re-sent.
+        assert!(!is_bundle_eligible(&make(false, Some(ReviewStatus::Open))));
+        // Resolved / outdated: never bundled even if touched this session.
+        assert!(!is_bundle_eligible(&make(true, Some(ReviewStatus::Resolved))));
+        assert!(!is_bundle_eligible(&make(true, Some(ReviewStatus::Outdated))));
+    }
+
+    #[test]
+    fn hydrate_scopes_to_target_and_preserves_other_target_threads() {
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        let seed = |id: &str, base_ref: &str, text: &str| forge_primitives::ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 5,
+                content_hash: resolver::content_hash(text),
+                context: Vec::new(),
+                base_ref: base_ref.to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: text.to_owned(),
+                at: String::new(),
+            }],
+            status: ReviewStatus::Open,
+            created_at: "t0".to_owned(),
+            updated_at: "t0".to_owned(),
+        };
+        // Same branch, two diff targets.
+        ws.save_review_threads(
+            "forge",
+            "feat",
+            &[seed("a", "main", "let a = 1;"), seed("b", "HEAD", "let b = 2;")],
+        );
+
+        // Open against "main"; its thread drifts (line 5 -> 8), forcing a
+        // writeback. The "HEAD"-target thread must survive that writeback.
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 8)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+        hydrate_threads(&mut app);
+
+        // Only the current-target thread renders.
+        let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
+        assert_eq!(comments.len(), 1, "only the main-target thread renders");
+        assert_eq!(comments[0].thread.as_ref().expect("thread").id, "a");
+
+        let reloaded = ws.load_review_threads("forge", "feat");
+        assert_eq!(reloaded.len(), 2, "the HEAD-target thread survived the writeback");
+        assert_eq!(
+            reloaded.iter().find(|t| t.id == "a").expect("a").anchor.line,
+            8,
+            "the main-target thread re-anchored to the moved line",
+        );
+        assert!(reloaded.iter().any(|t| t.id == "b"), "the HEAD-target thread is preserved");
+    }
+
+    #[test]
+    fn r_and_o_keys_resolve_and_reopen_via_handle_key() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = 1;", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        with_editor(&mut overlay, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }, "note");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('r')));
+        assert_eq!(focused_status(&app), ReviewStatus::Resolved, "r resolves through handle_key");
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('o')));
+        assert_eq!(focused_status(&app), ReviewStatus::Open, "o reopens through handle_key");
+    }
+
+    #[test]
+    fn resolve_flips_an_outdated_thread_to_resolved() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = 1;", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        with_editor(&mut overlay, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }, "note");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+        // Simulate the thread having drifted to Outdated.
+        if let Some(o) = app.diff_overlay.as_mut()
+            && let Some(thread) = o.comments[0].thread.as_mut()
+        {
+            thread.status = ReviewStatus::Outdated;
+        }
+        resolve_focused_thread(&mut app);
+        assert_eq!(focused_status(&app), ReviewStatus::Resolved, "outdated resolves to resolved");
+    }
+
+    #[test]
+    fn write_failure_with_all_present_keeps_comment_at_risk() {
+        // Workspace + project + branch all present, but its store isn't
+        // open, so upsert returns false - the comment must stay at-risk
+        // (persisted = false), not be marked durable on scope alone.
+        let mut app = App::test_default();
+        let key = forge_workspace::SessionKey::from_session_id("review-session");
+        let mut session = crate::app::session::UiSession::new(key.clone());
+        session.project = Some("forge".to_owned());
+        session.cwd_raw = "/tmp/repo".into();
+        app.sessions.insert(key.clone(), session);
+        app.active_session_key = Some(key);
+        // Deliberately NO install_db_for_test: the write will fail.
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = 1;", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        with_editor(&mut overlay, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }, "note");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+
+        let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
+        assert!(comment.authored_this_session);
+        assert!(!comment.persisted, "a failed write with all present stays at-risk");
+        assert!(comment.thread.is_some(), "still a whole-diff thread");
+    }
+
+    #[test]
+    fn reopen_then_cancel_keeps_a_hydrated_chip_unbundled() {
+        // A read-only view of a prior review (hydrated threads) that the
+        // user clicks then Esc-cancels must not become session-authored,
+        // so closing the overlay re-prompts the agent with nothing.
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads(
+            "forge",
+            "feat",
+            &[forge_primitives::ReviewThread {
+                id: "h".to_owned(),
+                anchor: ReviewAnchor {
+                    path: "src/x.rs".to_owned(),
+                    side: ReviewSide::New,
+                    line: 10,
+                    content_hash: resolver::content_hash("keep"),
+                    context: Vec::new(),
+                    base_ref: "main".to_owned(),
+                },
+                comments: vec![ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "prior".to_owned(),
+                    at: "t0".to_owned(),
+                }],
+                status: ReviewStatus::Open,
+                created_at: "t0".to_owned(),
+                updated_at: "t0".to_owned(),
+            }],
+        );
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("keep", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+        hydrate_threads(&mut app);
+
+        let key = app.diff_overlay.as_ref().expect("overlay").comments[0].key;
+        if let Some(o) = app.diff_overlay.as_mut() {
+            reopen_comment_for_key(o, key);
+        }
+        cancel_active_input(&mut app);
+
+        let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
+        assert!(!comment.authored_this_session, "reopen + cancel keeps the chip hydrated");
+        assert!(!is_bundle_eligible(comment), "and never enters the agent bundle");
+    }
+
+    #[test]
+    fn force_clear_keeps_persisted_threads_in_redb() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = 1;", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        with_editor(&mut overlay, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }, "note");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+        app.active_view = crate::app::view::ActiveView::Diff;
+
+        // A session-swap force-clear drops the overlay without going
+        // through close_with_submit; the persisted thread must survive.
+        crate::app::view::set_active_view(&mut app, crate::app::view::ActiveView::Launchpad);
+        assert!(app.diff_overlay.is_none(), "overlay force-cleared");
+        let ws = app.workspace.clone().expect("ws");
+        assert_eq!(
+            ws.load_review_threads("forge", "feat").len(),
+            1,
+            "the persisted thread survives the force-clear",
+        );
     }
 }

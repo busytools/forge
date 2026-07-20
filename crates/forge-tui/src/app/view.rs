@@ -54,23 +54,24 @@ fn clear_transient_view_state(app: &mut App) {
         app.config.overlay = None;
     }
     if app.active_view == ActiveView::Diff {
-        // Pending comments / in-progress editor are dropped on
-        // indirect view transitions (e.g. session swap mid-review).
-        // The normal Esc / banner ✕ paths go through
-        // `close_with_submit` which bundles + submits comments
-        // first; reaching THIS path means something external
-        // forced the transition without giving the diff overlay
-        // a chance to flush. Log so an operator can grep for it.
-        let dropped_comments = app.diff_overlay.as_ref().map_or(0, |o| o.comments.len());
+        // Confirmed-persisted review threads (and hydrated history) are
+        // durable in redb, so this forced transition (e.g. a session swap
+        // mid-review) can't lose them. At risk here: session-authored
+        // comments not yet confirmed-written (ephemeral commit-scoped
+        // ones, and durable ones whose write was skipped/failed) plus an
+        // in-progress editor's unsent text. Warn so those stay greppable.
+        let dropped_at_risk = app.diff_overlay.as_ref().map_or(0, |o| {
+            o.comments.iter().filter(|c| c.authored_this_session && !c.persisted).count()
+        });
         let had_in_progress_editor =
             app.diff_overlay.as_ref().is_some_and(|o| o.active_input.is_some());
-        if dropped_comments > 0 || had_in_progress_editor {
+        if dropped_at_risk > 0 || had_in_progress_editor {
             tracing::warn!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "diff_overlay_force_cleared",
-                message = "diff overlay cleared via view transition without close_with_submit; pending review state lost",
+                message = "diff overlay cleared via view transition; persisted review threads survive, unpersisted comments/editor dropped",
                 outcome = "dropped",
-                dropped_comments,
+                dropped_at_risk,
                 had_in_progress_editor,
             );
         }

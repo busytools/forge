@@ -27,6 +27,7 @@
 
 mod pairing;
 
+use forge_primitives::ReviewStatus;
 use forge_workspace::env::git_diff::hunks::{DiffLineKind, FileHunks, FileStatus, Hunk};
 
 use crate::app::diff_overlay::{
@@ -831,6 +832,8 @@ fn render_footer(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState, mode
         }
         hints.push(("t", "split/unified"));
         hints.push(("click line", "comment"));
+        hints.push(("r", "resolve"));
+        hints.push(("o", "reopen"));
         if !commit_mode {
             hints.push(("click file", "jump"));
         }
@@ -1244,7 +1247,7 @@ fn push_file_body(
     file_idx: usize,
     include_header: bool,
     pane_width: u16,
-    comments_by_key: &std::collections::HashMap<LineKey, &HunkComment>,
+    comments_by_key: &std::collections::HashMap<LineKey, Vec<&HunkComment>>,
     lines: &mut Vec<Line<'static>>,
     keys: &mut Vec<BodyRowKey>,
 ) {
@@ -1322,7 +1325,7 @@ fn push_unified_body(
     gutter_width: usize,
     pane_width: u16,
     cache: Option<&FileHighlight>,
-    comments_by_key: &std::collections::HashMap<LineKey, &HunkComment>,
+    comments_by_key: &std::collections::HashMap<LineKey, Vec<&HunkComment>>,
     lines: &mut Vec<Line<'static>>,
     keys: &mut Vec<BodyRowKey>,
 ) {
@@ -1341,7 +1344,7 @@ fn push_unified_body(
                 let spans = line_key.map_or(&[][..], |key| cached_line_spans(cache, key));
                 push_unified_diff_rows(&row, spans, gutter_width, content_width, lines, keys);
                 if let Some(key) = line_key {
-                    if let Some(comment) = comments_by_key.get(&key) {
+                    for comment in comments_by_key.get(&key).into_iter().flatten() {
                         render_comment_chip(comment, key, gutter_width, pane_width, lines, keys);
                     }
                     if let Some(input) = overlay.active_input.as_ref().filter(|i| i.key == key) {
@@ -1423,7 +1426,7 @@ fn push_split_body(
     gutter_width: usize,
     pane_width: u16,
     cache: Option<&FileHighlight>,
-    comments_by_key: &std::collections::HashMap<LineKey, &HunkComment>,
+    comments_by_key: &std::collections::HashMap<LineKey, Vec<&HunkComment>>,
     lines: &mut Vec<Line<'static>>,
     keys: &mut Vec<BodyRowKey>,
 ) {
@@ -1445,7 +1448,7 @@ fn push_split_body(
                 sides.push(k);
             }
             for side_key in sides {
-                if let Some(comment) = comments_by_key.get(&side_key) {
+                for comment in comments_by_key.get(&side_key).into_iter().flatten() {
                     render_comment_chip(comment, side_key, gutter_width, pane_width, lines, keys);
                 }
                 if let Some(input) = overlay.active_input.as_ref().filter(|i| i.key == side_key) {
@@ -1517,16 +1520,16 @@ fn status_badge(status: FileStatus) -> (&'static str, Color) {
 }
 
 /// Index `comments` by `LineKey` for O(1) chip lookup during row
-/// emission. Used only inside `build_pane_lines`.
+/// emission. Multiple comments can share a key when an outdated thread
+/// is re-placed onto a surviving line that already carries one, so each
+/// key maps to a list rendered top-to-bottom in insertion order.
 fn index_comments_by_key<'a>(
     comments: &[&'a HunkComment],
-) -> std::collections::HashMap<LineKey, &'a HunkComment> {
-    let mut map = std::collections::HashMap::with_capacity(comments.len());
+) -> std::collections::HashMap<LineKey, Vec<&'a HunkComment>> {
+    let mut map: std::collections::HashMap<LineKey, Vec<&'a HunkComment>> =
+        std::collections::HashMap::with_capacity(comments.len());
     for c in comments {
-        // Last-write-wins on duplicate keys (which shouldn't happen -
-        // saving a comment on a line that already has one replaces
-        // the existing entry - but stay defensive).
-        map.insert(c.key, *c);
+        map.entry(c.key).or_default().push(*c);
     }
     map
 }
@@ -1552,6 +1555,18 @@ fn index_comments_by_key<'a>(
 /// green/red tints.
 const CHIP_BG: Color = Color::Rgb(35, 23, 10);
 
+/// Border colour + uppercase state label for a comment box, keyed off
+/// its durable review-thread status. `None` (an ephemeral commit-scoped
+/// comment) keeps the classic orange box with no state label.
+fn review_state_style(status: Option<ReviewStatus>) -> (Color, Option<&'static str>) {
+    match status {
+        None | Some(ReviewStatus::Open) => (theme::RUST_ORANGE, status.map(|_| "OPEN")),
+        Some(ReviewStatus::Addressed) => (theme::SUBAGENT_TOKEN, Some("ADDRESSED")),
+        Some(ReviewStatus::Resolved) => (theme::REVIEW_RESOLVED, Some("RESOLVED")),
+        Some(ReviewStatus::Outdated) => (theme::STATUS_WARNING, Some("OUTDATED")),
+    }
+}
+
 fn render_comment_chip(
     comment: &HunkComment,
     key: LineKey,
@@ -1560,13 +1575,21 @@ fn render_comment_chip(
     lines: &mut Vec<Line<'static>>,
     keys: &mut Vec<BodyRowKey>,
 ) {
+    let status = comment.thread.as_ref().map(|t| t.status);
+    // Resolved threads collapse to a single green one-liner.
+    if status == Some(ReviewStatus::Resolved) {
+        render_resolved_chip(comment, key, gutter_width, pane_width, lines, keys);
+        return;
+    }
+    let (accent, state_label) = review_state_style(status);
     let indent_cols = gutter_width + 4;
     let indent = " ".repeat(indent_cols);
     let left_offset = 2 + indent_cols;
     let right_pad = 2usize;
     let box_width = usize::from(pane_width).saturating_sub(left_offset + right_pad).max(20);
-    let border_style = Style::default().fg(theme::RUST_ORANGE).bg(CHIP_BG);
+    let border_style = Style::default().fg(accent).bg(CHIP_BG);
     let body_style = Style::default().bg(CHIP_BG);
+    let note_style = Style::default().fg(theme::DIM).bg(CHIP_BG);
 
     // Top border with embedded title. Whole row carries CHIP_BG so
     // the entire box surface is tinted - eye reads it as one block
@@ -1578,7 +1601,10 @@ fn render_comment_chip(
     // column width. Without this the top border would land 1 cell
     // further right than the body's `│` border, making the box
     // look stepped.
-    let title = format!(" 💬 Comment on line {} ", comment.line);
+    let title = match state_label {
+        Some(label) => format!(" 💬 line {} · {label} ", comment.line),
+        None => format!(" 💬 Comment on line {} ", comment.line),
+    };
     let title_visual = title.chars().count() + 1; // +1 for 💬's 2nd cell
     let dash_after = box_width.saturating_sub(3 + title_visual + 1);
     let top = format!("┌──{title}{}┐", "─".repeat(dash_after));
@@ -1593,15 +1619,22 @@ fn render_comment_chip(
     // inner width (`│ ... │` consumes 4 cells of chrome). Keep the
     // wrap simple: break on the box width and on explicit newlines.
     let inner_width = box_width.saturating_sub(4);
-    let wrapped = wrap_chip_body(&comment.comment_text, inner_width);
-    for row in &wrapped {
+    let mut body_rows = wrap_chip_body(&comment.comment_text, inner_width);
+    if status == Some(ReviewStatus::Outdated) {
+        // The anchored line drifted; the box renders against the
+        // captured context, so name that instead of implying the line
+        // is live.
+        body_rows.push("line changed - resolve, or re-comment on a live line".to_owned());
+    }
+    for (idx, row) in body_rows.iter().enumerate() {
         let row_chars = row.chars().count();
         let pad = inner_width.saturating_sub(row_chars);
+        let is_note = status == Some(ReviewStatus::Outdated) && idx == body_rows.len() - 1;
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::raw(indent.clone()),
             Span::styled("│ ", border_style),
-            Span::styled(row.clone(), body_style),
+            Span::styled(row.clone(), if is_note { note_style } else { body_style }),
             Span::styled(" ".repeat(pad), body_style),
             Span::styled(" │", border_style),
         ]));
@@ -1614,6 +1647,35 @@ fn render_comment_chip(
         Span::raw("  "),
         Span::raw(indent),
         Span::styled(bottom, border_style),
+    ]));
+    keys.push(BodyRowKey::CommentChip(key));
+}
+
+/// A resolved thread collapses to one green row: `└─ ✓ line N ·
+/// RESOLVED  <text>  · [o] reopen`. Truncated to the pane width; the
+/// whole row is a [`BodyRowKey::CommentChip`] so a click reopens it.
+fn render_resolved_chip(
+    comment: &HunkComment,
+    key: LineKey,
+    gutter_width: usize,
+    pane_width: u16,
+    lines: &mut Vec<Line<'static>>,
+    keys: &mut Vec<BodyRowKey>,
+) {
+    let indent_cols = gutter_width + 4;
+    let indent = " ".repeat(indent_cols);
+    let green = Style::default().fg(theme::REVIEW_RESOLVED);
+    let dim = Style::default().fg(theme::DIM);
+    let head = format!("└─ ✓ line {} · RESOLVED  ", comment.line);
+    let avail = usize::from(pane_width).saturating_sub(2 + indent_cols + head.chars().count() + 12);
+    let text = comment.comment_text.replace('\n', " ");
+    let snippet: String = text.chars().take(avail.max(8)).collect();
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::raw(indent),
+        Span::styled(head, green),
+        Span::styled(snippet, dim),
+        Span::styled("  · [o] reopen", dim),
     ]));
     keys.push(BodyRowKey::CommentChip(key));
 }
@@ -2489,5 +2551,111 @@ mod tests {
         assert!(full.contains("split the near-threshold predicate"), "body renders above the diff");
         assert!(full.contains("is_near_threshold"), "the commit's diff still renders below it");
         assert!(full.contains("all changes / back"), "footer shows the `a` toggle hint");
+    }
+
+    fn chip_comment(line: u32, text: &str, status: Option<ReviewStatus>) -> HunkComment {
+        let thread = status.map(|status| forge_primitives::ReviewThread {
+            id: "t1".to_owned(),
+            anchor: forge_primitives::ReviewAnchor {
+                path: "a.rs".to_owned(),
+                side: forge_primitives::ReviewSide::New,
+                line,
+                content_hash: 0,
+                context: Vec::new(),
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![forge_primitives::ReviewComment {
+                author: forge_primitives::ReviewAuthor::User,
+                text: text.to_owned(),
+                at: String::new(),
+            }],
+            status,
+            created_at: String::new(),
+            updated_at: String::new(),
+        });
+        HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "a.rs".to_owned(),
+            line,
+            hunk_context: Vec::new(),
+            comment_text: text.to_owned(),
+            commit: None,
+            thread,
+            authored_this_session: false,
+            persisted: true,
+        }
+    }
+
+    fn render_chip(comment: &HunkComment) -> (Vec<Line<'static>>, Vec<BodyRowKey>) {
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let mut lines = Vec::new();
+        let mut keys = Vec::new();
+        render_comment_chip(comment, key, 4, 80, &mut lines, &mut keys);
+        (lines, keys)
+    }
+
+    #[test]
+    fn comment_chip_open_box_titles_and_tints_by_state() {
+        let (lines, _) =
+            render_chip(&chip_comment(7, "needs a bound check", Some(ReviewStatus::Open)));
+        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(
+            joined.contains("\u{1f4ac} line 7 \u{b7} OPEN"),
+            "open title carries state; got:\n{joined}"
+        );
+        let top = lines.first().expect("top border");
+        assert_eq!(
+            top.spans.last().expect("border span").style.fg,
+            Some(theme::RUST_ORANGE),
+            "open border is rust-orange",
+        );
+    }
+
+    #[test]
+    fn comment_chip_outdated_box_is_yellow_with_a_note() {
+        let (lines, _) =
+            render_chip(&chip_comment(72, "guard the None case", Some(ReviewStatus::Outdated)));
+        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("\u{b7} OUTDATED"), "outdated title");
+        assert!(joined.contains("line changed"), "outdated note names the drift");
+        assert_eq!(
+            lines.first().expect("top").spans.last().expect("border").style.fg,
+            Some(theme::STATUS_WARNING),
+            "outdated border is yellow",
+        );
+    }
+
+    #[test]
+    fn comment_chip_resolved_collapses_to_one_green_row() {
+        let (lines, keys) =
+            render_chip(&chip_comment(88, "rename tok to token", Some(ReviewStatus::Resolved)));
+        assert_eq!(lines.len(), 1, "resolved collapses to a single row");
+        assert_eq!(keys.len(), 1);
+        let text = line_text(&lines[0]);
+        assert!(
+            text.contains("\u{2713} line 88 \u{b7} RESOLVED"),
+            "resolved one-liner; got: {text}"
+        );
+        assert!(text.contains("[o] reopen"), "reopen hint present");
+    }
+
+    #[test]
+    fn multiple_comments_on_one_line_all_index() {
+        // An outdated thread re-placed onto a line that already carries a
+        // comment must not clobber it - both live under the shared key.
+        let a = chip_comment(5, "first", Some(ReviewStatus::Open));
+        let b = chip_comment(5, "drifted here", Some(ReviewStatus::Outdated));
+        let refs = vec![&a, &b];
+        let map = index_comments_by_key(&refs);
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        assert_eq!(map.get(&key).map(Vec::len), Some(2), "both comments indexed at the shared key");
+    }
+
+    #[test]
+    fn comment_chip_ephemeral_keeps_classic_title() {
+        let (lines, _) = render_chip(&chip_comment(3, "commit-scoped", None));
+        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("Comment on line 3"), "no-thread comment keeps the classic title");
+        assert!(!joined.contains("\u{b7} OPEN"), "and carries no state label");
     }
 }

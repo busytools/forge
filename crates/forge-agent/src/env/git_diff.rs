@@ -42,6 +42,7 @@ use tokio::process::Command;
 use tokio::time::timeout;
 
 pub mod hunks;
+pub mod resolver;
 
 /// Max bytes accepted from any single `git` subprocess invocation.
 /// `--numstat` is small in practice; the per-file `git diff <target>

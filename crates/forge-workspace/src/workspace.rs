@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use forge_agent::AgentHandle;
 use forge_agent::client::SessionLaunchSettings;
-use forge_primitives::{PeerInflightStats, SDKSessionInfo};
+use forge_primitives::{PeerInflightStats, ReviewStatus, ReviewThread, SDKSessionInfo};
 
 use crate::mcp::peers::types::{
     AskChannel, CorrelationId, InflightAsk, WrappedKind, WrappedPrompt,
@@ -3380,6 +3380,132 @@ impl Workspace {
         Ok(rows.iter().any(|w| w.label == label))
     }
 
+    /// Persisted review threads for `(project, branch)`, empty when the
+    /// DB isn't open or the read fails. `project` is the forge.toml
+    /// project NAME (worktree-agnostic). Query-style, so this is a direct
+    /// method - review-thread persistence is local redb IO, not an
+    /// agent-driving action that needs the `Command` bus.
+    pub fn load_review_threads(&self, project: &str, branch: &str) -> Vec<ReviewThread> {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            return Vec::new();
+        };
+        crate::store::review::load(db, project, branch).unwrap_or_else(|error| {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                project = %project,
+                branch = %branch,
+                "loading review threads failed",
+            );
+            Vec::new()
+        })
+    }
+
+    /// Overwrite the review-thread set for `(project, branch)`. Best-effort:
+    /// a write failure is logged, not surfaced, since the diff overlay has
+    /// no recovery path.
+    pub fn save_review_threads(&self, project: &str, branch: &str, threads: &[ReviewThread]) {
+        if let Some(db) = self.db.lock().as_ref()
+            && let Err(error) = crate::store::review::save(db, project, branch, threads)
+        {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                project = %project,
+                branch = %branch,
+                "saving review threads failed",
+            );
+        }
+    }
+
+    /// Insert or replace one review thread by id in `(project, branch)`.
+    /// Returns whether the write was confirmed - `false` when the store
+    /// isn't open or the write failed, so the caller can leave the
+    /// comment in the at-risk (not-yet-durable) bucket.
+    pub fn upsert_review_thread(&self, project: &str, branch: &str, thread: ReviewThread) -> bool {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            return false;
+        };
+        match crate::store::review::upsert(db, project, branch, thread) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    project = %project,
+                    branch = %branch,
+                    "upserting a review thread failed",
+                );
+                false
+            }
+        }
+    }
+
+    /// Remove one review thread by id from `(project, branch)`, so a
+    /// deleted comment does not resurrect on the next hydrate. Returns
+    /// whether the removal was confirmed.
+    pub fn remove_review_thread(&self, project: &str, branch: &str, id: &str) -> bool {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            return false;
+        };
+        match crate::store::review::remove_thread(db, project, branch, id) {
+            Ok(removed) => removed,
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    project = %project,
+                    branch = %branch,
+                    id = %id,
+                    "removing a review thread failed",
+                );
+                false
+            }
+        }
+    }
+
+    /// Set the status of one review thread by id, bumping its `updated_at`.
+    pub fn set_review_thread_status(
+        &self,
+        project: &str,
+        branch: &str,
+        id: &str,
+        status: ReviewStatus,
+    ) {
+        if let Some(db) = self.db.lock().as_ref()
+            && let Err(error) = crate::store::review::set_status(db, project, branch, id, status)
+        {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                project = %project,
+                branch = %branch,
+                id = %id,
+                "setting a review-thread status failed",
+            );
+        }
+    }
+
+    /// Delete the whole review-thread set for `(project, branch)`. Called
+    /// on branch/worktree teardown so an abandoned or merged branch's
+    /// threads don't linger.
+    pub fn delete_review_threads(&self, project: &str, branch: &str) {
+        if let Some(db) = self.db.lock().as_ref()
+            && let Err(error) = crate::store::review::delete(db, project, branch)
+        {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                project = %project,
+                branch = %branch,
+                "deleting review threads failed",
+            );
+        }
+    }
+
     /// Install a redb store into a test workspace so the durable-vs-
     /// ephemeral persistence path is exercisable without `Workspace::new`.
     #[cfg(any(test, feature = "test-helpers"))]
@@ -5584,6 +5710,58 @@ mod tests {
             Some(crate::ui::SpinnerStyle::Ember),
             "persist_spinner writes the override into the store",
         );
+    }
+
+    #[test]
+    fn review_thread_crud_round_trips_through_the_workspace() {
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+        };
+        let make = |id: &str, line: u32| ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line,
+                content_hash: u64::from(line),
+                context: vec!["ctx".to_owned()],
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: format!("c{id}"),
+                at: "2026-07-19T10:00:00Z".to_owned(),
+            }],
+            status: ReviewStatus::Open,
+            created_at: "2026-07-19T10:00:00Z".to_owned(),
+            updated_at: "2026-07-19T10:00:00Z".to_owned(),
+        };
+
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+
+        assert!(ws.load_review_threads("forge", "feat").is_empty(), "empty on miss");
+
+        ws.upsert_review_thread("forge", "feat", make("a", 10));
+        ws.upsert_review_thread("forge", "feat", make("b", 20));
+        assert_eq!(ws.load_review_threads("forge", "feat").len(), 2);
+
+        ws.set_review_thread_status("forge", "feat", "a", ReviewStatus::Resolved);
+        let loaded = ws.load_review_threads("forge", "feat");
+        assert_eq!(loaded.iter().find(|t| t.id == "a").expect("a").status, ReviewStatus::Resolved);
+        assert_eq!(loaded.iter().find(|t| t.id == "b").expect("b").status, ReviewStatus::Open);
+
+        // A different (project, branch) is scoped separately.
+        ws.save_review_threads("forge", "other", &[make("c", 30)]);
+        assert_eq!(ws.load_review_threads("forge", "feat").len(), 2, "other branch is isolated");
+        assert_eq!(ws.load_review_threads("forge", "other").len(), 1);
+
+        ws.delete_review_threads("forge", "feat");
+        assert!(ws.load_review_threads("forge", "feat").is_empty(), "teardown clears the branch");
+        assert_eq!(ws.load_review_threads("forge", "other").len(), 1, "delete is scoped");
     }
 
     #[test]
