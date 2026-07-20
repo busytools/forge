@@ -3597,7 +3597,16 @@ impl Workspace {
     pub async fn refresh_pricing(self: &Arc<Self>) -> bool {
         let fresh = {
             let workspace = Arc::clone(self);
-            tokio::task::spawn_blocking(move || workspace.pricing_is_fresh()).await.unwrap_or(false)
+            tokio::task::spawn_blocking(move || workspace.pricing_is_fresh()).await.unwrap_or_else(
+                |error| {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        %error,
+                        "pricing freshness-check task failed; treating the cache as stale",
+                    );
+                    false
+                },
+            )
         };
         if fresh {
             return false;
@@ -3608,7 +3617,14 @@ impl Workspace {
         let workspace = Arc::clone(self);
         tokio::task::spawn_blocking(move || workspace.store_fresh_pricing(json))
             .await
-            .unwrap_or(false)
+            .unwrap_or_else(|error| {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    "pricing store task failed; the cache was not updated",
+                );
+                false
+            })
     }
 
     /// Store freshly-fetched pricing json unless it parses to an empty
