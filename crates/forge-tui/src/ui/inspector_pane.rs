@@ -584,7 +584,7 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // explicit `CronDelete`. The MONITORS section is gone; Monitor
     // tool calls now render their live tail directly in chat (see
     // `ui::message::render_lifecycle_one_liner`'s `"Monitor"` arm).
-    if !app.schedules().is_empty() || !app.forge_crons.is_empty() {
+    if !app.schedules().is_empty() || !app.forge_schedule_rows.is_empty() {
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
@@ -1488,17 +1488,13 @@ const TASKS_MAX: usize = 5;
 fn append_schedules_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // Two sources share this section: the chat-parsed cloud routines
     // (`ScheduleWakeup` / `CronCreate`, per-session) and the durable
-    // forge crons (`mcp__forge__cron`, sourced from the workspace via
-    // the cached `app.forge_crons` snapshot). Forge crons carry a
-    // concrete `next_fire`, so they render with a live countdown.
+    // forge crons (`mcp__forge__cron`). The forge-cron rows are humanized
+    // once per ~1s tick into `app.forge_schedule_rows`, so the render
+    // does no timezone syscall or humanize allocation per frame; the live
+    // countdown still recomputes from each row's `fire_at` below.
     let now = std::time::SystemTime::now();
     let mut entries: Vec<crate::app::ScheduleEntry> = app.schedules().to_vec();
-    // Resolve the local zone (a per-frame syscall) only when there are
-    // forge crons to humanize - most sessions have none.
-    if !app.forge_crons.is_empty() {
-        let tz = forge_workspace::env::timezone::system_timezone();
-        entries.extend(app.forge_crons.iter().map(|c| forge_cron_to_schedule_entry(c, now, tz)));
-    }
+    entries.extend(app.forge_schedule_rows.iter().cloned());
     if entries.is_empty() {
         return;
     }
@@ -1664,7 +1660,7 @@ fn wrap_app_list(names: &[String], max_width: usize) -> Vec<String> {
 /// schedule is humanized (`daily at 09:00` for recurring, a local
 /// wall-clock time for run-once). `fire_at` carries the concrete
 /// `next_fire` so [`append_schedule_row`] renders a live countdown.
-fn forge_cron_to_schedule_entry(
+pub(crate) fn forge_cron_to_schedule_entry(
     cron: &forge_primitives::CronEntry,
     now: std::time::SystemTime,
     tz: &time_tz::Tz,
@@ -1689,7 +1685,7 @@ fn forge_cron_to_schedule_entry(
 
 /// First non-blank line of a prompt, trimmed - the headline fallback
 /// when a cron carries no description.
-fn first_line(prompt: &str) -> String {
+pub(crate) fn first_line(prompt: &str) -> String {
     prompt.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default().to_owned()
 }
 
@@ -2630,7 +2626,7 @@ mod tests {
         use std::time::{Duration, SystemTime};
 
         let mut app = App::test_default();
-        app.forge_crons = vec![CronEntry {
+        let cron = CronEntry {
             id: CronId::from("c1"),
             project_name: "cronproj".to_owned(),
             kind: CronKind::Recurring("0 9 * * *".to_owned()),
@@ -2640,7 +2636,12 @@ mod tests {
             last_fire: None,
             next_fire: SystemTime::now() + Duration::from_secs(3600),
             team_role: None,
-        }];
+        };
+        app.forge_schedule_rows = vec![forge_cron_to_schedule_entry(
+            &cron,
+            SystemTime::now(),
+            time_tz::timezones::db::UTC,
+        )];
 
         let mut lines = Vec::new();
         append_schedules_section(&mut lines, &app, 60);
@@ -2659,7 +2660,7 @@ mod tests {
         // Regression: the section gate must draw SCHEDULES from durable
         // forge crons even when the cloud-wakeup list is empty.
         let mut app = App::test_default();
-        app.forge_crons = vec![CronEntry {
+        let cron = CronEntry {
             id: CronId::from("c1"),
             project_name: "cronproj".to_owned(),
             kind: CronKind::Recurring("0 9 * * *".to_owned()),
@@ -2669,7 +2670,12 @@ mod tests {
             last_fire: None,
             next_fire: SystemTime::now() + Duration::from_secs(3600),
             team_role: None,
-        }];
+        };
+        app.forge_schedule_rows = vec![forge_cron_to_schedule_entry(
+            &cron,
+            SystemTime::now(),
+            time_tz::timezones::db::UTC,
+        )];
         assert!(app.schedules().is_empty(), "precondition: no cloud wakeups");
 
         let mut lines = Vec::new();

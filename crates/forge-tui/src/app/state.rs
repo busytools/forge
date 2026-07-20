@@ -298,6 +298,12 @@ pub struct App {
     /// per frame (mirrors the git-diff snapshot pattern). Empty when
     /// there's no active project or it has no crons.
     pub forge_crons: Vec<forge_primitives::CronEntry>,
+    /// Presentation rows for the Inspector SCHEDULES section, humanized
+    /// once per ~1s tick by [`App::refresh_forge_crons`] (parallel to the
+    /// raw `forge_crons`). The render reads these instead of resolving
+    /// the local timezone + humanizing per frame; the live countdown
+    /// still recomputes from each row's `fire_at` at render time.
+    pub forge_schedule_rows: Vec<crate::app::state::types::ScheduleEntry>,
     /// Active project's Gotify subscriptions and stream connection
     /// status. Refreshed on the ~1s tick by [`App::refresh_gotify`]; the
     /// Inspector GOTIFY section reads these caches each render (mirrors
@@ -2015,12 +2021,26 @@ impl App {
     /// bucket resolves its project once at Connect, so the per-tick read
     /// never re-derives it from a stale / synthetic / pre-Connect cwd.
     /// Empty when the active bucket has no project yet or it has no crons.
+    /// Also humanizes the crons into `forge_schedule_rows` here (resolving
+    /// the local timezone once) so the render never pays that per frame.
     pub fn refresh_forge_crons(&mut self) {
         let mut crons = match (self.active_project_name(), self.workspace.as_ref()) {
             (Some(name), Some(ws)) => ws.crons_for_project(&name),
             _ => Vec::new(),
         };
         crons.sort_by_key(|c| c.next_fire);
+        // Resolve the local zone (an OS probe) only when there are crons
+        // to humanize - most sessions have none.
+        self.forge_schedule_rows = if crons.is_empty() {
+            Vec::new()
+        } else {
+            let now = std::time::SystemTime::now();
+            let tz = forge_workspace::env::timezone::system_timezone();
+            crons
+                .iter()
+                .map(|c| crate::ui::inspector_pane::forge_cron_to_schedule_entry(c, now, tz))
+                .collect()
+        };
         self.forge_crons = crons;
     }
 
@@ -3093,6 +3113,7 @@ impl App {
             sessions,
             active_session_key: Some(pending_key),
             forge_crons: Vec::new(),
+            forge_schedule_rows: Vec::new(),
             gotify_subs: Vec::new(),
             gotify_connected: false,
             help_view: HelpView::Keys,
@@ -3934,6 +3955,50 @@ mod tests {
             "resolves via the pane/top-bar resolver despite a None stamp + blank cwd",
         );
         assert_eq!(app.forge_crons, vec![cron], "SCHEDULES populates via the robust chain");
+    }
+
+    #[test]
+    fn refresh_forge_crons_caches_humanized_schedule_rows() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+
+        let mut app = App::test_default();
+        let ws = app.workspace.clone().expect("test workspace");
+        let path = "/Users/me/Projects/trader-cc";
+        ws.seed_test_project_with_static_workers("trader-cc", path, &[]);
+        let uuid = "acbd8a76-448b-4dda-bb01-dd930cdd261a";
+        ws.record_connected_session(path, uuid, None);
+        ws.seed_test_cron(CronEntry {
+            id: CronId::from("c1"),
+            project_name: "trader-cc".to_owned(),
+            kind: CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: "market open".to_owned(),
+            description: Some("Morning digest".to_owned()),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+            team_role: None,
+        });
+        let key = forge_workspace::SessionKey::from_session_id(uuid);
+        let mut bucket = crate::app::session::UiSession::new(key.clone());
+        bucket.project = Some("trader-cc".to_owned());
+        app.sessions.insert(key.clone(), bucket);
+        app.active_session_key = Some(key);
+
+        app.refresh_forge_crons();
+        assert_eq!(app.forge_crons.len(), 1, "raw snapshot still populated");
+        assert_eq!(
+            app.forge_schedule_rows.len(),
+            1,
+            "the tick humanizes the cron into a cached presentation row",
+        );
+        let row = &app.forge_schedule_rows[0];
+        assert_eq!(row.schedule, "daily at 09:00", "schedule humanized once on the tick");
+        assert_eq!(row.description.as_deref(), Some("Morning digest"), "description headlines");
+        assert_eq!(
+            row.fire_at,
+            Some(std::time::SystemTime::UNIX_EPOCH),
+            "fire_at drives the countdown"
+        );
     }
 
     /// Last-resort chain link: when the stamp is None AND the catalog has
