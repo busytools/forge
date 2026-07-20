@@ -2211,8 +2211,8 @@ fn handle_rail_click(overlay: &mut DiffOverlayState, row: u16) -> MouseEffect {
     // file leaves. We resolve the click by walking `rail_keys`
     // (parallel to the rendered rows) at offset `rail_scroll`.
     // The banner / rule / blank rows live at the head of the list
-    // and don't scroll - they're always at the absolute screen
-    // rows 0, 1, 2. The scrollable portion starts at row 3
+    // and don't scroll - they're at rows 0, 1, 2 relative to the
+    // rail's top. The scrollable portion starts at row 3
     // (== FIRST_FILE_ROW_Y).
     let row_idx_in_keys = if row < FIRST_FILE_ROW_Y {
         usize::from(row)
