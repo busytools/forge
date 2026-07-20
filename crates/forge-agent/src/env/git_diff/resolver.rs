@@ -186,7 +186,7 @@ mod tests {
             new_count: 0,
             lines: vec![new_line("a", 1), new_line("b", 2), new_line("c", 3), new_line("d", 4)],
         };
-        // Middle: two before, one after (clamped by len).
+        // Middle: one before, two after (clamped by len).
         assert_eq!(
             capture_context(&hunk, 1, 2),
             vec!["a".to_owned(), "c".to_owned(), "d".to_owned()]
