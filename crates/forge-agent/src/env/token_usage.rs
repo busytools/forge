@@ -797,7 +797,10 @@ mod tests {
         assert_eq!(projects[0].label, "pricey-proj", "sorted by cost descending");
         assert_eq!(projects[1].label, "cheap-proj");
         assert_eq!(projects.iter().find(|r| r.label == "cheap-proj").expect("cheap").output, 100);
-        assert_eq!(projects.iter().find(|r| r.label == "pricey-proj").expect("pricey").output, 1000);
+        assert_eq!(
+            projects.iter().find(|r| r.label == "pricey-proj").expect("pricey").output,
+            1000
+        );
     }
 
     #[test]
