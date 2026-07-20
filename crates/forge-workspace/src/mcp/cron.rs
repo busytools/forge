@@ -306,6 +306,7 @@ mod tests {
             kind: CronKind::Recurring("0 9 * * *".to_owned()),
             prompt: "p".to_owned(),
             created_at: SystemTime::UNIX_EPOCH,
+            description: None,
             last_fire: None,
             next_fire: SystemTime::UNIX_EPOCH,
             team_role: None,
