@@ -6048,6 +6048,34 @@ mod tests {
     }
 
     #[test]
+    fn pricing_is_fresh_only_within_the_daily_window() {
+        let (_dir, ws) = usage_workspace();
+        assert!(!ws.pricing_is_fresh(), "no cache is not fresh");
+        ws.store_pricing(&crate::store::pricing::CachedPricing {
+            fetched_at: std::time::SystemTime::now(),
+            json: r#"{"m":{"input_cost_per_token":1,"output_cost_per_token":1}}"#.to_owned(),
+        });
+        assert!(ws.pricing_is_fresh(), "a just-now fetch is within the window");
+        ws.store_pricing(&crate::store::pricing::CachedPricing {
+            fetched_at: std::time::SystemTime::now()
+                - std::time::Duration::from_secs(2 * 24 * 60 * 60),
+            json: "{}".to_owned(),
+        });
+        assert!(!ws.pricing_is_fresh(), "a two-day-old fetch is stale and re-fetched");
+    }
+
+    #[test]
+    fn store_fresh_pricing_keeps_a_good_cache_on_a_garbage_response() {
+        let (_dir, ws) = usage_workspace();
+        let good = r#"{"m":{"input_cost_per_token":0.001,"output_cost_per_token":0.002}}"#;
+        assert!(ws.store_fresh_pricing(good.to_owned()), "a valid table stores");
+        assert!(!ws.load_pricing().is_empty(), "the cache holds the priced model");
+        // A garbage 200 parses empty and must NOT wipe the good cache.
+        assert!(!ws.store_fresh_pricing("not json".to_owned()), "garbage is rejected");
+        assert!(!ws.load_pricing().is_empty(), "the good cache survives the garbage response");
+    }
+
+    #[test]
     fn boot_load_reads_the_redb_spinner_override() {
         // Stands in for the removed connect.rs override test: a persisted
         // redb spinner override is what account_cache::load returns, so
