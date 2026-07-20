@@ -1340,15 +1340,22 @@ fn hydrate_threads(app: &mut App) {
     };
 
     let loaded = workspace.load_review_threads(&project, &branch);
+    // Threads are keyed by (project, branch) across every diff target;
+    // process only those authored against the current target, and keep
+    // the rest untouched so the whole-row writeback below preserves them
+    // instead of silently dropping other-target threads.
+    let target = overlay.target.clone();
+    let (mine, others): (Vec<_>, Vec<_>) =
+        loaded.into_iter().partition(|t| t.anchor.base_ref == target);
     let had_whole_diff = overlay.comments.iter().any(|c| c.commit.is_none());
-    if loaded.is_empty() && !had_whole_diff {
+    if mine.is_empty() && !had_whole_diff {
         return;
     }
 
-    let mut rebuilt = Vec::with_capacity(loaded.len());
-    let mut persist = Vec::with_capacity(loaded.len());
+    let mut rebuilt = Vec::with_capacity(mine.len());
+    let mut persist = others;
     let mut changed = false;
-    for mut thread in loaded {
+    for mut thread in mine {
         let comment = match resolver::resolve_anchor(&thread.anchor, &overlay.files) {
             AnchorResolution::InPlace { file_idx, hunk_idx, line_idx }
             | AnchorResolution::Moved { file_idx, hunk_idx, line_idx } => {
@@ -4579,5 +4586,59 @@ mod tests {
         // Resolved / outdated: never bundled even if touched this session.
         assert!(!is_bundle_eligible(&make(true, Some(ReviewStatus::Resolved))));
         assert!(!is_bundle_eligible(&make(true, Some(ReviewStatus::Outdated))));
+    }
+
+    #[test]
+    fn hydrate_scopes_to_target_and_preserves_other_target_threads() {
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        let seed = |id: &str, base_ref: &str, text: &str| forge_primitives::ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 5,
+                content_hash: resolver::content_hash(text),
+                context: Vec::new(),
+                base_ref: base_ref.to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: text.to_owned(),
+                at: String::new(),
+            }],
+            status: ReviewStatus::Open,
+            created_at: "t0".to_owned(),
+            updated_at: "t0".to_owned(),
+        };
+        // Same branch, two diff targets.
+        ws.save_review_threads(
+            "forge",
+            "feat",
+            &[seed("a", "main", "let a = 1;"), seed("b", "HEAD", "let b = 2;")],
+        );
+
+        // Open against "main"; its thread drifts (line 5 -> 8), forcing a
+        // writeback. The "HEAD"-target thread must survive that writeback.
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 8)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+        hydrate_threads(&mut app);
+
+        // Only the current-target thread renders.
+        let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
+        assert_eq!(comments.len(), 1, "only the main-target thread renders");
+        assert_eq!(comments[0].thread.as_ref().expect("thread").id, "a");
+
+        let reloaded = ws.load_review_threads("forge", "feat");
+        assert_eq!(reloaded.len(), 2, "the HEAD-target thread survived the writeback");
+        assert_eq!(
+            reloaded.iter().find(|t| t.id == "a").expect("a").anchor.line,
+            8,
+            "the main-target thread re-anchored to the moved line",
+        );
+        assert!(reloaded.iter().any(|t| t.id == "b"), "the HEAD-target thread is preserved");
     }
 }
