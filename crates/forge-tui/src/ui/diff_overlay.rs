@@ -74,23 +74,40 @@ const STEPPER_MOVE_ROW: u16 = 2;
 const STEPPER_HEIGHT: u16 = 4;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
-    let area = frame.area();
-    app.cached_frame_area = area;
+    app.cached_frame_area = frame.area();
 
-    if app.diff_overlay.is_none() {
-        render_missing_state(frame, area);
+    let Some(overlay) = app.diff_overlay.as_ref() else {
+        super::page::render_page(frame, "Diff review", None, Line::default(), |frame, body| {
+            render_missing_state(frame, body);
+        });
         return;
-    }
+    };
 
-    // Reserve the top rows for the commit stepper (commit mode only)
-    // and the bottom row for the key-hints bar; the rail + body fill
-    // what's left.
+    // Build the key-hints footer before entering the scaffold body. The
+    // effective view mode depends on the eventual pane width (body minus
+    // the FILES rail), so derive it from the inner width up front.
+    let body_width = frame.area().width.saturating_sub(2);
+    let rail_width = rail_width_for(body_width);
+    let sep = u16::from(rail_width > 0);
+    let pane_width = body_width.saturating_sub(rail_width).saturating_sub(sep);
+    let footer =
+        footer_line(overlay, effective_view_mode(overlay.view_mode, pane_width), body_width);
+
+    super::page::render_page(frame, "Diff review", None, footer, |frame, body| {
+        render_diff_body(frame, body, app);
+    });
+}
+
+fn render_diff_body(frame: &mut Frame, area: Rect, app: &mut App) {
+    // Reserve the top rows for the commit stepper (commit mode only);
+    // the key-hints footer lives on the page scaffold, so the rail +
+    // body fill the rest of the body rect.
     let stepper_h: u16 = if app.diff_overlay.as_ref().is_some_and(|o| !o.commits.is_empty()) {
         STEPPER_HEIGHT
     } else {
         0
     };
-    let usable_height = area.height.saturating_sub(1).saturating_sub(stepper_h);
+    let usable_height = area.height.saturating_sub(stepper_h);
     let usable_area = Rect {
         x: area.x,
         y: area.y.saturating_add(stepper_h),
@@ -190,15 +207,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         o.pane_origin_row = pane_area.y;
         o.pane_origin_col = pane_area.x;
         o.pane_width = pane_area.width;
+        o.content_origin_col = area.x;
+        o.rail_origin_row = rail_area.map_or(usable_area.y, |r| r.y);
     }
 
     // 5. Draw: rail (if shown), separator, the pinned sticky header +
-    //    the scrolling tail beneath it, then the key-hints bar.
+    //    the scrolling tail beneath it.
     if let (Some(rail_area), Some(sep_area)) = (rail_area, sep_area) {
         render_rail(frame, rail_area, app);
         render_separator(frame, sep_area);
     }
-    let Some(overlay) = app.diff_overlay.as_ref() else { return };
     let head_height = u16::try_from(head_count).unwrap_or(1);
     let (head, tail) = lines.split_at(head_count);
     let head_rect =
@@ -212,7 +230,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Paragraph::new(head.to_vec()), head_rect);
     let tail_scroll_u16 = u16::try_from(tail_scroll).unwrap_or(u16::MAX);
     frame.render_widget(Paragraph::new(tail.to_vec()).scroll((tail_scroll_u16, 0)), tail_rect);
-    render_footer(frame, area, overlay, effective_view_mode(overlay.view_mode, pane_area.width));
 
     // Commit stepper on top (commit mode only), and the jump dropdown
     // painted over the body when open. Both draw last so they sit above
@@ -783,16 +800,11 @@ fn render_separator(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// Render the pinned key-hints bar along the bottom edge: scroll /
-/// page / `t` toggle / click-to-comment / click-to-jump / Esc, with
-/// the current mode (unified / split) right-justified. With a comment
-/// editor open it shows the editor's Enter/Esc hints instead. Painted
-/// over the last row of `area`, after the body, so it never overlaps.
-fn render_footer(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState, mode: DiffViewMode) {
-    if area.height < 2 {
-        return;
-    }
-    let footer_rect = Rect { x: area.x, y: area.y + area.height - 1, width: area.width, height: 1 };
+/// The pinned key-hints line for the page footer: scroll / page / `t`
+/// toggle / click-to-comment / click-to-jump / Esc, with the effective
+/// mode (unified / split) right-justified to `width`. With a comment
+/// editor open it shows the editor's Enter/Esc hints instead.
+fn footer_line(overlay: &DiffOverlayState, mode: DiffViewMode, width: u16) -> Line<'static> {
     let dim = Style::default().fg(theme::DIM);
     let orange = Style::default().fg(theme::RUST_ORANGE);
     let count = overlay.comments.len();
@@ -853,14 +865,14 @@ fn render_footer(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState, mode
         DiffViewMode::Split => "split",
     };
     let left_width: usize = spans.iter().map(Span::width).sum();
-    let pad = usize::from(area.width)
+    let pad = usize::from(width)
         .saturating_sub(left_width)
         .saturating_sub(mode_label.width())
         .saturating_sub(2);
     spans.push(Span::raw(" ".repeat(pad)));
     spans.push(Span::styled(mode_label, orange));
     spans.push(Span::raw(" "));
-    frame.render_widget(Paragraph::new(Line::from(spans)), footer_rect);
+    Line::from(spans)
 }
 
 /// One logical row of the unified body, before syntax highlighting
@@ -2431,23 +2443,28 @@ mod tests {
         terminal.draw(|frame| render(frame, &mut app)).expect("draw");
         let buffer = terminal.backend().buffer();
         let w = usize::from(width);
-        let row =
-            |r: usize| -> String { (0..w).map(|x| buffer.content[r * w + x].symbol()).collect() };
+        // Interior of a row, stripping the page border columns so the
+        // stepper's own layout is asserted (the box shifts everything
+        // down one row and in one column).
+        let row = |r: usize| -> String {
+            (1..w - 1).map(|x| buffer.content[r * w + x].symbol()).collect()
+        };
 
-        assert!(row(0).contains("COMMITS"), "title on row 0: {:?}", row(0));
-        assert!(row(1).trim().is_empty(), "blank spacer on row 1: {:?}", row(1));
+        assert!(row(0).contains("Diff review"), "the page title tops the box: {:?}", row(0));
+        assert!(row(1).contains("COMMITS"), "title on row 1: {:?}", row(1));
+        assert!(row(2).trim().is_empty(), "blank spacer on row 2: {:?}", row(2));
         assert!(
-            row(2).contains("a3f9c1e") && row(2).contains("jump"),
-            "movement row on row 2: {:?}",
-            row(2)
+            row(3).contains("a3f9c1e") && row(3).contains("jump"),
+            "movement row on row 3: {:?}",
+            row(3)
         );
-        assert!(row(3).trim().is_empty(), "blank spacer on row 3: {:?}", row(3));
-        assert!(row(4).contains("FILES"), "FILES rail begins on row 4: {:?}", row(4));
+        assert!(row(4).trim().is_empty(), "blank spacer on row 4: {:?}", row(4));
+        assert!(row(5).contains("FILES"), "FILES rail begins on row 5: {:?}", row(5));
 
         assert_eq!(
             app.diff_overlay.as_ref().and_then(|o| o.jump_hint_span).map(|(r, _, _)| r),
-            Some(2),
-            "the jump-hint click span sits on the movement row (row 2)",
+            Some(3),
+            "the jump-hint click span sits on the movement row (row 3)",
         );
     }
 
