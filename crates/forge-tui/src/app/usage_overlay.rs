@@ -49,26 +49,39 @@ impl Window {
     }
 }
 
-/// The scanned report delivered from the background task.
+/// Outcome of a background scan delivered to the overlay.
 #[derive(Debug)]
-pub struct UsageOverlayEvent {
-    pub report: UsageReport,
+pub enum UsageOverlayEvent {
+    // Boxed to keep the enum small - a bare `UsageReport` dwarfs the
+    // unit `ScanFailed` variant.
+    Report(Box<UsageReport>),
+    /// The scan task died (a panic surfaces as a dropped `JoinError`);
+    /// without this the overlay would hang on "scanning…" forever.
+    ScanFailed,
 }
 
 /// Overlay presentation state. `report` is `None` until the first scan
-/// lands (the overlay shows a scanning notice meanwhile).
+/// lands (the overlay shows a scanning notice meanwhile); `scan_failed`
+/// flips the notice to a retry hint when a scan died before any report.
 #[derive(Debug, Clone)]
 pub struct UsageOverlayState {
     pub report: Option<UsageReport>,
     pub group: Grouping,
     pub window: Window,
     pub scroll: u16,
+    pub scan_failed: bool,
 }
 
 impl UsageOverlayState {
     fn new() -> Self {
         // Defaults match the mock: grouped by project, lifetime window.
-        Self { report: None, group: Grouping::Project, window: Window::Lifetime, scroll: 0 }
+        Self {
+            report: None,
+            group: Grouping::Project,
+            window: Window::Lifetime,
+            scroll: 0,
+            scan_failed: false,
+        }
     }
 
     /// The chosen window's data, or `None` before the first scan.
@@ -116,23 +129,39 @@ fn spawn_fetch(app: &mut App) {
     let tx = app.usage_overlay_event_tx.clone();
     tokio::task::spawn_local(async move {
         let scan = workspace.clone();
-        if let Ok(report) = tokio::task::spawn_blocking(move || scan.scan_usage()).await {
-            let _ = tx.send(UsageOverlayEvent { report });
-        }
+        let _ = tx.send(scan_event(tokio::task::spawn_blocking(move || scan.scan_usage()).await));
         if workspace.refresh_pricing().await {
             let scan = workspace.clone();
-            if let Ok(report) = tokio::task::spawn_blocking(move || scan.scan_usage()).await {
-                let _ = tx.send(UsageOverlayEvent { report });
-            }
+            let _ =
+                tx.send(scan_event(tokio::task::spawn_blocking(move || scan.scan_usage()).await));
         }
     });
+}
+
+/// Map a `spawn_blocking` join result to an overlay event; a `JoinError`
+/// (the scan task panicked) becomes the failure sentinel.
+fn scan_event(
+    joined: Result<forge_primitives::token_usage::UsageReport, tokio::task::JoinError>,
+) -> UsageOverlayEvent {
+    match joined {
+        Ok(report) => UsageOverlayEvent::Report(Box::new(report)),
+        Err(_) => UsageOverlayEvent::ScanFailed,
+    }
 }
 
 /// Apply any scanned reports that arrived since the last frame.
 pub(crate) fn drain_events(app: &mut App) {
     while let Ok(event) = app.usage_overlay_event_rx.try_recv() {
         if let Some(overlay) = app.usage_overlay.as_mut() {
-            overlay.report = Some(event.report);
+            match event {
+                UsageOverlayEvent::Report(report) => {
+                    overlay.report = Some(*report);
+                    overlay.scan_failed = false;
+                }
+                // Only surfaces in the UI while there's no report to show;
+                // a failed re-scan keeps the last good report.
+                UsageOverlayEvent::ScanFailed => overlay.scan_failed = true,
+            }
             app.needs_redraw = true;
         }
     }
@@ -289,5 +318,29 @@ mod tests {
         state.window = Window::Today;
         assert_eq!(state.rows()[0].label, "today-m");
         assert_eq!(state.window_usage().expect("window").total.label, "TOTAL");
+    }
+
+    #[test]
+    fn scan_failed_flag_flips_and_a_report_clears_it() {
+        let mut app = App::test_default();
+        seed(&mut app);
+        app.usage_overlay_event_tx.send(UsageOverlayEvent::ScanFailed).expect("send failed");
+        drain_events(&mut app);
+        assert!(overlay(&app).scan_failed, "a dropped scan flips the failed flag");
+        assert!(overlay(&app).report.is_none());
+
+        let report = UsageReport {
+            today: window("m", "p"),
+            week: window("m", "p"),
+            month: window("m", "p"),
+            lifetime: window("m", "p"),
+            pricing_available: true,
+        };
+        app.usage_overlay_event_tx
+            .send(UsageOverlayEvent::Report(Box::new(report)))
+            .expect("send report");
+        drain_events(&mut app);
+        assert!(!overlay(&app).scan_failed, "a fresh report clears the failed flag");
+        assert!(overlay(&app).report.is_some());
     }
 }

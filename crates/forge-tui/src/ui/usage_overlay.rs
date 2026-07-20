@@ -27,8 +27,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         return;
     };
     if overlay.report.is_none() {
-        let line = Line::from(Span::styled("  scanning usage…", dim()));
-        frame.render_widget(Paragraph::new(line), area);
+        let (message, style) = if overlay.scan_failed {
+            ("  usage scan failed · Esc to close · reopen /usage to retry", warning())
+        } else {
+            ("  scanning usage…", dim())
+        };
+        frame.render_widget(Paragraph::new(Line::from(Span::styled(message, style))), area);
         return;
     }
 
@@ -373,6 +377,7 @@ mod tests {
             group: Grouping::Project,
             window: Window::Lifetime,
             scroll: 0,
+            scan_failed: false,
         });
         app
     }
@@ -446,6 +451,17 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 20)).expect("terminal");
         terminal.draw(|frame| render(frame, &mut app)).expect("draw");
         assert!(buffer_text(terminal.backend().buffer()).contains("scanning"));
+    }
+
+    #[test]
+    fn render_shows_a_retry_hint_when_the_scan_failed() {
+        let mut app = app_with(None);
+        if let Some(overlay) = app.usage_overlay.as_mut() {
+            overlay.scan_failed = true;
+        }
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).expect("terminal");
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+        assert!(buffer_text(terminal.backend().buffer()).contains("usage scan failed"));
     }
 
     #[test]
