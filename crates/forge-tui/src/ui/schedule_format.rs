@@ -164,6 +164,11 @@ mod tests {
         assert_eq!(humanize_cron("0 0 1 * *"), "monthly on the 1st");
         assert_eq!(humanize_cron("30 14 2 * *"), "monthly on the 2nd at 14:30");
         assert_eq!(humanize_cron("0 0 23 * *"), "monthly on the 23rd");
+        // Teens take `th`, not the 1st/2nd/3rd suffixes their last digit
+        // would otherwise pick.
+        assert_eq!(humanize_cron("0 0 11 * *"), "monthly on the 11th");
+        assert_eq!(humanize_cron("0 0 12 * *"), "monthly on the 12th");
+        assert_eq!(humanize_cron("0 0 13 * *"), "monthly on the 13th");
     }
 
     #[test]
@@ -175,6 +180,7 @@ mod tests {
         assert_eq!(humanize_cron("  weird  "), "weird");
         // Out-of-range clock falls through rather than lying.
         assert_eq!(humanize_cron("0 99 * * *"), "0 99 * * *");
+        assert_eq!(humanize_cron("99 9 * * *"), "99 9 * * *");
     }
 
     fn utc(year: i32, month: Month, day: u8, h: u8, m: u8) -> SystemTime {
