@@ -216,6 +216,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     forge.insert("/resume".into(), "Resume a session by ID".into());
     forge.insert("/plugins".into(), "Open plugins".into());
     forge.insert("/spinner".into(), "Show / set the spinner style".into());
+    forge.insert("/usage".into(), "Token/cost usage by project or model".into());
 
     // Claude group: commands advertised by the upstream claude CLI that
     // forge doesn't have its own handler for - forwarded as-is.
@@ -479,6 +480,7 @@ pub fn is_supported_command(app: &App, command_name: &str) -> bool {
             | "/resume"
             | "/plugins"
             | "/spinner"
+            | "/usage"
     ) || advertised_commands(app).iter().any(|c| c == command_name)
 }
 

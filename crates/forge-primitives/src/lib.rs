@@ -70,6 +70,7 @@ pub mod session_key;
 pub mod session_meta;
 pub mod session_update;
 pub mod subagents;
+pub mod token_usage;
 pub mod turn_error;
 pub mod usage;
 pub mod workers;

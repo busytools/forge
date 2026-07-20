@@ -36,6 +36,8 @@ parking_lot = { workspace = true }
 reqwest = { workspace = true }
 sha2 = { workspace = true }
 time = { workspace = true }
+time-tz = { workspace = true }
+iana-time-zone = { workspace = true }
 unicode-normalization = { workspace = true }
 uuid = { workspace = true }
 which = { workspace = true }

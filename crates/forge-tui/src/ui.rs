@@ -26,6 +26,7 @@ pub(crate) mod theme;
 mod tool_call;
 pub mod top_bar;
 mod two_column_list;
+mod usage_overlay;
 pub(crate) mod worker_status;
 mod wrap;
 
@@ -43,6 +44,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         ActiveView::Mcp => config::render_mcp(frame, app),
         ActiveView::Launchpad => launchpad::render(frame, app),
         ActiveView::Diff => diff_overlay::render(frame, app),
+        ActiveView::Usage => usage_overlay::render(frame, app),
     }
     // Modal overlay drawn over whatever view rendered above.
     if app.spinner_picker.is_some() {
