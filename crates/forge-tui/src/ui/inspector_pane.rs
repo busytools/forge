@@ -2621,6 +2621,47 @@ mod tests {
     }
 
     #[test]
+    fn headline_less_cloud_cron_renders_one_line_with_schedule() {
+        // A cloud CronCreate carries no description and no prompt, so the
+        // headline is empty and the row collapses to a single line showing
+        // the humanized schedule + badge.
+        use std::time::SystemTime;
+        let now = SystemTime::UNIX_EPOCH;
+        let entry = cron_entry(true, "", None, "every 5 minutes", None);
+        let mut lines = Vec::new();
+        append_schedule_row(&mut lines, &entry, now, 60);
+        assert_eq!(lines.len(), 1, "a headline-less cron is one line, not a blank headline");
+        let text = line_text(&lines[0]);
+        assert!(text.contains("every 5 minutes"), "the schedule is the row text: {text}");
+        assert!(text.contains("recurring"), "with its recurrence badge: {text}");
+    }
+
+    #[test]
+    fn two_line_cron_row_stays_within_a_narrow_pane() {
+        use std::time::{Duration, SystemTime};
+        let now = SystemTime::UNIX_EPOCH;
+        let entry = cron_entry(
+            false,
+            "prompt fallback headline that is far too long for the pane",
+            Some("An extremely long description headline that exceeds the pane budget"),
+            "an unusually long humanized schedule that also exceeds the width",
+            Some(now + Duration::from_secs(300)),
+        );
+        let width = 24usize;
+        let mut lines = Vec::new();
+        append_schedule_row(&mut lines, &entry, now, width);
+        assert_eq!(lines.len(), 2, "a described cron renders two lines");
+        for line in &lines {
+            let cols = line_text(line).chars().count();
+            assert!(
+                cols <= width,
+                "row overflows the {width}-col pane ({cols}): {:?}",
+                line_text(line)
+            );
+        }
+    }
+
+    #[test]
     fn schedules_section_renders_forge_cron_row_humanized() {
         use forge_primitives::cron::{CronEntry, CronId, CronKind};
         use std::time::{Duration, SystemTime};
