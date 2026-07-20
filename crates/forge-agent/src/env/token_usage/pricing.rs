@@ -99,7 +99,18 @@ async fn attempt_fetch(direct: bool) -> Option<String> {
     if direct {
         builder = builder.no_proxy();
     }
-    let client = builder.build().ok()?;
+    let client = match builder.build() {
+        Ok(client) => client,
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_agent::env::token_usage::pricing",
+                %error,
+                direct,
+                "pricing http client build failed",
+            );
+            return None;
+        }
+    };
     let response = match client.get(LITELLM_URL).send().await {
         Ok(response) => response,
         Err(error) => {
@@ -121,7 +132,18 @@ async fn attempt_fetch(direct: bool) -> Option<String> {
         );
         return None;
     }
-    response.text().await.ok()
+    match response.text().await {
+        Ok(body) => Some(body),
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_agent::env::token_usage::pricing",
+                %error,
+                direct,
+                "reading the pricing response body failed",
+            );
+            None
+        }
+    }
 }
 
 #[cfg(test)]
