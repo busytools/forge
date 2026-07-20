@@ -2834,6 +2834,37 @@ mod tests {
     }
 
     #[test]
+    fn handle_mouse_hit_tests_the_rail_at_the_inner_content_width() {
+        // handle_mouse derives the rail width from the page's INNER width
+        // (frame minus the two border columns), so a rail click resolves
+        // against the same geometry the renderer stashed. Simulate a
+        // rendered 160-wide frame: 158-wide content, rail at column 1.
+        let mut state = sample_state(); // 2 files, flat rail_keys
+        state.measured_heights = vec![Some(10), Some(4)];
+        state.content_origin_col = 1;
+        state.rail_origin_row = 1;
+        let mut app = App::test_default();
+        app.diff_overlay = Some(state);
+        app.cached_frame_area = ratatui::layout::Rect::new(0, 0, 160, 40);
+
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 5,  // inside the rail (spans col 1..1+rail_width)
+                row: 1 + 4, // rail top (1) + banner/rule/blank + file 1
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+        );
+
+        assert_eq!(
+            app.diff_overlay.as_ref().expect("overlay").doc_scroll,
+            10,
+            "the inner-width rail hit-test resolves file 1",
+        );
+    }
+
+    #[test]
     fn body_click_on_deleted_header_toggles_expand() {
         let mut state = DiffOverlayState::new(
             PathBuf::from("/tmp/repo"),

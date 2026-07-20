@@ -422,12 +422,17 @@ mod tests {
             .join("\n")
     }
 
-    /// Rightmost non-space column in the row containing `needle`.
-    fn rightmost_nonspace_col(buffer: &Buffer, needle: &str) -> Option<usize> {
+    /// Rightmost non-space column of the table content in the row
+    /// containing `needle`, excluding the page's right border so it
+    /// measures the table, not the box.
+    fn rightmost_content_col(buffer: &Buffer, needle: &str) -> Option<usize> {
         let width = usize::from(buffer.area.width);
         buffer.content.chunks(width).find_map(|row| {
             let line: String = row.iter().map(Cell::symbol).collect();
-            line.contains(needle).then(|| row.iter().rposition(|c| c.symbol() != " "))?
+            if !line.contains(needle) {
+                return None;
+            }
+            row[..width.saturating_sub(1)].iter().rposition(|c| c.symbol() != " ")
         })
     }
 
@@ -569,8 +574,12 @@ mod tests {
         let rendered = buffer_text(buffer);
         assert!(rendered.contains("claude-sonnet-4-5"), "full id, no ellipsis: {rendered}");
         assert!(!rendered.contains('…'), "no truncation at width 200: {rendered}");
-        let right = rightmost_nonspace_col(buffer, "claude-sonnet-4-5").expect("model row");
-        assert!(right > 100, "table fills toward the right edge, got column {right}");
+        let body_width = 200 - 2; // inner width inside the page border
+        let right = rightmost_content_col(buffer, "claude-sonnet-4-5").expect("model row");
+        assert!(
+            right >= body_width - 8,
+            "table content reaches the right edge (col {right} of inner {body_width})",
+        );
     }
 
     #[test]
