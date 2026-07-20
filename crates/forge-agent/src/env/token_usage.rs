@@ -446,9 +446,11 @@ fn make_row(label: String, counts: &TokenCounts, cost_usd: f64) -> UsageRow {
 
 /// Notional cost of `counts` at `model`'s price; 0 for an unpriced or
 /// `<synthetic>` model.
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "token counts stay well under 2^53, so the f64 conversion is exact"
+)]
 fn cost_of(model: &str, counts: &TokenCounts, pricing: &PricingTable) -> f64 {
-    // Token counts stay well under 2^53, so the f64 conversion is exact.
     let Some(price) = pricing.price(model) else {
         return 0.0;
     };

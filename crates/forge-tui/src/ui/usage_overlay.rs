@@ -121,7 +121,10 @@ fn header_lines(
         span("  split   input ", dim()),
         span(format!("{}    ", fmt_tokens(life.input)), Style::default()),
         span("cache-write ", warning()),
-        span(format!("{}    ", fmt_tokens(life.cache_write_1h + life.cache_write_5m)), warning()),
+        span(
+            format!("{}    ", fmt_tokens(life.cache_write_1h.saturating_add(life.cache_write_5m))),
+            warning(),
+        ),
         span("cache-read ", success()),
         span(format!("{} ({cache_pct}%)    ", fmt_tokens(life.cache_read)), success()),
         span("output ", dim()),
@@ -238,7 +241,7 @@ fn data_row(row: &UsageRow, group: Grouping, is_total: bool) -> Line<'static> {
     let mut spans = vec![
         span(format!("  {}", pad_label(&row.label)), label_style),
         span(num(&fmt_tokens(row.input)), dim()),
-        span(num(&fmt_tokens(row.cache_write_1h + row.cache_write_5m)), warning()),
+        span(num(&fmt_tokens(row.cache_write_1h.saturating_add(row.cache_write_5m))), warning()),
         span(num(&fmt_tokens(row.cache_read)), success()),
         span(num(&fmt_tokens(row.output)), dim()),
         span(num(&fmt_tokens(row.tokens())), bold()),
