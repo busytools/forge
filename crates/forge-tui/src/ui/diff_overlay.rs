@@ -2468,6 +2468,96 @@ mod tests {
         );
     }
 
+    // ---- render -> click round-trip at the real border offset ----
+
+    fn one_line_file(path: &str) -> FileHunks {
+        use forge_workspace::env::git_diff::hunks::DiffLine;
+        FileHunks {
+            path: path.into(),
+            status: FileStatus::Modified,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_count: 1,
+                new_start: 1,
+                new_count: 1,
+                lines: vec![DiffLine {
+                    kind: DiffLineKind::Context,
+                    text: "x".into(),
+                    old_line: Some(1),
+                    new_line: Some(1),
+                }],
+            }],
+        }
+    }
+
+    /// Render the overlay (so the renderer stashes the real border-offset
+    /// geometry), then left-click the second file's rail row through
+    /// `handle_mouse` and confirm it resolves to file 1 - the guard for
+    /// "a screen click maps to the right file now that the content is
+    /// offset by the page border". The rail rows are banner / rule / blank
+    /// then file0 / file1, so file 1 sits four rows below the rail top.
+    fn rail_click_round_trip(commit_mode: bool) {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp/repo"),
+            "HEAD".to_owned(),
+            vec![one_line_file("a.rs"), one_line_file("b.rs")],
+        );
+        state.scanner_ok = true;
+        if commit_mode {
+            state.commits = vec![forge_workspace::env::git_diff::hunks::CommitMeta {
+                sha: "a".into(),
+                short_sha: "a3f9c1e".into(),
+                subject: "seed".into(),
+                body: String::new(),
+            }];
+            state.scope = crate::app::diff_overlay::DiffScope::Commit(0);
+        }
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Diff;
+        app.diff_overlay = Some(state);
+
+        let mut terminal = Terminal::new(TestBackend::new(130, 24)).expect("terminal");
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+
+        let (rail_top, file1_offset) = {
+            let overlay = app.diff_overlay.as_ref().expect("overlay");
+            (overlay.rail_origin_row, overlay.doc_offsets().starts[1])
+        };
+        assert!(file1_offset > 0, "file 0 must occupy rows so the jump to file 1 is observable");
+
+        crate::app::diff_overlay::handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 5,
+                row: rail_top + 4,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+
+        assert_eq!(
+            app.diff_overlay.as_ref().expect("overlay").doc_scroll,
+            file1_offset,
+            "a rail click at the rendered border offset jumps to file 1 (commit_mode={commit_mode})",
+        );
+    }
+
+    #[test]
+    fn rail_click_resolves_file_after_border_offset_plain_mode() {
+        rail_click_round_trip(false);
+    }
+
+    #[test]
+    fn rail_click_resolves_file_after_border_offset_commit_mode() {
+        // Commit mode pushes the rail below the stepper, so this pins
+        // the rail-below-stepper hit-test geometry.
+        rail_click_round_trip(true);
+    }
+
     // ---- commit-message block ----
 
     fn commit_state_with_body(subject: &str, body: &str) -> DiffOverlayState {
