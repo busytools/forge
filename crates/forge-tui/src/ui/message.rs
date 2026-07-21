@@ -3859,9 +3859,7 @@ mod tests {
     /// it. Reuses the existing `peer_block` to_prose shape so the test
     /// doesn't have to hand-roll the bracket format.
     fn make_peer_envelope_message(sender: &str, org: &str, body: &str) -> ChatMessage {
-        let text = format!(
-            "[Message id=t-12345678 hop=1/10 from agent '{sender}' (org '{org}')]\n\n{body}"
-        );
+        let text = format!("[Message id=t-12345678 from agent '{sender}' (org '{org}')]\n\n{body}");
         ChatMessage::new_peer_envelope(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete(&text))],
@@ -3923,9 +3921,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     fn make_envelope_msg(sender: &str, org: &str, body: &str) -> ChatMessage {
-        let text = format!(
-            "[Message id=t-12345678 hop=1/10 from agent '{sender}' (org '{org}')]\n\n{body}"
-        );
+        let text = format!("[Message id=t-12345678 from agent '{sender}' (org '{org}')]\n\n{body}");
         ChatMessage::new_peer_envelope(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete(&text))],

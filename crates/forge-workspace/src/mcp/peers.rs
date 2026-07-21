@@ -61,11 +61,6 @@ pub(crate) fn add_tools(
     builder.tool(whoami).tool(list_agents).tool(tell_agent).tool(ask_agent)
 }
 
-/// Default hop limit for forwarded ask/tell chains (#114 v1 brainstorm
-/// locked at 10). Bumped at each forward; refused past the limit by
-/// `WorkspaceFacade::deliver_peer_prompt`.
-const HOP_LIMIT: u8 = 10;
-
 /// `peers__whoami` - caller's own identity. No args. Returns a
 /// JSON blob containing name, org, path, current liveness, model
 /// (when known), and the current in-flight peer-message counters.
@@ -227,11 +222,6 @@ impl Tool for ListAgents {
 ///   (log warn; LLM hallucinated the wrong target)
 /// - Not found → wrapper kind = Message (log warn; LLM hallucinated
 ///   the correlation id)
-///
-/// Hop count is stamped automatically - caller doesn't pass it. The
-/// outgoing hop is `peek_current_inbound_hop(caller).unwrap_or(0) + 1`.
-/// Outgoing chains exceeding `HOP_LIMIT` (default 10) are refused by
-/// the facade with `is_error: true`.
 pub(crate) struct TellAgent {
     pub(crate) facade: Arc<dyn WorkspaceFacade>,
     pub(crate) caller_key: CallerKeyResolver,
@@ -264,8 +254,6 @@ impl Tool for TellAgent {
          a new user turn in its chat and may respond by sending another \
          tell, asking you back via peers__ask_agent, or simply continuing \
          its own work. Auto-spawns the target if it's currently sleeping. \
-         Hop count is stamped by forge automatically - do not pass it as \
-         an argument. \
          \
          Use this (instead of mutating another project's files directly) \
          whenever the user asks you to notify or hand off work to another \
@@ -316,9 +304,6 @@ impl Tool for TellAgent {
             ));
         };
 
-        let inbound_hop = self.facade.peek_current_inbound_hop(&caller_key).unwrap_or(0);
-        let outgoing_hop = inbound_hop.saturating_add(1);
-
         // Validate LLM-supplied in_reply_to at the tool boundary. A
         // malformed id (wrong prefix, wrong length, non-hex,
         // uppercase) would otherwise miss the inflight-map lookup
@@ -354,8 +339,6 @@ impl Tool for TellAgent {
                     channel: AskChannel::Peers,
                     sender_name: identity.name,
                     sender_org: identity.org,
-                    hop: outgoing_hop,
-                    hop_limit: HOP_LIMIT,
                     body: args.message,
                 };
                 if let Err(err) = self.facade.deliver_reply_to_caller(&caller, &wrapped) {
@@ -386,8 +369,6 @@ impl Tool for TellAgent {
                     channel: AskChannel::Peers,
                     sender_name: identity.name,
                     sender_org: identity.org,
-                    hop: outgoing_hop,
-                    hop_limit: HOP_LIMIT,
                     body: args.message,
                 };
                 let status =
@@ -396,7 +377,7 @@ impl Tool for TellAgent {
                         Ok(crate::mcp::peers::facade::TargetStatus::QueuedForSpawn) => {
                             "queued_for_spawn"
                         }
-                        Err(err) => return tool_error(format_deliver_error(&args.target, &err)),
+                        Err(err) => return tool_error(format_deliver_error(&err)),
                     };
                 tell_ok_response(&correlation_id, status, note)
             }
@@ -436,15 +417,11 @@ fn tool_error(text: String) -> ToolOutput {
     ToolOutput { blocks: vec![forge_sdk::mcp::tool::ToolOutputBlock { text }], is_error: true }
 }
 
-fn format_deliver_error(target: &str, err: &facade::DeliverError) -> String {
+fn format_deliver_error(err: &facade::DeliverError) -> String {
     match err {
         facade::DeliverError::UnknownTarget { name } => format!(
             "peer '{name}' is not available (no such agent in forge.toml); call \
              peers__list_agents to see who you can reach."
-        ),
-        facade::DeliverError::HopLimitExceeded { hop, limit } => format!(
-            "hop limit exceeded forwarding to '{target}' ({hop}/{limit}). The peer chain \
-             has reached its maximum depth - your message will not be forwarded."
         ),
     }
 }
@@ -504,11 +481,6 @@ fn chrono_rfc3339_now() -> String {
 /// asks can run in parallel - fire several ask_agent calls in one
 /// turn, replies arrive independently and can be threaded back via
 /// their distinct correlation_ids.
-///
-/// Hop count is stamped by forge automatically
-/// (peek_current_inbound_hop + 1). The LLM does not pass it.
-/// Outgoing hops exceeding HOP_LIMIT (default 10) are refused with
-/// is_error.
 pub(crate) struct AskAgent {
     pub(crate) facade: Arc<dyn WorkspaceFacade>,
     pub(crate) caller_key: CallerKeyResolver,
@@ -541,11 +513,11 @@ impl Tool for AskAgent {
          Multiple asks can run in parallel - fire several ask_agent calls \
          in one turn and the replies arrive independently, each carrying \
          its own correlation_id you can thread back. Synchronous errors \
-         (target not in forge.toml, hop limit exceeded) return \
+         (target not in forge.toml) return \
          is_error: true; later-detected delivery failures arrive as a \
          '[Ask ... failed to deliver: ...]' envelope in your chat. \
          Auto-spawns sleeping targets (expect extra latency on the first \
-         ask). Hop count is stamped automatically - do not pass it. \
+         ask). \
          \
          Use this whenever you need another forge project to TAKE AN \
          ACTION or give you an authoritative answer that only its own \
@@ -598,9 +570,6 @@ impl Tool for AskAgent {
             ));
         };
 
-        let inbound_hop = self.facade.peek_current_inbound_hop(&caller_key).unwrap_or(0);
-        let outgoing_hop = inbound_hop.saturating_add(1);
-
         let correlation_id = CorrelationId::new_ask();
 
         let wrapped = WrappedPrompt {
@@ -609,8 +578,6 @@ impl Tool for AskAgent {
             channel: AskChannel::Peers,
             sender_name: identity.name.clone(),
             sender_org: identity.org.clone(),
-            hop: outgoing_hop,
-            hop_limit: HOP_LIMIT,
             body: args.prompt,
         };
 
@@ -640,7 +607,7 @@ impl Tool for AskAgent {
                     // and inflight_asks entry would otherwise leak.
                     self.facade.complete_inflight_ask(&correlation_id);
                     self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::OutgoingMinus1);
-                    return tool_error(format_deliver_error(&args.target, &err));
+                    return tool_error(format_deliver_error(&err));
                 }
             };
 
@@ -1227,31 +1194,6 @@ mod tests {
             })
             .await;
         assert!(output.is_error);
-    }
-
-    #[tokio::test]
-    async fn ask_agent_hop_propagation_stamps_outgoing_plus_one() {
-        let mock = Arc::new(MockWorkspaceFacade::new());
-        mock.peers.lock().push(fake_peer("forge"));
-        mock.peers.lock().push(fake_peer("gateway-backend"));
-        // Caller is mid-turn on a peer prompt with hop=3; outgoing
-        // should stamp hop=4.
-        *mock.current_inbound_hop.lock() = Some(3);
-        let facade: Arc<dyn WorkspaceFacade> = mock.clone();
-        let tool =
-            AskAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
-        let _ = tool
-            .call(ToolInput {
-                value: serde_json::json!({
-                    "target": "gateway-backend",
-                    "prompt": "hi",
-                }),
-            })
-            .await;
-        let calls = mock.deliver_calls.lock();
-        assert_eq!(calls.len(), 1);
-        let wrapped = &calls[0].2;
-        assert_eq!(wrapped.hop, 4, "ambient inbound hop=3 -> outgoing hop should be 4");
     }
 
     #[test]
