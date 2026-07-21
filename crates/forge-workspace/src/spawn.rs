@@ -156,8 +156,7 @@ pub(crate) fn handle_spawn_project(
 
 /// Handle a `Command::DeliverPeerPrompt`. Resolves the target
 /// project to a running SessionTask (deliver immediately) or a
-/// sleeping one (buffer + auto-spawn). Hop stamping on target's
-/// DomainSession happens here, before dispatching the wrapped
+/// sleeping one (buffer + auto-spawn), then dispatches the wrapped
 /// prompt as a regular `Command::Prompt`.
 pub(crate) fn handle_deliver_peer_prompt(
     workspace: &Arc<Workspace>,
@@ -1253,11 +1252,11 @@ pub(crate) fn handle_despawn_worker(
 
 /// Handle a `Command::DeliverWorkerPrompt`: route a wrapped peer-style
 /// envelope to the worker matching `target_label` in the caller's
-/// project. Latest-spawned-wins on duplicate labels. Hop stamping on
-/// the target's DomainSession + the typed PeerEnvelopeAppended echo
-/// follow the same pattern as `handle_deliver_peer_prompt` - workers
-/// reuse the peer envelope verbatim so the TUI's chat render is
-/// identical between the two paths.
+/// project. Latest-spawned-wins on duplicate labels. The typed
+/// PeerEnvelopeAppended echo follows the same pattern as
+/// `handle_deliver_peer_prompt` - workers reuse the peer envelope
+/// verbatim so the TUI's chat render is identical between the two
+/// paths.
 ///
 /// Unlike `handle_deliver_peer_prompt`, this handler never buffers +
 /// auto-spawns: workers are only addressable while live. If the
