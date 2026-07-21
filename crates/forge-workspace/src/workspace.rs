@@ -190,8 +190,8 @@ pub struct Workspace {
     /// Shared [`DomainSession`] handles, one per active `SessionTask`.
     /// [`Self::store_pending_interaction`] writes under the same lock
     /// the `SessionTask` actor uses to read+remove. `pub(crate)` so
-    /// `mcp::peers::facade::WorkspaceFacade` can read
-    /// `current_inbound_hop` without an extra wrapper method.
+    /// crate-internal spawn and delivery paths can reach a session's
+    /// `DomainSession` directly.
     pub(crate) domain_handles: Mutex<HashMap<SessionKey, Arc<Mutex<DomainSession>>>>,
     /// Wire-shape state for in-flight peer-coordination asks
     /// (`mcp__forge__peers__ask_agent`). One entry per outstanding ask
@@ -1001,9 +1001,9 @@ impl Workspace {
             //     Reuse it.
             //  2. `spawn_key` was provided AND a DomainSession exists
             //     there (peer-coordination spawn path: handle_deliver_
-            //     peer_prompt pre-populated pending_peer_prompts /
-            //     current_inbound_hop at synth_key=`__spawn_<name>__`
-            //     before dispatching SpawnProject). Move that
+            //     peer_prompt pre-populated pending_peer_prompts at
+            //     synth_key=`__spawn_<name>__` before dispatching
+            //     SpawnProject). Move that
             //     DomainSession onto `session_key` so the SessionTask
             //     we're about to construct sees the buffered state.
             //  3. Neither - create fresh at `session_key`.
@@ -1011,7 +1011,7 @@ impl Workspace {
             // When both `session_key` and `spawn_key` exist (race:
             // peer ask arrives while a pre-Connect placeholder was
             // already there), merge `spawn_key`'s buffered prompts
-            // / hop into the placeholder. The placeholder is the
+            // into the placeholder. The placeholder is the
             // one the SessionTask will pick up via `session_key`.
             if let Some(existing) = handles.get(&session_key).cloned() {
                 if let Some(spawn) = spawn_key.as_ref()
@@ -1236,22 +1236,12 @@ impl Workspace {
         }
         let buffered_domain = self.domain_handles.lock().remove(spawn_key);
         let Some(buffered_domain) = buffered_domain else { return };
-        let (pending, incoming_hop) = {
+        let pending = {
             let mut guard = buffered_domain.lock();
-            (std::mem::take(&mut guard.pending_peer_prompts), guard.current_inbound_hop)
+            std::mem::take(&mut guard.pending_peer_prompts)
         };
-        if pending.is_empty() && incoming_hop.is_none() {
+        if pending.is_empty() {
             return;
-        }
-        // Stamp the inbound hop on the live session, taking max
-        // against any existing value so concurrent inbound asks
-        // don't undershoot each other.
-        if let Some(hop) = incoming_hop
-            && let Some(live) = self.domain_handles.lock().get(session_key).cloned()
-        {
-            let mut guard = live.lock();
-            let current = guard.current_inbound_hop.unwrap_or(0);
-            guard.current_inbound_hop = Some(current.max(hop));
         }
         // Re-dispatch each buffered prompt against the live session.
         // Mirrors session_task::drain_pending_peer_prompts: bump
@@ -1288,8 +1278,7 @@ impl Workspace {
     /// Merge a synthetic spawn-key DomainSession's buffered peer prompts
     /// into an existing placeholder (Case 1 in
     /// `get_agent_handle_with_spawn_key`: a peer ask arrived while a
-    /// pre-Connect placeholder already sat at `session_key`). The inbound
-    /// hop takes the max so concurrent asks don't undershoot. Cron prompts
+    /// pre-Connect placeholder already sat at `session_key`). Cron prompts
     /// live in the owner-keyed buffer, not on the synth key, so they need
     /// no merge here.
     fn merge_spawn_buffer_into_placeholder(
@@ -1299,10 +1288,6 @@ impl Workspace {
         let mut placeholder = placeholder.lock();
         let mut src = buffered.lock();
         placeholder.pending_peer_prompts.append(&mut src.pending_peer_prompts);
-        if let Some(hop) = src.current_inbound_hop {
-            let current = placeholder.current_inbound_hop.unwrap_or(0);
-            placeholder.current_inbound_hop = Some(current.max(hop));
-        }
     }
 
     /// Crate-internal accessor for the boot-time loading task to
@@ -4268,8 +4253,6 @@ impl Workspace {
                     channel: AskChannel::Workers,
                     sender_name: entry.label.clone(),
                     sender_org: String::new(),
-                    hop: 1,
-                    hop_limit: 10,
                     body: reason.clone(),
                 };
                 if let Err(err) = self.dispatch(Command::Prompt {
@@ -5050,8 +5033,6 @@ impl Workspace {
             channel: ask.channel,
             sender_name: ask.target_project.clone(),
             sender_org: target_org,
-            hop: 0,
-            hop_limit: 10,
             body,
         };
         // The CLI never echoes stdin-injected prompts back, so paint the
@@ -5075,20 +5056,14 @@ impl Workspace {
     /// name/label resolution. The asker is identified by `SessionKey`
     /// (a worker asker has no addressable project name), so this
     /// by-session path is load-bearing for closing a cross-agent ask.
-    /// Guards the hop limit and confirms the caller session is still
-    /// live before dispatching. Shared by the peers + workers facades.
+    /// Confirms the caller session is still live before dispatching.
+    /// Shared by the peers + workers facades.
     pub(crate) fn deliver_reply_to_caller(
         self: &Arc<Self>,
         caller: &SessionKey,
         reply: &WrappedPrompt,
     ) -> Result<(), crate::mcp::peers::facade::ReplyDeliverError> {
         use crate::mcp::peers::facade::ReplyDeliverError;
-        if reply.exceeds_hop_limit() {
-            return Err(ReplyDeliverError::HopLimitExceeded {
-                hop: reply.hop,
-                limit: reply.hop_limit,
-            });
-        }
         if !self.pool.lock().contains_key(caller) {
             return Err(ReplyDeliverError::CallerSessionGone);
         }
@@ -8614,8 +8589,6 @@ config_dir = "~/.claude-subspace"
             channel: AskChannel::Peers,
             sender_name: "forge".to_owned(),
             sender_org: "Personal".to_owned(),
-            hop: 1,
-            hop_limit: 10,
             body: "are you up?".to_owned(),
         };
         let domain = Arc::new(Mutex::new(DomainSession::new(synth_key.clone(), None)));
@@ -8745,8 +8718,6 @@ config_dir = "~/.claude-subspace"
             channel: AskChannel::Peers,
             sender_name: "forge".to_owned(),
             sender_org: "Default".to_owned(),
-            hop: 1,
-            hop_limit: 10,
             body: "fyi".to_owned(),
         };
         // The command channel is the workspace's main dispatch bus -
@@ -8774,12 +8745,10 @@ config_dir = "~/.claude-subspace"
             channel: AskChannel::Workers,
             sender_name: "worker".to_owned(),
             sender_org: "worker in forge".to_owned(),
-            hop: 1,
-            hop_limit: 10,
             body: "here's the answer".to_owned(),
         };
 
-        // Happy path: caller live in the pool, hop within limit -> Ok
+        // Happy path: caller live in the pool -> Ok
         // plus exactly one Command::Prompt to the caller carrying the prose.
         let (handle, _hrx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
@@ -8804,15 +8773,6 @@ config_dir = "~/.claude-subspace"
             Err(ReplyDeliverError::CallerSessionGone),
         );
         assert!(ws.drain_test_dispatch_buffer().is_empty(), "no dispatch on pool-miss");
-
-        // Hop over the limit -> HopLimitExceeded, nothing dispatched
-        // (the guard fires before the pool check).
-        let over = WrappedPrompt { hop: 11, ..reply.clone() };
-        assert_eq!(
-            ws.deliver_reply_to_caller(&caller, &over),
-            Err(ReplyDeliverError::HopLimitExceeded { hop: 11, limit: 10 }),
-        );
-        assert!(ws.drain_test_dispatch_buffer().is_empty(), "no dispatch on hop-limit");
     }
 
     /// deliver_reply_to_caller paints the visible peer block: it emits
@@ -8833,8 +8793,6 @@ config_dir = "~/.claude-subspace"
             channel: AskChannel::Workers,
             sender_name: "worker".to_owned(),
             sender_org: "worker in forge".to_owned(),
-            hop: 1,
-            hop_limit: 10,
             body: "here's the answer".to_owned(),
         };
 
