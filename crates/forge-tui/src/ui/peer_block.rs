@@ -4,7 +4,7 @@
 //!
 //! 1. **Inbound detection + rendering**. Pattern-match the bracket-
 //!    wrapped prose `forge_workspace::deliver_peer_prompt` injects
-//!    into user-turn text (e.g. `[Question id=q-... hop=1/10 from
+//!    into user-turn text (e.g. `[Question id=q-... from
 //!    agent 'forge' (org 'Personal') - reply with peers__tell_agent
 //!    in_reply_to=q-...]\n\n<body>`) and render a styled block in
 //!    place of the default user-message bubble. Catches the five
@@ -35,11 +35,11 @@ use ratatui::text::{Line, Span};
 
 /// One inbound peer block parsed from the user-turn text.
 ///
-/// Wire envelopes carry several fields (correlation id, hop counter,
-/// originating org) that the previous chrome surfaced as DIM meta
-/// chunks. The redesigned chat block hides those by default - the
-/// parser still skips past them in the prefix, but the type only
-/// retains what the renderer or chat-streak grouping reads.
+/// Wire envelopes carry several fields (correlation id, originating
+/// org) that the previous chrome surfaced as DIM meta chunks. The
+/// redesigned chat block hides those by default - the parser still
+/// skips past them in the prefix, but the type only retains what the
+/// renderer or chat-streak grouping reads.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum PeerInboundKind {
     Question {
@@ -174,15 +174,13 @@ pub(crate) fn detect_inbound(text: &str) -> Option<PeerInboundKind> {
     let body = after_bracket.strip_prefix("\n\n").unwrap_or("").to_owned();
 
     if let Some(rest) = header.strip_prefix("Question id=") {
-        let (_id, rest) = take_until(rest, " hop=")?;
-        let (_hop, rest) = take_until(rest, " from agent ")?;
+        let (_id, rest) = take_until(rest, " from agent ")?;
         let (from, org) = extract_from_agent_after(rest)?;
         return Some(PeerInboundKind::Question { from, org, body });
     }
 
     if let Some(rest) = header.strip_prefix("Message id=") {
-        let (_id, rest) = take_until(rest, " hop=")?;
-        let (_hop, rest) = take_until(rest, " from agent ")?;
+        let (_id, rest) = take_until(rest, " from agent ")?;
         let (from, org) = extract_from_agent_after(rest)?;
         return Some(PeerInboundKind::Message { from, org, body });
     }
@@ -663,7 +661,7 @@ mod tests {
 
     #[test]
     fn detect_question_inbound() {
-        let text = "[Question id=q-7f3a92e0 hop=1/10 from agent 'forge' (org 'Personal') - reply with peers__tell_agent in_reply_to=q-7f3a92e0]\n\nWhat's the test setup?";
+        let text = "[Question id=q-7f3a92e0 from agent 'forge' (org 'Personal') - reply with peers__tell_agent in_reply_to=q-7f3a92e0]\n\nWhat's the test setup?";
         let kind = detect_inbound(text).expect("question");
         match kind {
             PeerInboundKind::Question { from, org, body } => {
@@ -677,7 +675,7 @@ mod tests {
 
     #[test]
     fn detect_message_inbound() {
-        let text = "[Message id=t-c45a8f12 hop=2/10 from agent 'granite-backend' (org 'Granite')]\n\nFYI rewriter cleanup just landed.";
+        let text = "[Message id=t-c45a8f12 from agent 'granite-backend' (org 'Granite')]\n\nFYI rewriter cleanup just landed.";
         let kind = detect_inbound(text).expect("message");
         match kind {
             PeerInboundKind::Message { from, org, body } => {

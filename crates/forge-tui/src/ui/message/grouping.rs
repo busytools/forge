@@ -2052,8 +2052,8 @@ mod tests {
         // wrapper-prose shape `peer_block::detect_inbound` matches.
         let id = "t-test1234";
         let header = match kind {
-            "Question" => format!("[Question id={id} hop=1/10 from agent '{from}' (org 'forge')]"),
-            "Message" => format!("[Message id={id} hop=1/10 from agent '{from}' (org 'forge')]"),
+            "Question" => format!("[Question id={id} from agent '{from}' (org 'forge')]"),
+            "Message" => format!("[Message id={id} from agent '{from}' (org 'forge')]"),
             "Reply" => {
                 format!("[Reply id={id} from agent '{from}' (org 'forge')]")
             }
