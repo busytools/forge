@@ -23,10 +23,6 @@ use crate::mcp::workers::facade::{
 pub mod facade;
 pub mod types;
 
-/// Default hop limit for forwarded ask/tell chains within a project.
-/// Mirrors the peer-MCP value (#114 v1 brainstorm locked at 10).
-const HOP_LIMIT: u8 = 10;
-
 /// Composite key stored in `InflightAsk.target_project` for worker-
 /// bound asks. The `::` separator can never appear in a real project
 /// name (forge.toml validation rejects it), so this shape is
@@ -504,8 +500,6 @@ impl Tool for Tell {
         };
 
         let identity = self.facade.caller_identity(&caller_key);
-        let outgoing_hop =
-            self.facade.peek_current_inbound_hop(&caller_key).unwrap_or(0).saturating_add(1);
         let correlation_id = CorrelationId::new_tell();
 
         match classify_workers_tell(&*self.facade, in_reply_to_id.as_ref()) {
@@ -524,8 +518,6 @@ impl Tool for Tell {
                     channel: AskChannel::Workers,
                     sender_name: identity.name,
                     sender_org: identity.org,
-                    hop: outgoing_hop,
-                    hop_limit: HOP_LIMIT,
                     body: args.message,
                 };
                 if let Err(err) = self.facade.deliver_reply_to_caller(&caller, &wrapped) {
@@ -545,8 +537,6 @@ impl Tool for Tell {
                     channel: AskChannel::Workers,
                     sender_name: identity.name,
                     sender_org: identity.org,
-                    hop: outgoing_hop,
-                    hop_limit: HOP_LIMIT,
                     body: args.message,
                 };
                 // An unknown/stale in_reply_to fell through to a plain
@@ -648,10 +638,6 @@ fn format_lead_deliver_error(err: &WorkerLeadDeliverError) -> String {
             "your lead is not available (its session closed since this worker was spawned)."
                 .to_owned()
         }
-        WorkerLeadDeliverError::HopLimitExceeded { hop, limit } => format!(
-            "hop limit exceeded forwarding to lead ({hop}/{limit}). The chain has reached \
-             its maximum depth - your message will not be forwarded."
-        ),
     }
 }
 
@@ -660,10 +646,6 @@ fn format_deliver_error(label: &str, err: &WorkerDeliverError) -> String {
         WorkerDeliverError::UnknownLabel { project_key, .. } => format!(
             "worker '{label}' is not available (no live worker by that label in \
              '{project_key}'); call workers__list to see the current pool."
-        ),
-        WorkerDeliverError::HopLimitExceeded { hop, limit } => format!(
-            "hop limit exceeded forwarding to worker '{label}' ({hop}/{limit}). The \
-             chain has reached its maximum depth - your message will not be forwarded."
         ),
     }
 }
@@ -749,16 +731,12 @@ impl Tool for Ask {
         let correlation_id = CorrelationId::new_ask();
 
         let identity = self.facade.caller_identity(&caller_key);
-        let outgoing_hop =
-            self.facade.peek_current_inbound_hop(&caller_key).unwrap_or(0).saturating_add(1);
         let wrapped = WrappedPrompt {
             correlation_id: correlation_id.clone(),
             kind: WrappedKind::Question,
             channel: AskChannel::Workers,
             sender_name: identity.name,
             sender_org: identity.org,
-            hop: outgoing_hop,
-            hop_limit: HOP_LIMIT,
             body: args.question,
         };
 
@@ -1649,44 +1627,6 @@ mod tests {
         assert_eq!(dispatched.len(), 1, "exactly one deliver dispatch");
         assert_eq!(dispatched[0].1, "reviewer");
         assert!(matches!(dispatched[0].2.kind, WrappedKind::Message));
-    }
-
-    #[tokio::test]
-    async fn tell_forwards_incoming_hop_plus_one() {
-        // A worker relaying a message it received at hop 3 must send at
-        // hop 4 - otherwise the HOP_LIMIT relay-cycle guard never fires.
-        let mock = Arc::new(MockWorkerFacade::new());
-        let caller = fake_key("worker-key");
-        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
-        mock.workers.lock().insert("forge".into(), vec![fake_worker("reviewer", "charter")]);
-        *mock.current_inbound_hop.lock() = Some(3);
-        let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
-        let output = tool
-            .call(ToolInput {
-                value: serde_json::json!({ "label": "reviewer", "message": "relayed" }),
-            })
-            .await;
-        assert!(!output.is_error);
-        assert_eq!(mock.deliver_calls.lock()[0].2.hop, 4, "hop must be inbound + 1");
-    }
-
-    #[tokio::test]
-    async fn ask_forwards_incoming_hop_plus_one() {
-        let mock = Arc::new(MockWorkerFacade::new());
-        let caller = fake_key("worker-key");
-        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
-        mock.workers.lock().insert("forge".into(), vec![fake_worker("reviewer", "charter")]);
-        *mock.current_inbound_hop.lock() = Some(5);
-        let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Ask { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
-        let output = tool
-            .call(ToolInput {
-                value: serde_json::json!({ "label": "reviewer", "question": "status?" }),
-            })
-            .await;
-        assert!(!output.is_error);
-        assert_eq!(mock.deliver_calls.lock()[0].2.hop, 6, "hop must be inbound + 1");
     }
 
     #[tokio::test]

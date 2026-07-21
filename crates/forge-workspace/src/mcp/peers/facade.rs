@@ -151,20 +151,14 @@ pub enum TargetStatus {
 pub enum DeliverError {
     /// No project named `name` in forge.toml.
     UnknownTarget { name: String },
-    /// Outgoing hop exceeds the limit (default 10 - see #114 v1
-    /// brainstorm). The chain stops here; tool returns `is_error`.
-    HopLimitExceeded { hop: u8, limit: u8 },
 }
 
 /// Why delivering a Reply straight to the asker's session failed.
 /// Reply delivery bypasses name/label resolution (the asker is
-/// addressed by `SessionKey`), so the only failure modes are the
-/// hop-limit guard and a caller session that closed before the reply
-/// could land.
+/// addressed by `SessionKey`), so the only failure mode is a caller
+/// session that closed before the reply could land.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReplyDeliverError {
-    /// Outgoing hop exceeds the limit (default 10).
-    HopLimitExceeded { hop: u8, limit: u8 },
     /// The asker's session closed before its reply could be delivered.
     CallerSessionGone,
 }
@@ -174,10 +168,6 @@ impl ReplyDeliverError {
     /// Shared by the peers + workers tell handlers.
     pub(crate) fn user_message(&self) -> String {
         match self {
-            ReplyDeliverError::HopLimitExceeded { hop, limit } => format!(
-                "hop limit exceeded delivering this reply ({hop}/{limit}); the reply chain has \
-                 reached its maximum depth and was not forwarded."
-            ),
             ReplyDeliverError::CallerSessionGone => {
                 "the original asker's session is no longer available, so your reply could not be \
                  delivered."
@@ -224,7 +214,6 @@ pub trait WorkspaceFacade: Send + Sync {
     ///   is buffered in target's `pending_peer_prompts` for delivery
     ///   on `AgentEvent::Connected`.
     /// - `Err(UnknownTarget)` - target not in forge.toml.
-    /// - `Err(HopLimitExceeded)` - `wrapped.hop > wrapped.hop_limit`.
     ///
     /// The actual buffer + dispatch logic lives in `spawn.rs`'s
     /// `Command::DeliverPeerPrompt` handler (lands in C11).
@@ -239,7 +228,7 @@ pub trait WorkspaceFacade: Send + Sync {
     /// from the resolved `InflightAsk`), bypassing name/label
     /// resolution. The asker may be a worker with no addressable
     /// project name, so by-session delivery is load-bearing. Returns
-    /// `Err` only on hop-limit or a closed caller session.
+    /// `Err` only when the caller session closed.
     fn deliver_reply_to_caller(
         &self,
         caller: &SessionKey,
@@ -261,15 +250,6 @@ pub trait WorkspaceFacade: Send + Sync {
     /// removed ask so the caller can inspect status / caller / etc.,
     /// or `None` when the entry was already gone.
     fn complete_inflight_ask(&self, id: &CorrelationId) -> Option<InflightAsk>;
-
-    /// Read the caller's ambient `current_inbound_hop` from its
-    /// DomainSession. Returns `Some(hop)` when the caller's LLM is
-    /// processing a peer-wrapped prompt (set by C11's
-    /// `Command::DeliverPeerPrompt` handler before dispatch); `None`
-    /// for user-initiated turns. Tools use this to stamp `hop = N+1`
-    /// on outgoing forwarded messages without the LLM having to pass
-    /// it as an arg.
-    fn peek_current_inbound_hop(&self, caller: &SessionKey) -> Option<u8>;
 
     /// Apply a delta to `peer_stats[key]` and emit
     /// `SessionUpdate::PeerInflightStatsChanged` so the TUI reducer
@@ -383,12 +363,6 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         target_project: &str,
         wrapped: WrappedPrompt,
     ) -> Result<TargetStatus, DeliverError> {
-        if wrapped.exceeds_hop_limit() {
-            return Err(DeliverError::HopLimitExceeded {
-                hop: wrapped.hop,
-                limit: wrapped.hop_limit,
-            });
-        }
         let Some(ws) = self.0.upgrade() else {
             return Err(DeliverError::UnknownTarget { name: target_project.to_owned() });
         };
@@ -451,14 +425,6 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         ws.inflight_asks.lock().remove(id)
     }
 
-    fn peek_current_inbound_hop(&self, caller: &SessionKey) -> Option<u8> {
-        let ws = self.0.upgrade()?;
-        let handles = ws.domain_handles.lock();
-        let domain = handles.get(caller)?;
-        let guard = domain.lock();
-        guard.current_inbound_hop
-    }
-
     fn bump_inflight_stats(&self, key: &SessionKey, delta: PeerStatsDelta) {
         let Some(ws) = self.0.upgrade() else { return };
         let stats_snapshot = {
@@ -509,8 +475,6 @@ fn apply_delta(stats: &mut PeerInflightStats, delta: PeerStatsDelta) {
 pub struct MockWorkspaceFacade {
     /// Pre-loaded peer status snapshot returned by `list_peers`.
     pub peers: parking_lot::Mutex<Vec<PeerStatus>>,
-    /// Pre-loaded inbound-hop value `peek_current_inbound_hop` returns.
-    pub current_inbound_hop: parking_lot::Mutex<Option<u8>>,
     /// Captured calls to `deliver_peer_prompt`.
     pub deliver_calls: parking_lot::Mutex<Vec<(SessionKey, String, WrappedPrompt)>>,
     /// Captured calls to `deliver_reply_to_caller` (by-session reply
@@ -571,12 +535,6 @@ impl WorkspaceFacade for MockWorkspaceFacade {
         if let Some(err) = self.force_deliver_error.lock().clone() {
             return Err(err);
         }
-        if wrapped.exceeds_hop_limit() {
-            return Err(DeliverError::HopLimitExceeded {
-                hop: wrapped.hop,
-                limit: wrapped.hop_limit,
-            });
-        }
         let known = self.peers.lock().iter().any(|p| p.name == target_project);
         if !known {
             return Err(DeliverError::UnknownTarget { name: target_project.to_owned() });
@@ -618,10 +576,6 @@ impl WorkspaceFacade for MockWorkspaceFacade {
         self.inflight.lock().remove(id)
     }
 
-    fn peek_current_inbound_hop(&self, _caller: &SessionKey) -> Option<u8> {
-        *self.current_inbound_hop.lock()
-    }
-
     fn bump_inflight_stats(&self, key: &SessionKey, delta: PeerStatsDelta) {
         self.bump_calls.lock().push((key.clone(), delta));
     }
@@ -652,15 +606,13 @@ mod tests {
         }
     }
 
-    fn fake_wrapped(hop: u8, hop_limit: u8) -> WrappedPrompt {
+    fn fake_wrapped() -> WrappedPrompt {
         WrappedPrompt {
             correlation_id: CorrelationId::new_ask(),
             kind: WrappedKind::Question,
             channel: AskChannel::Peers,
             sender_name: "forge".to_owned(),
             sender_org: "Personal".to_owned(),
-            hop,
-            hop_limit,
             body: "hi".to_owned(),
         }
     }
@@ -700,21 +652,9 @@ mod tests {
     fn mock_deliver_unknown_target_errors() {
         let mock = MockWorkspaceFacade::new();
         let caller = fake_key("alpha");
-        let result = mock.deliver_peer_prompt(&caller, "missing", fake_wrapped(1, 10));
+        let result = mock.deliver_peer_prompt(&caller, "missing", fake_wrapped());
         assert!(
             matches!(result, Err(DeliverError::UnknownTarget { ref name }) if name == "missing")
-        );
-    }
-
-    #[test]
-    fn mock_deliver_hop_limit_errors() {
-        let mock = MockWorkspaceFacade::new();
-        mock.peers.lock().push(fake_peer("beta", PeerLiveness::Running));
-        let caller = fake_key("alpha");
-        let result = mock.deliver_peer_prompt(&caller, "beta", fake_wrapped(11, 10));
-        assert!(
-            matches!(result, Err(DeliverError::HopLimitExceeded { hop: 11, limit: 10 })),
-            "hop>limit must error: {result:?}",
         );
     }
 
@@ -723,7 +663,7 @@ mod tests {
         let mock = MockWorkspaceFacade::new();
         mock.peers.lock().push(fake_peer("beta", PeerLiveness::Running));
         let caller = fake_key("alpha");
-        let result = mock.deliver_peer_prompt(&caller, "beta", fake_wrapped(1, 10));
+        let result = mock.deliver_peer_prompt(&caller, "beta", fake_wrapped());
         assert_eq!(result, Ok(TargetStatus::Delivered));
         assert_eq!(mock.deliver_calls.lock().len(), 1);
     }
@@ -733,7 +673,7 @@ mod tests {
         let mock = MockWorkspaceFacade::new();
         mock.peers.lock().push(fake_peer("beta", PeerLiveness::Sleeping));
         let caller = fake_key("alpha");
-        let result = mock.deliver_peer_prompt(&caller, "beta", fake_wrapped(1, 10));
+        let result = mock.deliver_peer_prompt(&caller, "beta", fake_wrapped());
         assert_eq!(result, Ok(TargetStatus::QueuedForSpawn));
     }
 
@@ -772,13 +712,6 @@ mod tests {
     }
 
     #[test]
-    fn mock_peek_current_inbound_hop_returns_preloaded() {
-        let mock = MockWorkspaceFacade::new();
-        *mock.current_inbound_hop.lock() = Some(3);
-        assert_eq!(mock.peek_current_inbound_hop(&fake_key("alpha")), Some(3));
-    }
-
-    #[test]
     fn mock_whoami_matches_by_name() {
         let mock = MockWorkspaceFacade::new();
         mock.peers.lock().push(fake_peer("alpha", PeerLiveness::Running));
@@ -809,7 +742,7 @@ mod tests {
         *mock.force_deliver_error.lock() =
             Some(DeliverError::UnknownTarget { name: "forced".to_owned() });
         let caller = fake_key("alpha");
-        let result = mock.deliver_peer_prompt(&caller, "beta", fake_wrapped(1, 10));
+        let result = mock.deliver_peer_prompt(&caller, "beta", fake_wrapped());
         assert!(matches!(
             result,
             Err(DeliverError::UnknownTarget { ref name }) if name == "forced"
@@ -896,31 +829,15 @@ mod lead_resolution_tests {
         assert!(lead_session_view(&ws, &view).is_none(), "an all-worker project has no lead");
     }
 
-    fn wrapped(hop: u8, hop_limit: u8) -> WrappedPrompt {
+    fn wrapped() -> WrappedPrompt {
         WrappedPrompt {
             correlation_id: CorrelationId::new_ask(),
             kind: WrappedKind::Question,
             channel: AskChannel::Peers,
             sender_name: "forge".to_owned(),
             sender_org: "Personal".to_owned(),
-            hop,
-            hop_limit,
             body: "hi".to_owned(),
         }
-    }
-
-    #[test]
-    fn deliver_rejects_when_hop_exceeds_limit() {
-        // The hop guard fires before any project lookup, so an empty
-        // stub workspace exercises it.
-        let (ws, _rx) = Workspace::testing_stub();
-        let facade = ProdWorkspaceFacade::from_arc(&ws);
-        let result = facade.deliver_peer_prompt(
-            &SessionKey::from_session_id("caller"),
-            "anywhere",
-            wrapped(5, 3),
-        );
-        assert!(matches!(result, Err(DeliverError::HopLimitExceeded { hop: 5, limit: 3 })));
     }
 
     #[test]
@@ -930,7 +847,7 @@ mod lead_resolution_tests {
         let result = facade.deliver_peer_prompt(
             &SessionKey::from_session_id("caller"),
             "no-such-project",
-            wrapped(1, 10),
+            wrapped(),
         );
         assert!(
             matches!(result, Err(DeliverError::UnknownTarget { ref name }) if name == "no-such-project")
