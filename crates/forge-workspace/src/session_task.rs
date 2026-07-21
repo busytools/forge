@@ -501,17 +501,12 @@ impl SessionTask {
                 self.emit(SessionUpdate::McpSnapshot { session_id, servers, error });
             }
             AgentEvent::SdkMessage { session_id, msg } => {
-                // Clear current_inbound_hop on turn boundary so the
-                // next user-initiated turn starts the outgoing peer
-                // chain at hop=1 instead of inheriting a stale
-                // forwarded-peer hop from the prior turn. Clear the
-                // turn-commit marker on the same boundary so the
-                // `/account` backstop stops refusing once the turn ends.
-                // `Message::Result` is the SDK's signal that the
+                // Clear the turn-commit marker on the turn boundary so
+                // the `/account` backstop stops refusing once the turn
+                // ends. `Message::Result` is the SDK's signal that the
                 // assistant turn has fully completed.
                 if matches!(msg, forge_primitives::Message::Result { .. }) {
                     let mut guard = self.domain.lock();
-                    guard.current_inbound_hop = None;
                     guard.turn_pending = false;
                 }
                 self.note_rate_limit_from_message(&msg);
@@ -1717,8 +1712,6 @@ mod tests {
                     channel: AskChannel::Peers,
                     sender_name: "forge".to_owned(),
                     sender_org: "Default".to_owned(),
-                    hop: 1,
-                    hop_limit: 10,
                     body: body.to_owned(),
                 });
             }

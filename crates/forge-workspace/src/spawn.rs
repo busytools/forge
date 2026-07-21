@@ -187,10 +187,6 @@ pub(crate) fn handle_deliver_peer_prompt(
         });
 
     if let Some(target_key) = target_running_key {
-        // Stamp current_inbound_hop on target's DomainSession before
-        // dispatch so any tools the target's LLM fires on the resulting
-        // turn read the correct ambient hop via peek_current_inbound_hop.
-        stamp_inbound_hop(workspace, &target_key, wrapped.hop);
         // Bump the target's incoming badge only for `Question`
         // wrappers. Badges count pending asks awaiting reply; every
         // other kind (tells, replies, delivery-failure notices) has no
@@ -242,7 +238,7 @@ pub(crate) fn handle_deliver_peer_prompt(
 
     let synth_key = SessionKey::from_session_id(format!("__spawn_{target_project}__"));
 
-    // Ensure DomainSession at synth_key + buffer wrapped + stamp hop.
+    // Ensure DomainSession at synth_key + buffer wrapped.
     // get_agent_handle_with_spawn_key (called by handle_spawn_project
     // below) will re-use this DomainSession if present; otherwise it
     // creates a new one. We want to buffer BEFORE the spawn so the
@@ -255,8 +251,6 @@ pub(crate) fn handle_deliver_peer_prompt(
             .clone();
         drop(handles);
         let mut d = domain.lock();
-        let current = d.current_inbound_hop.unwrap_or(0);
-        d.current_inbound_hop = Some(current.max(wrapped.hop));
         d.pending_peer_prompts.push(wrapped);
     }
 
@@ -568,21 +562,6 @@ fn team_worker_key(workspace: &Arc<Workspace>, project: &str, label: &str) -> Op
         .into_iter()
         .find(|w| w.label == label)
         .map(|w| w.session_key)
-}
-
-/// Stamp `current_inbound_hop = max(current, hop)` on the target's
-/// DomainSession. Used by handle_deliver_peer_prompt before
-/// dispatching Command::Prompt so the recipient's tools observe the
-/// correct ambient hop when they fire outbound asks/tells during
-/// the resulting turn.
-fn stamp_inbound_hop(workspace: &Workspace, target_key: &SessionKey, hop: u8) {
-    let handles = workspace.domain_handles.lock();
-    if let Some(domain) = handles.get(target_key).cloned() {
-        drop(handles);
-        let mut d = domain.lock();
-        let current = d.current_inbound_hop.unwrap_or(0);
-        d.current_inbound_hop = Some(current.max(hop));
-    }
 }
 
 /// Emit a typed `PeerEnvelopeAppended` so the target session's TUI
@@ -1291,7 +1270,7 @@ pub(crate) fn handle_despawn_worker(
 /// `None` when it buffered (the target's Connected handler drains
 /// `pending_peer_prompts`, doing the bump + render + dispatch). Mirrors
 /// the sleeping-peer buffering in `handle_deliver_peer_prompt` so the
-/// bump/hop bookkeeping happens exactly once, at real delivery time.
+/// bump bookkeeping happens exactly once, at real delivery time.
 fn buffer_prompt_until_connected(
     workspace: &Arc<Workspace>,
     target_key: &SessionKey,
@@ -1306,8 +1285,6 @@ fn buffer_prompt_until_connected(
     if d.session_id.is_some() {
         return Some(wrapped);
     }
-    let current = d.current_inbound_hop.unwrap_or(0);
-    d.current_inbound_hop = Some(current.max(wrapped.hop));
     d.pending_peer_prompts.push(wrapped);
     None
 }
@@ -1375,10 +1352,6 @@ pub(crate) fn handle_deliver_worker_prompt(
             );
         }
     }
-
-    // Stamp current_inbound_hop so any tools the target's LLM fires
-    // during the resulting turn observe the correct ambient hop.
-    stamp_inbound_hop(workspace, &target_key, wrapped.hop);
 
     // Bump target's incoming counter for Question kind only (matches
     // peer behavior - the sidebar badge tracks awaiting-reply asks).
@@ -1448,8 +1421,6 @@ pub(crate) fn handle_deliver_worker_prompt_to_lead(
     let Some(wrapped) = buffer_prompt_until_connected(workspace, target_lead_key, wrapped) else {
         return;
     };
-
-    stamp_inbound_hop(workspace, target_lead_key, wrapped.hop);
 
     if matches!(wrapped.kind, crate::mcp::peers::types::WrappedKind::Question) {
         let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace);
@@ -1630,8 +1601,6 @@ config_dir = "~/.claude-subspace"
             channel: crate::mcp::peers::types::AskChannel::Peers,
             sender_name: "forge".to_owned(),
             sender_org: "Default".to_owned(),
-            hop: 1,
-            hop_limit: 10,
             body: "fyi".to_owned(),
         }
     }
