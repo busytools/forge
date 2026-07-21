@@ -7272,9 +7272,8 @@ mod tests {
     fn cmd_x_clears_peer_collapsed_override_on_all_text_blocks() {
         let mut app = App::test_default();
         let push_peer = |app: &mut App, sender: &str, override_val: bool| {
-            let text = format!(
-                "[Message id=t-12345678 hop=1/10 from agent '{sender}' (org 'Personal')]\n\nhi"
-            );
+            let text =
+                format!("[Message id=t-12345678 from agent '{sender}' (org 'Personal')]\n\nhi");
             let mut block = TextBlock::from_complete(&text);
             block.peer_collapsed_override = Some(override_val);
             app.active_messages_mut().push(ChatMessage::new_peer_envelope(

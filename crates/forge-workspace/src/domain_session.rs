@@ -51,16 +51,6 @@ pub struct DomainSession {
     /// `AgentEvent::Connected`, emits a chat echo, and re-dispatches each
     /// as a plain user turn. Empty in steady state.
     pub pending_gotify_prompts: Vec<GotifyNotification>,
-    /// Hop count of the most-recent peer wrapper the LLM is currently
-    /// processing. Stamped by `Workspace::deliver_peer_prompt` with
-    /// `max(current.unwrap_or(0), wrapped.hop)` BEFORE dispatching
-    /// `Command::Prompt`; cleared by `SessionTask` on `TurnComplete`.
-    /// Read by `WorkspaceFacade::peek_current_inbound_hop` so the
-    /// outbound ask/tell tools can stamp `hop = current + 1` on
-    /// forwarded messages without the LLM having to pass it. `None`
-    /// when the LLM is mid-turn on a user-initiated (not peer-
-    /// forwarded) prompt.
-    pub current_inbound_hop: Option<u8>,
     /// `--new` boot-wave flag, stamped at spawn time from
     /// `SessionLaunchSettings.force_new`. For a project lead it makes
     /// the Connected-time team spawn skip the worker resume scan
@@ -94,7 +84,6 @@ impl DomainSession {
             pending_interactions: HashMap::new(),
             pending_peer_prompts: Vec::new(),
             pending_gotify_prompts: Vec::new(),
-            current_inbound_hop: None,
             spawned_force_new: false,
             runtime_state: None,
             turn_pending: false,
@@ -110,7 +99,6 @@ impl std::fmt::Debug for DomainSession {
             .field("pending_interactions_count", &self.pending_interactions.len())
             .field("pending_peer_prompts_count", &self.pending_peer_prompts.len())
             .field("pending_gotify_prompts_count", &self.pending_gotify_prompts.len())
-            .field("current_inbound_hop", &self.current_inbound_hop)
             .finish_non_exhaustive()
     }
 }

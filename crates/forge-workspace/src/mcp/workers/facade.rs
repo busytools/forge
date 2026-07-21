@@ -31,8 +31,6 @@ pub enum WorkerTargetStatus {
 pub enum WorkerDeliverError {
     /// No live worker in `project_key` matches `label`.
     UnknownLabel { project_key: String, label: String },
-    /// Outgoing hop exceeds the limit (default 10).
-    HopLimitExceeded { hop: u8, limit: u8 },
 }
 
 /// Synchronous error from `deliver_prompt_to_lead`. The caller wants
@@ -50,8 +48,6 @@ pub enum WorkerLeadDeliverError {
     /// in the pool (lead session ended). The worker can't reach its
     /// lead anymore.
     LeadGone,
-    /// Outgoing hop exceeds the limit (default 10).
-    HopLimitExceeded { hop: u8, limit: u8 },
 }
 
 /// Label string the workers MCP reserves for addressing the caller's
@@ -238,12 +234,6 @@ pub trait WorkerFacade: Send + Sync {
     ///   `(session_id, "worker in <project_key> (detached)")`
     fn caller_identity(&self, caller: &SessionKey) -> WorkerIdentity;
 
-    /// The caller's ambient inbound hop, stamped on its `DomainSession`
-    /// when it received the message it's now relaying. `Tell`/`Ask`
-    /// forward `hop + 1` so the `HOP_LIMIT` guard can break relay
-    /// cycles - mirrors `WorkspaceFacade::peek_current_inbound_hop`.
-    fn peek_current_inbound_hop(&self, caller: &SessionKey) -> Option<u8>;
-
     /// Dispatch a `Command::SpawnWorker` and await its synchronous
     /// reply. Gating (lead-only, non-empty label) happens before
     /// dispatch. `charter`: `Some` inline mission, or `None` to load
@@ -275,8 +265,7 @@ pub trait WorkerFacade: Send + Sync {
     /// Dispatch a worker-bound wrapped prompt. Returns immediately
     /// with `Delivered` (target was in `live_workers` and the
     /// `Command::DeliverWorkerPrompt` was dispatched) or
-    /// `UnknownLabel` (no live match). Hop-limit excess is rejected
-    /// synchronously here too.
+    /// `UnknownLabel` (no live match).
     fn deliver_worker_prompt(
         &self,
         caller: &SessionKey,
@@ -289,7 +278,7 @@ pub trait WorkerFacade: Send + Sync {
     /// caller's `WorkerEntry::spawned_by_session_id`. Returns
     /// `Delivered` (`Command::DeliverWorkerPromptToLead` dispatched)
     /// or one of the `WorkerLeadDeliverError` variants. Same
-    /// hop-limit + wire-shape contract as `deliver_worker_prompt`.
+    /// wire-shape contract as `deliver_worker_prompt`.
     fn deliver_prompt_to_lead(
         &self,
         caller: &SessionKey,
@@ -299,7 +288,7 @@ pub trait WorkerFacade: Send + Sync {
     /// Deliver a Reply straight to the asker's session, bypassing
     /// label resolution (the asker is addressed by `SessionKey`).
     /// Shares the peer-MCP by-session delivery path. Returns `Err`
-    /// only on hop-limit or a closed caller session.
+    /// only when the caller session closed.
     fn deliver_reply_to_caller(
         &self,
         caller: &SessionKey,
@@ -398,14 +387,6 @@ impl WorkerFacade for ProdWorkerFacade {
         let ws = self.workspace.upgrade()?;
         let cp = self.caller_project(caller)?;
         ws.list_projects().into_iter().find(|v| v.key == cp.project_key).map(|v| v.name)
-    }
-
-    fn peek_current_inbound_hop(&self, caller: &SessionKey) -> Option<u8> {
-        let ws = self.workspace.upgrade()?;
-        let handles = ws.domain_handles.lock();
-        let domain = handles.get(caller)?;
-        let guard = domain.lock();
-        guard.current_inbound_hop
     }
 
     fn caller_identity(&self, caller: &SessionKey) -> WorkerIdentity {
@@ -589,12 +570,6 @@ impl WorkerFacade for ProdWorkerFacade {
         target_label: &str,
         wrapped: WrappedPrompt,
     ) -> Result<WorkerTargetStatus, WorkerDeliverError> {
-        if wrapped.exceeds_hop_limit() {
-            return Err(WorkerDeliverError::HopLimitExceeded {
-                hop: wrapped.hop,
-                limit: wrapped.hop_limit,
-            });
-        }
         let cp = self.caller_project(caller).ok_or_else(|| WorkerDeliverError::UnknownLabel {
             project_key: "<unknown>".into(),
             label: target_label.into(),
@@ -632,12 +607,6 @@ impl WorkerFacade for ProdWorkerFacade {
         caller: &SessionKey,
         wrapped: WrappedPrompt,
     ) -> Result<WorkerTargetStatus, WorkerLeadDeliverError> {
-        if wrapped.exceeds_hop_limit() {
-            return Err(WorkerLeadDeliverError::HopLimitExceeded {
-                hop: wrapped.hop,
-                limit: wrapped.hop_limit,
-            });
-        }
         let Some(ws) = self.workspace.upgrade() else {
             return Err(WorkerLeadDeliverError::UnknownCaller);
         };
@@ -763,10 +732,6 @@ pub struct MockWorkerFacade {
     /// Pre-loaded outcome for `despawn_worker` on a known label. When
     /// `None`, defaults to `Despawned { worktree_cleanup_warning: None }`.
     pub despawn_outcome: parking_lot::Mutex<Option<DespawnOutcome>>,
-    /// Caller's ambient inbound hop returned by
-    /// `peek_current_inbound_hop`. `None` (the default) mimics a
-    /// top-level caller with no inbound context.
-    pub current_inbound_hop: parking_lot::Mutex<Option<u8>>,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -791,10 +756,6 @@ impl WorkerFacade for MockWorkerFacade {
         // Tests set `project_key` to the project name they want, so the
         // mock namespace is the key string.
         self.caller_project(caller).map(|cp| cp.project_key.as_str().to_owned())
-    }
-
-    fn peek_current_inbound_hop(&self, _caller: &SessionKey) -> Option<u8> {
-        *self.current_inbound_hop.lock()
     }
 
     fn caller_identity(&self, caller: &SessionKey) -> WorkerIdentity {
@@ -879,12 +840,6 @@ impl WorkerFacade for MockWorkerFacade {
         target_label: &str,
         wrapped: WrappedPrompt,
     ) -> Result<WorkerTargetStatus, WorkerDeliverError> {
-        if wrapped.exceeds_hop_limit() {
-            return Err(WorkerDeliverError::HopLimitExceeded {
-                hop: wrapped.hop,
-                limit: wrapped.hop_limit,
-            });
-        }
         let cp = self.caller_project(caller).ok_or_else(|| WorkerDeliverError::UnknownLabel {
             project_key: "<unknown>".into(),
             label: target_label.into(),
@@ -909,12 +864,6 @@ impl WorkerFacade for MockWorkerFacade {
         caller: &SessionKey,
         wrapped: WrappedPrompt,
     ) -> Result<WorkerTargetStatus, WorkerLeadDeliverError> {
-        if wrapped.exceeds_hop_limit() {
-            return Err(WorkerLeadDeliverError::HopLimitExceeded {
-                hop: wrapped.hop,
-                limit: wrapped.hop_limit,
-            });
-        }
         let cp = self.caller_project(caller).ok_or(WorkerLeadDeliverError::UnknownCaller)?;
         if cp.is_lead {
             return Err(WorkerLeadDeliverError::LeadCallerHasNoLead);
@@ -1202,8 +1151,6 @@ mod mock_tests {
             channel: AskChannel::Workers,
             sender_name: "forge".into(),
             sender_org: "Personal".into(),
-            hop: 1,
-            hop_limit: 10,
             body: "hi".into(),
         };
         let res = mock.deliver_worker_prompt(&caller, "missing", wrapped);

@@ -21,7 +21,7 @@
 //! ## Wire wrapping
 //!
 //! Every peer message that hits a recipient's chat is wrapped with a
-//! prose header carrying: correlation id, hop count, sender identity,
+//! prose header carrying: correlation id, sender identity,
 //! and (for asks) reply instructions. The recipient's LLM reads this
 //! header as part of its prompt context; the recipient's TUI strips
 //! the bracket prefix at render time and substitutes a styled peer
@@ -207,19 +207,10 @@ pub struct WrappedPrompt {
     pub channel: AskChannel,
     pub sender_name: String,
     pub sender_org: String,
-    pub hop: u8,
-    pub hop_limit: u8,
     pub body: String,
 }
 
 impl WrappedPrompt {
-    /// True when this envelope has been relayed past its hop limit -
-    /// the anti-relay-cycle guard every delivery path checks before
-    /// forwarding.
-    pub(crate) fn exceeds_hop_limit(&self) -> bool {
-        self.hop > self.hop_limit
-    }
-
     /// Build the exact prose string that gets injected into the
     /// recipient's chat as a `Command::Prompt` text. The format MUST
     /// match the prefix patterns `forge-tui::ui::peer_block::detect_inbound`
@@ -227,10 +218,8 @@ impl WrappedPrompt {
     pub fn to_prose(&self) -> String {
         match self.kind {
             WrappedKind::Question => format!(
-                "[Question id={} hop={}/{} from agent '{}' (org '{}') - reply with {} in_reply_to={}]\n\n{}",
+                "[Question id={} from agent '{}' (org '{}') - reply with {} in_reply_to={}]\n\n{}",
                 self.correlation_id,
-                self.hop,
-                self.hop_limit,
                 self.sender_name,
                 self.sender_org,
                 self.channel.reply_tool(),
@@ -238,13 +227,8 @@ impl WrappedPrompt {
                 self.body,
             ),
             WrappedKind::Message => format!(
-                "[Message id={} hop={}/{} from agent '{}' (org '{}')]\n\n{}",
-                self.correlation_id,
-                self.hop,
-                self.hop_limit,
-                self.sender_name,
-                self.sender_org,
-                self.body,
+                "[Message id={} from agent '{}' (org '{}')]\n\n{}",
+                self.correlation_id, self.sender_name, self.sender_org, self.body,
             ),
             WrappedKind::Reply => format!(
                 "[Reply id={} from agent '{}' (org '{}') to your earlier ask]\n\n{}",
@@ -364,8 +348,6 @@ mod tests {
             channel,
             sender_name: sender.to_owned(),
             sender_org: org.to_owned(),
-            hop: 1,
-            hop_limit: 10,
             body: body.to_owned(),
         }
     }
@@ -381,7 +363,7 @@ mod tests {
         );
         let prose = w.to_prose();
         assert!(prose.starts_with(
-            "[Question id=q-7f3a92e0 hop=1/10 from agent 'forge' (org 'Personal') - reply with peers__tell_agent in_reply_to=q-7f3a92e0]",
+            "[Question id=q-7f3a92e0 from agent 'forge' (org 'Personal') - reply with peers__tell_agent in_reply_to=q-7f3a92e0]",
         ));
         assert!(prose.ends_with("What's the test setup look like?"));
     }
@@ -397,7 +379,7 @@ mod tests {
         );
         let prose = w.to_prose();
         assert!(prose.starts_with(
-            "[Question id=q-7f3a92e0 hop=1/10 from agent 'lead' (org 'Personal') - reply with workers__tell in_reply_to=q-7f3a92e0]",
+            "[Question id=q-7f3a92e0 from agent 'lead' (org 'Personal') - reply with workers__tell in_reply_to=q-7f3a92e0]",
         ));
         assert!(prose.ends_with("Status on the failing test?"));
     }
@@ -412,11 +394,7 @@ mod tests {
             "FYI I just pushed the rewriter cleanup.",
         );
         let prose = w.to_prose();
-        assert!(
-            prose.starts_with(
-                "[Message id=t-c45a8f12 hop=1/10 from agent 'forge' (org 'Personal')]"
-            )
-        );
+        assert!(prose.starts_with("[Message id=t-c45a8f12 from agent 'forge' (org 'Personal')]"));
     }
 
     #[test]

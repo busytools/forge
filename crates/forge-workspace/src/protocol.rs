@@ -207,7 +207,6 @@ pub enum Command {
     /// impls via `WorkspaceFacade::deliver_peer_prompt`. Routed to
     /// `spawn::handle_deliver_peer_prompt` which: (a) resolves
     /// `target_project` to a `SessionKey`; (b) if target is running,
-    /// stamps `current_inbound_hop` on target's DomainSession and
     /// dispatches a plain `Command::Prompt` carrying the wrapper
     /// prose; (c) if sleeping, buffers `wrapped` in target's
     /// `pending_peer_prompts` and dispatches `Command::SpawnProject`;

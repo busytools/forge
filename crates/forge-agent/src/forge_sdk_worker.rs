@@ -48,8 +48,8 @@ with other forge agents - peer sessions for other projects the user \
 is running side-by-side with this one.\n\
 \n\
 When a user-turn message starts with one of these bracket envelopes:\n\
-  [Question id=q-... hop=k/M from agent 'X' (org 'Y') - reply with <tool> in_reply_to=q-...]\n\
-  [Message id=t-... hop=k/M from agent 'X' (org 'Y')]\n\
+  [Question id=q-... from agent 'X' (org 'Y') - reply with <tool> in_reply_to=q-...]\n\
+  [Message id=t-... from agent 'X' (org 'Y')]\n\
   [Reply id=t-... from agent 'X' (org 'Y') to your earlier ask]\n\
   [Ask id=q-... to agent 'X' (org 'Y') failed to deliver: ...]\n\
 \n\
