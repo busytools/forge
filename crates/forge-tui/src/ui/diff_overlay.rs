@@ -204,6 +204,9 @@ fn render_diff_body(frame: &mut Frame, area: Rect, app: &mut App) {
         o.body_keys = keys;
         o.body_head_rows = head_count;
         o.body_tail_scroll = tail_scroll;
+        // The rail highlights this same (message-adjusted) top file, so
+        // its arrow tracks the body's pinned header in commit mode.
+        o.current_file_idx = first_visible;
         o.pane_origin_row = pane_area.y;
         o.pane_origin_col = pane_area.x;
         o.pane_width = pane_area.width;
@@ -491,9 +494,11 @@ fn render_rail(frame: &mut Frame, area: Rect, app: &mut App) {
     }
     let Some(overlay) = app.diff_overlay.as_ref() else { return };
     let inner_width = usize::from(area.width.saturating_sub(4));
-    // Highlight the leaf whose document range owns the top of the
-    // viewport - the same file the sticky header pins.
-    let current_idx = overlay.doc_offsets().file_at_row(overlay.doc_scroll);
+    // Highlight the leaf the sticky header pins - the body computes this
+    // once (message-adjusted in commit mode) and stashes it, so the rail
+    // never re-derives it from the raw `doc_scroll` and drifts by the
+    // leading message block.
+    let current_idx = overlay.current_file_idx;
 
     // Build the full row list (banner + rule + blank + tree rows +
     // optional untracked notice). We materialise everything because
@@ -2489,6 +2494,27 @@ mod tests {
         }
     }
 
+    fn multi_line_file(path: &str, count: usize) -> FileHunks {
+        use forge_workspace::env::git_diff::hunks::DiffLine;
+        let n = u32::try_from(count).unwrap_or(u32::MAX);
+        let lines = (0..count)
+            .map(|i| {
+                let no = u32::try_from(i + 1).unwrap_or(u32::MAX);
+                DiffLine {
+                    kind: DiffLineKind::Context,
+                    text: format!("line {i}"),
+                    old_line: Some(no),
+                    new_line: Some(no),
+                }
+            })
+            .collect();
+        FileHunks {
+            path: path.into(),
+            status: FileStatus::Modified,
+            hunks: vec![Hunk { old_start: 1, old_count: n, new_start: 1, new_count: n, lines }],
+        }
+    }
+
     /// Render the overlay (so the renderer stashes the real border-offset
     /// geometry), then left-click the second file's rail row through
     /// `handle_mouse` and confirm it resolves to file 1 - the guard for
@@ -2555,6 +2581,120 @@ mod tests {
         // Commit mode pushes the rail below the stepper, so this pins
         // the rail-below-stepper hit-test geometry.
         rail_click_round_trip(true);
+    }
+
+    // ---- one canonical file order (monotonic current-file arrow) ----
+
+    #[test]
+    fn rail_and_body_share_one_file_order() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        // Scanner order (as `git diff --name-status` might emit) puts a
+        // file ahead of a sibling directory's contents and out of alpha.
+        // The overlay reorders both the body and the rail into the
+        // folded-tree traversal, so the current-file arrow can only step
+        // monotonically down the rail as the body scrolls.
+        let mut state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp/repo"),
+            "HEAD".to_owned(),
+            vec![
+                one_line_file("src/zzz.rs"),
+                one_line_file("src/app.rs"),
+                one_line_file("src/app/foo.rs"),
+            ],
+        );
+        state.scanner_ok = true;
+        let paths: Vec<&str> = state.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec!["src/app/foo.rs", "src/app.rs", "src/zzz.rs"],
+            "files reordered into folded-tree traversal",
+        );
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Diff;
+        app.diff_overlay = Some(state);
+
+        let mut terminal = Terminal::new(TestBackend::new(130, 24)).expect("terminal");
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+
+        // The rail's file leaves ascend in `file_idx`, so the rail row
+        // order is the exact sequence `file_at_row(doc_scroll)` indexes.
+        let overlay = app.diff_overlay.as_ref().expect("overlay");
+        let leaves: Vec<usize> = overlay
+            .rail_keys
+            .iter()
+            .filter_map(|k| match k {
+                crate::app::diff_overlay::RailRowKey::File { file_idx } => Some(*file_idx),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(leaves, vec![0, 1, 2], "rail leaves ascend in body file order");
+    }
+
+    #[test]
+    fn commit_mode_rail_highlight_is_message_adjusted() {
+        use crate::app::diff_overlay::DiffScope;
+        use forge_workspace::env::git_diff::hunks::CommitMeta;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        // A commit's message block leads the scroll, so the rail's
+        // current-file highlight must offset by it, not read the raw
+        // `doc_scroll`. File 0 is short (so the message block is taller
+        // than it); file 1 is taller than the viewport so its header can
+        // pin at the very top.
+        let mut state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp"),
+            "main".to_owned(),
+            vec![one_line_file("a.rs"), multi_line_file("b.rs", 60)],
+        );
+        state.scanner_ok = true;
+        state.commits = vec![CommitMeta {
+            sha: "a".into(),
+            short_sha: "a3f9c1e".into(),
+            subject: "seed".into(),
+            body: "l1\nl2\nl3\nl4".into(),
+        }];
+        state.scope = DiffScope::Commit(0);
+        let mut app = App::test_default();
+        app.diff_overlay = Some(state);
+
+        let mut terminal = Terminal::new(TestBackend::new(130, 24)).expect("terminal");
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+
+        let (pane_width, start1) = {
+            let o = app.diff_overlay.as_ref().expect("overlay");
+            (o.pane_width, o.doc_offsets().starts[1])
+        };
+        let msg_rows = u32::try_from(
+            commit_message_block_lines(app.diff_overlay.as_ref().expect("overlay"), pane_width)
+                .len(),
+        )
+        .expect("rows fit u32");
+        // The message block must be taller than file 0, else a raw
+        // `doc_scroll` read would also land on file 0 and the assertion
+        // below wouldn't catch the regression.
+        assert!(msg_rows >= start1, "message taller than file 0 (msg={msg_rows}, start1={start1})");
+
+        // Parked at the message boundary: file 0 is pinned, but a raw
+        // `file_at_row(doc_scroll)` would wrongly report file 1.
+        app.diff_overlay.as_mut().expect("overlay").doc_scroll = msg_rows;
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+        assert_eq!(
+            app.diff_overlay.as_ref().expect("overlay").current_file_idx,
+            0,
+            "rail tracks the body's pinned file 0, not the raw doc_scroll",
+        );
+
+        // One file deeper pins file 1.
+        app.diff_overlay.as_mut().expect("overlay").doc_scroll = msg_rows + start1;
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+        assert_eq!(
+            app.diff_overlay.as_ref().expect("overlay").current_file_idx,
+            1,
+            "scrolling one file down advances the rail highlight",
+        );
     }
 
     // ---- commit-message block ----

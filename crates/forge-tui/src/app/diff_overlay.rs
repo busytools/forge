@@ -113,6 +113,39 @@ pub fn file_offsets(heights: &[u32]) -> DocOffsets {
     DocOffsets { starts, total: acc }
 }
 
+/// Reorder a scanner-ordered file list into the FILES rail's folded-tree
+/// traversal order - the one canonical display sequence the body, the
+/// offset table, and the rail all walk, so the current-file arrow steps
+/// monotonically down the rail as the body scrolls. Sorting the paths by
+/// [`compare_tree_paths`] yields the rail's pre-order leaf sequence
+/// because the rail re-sorts by the same per-level rule, so its tree is
+/// a pure function of the path set (independent of input order).
+fn reorder_files_to_tree(files: &mut [FileHunks]) {
+    files.sort_by(|a, b| compare_tree_paths(&a.path, &b.path));
+}
+
+/// Order two diff paths by the rail's per-level rule: at the first
+/// differing path segment, a directory (a segment that isn't the path's
+/// last component) sorts before a file, then alphabetically within each
+/// group.
+fn compare_tree_paths(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let a: Vec<&str> = a.split('/').filter(|c| !c.is_empty()).collect();
+    let b: Vec<&str> = b.split('/').filter(|c| !c.is_empty()).collect();
+    for i in 0..a.len().min(b.len()) {
+        if a[i] != b[i] {
+            let a_dir = i + 1 < a.len();
+            let b_dir = i + 1 < b.len();
+            return match (a_dir, b_dir) {
+                (true, false) => Ordering::Less,
+                (false, true) => Ordering::Greater,
+                _ => a[i].cmp(b[i]),
+            };
+        }
+    }
+    a.len().cmp(&b.len())
+}
+
 /// Unwrapped, syntax-highlighted spans for one file's diff lines,
 /// indexed `[hunk_idx][line_idx]` (the innermost `Vec` is one line's
 /// spans). Cached on [`DiffOverlayState::highlighted`] and reused
@@ -816,6 +849,12 @@ pub struct DiffOverlayState {
     /// this is the within-window tail scroll derived from it each
     /// frame, stashed like the other geometry fields.
     pub body_tail_scroll: usize,
+    /// File index at the top of the viewport, message-adjusted (the
+    /// same file the sticky header pins). Stashed each render so the
+    /// rail highlights the file the body actually shows - in commit
+    /// mode a message block leads the document, so the rail must offset
+    /// by it rather than reading the raw `doc_scroll`.
+    pub current_file_idx: usize,
     /// Per-file measured document height in rows, at the current
     /// width + view_mode. `None` = not measured yet (off-screen, or
     /// invalidated); the offset table falls back to a cheap estimate
@@ -926,7 +965,13 @@ impl DiffOverlayState {
     /// to the top; `deleted_expanded` clears (indices were per-file-set);
     /// `comments` persist and are re-tallied for the new scope. Callers
     /// must close any open editor (preserving its prior) first.
-    fn set_files(&mut self, files: Vec<FileHunks>, scanner_ok: bool, untracked_suppressed: usize) {
+    fn set_files(
+        &mut self,
+        mut files: Vec<FileHunks>,
+        scanner_ok: bool,
+        untracked_suppressed: usize,
+    ) {
+        reorder_files_to_tree(&mut files);
         let n = files.len();
         self.files = files;
         self.scanner_ok = scanner_ok;
@@ -1142,7 +1187,8 @@ impl DiffOverlayState {
     /// caller reaching for this constructor would silently lose
     /// both signals.
     #[cfg(test)]
-    pub fn new(cwd: PathBuf, target: String, files: Vec<FileHunks>) -> Self {
+    pub fn new(cwd: PathBuf, target: String, mut files: Vec<FileHunks>) -> Self {
+        reorder_files_to_tree(&mut files);
         let file_count = files.len();
         Self {
             cwd,
@@ -1166,6 +1212,7 @@ impl DiffOverlayState {
             rail_keys: Vec::new(),
             body_head_rows: 0,
             body_tail_scroll: 0,
+            current_file_idx: 0,
             measured_heights: vec![None; file_count],
             highlighted: vec![None; file_count],
             commits: Vec::new(),
@@ -1192,13 +1239,14 @@ impl DiffOverlayState {
         let DiffOverlayEvent {
             cwd,
             target,
-            files,
+            mut files,
             scanner_ok,
             untracked_suppressed,
             seq: _,
             kind,
             commit_body,
         } = event;
+        reorder_files_to_tree(&mut files);
         // drain_events only routes Initial events here; a Scope event
         // would be a bug, so fall back to whole-diff defensively.
         let (mut commits, branch, whole_diff) = match kind {
@@ -1248,6 +1296,7 @@ impl DiffOverlayState {
             rail_keys: Vec::new(),
             body_head_rows: 0,
             body_tail_scroll: 0,
+            current_file_idx: 0,
             measured_heights: vec![None; file_count],
             highlighted: vec![None; file_count],
             commits,
