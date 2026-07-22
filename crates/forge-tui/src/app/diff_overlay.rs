@@ -1195,6 +1195,9 @@ impl DiffOverlayState {
     /// (hunks merge, line indices shift) so a comment keeps pointing at
     /// its line rather than a stale coordinate.
     fn reanchor_comments_in_file(&mut self, idx: usize) {
+        // Only the current scope's comments index this scope's file set;
+        // an off-scope comment's key points at a different file layout.
+        let sha = self.current_commit_sha();
         let Some(file) = self.files.get(idx) else { return };
         // Snapshot the remaps first so the immutable borrow of `file`
         // drops before mutating `self.comments`.
@@ -1202,7 +1205,7 @@ impl DiffOverlayState {
             .comments
             .iter()
             .enumerate()
-            .filter(|(_, c)| c.key.file_idx == idx)
+            .filter(|(_, c)| c.key.file_idx == idx && c.commit == sha)
             .filter_map(|(pos, c)| {
                 let side = c
                     .thread
@@ -1900,10 +1903,15 @@ fn set_thread_status_by_key(
     let Some(branch) = overlay.branch.clone() else {
         return;
     };
+    // Scope-qualify: on a single-commit branch the whole-diff and commit
+    // diffs are identical, so keys collide across scopes. Match the
+    // current scope's comment or the button lands on the wrong thread
+    // (e.g. the ephemeral commit-scoped one with no durable thread).
+    let sha = overlay.current_commit_sha();
     let Some(thread) = overlay
         .comments
         .iter_mut()
-        .find(|c| c.key == key)
+        .find(|c| c.key == key && c.commit == sha)
         .and_then(|c| c.thread.as_mut())
         .filter(|t| allowed_from.contains(&t.status))
     else {
@@ -5162,6 +5170,79 @@ mod tests {
         resolve_focused_thread(&mut app);
         let ws = app.workspace.clone().expect("ws");
         assert!(ws.load_review_threads("forge", "feat").is_empty());
+    }
+
+    #[test]
+    fn comment_button_resolves_current_scope_thread_on_key_collision() {
+        // On a single-commit branch the whole-diff and commit diffs share
+        // a file layout, so a whole-diff durable comment and an ephemeral
+        // commit-scoped one can land on the same key (hydrate keeps the
+        // ephemeral and adds the durable). The button must act on the
+        // current scope's thread, not whichever `.find` hits first.
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        overlay.commits = vec![commit_meta("aaa", "first")];
+        overlay.scope = DiffScope::WholeDiff;
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        // Ephemeral commit-scoped comment pushed FIRST (no durable thread).
+        overlay.comments.push(HunkComment {
+            key,
+            path: "src/x.rs".to_owned(),
+            line: 10,
+            hunk_context: Vec::new(),
+            comment_text: "ephemeral".to_owned(),
+            commit: Some("aaa".to_owned()),
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
+        });
+        // Durable whole-diff thread at the SAME key.
+        overlay.comments.push(HunkComment {
+            key,
+            path: "src/x.rs".to_owned(),
+            line: 10,
+            hunk_context: Vec::new(),
+            comment_text: "durable".to_owned(),
+            commit: None,
+            thread: Some(forge_primitives::ReviewThread {
+                id: "t1".to_owned(),
+                anchor: ReviewAnchor {
+                    path: "src/x.rs".to_owned(),
+                    side: ReviewSide::New,
+                    line: 10,
+                    content_hash: 0,
+                    context: Vec::new(),
+                    base_ref: "feat".to_owned(),
+                },
+                comments: vec![ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "durable".to_owned(),
+                    at: String::new(),
+                }],
+                status: ReviewStatus::Open,
+                created_at: String::new(),
+                updated_at: String::new(),
+            }),
+            authored_this_session: false,
+            persisted: true,
+        });
+        app.diff_overlay = Some(overlay);
+
+        // In whole-diff scope the button targets the commit==None thread.
+        apply_thread_action(&mut app, key, ThreadAction::Resolve);
+
+        let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
+        let durable = comments.iter().find(|c| c.commit.is_none()).expect("durable comment");
+        assert_eq!(
+            durable.thread.as_ref().map(|t| t.status),
+            Some(ReviewStatus::Resolved),
+            "the current scope's durable thread resolved despite the key collision",
+        );
+        let ephemeral = comments.iter().find(|c| c.commit.is_some()).expect("ephemeral comment");
+        assert!(ephemeral.thread.is_none(), "the ephemeral comment is untouched");
     }
 
     #[test]
