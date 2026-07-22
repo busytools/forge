@@ -1109,4 +1109,34 @@ mod tests {
         let info = read_session_info(&path).expect("session info parsed");
         assert_eq!(info.tag.as_deref(), Some("second"));
     }
+
+    /// A resumed git worker anchors its history read at the worktree run
+    /// dir (`claude --resume` receives that cwd via `worker_tag_dir`), so
+    /// the JSONL is read from the worktree project key, not the repo-root
+    /// key. The same session id under the repo-root key is invisible -
+    /// which is why the resume-map must pick a worktree-scoped session.
+    #[test]
+    fn get_session_messages_reads_git_worker_from_worktree_key() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let session_id = "550e8400-e29b-41d4-a716-446655440000";
+        let repo_root = "/Users/me/Projects/playground";
+        let worktree = "/Users/me/Projects/playground/.claude/worktrees/gpt-tutor";
+
+        let worktree_dir = project_dir_for(config_dir.path(), worktree);
+        fs::create_dir_all(&worktree_dir).unwrap();
+        write_session_jsonl(
+            &worktree_dir,
+            session_id,
+            "{\"type\":\"user\",\"message\":{\"content\":\"hello from the worktree\"}}\n",
+        );
+
+        let from_worktree = get_session_messages(config_dir.path(), session_id, Some(worktree));
+        assert_eq!(from_worktree.len(), 1, "resume reads the JSONL under the worktree key");
+
+        let from_repo_root = get_session_messages(config_dir.path(), session_id, Some(repo_root));
+        assert!(
+            from_repo_root.is_empty(),
+            "the same session id under the repo-root key is not where a git worker reads",
+        );
+    }
 }
