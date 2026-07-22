@@ -1289,45 +1289,59 @@ fn push_file_body(
             ),
         ]));
         keys.push(BodyRowKey::DeletedCollapsed { file_idx });
-    } else if file.hunks.is_empty() {
-        // An untracked file with no hunks was dropped by one of the
-        // scan_untracked paths (size cap, non-regular, IO error), all
-        // logged WARN under agent.env_git. A tracked file with no
-        // hunks is a real binary diff. Differentiate so the user knows
-        // whether to grep logs or accept the answer.
-        let message = if file.status == FileStatus::Untracked {
-            "    (untracked, content not surfaced - see logs (target: agent.env_git))"
-        } else {
-            "    (binary file or no diff content)"
-        };
-        lines.push(Line::from(Span::styled(message, Style::default().fg(theme::DIM))));
-        keys.push(BodyRowKey::EmptyState);
     } else {
-        let gutter_width = gutter_width_for(file);
-        let cache = overlay.highlighted.get(file_idx).and_then(Option::as_ref);
-        match effective_view_mode(overlay.view_mode, pane_width) {
-            DiffViewMode::Unified => push_unified_body(
-                overlay,
-                file,
-                file_idx,
-                gutter_width,
-                pane_width,
-                cache,
-                comments_by_key,
-                lines,
-                keys,
-            ),
-            DiffViewMode::Split => push_split_body(
-                overlay,
-                file,
-                file_idx,
-                gutter_width,
-                pane_width,
-                cache,
-                comments_by_key,
-                lines,
-                keys,
-            ),
+        if file.oversize {
+            // The full-context snapshot tripped the size cap, so this
+            // file shows a bounded diff and can't expand context.
+            lines.push(Line::from(Span::styled(
+                "    (file too large - context expansion disabled)",
+                Style::default().fg(theme::STATUS_WARNING),
+            )));
+            keys.push(BodyRowKey::EmptyState);
+        }
+        if file.hunks.is_empty() {
+            // An untracked file with no hunks was dropped by one of the
+            // scan_untracked paths (size cap, non-regular, IO error), all
+            // logged WARN under agent.env_git. A tracked file with no
+            // hunks is a real binary diff. Differentiate so the user knows
+            // whether to grep logs or accept the answer. An oversize file
+            // whose bounded fallback was also too big keeps only the note.
+            if !file.oversize {
+                let message = if file.status == FileStatus::Untracked {
+                    "    (untracked, content not surfaced - see logs (target: agent.env_git))"
+                } else {
+                    "    (binary file or no diff content)"
+                };
+                lines.push(Line::from(Span::styled(message, Style::default().fg(theme::DIM))));
+                keys.push(BodyRowKey::EmptyState);
+            }
+        } else {
+            let gutter_width = gutter_width_for(file);
+            let cache = overlay.highlighted.get(file_idx).and_then(Option::as_ref);
+            match effective_view_mode(overlay.view_mode, pane_width) {
+                DiffViewMode::Unified => push_unified_body(
+                    overlay,
+                    file,
+                    file_idx,
+                    gutter_width,
+                    pane_width,
+                    cache,
+                    comments_by_key,
+                    lines,
+                    keys,
+                ),
+                DiffViewMode::Split => push_split_body(
+                    overlay,
+                    file,
+                    file_idx,
+                    gutter_width,
+                    pane_width,
+                    cache,
+                    comments_by_key,
+                    lines,
+                    keys,
+                ),
+            }
         }
     }
     push_file_end_cap(overlay, file_idx, pane_width, lines, keys);
@@ -1387,9 +1401,11 @@ fn hidden_lines_before_hunk(file: &FileHunks, hunk_idx: usize) -> Option<(&'stat
 }
 
 /// Emit a dim `┈ ↕ N lines ┈` context-expander row before hunk `hunk_idx`
-/// when lines are hidden there. Clicking it widens the whole file's
-/// context (the `-U<n>` re-fetch is per-file), so every expander in a
-/// file carries the same [`BodyRowKey::ContextExpander`].
+/// when lines are hidden there. Clicking it re-slices the file's pinned
+/// wide snapshot at a wider level in memory (context is per-file), so
+/// every expander in a file carries the same
+/// [`BodyRowKey::ContextExpander`]. Suppressed for an `oversize` file,
+/// whose snapshot is a bounded fallback with nothing more to reveal.
 fn push_context_expander(
     file: &FileHunks,
     file_idx: usize,
@@ -1398,6 +1414,9 @@ fn push_context_expander(
     lines: &mut Vec<Line<'static>>,
     keys: &mut Vec<BodyRowKey>,
 ) {
+    if file.oversize {
+        return;
+    }
     let Some((glyph, count)) = hidden_lines_before_hunk(file, hunk_idx) else { return };
     let dim = Style::default().fg(theme::DIM);
     let total = usize::from(pane_width);
@@ -2189,6 +2208,7 @@ mod tests {
         let file = FileHunks {
             path: "a.rs".into(),
             status: FileStatus::Modified,
+            oversize: false,
             hunks: vec![Hunk {
                 old_start: 1,
                 old_count: 2,
@@ -2266,6 +2286,7 @@ mod tests {
             vec![FileHunks {
                 path: "gone.rs".into(),
                 status: FileStatus::Deleted,
+                oversize: false,
                 hunks: Vec::new(),
             }],
         );
@@ -2284,6 +2305,7 @@ mod tests {
         let file = FileHunks {
             path: "a.rs".into(),
             status: FileStatus::Modified,
+            oversize: false,
             hunks: vec![Hunk {
                 old_start: 1,
                 old_count: 1,
@@ -2334,6 +2356,7 @@ mod tests {
         let make = || FileHunks {
             path: "a.rs".into(),
             status: FileStatus::Modified,
+            oversize: false,
             hunks: vec![Hunk {
                 old_start: 1,
                 old_count: 1,
@@ -2424,7 +2447,12 @@ mod tests {
         let mut state = DiffOverlayState::new(
             std::path::PathBuf::from("/tmp"),
             "main".to_owned(),
-            vec![FileHunks { path: "a.rs".into(), status: FileStatus::Modified, hunks: vec![] }],
+            vec![FileHunks {
+                path: "a.rs".into(),
+                status: FileStatus::Modified,
+                hunks: vec![],
+                oversize: false,
+            }],
         );
         state.branch = Some("feat/x".to_owned());
         state.commits = vec![
@@ -2483,7 +2511,12 @@ mod tests {
         let mut state = DiffOverlayState::new(
             std::path::PathBuf::from("/tmp"),
             "HEAD".to_owned(),
-            vec![FileHunks { path: "a.rs".into(), status: FileStatus::Modified, hunks: vec![] }],
+            vec![FileHunks {
+                path: "a.rs".into(),
+                status: FileStatus::Modified,
+                hunks: vec![],
+                oversize: false,
+            }],
         );
         state.scanner_ok = true;
         assert!(state.commits.is_empty());
@@ -2513,7 +2546,12 @@ mod tests {
         let mut state = DiffOverlayState::new(
             std::path::PathBuf::from("/tmp"),
             "main".to_owned(),
-            vec![FileHunks { path: "a.rs".into(), status: FileStatus::Modified, hunks: vec![] }],
+            vec![FileHunks {
+                path: "a.rs".into(),
+                status: FileStatus::Modified,
+                hunks: vec![],
+                oversize: false,
+            }],
         );
         state.branch = Some("feat/x".to_owned());
         state.commits = vec![CommitMeta {
@@ -2564,6 +2602,7 @@ mod tests {
         FileHunks {
             path: path.into(),
             status: FileStatus::Modified,
+            oversize: false,
             hunks: vec![Hunk {
                 old_start: 1,
                 old_count: 1,
@@ -2596,6 +2635,7 @@ mod tests {
         FileHunks {
             path: path.into(),
             status: FileStatus::Modified,
+            oversize: false,
             hunks: vec![Hunk { old_start: 1, old_count: n, new_start: 1, new_count: n, lines }],
         }
     }
@@ -2867,6 +2907,7 @@ mod tests {
         let file = FileHunks {
             path: "a.rs".into(),
             status: FileStatus::Modified,
+            oversize: false,
             hunks: vec![
                 Hunk {
                     old_start: 5,
@@ -2907,6 +2948,46 @@ mod tests {
     }
 
     #[test]
+    fn oversize_file_shows_note_and_no_expanders() {
+        // Two hunks with a gap that would normally draw an expander, but
+        // the file is flagged oversize: no expander renders and a "too
+        // large" note appears instead.
+        let file = FileHunks {
+            path: "big.txt".into(),
+            status: FileStatus::Modified,
+            hunks: vec![
+                Hunk {
+                    old_start: 5,
+                    old_count: 1,
+                    new_start: 5,
+                    new_count: 1,
+                    lines: vec![ctx(5)],
+                },
+                Hunk {
+                    old_start: 20,
+                    old_count: 1,
+                    new_start: 20,
+                    new_count: 1,
+                    lines: vec![ctx(20)],
+                },
+            ],
+            oversize: true,
+        };
+        let state =
+            DiffOverlayState::new(std::path::PathBuf::from("/tmp"), "HEAD".to_owned(), vec![file]);
+        let comments = std::collections::HashMap::new();
+        let mut lines = Vec::new();
+        let mut keys = Vec::new();
+        push_file_body(&state, 0, true, 80, &comments, &mut lines, &mut keys);
+        assert!(
+            !keys.iter().any(|k| matches!(k, BodyRowKey::ContextExpander { .. })),
+            "an oversize file renders no expanders",
+        );
+        let joined: Vec<String> = lines.iter().map(line_text).collect();
+        assert!(joined.iter().any(|l| l.contains("too large")), "the too-large note is shown");
+    }
+
+    #[test]
     fn no_context_expander_when_nothing_is_hidden() {
         // A single hunk starting at line 1 with no following hunk: nothing
         // is hidden above or between, so no expander renders (the
@@ -2934,7 +3015,12 @@ mod tests {
         let mut state = DiffOverlayState::new(
             std::path::PathBuf::from("/tmp"),
             "main".to_owned(),
-            vec![FileHunks { path: "a.rs".into(), status: FileStatus::Modified, hunks: vec![] }],
+            vec![FileHunks {
+                path: "a.rs".into(),
+                status: FileStatus::Modified,
+                hunks: vec![],
+                oversize: false,
+            }],
         );
         state.commits = vec![CommitMeta {
             sha: "a".into(),
@@ -2972,7 +3058,12 @@ mod tests {
         let state = DiffOverlayState::new(
             std::path::PathBuf::from("/tmp"),
             "HEAD".to_owned(),
-            vec![FileHunks { path: "a.rs".into(), status: FileStatus::Modified, hunks: vec![] }],
+            vec![FileHunks {
+                path: "a.rs".into(),
+                status: FileStatus::Modified,
+                hunks: vec![],
+                oversize: false,
+            }],
         );
         assert!(commit_message_block_lines(&state, 80).is_empty());
     }
@@ -2987,6 +3078,7 @@ mod tests {
         let file = FileHunks {
             path: "rate_limit.rs".into(),
             status: FileStatus::Modified,
+            oversize: false,
             hunks: vec![Hunk {
                 old_start: 65,
                 old_count: 1,

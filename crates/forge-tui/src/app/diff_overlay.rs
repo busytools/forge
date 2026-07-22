@@ -235,17 +235,22 @@ pub(crate) fn estimated_height(file: &FileHunks, collapsed: bool) -> u32 {
     if collapsed {
         return 2;
     }
-    let mut rows: u32 = 1; // file sticky header
+    // A sticky header, plus (oversize files only) the one-line
+    // "too large" note the renderer shows instead of expanders.
+    let mut rows: u32 = if file.oversize { 2 } else { 1 };
     let mut prev_end: Option<u32> = None;
     for hunk in &file.hunks {
-        // Expander row where lines are hidden before this hunk: above the
-        // first hunk (leading), or across a gap from the previous one.
-        let hidden = match prev_end {
-            None => hunk.new_start.saturating_sub(1),
-            Some(end) => hunk.new_start.saturating_sub(end),
-        };
-        if hidden > 0 {
-            rows = rows.saturating_add(1);
+        // Expander row where lines are hidden before this hunk - above the
+        // first hunk (leading) or across a gap - but oversize files render
+        // no expanders (their snapshot can't reveal more).
+        if !file.oversize {
+            let hidden = match prev_end {
+                None => hunk.new_start.saturating_sub(1),
+                Some(end) => hunk.new_start.saturating_sub(end),
+            };
+            if hidden > 0 {
+                rows = rows.saturating_add(1);
+            }
         }
         rows = rows.saturating_add(1); // @@ header
         rows = rows.saturating_add(u32::try_from(hunk.lines.len()).unwrap_or(u32::MAX));
@@ -309,9 +314,9 @@ pub enum BodyRowKey {
     /// the ending file; non-interactive.
     FileEndCap { file_idx: usize },
     /// A dim `┈ ↕ N lines ┈` context-expander row at a hunk's leading
-    /// edge or an inter-hunk gap. Click re-fetches the file at a wider
-    /// context radius (context is per-file, so every expander in a file
-    /// bumps the same level).
+    /// edge or an inter-hunk gap. Click re-slices the file from its pinned
+    /// wide snapshot at a wider context level in memory (context is
+    /// per-file, so every expander in a file bumps the same level).
     ContextExpander { file_idx: usize },
     /// `@@ -A,B +C,D @@` hunk header - non-interactive in v1.
     HunkHeader { file_idx: usize, hunk_idx: usize },
@@ -1114,7 +1119,8 @@ impl DiffOverlayState {
     /// [`Self::wide_hunks`] snapshot, then narrow the displayed `files`
     /// down to their current context level. Runs once whenever a fresh
     /// scan is installed (open / scope switch), so display and expansion
-    /// both derive from the one snapshot with no further `git` calls.
+    /// both derive from the one snapshot with no further `git` calls. An
+    /// oversize file (bounded fallback, expansion disabled) is left as-is.
     fn capture_wide_and_narrow(&mut self) {
         self.wide_hunks = self.files.iter().map(|f| f.hunks.clone()).collect();
         let narrowed: Vec<Vec<Hunk>> = self
@@ -1122,6 +1128,10 @@ impl DiffOverlayState {
             .iter()
             .enumerate()
             .map(|(i, wide)| {
+                let oversize = self.files.get(i).is_some_and(|f| f.oversize);
+                if oversize {
+                    return wide.clone();
+                }
                 let level = self.context_levels.get(i).copied().unwrap_or(DEFAULT_CONTEXT);
                 narrow_hunks(wide, usize::try_from(level).unwrap_or(usize::MAX))
             })
@@ -1188,14 +1198,25 @@ impl DiffOverlayState {
     /// Expansion only adds context lines, so every already-shown line
     /// survives - a comment's line always re-resolves.
     pub fn expand_file_context(&mut self, idx: usize) {
-        let Some(slot) = self.context_levels.get_mut(idx) else {
+        // An oversize file has only a bounded fallback snapshot - nothing
+        // more to reveal - so its expanders are suppressed; guard here too.
+        if self.files.get(idx).is_some_and(|f| f.oversize) {
             return;
+        }
+        // Guard the snapshot BEFORE bumping the level so a desynced vec
+        // can't silently advance the level with nothing to re-slice.
+        let level = match self.context_levels.get(idx) {
+            Some(current) => {
+                usize::try_from(current.saturating_add(CONTEXT_STEP)).unwrap_or(usize::MAX)
+            }
+            None => return,
         };
-        *slot = slot.saturating_add(CONTEXT_STEP);
-        let level = usize::try_from(*slot).unwrap_or(usize::MAX);
         let Some(narrowed) = self.wide_hunks.get(idx).map(|wide| narrow_hunks(wide, level)) else {
             return;
         };
+        if let Some(slot) = self.context_levels.get_mut(idx) {
+            *slot = slot.saturating_add(CONTEXT_STEP);
+        }
         if let Some(file) = self.files.get_mut(idx) {
             file.hunks = narrowed;
         }
@@ -2953,8 +2974,18 @@ mod tests {
             PathBuf::from("/tmp/repo"),
             "HEAD".to_owned(),
             vec![
-                FileHunks { path: "a.rs".into(), status: FileStatus::Modified, hunks: vec![] },
-                FileHunks { path: "b.rs".into(), status: FileStatus::Added, hunks: vec![] },
+                FileHunks {
+                    path: "a.rs".into(),
+                    status: FileStatus::Modified,
+                    hunks: vec![],
+                    oversize: false,
+                },
+                FileHunks {
+                    path: "b.rs".into(),
+                    status: FileStatus::Added,
+                    hunks: vec![],
+                    oversize: false,
+                },
             ],
         );
         // Simulate what the renderer's tree pass would stash on
@@ -3225,7 +3256,12 @@ mod tests {
         let mut state = DiffOverlayState::new(
             PathBuf::from("/tmp/repo"),
             "HEAD".to_owned(),
-            vec![FileHunks { path: "gone.rs".into(), status: FileStatus::Deleted, hunks: vec![] }],
+            vec![FileHunks {
+                path: "gone.rs".into(),
+                status: FileStatus::Deleted,
+                hunks: vec![],
+                oversize: false,
+            }],
         );
         state.measured_heights = vec![Some(2)];
         state.body_keys = vec![BodyRowKey::FileHeader { file_idx: 0 }];
@@ -4155,7 +4191,7 @@ mod tests {
     }
 
     fn one_file(path: &str, status: FileStatus) -> FileHunks {
-        FileHunks { path: path.to_owned(), status, hunks: vec![] }
+        FileHunks { path: path.to_owned(), status, hunks: vec![], oversize: false }
     }
 
     /// Three-commit branch with every commit's hunks pre-cached (so
@@ -4387,6 +4423,7 @@ mod tests {
         FileHunks {
             path: "a.rs".to_owned(),
             status: FileStatus::Modified,
+            oversize: false,
             hunks: vec![Hunk {
                 old_start: 1,
                 old_count: old - 1,
@@ -4405,6 +4442,7 @@ mod tests {
         let file = FileHunks {
             path: "a.rs".to_owned(),
             status: FileStatus::Modified,
+            oversize: false,
             hunks: vec![
                 Hunk {
                     old_start: 5,
@@ -4429,6 +4467,7 @@ mod tests {
         let flush = FileHunks {
             path: "b.rs".to_owned(),
             status: FileStatus::Modified,
+            oversize: false,
             hunks: vec![Hunk {
                 old_start: 1,
                 old_count: 1,
@@ -4558,6 +4597,7 @@ mod tests {
         let file = FileHunks {
             path: "a.rs".into(),
             status: FileStatus::Modified,
+            oversize: false,
             hunks: vec![Hunk {
                 old_start: 1,
                 old_count: 1,
@@ -4796,6 +4836,7 @@ mod tests {
         FileHunks {
             path: path.to_owned(),
             status: FileStatus::Modified,
+            oversize: false,
             hunks: vec![forge_workspace::env::git_diff::hunks::Hunk {
                 old_start: 1,
                 old_count: 0,
