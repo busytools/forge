@@ -411,13 +411,13 @@ pub struct ActiveCommentInput {
 /// (a commit or "All changes") installed into an already-open overlay.
 #[derive(Debug)]
 pub enum DiffScanKind {
-    /// The overlay's initial open. `commits` empty ⇒ whole-diff mode
-    /// (`files` is the whole-branch diff); non-empty ⇒ commit mode
-    /// (`files` is the first commit's diff) unless `whole_diff` forces
-    /// the whole-branch view (`files` is the whole diff, scope opens on
-    /// "All changes") because the branch has persisted review threads.
-    /// `branch` names the branch under review for the stepper header.
-    Initial { commits: Vec<CommitMeta>, branch: Option<String>, whole_diff: bool },
+    /// The overlay's initial open. `scope` is the resolved landing scope:
+    /// `Commit(i)` when opening on a commit (`files` is that commit's
+    /// diff, cached at slot `i`), `WholeDiff` when opening "All changes"
+    /// (`files` is the whole-branch diff). `commits` is the stepper list
+    /// (empty in whole-diff-only mode); `branch` names the branch under
+    /// review for the stepper header.
+    Initial { commits: Vec<CommitMeta>, branch: Option<String>, scope: DiffScope },
     /// A lazily-scanned scope, installed into the open overlay's cache
     /// (and swapped into view if still current). `files` is that scope's
     /// diff.
@@ -451,43 +451,85 @@ pub struct DiffOverlayEvent {
     pub commit_body: Option<String>,
 }
 
+/// Which scope the initial `/diff` open should land on, resolved from the
+/// branch's persisted review threads so a reopen shows the user's
+/// comments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InitialScope {
+    /// A whole-diff thread exists; open on "All changes".
+    WholeDiff,
+    /// Only commit-scoped threads exist; open on the commit carrying the
+    /// most-recently-updated one (its sha).
+    Commit(String),
+    /// No threads; open on the first commit when the branch has commits
+    /// ahead, else whole-diff.
+    Default,
+}
+
+/// Pick the initial scope from the branch's persisted threads: whole-diff
+/// when any whole-diff thread exists (the pre-scope behavior), else the
+/// commit carrying the most-recently-updated comment, else the default.
+fn initial_scope_from_threads(threads: &[forge_primitives::ReviewThread]) -> InitialScope {
+    if threads.iter().any(|t| t.commit.is_none()) {
+        return InitialScope::WholeDiff;
+    }
+    threads
+        .iter()
+        .max_by(|a, b| a.updated_at.cmp(&b.updated_at))
+        .and_then(|t| t.commit.clone())
+        .map_or(InitialScope::Default, InitialScope::Commit)
+}
+
+/// Resolve an [`InitialScope`] against a freshly-scanned commit list into
+/// the commit to open (index + sha), or `None` for whole-diff. A chosen
+/// sha no longer in the list falls back to the first commit.
+fn resolve_initial_commit(
+    initial: &InitialScope,
+    commits: &[CommitMeta],
+) -> Option<(usize, String)> {
+    match initial {
+        InitialScope::WholeDiff => None,
+        InitialScope::Default => commits.first().map(|c| (0, c.sha.clone())),
+        InitialScope::Commit(sha) => commits
+            .iter()
+            .position(|c| &c.sha == sha)
+            .map(|idx| (idx, sha.clone()))
+            .or_else(|| commits.first().map(|c| (0, c.sha.clone()))),
+    }
+}
+
 /// Spawn the initial `/diff` scan and post a [`DiffOverlayEvent`] when
 /// it completes. Best-effort send - receiver going away (app shutdown)
-/// just drops the result. Scans the commit list first: when the target
-/// has commits ahead the overlay opens in commit mode on the first
-/// commit (its diff is scanned upfront; the rest lazily on navigation);
-/// otherwise it scans the whole diff and opens whole-diff mode - today's
-/// behavior. `branch` names the branch under review for the stepper.
+/// just drops the result. Scans the commit list first, then resolves
+/// `initial` against it: a commit scope scans that commit's diff upfront
+/// (the rest lazily on navigation) and opens on it; otherwise it scans
+/// the whole diff and opens whole-diff mode. `branch` names the branch
+/// under review for the stepper.
 pub fn spawn_fetch(
     cwd: PathBuf,
     target: String,
     branch: Option<String>,
-    prefer_whole_diff: bool,
+    initial: InitialScope,
     seq: u64,
     tx: std_mpsc::Sender<DiffOverlayEvent>,
 ) {
     tokio::task::spawn_local(async move {
         let commits = forge_workspace::env::git_diff::hunks::scan_commits(&cwd, &target).await;
-        // Clone the first sha so `commits` isn't borrowed across the
-        // scan (it moves into the event below).
-        let first_sha = commits.first().map(|c| c.sha.clone());
-        // `prefer_whole_diff` (the branch already has persisted review
-        // threads) opens on the whole-branch diff so a reopen lands on
-        // the durable-review surface; otherwise a branch with commits
-        // opens on the first commit as before.
-        let (files, scanner_ok, untracked_suppressed, commit_body, whole_diff) = match first_sha {
-            Some(sha) if !prefer_whole_diff => {
+        // Resolve the initial scope against the freshly-scanned commits:
+        // `Some((idx, sha))` opens on that commit (its diff scanned
+        // upfront), `None` opens the whole-branch diff.
+        let open_commit = resolve_initial_commit(&initial, &commits);
+        let (files, scanner_ok, untracked_suppressed, commit_body, scope) =
+            if let Some((idx, sha)) = open_commit {
                 let o = forge_workspace::env::git_diff::hunks::scan_commit(&cwd, &sha).await;
                 let body =
                     forge_workspace::env::git_diff::hunks::scan_commit_body(&cwd, &sha).await;
-                (o.files, o.scanner_ok, 0, Some(body), false)
-            }
-            _ => {
+                (o.files, o.scanner_ok, 0, Some(body), DiffScope::Commit(idx))
+            } else {
                 let ScanOutcome { files, scanner_ok, untracked_suppressed } =
                     forge_workspace::env::git_diff::hunks::scan(&cwd, &target).await;
-                (files, scanner_ok, untracked_suppressed, None, true)
-            }
-        };
+                (files, scanner_ok, untracked_suppressed, None, DiffScope::WholeDiff)
+            };
         let _ = tx.send(DiffOverlayEvent {
             cwd,
             target,
@@ -495,7 +537,7 @@ pub fn spawn_fetch(
             scanner_ok,
             untracked_suppressed,
             seq,
-            kind: DiffScanKind::Initial { commits, branch, whole_diff },
+            kind: DiffScanKind::Initial { commits, branch, scope },
             commit_body,
         });
     });
@@ -649,17 +691,17 @@ pub fn open_with_target(app: &mut App, target: String) {
                 _ => None,
             },
         );
-    // Open on the whole-branch diff when the branch already has
-    // persisted review threads, so a reopen lands on the durable-review
-    // surface instead of the first commit.
-    let prefer_whole_diff = if let (Some(project), Some(branch), Some(workspace)) = (
+    // Open on the scope that holds the branch's persisted review threads,
+    // so a reopen lands where the user's comments are instead of the first
+    // commit.
+    let initial = if let (Some(project), Some(branch), Some(workspace)) = (
         app.active_session().and_then(|s| s.project.clone()),
         branch.clone(),
         app.workspace.clone(),
     ) {
-        !workspace.load_review_threads(&project, &branch).is_empty()
+        initial_scope_from_threads(&workspace.load_review_threads(&project, &branch))
     } else {
-        false
+        InitialScope::Default
     };
     // Bump the seq before spawning so the new scan's events
     // outrank anything still in flight from an earlier /diff call.
@@ -667,7 +709,7 @@ pub fn open_with_target(app: &mut App, target: String) {
     // dropped by drain_events as superseded.
     app.diff_scan_seq = app.diff_scan_seq.wrapping_add(1);
     let seq = app.diff_scan_seq;
-    spawn_fetch(cwd, target, branch, prefer_whole_diff, seq, app.diff_overlay_event_tx.clone());
+    spawn_fetch(cwd, target, branch, initial, seq, app.diff_overlay_event_tx.clone());
 }
 
 /// Resolve the cwd a diff scan should run against for the active
@@ -1480,30 +1522,30 @@ impl DiffOverlayState {
         reorder_files_to_tree(&mut files);
         // drain_events only routes Initial events here; a Scope event
         // would be a bug, so fall back to whole-diff defensively.
-        let (mut commits, branch, whole_diff) = match kind {
-            DiffScanKind::Initial { commits, branch, whole_diff } => (commits, branch, whole_diff),
-            DiffScanKind::Scope(_) => (Vec::new(), None, true),
+        let (mut commits, branch, initial_scope) = match kind {
+            DiffScanKind::Initial { commits, branch, scope } => (commits, branch, scope),
+            DiffScanKind::Scope(_) => (Vec::new(), None, DiffScope::WholeDiff),
         };
-        // First commit's body arrives with its upfront-scanned diff.
-        if let Some(body) = commit_body
-            && let Some(first) = commits.first_mut()
+        // The opened commit's body arrives with its upfront-scanned diff.
+        if let (Some(body), DiffScope::Commit(idx)) = (commit_body, initial_scope)
+            && let Some(commit) = commits.get_mut(idx)
         {
-            first.body = body;
+            commit.body = body;
         }
         let file_count = files.len();
-        // Open on the whole diff when there are no commits ahead OR the
-        // branch has persisted review threads (`whole_diff`); `files` is
-        // then the whole-branch diff. Otherwise open on the first commit.
-        let (scope, commit_cache, whole_diff_cache) = if commits.is_empty() || whole_diff {
-            (
+        // Open on the resolved scope: a commit caches `files` at its slot;
+        // whole-diff (or a stale index) caches `files` as the whole diff.
+        let (scope, commit_cache, whole_diff_cache) = match initial_scope {
+            DiffScope::Commit(idx) if idx < commits.len() => {
+                let mut cache = vec![None; commits.len()];
+                cache[idx] = Some(CachedScan { files: files.clone(), scanner_ok });
+                (DiffScope::Commit(idx), cache, None)
+            }
+            _ => (
                 DiffScope::WholeDiff,
                 vec![None; commits.len()],
                 Some(CachedScan { files: files.clone(), scanner_ok }),
-            )
-        } else {
-            let mut cache = vec![None; commits.len()];
-            cache[0] = Some(CachedScan { files: files.clone(), scanner_ok });
-            (DiffScope::Commit(0), cache, None)
+            ),
         };
         let mut state = Self {
             cwd,
@@ -4744,7 +4786,7 @@ mod tests {
             kind: DiffScanKind::Initial {
                 commits: vec![commit_meta("aaa", "first"), commit_meta("bbb", "second")],
                 branch: Some("feat".into()),
-                whole_diff: false,
+                scope: DiffScope::Commit(0),
             },
             commit_body: Some("the first commit's body".to_owned()),
         };
@@ -4768,7 +4810,11 @@ mod tests {
             scanner_ok: true,
             untracked_suppressed: 2,
             seq: 1,
-            kind: DiffScanKind::Initial { commits: Vec::new(), branch: None, whole_diff: false },
+            kind: DiffScanKind::Initial {
+                commits: Vec::new(),
+                branch: None,
+                scope: DiffScope::WholeDiff,
+            },
             commit_body: None,
         };
         let state = DiffOverlayState::new_initial(event);
@@ -4777,6 +4823,84 @@ mod tests {
         assert!(state.commit_cache.is_empty());
         assert!(state.whole_diff_cache.is_some());
         assert_eq!(state.untracked_suppressed, 2, "whole-diff keeps the untracked cap count");
+    }
+
+    // ---- initial-scope selection from persisted threads ----
+
+    fn scope_thread(
+        id: &str,
+        commit: Option<&str>,
+        updated_at: &str,
+    ) -> forge_primitives::ReviewThread {
+        forge_primitives::ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 1,
+                content_hash: 0,
+                context: Vec::new(),
+                base_ref: "main".to_owned(),
+            },
+            comments: Vec::new(),
+            status: ReviewStatus::Open,
+            created_at: "t0".to_owned(),
+            updated_at: updated_at.to_owned(),
+            commit: commit.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn open_prefers_whole_diff_when_whole_diff_threads_exist() {
+        // A whole-diff thread keeps priority even alongside commit-scoped
+        // ones - the pre-scope behavior. No threads at all -> default.
+        let threads = [scope_thread("cs", Some("sha1"), "t2"), scope_thread("wd", None, "t1")];
+        assert_eq!(initial_scope_from_threads(&threads), InitialScope::WholeDiff);
+        assert_eq!(initial_scope_from_threads(&[]), InitialScope::Default);
+    }
+
+    #[test]
+    fn open_lands_on_commit_with_persisted_thread() {
+        // No whole-diff thread: the most-recently-updated commit-scoped
+        // thread's commit is chosen, and it maps to that commit's index.
+        let threads = [
+            scope_thread("a", Some("sha0"), "2026-07-20T10:00:00Z"),
+            scope_thread("b", Some("sha1"), "2026-07-21T10:00:00Z"),
+        ];
+        let pref = initial_scope_from_threads(&threads);
+        assert_eq!(pref, InitialScope::Commit("sha1".to_owned()), "newest commit-scoped wins");
+
+        let commits = vec![commit_meta("sha0", "first"), commit_meta("sha1", "second")];
+        assert_eq!(
+            resolve_initial_commit(&pref, &commits),
+            Some((1, "sha1".to_owned())),
+            "the chosen sha maps to Commit(1)",
+        );
+    }
+
+    #[test]
+    fn resolve_initial_commit_defaults_and_falls_back() {
+        let commits = vec![commit_meta("sha0", "first"), commit_meta("sha1", "second")];
+        assert_eq!(
+            resolve_initial_commit(&InitialScope::Default, &commits),
+            Some((0, "sha0".to_owned())),
+            "default opens the first commit when the branch has commits",
+        );
+        assert_eq!(
+            resolve_initial_commit(&InitialScope::Default, &[]),
+            None,
+            "default with no commits opens whole-diff",
+        );
+        assert_eq!(
+            resolve_initial_commit(&InitialScope::WholeDiff, &commits),
+            None,
+            "whole-diff never resolves to a commit",
+        );
+        assert_eq!(
+            resolve_initial_commit(&InitialScope::Commit("gone".to_owned()), &commits),
+            Some((0, "sha0".to_owned())),
+            "a vanished commit sha falls back to the first commit",
+        );
     }
 
     // ---- durable review threads (persist / re-anchor / drift) ----
@@ -5114,7 +5238,7 @@ mod tests {
     }
 
     #[test]
-    fn new_initial_whole_diff_flag_opens_all_changes_with_commits() {
+    fn new_initial_whole_diff_scope_opens_all_changes_with_commits() {
         let event = DiffOverlayEvent {
             cwd: PathBuf::from("/tmp"),
             target: "main".into(),
@@ -5125,7 +5249,7 @@ mod tests {
             kind: DiffScanKind::Initial {
                 commits: vec![commit_meta("aaa", "first"), commit_meta("bbb", "second")],
                 branch: Some("feat".into()),
-                whole_diff: true,
+                scope: DiffScope::WholeDiff,
             },
             commit_body: None,
         };
@@ -5134,6 +5258,32 @@ mod tests {
         assert_eq!(state.commits.len(), 2, "the stepper stays available");
         assert!(state.whole_diff_cache.is_some(), "whole-diff files cached");
         assert!(state.commit_cache.iter().all(Option::is_none), "commits scanned lazily");
+    }
+
+    #[test]
+    fn new_initial_opens_on_the_given_commit_index() {
+        // A commit-scoped reopen lands on the carrying commit, not commit 0:
+        // its diff caches at that slot and its body fills that commit.
+        let event = DiffOverlayEvent {
+            cwd: PathBuf::from("/tmp"),
+            target: "main".into(),
+            files: vec![one_file("b.rs", FileStatus::Modified)],
+            scanner_ok: true,
+            untracked_suppressed: 0,
+            seq: 1,
+            kind: DiffScanKind::Initial {
+                commits: vec![commit_meta("aaa", "first"), commit_meta("bbb", "second")],
+                branch: Some("feat".into()),
+                scope: DiffScope::Commit(1),
+            },
+            commit_body: Some("second commit body".to_owned()),
+        };
+        let state = DiffOverlayState::new_initial(event);
+        assert_eq!(state.scope, DiffScope::Commit(1), "opens on the carrying commit");
+        assert!(state.commit_cache[0].is_none(), "commit 0 stays lazy");
+        assert!(state.commit_cache[1].is_some(), "the opened commit's diff is cached");
+        assert!(state.whole_diff_cache.is_none());
+        assert_eq!(state.commits[1].body, "second commit body", "body filled on the opened commit");
     }
 
     fn thread_status(app: &App) -> ReviewStatus {
