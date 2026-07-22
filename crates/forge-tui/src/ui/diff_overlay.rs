@@ -2711,6 +2711,25 @@ mod tests {
     }
 
     #[test]
+    fn rail_order_handles_file_dir_name_collision() {
+        // A file→dir refactor makes git emit a name as BOTH a file and a
+        // directory (`D z` + `A z/a`). The comparator must stay a total
+        // order (dir before the same-named file) or `sort_by` mis-orders
+        // and the arrow jumble returns.
+        let state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp"),
+            "HEAD".to_owned(),
+            vec![one_line_file("z"), one_line_file("m"), one_line_file("z/a")],
+        );
+        let paths: Vec<&str> = state.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec!["z/a", "m", "z"],
+            "dir `z/` (from z/a) sorts before file `m`, then the file `z`",
+        );
+    }
+
+    #[test]
     fn commit_mode_rail_highlight_is_message_adjusted() {
         use crate::app::diff_overlay::DiffScope;
         use forge_workspace::env::git_diff::hunks::CommitMeta;

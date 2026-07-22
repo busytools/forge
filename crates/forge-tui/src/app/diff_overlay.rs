@@ -124,23 +124,19 @@ fn reorder_files_to_tree(files: &mut [FileHunks]) {
     files.sort_by(|a, b| compare_tree_paths(&a.path, &b.path));
 }
 
-/// Order two diff paths by the rail's per-level rule: at the first
-/// differing path segment, a directory (a segment that isn't the path's
-/// last component) sorts before a file, then alphabetically within each
-/// group.
+/// Order two diff paths by the rail's per-level rule, as a genuine total
+/// order: at each segment, a directory (a segment that isn't this path's
+/// leaf) sorts before a file, then alphabetically. Comparing the
+/// `(is_leaf, name)` tuple per segment keeps it transitive even when a
+/// name is both a file and a directory (a file->dir refactor git emits as
+/// `D z` + `A z/a`), which a length-only fallback would make cyclic.
 fn compare_tree_paths(a: &str, b: &str) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
     let a: Vec<&str> = a.split('/').filter(|c| !c.is_empty()).collect();
     let b: Vec<&str> = b.split('/').filter(|c| !c.is_empty()).collect();
     for i in 0..a.len().min(b.len()) {
-        if a[i] != b[i] {
-            let a_dir = i + 1 < a.len();
-            let b_dir = i + 1 < b.len();
-            return match (a_dir, b_dir) {
-                (true, false) => Ordering::Less,
-                (false, true) => Ordering::Greater,
-                _ => a[i].cmp(b[i]),
-            };
+        let ord = (i + 1 == a.len(), a[i]).cmp(&(i + 1 == b.len(), b[i]));
+        if ord != std::cmp::Ordering::Equal {
+            return ord;
         }
     }
     a.len().cmp(&b.len())
