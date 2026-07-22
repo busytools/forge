@@ -50,6 +50,11 @@ pub struct FileHunks {
     pub path: String,
     pub status: FileStatus,
     pub hunks: Vec<Hunk>,
+    /// The full-context fetch tripped the oversize cap, so `hunks` is a
+    /// bounded fallback (or empty) rather than the pinned snapshot the
+    /// overlay expands from. The overlay renders it normally but disables
+    /// context expansion for this file.
+    pub oversize: bool,
 }
 
 /// File-level change classification from `git diff --name-status`,
@@ -256,6 +261,18 @@ pub async fn scan_commit_body(cwd: &Path, sha: &str) -> String {
 /// while still giving a 16× speedup over a sequential loop.
 const MAX_INFLIGHT_FETCHES: usize = 16;
 
+/// Unified-diff context radius the per-file fetch pins at open: large
+/// enough to cover realistic inter-hunk gaps (so expanding reveals hidden
+/// lines from the cached snapshot without a live re-fetch), but bounded
+/// so a big file with a small change doesn't emit its whole content and
+/// trip the oversize cap. A gap wider than this reveals up to the cap.
+const PINNED_CONTEXT_LINES: u32 = 2_000;
+
+/// Fallback context radius for a file whose pinned full-context fetch was
+/// still oversize - a bounded diff that renders normally (expansion is
+/// disabled for it). git's own default is 3.
+const FALLBACK_CONTEXT_LINES: u32 = 3;
+
 /// Top-level scanner entry. `target` is a plain ref / SHA / `"HEAD"`
 /// (not a `..`/`...` range - the helper `diff_ref_spec` picks the
 /// shape for us). `"HEAD"` runs a two-dot working-tree diff
@@ -333,7 +350,13 @@ async fn scan_with_ref_spec(cwd: &Path, ref_spec: &str) -> ScanOutcome {
         .buffer_unordered(MAX_INFLIGHT_FETCHES);
         while let Some((idx, result)) = stream.next().await {
             match result {
-                FileScanOutcome::Ok(hunks) => files[idx].hunks = hunks,
+                FileScanOutcome::Ok { hunks, oversize } => {
+                    files[idx].hunks = hunks;
+                    files[idx].oversize = oversize;
+                }
+                // An oversize file is reported as Ok (with the flag set),
+                // so only a genuine subprocess crash flips scanner_ok - one
+                // huge file no longer blanks the whole scope.
                 FileScanOutcome::SubprocessFailed => {
                     scanner_ok = false;
                 }
@@ -344,11 +367,13 @@ async fn scan_with_ref_spec(cwd: &Path, ref_spec: &str) -> ScanOutcome {
     ScanOutcome { files, scanner_ok, untracked_suppressed: 0 }
 }
 
-/// Per-file fetch result. `SubprocessFailed` propagates back to
-/// `scan` so a single-file failure flips `scanner_ok` without
-/// poisoning the rest of the per-file results.
+/// Per-file fetch result. `SubprocessFailed` propagates back to `scan`
+/// so a single-file crash flips `scanner_ok` without poisoning the rest.
+/// `oversize` marks a file whose full-context fetch tripped the size cap
+/// and fell back to a bounded diff (or empty) - it renders but doesn't
+/// expand, and crucially does NOT flip the scope-wide `scanner_ok`.
 enum FileScanOutcome {
-    Ok(Vec<Hunk>),
+    Ok { hunks: Vec<Hunk>, oversize: bool },
     SubprocessFailed,
 }
 
@@ -373,22 +398,26 @@ fn diff_ref_spec(target: &str) -> String {
     if target == "HEAD" { "HEAD".to_owned() } else { format!("{target}...HEAD") }
 }
 
-/// Fetch hunks for one file via
-/// `git diff <ref_spec> --no-ext-diff -- <path>`. The `--` separator
-/// ensures the path isn't reinterpreted as a flag for files like
-/// `--foo`. Binary files and submodule entries return `Ok(vec![])`
-/// (that's the legitimate "no @@ hunks" case and matches the
-/// rendering convention for those file kinds).
-///
-/// `ref_spec` is the already-resolved diff range from
-/// [`diff_ref_spec`] (e.g. `HEAD` for working-tree diffs, or
-/// `main...HEAD` for branch-against-default). Callers must pre-resolve
-/// the spec so the per-file and top-level scans agree.
-async fn fetch_file_hunks(cwd: &Path, ref_spec: &str, path: &str) -> FileScanOutcome {
-    let section = match run_git(cwd, &["diff", ref_spec, "--no-ext-diff", "--", path]).await {
+/// One file-diff subprocess result before it's folded into a
+/// [`FileScanOutcome`]: parsed hunks, the size cap, or a crash.
+enum DiffFetch {
+    Ok(Vec<Hunk>),
+    Oversize,
+    Failed,
+}
+
+/// Fetch + parse one file's diff at a given context radius. Binary /
+/// submodule entries and empty diffs return `Ok(vec![])`. Splits the
+/// oversize cap from a genuine subprocess crash so the caller can retry
+/// oversize at a smaller context instead of failing the whole scan.
+async fn run_file_diff(cwd: &Path, ref_spec: &str, path: &str, context: u32) -> DiffFetch {
+    let flag = format!("-U{context}");
+    let section = match run_git(cwd, &["diff", ref_spec, "--no-ext-diff", &flag, "--", path]).await
+    {
         GitOutput::Ok(s) => s,
-        GitOutput::Empty => return FileScanOutcome::Ok(Vec::new()),
-        GitOutput::Failed | GitOutput::Oversize => return FileScanOutcome::SubprocessFailed,
+        GitOutput::Empty => return DiffFetch::Ok(Vec::new()),
+        GitOutput::Oversize => return DiffFetch::Oversize,
+        GitOutput::Failed => return DiffFetch::Failed,
     };
     let hunks = parse_hunks(&section);
     if hunks.is_empty() && contains_hunk_marker(&section) {
@@ -406,7 +435,35 @@ async fn fetch_file_hunks(cwd: &Path, ref_spec: &str, path: &str) -> FileScanOut
             section_bytes = section.len(),
         );
     }
-    FileScanOutcome::Ok(hunks)
+    DiffFetch::Ok(hunks)
+}
+
+/// Fetch one file's hunks for the overlay, pinning at
+/// [`PINNED_CONTEXT_LINES`] so the returned hunks carry enough context
+/// for in-memory expansion. The `--` separator keeps a `--foo` path from
+/// being read as a flag.
+///
+/// A file whose pinned fetch trips the oversize cap falls back to a
+/// bounded [`FALLBACK_CONTEXT_LINES`] diff and is flagged `oversize` (it
+/// renders but can't expand); if even that is oversize (a huge fully-
+/// rewritten file) it keeps empty hunks and the flag. Either way it stays
+/// `Ok`, so one big file never flips the scope-wide `scanner_ok`.
+///
+/// `ref_spec` is the already-resolved diff range from [`diff_ref_spec`]
+/// (e.g. `HEAD`, or `main...HEAD`); callers pre-resolve it so the per-file
+/// and top-level scans agree.
+async fn fetch_file_hunks(cwd: &Path, ref_spec: &str, path: &str) -> FileScanOutcome {
+    match run_file_diff(cwd, ref_spec, path, PINNED_CONTEXT_LINES).await {
+        DiffFetch::Ok(hunks) => FileScanOutcome::Ok { hunks, oversize: false },
+        DiffFetch::Failed => FileScanOutcome::SubprocessFailed,
+        DiffFetch::Oversize => {
+            match run_file_diff(cwd, ref_spec, path, FALLBACK_CONTEXT_LINES).await {
+                DiffFetch::Ok(hunks) => FileScanOutcome::Ok { hunks, oversize: true },
+                DiffFetch::Oversize => FileScanOutcome::Ok { hunks: Vec::new(), oversize: true },
+                DiffFetch::Failed => FileScanOutcome::SubprocessFailed,
+            }
+        }
+    }
 }
 
 /// Parse `git diff --name-status` output into a list of `FileHunks`
@@ -449,7 +506,7 @@ fn parse_name_status(raw: &str) -> Vec<FileHunks> {
                     return None;
                 }
             };
-            Some(FileHunks { path: path.to_owned(), status, hunks: Vec::new() })
+            Some(FileHunks { path: path.to_owned(), status, hunks: Vec::new(), oversize: false })
         })
         .collect()
 }
@@ -688,7 +745,12 @@ async fn scan_untracked(cwd: &Path) -> (Vec<FileHunks>, bool, usize) {
                 Vec::new()
             }
         };
-        out.push(FileHunks { path: path.to_owned(), status: FileStatus::Untracked, hunks });
+        out.push(FileHunks {
+            path: path.to_owned(),
+            status: FileStatus::Untracked,
+            hunks,
+            oversize: false,
+        });
     }
     (out, true, 0)
 }
@@ -930,6 +992,7 @@ diff --git a/x.rs b/x.rs
             path: "x.rs".to_owned(),
             status: FileStatus::Modified,
             hunks: hunks.clone(),
+            oversize: false,
         };
         assert_eq!(file.added_count(), 1);
         assert_eq!(file.removed_count(), 0);
@@ -1104,5 +1167,56 @@ diff --git a/x.rs b/x.rs
         let sha = git_capture(&dir, &["rev-parse", "HEAD"]);
         let body = scan_commit_body(dir.path(), &sha).await;
         assert!(body.is_empty(), "a subject-only commit has an empty body, got {body:?}");
+    }
+
+    // ---- full-context scan (pin-at-open snapshot source) ----
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scan_fetches_full_context_hunks() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_commit_repo(&dir);
+        // A 20-line file; edits near the top (line 3) and near the bottom
+        // (line 17) leave a ~13-line unchanged gap between them. At full
+        // context git folds them into one hunk carrying every line, so the
+        // overlay can narrow + expand from that single cached snapshot.
+        let base_lines: Vec<String> = (1..=20).map(|i| format!("line {i}")).collect();
+        write_file(&dir, "f.rs", &format!("{}\n", base_lines.join("\n")));
+        commit(&dir, "base");
+        let mut edited = base_lines;
+        "line 3 CHANGED".clone_into(&mut edited[2]);
+        "line 17 CHANGED".clone_into(&mut edited[16]);
+        write_file(&dir, "f.rs", &format!("{}\n", edited.join("\n")));
+
+        let outcome = scan(dir.path(), "HEAD").await;
+        assert!(outcome.scanner_ok);
+        let file = outcome.files.iter().find(|f| f.path == "f.rs").expect("f.rs scanned");
+        assert_eq!(file.hunks.len(), 1, "full context merges the two edits into one hunk");
+        // The previously-hidden middle lines are all present in the snapshot.
+        let texts: Vec<&str> = file.hunks[0].lines.iter().map(|l| l.text.as_str()).collect();
+        assert!(texts.contains(&"line 10"), "a middle context line is in the snapshot");
+        assert!(texts.contains(&"line 3 CHANGED"), "the first edit is present");
+        assert!(texts.contains(&"line 17 CHANGED"), "the second edit is present");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn oversize_file_does_not_blank_the_scope() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_commit_repo(&dir);
+        write_file(&dir, "small.rs", "fn a() {}\n");
+        // A file whose diff blows the 8 MiB stdout cap: one ~5 MiB line
+        // changed to another, so old+new exceeds the cap even at the
+        // bounded fallback context.
+        write_file(&dir, "big.txt", &"a".repeat(5 * 1024 * 1024));
+        commit(&dir, "base");
+        write_file(&dir, "small.rs", "fn a() { b(); }\n");
+        write_file(&dir, "big.txt", &"b".repeat(5 * 1024 * 1024));
+
+        let outcome = scan(dir.path(), "HEAD").await;
+        assert!(outcome.scanner_ok, "one oversize file must not blank the whole scope");
+        let small = outcome.files.iter().find(|f| f.path == "small.rs").expect("small scanned");
+        assert!(!small.oversize, "the normal file is not flagged oversize");
+        assert!(!small.hunks.is_empty(), "the normal file still renders its diff");
+        let big = outcome.files.iter().find(|f| f.path == "big.txt").expect("big listed");
+        assert!(big.oversize, "the oversize file is flagged (expansion disabled downstream)");
     }
 }

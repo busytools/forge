@@ -28,7 +28,7 @@ use forge_primitives::review::{
 };
 use forge_workspace::env::git_diff::hunks::ScanOutcome;
 use forge_workspace::env::git_diff::hunks::{
-    CommitMeta, DiffLine, DiffLineKind, FileHunks, FileStatus,
+    CommitMeta, DiffLine, DiffLineKind, FileHunks, FileStatus, Hunk,
 };
 use forge_workspace::env::git_diff::resolver::{self, AnchorResolution, CONTEXT_RADIUS};
 use tui_textarea::TextArea;
@@ -113,6 +113,93 @@ pub fn file_offsets(heights: &[u32]) -> DocOffsets {
     DocOffsets { starts, total: acc }
 }
 
+/// Reorder a scanner-ordered file list into the FILES rail's folded-tree
+/// traversal order - the one canonical display sequence the body, the
+/// offset table, and the rail all walk, so the current-file arrow steps
+/// monotonically down the rail as the body scrolls. Sorting the paths by
+/// [`compare_tree_paths`] yields the rail's pre-order leaf sequence
+/// because the rail re-sorts by the same per-level rule, so its tree is
+/// a pure function of the path set (independent of input order).
+fn reorder_files_to_tree(files: &mut [FileHunks]) {
+    files.sort_by(|a, b| compare_tree_paths(&a.path, &b.path));
+}
+
+/// Order two diff paths by the rail's per-level rule, as a genuine total
+/// order: at each segment, a directory (a segment that isn't this path's
+/// leaf) sorts before a file, then alphabetically. Comparing the
+/// `(is_leaf, name)` tuple per segment keeps it transitive even when a
+/// name is both a file and a directory (a file->dir refactor git emits as
+/// `D z` + `A z/a`), which a length-only fallback would make cyclic.
+fn compare_tree_paths(a: &str, b: &str) -> std::cmp::Ordering {
+    let a: Vec<&str> = a.split('/').filter(|c| !c.is_empty()).collect();
+    let b: Vec<&str> = b.split('/').filter(|c| !c.is_empty()).collect();
+    for i in 0..a.len().min(b.len()) {
+        let ord = (i + 1 == a.len(), a[i]).cmp(&(i + 1 == b.len(), b[i]));
+        if ord != std::cmp::Ordering::Equal {
+            return ord;
+        }
+    }
+    a.len().cmp(&b.len())
+}
+
+/// Narrow a file's full-context wide hunks down to `context` lines
+/// around each change, reproducing git's `-U<context>` hunking in memory:
+/// a line is kept when it is a change or within `context` of one, and
+/// maximal runs of kept lines become hunks (so two changes whose gap the
+/// context spans fold into one). The overlay captures the wide hunks once
+/// at open and re-narrows from them on an expander click - no re-fetch.
+fn narrow_hunks(wide: &[Hunk], context: usize) -> Vec<Hunk> {
+    let mut out = Vec::new();
+    for hunk in wide {
+        let n = hunk.lines.len();
+        let mut keep = vec![false; n];
+        let mut has_change = false;
+        for (i, line) in hunk.lines.iter().enumerate() {
+            if line.kind != DiffLineKind::Context {
+                has_change = true;
+                let lo = i.saturating_sub(context);
+                let hi = (i + context).min(n.saturating_sub(1));
+                for slot in keep.iter_mut().take(hi + 1).skip(lo) {
+                    *slot = true;
+                }
+            }
+        }
+        // A real diff hunk always carries a change; a changeless one (only
+        // test fixtures build these) has nothing to narrow around, so keep
+        // it whole rather than dropping it to an empty display.
+        if !has_change {
+            keep.fill(true);
+        }
+        let mut i = 0;
+        while i < n {
+            if !keep[i] {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < n && keep[i] {
+                i += 1;
+            }
+            out.push(hunk_from_lines(&hunk.lines[start..i]));
+        }
+    }
+    out
+}
+
+/// Build a `Hunk` header from a contiguous run of diff lines: the start
+/// line numbers are the first old-/new-side line present, the counts the
+/// number of old-/new-side lines. Used by [`narrow_hunks`] to re-header a
+/// slice of the wide snapshot.
+fn hunk_from_lines(lines: &[DiffLine]) -> Hunk {
+    let old_start = lines.iter().find_map(|l| l.old_line).unwrap_or(0);
+    let new_start = lines.iter().find_map(|l| l.new_line).unwrap_or(0);
+    let old_count =
+        u32::try_from(lines.iter().filter(|l| l.old_line.is_some()).count()).unwrap_or(u32::MAX);
+    let new_count =
+        u32::try_from(lines.iter().filter(|l| l.new_line.is_some()).count()).unwrap_or(u32::MAX);
+    Hunk { old_start, old_count, new_start, new_count, lines: lines.to_vec() }
+}
+
 /// Unwrapped, syntax-highlighted spans for one file's diff lines,
 /// indexed `[hunk_idx][line_idx]` (the innermost `Vec` is one line's
 /// spans). Cached on [`DiffOverlayState::highlighted`] and reused
@@ -121,19 +208,53 @@ pub fn file_offsets(heights: &[u32]) -> DocOffsets {
 /// plain scroll never re-runs syntect.
 pub type FileHighlight = Vec<Vec<Vec<ratatui::text::Span<'static>>>>;
 
+/// Rendered rows the end-of-file boundary adds after every file but the
+/// last: the `└─ end <path> ──` cap row plus a blank spacer before the
+/// next file's banded header. Measured heights (via the renderer's
+/// `push_file_body`) already include it, so the off-screen estimate must
+/// add it too or the offset table drifts by two rows per file boundary.
+pub(crate) const END_CAP_ROWS: u32 = 2;
+
+/// Unified-diff context radius the initial scan runs at (`git diff`'s
+/// default `-U3`). The per-file expansion level starts here and grows by
+/// [`CONTEXT_STEP`] per expander click.
+pub(crate) const DEFAULT_CONTEXT: u32 = 3;
+
+/// Lines of context an expander click adds per side (so a gap shrinks by
+/// up to `2 * CONTEXT_STEP` per click, GitHub's ~20-lines-per-click feel).
+pub(crate) const CONTEXT_STEP: u32 = 20;
+
 /// Cheap height estimate for an off-screen file (no wrap, no pairing):
-/// 1 sticky header row + per hunk (1 `@@` header + raw line count), or
-/// 2 for a collapsed deleted file. The offset table uses this for
-/// not-yet-measured files; the renderer's `file_height` replaces it
-/// (storing into `measured_heights`) when the file enters the window.
+/// 1 sticky header row + per hunk (1 `@@` header + raw line count) + the
+/// context-expander rows the renderer emits (one above the first hunk
+/// when it starts past line 1, one per non-zero inter-hunk gap), or 2 for
+/// a collapsed deleted file. The offset table uses this for not-yet-
+/// measured files; the renderer's `file_height` replaces it (storing into
+/// `measured_heights`) when the file enters the window.
 pub(crate) fn estimated_height(file: &FileHunks, collapsed: bool) -> u32 {
     if collapsed {
         return 2;
     }
-    let mut rows: u32 = 1; // file sticky header
+    // A sticky header, plus (oversize files only) the one-line
+    // "too large" note the renderer shows instead of expanders.
+    let mut rows: u32 = if file.oversize { 2 } else { 1 };
+    let mut prev_end: Option<u32> = None;
     for hunk in &file.hunks {
+        // Expander row where lines are hidden before this hunk - above the
+        // first hunk (leading) or across a gap - but oversize files render
+        // no expanders (their snapshot can't reveal more).
+        if !file.oversize {
+            let hidden = match prev_end {
+                None => hunk.new_start.saturating_sub(1),
+                Some(end) => hunk.new_start.saturating_sub(end),
+            };
+            if hidden > 0 {
+                rows = rows.saturating_add(1);
+            }
+        }
         rows = rows.saturating_add(1); // @@ header
         rows = rows.saturating_add(u32::try_from(hunk.lines.len()).unwrap_or(u32::MAX));
+        prev_end = Some(hunk.new_start.saturating_add(hunk.new_count));
     }
     rows
 }
@@ -188,6 +309,15 @@ pub enum BodyRowKey {
     /// The one-line "File deleted - N lines removed" notice shown for
     /// a collapsed deleted file. Click expands it.
     DeletedCollapsed { file_idx: usize },
+    /// The dim `└─ end <path> ──` boundary row (and its blank spacer)
+    /// that closes a file before the next file's banded header. Names
+    /// the ending file; non-interactive.
+    FileEndCap { file_idx: usize },
+    /// A dim `┈ ↕ N lines ┈` context-expander row at a hunk's leading
+    /// edge or an inter-hunk gap. Click re-slices the file from its pinned
+    /// wide snapshot at a wider context level in memory (context is
+    /// per-file, so every expander in a file bumps the same level).
+    ContextExpander { file_idx: usize },
     /// `@@ -A,B +C,D @@` hunk header - non-interactive in v1.
     HunkHeader { file_idx: usize, hunk_idx: usize },
     /// A diff row in the split body. Carries both column keys -
@@ -198,6 +328,11 @@ pub enum BodyRowKey {
     /// The single-line summary chip showing a saved comment ("💬
     /// L<line>: ..."). Click → re-open the saved comment for edit.
     CommentChip(LineKey),
+    /// A comment box's button row (`[ Resolve ]` / `[ Reopen ]`). Click
+    /// runs `action` on THAT thread by `key`, not the focused thread, but
+    /// only when the click column falls in `[col_start, col_end)` - the
+    /// active button's span - so the dim inactive button no-ops.
+    CommentButton { key: LineKey, action: ThreadAction, col_start: u16, col_end: u16 },
     /// Inline TextArea row for the currently-open comment editor.
     /// Multiple consecutive rows when the comment spans more than
     /// one visual line.
@@ -205,6 +340,15 @@ pub enum BodyRowKey {
     /// A row of the commit-message block shown above the diff in commit
     /// mode (the leading rule, subject, or a body line). Non-interactive.
     CommitMessage,
+}
+
+/// The lifecycle transition a comment box's button fires. `Resolve`
+/// moves an Open / Outdated thread to Resolved; `Reopen` moves a
+/// Resolved thread back to Open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadAction {
+    Resolve,
+    Reopen,
 }
 
 /// A saved per-line comment. `path` / `line` / `hunk_context` are
@@ -816,6 +960,16 @@ pub struct DiffOverlayState {
     /// this is the within-window tail scroll derived from it each
     /// frame, stashed like the other geometry fields.
     pub body_tail_scroll: usize,
+    /// File index at the top of the viewport, message-adjusted (the
+    /// same file the sticky header pins). Stashed each render so the
+    /// rail highlights the file the body actually shows - in commit
+    /// mode a message block leads the document, so the rail must offset
+    /// by it rather than reading the raw `doc_scroll`.
+    pub current_file_idx: usize,
+    /// Rows the commit-message block occupies at the top of the document
+    /// (0 in whole-diff mode). Stashed each render so a rail-click target
+    /// in file-sub-document space is lifted back into full-document space.
+    pub message_rows: u32,
     /// Per-file measured document height in rows, at the current
     /// width + view_mode. `None` = not measured yet (off-screen, or
     /// invalidated); the offset table falls back to a cheap estimate
@@ -831,6 +985,17 @@ pub struct DiffOverlayState {
     /// resize all leave it valid); a fresh scan is a fresh state with
     /// an empty cache. Length tracks `files`.
     pub highlighted: Vec<Option<FileHighlight>>,
+    /// Per-file unified-diff context radius currently shown. Starts at
+    /// the default context; an expander click bumps it by `CONTEXT_STEP`
+    /// and re-narrows that file from [`Self::wide_hunks`] in memory.
+    /// Length tracks `files`; reset on scope change.
+    pub context_levels: Vec<u32>,
+    /// Per-file full-context hunks captured once at scope open - the
+    /// pinned snapshot the display is narrowed from and expanders reveal
+    /// from, so an expander click never re-runs `git diff` (no
+    /// fetch-failure, scope-switch race, or mid-review tree drift).
+    /// Length tracks `files`.
+    pub wide_hunks: Vec<Vec<Hunk>>,
     /// Ordered commit list for the stepper (oldest first). Empty in
     /// whole-diff-only mode (no commits ahead of the target) - the
     /// stepper never renders and the overlay behaves exactly as before.
@@ -926,7 +1091,13 @@ impl DiffOverlayState {
     /// to the top; `deleted_expanded` clears (indices were per-file-set);
     /// `comments` persist and are re-tallied for the new scope. Callers
     /// must close any open editor (preserving its prior) first.
-    fn set_files(&mut self, files: Vec<FileHunks>, scanner_ok: bool, untracked_suppressed: usize) {
+    fn set_files(
+        &mut self,
+        mut files: Vec<FileHunks>,
+        scanner_ok: bool,
+        untracked_suppressed: usize,
+    ) {
+        reorder_files_to_tree(&mut files);
         let n = files.len();
         self.files = files;
         self.scanner_ok = scanner_ok;
@@ -937,9 +1108,37 @@ impl DiffOverlayState {
         self.active_input = None;
         self.measured_heights = vec![None; n];
         self.highlighted = vec![None; n];
+        self.context_levels = vec![DEFAULT_CONTEXT; n];
         self.body_keys.clear();
         self.commit_loading = false;
+        self.capture_wide_and_narrow();
         self.recompute_comment_counts();
+    }
+
+    /// Capture each file's just-scanned full-context hunks as the pinned
+    /// [`Self::wide_hunks`] snapshot, then narrow the displayed `files`
+    /// down to their current context level. Runs once whenever a fresh
+    /// scan is installed (open / scope switch), so display and expansion
+    /// both derive from the one snapshot with no further `git` calls. An
+    /// oversize file (bounded fallback, expansion disabled) is left as-is.
+    fn capture_wide_and_narrow(&mut self) {
+        self.wide_hunks = self.files.iter().map(|f| f.hunks.clone()).collect();
+        let narrowed: Vec<Vec<Hunk>> = self
+            .wide_hunks
+            .iter()
+            .enumerate()
+            .map(|(i, wide)| {
+                let oversize = self.files.get(i).is_some_and(|f| f.oversize);
+                if oversize {
+                    return wide.clone();
+                }
+                let level = self.context_levels.get(i).copied().unwrap_or(DEFAULT_CONTEXT);
+                narrow_hunks(wide, usize::try_from(level).unwrap_or(usize::MAX))
+            })
+            .collect();
+        for (file, hunks) in self.files.iter_mut().zip(narrowed) {
+            file.hunks = hunks;
+        }
     }
 
     /// Point the overlay at `scope`, closing the jump dropdown. If the
@@ -990,6 +1189,79 @@ impl DiffOverlayState {
         } else {
             self.put_scope_cache(scope, CachedScan { files, scanner_ok });
         }
+    }
+
+    /// Expand file `idx`'s shown context by one step, re-slicing its
+    /// display hunks from the pinned wide snapshot in memory (no `git`):
+    /// bump the level, re-narrow, drop the file's stale height + highlight
+    /// caches, and re-anchor its comments onto the new hunk coordinates.
+    /// Expansion only adds context lines, so every already-shown line
+    /// survives - a comment's line always re-resolves.
+    pub fn expand_file_context(&mut self, idx: usize) {
+        // An oversize file has only a bounded fallback snapshot - nothing
+        // more to reveal - so its expanders are suppressed; guard here too.
+        if self.files.get(idx).is_some_and(|f| f.oversize) {
+            return;
+        }
+        // Guard the snapshot BEFORE bumping the level so a desynced vec
+        // can't silently advance the level with nothing to re-slice.
+        let level = match self.context_levels.get(idx) {
+            Some(current) => {
+                usize::try_from(current.saturating_add(CONTEXT_STEP)).unwrap_or(usize::MAX)
+            }
+            None => return,
+        };
+        let Some(narrowed) = self.wide_hunks.get(idx).map(|wide| narrow_hunks(wide, level)) else {
+            return;
+        };
+        if let Some(slot) = self.context_levels.get_mut(idx) {
+            *slot = slot.saturating_add(CONTEXT_STEP);
+        }
+        if let Some(file) = self.files.get_mut(idx) {
+            file.hunks = narrowed;
+        }
+        if let Some(slot) = self.measured_heights.get_mut(idx) {
+            *slot = None;
+        }
+        if let Some(slot) = self.highlighted.get_mut(idx) {
+            *slot = None;
+        }
+        self.reanchor_comments_in_file(idx);
+    }
+
+    /// Remap the `LineKey` of every comment anchored in file `idx` onto
+    /// the file's current hunks by matching each comment's line number on
+    /// its side. Used after a context expand rewrites the hunk structure
+    /// (hunks merge, line indices shift) so a comment keeps pointing at
+    /// its line rather than a stale coordinate.
+    fn reanchor_comments_in_file(&mut self, idx: usize) {
+        // Only the current scope's comments index this scope's file set;
+        // an off-scope comment's key points at a different file layout.
+        let sha = self.current_commit_sha();
+        let Some(file) = self.files.get(idx) else { return };
+        // Snapshot the remaps first so the immutable borrow of `file`
+        // drops before mutating `self.comments`.
+        let remaps: Vec<(usize, LineKey)> = self
+            .comments
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.key.file_idx == idx && c.commit == sha)
+            .filter_map(|(pos, c)| {
+                let side = c
+                    .thread
+                    .as_ref()
+                    .map(|t| t.anchor.side)
+                    .or_else(|| c.hunk_context.first().map(|dl| anchor_side(dl.kind)))
+                    .unwrap_or(ReviewSide::New);
+                find_line_key(file, idx, side, c.line).map(|key| (pos, key))
+            })
+            .collect();
+        for (pos, key) in remaps {
+            if let Some(c) = self.comments.get_mut(pos) {
+                c.key = key;
+            }
+        }
+        self.recompute_comment_counts();
     }
 
     /// Store `cached` in the slot for `scope`.
@@ -1119,16 +1391,20 @@ impl DiffOverlayState {
     /// to find the file at the top of the viewport, jump the scroll
     /// from the rail, and size the scrollbar.
     pub fn doc_offsets(&self) -> DocOffsets {
+        let last = self.files.len().saturating_sub(1);
         let heights: Vec<u32> = self
             .files
             .iter()
             .enumerate()
             .map(|(idx, file)| {
-                self.measured_heights
-                    .get(idx)
-                    .copied()
-                    .flatten()
-                    .unwrap_or_else(|| estimated_height(file, self.is_collapsed(idx)))
+                self.measured_heights.get(idx).copied().flatten().unwrap_or_else(|| {
+                    // The measured height already folds in the trailing
+                    // end-cap; mirror it in the estimate for every file
+                    // but the last so an unmeasured file's start row lines
+                    // up with what the renderer draws.
+                    let cap = if idx < last { END_CAP_ROWS } else { 0 };
+                    estimated_height(file, self.is_collapsed(idx)).saturating_add(cap)
+                })
             })
             .collect();
         file_offsets(&heights)
@@ -1142,9 +1418,10 @@ impl DiffOverlayState {
     /// caller reaching for this constructor would silently lose
     /// both signals.
     #[cfg(test)]
-    pub fn new(cwd: PathBuf, target: String, files: Vec<FileHunks>) -> Self {
+    pub fn new(cwd: PathBuf, target: String, mut files: Vec<FileHunks>) -> Self {
+        reorder_files_to_tree(&mut files);
         let file_count = files.len();
-        Self {
+        let mut state = Self {
             cwd,
             target,
             files,
@@ -1166,8 +1443,12 @@ impl DiffOverlayState {
             rail_keys: Vec::new(),
             body_head_rows: 0,
             body_tail_scroll: 0,
+            current_file_idx: 0,
+            message_rows: 0,
             measured_heights: vec![None; file_count],
             highlighted: vec![None; file_count],
+            context_levels: vec![DEFAULT_CONTEXT; file_count],
+            wide_hunks: Vec::new(),
             commits: Vec::new(),
             branch: None,
             scope: DiffScope::WholeDiff,
@@ -1179,7 +1460,9 @@ impl DiffOverlayState {
             jump_selected: 0,
             jump_hint_span: None,
             focused_thread: None,
-        }
+        };
+        state.capture_wide_and_narrow();
+        state
     }
 
     /// Build state from a completed initial-scan event, threading
@@ -1192,13 +1475,14 @@ impl DiffOverlayState {
         let DiffOverlayEvent {
             cwd,
             target,
-            files,
+            mut files,
             scanner_ok,
             untracked_suppressed,
             seq: _,
             kind,
             commit_body,
         } = event;
+        reorder_files_to_tree(&mut files);
         // drain_events only routes Initial events here; a Scope event
         // would be a bug, so fall back to whole-diff defensively.
         let (mut commits, branch, whole_diff) = match kind {
@@ -1226,7 +1510,7 @@ impl DiffOverlayState {
             cache[0] = Some(CachedScan { files: files.clone(), scanner_ok });
             (DiffScope::Commit(0), cache, None)
         };
-        Self {
+        let mut state = Self {
             cwd,
             target,
             files,
@@ -1248,8 +1532,12 @@ impl DiffOverlayState {
             rail_keys: Vec::new(),
             body_head_rows: 0,
             body_tail_scroll: 0,
+            current_file_idx: 0,
+            message_rows: 0,
             measured_heights: vec![None; file_count],
             highlighted: vec![None; file_count],
+            context_levels: vec![DEFAULT_CONTEXT; file_count],
+            wide_hunks: Vec::new(),
             commits,
             branch,
             scope,
@@ -1261,7 +1549,9 @@ impl DiffOverlayState {
             jump_selected: 0,
             jump_hint_span: None,
             focused_thread: None,
-        }
+        };
+        state.capture_wide_and_narrow();
+        state
     }
 }
 
@@ -1373,6 +1663,29 @@ fn first_line_key(files: &[FileHunks]) -> Option<LineKey> {
             .find(|(_, hunk)| !hunk.lines.is_empty())
             .map(|(hunk_idx, _)| LineKey { file_idx, hunk_idx, line_idx: 0 })
     })
+}
+
+/// The `LineKey` of the line in `file` whose number on `side` equals
+/// `line`, or `None` when no such line is present. Used to re-anchor a
+/// comment onto a file's hunks after they change.
+fn find_line_key(
+    file: &FileHunks,
+    file_idx: usize,
+    side: ReviewSide,
+    line: u32,
+) -> Option<LineKey> {
+    for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+        for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
+            let number = match side {
+                ReviewSide::Old => diff_line.old_line,
+                ReviewSide::New => diff_line.new_line,
+            };
+            if number == Some(line) {
+                return Some(LineKey { file_idx, hunk_idx, line_idx });
+            }
+        }
+    }
+    None
 }
 
 /// The user-authored text of a thread (first user comment), for the
@@ -1577,13 +1890,13 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// `r`: resolve the focused thread (Open / Addressed / Outdated →
-/// Resolved). Only the user resolves.
+/// `r`: resolve the focused thread (Open / Outdated → Resolved). Only
+/// the user resolves.
 fn resolve_focused_thread(app: &mut App) {
     set_focused_thread_status(
         app,
         ReviewStatus::Resolved,
-        &[ReviewStatus::Open, ReviewStatus::Addressed, ReviewStatus::Outdated],
+        &[ReviewStatus::Open, ReviewStatus::Outdated],
     );
 }
 
@@ -1592,22 +1905,55 @@ fn reopen_focused_thread(app: &mut App) {
     set_focused_thread_status(app, ReviewStatus::Open, &[ReviewStatus::Resolved]);
 }
 
-/// Flip the focused thread's status when it is currently in one of
-/// `allowed_from`, updating the in-memory box and persisting the change.
-/// No-op when nothing is focused, the focused comment has no durable
-/// thread, or its status isn't a legal source for this transition.
+/// Flip the focused thread's status - the `r` / `o` keyboard path. Acts
+/// on the last-clicked / saved box; a no-op when nothing is focused.
 fn set_focused_thread_status(app: &mut App, next: ReviewStatus, allowed_from: &[ReviewStatus]) {
+    let Some(key) = app.diff_overlay.as_ref().and_then(|o| o.focused_thread) else {
+        return;
+    };
+    set_thread_status_by_key(app, key, next, allowed_from);
+}
+
+/// Map a comment-button click to its transition and run it on the clicked
+/// thread. Distinct from the `r` / `o` keys in that it targets `key`
+/// directly rather than the focused thread, so a click resolves exactly
+/// the box it landed on.
+fn apply_thread_action(app: &mut App, key: LineKey, action: ThreadAction) {
+    let (next, allowed_from): (ReviewStatus, &[ReviewStatus]) = match action {
+        ThreadAction::Resolve => {
+            (ReviewStatus::Resolved, &[ReviewStatus::Open, ReviewStatus::Outdated])
+        }
+        ThreadAction::Reopen => (ReviewStatus::Open, &[ReviewStatus::Resolved]),
+    };
+    set_thread_status_by_key(app, key, next, allowed_from);
+}
+
+/// Flip the thread anchored at `key` to `next` when it is currently in
+/// one of `allowed_from`, updating the in-memory box, focusing it (so the
+/// `r` / `o` keys follow), and persisting the change. No-op when the key
+/// has no durable thread or its status isn't a legal source.
+fn set_thread_status_by_key(
+    app: &mut App,
+    key: LineKey,
+    next: ReviewStatus,
+    allowed_from: &[ReviewStatus],
+) {
     let project = app.active_session().and_then(|s| s.project.clone());
     let Some(overlay) = app.diff_overlay.as_mut() else {
         return;
     };
-    let (Some(key), Some(branch)) = (overlay.focused_thread, overlay.branch.clone()) else {
+    let Some(branch) = overlay.branch.clone() else {
         return;
     };
+    // Scope-qualify: on a single-commit branch the whole-diff and commit
+    // diffs are identical, so keys collide across scopes. Match the
+    // current scope's comment or the button lands on the wrong thread
+    // (e.g. the ephemeral commit-scoped one with no durable thread).
+    let sha = overlay.current_commit_sha();
     let Some(thread) = overlay
         .comments
         .iter_mut()
-        .find(|c| c.key == key)
+        .find(|c| c.key == key && c.commit == sha)
         .and_then(|c| c.thread.as_mut())
         .filter(|t| allowed_from.contains(&t.status))
     else {
@@ -1615,6 +1961,7 @@ fn set_focused_thread_status(app: &mut App, next: ReviewStatus, allowed_from: &[
     };
     thread.status = next;
     let id = thread.id.clone();
+    overlay.focused_thread = Some(key);
     app.needs_redraw = true;
     if let Some(project) = project
         && let Some(workspace) = app.workspace.as_ref()
@@ -2095,6 +2442,10 @@ pub(crate) fn rail_width_for(terminal_width: u16) -> u16 {
 #[derive(Debug, Default)]
 struct MouseEffect {
     redraw: bool,
+    /// A comment-button click: run `action` on the thread at this key.
+    /// Surfaced to the outer handler because persisting the status needs
+    /// the App's workspace, which the inner overlay borrow can't reach.
+    thread_action: Option<(LineKey, ThreadAction)>,
 }
 
 /// Handle a mouse event while the diff overlay is active.
@@ -2129,6 +2480,9 @@ pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
     } else {
         MouseEffect::default()
     };
+    if let Some((key, action)) = effect.thread_action {
+        apply_thread_action(app, key, action);
+    }
     if effect.redraw {
         app.needs_redraw = true;
     }
@@ -2161,7 +2515,7 @@ fn handle_scroll(
     } else {
         overlay.doc_scroll = overlay.doc_scroll.saturating_sub(u32::from(SCROLL_LINES_PER_NOTCH));
     }
-    MouseEffect { redraw: true }
+    MouseEffect { redraw: true, thread_action: None }
 }
 
 /// Resolve a left-click to an action. Returns the effect (redraw +
@@ -2185,12 +2539,12 @@ fn handle_left_click(
         } else {
             overlay.open_jump();
         }
-        return MouseEffect { redraw: true };
+        return MouseEffect { redraw: true, thread_action: None };
     }
     // Any other click with the dropdown open closes it (click-away).
     if overlay.jump_open {
         overlay.jump_open = false;
-        return MouseEffect { redraw: true };
+        return MouseEffect { redraw: true, thread_action: None };
     }
     // Rail click: column inside the rail → rail row hit-test.
     if column_in_rail(overlay, column, content_width) {
@@ -2233,12 +2587,15 @@ fn handle_rail_click(overlay: &mut DiffOverlayState, row: u16) -> MouseEffect {
     if file_idx >= overlay.files.len() {
         return MouseEffect::default();
     }
-    // Jump the document scroll to this file's first row. Closing the
-    // active editor on rail interaction preserves a reopened chip's
-    // prior comment.
-    overlay.doc_scroll = overlay.doc_offsets().starts.get(file_idx).copied().unwrap_or(0);
+    // Jump the document scroll to this file's first row. `starts` is in
+    // file-sub-document space; add the commit-message block height so the
+    // target lands in full-document space and the file actually pins in
+    // commit mode (message_rows is 0 in whole-diff mode). Closing the
+    // active editor on rail interaction preserves a reopened chip's prior.
+    let file_start = overlay.doc_offsets().starts.get(file_idx).copied().unwrap_or(0);
+    overlay.doc_scroll = overlay.message_rows.saturating_add(file_start);
     close_active_input_preserving_prior(overlay);
-    MouseEffect { redraw: true }
+    MouseEffect { redraw: true, thread_action: None }
 }
 
 /// Hit-test a left-click against the narrow-tier `◀ ▶` cycle
@@ -2290,14 +2647,34 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
             }
         }
         BodyRowKey::CommentChip(line_key) => reopen_comment_for_key(overlay, line_key),
+        BodyRowKey::CommentButton { key, action, col_start, col_end } => {
+            // Only the active button fires; a click on the dim inactive
+            // button (or the padding) elsewhere on the row no-ops.
+            let pane_col = column.saturating_sub(overlay.pane_origin_col);
+            if pane_col >= col_start && pane_col < col_end {
+                MouseEffect { redraw: true, thread_action: Some((key, action)) }
+            } else {
+                MouseEffect::default()
+            }
+        }
         BodyRowKey::FileHeader { file_idx } | BodyRowKey::DeletedCollapsed { file_idx } => {
             toggle_deleted_collapse(overlay, file_idx)
         }
+        BodyRowKey::ContextExpander { file_idx } => expand_context(overlay, file_idx),
         BodyRowKey::EmptyState
         | BodyRowKey::HunkHeader { .. }
         | BodyRowKey::InputRow(_)
-        | BodyRowKey::CommitMessage => MouseEffect::default(),
+        | BodyRowKey::CommitMessage
+        | BodyRowKey::FileEndCap { .. } => MouseEffect::default(),
     }
+}
+
+/// Handle a context-expander click: reveal more of the file's pinned
+/// wide snapshot in memory (no `git`). Bumps the file's shown-context
+/// level and re-narrows from the cached wide hunks.
+fn expand_context(overlay: &mut DiffOverlayState, file_idx: usize) -> MouseEffect {
+    overlay.expand_file_context(file_idx);
+    MouseEffect { redraw: true, thread_action: None }
 }
 
 /// Toggle a deleted file's expanded state (collapse <-> full body).
@@ -2314,7 +2691,7 @@ fn toggle_deleted_collapse(overlay: &mut DiffOverlayState, file_idx: usize) -> M
     if let Some(slot) = overlay.measured_heights.get_mut(file_idx) {
         *slot = None;
     }
-    MouseEffect { redraw: true }
+    MouseEffect { redraw: true, thread_action: None }
 }
 
 fn open_input_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffect {
@@ -2332,7 +2709,7 @@ fn open_input_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffe
     close_active_input_preserving_prior(overlay);
     let editor = TextArea::default();
     overlay.active_input = Some(ActiveCommentInput { key, editor, prior_comment: None });
-    MouseEffect { redraw: true }
+    MouseEffect { redraw: true, thread_action: None }
 }
 
 fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffect {
@@ -2359,7 +2736,7 @@ fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> Mouse
     overlay.focused_thread = Some(key);
     overlay.active_input =
         Some(ActiveCommentInput { key: comment.key, editor, prior_comment: Some(comment) });
-    MouseEffect { redraw: true }
+    MouseEffect { redraw: true, thread_action: None }
 }
 
 /// Whether a comment belongs in the agent bundle on Esc: authored or
@@ -2597,8 +2974,18 @@ mod tests {
             PathBuf::from("/tmp/repo"),
             "HEAD".to_owned(),
             vec![
-                FileHunks { path: "a.rs".into(), status: FileStatus::Modified, hunks: vec![] },
-                FileHunks { path: "b.rs".into(), status: FileStatus::Added, hunks: vec![] },
+                FileHunks {
+                    path: "a.rs".into(),
+                    status: FileStatus::Modified,
+                    hunks: vec![],
+                    oversize: false,
+                },
+                FileHunks {
+                    path: "b.rs".into(),
+                    status: FileStatus::Added,
+                    hunks: vec![],
+                    oversize: false,
+                },
             ],
         );
         // Simulate what the renderer's tree pass would stash on
@@ -2869,7 +3256,12 @@ mod tests {
         let mut state = DiffOverlayState::new(
             PathBuf::from("/tmp/repo"),
             "HEAD".to_owned(),
-            vec![FileHunks { path: "gone.rs".into(), status: FileStatus::Deleted, hunks: vec![] }],
+            vec![FileHunks {
+                path: "gone.rs".into(),
+                status: FileStatus::Deleted,
+                hunks: vec![],
+                oversize: false,
+            }],
         );
         state.measured_heights = vec![Some(2)];
         state.body_keys = vec![BodyRowKey::FileHeader { file_idx: 0 }];
@@ -3799,7 +4191,7 @@ mod tests {
     }
 
     fn one_file(path: &str, status: FileStatus) -> FileHunks {
-        FileHunks { path: path.to_owned(), status, hunks: vec![] }
+        FileHunks { path: path.to_owned(), status, hunks: vec![], oversize: false }
     }
 
     /// Three-commit branch with every commit's hunks pre-cached (so
@@ -4009,6 +4401,152 @@ mod tests {
         );
     }
 
+    fn diff_line(kind: DiffLineKind, old: Option<u32>, new: Option<u32>) -> DiffLine {
+        DiffLine { kind, text: "x".to_owned(), old_line: old, new_line: new }
+    }
+
+    /// A full-context (wide) file: 30 new-file lines with additions at
+    /// lines 5 and 25, leaving a wide unchanged middle. The overlay
+    /// captures this at open; the default context narrows it to two hunks,
+    /// and expanding folds them back into one.
+    fn wide_file_with_two_changes() -> FileHunks {
+        let mut lines = Vec::new();
+        let mut old = 1u32;
+        for new in 1..=30u32 {
+            if new == 5 || new == 25 {
+                lines.push(diff_line(DiffLineKind::Added, None, Some(new)));
+            } else {
+                lines.push(diff_line(DiffLineKind::Context, Some(old), Some(new)));
+                old += 1;
+            }
+        }
+        FileHunks {
+            path: "a.rs".to_owned(),
+            status: FileStatus::Modified,
+            oversize: false,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_count: old - 1,
+                new_start: 1,
+                new_count: 30,
+                lines,
+            }],
+        }
+    }
+
+    #[test]
+    fn estimated_height_counts_expander_rows() {
+        // Two hunks: the first starts at line 5 (4 hidden above → a
+        // leading expander) with a 14-line gap to the second (a gap
+        // expander). The estimate must fold both in.
+        let file = FileHunks {
+            path: "a.rs".to_owned(),
+            status: FileStatus::Modified,
+            oversize: false,
+            hunks: vec![
+                Hunk {
+                    old_start: 5,
+                    old_count: 1,
+                    new_start: 5,
+                    new_count: 1,
+                    lines: vec![diff_line(DiffLineKind::Context, Some(5), Some(5))],
+                },
+                Hunk {
+                    old_start: 20,
+                    old_count: 1,
+                    new_start: 20,
+                    new_count: 1,
+                    lines: vec![diff_line(DiffLineKind::Context, Some(20), Some(20))],
+                },
+            ],
+        };
+        // 1 header + leading expander + (@@ + line) + gap expander + (@@ + line).
+        assert_eq!(estimated_height(&file, false), 7);
+
+        // A single hunk flush at line 1 hides nothing → no expander row.
+        let flush = FileHunks {
+            path: "b.rs".to_owned(),
+            status: FileStatus::Modified,
+            oversize: false,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_count: 1,
+                new_start: 1,
+                new_count: 1,
+                lines: vec![diff_line(DiffLineKind::Context, Some(1), Some(1))],
+            }],
+        };
+        assert_eq!(estimated_height(&flush, false), 3, "no expander when nothing is hidden");
+    }
+
+    #[test]
+    fn narrow_hunks_reproduces_git_hunking() {
+        let wide = wide_file_with_two_changes().hunks;
+        assert_eq!(narrow_hunks(&wide, 3).len(), 2, "default context keeps the gap as two hunks");
+        let merged = narrow_hunks(&wide, 23);
+        assert_eq!(merged.len(), 1, "wide-enough context folds the two changes into one hunk");
+        assert_eq!(merged[0].lines.len(), 30, "the merged hunk carries the whole file");
+    }
+
+    #[test]
+    fn context_expander_expands_from_cached_snapshot() {
+        let mut state = DiffOverlayState::new(
+            PathBuf::from("/tmp"),
+            "HEAD".to_owned(),
+            vec![wide_file_with_two_changes()],
+        );
+        // Opened at the default context: two hunks, middle hidden; the wide
+        // snapshot holds the full file for in-memory expansion.
+        assert_eq!(state.files[0].hunks.len(), 2, "default context leaves the gap");
+        assert_eq!(state.wide_hunks[0][0].lines.len(), 30, "wide snapshot pinned at open");
+        let rows_before: usize = state.files[0].hunks.iter().map(|h| h.lines.len()).sum();
+        state.measured_heights[0] = Some(99);
+
+        // Expand: pure in-memory re-slice from the cached snapshot (no git).
+        state.expand_file_context(0);
+        let rows_after: usize = state.files[0].hunks.iter().map(|h| h.lines.len()).sum();
+        assert!(
+            rows_after > rows_before,
+            "expansion reveals more lines ({rows_after} > {rows_before})"
+        );
+        assert_eq!(state.files[0].hunks.len(), 1, "wide-enough context folds the hunks into one");
+        let revealed =
+            state.files[0].hunks.iter().flat_map(|h| &h.lines).any(|l| l.new_line == Some(15));
+        assert!(revealed, "a previously-hidden middle line is now shown");
+        assert_eq!(state.measured_heights[0], None, "height cache invalidated on expand");
+        assert_eq!(state.wide_hunks[0][0].lines.len(), 30, "the wide snapshot is untouched");
+    }
+
+    #[test]
+    fn comment_reanchors_after_expand() {
+        let mut state = DiffOverlayState::new(
+            PathBuf::from("/tmp"),
+            "HEAD".to_owned(),
+            vec![wide_file_with_two_changes()],
+        );
+        // Comment on the first change (new line 5), keyed at its level-3
+        // display coordinate.
+        let key = find_line_key(&state.files[0], 0, ReviewSide::New, 5).expect("line 5 visible");
+        state.comments.push(HunkComment {
+            key,
+            path: "a.rs".to_owned(),
+            line: 5,
+            hunk_context: vec![diff_line(DiffLineKind::Added, None, Some(5))],
+            comment_text: "note".to_owned(),
+            commit: None,
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
+        });
+
+        // Expanding merges the hunks and shifts line_idx; the comment must
+        // follow its line.
+        state.expand_file_context(0);
+        let comment = &state.comments[0];
+        let anchored = &state.files[0].hunks[comment.key.hunk_idx].lines[comment.key.line_idx];
+        assert_eq!(anchored.new_line, Some(5), "comment re-anchored onto its line after expand");
+    }
+
     #[test]
     fn jump_dropdown_rows_map_to_scopes() {
         let state = commit_mode_state();
@@ -4059,6 +4597,7 @@ mod tests {
         let file = FileHunks {
             path: "a.rs".into(),
             status: FileStatus::Modified,
+            oversize: false,
             hunks: vec![Hunk {
                 old_start: 1,
                 old_count: 1,
@@ -4297,6 +4836,7 @@ mod tests {
         FileHunks {
             path: path.to_owned(),
             status: FileStatus::Modified,
+            oversize: false,
             hunks: vec![forge_workspace::env::git_diff::hunks::Hunk {
                 old_start: 1,
                 old_count: 0,
@@ -4674,6 +5214,46 @@ mod tests {
     }
 
     #[test]
+    fn comment_button_click_resolves_only_the_clicked_thread() {
+        let (mut app, _dir) = review_app();
+        let files =
+            vec![single_hunk_file("src/x.rs", vec![added_line("a", 10), added_line("b", 11)])];
+        let overlay = DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        app.diff_overlay = Some(overlay);
+        app.diff_overlay.as_mut().expect("overlay").branch = Some("feat".to_owned());
+        let ka = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let kb = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 };
+        with_editor(app.diff_overlay.as_mut().expect("overlay"), ka, "thread A");
+        save_active_input(&mut app);
+        with_editor(app.diff_overlay.as_mut().expect("overlay"), kb, "thread B");
+        save_active_input(&mut app);
+
+        // Focus A, then click B's Resolve button: the click must target B
+        // by key, not the focused thread.
+        app.diff_overlay.as_mut().expect("overlay").focused_thread = Some(ka);
+        apply_thread_action(&mut app, kb, ThreadAction::Resolve);
+
+        let overlay = app.diff_overlay.as_ref().expect("overlay");
+        let status_of = |key: LineKey| {
+            overlay
+                .comments
+                .iter()
+                .find(|c| c.key == key)
+                .and_then(|c| c.thread.as_ref())
+                .map(|t| t.status)
+        };
+        assert_eq!(status_of(kb), Some(ReviewStatus::Resolved), "the clicked thread resolves");
+        assert_eq!(status_of(ka), Some(ReviewStatus::Open), "the other thread is untouched");
+
+        let ws = app.workspace.clone().expect("ws");
+        let threads = ws.load_review_threads("forge", "feat");
+        let persisted =
+            |line: u32| threads.iter().find(|t| t.anchor.line == line).map(|t| t.status);
+        assert_eq!(persisted(11), Some(ReviewStatus::Resolved), "B persisted resolved");
+        assert_eq!(persisted(10), Some(ReviewStatus::Open), "A stays open in redb");
+    }
+
+    #[test]
     fn reopen_is_noop_on_an_open_thread() {
         let (mut app, _dir) = review_app();
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("z", 3)])];
@@ -4705,6 +5285,108 @@ mod tests {
         resolve_focused_thread(&mut app);
         let ws = app.workspace.clone().expect("ws");
         assert!(ws.load_review_threads("forge", "feat").is_empty());
+    }
+
+    #[test]
+    fn only_the_active_comment_button_is_clickable() {
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let mut state = DiffOverlayState::new(
+            PathBuf::from("/tmp"),
+            "HEAD".to_owned(),
+            vec![single_hunk_file("a.rs", vec![added_line("x", 1)])],
+        );
+        state.pane_origin_col = 0;
+        state.pane_origin_row = 0;
+        state.body_head_rows = 0;
+        state.body_tail_scroll = 0;
+        state.body_keys = vec![BodyRowKey::CommentButton {
+            key,
+            action: ThreadAction::Resolve,
+            col_start: 10,
+            col_end: 21,
+        }];
+
+        let hit = handle_body_click(&mut state, 15, 0);
+        assert_eq!(
+            hit.thread_action,
+            Some((key, ThreadAction::Resolve)),
+            "a click inside the active button's span fires the action",
+        );
+        let miss = handle_body_click(&mut state, 25, 0);
+        assert_eq!(miss.thread_action, None, "a click on the dim button / padding no-ops");
+    }
+
+    #[test]
+    fn comment_button_resolves_current_scope_thread_on_key_collision() {
+        // On a single-commit branch the whole-diff and commit diffs share
+        // a file layout, so a whole-diff durable comment and an ephemeral
+        // commit-scoped one can land on the same key (hydrate keeps the
+        // ephemeral and adds the durable). The button must act on the
+        // current scope's thread, not whichever `.find` hits first.
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        overlay.commits = vec![commit_meta("aaa", "first")];
+        overlay.scope = DiffScope::WholeDiff;
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        // Ephemeral commit-scoped comment pushed FIRST (no durable thread).
+        overlay.comments.push(HunkComment {
+            key,
+            path: "src/x.rs".to_owned(),
+            line: 10,
+            hunk_context: Vec::new(),
+            comment_text: "ephemeral".to_owned(),
+            commit: Some("aaa".to_owned()),
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
+        });
+        // Durable whole-diff thread at the SAME key.
+        overlay.comments.push(HunkComment {
+            key,
+            path: "src/x.rs".to_owned(),
+            line: 10,
+            hunk_context: Vec::new(),
+            comment_text: "durable".to_owned(),
+            commit: None,
+            thread: Some(forge_primitives::ReviewThread {
+                id: "t1".to_owned(),
+                anchor: ReviewAnchor {
+                    path: "src/x.rs".to_owned(),
+                    side: ReviewSide::New,
+                    line: 10,
+                    content_hash: 0,
+                    context: Vec::new(),
+                    base_ref: "feat".to_owned(),
+                },
+                comments: vec![ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "durable".to_owned(),
+                    at: String::new(),
+                }],
+                status: ReviewStatus::Open,
+                created_at: String::new(),
+                updated_at: String::new(),
+            }),
+            authored_this_session: false,
+            persisted: true,
+        });
+        app.diff_overlay = Some(overlay);
+
+        // In whole-diff scope the button targets the commit==None thread.
+        apply_thread_action(&mut app, key, ThreadAction::Resolve);
+
+        let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
+        let durable = comments.iter().find(|c| c.commit.is_none()).expect("durable comment");
+        assert_eq!(
+            durable.thread.as_ref().map(|t| t.status),
+            Some(ReviewStatus::Resolved),
+            "the current scope's durable thread resolved despite the key collision",
+        );
+        let ephemeral = comments.iter().find(|c| c.commit.is_some()).expect("ephemeral comment");
+        assert!(ephemeral.thread.is_none(), "the ephemeral comment is untouched");
     }
 
     #[test]
