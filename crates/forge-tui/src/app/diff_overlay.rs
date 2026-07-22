@@ -142,6 +142,64 @@ fn compare_tree_paths(a: &str, b: &str) -> std::cmp::Ordering {
     a.len().cmp(&b.len())
 }
 
+/// Narrow a file's full-context wide hunks down to `context` lines
+/// around each change, reproducing git's `-U<context>` hunking in memory:
+/// a line is kept when it is a change or within `context` of one, and
+/// maximal runs of kept lines become hunks (so two changes whose gap the
+/// context spans fold into one). The overlay captures the wide hunks once
+/// at open and re-narrows from them on an expander click - no re-fetch.
+fn narrow_hunks(wide: &[Hunk], context: usize) -> Vec<Hunk> {
+    let mut out = Vec::new();
+    for hunk in wide {
+        let n = hunk.lines.len();
+        let mut keep = vec![false; n];
+        let mut has_change = false;
+        for (i, line) in hunk.lines.iter().enumerate() {
+            if line.kind != DiffLineKind::Context {
+                has_change = true;
+                let lo = i.saturating_sub(context);
+                let hi = (i + context).min(n.saturating_sub(1));
+                for slot in keep.iter_mut().take(hi + 1).skip(lo) {
+                    *slot = true;
+                }
+            }
+        }
+        // A real diff hunk always carries a change; a changeless one (only
+        // test fixtures build these) has nothing to narrow around, so keep
+        // it whole rather than dropping it to an empty display.
+        if !has_change {
+            keep.fill(true);
+        }
+        let mut i = 0;
+        while i < n {
+            if !keep[i] {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < n && keep[i] {
+                i += 1;
+            }
+            out.push(hunk_from_lines(&hunk.lines[start..i]));
+        }
+    }
+    out
+}
+
+/// Build a `Hunk` header from a contiguous run of diff lines: the start
+/// line numbers are the first old-/new-side line present, the counts the
+/// number of old-/new-side lines. Used by [`narrow_hunks`] to re-header a
+/// slice of the wide snapshot.
+fn hunk_from_lines(lines: &[DiffLine]) -> Hunk {
+    let old_start = lines.iter().find_map(|l| l.old_line).unwrap_or(0);
+    let new_start = lines.iter().find_map(|l| l.new_line).unwrap_or(0);
+    let old_count =
+        u32::try_from(lines.iter().filter(|l| l.old_line.is_some()).count()).unwrap_or(u32::MAX);
+    let new_count =
+        u32::try_from(lines.iter().filter(|l| l.new_line.is_some()).count()).unwrap_or(u32::MAX);
+    Hunk { old_start, old_count, new_start, new_count, lines: lines.to_vec() }
+}
+
 /// Unwrapped, syntax-highlighted spans for one file's diff lines,
 /// indexed `[hunk_idx][line_idx]` (the innermost `Vec` is one line's
 /// spans). Cached on [`DiffOverlayState::highlighted`] and reused
@@ -344,12 +402,6 @@ pub enum DiffScanKind {
     /// (and swapped into view if still current). `files` is that scope's
     /// diff.
     Scope(DiffScope),
-    /// A single file re-fetched at a wider context radius for on-demand
-    /// context expansion. `files` carries just that file (its hunks at
-    /// the wider `-U<level>`); the drain replaces the matching file's
-    /// hunks and re-anchors its comments. `path` finds the file (indices
-    /// can't be trusted across a possible scope change mid-fetch).
-    ContextExpand { path: String, level: u32 },
 }
 
 /// Event shuttled from the spawned scan task back to the main loop.
@@ -462,47 +514,6 @@ fn spawn_scope_fetch(
             seq,
             kind: DiffScanKind::Scope(scope),
             commit_body,
-        });
-    });
-}
-
-/// Spawn a single file's wider-context re-fetch for on-demand context
-/// expansion and post it back as a [`DiffScanKind::ContextExpand`] event.
-/// `commit_sha` scopes the diff (a commit's own range, or the whole
-/// branch). Reuses the current `seq` like [`spawn_scope_fetch`]. Sends
-/// nothing when the fetch yields no hunks (subprocess failure / empty),
-/// so the file keeps its current hunks.
-fn spawn_context_fetch(
-    cwd: PathBuf,
-    target: String,
-    commit_sha: Option<String>,
-    path: String,
-    status: FileStatus,
-    level: u32,
-    seq: u64,
-    tx: std_mpsc::Sender<DiffOverlayEvent>,
-) {
-    tokio::task::spawn_local(async move {
-        let Some(hunks) = forge_workspace::env::git_diff::hunks::fetch_file_context(
-            &cwd,
-            &target,
-            commit_sha.as_deref(),
-            &path,
-            level,
-        )
-        .await
-        else {
-            return;
-        };
-        let _ = tx.send(DiffOverlayEvent {
-            cwd,
-            target,
-            files: vec![FileHunks { path: path.clone(), status, hunks }],
-            scanner_ok: true,
-            untracked_suppressed: 0,
-            seq,
-            kind: DiffScanKind::ContextExpand { path, level },
-            commit_body: None,
         });
     });
 }
@@ -824,16 +835,6 @@ pub fn drain_events(app: &mut App) {
                     target_ref = %event.target,
                 );
             }
-        } else if let DiffScanKind::ContextExpand { path, level } = event.kind {
-            // A single file's wider-context re-fetch lands into the open
-            // overlay. Drop it if the overlay closed or the scope changed
-            // (the path no longer resolves).
-            if let (Some(overlay), Some(file)) =
-                (app.diff_overlay.as_mut(), event.files.into_iter().next())
-                && overlay.install_context_expand(&path, level, file.hunks)
-            {
-                app.needs_redraw = true;
-            }
         }
     }
 }
@@ -962,10 +963,15 @@ pub struct DiffOverlayState {
     pub highlighted: Vec<Option<FileHighlight>>,
     /// Per-file unified-diff context radius currently shown. Starts at
     /// the default context; an expander click bumps it by `CONTEXT_STEP`
-    /// and re-fetches that file's hunks at the wider `-U<level>`. Length
-    /// tracks `files`; reset on scope change (a fresh file set scans at
-    /// the default context).
+    /// and re-narrows that file from [`Self::wide_hunks`] in memory.
+    /// Length tracks `files`; reset on scope change.
     pub context_levels: Vec<u32>,
+    /// Per-file full-context hunks captured once at scope open - the
+    /// pinned snapshot the display is narrowed from and expanders reveal
+    /// from, so an expander click never re-runs `git diff` (no
+    /// fetch-failure, scope-switch race, or mid-review tree drift).
+    /// Length tracks `files`.
+    pub wide_hunks: Vec<Vec<Hunk>>,
     /// Ordered commit list for the stepper (oldest first). Empty in
     /// whole-diff-only mode (no commits ahead of the target) - the
     /// stepper never renders and the overlay behaves exactly as before.
@@ -1081,7 +1087,29 @@ impl DiffOverlayState {
         self.context_levels = vec![DEFAULT_CONTEXT; n];
         self.body_keys.clear();
         self.commit_loading = false;
+        self.capture_wide_and_narrow();
         self.recompute_comment_counts();
+    }
+
+    /// Capture each file's just-scanned full-context hunks as the pinned
+    /// [`Self::wide_hunks`] snapshot, then narrow the displayed `files`
+    /// down to their current context level. Runs once whenever a fresh
+    /// scan is installed (open / scope switch), so display and expansion
+    /// both derive from the one snapshot with no further `git` calls.
+    fn capture_wide_and_narrow(&mut self) {
+        self.wide_hunks = self.files.iter().map(|f| f.hunks.clone()).collect();
+        let narrowed: Vec<Vec<Hunk>> = self
+            .wide_hunks
+            .iter()
+            .enumerate()
+            .map(|(i, wide)| {
+                let level = self.context_levels.get(i).copied().unwrap_or(DEFAULT_CONTEXT);
+                narrow_hunks(wide, usize::try_from(level).unwrap_or(usize::MAX))
+            })
+            .collect();
+        for (file, hunks) in self.files.iter_mut().zip(narrowed) {
+            file.hunks = hunks;
+        }
     }
 
     /// Point the overlay at `scope`, closing the jump dropdown. If the
@@ -1134,27 +1162,23 @@ impl DiffOverlayState {
         }
     }
 
-    /// Install a file re-fetched at a wider context radius: swap in its
-    /// wider hunks, record the new level, drop the file's stale height +
-    /// highlight caches (both change with the new lines), and re-anchor
-    /// its comments onto the new hunk coordinates. Returns `false` when no
-    /// file matches `path` (the scope changed while the fetch ran).
+    /// Expand file `idx`'s shown context by one step, re-slicing its
+    /// display hunks from the pinned wide snapshot in memory (no `git`):
+    /// bump the level, re-narrow, drop the file's stale height + highlight
+    /// caches, and re-anchor its comments onto the new hunk coordinates.
     /// Expansion only adds context lines, so every already-shown line
     /// survives - a comment's line always re-resolves.
-    pub fn install_context_expand(&mut self, path: &str, level: u32, hunks: Vec<Hunk>) -> bool {
-        let Some(idx) = self.files.iter().position(|f| f.path == path) else {
-            return false;
+    pub fn expand_file_context(&mut self, idx: usize) {
+        let Some(slot) = self.context_levels.get_mut(idx) else {
+            return;
         };
-        // Drop a stale out-of-order fetch that would shrink the context
-        // (the click optimistically bumped the level to the latest).
-        if self.context_levels.get(idx).is_some_and(|&current| level < current) {
-            return false;
-        }
+        *slot = slot.saturating_add(CONTEXT_STEP);
+        let level = usize::try_from(*slot).unwrap_or(usize::MAX);
+        let Some(narrowed) = self.wide_hunks.get(idx).map(|wide| narrow_hunks(wide, level)) else {
+            return;
+        };
         if let Some(file) = self.files.get_mut(idx) {
-            file.hunks = hunks;
-        }
-        if let Some(slot) = self.context_levels.get_mut(idx) {
-            *slot = level;
+            file.hunks = narrowed;
         }
         if let Some(slot) = self.measured_heights.get_mut(idx) {
             *slot = None;
@@ -1163,7 +1187,6 @@ impl DiffOverlayState {
             *slot = None;
         }
         self.reanchor_comments_in_file(idx);
-        true
     }
 
     /// Remap the `LineKey` of every comment anchored in file `idx` onto
@@ -1355,7 +1378,7 @@ impl DiffOverlayState {
     pub fn new(cwd: PathBuf, target: String, mut files: Vec<FileHunks>) -> Self {
         reorder_files_to_tree(&mut files);
         let file_count = files.len();
-        Self {
+        let mut state = Self {
             cwd,
             target,
             files,
@@ -1381,6 +1404,7 @@ impl DiffOverlayState {
             measured_heights: vec![None; file_count],
             highlighted: vec![None; file_count],
             context_levels: vec![DEFAULT_CONTEXT; file_count],
+            wide_hunks: Vec::new(),
             commits: Vec::new(),
             branch: None,
             scope: DiffScope::WholeDiff,
@@ -1392,7 +1416,9 @@ impl DiffOverlayState {
             jump_selected: 0,
             jump_hint_span: None,
             focused_thread: None,
-        }
+        };
+        state.capture_wide_and_narrow();
+        state
     }
 
     /// Build state from a completed initial-scan event, threading
@@ -1413,12 +1439,11 @@ impl DiffOverlayState {
             commit_body,
         } = event;
         reorder_files_to_tree(&mut files);
-        // drain_events only routes Initial events here; a Scope /
-        // ContextExpand event would be a bug, so fall back to whole-diff
-        // defensively.
+        // drain_events only routes Initial events here; a Scope event
+        // would be a bug, so fall back to whole-diff defensively.
         let (mut commits, branch, whole_diff) = match kind {
             DiffScanKind::Initial { commits, branch, whole_diff } => (commits, branch, whole_diff),
-            DiffScanKind::Scope(_) | DiffScanKind::ContextExpand { .. } => (Vec::new(), None, true),
+            DiffScanKind::Scope(_) => (Vec::new(), None, true),
         };
         // First commit's body arrives with its upfront-scanned diff.
         if let Some(body) = commit_body
@@ -1441,7 +1466,7 @@ impl DiffOverlayState {
             cache[0] = Some(CachedScan { files: files.clone(), scanner_ok });
             (DiffScope::Commit(0), cache, None)
         };
-        Self {
+        let mut state = Self {
             cwd,
             target,
             files,
@@ -1467,6 +1492,7 @@ impl DiffOverlayState {
             measured_heights: vec![None; file_count],
             highlighted: vec![None; file_count],
             context_levels: vec![DEFAULT_CONTEXT; file_count],
+            wide_hunks: Vec::new(),
             commits,
             branch,
             scope,
@@ -1478,7 +1504,9 @@ impl DiffOverlayState {
             jump_selected: 0,
             jump_hint_span: None,
             focused_thread: None,
-        }
+        };
+        state.capture_wide_and_narrow();
+        state
     }
 }
 
@@ -2364,10 +2392,6 @@ pub(crate) fn rail_width_for(terminal_width: u16) -> u16 {
 #[derive(Debug, Default)]
 struct MouseEffect {
     redraw: bool,
-    /// A context-expander click: `(file_idx, requested_level)`. The outer
-    /// `handle_mouse` spawns the wider-context re-fetch (which needs the
-    /// App's event channel the inner overlay borrow can't reach).
-    expand: Option<(usize, u32)>,
     /// A comment-button click: run `action` on the thread at this key.
     /// Surfaced to the outer handler because persisting the status needs
     /// the App's workspace, which the inner overlay borrow can't reach.
@@ -2406,40 +2430,12 @@ pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
     } else {
         MouseEffect::default()
     };
-    if let Some((file_idx, level)) = effect.expand {
-        request_context_expand(app, file_idx, level);
-    }
     if let Some((key, action)) = effect.thread_action {
         apply_thread_action(app, key, action);
     }
     if effect.redraw {
         app.needs_redraw = true;
     }
-}
-
-/// Spawn the wider-context re-fetch for a context-expander click. Reads
-/// the overlay's cwd / target / current commit scope and the clicked
-/// file's path + status, then hands off to [`spawn_context_fetch`]; the
-/// result lands through the overlay event channel (see [`drain_events`]).
-fn request_context_expand(app: &mut App, file_idx: usize, level: u32) {
-    let Some(overlay) = app.diff_overlay.as_ref() else { return };
-    let Some(file) = overlay.files.get(file_idx) else { return };
-    let cwd = overlay.cwd.clone();
-    let target = overlay.target.clone();
-    let sha = overlay.current_commit_sha();
-    let path = file.path.clone();
-    let status = file.status;
-    let seq = app.diff_scan_seq;
-    spawn_context_fetch(
-        cwd,
-        target,
-        sha,
-        path,
-        status,
-        level,
-        seq,
-        app.diff_overlay_event_tx.clone(),
-    );
 }
 
 /// Whether a click column lands in the FILES rail: the rail spans
@@ -2469,7 +2465,7 @@ fn handle_scroll(
     } else {
         overlay.doc_scroll = overlay.doc_scroll.saturating_sub(u32::from(SCROLL_LINES_PER_NOTCH));
     }
-    MouseEffect { redraw: true, expand: None, thread_action: None }
+    MouseEffect { redraw: true, thread_action: None }
 }
 
 /// Resolve a left-click to an action. Returns the effect (redraw +
@@ -2493,12 +2489,12 @@ fn handle_left_click(
         } else {
             overlay.open_jump();
         }
-        return MouseEffect { redraw: true, expand: None, thread_action: None };
+        return MouseEffect { redraw: true, thread_action: None };
     }
     // Any other click with the dropdown open closes it (click-away).
     if overlay.jump_open {
         overlay.jump_open = false;
-        return MouseEffect { redraw: true, expand: None, thread_action: None };
+        return MouseEffect { redraw: true, thread_action: None };
     }
     // Rail click: column inside the rail → rail row hit-test.
     if column_in_rail(overlay, column, content_width) {
@@ -2546,7 +2542,7 @@ fn handle_rail_click(overlay: &mut DiffOverlayState, row: u16) -> MouseEffect {
     // prior comment.
     overlay.doc_scroll = overlay.doc_offsets().starts.get(file_idx).copied().unwrap_or(0);
     close_active_input_preserving_prior(overlay);
-    MouseEffect { redraw: true, expand: None, thread_action: None }
+    MouseEffect { redraw: true, thread_action: None }
 }
 
 /// Hit-test a left-click against the narrow-tier `◀ ▶` cycle
@@ -2599,7 +2595,7 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
         }
         BodyRowKey::CommentChip(line_key) => reopen_comment_for_key(overlay, line_key),
         BodyRowKey::CommentButton { key, action } => {
-            MouseEffect { redraw: true, expand: None, thread_action: Some((key, action)) }
+            MouseEffect { redraw: true, thread_action: Some((key, action)) }
         }
         BodyRowKey::FileHeader { file_idx } | BodyRowKey::DeletedCollapsed { file_idx } => {
             toggle_deleted_collapse(overlay, file_idx)
@@ -2613,16 +2609,12 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
     }
 }
 
-/// Handle a context-expander click: optimistically bump the file's
-/// context level so rapid clicks advance without waiting for each fetch,
-/// then ask the outer handler to spawn the re-fetch at the new level.
+/// Handle a context-expander click: reveal more of the file's pinned
+/// wide snapshot in memory (no `git`). Bumps the file's shown-context
+/// level and re-narrows from the cached wide hunks.
 fn expand_context(overlay: &mut DiffOverlayState, file_idx: usize) -> MouseEffect {
-    let Some(level) = overlay.context_levels.get_mut(file_idx) else {
-        return MouseEffect::default();
-    };
-    *level = level.saturating_add(CONTEXT_STEP);
-    let requested = *level;
-    MouseEffect { redraw: true, expand: Some((file_idx, requested)), thread_action: None }
+    overlay.expand_file_context(file_idx);
+    MouseEffect { redraw: true, thread_action: None }
 }
 
 /// Toggle a deleted file's expanded state (collapse <-> full body).
@@ -2639,7 +2631,7 @@ fn toggle_deleted_collapse(overlay: &mut DiffOverlayState, file_idx: usize) -> M
     if let Some(slot) = overlay.measured_heights.get_mut(file_idx) {
         *slot = None;
     }
-    MouseEffect { redraw: true, expand: None, thread_action: None }
+    MouseEffect { redraw: true, thread_action: None }
 }
 
 fn open_input_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffect {
@@ -2657,7 +2649,7 @@ fn open_input_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffe
     close_active_input_preserving_prior(overlay);
     let editor = TextArea::default();
     overlay.active_input = Some(ActiveCommentInput { key, editor, prior_comment: None });
-    MouseEffect { redraw: true, expand: None, thread_action: None }
+    MouseEffect { redraw: true, thread_action: None }
 }
 
 fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffect {
@@ -2684,7 +2676,7 @@ fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> Mouse
     overlay.focused_thread = Some(key);
     overlay.active_input =
         Some(ActiveCommentInput { key: comment.key, editor, prior_comment: Some(comment) });
-    MouseEffect { redraw: true, expand: None, thread_action: None }
+    MouseEffect { redraw: true, thread_action: None }
 }
 
 /// Whether a comment belongs in the agent bundle on Esc: authored or
@@ -4338,95 +4330,100 @@ mod tests {
         DiffLine { kind, text: "x".to_owned(), old_line: old, new_line: new }
     }
 
-    #[test]
-    fn context_expander_click_bumps_level_and_requests_fetch() {
-        let file = FileHunks {
+    /// A full-context (wide) file: 30 new-file lines with additions at
+    /// lines 5 and 25, leaving a wide unchanged middle. The overlay
+    /// captures this at open; the default context narrows it to two hunks,
+    /// and expanding folds them back into one.
+    fn wide_file_with_two_changes() -> FileHunks {
+        let mut lines = Vec::new();
+        let mut old = 1u32;
+        for new in 1..=30u32 {
+            if new == 5 || new == 25 {
+                lines.push(diff_line(DiffLineKind::Added, None, Some(new)));
+            } else {
+                lines.push(diff_line(DiffLineKind::Context, Some(old), Some(new)));
+                old += 1;
+            }
+        }
+        FileHunks {
             path: "a.rs".to_owned(),
             status: FileStatus::Modified,
             hunks: vec![Hunk {
                 old_start: 1,
-                old_count: 1,
+                old_count: old - 1,
                 new_start: 1,
-                new_count: 1,
-                lines: vec![diff_line(DiffLineKind::Context, Some(1), Some(1))],
+                new_count: 30,
+                lines,
             }],
-        };
-        let mut state = DiffOverlayState::new(PathBuf::from("/tmp"), "HEAD".to_owned(), vec![file]);
-        // Simulate the renderer having drawn one expander row at the top.
-        state.body_keys = vec![BodyRowKey::ContextExpander { file_idx: 0 }];
-        state.pane_origin_row = 0;
-        state.body_head_rows = 0;
-        state.body_tail_scroll = 0;
-        let effect = handle_body_click(&mut state, 5, 0);
-        assert_eq!(
-            effect.expand,
-            Some((0, DEFAULT_CONTEXT + CONTEXT_STEP)),
-            "the click asks the outer handler to re-fetch at the bumped level",
-        );
-        assert_eq!(
-            state.context_levels[0],
-            DEFAULT_CONTEXT + CONTEXT_STEP,
-            "level bumped optimistically so rapid clicks advance",
-        );
+        }
     }
 
     #[test]
-    fn context_expand_install_reanchors_comment_and_invalidates_caches() {
-        // Narrow file: the commented line (new line 2) sits at line_idx 1.
-        let narrow = FileHunks {
-            path: "a.rs".to_owned(),
-            status: FileStatus::Modified,
-            hunks: vec![Hunk {
-                old_start: 1,
-                old_count: 2,
-                new_start: 1,
-                new_count: 3,
-                lines: vec![
-                    diff_line(DiffLineKind::Context, Some(1), Some(1)),
-                    diff_line(DiffLineKind::Added, None, Some(2)),
-                    diff_line(DiffLineKind::Context, Some(2), Some(3)),
-                ],
-            }],
-        };
-        let mut state =
-            DiffOverlayState::new(PathBuf::from("/tmp"), "HEAD".to_owned(), vec![narrow]);
-        let added = state.files[0].hunks[0].lines[1].clone();
+    fn narrow_hunks_reproduces_git_hunking() {
+        let wide = wide_file_with_two_changes().hunks;
+        assert_eq!(narrow_hunks(&wide, 3).len(), 2, "default context keeps the gap as two hunks");
+        let merged = narrow_hunks(&wide, 23);
+        assert_eq!(merged.len(), 1, "wide-enough context folds the two changes into one hunk");
+        assert_eq!(merged[0].lines.len(), 30, "the merged hunk carries the whole file");
+    }
+
+    #[test]
+    fn context_expander_expands_from_cached_snapshot() {
+        let mut state = DiffOverlayState::new(
+            PathBuf::from("/tmp"),
+            "HEAD".to_owned(),
+            vec![wide_file_with_two_changes()],
+        );
+        // Opened at the default context: two hunks, middle hidden; the wide
+        // snapshot holds the full file for in-memory expansion.
+        assert_eq!(state.files[0].hunks.len(), 2, "default context leaves the gap");
+        assert_eq!(state.wide_hunks[0][0].lines.len(), 30, "wide snapshot pinned at open");
+        let rows_before: usize = state.files[0].hunks.iter().map(|h| h.lines.len()).sum();
+        state.measured_heights[0] = Some(99);
+
+        // Expand: pure in-memory re-slice from the cached snapshot (no git).
+        state.expand_file_context(0);
+        let rows_after: usize = state.files[0].hunks.iter().map(|h| h.lines.len()).sum();
+        assert!(
+            rows_after > rows_before,
+            "expansion reveals more lines ({rows_after} > {rows_before})"
+        );
+        assert_eq!(state.files[0].hunks.len(), 1, "wide-enough context folds the hunks into one");
+        let revealed =
+            state.files[0].hunks.iter().flat_map(|h| &h.lines).any(|l| l.new_line == Some(15));
+        assert!(revealed, "a previously-hidden middle line is now shown");
+        assert_eq!(state.measured_heights[0], None, "height cache invalidated on expand");
+        assert_eq!(state.wide_hunks[0][0].lines.len(), 30, "the wide snapshot is untouched");
+    }
+
+    #[test]
+    fn comment_reanchors_after_expand() {
+        let mut state = DiffOverlayState::new(
+            PathBuf::from("/tmp"),
+            "HEAD".to_owned(),
+            vec![wide_file_with_two_changes()],
+        );
+        // Comment on the first change (new line 5), keyed at its level-3
+        // display coordinate.
+        let key = find_line_key(&state.files[0], 0, ReviewSide::New, 5).expect("line 5 visible");
         state.comments.push(HunkComment {
-            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 },
+            key,
             path: "a.rs".to_owned(),
-            line: 2,
-            hunk_context: vec![added],
+            line: 5,
+            hunk_context: vec![diff_line(DiffLineKind::Added, None, Some(5))],
             comment_text: "note".to_owned(),
             commit: None,
             thread: None,
             authored_this_session: true,
             persisted: false,
         });
-        state.measured_heights[0] = Some(99);
-        state.highlighted[0] = Some(Vec::new());
 
-        // Wider hunks: a leading removed line shifts new line 2 to line_idx 2.
-        let wide = vec![Hunk {
-            old_start: 1,
-            old_count: 3,
-            new_start: 1,
-            new_count: 3,
-            lines: vec![
-                diff_line(DiffLineKind::Removed, Some(1), None),
-                diff_line(DiffLineKind::Context, Some(2), Some(1)),
-                diff_line(DiffLineKind::Added, None, Some(2)),
-            ],
-        }];
-        assert!(state.install_context_expand("a.rs", DEFAULT_CONTEXT + CONTEXT_STEP, wide));
-
+        // Expanding merges the hunks and shifts line_idx; the comment must
+        // follow its line.
+        state.expand_file_context(0);
         let comment = &state.comments[0];
-        assert_eq!(comment.line, 2, "the line number is unchanged");
-        assert_eq!(comment.key.line_idx, 2, "the key followed the line to its new index");
         let anchored = &state.files[0].hunks[comment.key.hunk_idx].lines[comment.key.line_idx];
-        assert_eq!(anchored.new_line, Some(2), "re-anchored onto the same line number");
-        assert_eq!(state.measured_heights[0], None, "height cache invalidated");
-        assert!(state.highlighted[0].is_none(), "highlight cache invalidated");
-        assert_eq!(state.context_levels[0], DEFAULT_CONTEXT + CONTEXT_STEP);
+        assert_eq!(anchored.new_line, Some(5), "comment re-anchored onto its line after expand");
     }
 
     #[test]

@@ -256,6 +256,14 @@ pub async fn scan_commit_body(cwd: &Path, sha: &str) -> String {
 /// while still giving a 16× speedup over a sequential loop.
 const MAX_INFLIGHT_FETCHES: usize = 16;
 
+/// Unified-diff context radius the per-file fetch runs at: effectively
+/// full-file, so the `/diff` overlay captures every file's whole context
+/// once at open and reveals hidden lines from that cached snapshot on an
+/// expander click (no live re-fetch). git clamps `-U` to the file length,
+/// so a small file simply shows in full; a file too large to snapshot
+/// trips the oversize cap and surfaces as a scan failure.
+const FULL_CONTEXT_LINES: u32 = 1_000_000;
+
 /// Top-level scanner entry. `target` is a plain ref / SHA / `"HEAD"`
 /// (not a `..`/`...` range - the helper `diff_ref_spec` picks the
 /// shape for us). `"HEAD"` runs a two-dot working-tree diff
@@ -374,22 +382,29 @@ fn diff_ref_spec(target: &str) -> String {
 }
 
 /// Fetch hunks for one file via
-/// `git diff <ref_spec> --no-ext-diff -- <path>`. The `--` separator
-/// ensures the path isn't reinterpreted as a flag for files like
-/// `--foo`. Binary files and submodule entries return `Ok(vec![])`
+/// `git diff <ref_spec> --no-ext-diff -U<full> -- <path>`. The `--`
+/// separator ensures the path isn't reinterpreted as a flag for files
+/// like `--foo`. Binary files and submodule entries return `Ok(vec![])`
 /// (that's the legitimate "no @@ hunks" case and matches the
 /// rendering convention for those file kinds).
+///
+/// Runs at [`FULL_CONTEXT_LINES`] so the returned hunks carry the file's
+/// whole context; the overlay caches these once at open and narrows them
+/// in memory for display, revealing hidden lines from the cache on an
+/// expander click without a live re-fetch.
 ///
 /// `ref_spec` is the already-resolved diff range from
 /// [`diff_ref_spec`] (e.g. `HEAD` for working-tree diffs, or
 /// `main...HEAD` for branch-against-default). Callers must pre-resolve
 /// the spec so the per-file and top-level scans agree.
 async fn fetch_file_hunks(cwd: &Path, ref_spec: &str, path: &str) -> FileScanOutcome {
-    let section = match run_git(cwd, &["diff", ref_spec, "--no-ext-diff", "--", path]).await {
-        GitOutput::Ok(s) => s,
-        GitOutput::Empty => return FileScanOutcome::Ok(Vec::new()),
-        GitOutput::Failed | GitOutput::Oversize => return FileScanOutcome::SubprocessFailed,
-    };
+    let context = format!("-U{FULL_CONTEXT_LINES}");
+    let section =
+        match run_git(cwd, &["diff", ref_spec, "--no-ext-diff", &context, "--", path]).await {
+            GitOutput::Ok(s) => s,
+            GitOutput::Empty => return FileScanOutcome::Ok(Vec::new()),
+            GitOutput::Failed | GitOutput::Oversize => return FileScanOutcome::SubprocessFailed,
+        };
     let hunks = parse_hunks(&section);
     if hunks.is_empty() && contains_hunk_marker(&section) {
         // Parser produced zero hunks despite seeing at least one
@@ -407,41 +422,6 @@ async fn fetch_file_hunks(cwd: &Path, ref_spec: &str, path: &str) -> FileScanOut
         );
     }
     FileScanOutcome::Ok(hunks)
-}
-
-/// Re-fetch one file's hunks at a wider unified-diff context radius, for
-/// the `/diff` overlay's on-demand context expansion. Sibling to
-/// `fetch_file_hunks`, but passes `-U<context>` so git emits more
-/// surrounding lines (and folds hunks whose gap the wider context now
-/// spans into one). `commit_sha` selects the scope, matching the two
-/// scan entry points: `None` re-fetches against the whole-branch range
-/// (as [`scan`]), `Some(sha)` against that commit's own diff (as
-/// [`scan_commit`], with the empty-tree fallback for a parentless root).
-/// Returns `None` on a subprocess failure or an empty diff so the caller
-/// keeps the file's existing hunks.
-pub async fn fetch_file_context(
-    cwd: &Path,
-    target: &str,
-    commit_sha: Option<&str>,
-    path: &str,
-    context: u32,
-) -> Option<Vec<Hunk>> {
-    let ref_spec = match commit_sha {
-        Some(sha) => commit_ref_spec(cwd, sha).await,
-        None => diff_ref_spec(target),
-    };
-    let context_flag = format!("-U{context}");
-    let section = match run_git(
-        cwd,
-        &["diff", &ref_spec, "--no-ext-diff", &context_flag, "--", path],
-    )
-    .await
-    {
-        GitOutput::Ok(s) => s,
-        GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => return None,
-    };
-    let hunks = parse_hunks(&section);
-    if hunks.is_empty() { None } else { Some(hunks) }
 }
 
 /// Parse `git diff --name-status` output into a list of `FileHunks`
@@ -1141,14 +1121,16 @@ diff --git a/x.rs b/x.rs
         assert!(body.is_empty(), "a subject-only commit has an empty body, got {body:?}");
     }
 
-    // ---- on-demand context expansion (fetch_file_context) ----
+    // ---- full-context scan (pin-at-open snapshot source) ----
 
     #[tokio::test(flavor = "current_thread")]
-    async fn fetch_file_context_widens_and_merges_hunks() {
+    async fn scan_fetches_full_context_hunks() {
         let dir = tempfile::tempdir().expect("tempdir");
         init_commit_repo(&dir);
         // A 20-line file; edits near the top (line 3) and near the bottom
-        // (line 17) leave a ~13-line unchanged gap between them.
+        // (line 17) leave a ~13-line unchanged gap between them. At full
+        // context git folds them into one hunk carrying every line, so the
+        // overlay can narrow + expand from that single cached snapshot.
         let base_lines: Vec<String> = (1..=20).map(|i| format!("line {i}")).collect();
         write_file(&dir, "f.rs", &format!("{}\n", base_lines.join("\n")));
         commit(&dir, "base");
@@ -1157,22 +1139,14 @@ diff --git a/x.rs b/x.rs
         "line 17 CHANGED".clone_into(&mut edited[16]);
         write_file(&dir, "f.rs", &format!("{}\n", edited.join("\n")));
 
-        // Default 3-line context: the gap exceeds 2×3, so the two edits
-        // stay separate hunks.
-        let narrow =
-            fetch_file_context(dir.path(), "HEAD", None, "f.rs", 3).await.expect("narrow hunks");
-        assert_eq!(narrow.len(), 2, "narrow context keeps two separate hunks");
-
-        // A wide context spans the gap, folding the edits into one hunk
-        // that surfaces the previously-hidden lines between them.
-        let wide =
-            fetch_file_context(dir.path(), "HEAD", None, "f.rs", 20).await.expect("wide hunks");
-        assert_eq!(wide.len(), 1, "wide context merges the two edits into one hunk");
-        let narrow_lines: usize = narrow.iter().map(|h| h.lines.len()).sum();
-        assert!(
-            wide[0].lines.len() > narrow_lines,
-            "the merged hunk reveals more lines ({} vs {narrow_lines})",
-            wide[0].lines.len(),
-        );
+        let outcome = scan(dir.path(), "HEAD").await;
+        assert!(outcome.scanner_ok);
+        let file = outcome.files.iter().find(|f| f.path == "f.rs").expect("f.rs scanned");
+        assert_eq!(file.hunks.len(), 1, "full context merges the two edits into one hunk");
+        // The previously-hidden middle lines are all present in the snapshot.
+        let texts: Vec<&str> = file.hunks[0].lines.iter().map(|l| l.text.as_str()).collect();
+        assert!(texts.contains(&"line 10"), "a middle context line is in the snapshot");
+        assert!(texts.contains(&"line 3 CHANGED"), "the first edit is present");
+        assert!(texts.contains(&"line 17 CHANGED"), "the second edit is present");
     }
 }
