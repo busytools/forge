@@ -205,6 +205,7 @@ mod tests {
             status: ReviewStatus::Open,
             created_at: "2026-07-19T10:00:00Z".to_owned(),
             updated_at: "2026-07-19T10:00:00Z".to_owned(),
+            commit: None,
         }
     }
 

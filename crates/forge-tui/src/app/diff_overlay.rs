@@ -2358,6 +2358,7 @@ fn build_thread(
             status: ReviewStatus::Open,
             created_at: String::new(),
             updated_at: String::new(),
+            commit: None,
         },
     }
 }
@@ -4929,6 +4930,7 @@ mod tests {
             status: ReviewStatus::Open,
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
+            commit: None,
         };
         ws.save_review_threads(
             "forge",
@@ -5029,6 +5031,7 @@ mod tests {
             status: ReviewStatus::Open,
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
+            commit: None,
         };
         ws.save_review_threads("forge", "feat", &[seed("live", "keep"), seed("stale", "old_body")]);
         // "keep" is live at line 10; "old_body" is gone.
@@ -5089,6 +5092,7 @@ mod tests {
                 status: ReviewStatus::Open,
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
+                commit: None,
             }],
         );
         // The commented file is no longer in the diff.
@@ -5326,6 +5330,7 @@ mod tests {
                 status: ReviewStatus::Open,
                 created_at: String::new(),
                 updated_at: String::new(),
+                commit: None,
             }),
             authored_this_session: false,
             persisted: true,
@@ -5436,6 +5441,7 @@ mod tests {
                 status,
                 created_at: String::new(),
                 updated_at: String::new(),
+                commit: None,
             });
             HunkComment {
                 key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
@@ -5482,6 +5488,7 @@ mod tests {
             status: ReviewStatus::Open,
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
+            commit: None,
         };
         // Same branch, two diff targets.
         ws.save_review_threads(
@@ -5590,6 +5597,7 @@ mod tests {
                 status: ReviewStatus::Open,
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
+                commit: None,
             }],
         );
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("keep", 10)])];
