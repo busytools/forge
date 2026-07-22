@@ -32,7 +32,7 @@ use forge_workspace::env::git_diff::hunks::{DiffLineKind, FileHunks, FileStatus,
 
 use crate::app::diff_overlay::{
     ActiveCommentInput, BodyRowKey, DiffScope, DiffViewMode, FileHighlight, HunkComment, LineKey,
-    RailRowKey, rail_width_for,
+    RailRowKey, ThreadAction, rail_width_for,
 };
 use pairing::{PairedDiffRow, pair_hunk_lines};
 use ratatui::Frame;
@@ -204,6 +204,12 @@ fn render_diff_body(frame: &mut Frame, area: Rect, app: &mut App) {
         o.body_keys = keys;
         o.body_head_rows = head_count;
         o.body_tail_scroll = tail_scroll;
+        // The rail highlights this same (message-adjusted) top file, so
+        // its arrow tracks the body's pinned header in commit mode.
+        o.current_file_idx = first_visible;
+        // Leading commit-message rows the rail-click target must clear to
+        // land in file-sub-document space (0 in whole-diff mode).
+        o.message_rows = message_rows;
         o.pane_origin_row = pane_area.y;
         o.pane_origin_col = pane_area.x;
         o.pane_width = pane_area.width;
@@ -491,9 +497,11 @@ fn render_rail(frame: &mut Frame, area: Rect, app: &mut App) {
     }
     let Some(overlay) = app.diff_overlay.as_ref() else { return };
     let inner_width = usize::from(area.width.saturating_sub(4));
-    // Highlight the leaf whose document range owns the top of the
-    // viewport - the same file the sticky header pins.
-    let current_idx = overlay.doc_offsets().file_at_row(overlay.doc_scroll);
+    // Highlight the leaf the sticky header pins - the body computes this
+    // once (message-adjusted in commit mode) and stashes it, so the rail
+    // never re-derives it from the raw `doc_scroll` and drifts by the
+    // leading message block.
+    let current_idx = overlay.current_file_idx;
 
     // Build the full row list (banner + rule + blank + tree rows +
     // optional untracked notice). We materialise everything because
@@ -1281,49 +1289,146 @@ fn push_file_body(
             ),
         ]));
         keys.push(BodyRowKey::DeletedCollapsed { file_idx });
-        return;
-    }
-    if file.hunks.is_empty() {
-        // An untracked file with no hunks was dropped by one of the
-        // scan_untracked paths (size cap, non-regular, IO error), all
-        // logged WARN under agent.env_git. A tracked file with no
-        // hunks is a real binary diff. Differentiate so the user knows
-        // whether to grep logs or accept the answer.
-        let message = if file.status == FileStatus::Untracked {
-            "    (untracked, content not surfaced - see logs (target: agent.env_git))"
+    } else {
+        if file.oversize {
+            // The full-context snapshot tripped the size cap, so this
+            // file shows a bounded diff and can't expand context.
+            lines.push(Line::from(Span::styled(
+                "    (file too large - context expansion disabled)",
+                Style::default().fg(theme::STATUS_WARNING),
+            )));
+            keys.push(BodyRowKey::EmptyState);
+        }
+        if file.hunks.is_empty() {
+            // An untracked file with no hunks was dropped by one of the
+            // scan_untracked paths (size cap, non-regular, IO error), all
+            // logged WARN under agent.env_git. A tracked file with no
+            // hunks is a real binary diff. Differentiate so the user knows
+            // whether to grep logs or accept the answer. An oversize file
+            // whose bounded fallback was also too big keeps only the note.
+            if !file.oversize {
+                let message = if file.status == FileStatus::Untracked {
+                    "    (untracked, content not surfaced - see logs (target: agent.env_git))"
+                } else {
+                    "    (binary file or no diff content)"
+                };
+                lines.push(Line::from(Span::styled(message, Style::default().fg(theme::DIM))));
+                keys.push(BodyRowKey::EmptyState);
+            }
         } else {
-            "    (binary file or no diff content)"
-        };
-        lines.push(Line::from(Span::styled(message, Style::default().fg(theme::DIM))));
-        keys.push(BodyRowKey::EmptyState);
+            let gutter_width = gutter_width_for(file);
+            let cache = overlay.highlighted.get(file_idx).and_then(Option::as_ref);
+            match effective_view_mode(overlay.view_mode, pane_width) {
+                DiffViewMode::Unified => push_unified_body(
+                    overlay,
+                    file,
+                    file_idx,
+                    gutter_width,
+                    pane_width,
+                    cache,
+                    comments_by_key,
+                    lines,
+                    keys,
+                ),
+                DiffViewMode::Split => push_split_body(
+                    overlay,
+                    file,
+                    file_idx,
+                    gutter_width,
+                    pane_width,
+                    cache,
+                    comments_by_key,
+                    lines,
+                    keys,
+                ),
+            }
+        }
+    }
+    push_file_end_cap(overlay, file_idx, pane_width, lines, keys);
+}
+
+/// Close a file with the scroll-time boundary before the next file's
+/// banded header: a dim `└─ end <path> ──` cap row naming the file that
+/// just ended, then a blank spacer. Emitted after every file but the
+/// last (the document just ends there). Both rows carry
+/// [`BodyRowKey::FileEndCap`] so a click on them no-ops. The row count
+/// matches [`crate::app::diff_overlay::END_CAP_ROWS`].
+fn push_file_end_cap(
+    overlay: &DiffOverlayState,
+    file_idx: usize,
+    pane_width: u16,
+    lines: &mut Vec<Line<'static>>,
+    keys: &mut Vec<BodyRowKey>,
+) {
+    if file_idx + 1 >= overlay.files.len() {
         return;
     }
-    let gutter_width = gutter_width_for(file);
-    let cache = overlay.highlighted.get(file_idx).and_then(Option::as_ref);
-    match effective_view_mode(overlay.view_mode, pane_width) {
-        DiffViewMode::Unified => push_unified_body(
-            overlay,
-            file,
-            file_idx,
-            gutter_width,
-            pane_width,
-            cache,
-            comments_by_key,
-            lines,
-            keys,
-        ),
-        DiffViewMode::Split => push_split_body(
-            overlay,
-            file,
-            file_idx,
-            gutter_width,
-            pane_width,
-            cache,
-            comments_by_key,
-            lines,
-            keys,
-        ),
+    let Some(file) = overlay.files.get(file_idx) else { return };
+    lines.push(end_cap_line(&file.path, pane_width));
+    keys.push(BodyRowKey::FileEndCap { file_idx });
+    lines.push(Line::default());
+    keys.push(BodyRowKey::FileEndCap { file_idx });
+}
+
+/// The `└─ end <path> ────────` boundary rule: the corner + label, then
+/// dim dashes filling the pane width. The path front-truncates when the
+/// label would overflow so the rule stays one row at any width.
+fn end_cap_line(path: &str, pane_width: u16) -> Line<'static> {
+    let dim = Style::default().fg(theme::DIM);
+    let total = usize::from(pane_width);
+    let prefix = "\u{2514}\u{2500} end ";
+    let budget = total.saturating_sub(prefix.width()).saturating_sub(4).max(4);
+    let shown = truncate_path_front(path, budget);
+    let head = format!("{prefix}{shown} ");
+    let dashes = total.saturating_sub(head.width());
+    Line::from(vec![Span::styled(head, dim), Span::styled("\u{2500}".repeat(dashes), dim)])
+}
+
+/// Hidden new-side lines just before hunk `hunk_idx`, with the glyph to
+/// draw: `↑` for the leading edge above the first hunk, `↕` for an
+/// inter-hunk gap. `None` when nothing is hidden there (so no expander
+/// renders at the true top of a file or between touching hunks).
+fn hidden_lines_before_hunk(file: &FileHunks, hunk_idx: usize) -> Option<(&'static str, u32)> {
+    let hunk = file.hunks.get(hunk_idx)?;
+    if hunk_idx == 0 {
+        let above = hunk.new_start.saturating_sub(1);
+        (above > 0).then_some(("\u{2191}", above))
+    } else {
+        let prev = file.hunks.get(hunk_idx - 1)?;
+        let gap = hunk.new_start.saturating_sub(prev.new_start.saturating_add(prev.new_count));
+        (gap > 0).then_some(("\u{2195}", gap))
     }
+}
+
+/// Emit a dim `┈ ↕ N lines ┈` context-expander row before hunk `hunk_idx`
+/// when lines are hidden there. Clicking it re-slices the file's pinned
+/// wide snapshot at a wider level in memory (context is per-file), so
+/// every expander in a file carries the same
+/// [`BodyRowKey::ContextExpander`]. Suppressed for an `oversize` file,
+/// whose snapshot is a bounded fallback with nothing more to reveal.
+fn push_context_expander(
+    file: &FileHunks,
+    file_idx: usize,
+    hunk_idx: usize,
+    pane_width: u16,
+    lines: &mut Vec<Line<'static>>,
+    keys: &mut Vec<BodyRowKey>,
+) {
+    if file.oversize {
+        return;
+    }
+    let Some((glyph, count)) = hidden_lines_before_hunk(file, hunk_idx) else { return };
+    let dim = Style::default().fg(theme::DIM);
+    let total = usize::from(pane_width);
+    let label = format!(" {glyph} {count} line{} ", if count == 1 { "" } else { "s" });
+    let lead = 3usize.min(total);
+    let tail = total.saturating_sub(lead).saturating_sub(label.width());
+    lines.push(Line::from(vec![
+        Span::styled("\u{2508}".repeat(lead), dim),
+        Span::styled(label, dim),
+        Span::styled("\u{2508}".repeat(tail), dim),
+    ]));
+    keys.push(BodyRowKey::ContextExpander { file_idx });
 }
 
 /// Append a file's unified body: each hunk's `@@` header, then each
@@ -1344,7 +1449,8 @@ fn push_unified_body(
     let content_width = unified_content_width(pane_width, gutter_width).max(1);
     for row in unified_rows(file_idx, file) {
         match row.key {
-            BodyRowKey::HunkHeader { .. } => {
+            BodyRowKey::HunkHeader { hunk_idx, .. } => {
+                push_context_expander(file, file_idx, hunk_idx, pane_width, lines, keys);
                 lines.push(Line::from(Span::styled(
                     format!("  {}", row.text),
                     Style::default().fg(Color::Cyan),
@@ -1443,6 +1549,7 @@ fn push_split_body(
     keys: &mut Vec<BodyRowKey>,
 ) {
     for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+        push_context_expander(file, file_idx, hunk_idx, pane_width, lines, keys);
         lines.push(hunk_header_row(hunk));
         keys.push(BodyRowKey::HunkHeader { file_idx, hunk_idx });
         for pair in pair_hunk_lines(file_idx, hunk_idx, &hunk.lines) {
@@ -1488,33 +1595,39 @@ fn unified_sign_style(sign: char) -> (Color, Option<Color>) {
     }
 }
 
-/// Sticky file-divider header: caret + path (bold) + status badge,
-/// with the `+N -M` totals right-justified. `collapsed` picks the
-/// `▸` (collapsed) vs `▾` (expanded) caret.
+/// Sticky file-divider header, rendered as a banded (filled-background)
+/// bar so each file's start reads as a divider: caret + path (bold) +
+/// status badge, with the `+N -M` totals right-justified. The band fills
+/// the full pane width. `collapsed` picks the `▸` (collapsed) vs `▾`
+/// (expanded) caret.
 fn file_header_line(file: &FileHunks, pane_width: u16, collapsed: bool) -> Line<'static> {
+    let band = Style::default().bg(theme::DIFF_FILE_HEADER_BG);
     let caret = if collapsed { "\u{25b8}" } else { "\u{25be}" };
     let (badge, badge_color) = status_badge(file.status);
-    let mut left: Vec<Span<'static>> = vec![
-        Span::raw("  "),
-        Span::styled(caret, Style::default().fg(theme::DIM)),
-        Span::raw(" "),
-        Span::styled(file.path.clone(), Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw("  "),
-        Span::styled(badge, Style::default().fg(badge_color)),
+    let mut spans: Vec<Span<'static>> = vec![
+        Span::styled("  ", band),
+        Span::styled(caret, band.fg(theme::DIM)),
+        Span::styled(" ", band),
+        Span::styled(file.path.clone(), band.add_modifier(Modifier::BOLD)),
+        Span::styled("  ", band),
+        Span::styled(badge, band.fg(badge_color)),
     ];
     let added = file.added_count();
     let removed = file.removed_count();
     let counts = format!("+{added} -{removed}");
-    let left_width: usize = left.iter().map(Span::width).sum();
+    let left_width: usize = spans.iter().map(Span::width).sum();
+    // Fill to the full pane width so the band is one continuous bar, with
+    // the totals right-justified behind a single trailing band cell.
     let pad = usize::from(pane_width)
         .saturating_sub(left_width)
         .saturating_sub(counts.width())
-        .saturating_sub(2);
-    left.push(Span::raw(" ".repeat(pad)));
-    left.push(Span::styled(format!("+{added}"), Style::default().fg(Color::Green)));
-    left.push(Span::raw(" "));
-    left.push(Span::styled(format!("-{removed}"), Style::default().fg(Color::Red)));
-    Line::from(left)
+        .saturating_sub(1);
+    spans.push(Span::styled(" ".repeat(pad), band));
+    spans.push(Span::styled(format!("+{added}"), band.fg(Color::Green)));
+    spans.push(Span::styled(" ", band));
+    spans.push(Span::styled(format!("-{removed}"), band.fg(Color::Red)));
+    spans.push(Span::styled(" ", band));
+    Line::from(spans)
 }
 
 /// Status badge word + colour for a file header.
@@ -1573,7 +1686,6 @@ const CHIP_BG: Color = Color::Rgb(35, 23, 10);
 fn review_state_style(status: Option<ReviewStatus>) -> (Color, Option<&'static str>) {
     match status {
         None | Some(ReviewStatus::Open) => (theme::RUST_ORANGE, status.map(|_| "OPEN")),
-        Some(ReviewStatus::Addressed) => (theme::SUBAGENT_TOKEN, Some("ADDRESSED")),
         Some(ReviewStatus::Resolved) => (theme::REVIEW_RESOLVED, Some("RESOLVED")),
         Some(ReviewStatus::Outdated) => (theme::STATUS_WARNING, Some("OUTDATED")),
     }
@@ -1588,11 +1700,6 @@ fn render_comment_chip(
     keys: &mut Vec<BodyRowKey>,
 ) {
     let status = comment.thread.as_ref().map(|t| t.status);
-    // Resolved threads collapse to a single green one-liner.
-    if status == Some(ReviewStatus::Resolved) {
-        render_resolved_chip(comment, key, gutter_width, pane_width, lines, keys);
-        return;
-    }
     let (accent, state_label) = review_state_style(status);
     let indent_cols = gutter_width + 4;
     let indent = " ".repeat(indent_cols);
@@ -1653,41 +1760,42 @@ fn render_comment_chip(
         keys.push(BodyRowKey::CommentChip(key));
     }
 
+    // Button row (durable threads only) - the state's active transition
+    // in accent-bold plus the other, dim, so every state reads as the
+    // same three-part box. A click routes to this exact thread by `key`.
+    if let Some(status) = status {
+        let (active_label, action, other_label) = match status {
+            ReviewStatus::Resolved => ("[ Reopen ]", ThreadAction::Reopen, "[ Resolve ]"),
+            ReviewStatus::Open | ReviewStatus::Outdated => {
+                ("[ Resolve ]", ThreadAction::Resolve, "[ Reopen ]")
+            }
+        };
+        let active_style = border_style.add_modifier(Modifier::BOLD);
+        let content_w = active_label.width() + 2 + other_label.width();
+        let pad = inner_width.saturating_sub(content_w);
+        // Pane-relative span of the active button so a click on the dim
+        // inactive one no-ops: 2 leading + indent + `│ ` (2) then the label.
+        let col_start = u16::try_from(2 + indent_cols + 2).unwrap_or(u16::MAX);
+        let col_end = col_start.saturating_add(u16::try_from(active_label.width()).unwrap_or(0));
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::raw(indent.clone()),
+            Span::styled("│ ", border_style),
+            Span::styled(active_label, active_style),
+            Span::styled("  ", body_style),
+            Span::styled(other_label, note_style),
+            Span::styled(" ".repeat(pad), body_style),
+            Span::styled(" │", border_style),
+        ]));
+        keys.push(BodyRowKey::CommentButton { key, action, col_start, col_end });
+    }
+
     // Bottom border.
     let bottom = format!("└{}┘", "─".repeat(box_width.saturating_sub(2)));
     lines.push(Line::from(vec![
         Span::raw("  "),
         Span::raw(indent),
         Span::styled(bottom, border_style),
-    ]));
-    keys.push(BodyRowKey::CommentChip(key));
-}
-
-/// A resolved thread collapses to one green row: `└─ ✓ line N ·
-/// RESOLVED  <text>  · [o] reopen`. Truncated to the pane width; the
-/// whole row is a [`BodyRowKey::CommentChip`] so a click reopens it.
-fn render_resolved_chip(
-    comment: &HunkComment,
-    key: LineKey,
-    gutter_width: usize,
-    pane_width: u16,
-    lines: &mut Vec<Line<'static>>,
-    keys: &mut Vec<BodyRowKey>,
-) {
-    let indent_cols = gutter_width + 4;
-    let indent = " ".repeat(indent_cols);
-    let green = Style::default().fg(theme::REVIEW_RESOLVED);
-    let dim = Style::default().fg(theme::DIM);
-    let head = format!("└─ ✓ line {} · RESOLVED  ", comment.line);
-    let avail = usize::from(pane_width).saturating_sub(2 + indent_cols + head.chars().count() + 12);
-    let text = comment.comment_text.replace('\n', " ");
-    let snippet: String = text.chars().take(avail.max(8)).collect();
-    lines.push(Line::from(vec![
-        Span::raw("  "),
-        Span::raw(indent),
-        Span::styled(head, green),
-        Span::styled(snippet, dim),
-        Span::styled("  · [o] reopen", dim),
     ]));
     keys.push(BodyRowKey::CommentChip(key));
 }
@@ -2100,6 +2208,7 @@ mod tests {
         let file = FileHunks {
             path: "a.rs".into(),
             status: FileStatus::Modified,
+            oversize: false,
             hunks: vec![Hunk {
                 old_start: 1,
                 old_count: 2,
@@ -2177,6 +2286,7 @@ mod tests {
             vec![FileHunks {
                 path: "gone.rs".into(),
                 status: FileStatus::Deleted,
+                oversize: false,
                 hunks: Vec::new(),
             }],
         );
@@ -2195,6 +2305,7 @@ mod tests {
         let file = FileHunks {
             path: "a.rs".into(),
             status: FileStatus::Modified,
+            oversize: false,
             hunks: vec![Hunk {
                 old_start: 1,
                 old_count: 1,
@@ -2245,6 +2356,7 @@ mod tests {
         let make = || FileHunks {
             path: "a.rs".into(),
             status: FileStatus::Modified,
+            oversize: false,
             hunks: vec![Hunk {
                 old_start: 1,
                 old_count: 1,
@@ -2335,7 +2447,12 @@ mod tests {
         let mut state = DiffOverlayState::new(
             std::path::PathBuf::from("/tmp"),
             "main".to_owned(),
-            vec![FileHunks { path: "a.rs".into(), status: FileStatus::Modified, hunks: vec![] }],
+            vec![FileHunks {
+                path: "a.rs".into(),
+                status: FileStatus::Modified,
+                hunks: vec![],
+                oversize: false,
+            }],
         );
         state.branch = Some("feat/x".to_owned());
         state.commits = vec![
@@ -2394,7 +2511,12 @@ mod tests {
         let mut state = DiffOverlayState::new(
             std::path::PathBuf::from("/tmp"),
             "HEAD".to_owned(),
-            vec![FileHunks { path: "a.rs".into(), status: FileStatus::Modified, hunks: vec![] }],
+            vec![FileHunks {
+                path: "a.rs".into(),
+                status: FileStatus::Modified,
+                hunks: vec![],
+                oversize: false,
+            }],
         );
         state.scanner_ok = true;
         assert!(state.commits.is_empty());
@@ -2424,7 +2546,12 @@ mod tests {
         let mut state = DiffOverlayState::new(
             std::path::PathBuf::from("/tmp"),
             "main".to_owned(),
-            vec![FileHunks { path: "a.rs".into(), status: FileStatus::Modified, hunks: vec![] }],
+            vec![FileHunks {
+                path: "a.rs".into(),
+                status: FileStatus::Modified,
+                hunks: vec![],
+                oversize: false,
+            }],
         );
         state.branch = Some("feat/x".to_owned());
         state.commits = vec![CommitMeta {
@@ -2475,6 +2602,7 @@ mod tests {
         FileHunks {
             path: path.into(),
             status: FileStatus::Modified,
+            oversize: false,
             hunks: vec![Hunk {
                 old_start: 1,
                 old_count: 1,
@@ -2490,12 +2618,35 @@ mod tests {
         }
     }
 
+    fn multi_line_file(path: &str, count: usize) -> FileHunks {
+        use forge_workspace::env::git_diff::hunks::DiffLine;
+        let n = u32::try_from(count).unwrap_or(u32::MAX);
+        let lines = (0..count)
+            .map(|i| {
+                let no = u32::try_from(i + 1).unwrap_or(u32::MAX);
+                DiffLine {
+                    kind: DiffLineKind::Context,
+                    text: format!("line {i}"),
+                    old_line: Some(no),
+                    new_line: Some(no),
+                }
+            })
+            .collect();
+        FileHunks {
+            path: path.into(),
+            status: FileStatus::Modified,
+            oversize: false,
+            hunks: vec![Hunk { old_start: 1, old_count: n, new_start: 1, new_count: n, lines }],
+        }
+    }
+
     /// Render the overlay (so the renderer stashes the real border-offset
-    /// geometry), then left-click the second file's rail row through
-    /// `handle_mouse` and confirm it resolves to file 1 - the guard for
-    /// "a screen click maps to the right file now that the content is
-    /// offset by the page border". The rail rows are banner / rule / blank
-    /// then file0 / file1, so file 1 sits four rows below the rail top.
+    /// geometry + the message-block height), left-click the second file's
+    /// rail row through `handle_mouse`, then re-render and confirm file 1
+    /// actually PINS at the top of the viewport. File 1 is tall enough to
+    /// pin; in commit mode the click target must clear the message block
+    /// or file 1 lands short and never pins. The rail rows are banner /
+    /// rule / blank then file0 / file1, so file 1 sits four rows down.
     fn rail_click_round_trip(commit_mode: bool) {
         use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
         use ratatui::Terminal;
@@ -2504,7 +2655,7 @@ mod tests {
         let mut state = DiffOverlayState::new(
             std::path::PathBuf::from("/tmp/repo"),
             "HEAD".to_owned(),
-            vec![one_line_file("a.rs"), one_line_file("b.rs")],
+            vec![one_line_file("a.rs"), multi_line_file("b.rs", 60)],
         );
         state.scanner_ok = true;
         if commit_mode {
@@ -2512,7 +2663,7 @@ mod tests {
                 sha: "a".into(),
                 short_sha: "a3f9c1e".into(),
                 subject: "seed".into(),
-                body: String::new(),
+                body: "why the change\nmatters here".into(),
             }];
             state.scope = crate::app::diff_overlay::DiffScope::Commit(0);
         }
@@ -2538,24 +2689,322 @@ mod tests {
                 modifiers: KeyModifiers::NONE,
             },
         );
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
 
         assert_eq!(
-            app.diff_overlay.as_ref().expect("overlay").doc_scroll,
-            file1_offset,
-            "a rail click at the rendered border offset jumps to file 1 (commit_mode={commit_mode})",
+            app.diff_overlay.as_ref().expect("overlay").current_file_idx,
+            1,
+            "a rail click pins file 1 at the top of the viewport (commit_mode={commit_mode})",
         );
     }
 
     #[test]
-    fn rail_click_resolves_file_after_border_offset_plain_mode() {
+    fn rail_click_pins_target_file_plain_mode() {
         rail_click_round_trip(false);
     }
 
     #[test]
-    fn rail_click_resolves_file_after_border_offset_commit_mode() {
-        // Commit mode pushes the rail below the stepper, so this pins
-        // the rail-below-stepper hit-test geometry.
+    fn rail_click_pins_target_file_commit_mode() {
+        // Commit mode leads with a message block; the click target must
+        // clear it (message_rows) so the file pins rather than landing
+        // short - the symmetric half of the rail-highlight message-adjust.
         rail_click_round_trip(true);
+    }
+
+    // ---- one canonical file order (monotonic current-file arrow) ----
+
+    #[test]
+    fn rail_and_body_share_one_file_order() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        // Scanner order (as `git diff --name-status` might emit) puts a
+        // file ahead of a sibling directory's contents and out of alpha.
+        // The overlay reorders both the body and the rail into the
+        // folded-tree traversal, so the current-file arrow can only step
+        // monotonically down the rail as the body scrolls.
+        let mut state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp/repo"),
+            "HEAD".to_owned(),
+            vec![
+                one_line_file("src/zzz.rs"),
+                one_line_file("src/app.rs"),
+                one_line_file("src/app/foo.rs"),
+            ],
+        );
+        state.scanner_ok = true;
+        let paths: Vec<&str> = state.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec!["src/app/foo.rs", "src/app.rs", "src/zzz.rs"],
+            "files reordered into folded-tree traversal",
+        );
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Diff;
+        app.diff_overlay = Some(state);
+
+        let mut terminal = Terminal::new(TestBackend::new(130, 24)).expect("terminal");
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+
+        // The rail's file leaves ascend in `file_idx`, so the rail row
+        // order is the exact sequence `file_at_row(doc_scroll)` indexes.
+        let overlay = app.diff_overlay.as_ref().expect("overlay");
+        let leaves: Vec<usize> = overlay
+            .rail_keys
+            .iter()
+            .filter_map(|k| match k {
+                crate::app::diff_overlay::RailRowKey::File { file_idx } => Some(*file_idx),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(leaves, vec![0, 1, 2], "rail leaves ascend in body file order");
+    }
+
+    #[test]
+    fn rail_order_handles_file_dir_name_collision() {
+        // A file→dir refactor makes git emit a name as BOTH a file and a
+        // directory (`D z` + `A z/a`). The comparator must stay a total
+        // order (dir before the same-named file) or `sort_by` mis-orders
+        // and the arrow jumble returns.
+        let state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp"),
+            "HEAD".to_owned(),
+            vec![one_line_file("z"), one_line_file("m"), one_line_file("z/a")],
+        );
+        let paths: Vec<&str> = state.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec!["z/a", "m", "z"],
+            "dir `z/` (from z/a) sorts before file `m`, then the file `z`",
+        );
+    }
+
+    #[test]
+    fn commit_mode_rail_highlight_is_message_adjusted() {
+        use crate::app::diff_overlay::DiffScope;
+        use forge_workspace::env::git_diff::hunks::CommitMeta;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        // A commit's message block leads the scroll, so the rail's
+        // current-file highlight must offset by it, not read the raw
+        // `doc_scroll`. File 0 is short (so the message block is taller
+        // than it); file 1 is taller than the viewport so its header can
+        // pin at the very top.
+        let mut state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp"),
+            "main".to_owned(),
+            vec![one_line_file("a.rs"), multi_line_file("b.rs", 60)],
+        );
+        state.scanner_ok = true;
+        state.commits = vec![CommitMeta {
+            sha: "a".into(),
+            short_sha: "a3f9c1e".into(),
+            subject: "seed".into(),
+            body: "l1\nl2\nl3\nl4".into(),
+        }];
+        state.scope = DiffScope::Commit(0);
+        let mut app = App::test_default();
+        app.diff_overlay = Some(state);
+
+        let mut terminal = Terminal::new(TestBackend::new(130, 24)).expect("terminal");
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+
+        let (pane_width, start1) = {
+            let o = app.diff_overlay.as_ref().expect("overlay");
+            (o.pane_width, o.doc_offsets().starts[1])
+        };
+        let msg_rows = u32::try_from(
+            commit_message_block_lines(app.diff_overlay.as_ref().expect("overlay"), pane_width)
+                .len(),
+        )
+        .expect("rows fit u32");
+        // The message block must be taller than file 0, else a raw
+        // `doc_scroll` read would also land on file 0 and the assertion
+        // below wouldn't catch the regression.
+        assert!(msg_rows >= start1, "message taller than file 0 (msg={msg_rows}, start1={start1})");
+
+        // Parked at the message boundary: file 0 is pinned, but a raw
+        // `file_at_row(doc_scroll)` would wrongly report file 1.
+        app.diff_overlay.as_mut().expect("overlay").doc_scroll = msg_rows;
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+        assert_eq!(
+            app.diff_overlay.as_ref().expect("overlay").current_file_idx,
+            0,
+            "rail tracks the body's pinned file 0, not the raw doc_scroll",
+        );
+
+        // One file deeper pins file 1.
+        app.diff_overlay.as_mut().expect("overlay").doc_scroll = msg_rows + start1;
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+        assert_eq!(
+            app.diff_overlay.as_ref().expect("overlay").current_file_idx,
+            1,
+            "scrolling one file down advances the rail highlight",
+        );
+    }
+
+    // ---- banded file header + end-of-file boundary ----
+
+    #[test]
+    fn file_header_line_is_banded() {
+        let line = file_header_line(&one_line_file("a.rs"), 80, false);
+        assert!(
+            line.spans.iter().all(|s| s.style.bg == Some(theme::DIFF_FILE_HEADER_BG)),
+            "every header span carries the band background",
+        );
+        let text = line_text(&line);
+        assert!(text.contains("a.rs"), "path shown");
+        assert!(text.contains("modified"), "status badge word");
+    }
+
+    #[test]
+    fn end_cap_precedes_each_non_first_file() {
+        // Two-file body: file 0 closes with a `└─ end a.rs ──` cap + a
+        // blank spacer before file 1's banded header; file 1 (last) has
+        // no trailing cap - the document just ends.
+        let state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp"),
+            "HEAD".to_owned(),
+            vec![one_line_file("a.rs"), one_line_file("b.rs")],
+        );
+        let comments = std::collections::HashMap::new();
+        let mut lines = Vec::new();
+        let mut keys = Vec::new();
+        push_file_body(&state, 0, true, 80, &comments, &mut lines, &mut keys);
+        let f0_len = lines.len();
+        push_file_body(&state, 1, true, 80, &comments, &mut lines, &mut keys);
+
+        let joined: Vec<String> = lines.iter().map(line_text).collect();
+        let cap_idx = joined.iter().position(|l| l.contains("end a.rs")).expect("end cap present");
+        assert!(joined[cap_idx].contains('\u{2514}'), "cap opens with the └ corner");
+        assert_eq!(keys[cap_idx], BodyRowKey::FileEndCap { file_idx: 0 }, "cap keyed to file 0");
+        assert!(joined[cap_idx + 1].trim().is_empty(), "blank spacer follows the cap");
+        assert_eq!(keys[cap_idx + 1], BodyRowKey::FileEndCap { file_idx: 0 });
+        assert_eq!(cap_idx + 2, f0_len, "cap + blank close file 0's block, then file 1 begins");
+        assert!(
+            !joined.iter().any(|l| l.contains("end b.rs")),
+            "the last file emits no trailing cap",
+        );
+    }
+
+    // ---- context expanders ----
+
+    fn ctx(new_line: u32) -> forge_workspace::env::git_diff::hunks::DiffLine {
+        use forge_workspace::env::git_diff::hunks::DiffLine;
+        DiffLine {
+            kind: DiffLineKind::Context,
+            text: format!("line {new_line}"),
+            old_line: Some(new_line),
+            new_line: Some(new_line),
+        }
+    }
+
+    #[test]
+    fn context_expander_renders_above_first_hunk_and_at_gaps() {
+        // Hunk 0 starts at new line 5 (4 hidden above); hunk 1 starts at
+        // new line 20, leaving a gap after hunk 0 (which ends at line 6).
+        let file = FileHunks {
+            path: "a.rs".into(),
+            status: FileStatus::Modified,
+            oversize: false,
+            hunks: vec![
+                Hunk {
+                    old_start: 5,
+                    old_count: 2,
+                    new_start: 5,
+                    new_count: 2,
+                    lines: vec![ctx(5), ctx(6)],
+                },
+                Hunk {
+                    old_start: 20,
+                    old_count: 2,
+                    new_start: 20,
+                    new_count: 2,
+                    lines: vec![ctx(20), ctx(21)],
+                },
+            ],
+        };
+        let state =
+            DiffOverlayState::new(std::path::PathBuf::from("/tmp"), "HEAD".to_owned(), vec![file]);
+        let comments = std::collections::HashMap::new();
+        let mut lines = Vec::new();
+        let mut keys = Vec::new();
+        push_file_body(&state, 0, true, 80, &comments, &mut lines, &mut keys);
+        let joined: Vec<String> = lines.iter().map(line_text).collect();
+        let expanders: Vec<usize> = keys
+            .iter()
+            .enumerate()
+            .filter(|(_, k)| matches!(k, BodyRowKey::ContextExpander { file_idx: 0 }))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(expanders.len(), 2, "one leading expander + one gap expander");
+        // Leading: 4 lines hidden above line 5, drawn with ↑.
+        assert!(joined[expanders[0]].contains('\u{2191}'), "leading uses ↑");
+        assert!(joined[expanders[0]].contains("4 lines"), "leading hidden count");
+        // Gap: 20 - (5 + 2) = 13 lines between the hunks, drawn with ↕.
+        assert!(joined[expanders[1]].contains('\u{2195}'), "gap uses ↕");
+        assert!(joined[expanders[1]].contains("13 lines"), "gap hidden count");
+    }
+
+    #[test]
+    fn oversize_file_shows_note_and_no_expanders() {
+        // Two hunks with a gap that would normally draw an expander, but
+        // the file is flagged oversize: no expander renders and a "too
+        // large" note appears instead.
+        let file = FileHunks {
+            path: "big.txt".into(),
+            status: FileStatus::Modified,
+            hunks: vec![
+                Hunk {
+                    old_start: 5,
+                    old_count: 1,
+                    new_start: 5,
+                    new_count: 1,
+                    lines: vec![ctx(5)],
+                },
+                Hunk {
+                    old_start: 20,
+                    old_count: 1,
+                    new_start: 20,
+                    new_count: 1,
+                    lines: vec![ctx(20)],
+                },
+            ],
+            oversize: true,
+        };
+        let state =
+            DiffOverlayState::new(std::path::PathBuf::from("/tmp"), "HEAD".to_owned(), vec![file]);
+        let comments = std::collections::HashMap::new();
+        let mut lines = Vec::new();
+        let mut keys = Vec::new();
+        push_file_body(&state, 0, true, 80, &comments, &mut lines, &mut keys);
+        assert!(
+            !keys.iter().any(|k| matches!(k, BodyRowKey::ContextExpander { .. })),
+            "an oversize file renders no expanders",
+        );
+        let joined: Vec<String> = lines.iter().map(line_text).collect();
+        assert!(joined.iter().any(|l| l.contains("too large")), "the too-large note is shown");
+    }
+
+    #[test]
+    fn no_context_expander_when_nothing_is_hidden() {
+        // A single hunk starting at line 1 with no following hunk: nothing
+        // is hidden above or between, so no expander renders (the
+        // fully-expanded end state).
+        let state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp"),
+            "HEAD".to_owned(),
+            vec![one_line_file("a.rs")],
+        );
+        let comments = std::collections::HashMap::new();
+        let mut lines = Vec::new();
+        let mut keys = Vec::new();
+        push_file_body(&state, 0, true, 80, &comments, &mut lines, &mut keys);
+        assert!(
+            !keys.iter().any(|k| matches!(k, BodyRowKey::ContextExpander { .. })),
+            "no expander when the hunk covers the file edge and there's no gap",
+        );
     }
 
     // ---- commit-message block ----
@@ -2566,7 +3015,12 @@ mod tests {
         let mut state = DiffOverlayState::new(
             std::path::PathBuf::from("/tmp"),
             "main".to_owned(),
-            vec![FileHunks { path: "a.rs".into(), status: FileStatus::Modified, hunks: vec![] }],
+            vec![FileHunks {
+                path: "a.rs".into(),
+                status: FileStatus::Modified,
+                hunks: vec![],
+                oversize: false,
+            }],
         );
         state.commits = vec![CommitMeta {
             sha: "a".into(),
@@ -2604,7 +3058,12 @@ mod tests {
         let state = DiffOverlayState::new(
             std::path::PathBuf::from("/tmp"),
             "HEAD".to_owned(),
-            vec![FileHunks { path: "a.rs".into(), status: FileStatus::Modified, hunks: vec![] }],
+            vec![FileHunks {
+                path: "a.rs".into(),
+                status: FileStatus::Modified,
+                hunks: vec![],
+                oversize: false,
+            }],
         );
         assert!(commit_message_block_lines(&state, 80).is_empty());
     }
@@ -2619,6 +3078,7 @@ mod tests {
         let file = FileHunks {
             path: "rate_limit.rs".into(),
             status: FileStatus::Modified,
+            oversize: false,
             hunks: vec![Hunk {
                 old_start: 65,
                 old_count: 1,
@@ -2733,17 +3193,67 @@ mod tests {
     }
 
     #[test]
-    fn comment_chip_resolved_collapses_to_one_green_row() {
+    fn comment_chip_resolved_renders_full_box_with_reopen_button() {
         let (lines, keys) =
             render_chip(&chip_comment(88, "rename tok to token", Some(ReviewStatus::Resolved)));
-        assert_eq!(lines.len(), 1, "resolved collapses to a single row");
-        assert_eq!(keys.len(), 1);
-        let text = line_text(&lines[0]);
+        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(
-            text.contains("\u{2713} line 88 \u{b7} RESOLVED"),
-            "resolved one-liner; got: {text}"
+            joined.contains("\u{1f4ac} line 88 \u{b7} RESOLVED"),
+            "resolved uses the unified box title; got:\n{joined}"
         );
-        assert!(text.contains("[o] reopen"), "reopen hint present");
+        assert!(joined.contains("[ Reopen ]"), "resolved box offers the Reopen button");
+        assert_eq!(
+            lines.first().expect("top").spans.last().expect("border").style.fg,
+            Some(theme::REVIEW_RESOLVED),
+            "resolved border is green",
+        );
+        assert!(
+            keys.iter().any(|k| matches!(
+                k,
+                BodyRowKey::CommentButton { action: ThreadAction::Reopen, .. }
+            )),
+            "the button row routes to Reopen",
+        );
+    }
+
+    #[test]
+    fn comment_box_button_matches_state() {
+        for status in [ReviewStatus::Open, ReviewStatus::Outdated] {
+            let (_, keys) = render_chip(&chip_comment(1, "note", Some(status)));
+            assert!(
+                keys.iter().any(|k| matches!(
+                    k,
+                    BodyRowKey::CommentButton { action: ThreadAction::Resolve, .. }
+                )),
+                "{status:?} offers Resolve",
+            );
+        }
+        let (_, keys) = render_chip(&chip_comment(1, "note", Some(ReviewStatus::Resolved)));
+        assert!(
+            keys.iter().any(|k| matches!(
+                k,
+                BodyRowKey::CommentButton { action: ThreadAction::Reopen, .. }
+            )),
+            "Resolved offers Reopen",
+        );
+    }
+
+    #[test]
+    fn comment_box_shape_is_identical_across_states() {
+        // Every durable state renders the same three-part box: a top
+        // border (┌), a button row, and a bottom border (└).
+        for status in [ReviewStatus::Open, ReviewStatus::Resolved, ReviewStatus::Outdated] {
+            let (lines, keys) = render_chip(&chip_comment(1, "note", Some(status)));
+            assert!(line_text(&lines[0]).contains('\u{250c}'), "{status:?} opens with ┌");
+            assert!(
+                line_text(lines.last().expect("bottom")).contains('\u{2514}'),
+                "{status:?} closes with └",
+            );
+            assert!(
+                keys.iter().any(|k| matches!(k, BodyRowKey::CommentButton { .. })),
+                "{status:?} carries a button row",
+            );
+        }
     }
 
     #[test]

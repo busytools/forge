@@ -149,6 +149,7 @@ mod tests {
             path: path.to_owned(),
             status: FileStatus::Modified,
             hunks: vec![Hunk { old_start: 1, old_count: 0, new_start: 1, new_count: 0, lines }],
+            oversize: false,
         }
     }
 
@@ -299,6 +300,7 @@ mod tests {
                     lines: vec![new_line("h1", 10)],
                 },
             ],
+            oversize: false,
         }];
         let b = anchor("c.rs", ReviewSide::New, 10, "h1", &[]);
         assert_eq!(
