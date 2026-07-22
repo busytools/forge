@@ -1367,6 +1367,48 @@ fn end_cap_line(path: &str, pane_width: u16) -> Line<'static> {
     Line::from(vec![Span::styled(head, dim), Span::styled("\u{2500}".repeat(dashes), dim)])
 }
 
+/// Hidden new-side lines just before hunk `hunk_idx`, with the glyph to
+/// draw: `↑` for the leading edge above the first hunk, `↕` for an
+/// inter-hunk gap. `None` when nothing is hidden there (so no expander
+/// renders at the true top of a file or between touching hunks).
+fn hidden_lines_before_hunk(file: &FileHunks, hunk_idx: usize) -> Option<(&'static str, u32)> {
+    let hunk = file.hunks.get(hunk_idx)?;
+    if hunk_idx == 0 {
+        let above = hunk.new_start.saturating_sub(1);
+        (above > 0).then_some(("\u{2191}", above))
+    } else {
+        let prev = file.hunks.get(hunk_idx - 1)?;
+        let gap = hunk.new_start.saturating_sub(prev.new_start.saturating_add(prev.new_count));
+        (gap > 0).then_some(("\u{2195}", gap))
+    }
+}
+
+/// Emit a dim `┈ ↕ N lines ┈` context-expander row before hunk `hunk_idx`
+/// when lines are hidden there. Clicking it widens the whole file's
+/// context (the `-U<n>` re-fetch is per-file), so every expander in a
+/// file carries the same [`BodyRowKey::ContextExpander`].
+fn push_context_expander(
+    file: &FileHunks,
+    file_idx: usize,
+    hunk_idx: usize,
+    pane_width: u16,
+    lines: &mut Vec<Line<'static>>,
+    keys: &mut Vec<BodyRowKey>,
+) {
+    let Some((glyph, count)) = hidden_lines_before_hunk(file, hunk_idx) else { return };
+    let dim = Style::default().fg(theme::DIM);
+    let total = usize::from(pane_width);
+    let label = format!(" {glyph} {count} line{} ", if count == 1 { "" } else { "s" });
+    let lead = 3usize.min(total);
+    let tail = total.saturating_sub(lead).saturating_sub(label.width());
+    lines.push(Line::from(vec![
+        Span::styled("\u{2508}".repeat(lead), dim),
+        Span::styled(label, dim),
+        Span::styled("\u{2508}".repeat(tail), dim),
+    ]));
+    keys.push(BodyRowKey::ContextExpander { file_idx });
+}
+
 /// Append a file's unified body: each hunk's `@@` header, then each
 /// diff line as `[gutter] [sign] [highlighted text]` soft-wrapped to
 /// the content width, with the inline comment chip / editor after the
@@ -1385,7 +1427,8 @@ fn push_unified_body(
     let content_width = unified_content_width(pane_width, gutter_width).max(1);
     for row in unified_rows(file_idx, file) {
         match row.key {
-            BodyRowKey::HunkHeader { .. } => {
+            BodyRowKey::HunkHeader { hunk_idx, .. } => {
+                push_context_expander(file, file_idx, hunk_idx, pane_width, lines, keys);
                 lines.push(Line::from(Span::styled(
                     format!("  {}", row.text),
                     Style::default().fg(Color::Cyan),
@@ -1484,6 +1527,7 @@ fn push_split_body(
     keys: &mut Vec<BodyRowKey>,
 ) {
     for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+        push_context_expander(file, file_idx, hunk_idx, pane_width, lines, keys);
         lines.push(hunk_header_row(hunk));
         keys.push(BodyRowKey::HunkHeader { file_idx, hunk_idx });
         for pair in pair_hunk_lines(file_idx, hunk_idx, &hunk.lines) {
@@ -2780,6 +2824,84 @@ mod tests {
         assert!(
             !joined.iter().any(|l| l.contains("end b.rs")),
             "the last file emits no trailing cap",
+        );
+    }
+
+    // ---- context expanders ----
+
+    fn ctx(new_line: u32) -> forge_workspace::env::git_diff::hunks::DiffLine {
+        use forge_workspace::env::git_diff::hunks::DiffLine;
+        DiffLine {
+            kind: DiffLineKind::Context,
+            text: format!("line {new_line}"),
+            old_line: Some(new_line),
+            new_line: Some(new_line),
+        }
+    }
+
+    #[test]
+    fn context_expander_renders_above_first_hunk_and_at_gaps() {
+        // Hunk 0 starts at new line 5 (4 hidden above); hunk 1 starts at
+        // new line 20, leaving a gap after hunk 0 (which ends at line 6).
+        let file = FileHunks {
+            path: "a.rs".into(),
+            status: FileStatus::Modified,
+            hunks: vec![
+                Hunk {
+                    old_start: 5,
+                    old_count: 2,
+                    new_start: 5,
+                    new_count: 2,
+                    lines: vec![ctx(5), ctx(6)],
+                },
+                Hunk {
+                    old_start: 20,
+                    old_count: 2,
+                    new_start: 20,
+                    new_count: 2,
+                    lines: vec![ctx(20), ctx(21)],
+                },
+            ],
+        };
+        let state =
+            DiffOverlayState::new(std::path::PathBuf::from("/tmp"), "HEAD".to_owned(), vec![file]);
+        let comments = std::collections::HashMap::new();
+        let mut lines = Vec::new();
+        let mut keys = Vec::new();
+        push_file_body(&state, 0, true, 80, &comments, &mut lines, &mut keys);
+        let joined: Vec<String> = lines.iter().map(line_text).collect();
+        let expanders: Vec<usize> = keys
+            .iter()
+            .enumerate()
+            .filter(|(_, k)| matches!(k, BodyRowKey::ContextExpander { file_idx: 0 }))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(expanders.len(), 2, "one leading expander + one gap expander");
+        // Leading: 4 lines hidden above line 5, drawn with ↑.
+        assert!(joined[expanders[0]].contains('\u{2191}'), "leading uses ↑");
+        assert!(joined[expanders[0]].contains("4 lines"), "leading hidden count");
+        // Gap: 20 - (5 + 2) = 13 lines between the hunks, drawn with ↕.
+        assert!(joined[expanders[1]].contains('\u{2195}'), "gap uses ↕");
+        assert!(joined[expanders[1]].contains("13 lines"), "gap hidden count");
+    }
+
+    #[test]
+    fn no_context_expander_when_nothing_is_hidden() {
+        // A single hunk starting at line 1 with no following hunk: nothing
+        // is hidden above or between, so no expander renders (the
+        // fully-expanded end state).
+        let state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp"),
+            "HEAD".to_owned(),
+            vec![one_line_file("a.rs")],
+        );
+        let comments = std::collections::HashMap::new();
+        let mut lines = Vec::new();
+        let mut keys = Vec::new();
+        push_file_body(&state, 0, true, 80, &comments, &mut lines, &mut keys);
+        assert!(
+            !keys.iter().any(|k| matches!(k, BodyRowKey::ContextExpander { .. })),
+            "no expander when the hunk covers the file edge and there's no gap",
         );
     }
 
