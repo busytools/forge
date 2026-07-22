@@ -1754,6 +1754,10 @@ fn render_comment_chip(
         let active_style = border_style.add_modifier(Modifier::BOLD);
         let content_w = active_label.width() + 2 + other_label.width();
         let pad = inner_width.saturating_sub(content_w);
+        // Pane-relative span of the active button so a click on the dim
+        // inactive one no-ops: 2 leading + indent + `│ ` (2) then the label.
+        let col_start = u16::try_from(2 + indent_cols + 2).unwrap_or(u16::MAX);
+        let col_end = col_start.saturating_add(u16::try_from(active_label.width()).unwrap_or(0));
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::raw(indent.clone()),
@@ -1764,7 +1768,7 @@ fn render_comment_chip(
             Span::styled(" ".repeat(pad), body_style),
             Span::styled(" │", border_style),
         ]));
-        keys.push(BodyRowKey::CommentButton { key, action });
+        keys.push(BodyRowKey::CommentButton { key, action, col_start, col_end });
     }
 
     // Bottom border.

@@ -225,18 +225,31 @@ pub(crate) const DEFAULT_CONTEXT: u32 = 3;
 pub(crate) const CONTEXT_STEP: u32 = 20;
 
 /// Cheap height estimate for an off-screen file (no wrap, no pairing):
-/// 1 sticky header row + per hunk (1 `@@` header + raw line count), or
-/// 2 for a collapsed deleted file. The offset table uses this for
-/// not-yet-measured files; the renderer's `file_height` replaces it
-/// (storing into `measured_heights`) when the file enters the window.
+/// 1 sticky header row + per hunk (1 `@@` header + raw line count) + the
+/// context-expander rows the renderer emits (one above the first hunk
+/// when it starts past line 1, one per non-zero inter-hunk gap), or 2 for
+/// a collapsed deleted file. The offset table uses this for not-yet-
+/// measured files; the renderer's `file_height` replaces it (storing into
+/// `measured_heights`) when the file enters the window.
 pub(crate) fn estimated_height(file: &FileHunks, collapsed: bool) -> u32 {
     if collapsed {
         return 2;
     }
     let mut rows: u32 = 1; // file sticky header
+    let mut prev_end: Option<u32> = None;
     for hunk in &file.hunks {
+        // Expander row where lines are hidden before this hunk: above the
+        // first hunk (leading), or across a gap from the previous one.
+        let hidden = match prev_end {
+            None => hunk.new_start.saturating_sub(1),
+            Some(end) => hunk.new_start.saturating_sub(end),
+        };
+        if hidden > 0 {
+            rows = rows.saturating_add(1);
+        }
         rows = rows.saturating_add(1); // @@ header
         rows = rows.saturating_add(u32::try_from(hunk.lines.len()).unwrap_or(u32::MAX));
+        prev_end = Some(hunk.new_start.saturating_add(hunk.new_count));
     }
     rows
 }
@@ -311,8 +324,10 @@ pub enum BodyRowKey {
     /// L<line>: ..."). Click → re-open the saved comment for edit.
     CommentChip(LineKey),
     /// A comment box's button row (`[ Resolve ]` / `[ Reopen ]`). Click
-    /// runs `action` on THAT thread by `key`, not the focused thread.
-    CommentButton { key: LineKey, action: ThreadAction },
+    /// runs `action` on THAT thread by `key`, not the focused thread, but
+    /// only when the click column falls in `[col_start, col_end)` - the
+    /// active button's span - so the dim inactive button no-ops.
+    CommentButton { key: LineKey, action: ThreadAction, col_start: u16, col_end: u16 },
     /// Inline TextArea row for the currently-open comment editor.
     /// Multiple consecutive rows when the comment spans more than
     /// one visual line.
@@ -2611,8 +2626,15 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
             }
         }
         BodyRowKey::CommentChip(line_key) => reopen_comment_for_key(overlay, line_key),
-        BodyRowKey::CommentButton { key, action } => {
-            MouseEffect { redraw: true, thread_action: Some((key, action)) }
+        BodyRowKey::CommentButton { key, action, col_start, col_end } => {
+            // Only the active button fires; a click on the dim inactive
+            // button (or the padding) elsewhere on the row no-ops.
+            let pane_col = column.saturating_sub(overlay.pane_origin_col);
+            if pane_col >= col_start && pane_col < col_end {
+                MouseEffect { redraw: true, thread_action: Some((key, action)) }
+            } else {
+                MouseEffect::default()
+            }
         }
         BodyRowKey::FileHeader { file_idx } | BodyRowKey::DeletedCollapsed { file_idx } => {
             toggle_deleted_collapse(overlay, file_idx)
@@ -4376,6 +4398,49 @@ mod tests {
     }
 
     #[test]
+    fn estimated_height_counts_expander_rows() {
+        // Two hunks: the first starts at line 5 (4 hidden above → a
+        // leading expander) with a 14-line gap to the second (a gap
+        // expander). The estimate must fold both in.
+        let file = FileHunks {
+            path: "a.rs".to_owned(),
+            status: FileStatus::Modified,
+            hunks: vec![
+                Hunk {
+                    old_start: 5,
+                    old_count: 1,
+                    new_start: 5,
+                    new_count: 1,
+                    lines: vec![diff_line(DiffLineKind::Context, Some(5), Some(5))],
+                },
+                Hunk {
+                    old_start: 20,
+                    old_count: 1,
+                    new_start: 20,
+                    new_count: 1,
+                    lines: vec![diff_line(DiffLineKind::Context, Some(20), Some(20))],
+                },
+            ],
+        };
+        // 1 header + leading expander + (@@ + line) + gap expander + (@@ + line).
+        assert_eq!(estimated_height(&file, false), 7);
+
+        // A single hunk flush at line 1 hides nothing → no expander row.
+        let flush = FileHunks {
+            path: "b.rs".to_owned(),
+            status: FileStatus::Modified,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_count: 1,
+                new_start: 1,
+                new_count: 1,
+                lines: vec![diff_line(DiffLineKind::Context, Some(1), Some(1))],
+            }],
+        };
+        assert_eq!(estimated_height(&flush, false), 3, "no expander when nothing is hidden");
+    }
+
+    #[test]
     fn narrow_hunks_reproduces_git_hunking() {
         let wide = wide_file_with_two_changes().hunks;
         assert_eq!(narrow_hunks(&wide, 3).len(), 2, "default context keeps the gap as two hunks");
@@ -5179,6 +5244,35 @@ mod tests {
         resolve_focused_thread(&mut app);
         let ws = app.workspace.clone().expect("ws");
         assert!(ws.load_review_threads("forge", "feat").is_empty());
+    }
+
+    #[test]
+    fn only_the_active_comment_button_is_clickable() {
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let mut state = DiffOverlayState::new(
+            PathBuf::from("/tmp"),
+            "HEAD".to_owned(),
+            vec![single_hunk_file("a.rs", vec![added_line("x", 1)])],
+        );
+        state.pane_origin_col = 0;
+        state.pane_origin_row = 0;
+        state.body_head_rows = 0;
+        state.body_tail_scroll = 0;
+        state.body_keys = vec![BodyRowKey::CommentButton {
+            key,
+            action: ThreadAction::Resolve,
+            col_start: 10,
+            col_end: 21,
+        }];
+
+        let hit = handle_body_click(&mut state, 15, 0);
+        assert_eq!(
+            hit.thread_action,
+            Some((key, ThreadAction::Resolve)),
+            "a click inside the active button's span fires the action",
+        );
+        let miss = handle_body_click(&mut state, 25, 0);
+        assert_eq!(miss.thread_action, None, "a click on the dim button / padding no-ops");
     }
 
     #[test]
