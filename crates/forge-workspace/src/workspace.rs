@@ -493,15 +493,16 @@ async fn scan_worker_resume_map(
 /// Pure-function inner of [`scan_worker_resume_map`] - pulls the
 /// catalog scan out so the filtering logic can be unit-tested without
 /// the async filesystem walk. Returns label -> session_id, picking the
-/// most-recently-modified worker-tagged session whose `cwd` equals the
-/// label's run dir: `<project_dir>/.claude/worktrees/<label>` for a git
-/// worker, `project_dir` for a non-git worker.
+/// most-recently-modified worker-tagged session whose STORAGE KEY (the
+/// `projects/<KEY>/` dir it physically lives in) equals the label's run
+/// dir encoded the CLI way: `<project_dir>/.claude/worktrees/<label>`
+/// for a git worker, `project_dir` for a non-git worker.
 ///
-/// Matching the exact run dir (not merely "under `project_dir`") keeps
-/// the pick aligned with the resume read path, which derives the JSONL
-/// location from the same run dir via `worker_tag_dir` - so a newer
-/// repo-root session in a git project can't be picked and then fail to
-/// load from the worktree.
+/// Scoping by the storage folder rather than the head-read `cwd` keeps
+/// the pick aligned with the resume read path (which reads the JSONL
+/// from `project_key_for_directory(worker_tag_dir(...))`) by
+/// construction, and is immune to a `cwd` row that the lite metadata
+/// read of the transcript head didn't capture.
 fn build_resume_map_from_sessions(
     sessions: &[SDKSessionInfo],
     project_dir: &std::path::Path,
@@ -514,9 +515,6 @@ fn build_resume_map_from_sessions(
     ordered.sort_by_key(|s| std::cmp::Reverse(s.last_modified));
     let mut resume_map: HashMap<String, String> = HashMap::new();
     for info in ordered {
-        let Some(cwd) = info.cwd.as_deref().map(std::path::Path::new) else {
-            continue;
-        };
         let Some(tag) = info.tag.as_deref() else {
             continue;
         };
@@ -524,7 +522,10 @@ fn build_resume_map_from_sessions(
             continue;
         };
         let run_dir = crate::mcp::workers::types::worker_tag_dir(project_dir, label, is_git_repo);
-        if cwd != run_dir.as_path() {
+        let run_key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+            run_dir.to_string_lossy().as_ref(),
+        ));
+        if info.storage_key != run_key {
             continue;
         }
         resume_map.entry(label.to_owned()).or_insert_with(|| info.session_id.clone());
@@ -2247,9 +2248,9 @@ impl Workspace {
     /// project's session list to match the most-recent-first ordering
     /// the scan produces.
     pub fn record_connected_session(&self, cwd: &str, session_id: &str, summary: Option<String>) {
-        let key = ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
-            Some(cwd),
-        ));
+        let storage_key =
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(cwd));
+        let key = ProjectKey::new(storage_key.clone());
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
@@ -2262,6 +2263,7 @@ impl Workspace {
             first_prompt: None,
             git_branch: None,
             cwd: Some(cwd.to_owned()),
+            storage_key,
             tag: None,
             created_at: None,
         };
@@ -5533,6 +5535,7 @@ mod resolver_tests {
             first_prompt: None,
             git_branch: None,
             cwd: None,
+            storage_key: String::new(),
             tag: tag.map(str::to_owned),
             created_at: None,
         }
@@ -10218,6 +10221,9 @@ mod build_resume_map_tests {
             first_prompt: None,
             git_branch: None,
             cwd: cwd.map(str::to_owned),
+            storage_key: cwd
+                .map(|c| forge_agent::userdata::catalog::scan::project_key_for_directory(Some(c)))
+                .unwrap_or_default(),
             tag: tag.map(str::to_owned),
             created_at: None,
         }
@@ -10227,9 +10233,9 @@ mod build_resume_map_tests {
     /// workers spawned with `--worktree=<label>` `chdir` into
     /// `<project>/.claude/worktrees/<label>/` which is indexed under
     /// a SIBLING `<config_dir>/projects/<sanitize(worktree_path)>/`
-    /// subdir. A `directory=Some(<project>)` scan misses them. Matching
-    /// each worker's cwd against its `worker_tag_dir` run dir catches
-    /// them: every worktree cwd equals `<project>/.claude/worktrees/<label>`.
+    /// subdir. A `directory=Some(<project>)` scan misses them. Scoping
+    /// each worker to its `worker_tag_dir` run-dir storage key catches
+    /// them: every worktree session lives under that run dir's key.
     #[test]
     fn build_resume_map_finds_workers_in_worktree_subdirs() {
         let project_dir = std::path::Path::new("/Users/me/Projects/forge");
@@ -10257,7 +10263,8 @@ mod build_resume_map_tests {
     }
 
     /// Workers from OTHER projects must NOT appear in this project's
-    /// resume map - their cwd doesn't equal this project's run dir.
+    /// resume map - their storage key doesn't equal this project's
+    /// run-dir key.
     #[test]
     fn build_resume_map_filters_out_workers_from_other_projects() {
         let project_dir = std::path::Path::new("/Users/me/Projects/forge");
@@ -10281,9 +10288,9 @@ mod build_resume_map_tests {
     /// Exact run-dir matching keeps a project at
     /// `/Users/me/Projects/forge` from picking up workers of a sibling
     /// project at `/Users/me/Projects/forge-old`: the sibling's worktree
-    /// cwd never equals this project's `worker_tag_dir` run dir, so
-    /// `forge-old`'s workers can't migrate into `forge`'s resume map even
-    /// though the two paths share a byte-prefix.
+    /// storage key never equals this project's `worker_tag_dir` run-dir
+    /// key, so `forge-old`'s workers can't migrate into `forge`'s resume
+    /// map even though the two paths share a byte-prefix.
     #[test]
     fn build_resume_map_filters_out_workers_with_overlapping_path_prefix() {
         let project_dir = std::path::Path::new("/Users/me/Projects/forge");
@@ -10344,23 +10351,33 @@ mod build_resume_map_tests {
 
     /// Non-git project: workers run in the project's main cwd (no
     /// worktree), so `worker_tag_dir` leaves the run dir at
-    /// `project_dir` and the exact-match filter catches them.
+    /// `project_dir`. The project-root-key session is picked; a stray
+    /// (newer) worktree-key session is excluded because its storage
+    /// folder is not the non-git worker's run dir.
     #[test]
     fn build_resume_map_finds_workers_in_non_git_project() {
         let project_dir = std::path::Path::new("/Users/me/Projects/non-git");
-        let sessions = vec![mk_info(
-            "tester-uuid",
-            Some("/Users/me/Projects/non-git"),
+        let root =
+            mk_info("tester-uuid", Some("/Users/me/Projects/non-git"), Some("forge:worker:tester"));
+        let mut stray_worktree = mk_info(
+            "stray-worktree",
+            Some("/Users/me/Projects/non-git/.claude/worktrees/tester"),
             Some("forge:worker:tester"),
-        )];
-        let map = build_resume_map_from_sessions(&sessions, project_dir, false);
-        assert_eq!(map.get("tester"), Some(&"tester-uuid".to_owned()));
+        );
+        stray_worktree.last_modified = 999;
+        let map = build_resume_map_from_sessions(&[root, stray_worktree], project_dir, false);
+        assert_eq!(
+            map.get("tester"),
+            Some(&"tester-uuid".to_owned()),
+            "a non-git worker resumes its project-root session, never a stray worktree-key one",
+        );
     }
 
-    /// Sessions with no `cwd` field (uncommon - filesystem write
-    /// race?) are ignored rather than panic.
+    /// A worker session with no resolvable storage key (empty - a scan
+    /// that couldn't read the parent dir name, or a write race) is
+    /// skipped rather than panicking.
     #[test]
-    fn build_resume_map_skips_sessions_with_no_cwd() {
+    fn build_resume_map_skips_session_with_empty_storage_key() {
         let project_dir = std::path::Path::new("/Users/me/Projects/forge");
         let sessions = vec![mk_info("orphan", None, Some("forge:worker:planner"))];
         let map = build_resume_map_from_sessions(&sessions, project_dir, true);
@@ -10447,6 +10464,26 @@ mod build_resume_map_tests {
         assert_eq!(map.get("steward"), Some(&"steward-wt".to_owned()));
         assert_eq!(map.get("credit-supply"), Some(&"credit-wt".to_owned()));
         assert_eq!(map.get("wgpu-pr"), Some(&"wgpu-wt".to_owned()));
+    }
+
+    /// A worker's recorded `cwd` comes from the lite metadata read of
+    /// the transcript head, so a `cwd` row past that window reports a
+    /// wrong/fallback value. Scoping by the storage folder the session
+    /// physically lives in resumes it regardless of the head-read cwd.
+    #[test]
+    fn build_resume_map_picks_worktree_session_by_storage_key_despite_wrong_cwd() {
+        let project_dir = std::path::Path::new("/Users/me/Projects/playground");
+        let worktree = "/Users/me/Projects/playground/.claude/worktrees/gpt-tutor";
+        let mut info = mk_info("wt-uuid", Some(worktree), Some("forge:worker:gpt-tutor"));
+        // Storage key stays the worktree dir (where the file lives); the
+        // recorded cwd is a wrong value, as a head-read miss produces.
+        info.cwd = Some("/Users/me/Projects/playground".to_owned());
+        let map = build_resume_map_from_sessions(&[info], project_dir, true);
+        assert_eq!(
+            map.get("gpt-tutor"),
+            Some(&"wt-uuid".to_owned()),
+            "storage-key scoping resumes the worktree session even when the head-read cwd is wrong",
+        );
     }
 }
 
@@ -11178,6 +11215,38 @@ mod git_scan_cwd_tests {
         ws.record_connected_session(catalog_cwd, session_id, None);
         let resolved = ws.resume_cwd_for_session(&session_key);
         assert_eq!(resolved, catalog_cwd, "catalog cwd must win over the worker_tag_dir fallback");
+    }
+
+    /// Read/pick consistency: the cwd `resume_cwd_for_session` hands
+    /// `claude --resume` for a git worker encodes to the SAME storage
+    /// key `build_resume_map_from_sessions` scopes candidates to (both
+    /// go through `project_key_for_directory(worker_tag_dir(...))`), so
+    /// a picked session always lives in the dir the resume read looks
+    /// under - the pick and the read can't diverge the way the head-read
+    /// cwd allowed.
+    #[test]
+    fn git_worker_resume_cwd_encodes_to_scoped_storage_key() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let (project_root, session_key) = seed_project_and_worker(
+            &ws,
+            "playground",
+            "/tmp/test-playground-consistency",
+            "gpt-tutor",
+            "worker-uuid-consistency",
+            true,
+        );
+        let read_key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+            &ws.resume_cwd_for_session(&session_key),
+        ));
+        let scoped_key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+            crate::mcp::workers::types::worker_tag_dir(&project_root, "gpt-tutor", true)
+                .to_string_lossy()
+                .as_ref(),
+        ));
+        assert_eq!(
+            read_key, scoped_key,
+            "resume read dir and resume-map scope key must be the same storage folder",
+        );
     }
 
     // ---------------------------------------------------------------
