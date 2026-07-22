@@ -4979,6 +4979,7 @@ mod tests {
         assert_eq!(threads[0].anchor.line, 10);
         assert_eq!(threads[0].anchor.side, ReviewSide::New);
         assert_eq!(threads[0].status, ReviewStatus::Open);
+        assert_eq!(threads[0].commit, None, "a whole-diff thread carries no commit scope");
         assert_eq!(threads[0].comments[0].text, "needs a bound check");
         assert!(!threads[0].created_at.is_empty(), "store stamped created_at");
         let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
@@ -5803,6 +5804,106 @@ mod tests {
             "the current commit's thread re-anchored to the moved line",
         );
         assert!(reloaded.iter().any(|t| t.id == "c1"), "the sha1 thread is preserved");
+    }
+
+    #[test]
+    fn hydrate_isolates_by_commit_scope_reverse() {
+        // The mirror of the above from the other side: in Commit(1) scope
+        // only the sha1 thread renders; the sha0 thread stays out.
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        let seed = |id: &str, sha: &str, text: &str| forge_primitives::ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 5,
+                content_hash: resolver::content_hash(text),
+                context: Vec::new(),
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: text.to_owned(),
+                at: String::new(),
+            }],
+            status: ReviewStatus::Open,
+            created_at: "t0".to_owned(),
+            updated_at: "t0".to_owned(),
+            commit: Some(sha.to_owned()),
+        };
+        ws.save_review_threads(
+            "forge",
+            "feat",
+            &[seed("c0", "sha0", "let b = 2;"), seed("c1", "sha1", "let a = 1;")],
+        );
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        overlay.commits = vec![commit_meta("sha0", "first"), commit_meta("sha1", "second")];
+        overlay.scope = DiffScope::Commit(1);
+        app.diff_overlay = Some(overlay);
+        hydrate_threads(&mut app);
+
+        let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
+        assert_eq!(comments.len(), 1, "only the sha1 thread renders in Commit(1)");
+        assert_eq!(comments[0].thread.as_ref().expect("thread").id, "c1");
+        assert!(
+            comments.iter().all(|c| c.thread.as_ref().map(|t| t.id.as_str()) != Some("c0")),
+            "the sha0 thread stays out of the Commit(1) scope",
+        );
+        assert!(
+            ws.load_review_threads("forge", "feat").iter().any(|t| t.id == "c0"),
+            "the sha0 thread is preserved in the store",
+        );
+    }
+
+    #[test]
+    fn commit_scoped_thread_hydrates_back_resolved() {
+        // End-to-end state survival: a Resolved commit-scoped thread
+        // reopened on its commit hydrates back Resolved.
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads(
+            "forge",
+            "feat",
+            &[forge_primitives::ReviewThread {
+                id: "c0".to_owned(),
+                anchor: ReviewAnchor {
+                    path: "src/x.rs".to_owned(),
+                    side: ReviewSide::New,
+                    line: 5,
+                    content_hash: resolver::content_hash("let a = 1;"),
+                    context: Vec::new(),
+                    base_ref: "main".to_owned(),
+                },
+                comments: vec![ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "resolved earlier".to_owned(),
+                    at: String::new(),
+                }],
+                status: ReviewStatus::Resolved,
+                created_at: "t0".to_owned(),
+                updated_at: "t0".to_owned(),
+                commit: Some("sha0".to_owned()),
+            }],
+        );
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        overlay.commits = vec![commit_meta("sha0", "first")];
+        overlay.scope = DiffScope::Commit(0);
+        app.diff_overlay = Some(overlay);
+        hydrate_threads(&mut app);
+
+        let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
+        assert_eq!(
+            comment.thread.as_ref().expect("thread").status,
+            ReviewStatus::Resolved,
+            "the commit-scoped thread hydrated back Resolved",
+        );
     }
 
     #[test]
