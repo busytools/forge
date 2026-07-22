@@ -180,6 +180,20 @@ fn rfc3339_now() -> String {
     })
 }
 
+/// Test-only: write undecodable bytes into the `(project, branch)` row
+/// so a caller can exercise the load-error path (a corrupt / partially
+/// written redb row). Feature-gated for cross-crate test access.
+#[cfg(feature = "test-helpers")]
+pub fn write_corrupt_row_for_test(db: &Db, project: &str, branch: &str) -> anyhow::Result<()> {
+    let txn = db.database().begin_write()?;
+    {
+        let mut table = txn.open_table(REVIEW_THREADS)?;
+        table.insert((project, branch), b"not json".as_slice())?;
+    }
+    txn.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,6 +318,34 @@ mod tests {
         assert!(load(&db, "forge", "feat").expect("load").is_empty());
         assert_eq!(load(&db, "forge", "other").expect("load").len(), 2);
         assert_eq!(load(&db, "elsewhere", "feat").expect("load").len(), 1);
+    }
+
+    #[test]
+    fn corrupt_row_surfaces_error_and_is_never_clobbered() {
+        let (_dir, db) = open_db();
+        // Undecodable bytes directly in the row (a corrupt / partial write).
+        {
+            let txn = db.database().begin_write().expect("begin");
+            {
+                let mut table = txn.open_table(REVIEW_THREADS).expect("open");
+                table.insert(("forge", "feat"), b"not json".as_slice()).expect("insert");
+            }
+            txn.commit().expect("commit");
+        }
+        // `load` surfaces the decode failure rather than a silent empty vec.
+        assert!(load(&db, "forge", "feat").is_err(), "a corrupt row is an error, not empty");
+        // Every write path re-decodes with `?` and aborts before writing, so
+        // the corrupt bytes survive intact (the non-clobber guarantee).
+        assert!(upsert(&db, "forge", "feat", thread("a", 1)).is_err(), "upsert aborts");
+        assert!(
+            set_status(&db, "forge", "feat", "a", ReviewStatus::Resolved).is_err(),
+            "set_status aborts",
+        );
+        assert!(remove_thread(&db, "forge", "feat", "a").is_err(), "remove aborts");
+        let txn = db.database().begin_read().expect("begin read");
+        let table = txn.open_table(REVIEW_THREADS).expect("open");
+        let raw = table.get(("forge", "feat")).expect("get").expect("row present");
+        assert_eq!(raw.value(), b"not json".as_slice(), "the corrupt bytes were never overwritten");
     }
 
     #[test]

@@ -108,12 +108,24 @@ fn render_diff_body(frame: &mut Frame, area: Rect, app: &mut App) {
         0
     };
     let usable_height = area.height.saturating_sub(stepper_h);
-    let usable_area = Rect {
+    let mut usable_area = Rect {
         x: area.x,
         y: area.y.saturating_add(stepper_h),
         width: area.width,
         height: usable_height,
     };
+
+    // A failed review-thread load draws a full-width notice above the
+    // rail/body (and stays visible even if the body area collapses) so a
+    // genuine load failure never reads as an empty review pane.
+    if let Some(notice) = app.diff_overlay.as_ref().and_then(review_load_notice_line)
+        && usable_area.height > 0
+    {
+        let notice_area = Rect { height: 1, ..usable_area };
+        frame.render_widget(Paragraph::new(notice), notice_area);
+        usable_area.y = usable_area.y.saturating_add(1);
+        usable_area.height = usable_area.height.saturating_sub(1);
+    }
 
     // The jump rail shows at >= 120 cols (`rail_width_for`); below that
     // it hides and the continuous body takes the full width.
@@ -250,6 +262,18 @@ fn render_diff_body(frame: &mut Frame, area: Rect, app: &mut App) {
             }
         }
     }
+}
+
+/// The full-width notice shown when this branch's persisted review
+/// threads failed to load, so a decode / IO failure doesn't read as an
+/// empty review pane. `None` when the load succeeded.
+fn review_load_notice_line(overlay: &DiffOverlayState) -> Option<Line<'static>> {
+    overlay.review_load_error.as_ref().map(|_| {
+        Line::from(Span::styled(
+            "  review comments failed to load - see logs",
+            Style::default().fg(theme::STATUS_WARNING),
+        ))
+    })
 }
 
 fn render_missing_state(frame: &mut Frame, area: Rect) {
@@ -2496,6 +2520,17 @@ mod tests {
             Some(STEPPER_MOVE_ROW),
             "the jump click span is stashed on the movement row",
         );
+    }
+
+    #[test]
+    fn review_load_notice_shows_only_on_error() {
+        let mut state =
+            DiffOverlayState::new(std::path::PathBuf::from("/tmp"), "main".to_owned(), vec![]);
+        assert!(review_load_notice_line(&state).is_none(), "no notice when the load succeeded");
+        state.review_load_error = Some("boom".to_owned());
+        let line = review_load_notice_line(&state).expect("notice present on error");
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("failed to load"), "the notice names the failure");
     }
 
     #[test]

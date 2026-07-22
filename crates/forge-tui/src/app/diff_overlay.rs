@@ -699,7 +699,12 @@ pub fn open_with_target(app: &mut App, target: String) {
         branch.clone(),
         app.workspace.clone(),
     ) {
-        initial_scope_from_threads(&workspace.load_review_threads(&project, &branch))
+        // A load failure here just falls back to the default scope; the
+        // post-open `hydrate_threads` hits the same error and surfaces the
+        // notice against the now-open overlay.
+        workspace
+            .load_review_threads(&project, &branch)
+            .map_or(InitialScope::Default, |threads| initial_scope_from_threads(&threads))
     } else {
         InitialScope::Default
     };
@@ -1077,6 +1082,11 @@ pub struct DiffOverlayState {
     /// a click on it into "open the dropdown". `None` until the first
     /// commit-mode render.
     pub jump_hint_span: Option<(u16, u16, u16)>,
+    /// Set when loading this branch's persisted review threads failed
+    /// (a decode / IO error on an existing redb row), cleared on a
+    /// successful load. Drives a visible "review comments failed to load"
+    /// notice so a genuine failure doesn't read as an empty review pane.
+    pub review_load_error: Option<String>,
 }
 
 impl DiffOverlayState {
@@ -1501,6 +1511,7 @@ impl DiffOverlayState {
             jump_open: false,
             jump_selected: 0,
             jump_hint_span: None,
+            review_load_error: None,
         };
         state.capture_wide_and_narrow();
         state
@@ -1589,6 +1600,7 @@ impl DiffOverlayState {
             jump_open: false,
             jump_selected: 0,
             jump_hint_span: None,
+            review_load_error: None,
         };
         state.capture_wide_and_narrow();
         state
@@ -1758,7 +1770,19 @@ fn hydrate_threads(app: &mut App) {
         return;
     };
 
-    let loaded = workspace.load_review_threads(&project, &branch);
+    // Surface a load failure as a visible notice rather than a silent
+    // empty pane; a successful load clears any prior notice.
+    let loaded = match workspace.load_review_threads(&project, &branch) {
+        Ok(threads) => {
+            overlay.review_load_error = None;
+            threads
+        }
+        Err(error) => {
+            overlay.review_load_error = Some(error);
+            app.needs_redraw = true;
+            return;
+        }
+    };
     // Threads are keyed by (project, branch) across every scope; process
     // only those in the current scope (the active commit's sha, or
     // whole-diff threads against the current target), keeping the rest
@@ -4974,7 +4998,7 @@ mod tests {
         save_active_input(&mut app);
 
         let ws = app.workspace.clone().expect("ws");
-        let threads = ws.load_review_threads("forge", "feat");
+        let threads = ws.load_review_threads("forge", "feat").expect("load");
         assert_eq!(threads.len(), 1, "the whole-diff comment persisted a thread");
         assert_eq!(threads[0].anchor.line, 10);
         assert_eq!(threads[0].anchor.side, ReviewSide::New);
@@ -5001,7 +5025,7 @@ mod tests {
         save_active_input(&mut app);
 
         let ws = app.workspace.clone().expect("ws");
-        let threads = ws.load_review_threads("forge", "feat");
+        let threads = ws.load_review_threads("forge", "feat").expect("load");
         assert_eq!(threads.len(), 1, "the commit-scoped comment persisted a thread");
         assert_eq!(threads[0].commit.as_deref(), Some("aaa"), "the thread carries the commit sha");
         assert_eq!(threads[0].comments[0].text, "commit note");
@@ -5033,7 +5057,7 @@ mod tests {
         app.diff_overlay = None;
         let ws = app.workspace.clone().expect("ws");
         assert_eq!(
-            ws.load_review_threads("forge", "feat").len(),
+            ws.load_review_threads("forge", "feat").expect("load").len(),
             1,
             "the thread outlives the overlay"
         );
@@ -5129,7 +5153,7 @@ mod tests {
         assert_ne!(vanished.key, changed.key, "outdated threads do not collide");
 
         // The move + outdated flips are written back to redb.
-        let reloaded = ws.load_review_threads("forge", "feat");
+        let reloaded = ws.load_review_threads("forge", "feat").expect("load");
         let find = |id: &str| reloaded.iter().find(|t| t.id == id).expect("thread");
         assert_eq!(find("move").anchor.line, 8, "moved line persisted");
         assert_eq!(find("changed").status, ReviewStatus::Outdated, "outdated flip persisted");
@@ -5317,7 +5341,7 @@ mod tests {
         apply_thread_action(&mut app, key, ThreadAction::Resolve);
         assert_eq!(thread_status(&app), ReviewStatus::Resolved, "in-memory resolves");
         assert_eq!(
-            ws.load_review_threads("forge", "feat")[0].status,
+            ws.load_review_threads("forge", "feat").expect("load")[0].status,
             ReviewStatus::Resolved,
             "persisted"
         );
@@ -5325,7 +5349,7 @@ mod tests {
         apply_thread_action(&mut app, key, ThreadAction::Reopen);
         assert_eq!(thread_status(&app), ReviewStatus::Open, "in-memory reopens");
         assert_eq!(
-            ws.load_review_threads("forge", "feat")[0].status,
+            ws.load_review_threads("forge", "feat").expect("load")[0].status,
             ReviewStatus::Open,
             "persisted"
         );
@@ -5363,7 +5387,7 @@ mod tests {
         assert_eq!(status_of(ka), Some(ReviewStatus::Open), "the other thread is untouched");
 
         let ws = app.workspace.clone().expect("ws");
-        let threads = ws.load_review_threads("forge", "feat");
+        let threads = ws.load_review_threads("forge", "feat").expect("load");
         let persisted =
             |line: u32| threads.iter().find(|t| t.anchor.line == line).map(|t| t.status);
         assert_eq!(persisted(11), Some(ReviewStatus::Resolved), "B persisted resolved");
@@ -5402,7 +5426,7 @@ mod tests {
             ThreadAction::Resolve,
         );
         let ws = app.workspace.clone().expect("ws");
-        assert!(ws.load_review_threads("forge", "feat").is_empty());
+        assert!(ws.load_review_threads("forge", "feat").expect("load").is_empty());
     }
 
     #[test]
@@ -5566,7 +5590,7 @@ mod tests {
         app.diff_overlay = Some(overlay);
         save_active_input(&mut app);
         let ws = app.workspace.clone().expect("ws");
-        assert_eq!(ws.load_review_threads("forge", "feat").len(), 1, "saved");
+        assert_eq!(ws.load_review_threads("forge", "feat").expect("load").len(), 1, "saved");
 
         // Reopen the chip, clear the text, save empty -> delete.
         if let Some(o) = app.diff_overlay.as_mut() {
@@ -5577,7 +5601,10 @@ mod tests {
         }
         save_active_input(&mut app);
 
-        assert!(ws.load_review_threads("forge", "feat").is_empty(), "delete removed it from redb");
+        assert!(
+            ws.load_review_threads("forge", "feat").expect("load").is_empty(),
+            "delete removed it from redb"
+        );
         // A subsequent hydrate must not resurrect it.
         hydrate_threads(&mut app);
         assert!(app.diff_overlay.as_ref().expect("overlay").comments.is_empty(), "not resurrected");
@@ -5692,7 +5719,7 @@ mod tests {
         assert_eq!(comments.len(), 1, "only the main-target thread renders");
         assert_eq!(comments[0].thread.as_ref().expect("thread").id, "a");
 
-        let reloaded = ws.load_review_threads("forge", "feat");
+        let reloaded = ws.load_review_threads("forge", "feat").expect("load");
         assert_eq!(reloaded.len(), 3, "the other-target and commit-scoped threads survived");
         assert_eq!(
             reloaded.iter().find(|t| t.id == "a").expect("a").anchor.line,
@@ -5796,7 +5823,7 @@ mod tests {
         assert_eq!(comments.len(), 1, "only the current commit's thread renders");
         assert_eq!(comments[0].thread.as_ref().expect("thread").id, "c0");
 
-        let reloaded = ws.load_review_threads("forge", "feat");
+        let reloaded = ws.load_review_threads("forge", "feat").expect("load");
         assert_eq!(reloaded.len(), 2, "the other commit's thread survives the writeback");
         assert_eq!(
             reloaded.iter().find(|t| t.id == "c0").expect("c0").anchor.line,
@@ -5854,7 +5881,7 @@ mod tests {
             "the sha0 thread stays out of the Commit(1) scope",
         );
         assert!(
-            ws.load_review_threads("forge", "feat").iter().any(|t| t.id == "c0"),
+            ws.load_review_threads("forge", "feat").expect("load").iter().any(|t| t.id == "c0"),
             "the sha0 thread is preserved in the store",
         );
     }
@@ -5907,6 +5934,38 @@ mod tests {
     }
 
     #[test]
+    fn hydrate_surfaces_a_review_load_error() {
+        // A corrupt persisted row makes the load fail; hydrate must set the
+        // visible-notice state rather than leave a silently-empty pane.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("test workspace");
+        let db = forge_workspace::store::Db::open(&dir.path().join("db.redb")).expect("open db");
+        forge_workspace::store::review::write_corrupt_row_for_test(&db, "forge", "feat")
+            .expect("write corrupt row");
+        workspace.install_db_for_test(db);
+        let key = forge_workspace::SessionKey::from_session_id("review-session");
+        let mut session = crate::app::session::UiSession::new(key.clone());
+        session.project = Some("forge".to_owned());
+        session.cwd_raw = "/tmp/repo".into();
+        app.sessions.insert(key.clone(), session);
+        app.active_session_key = Some(key);
+
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+
+        hydrate_threads(&mut app);
+
+        assert!(
+            app.diff_overlay.as_ref().expect("overlay").review_load_error.is_some(),
+            "a load failure surfaces the review-load notice state, not a blank pane",
+        );
+    }
+
+    #[test]
     fn hydrate_whole_diff_ignores_commit_scoped() {
         let (mut app, _dir) = review_app();
         let ws = app.workspace.clone().expect("ws");
@@ -5949,7 +6008,7 @@ mod tests {
         assert_eq!(comments[0].commit, None);
         assert_eq!(comments[0].thread.as_ref().expect("thread").id, "wd");
 
-        let reloaded = ws.load_review_threads("forge", "feat");
+        let reloaded = ws.load_review_threads("forge", "feat").expect("load");
         assert_eq!(reloaded.len(), 2, "both threads survive");
         assert!(reloaded.iter().any(|t| t.id == "cs"), "the commit-scoped thread is preserved");
     }
@@ -6222,7 +6281,7 @@ mod tests {
         assert!(app.diff_overlay.is_none(), "overlay force-cleared");
         let ws = app.workspace.clone().expect("ws");
         assert_eq!(
-            ws.load_review_threads("forge", "feat").len(),
+            ws.load_review_threads("forge", "feat").expect("load").len(),
             1,
             "the persisted thread survives the force-clear",
         );

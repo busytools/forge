@@ -2048,11 +2048,11 @@ config_dir = "~/.claude-subspace"
         let _ = rx.await.expect("result");
 
         assert!(
-            workspace.load_review_threads("forge", &branch).is_empty(),
+            workspace.load_review_threads("forge", &branch).expect("load").is_empty(),
             "the torn-down branch's threads are cleaned",
         );
         assert_eq!(
-            workspace.load_review_threads("forge", "survivor").len(),
+            workspace.load_review_threads("forge", "survivor").expect("load").len(),
             1,
             "another branch's threads survive",
         );
@@ -2098,7 +2098,7 @@ config_dir = "~/.claude-subspace"
         let _ = rx.await.expect("result");
 
         assert_eq!(
-            workspace.load_review_threads("forge", "survivor").len(),
+            workspace.load_review_threads("forge", "survivor").expect("load").len(),
             1,
             "cleanup skipped gracefully, unrelated threads intact",
         );
