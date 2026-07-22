@@ -154,6 +154,13 @@ fn compare_tree_paths(a: &str, b: &str) -> std::cmp::Ordering {
 /// plain scroll never re-runs syntect.
 pub type FileHighlight = Vec<Vec<Vec<ratatui::text::Span<'static>>>>;
 
+/// Rendered rows the end-of-file boundary adds after every file but the
+/// last: the `└─ end <path> ──` cap row plus a blank spacer before the
+/// next file's banded header. Measured heights (via the renderer's
+/// `push_file_body`) already include it, so the off-screen estimate must
+/// add it too or the offset table drifts by two rows per file boundary.
+pub(crate) const END_CAP_ROWS: u32 = 2;
+
 /// Cheap height estimate for an off-screen file (no wrap, no pairing):
 /// 1 sticky header row + per hunk (1 `@@` header + raw line count), or
 /// 2 for a collapsed deleted file. The offset table uses this for
@@ -221,6 +228,10 @@ pub enum BodyRowKey {
     /// The one-line "File deleted - N lines removed" notice shown for
     /// a collapsed deleted file. Click expands it.
     DeletedCollapsed { file_idx: usize },
+    /// The dim `└─ end <path> ──` boundary row (and its blank spacer)
+    /// that closes a file before the next file's banded header. Names
+    /// the ending file; non-interactive.
+    FileEndCap { file_idx: usize },
     /// `@@ -A,B +C,D @@` hunk header - non-interactive in v1.
     HunkHeader { file_idx: usize, hunk_idx: usize },
     /// A diff row in the split body. Carries both column keys -
@@ -1164,16 +1175,20 @@ impl DiffOverlayState {
     /// to find the file at the top of the viewport, jump the scroll
     /// from the rail, and size the scrollbar.
     pub fn doc_offsets(&self) -> DocOffsets {
+        let last = self.files.len().saturating_sub(1);
         let heights: Vec<u32> = self
             .files
             .iter()
             .enumerate()
             .map(|(idx, file)| {
-                self.measured_heights
-                    .get(idx)
-                    .copied()
-                    .flatten()
-                    .unwrap_or_else(|| estimated_height(file, self.is_collapsed(idx)))
+                self.measured_heights.get(idx).copied().flatten().unwrap_or_else(|| {
+                    // The measured height already folds in the trailing
+                    // end-cap; mirror it in the estimate for every file
+                    // but the last so an unmeasured file's start row lines
+                    // up with what the renderer draws.
+                    let cap = if idx < last { END_CAP_ROWS } else { 0 };
+                    estimated_height(file, self.is_collapsed(idx)).saturating_add(cap)
+                })
             })
             .collect();
         file_offsets(&heights)
@@ -2345,7 +2360,8 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
         BodyRowKey::EmptyState
         | BodyRowKey::HunkHeader { .. }
         | BodyRowKey::InputRow(_)
-        | BodyRowKey::CommitMessage => MouseEffect::default(),
+        | BodyRowKey::CommitMessage
+        | BodyRowKey::FileEndCap { .. } => MouseEffect::default(),
     }
 }
 

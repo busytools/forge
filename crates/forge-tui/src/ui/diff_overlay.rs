@@ -1286,9 +1286,7 @@ fn push_file_body(
             ),
         ]));
         keys.push(BodyRowKey::DeletedCollapsed { file_idx });
-        return;
-    }
-    if file.hunks.is_empty() {
+    } else if file.hunks.is_empty() {
         // An untracked file with no hunks was dropped by one of the
         // scan_untracked paths (size cap, non-regular, IO error), all
         // logged WARN under agent.env_git. A tracked file with no
@@ -1301,34 +1299,72 @@ fn push_file_body(
         };
         lines.push(Line::from(Span::styled(message, Style::default().fg(theme::DIM))));
         keys.push(BodyRowKey::EmptyState);
+    } else {
+        let gutter_width = gutter_width_for(file);
+        let cache = overlay.highlighted.get(file_idx).and_then(Option::as_ref);
+        match effective_view_mode(overlay.view_mode, pane_width) {
+            DiffViewMode::Unified => push_unified_body(
+                overlay,
+                file,
+                file_idx,
+                gutter_width,
+                pane_width,
+                cache,
+                comments_by_key,
+                lines,
+                keys,
+            ),
+            DiffViewMode::Split => push_split_body(
+                overlay,
+                file,
+                file_idx,
+                gutter_width,
+                pane_width,
+                cache,
+                comments_by_key,
+                lines,
+                keys,
+            ),
+        }
+    }
+    push_file_end_cap(overlay, file_idx, pane_width, lines, keys);
+}
+
+/// Close a file with the scroll-time boundary before the next file's
+/// banded header: a dim `└─ end <path> ──` cap row naming the file that
+/// just ended, then a blank spacer. Emitted after every file but the
+/// last (the document just ends there). Both rows carry
+/// [`BodyRowKey::FileEndCap`] so a click on them no-ops. The row count
+/// matches [`crate::app::diff_overlay::END_CAP_ROWS`].
+fn push_file_end_cap(
+    overlay: &DiffOverlayState,
+    file_idx: usize,
+    pane_width: u16,
+    lines: &mut Vec<Line<'static>>,
+    keys: &mut Vec<BodyRowKey>,
+) {
+    if file_idx + 1 >= overlay.files.len() {
         return;
     }
-    let gutter_width = gutter_width_for(file);
-    let cache = overlay.highlighted.get(file_idx).and_then(Option::as_ref);
-    match effective_view_mode(overlay.view_mode, pane_width) {
-        DiffViewMode::Unified => push_unified_body(
-            overlay,
-            file,
-            file_idx,
-            gutter_width,
-            pane_width,
-            cache,
-            comments_by_key,
-            lines,
-            keys,
-        ),
-        DiffViewMode::Split => push_split_body(
-            overlay,
-            file,
-            file_idx,
-            gutter_width,
-            pane_width,
-            cache,
-            comments_by_key,
-            lines,
-            keys,
-        ),
-    }
+    let Some(file) = overlay.files.get(file_idx) else { return };
+    lines.push(end_cap_line(&file.path, pane_width));
+    keys.push(BodyRowKey::FileEndCap { file_idx });
+    lines.push(Line::default());
+    keys.push(BodyRowKey::FileEndCap { file_idx });
+}
+
+/// The `└─ end <path> ────────` boundary rule: the corner + label, then
+/// dim dashes filling the pane width. The path front-truncates when the
+/// label would overflow so the rule stays one row at any width.
+fn end_cap_line(path: &str, pane_width: u16) -> Line<'static> {
+    let dim = Style::default().fg(theme::DIM);
+    let total = usize::from(pane_width);
+    let prefix = "\u{2514}\u{2500} end ";
+    let budget = total.saturating_sub(prefix.width()).saturating_sub(4).max(4);
+    let shown = truncate_path_front(path, budget);
+    let head = format!("{prefix}{shown} ");
+    let dashes = total.saturating_sub(head.width());
+    Line::from(vec![Span::styled(head, dim), Span::styled("\u{2500}".repeat(dashes), dim)])
 }
 
 /// Append a file's unified body: each hunk's `@@` header, then each
@@ -1493,33 +1529,39 @@ fn unified_sign_style(sign: char) -> (Color, Option<Color>) {
     }
 }
 
-/// Sticky file-divider header: caret + path (bold) + status badge,
-/// with the `+N -M` totals right-justified. `collapsed` picks the
-/// `▸` (collapsed) vs `▾` (expanded) caret.
+/// Sticky file-divider header, rendered as a banded (filled-background)
+/// bar so each file's start reads as a divider: caret + path (bold) +
+/// status badge, with the `+N -M` totals right-justified. The band fills
+/// the full pane width. `collapsed` picks the `▸` (collapsed) vs `▾`
+/// (expanded) caret.
 fn file_header_line(file: &FileHunks, pane_width: u16, collapsed: bool) -> Line<'static> {
+    let band = Style::default().bg(theme::DIFF_FILE_HEADER_BG);
     let caret = if collapsed { "\u{25b8}" } else { "\u{25be}" };
     let (badge, badge_color) = status_badge(file.status);
-    let mut left: Vec<Span<'static>> = vec![
-        Span::raw("  "),
-        Span::styled(caret, Style::default().fg(theme::DIM)),
-        Span::raw(" "),
-        Span::styled(file.path.clone(), Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw("  "),
-        Span::styled(badge, Style::default().fg(badge_color)),
+    let mut spans: Vec<Span<'static>> = vec![
+        Span::styled("  ", band),
+        Span::styled(caret, band.fg(theme::DIM)),
+        Span::styled(" ", band),
+        Span::styled(file.path.clone(), band.add_modifier(Modifier::BOLD)),
+        Span::styled("  ", band),
+        Span::styled(badge, band.fg(badge_color)),
     ];
     let added = file.added_count();
     let removed = file.removed_count();
     let counts = format!("+{added} -{removed}");
-    let left_width: usize = left.iter().map(Span::width).sum();
+    let left_width: usize = spans.iter().map(Span::width).sum();
+    // Fill to the full pane width so the band is one continuous bar, with
+    // the totals right-justified behind a single trailing band cell.
     let pad = usize::from(pane_width)
         .saturating_sub(left_width)
         .saturating_sub(counts.width())
-        .saturating_sub(2);
-    left.push(Span::raw(" ".repeat(pad)));
-    left.push(Span::styled(format!("+{added}"), Style::default().fg(Color::Green)));
-    left.push(Span::raw(" "));
-    left.push(Span::styled(format!("-{removed}"), Style::default().fg(Color::Red)));
-    Line::from(left)
+        .saturating_sub(1);
+    spans.push(Span::styled(" ".repeat(pad), band));
+    spans.push(Span::styled(format!("+{added}"), band.fg(Color::Green)));
+    spans.push(Span::styled(" ", band));
+    spans.push(Span::styled(format!("-{removed}"), band.fg(Color::Red)));
+    spans.push(Span::styled(" ", band));
+    Line::from(spans)
 }
 
 /// Status badge word + colour for a file header.
@@ -2694,6 +2736,50 @@ mod tests {
             app.diff_overlay.as_ref().expect("overlay").current_file_idx,
             1,
             "scrolling one file down advances the rail highlight",
+        );
+    }
+
+    // ---- banded file header + end-of-file boundary ----
+
+    #[test]
+    fn file_header_line_is_banded() {
+        let line = file_header_line(&one_line_file("a.rs"), 80, false);
+        assert!(
+            line.spans.iter().all(|s| s.style.bg == Some(theme::DIFF_FILE_HEADER_BG)),
+            "every header span carries the band background",
+        );
+        let text = line_text(&line);
+        assert!(text.contains("a.rs"), "path shown");
+        assert!(text.contains("modified"), "status badge word");
+    }
+
+    #[test]
+    fn end_cap_precedes_each_non_first_file() {
+        // Two-file body: file 0 closes with a `└─ end a.rs ──` cap + a
+        // blank spacer before file 1's banded header; file 1 (last) has
+        // no trailing cap - the document just ends.
+        let state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp"),
+            "HEAD".to_owned(),
+            vec![one_line_file("a.rs"), one_line_file("b.rs")],
+        );
+        let comments = std::collections::HashMap::new();
+        let mut lines = Vec::new();
+        let mut keys = Vec::new();
+        push_file_body(&state, 0, true, 80, &comments, &mut lines, &mut keys);
+        let f0_len = lines.len();
+        push_file_body(&state, 1, true, 80, &comments, &mut lines, &mut keys);
+
+        let joined: Vec<String> = lines.iter().map(line_text).collect();
+        let cap_idx = joined.iter().position(|l| l.contains("end a.rs")).expect("end cap present");
+        assert!(joined[cap_idx].contains('\u{2514}'), "cap opens with the └ corner");
+        assert_eq!(keys[cap_idx], BodyRowKey::FileEndCap { file_idx: 0 }, "cap keyed to file 0");
+        assert!(joined[cap_idx + 1].trim().is_empty(), "blank spacer follows the cap");
+        assert_eq!(keys[cap_idx + 1], BodyRowKey::FileEndCap { file_idx: 0 });
+        assert_eq!(cap_idx + 2, f0_len, "cap + blank close file 0's block, then file 1 begins");
+        assert!(
+            !joined.iter().any(|l| l.contains("end b.rs")),
+            "the last file emits no trailing cap",
         );
     }
 

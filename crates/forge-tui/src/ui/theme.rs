@@ -49,6 +49,12 @@ pub const GOTIFY: Color = Color::Rgb(78, 201, 201);
 pub const DIFF_ADDITION_BG: Color = Color::Rgb(15, 49, 30);
 pub const DIFF_DELETION_BG: Color = Color::Rgb(58, 22, 26);
 
+/// Filled-bar background for the `/diff` overlay's per-file sticky
+/// header, so each file's start reads as a banded divider rather than
+/// blending into the surrounding diff lines. A cool slate that sits
+/// above the canvas without competing with the green / red line tints.
+pub const DIFF_FILE_HEADER_BG: Color = Color::Rgb(27, 33, 48);
+
 /// SDK tool icon + label pair. Monochrome Unicode symbols.
 /// Unknown tool names fall back to a generic Tool label.
 pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
