@@ -946,6 +946,10 @@ pub struct DiffOverlayState {
     /// mode a message block leads the document, so the rail must offset
     /// by it rather than reading the raw `doc_scroll`.
     pub current_file_idx: usize,
+    /// Rows the commit-message block occupies at the top of the document
+    /// (0 in whole-diff mode). Stashed each render so a rail-click target
+    /// in file-sub-document space is lifted back into full-document space.
+    pub message_rows: u32,
     /// Per-file measured document height in rows, at the current
     /// width + view_mode. `None` = not measured yet (off-screen, or
     /// invalidated); the offset table falls back to a cheap estimate
@@ -1404,6 +1408,7 @@ impl DiffOverlayState {
             body_head_rows: 0,
             body_tail_scroll: 0,
             current_file_idx: 0,
+            message_rows: 0,
             measured_heights: vec![None; file_count],
             highlighted: vec![None; file_count],
             context_levels: vec![DEFAULT_CONTEXT; file_count],
@@ -1492,6 +1497,7 @@ impl DiffOverlayState {
             body_head_rows: 0,
             body_tail_scroll: 0,
             current_file_idx: 0,
+            message_rows: 0,
             measured_heights: vec![None; file_count],
             highlighted: vec![None; file_count],
             context_levels: vec![DEFAULT_CONTEXT; file_count],
@@ -2545,10 +2551,13 @@ fn handle_rail_click(overlay: &mut DiffOverlayState, row: u16) -> MouseEffect {
     if file_idx >= overlay.files.len() {
         return MouseEffect::default();
     }
-    // Jump the document scroll to this file's first row. Closing the
-    // active editor on rail interaction preserves a reopened chip's
-    // prior comment.
-    overlay.doc_scroll = overlay.doc_offsets().starts.get(file_idx).copied().unwrap_or(0);
+    // Jump the document scroll to this file's first row. `starts` is in
+    // file-sub-document space; add the commit-message block height so the
+    // target lands in full-document space and the file actually pins in
+    // commit mode (message_rows is 0 in whole-diff mode). Closing the
+    // active editor on rail interaction preserves a reopened chip's prior.
+    let file_start = overlay.doc_offsets().starts.get(file_idx).copied().unwrap_or(0);
+    overlay.doc_scroll = overlay.message_rows.saturating_add(file_start);
     close_active_input_preserving_prior(overlay);
     MouseEffect { redraw: true, thread_action: None }
 }

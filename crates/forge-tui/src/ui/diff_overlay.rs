@@ -207,6 +207,9 @@ fn render_diff_body(frame: &mut Frame, area: Rect, app: &mut App) {
         // The rail highlights this same (message-adjusted) top file, so
         // its arrow tracks the body's pinned header in commit mode.
         o.current_file_idx = first_visible;
+        // Leading commit-message rows the rail-click target must clear to
+        // land in file-sub-document space (0 in whole-diff mode).
+        o.message_rows = message_rows;
         o.pane_origin_row = pane_area.y;
         o.pane_origin_col = pane_area.x;
         o.pane_width = pane_area.width;
@@ -2594,11 +2597,12 @@ mod tests {
     }
 
     /// Render the overlay (so the renderer stashes the real border-offset
-    /// geometry), then left-click the second file's rail row through
-    /// `handle_mouse` and confirm it resolves to file 1 - the guard for
-    /// "a screen click maps to the right file now that the content is
-    /// offset by the page border". The rail rows are banner / rule / blank
-    /// then file0 / file1, so file 1 sits four rows below the rail top.
+    /// geometry + the message-block height), left-click the second file's
+    /// rail row through `handle_mouse`, then re-render and confirm file 1
+    /// actually PINS at the top of the viewport. File 1 is tall enough to
+    /// pin; in commit mode the click target must clear the message block
+    /// or file 1 lands short and never pins. The rail rows are banner /
+    /// rule / blank then file0 / file1, so file 1 sits four rows down.
     fn rail_click_round_trip(commit_mode: bool) {
         use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
         use ratatui::Terminal;
@@ -2607,7 +2611,7 @@ mod tests {
         let mut state = DiffOverlayState::new(
             std::path::PathBuf::from("/tmp/repo"),
             "HEAD".to_owned(),
-            vec![one_line_file("a.rs"), one_line_file("b.rs")],
+            vec![one_line_file("a.rs"), multi_line_file("b.rs", 60)],
         );
         state.scanner_ok = true;
         if commit_mode {
@@ -2615,7 +2619,7 @@ mod tests {
                 sha: "a".into(),
                 short_sha: "a3f9c1e".into(),
                 subject: "seed".into(),
-                body: String::new(),
+                body: "why the change\nmatters here".into(),
             }];
             state.scope = crate::app::diff_overlay::DiffScope::Commit(0);
         }
@@ -2641,23 +2645,25 @@ mod tests {
                 modifiers: KeyModifiers::NONE,
             },
         );
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
 
         assert_eq!(
-            app.diff_overlay.as_ref().expect("overlay").doc_scroll,
-            file1_offset,
-            "a rail click at the rendered border offset jumps to file 1 (commit_mode={commit_mode})",
+            app.diff_overlay.as_ref().expect("overlay").current_file_idx,
+            1,
+            "a rail click pins file 1 at the top of the viewport (commit_mode={commit_mode})",
         );
     }
 
     #[test]
-    fn rail_click_resolves_file_after_border_offset_plain_mode() {
+    fn rail_click_pins_target_file_plain_mode() {
         rail_click_round_trip(false);
     }
 
     #[test]
-    fn rail_click_resolves_file_after_border_offset_commit_mode() {
-        // Commit mode pushes the rail below the stepper, so this pins
-        // the rail-below-stepper hit-test geometry.
+    fn rail_click_pins_target_file_commit_mode() {
+        // Commit mode leads with a message block; the click target must
+        // clear it (message_rows) so the file pins rather than landing
+        // short - the symmetric half of the rail-highlight message-adjust.
         rail_click_round_trip(true);
     }
 
