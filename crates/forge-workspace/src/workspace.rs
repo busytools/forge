@@ -452,10 +452,10 @@ async fn refresh_gotify_app_index(
 }
 
 /// Scan the catalog for `forge:worker:<label>` tagged sessions whose
-/// `cwd` falls under `project_dir` (the project's filesystem root).
-/// Returns one entry per role label, keyed by label and valued by
-/// session_id. Used by the engineering-team Connected hook to decide
-/// which roles to resume vs spawn fresh on forge restart.
+/// `cwd` equals the label's run dir under `project_dir` (the project's
+/// filesystem root). Returns one entry per role label, keyed by label
+/// and valued by session_id. Used by the engineering-team Connected
+/// hook to decide which roles to resume vs spawn fresh on forge restart.
 ///
 /// Why scan the whole catalog rather than just `project_dir`'s own
 /// subdir: workers spawned with `--worktree=<label>` `chdir` into
@@ -464,15 +464,11 @@ async fn refresh_gotify_app_index(
 /// keyed by the worktree path, not the main repo. A `directory=Some`
 /// scan only walks one subdir; a worker in a worktree lives in a
 /// SIBLING subdir, missing the filter. Switch to `directory=None`
-/// (walk every project subdir) and filter by `cwd.starts_with
-/// (project_dir)` so we catch:
+/// (walk every project subdir) and match each session's `cwd` against
+/// its label's run dir (worktree for a git worker, project root for a
+/// non-git worker) so the pick lands where the resume read path reads.
 ///
-/// - lead sessions: cwd == project_dir (matches)
-/// - workers in non-git projects: cwd == project_dir (matches)
-/// - workers in git worktrees: cwd == `<project_dir>/.claude/worktrees/<label>/`
-///   (starts with project_dir, matches)
-///
-/// Workers from OTHER projects have cwds outside `project_dir` and
+/// Workers from OTHER projects have cwds outside every run dir and
 /// are filtered out. Untagged or `forge:lead`-tagged sessions are
 /// filtered out by the tag-prefix check.
 ///
@@ -490,22 +486,26 @@ async fn scan_worker_resume_map(
                 .await,
         );
     }
-    build_resume_map_from_sessions(&sessions, project_dir)
+    let is_git_repo = forge_agent::env::worktree::is_git_repo(project_dir);
+    build_resume_map_from_sessions(&sessions, project_dir, is_git_repo)
 }
 
 /// Pure-function inner of [`scan_worker_resume_map`] - pulls the
 /// catalog scan out so the filtering logic can be unit-tested without
-/// the async filesystem walk. Takes the already-scanned `sessions`
-/// slice and a `project_dir` prefix; returns label -> session_id for
-/// each worker-tagged session whose `cwd` is under `project_dir`.
+/// the async filesystem walk. Returns label -> session_id, picking the
+/// most-recently-modified worker-tagged session whose `cwd` equals the
+/// label's run dir: `<project_dir>/.claude/worktrees/<label>` for a git
+/// worker, `project_dir` for a non-git worker.
 ///
-/// Uses `Path::starts_with` (component-aware) rather than
-/// `str::starts_with` so a project at `/foo/bar` doesn't match
-/// workers from a sibling project at `/foo/bar-old` whose cwd
-/// shares the byte-prefix.
+/// Matching the exact run dir (not merely "under `project_dir`") keeps
+/// the pick aligned with the resume read path, which derives the JSONL
+/// location from the same run dir via `worker_tag_dir` - so a newer
+/// repo-root session in a git project can't be picked and then fail to
+/// load from the worktree.
 fn build_resume_map_from_sessions(
     sessions: &[SDKSessionInfo],
     project_dir: &std::path::Path,
+    is_git_repo: bool,
 ) -> HashMap<String, String> {
     // Most-recently-modified session per label wins, including across
     // sessions merged from multiple account config_dirs (list_sessions
@@ -517,15 +517,16 @@ fn build_resume_map_from_sessions(
         let Some(cwd) = info.cwd.as_deref().map(std::path::Path::new) else {
             continue;
         };
-        if !cwd.starts_with(project_dir) {
-            continue;
-        }
         let Some(tag) = info.tag.as_deref() else {
             continue;
         };
         let Some(label) = tag.strip_prefix(forge_primitives::FORGE_WORKER_TAG_PREFIX) else {
             continue;
         };
+        let run_dir = crate::mcp::workers::types::worker_tag_dir(project_dir, label, is_git_repo);
+        if cwd != run_dir.as_path() {
+            continue;
+        }
         resume_map.entry(label.to_owned()).or_insert_with(|| info.session_id.clone());
     }
     resume_map
@@ -10249,7 +10250,7 @@ mod build_resume_map_tests {
                 Some("forge:worker:reviewer"),
             ),
         ];
-        let map = build_resume_map_from_sessions(&sessions, project_dir);
+        let map = build_resume_map_from_sessions(&sessions, project_dir, true);
         assert_eq!(map.len(), 2, "only worker-tagged sessions land in the map");
         assert_eq!(map.get("planner"), Some(&"planner-uuid".to_owned()));
         assert_eq!(map.get("reviewer"), Some(&"reviewer-uuid".to_owned()));
@@ -10272,7 +10273,7 @@ mod build_resume_map_tests {
                 Some("forge:worker:planner"),
             ),
         ];
-        let map = build_resume_map_from_sessions(&sessions, project_dir);
+        let map = build_resume_map_from_sessions(&sessions, project_dir, true);
         assert_eq!(map.len(), 1);
         assert_eq!(map.get("planner"), Some(&"ours".to_owned()));
     }
@@ -10299,7 +10300,7 @@ mod build_resume_map_tests {
                 Some("forge:worker:planner"),
             ),
         ];
-        let map = build_resume_map_from_sessions(&sessions, project_dir);
+        let map = build_resume_map_from_sessions(&sessions, project_dir, true);
         assert_eq!(map.len(), 1, "only the matching-project worker should resume");
         assert_eq!(map.get("planner"), Some(&"ours".to_owned()));
     }
@@ -10315,7 +10316,7 @@ mod build_resume_map_tests {
         let mut newer = mk_info("new-uuid", Some(worktree), Some("forge:worker:planner"));
         newer.last_modified = 200;
         // Older listed first, as a cross-account concat can produce.
-        let map = build_resume_map_from_sessions(&[older, newer], project_dir);
+        let map = build_resume_map_from_sessions(&[older, newer], project_dir, true);
         assert_eq!(map.get("planner"), Some(&"new-uuid".to_owned()));
     }
 
@@ -10337,7 +10338,7 @@ mod build_resume_map_tests {
                 Some("forge:worker:planner"),
             ),
         ];
-        let map = build_resume_map_from_sessions(&sessions, project_dir);
+        let map = build_resume_map_from_sessions(&sessions, project_dir, true);
         assert_eq!(map.len(), 1);
         assert!(map.contains_key("planner"));
     }
@@ -10353,7 +10354,7 @@ mod build_resume_map_tests {
             Some("/Users/me/Projects/non-git"),
             Some("forge:worker:tester"),
         )];
-        let map = build_resume_map_from_sessions(&sessions, project_dir);
+        let map = build_resume_map_from_sessions(&sessions, project_dir, false);
         assert_eq!(map.get("tester"), Some(&"tester-uuid".to_owned()));
     }
 
@@ -10363,7 +10364,7 @@ mod build_resume_map_tests {
     fn build_resume_map_skips_sessions_with_no_cwd() {
         let project_dir = std::path::Path::new("/Users/me/Projects/forge");
         let sessions = vec![mk_info("orphan", None, Some("forge:worker:planner"))];
-        let map = build_resume_map_from_sessions(&sessions, project_dir);
+        let map = build_resume_map_from_sessions(&sessions, project_dir, true);
         assert!(map.is_empty());
     }
 
@@ -10386,8 +10387,65 @@ mod build_resume_map_tests {
                 Some("forge:worker:planner"),
             ),
         ];
-        let map = build_resume_map_from_sessions(&sessions, project_dir);
+        let map = build_resume_map_from_sessions(&sessions, project_dir, true);
         assert_eq!(map.get("planner"), Some(&"newer".to_owned()));
+    }
+
+    /// A git worker whose NEWEST tagged session lives at the repo root
+    /// (an accumulated legacy session) but which also has an older
+    /// worktree session must resume the WORKTREE session: that is the
+    /// only one the worktree resume read path can find. Picking the
+    /// newer repo-root session diverges from the read path and yields
+    /// an empty resume.
+    #[test]
+    fn build_resume_map_scopes_git_worker_to_worktree_dir() {
+        let project_dir = std::path::Path::new("/Users/me/Projects/playground");
+        let mut root_newer = mk_info(
+            "root-newer",
+            Some("/Users/me/Projects/playground"),
+            Some("forge:worker:gpt-tutor"),
+        );
+        root_newer.last_modified = 200;
+        let mut wt_older = mk_info(
+            "wt-older",
+            Some("/Users/me/Projects/playground/.claude/worktrees/gpt-tutor"),
+            Some("forge:worker:gpt-tutor"),
+        );
+        wt_older.last_modified = 100;
+        let map = build_resume_map_from_sessions(&[root_newer, wt_older], project_dir, true);
+        assert_eq!(map.get("gpt-tutor"), Some(&"wt-older".to_owned()));
+    }
+
+    /// Non-regression guard for the working durable workers
+    /// (steward / credit-supply / wgpu-pr): their newest tagged session
+    /// already lives in the worktree, so scoping the candidate set to the
+    /// worktree dir picks the SAME session the old "newest under project"
+    /// logic did. steward additionally carries an older stray repo-root
+    /// session to prove the worktree pick is unchanged even then.
+    #[test]
+    fn build_resume_map_unchanged_for_worktree_newest_workers() {
+        let project_dir = std::path::Path::new("/Users/me/Projects/granite");
+        let wt = |label: &str| format!("/Users/me/Projects/granite/.claude/worktrees/{label}");
+        let mut steward_wt =
+            mk_info("steward-wt", Some(&wt("steward")), Some("forge:worker:steward"));
+        steward_wt.last_modified = 300;
+        let mut steward_root = mk_info(
+            "steward-root",
+            Some("/Users/me/Projects/granite"),
+            Some("forge:worker:steward"),
+        );
+        steward_root.last_modified = 100;
+        let credit_wt =
+            mk_info("credit-wt", Some(&wt("credit-supply")), Some("forge:worker:credit-supply"));
+        let wgpu_wt = mk_info("wgpu-wt", Some(&wt("wgpu-pr")), Some("forge:worker:wgpu-pr"));
+        let map = build_resume_map_from_sessions(
+            &[steward_wt, steward_root, credit_wt, wgpu_wt],
+            project_dir,
+            true,
+        );
+        assert_eq!(map.get("steward"), Some(&"steward-wt".to_owned()));
+        assert_eq!(map.get("credit-supply"), Some(&"credit-wt".to_owned()));
+        assert_eq!(map.get("wgpu-pr"), Some(&"wgpu-wt".to_owned()));
     }
 }
 
