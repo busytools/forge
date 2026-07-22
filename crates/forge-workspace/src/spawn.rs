@@ -2038,6 +2038,7 @@ config_dir = "~/.claude-stargate"
             status: ReviewStatus::Open,
             created_at: "t".to_owned(),
             updated_at: "t".to_owned(),
+            commit: None,
         };
         workspace.save_review_threads("forge", &branch, &[thread("a")]);
         workspace.save_review_threads("forge", "survivor", &[thread("b")]);
@@ -2047,11 +2048,11 @@ config_dir = "~/.claude-stargate"
         let _ = rx.await.expect("result");
 
         assert!(
-            workspace.load_review_threads("forge", &branch).is_empty(),
+            workspace.load_review_threads("forge", &branch).expect("load").is_empty(),
             "the torn-down branch's threads are cleaned",
         );
         assert_eq!(
-            workspace.load_review_threads("forge", "survivor").len(),
+            workspace.load_review_threads("forge", "survivor").expect("load").len(),
             1,
             "another branch's threads survive",
         );
@@ -2088,6 +2089,7 @@ config_dir = "~/.claude-stargate"
                 status: ReviewStatus::Open,
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
+                commit: None,
             }],
         );
 
@@ -2096,7 +2098,7 @@ config_dir = "~/.claude-stargate"
         let _ = rx.await.expect("result");
 
         assert_eq!(
-            workspace.load_review_threads("forge", "survivor").len(),
+            workspace.load_review_threads("forge", "survivor").expect("load").len(),
             1,
             "cleanup skipped gracefully, unrelated threads intact",
         );

@@ -370,21 +370,22 @@ pub struct HunkComment {
     /// the comment: navigating between commits keeps every comment but
     /// only those matching the current scope render and count.
     pub commit: Option<String>,
-    /// Durable review-thread record when this is a whole-diff comment
-    /// persisted to redb; `None` for ephemeral commit-scoped comments.
-    /// The flat fields above carry the current-scan view (re-resolved
-    /// each open); `thread.anchor` carries the durable last-known
-    /// location and `thread.status` drives the box's state tint.
-    pub thread: Option<forge_primitives::ReviewThread>,
+    /// Durable review-thread record: the anchor, comment chain, and
+    /// lifecycle state persisted to redb. The flat fields above carry the
+    /// current-scan view (re-resolved each open); `thread.anchor` carries
+    /// the durable last-known location and `thread.status` drives the
+    /// box's state tint. Every comment carries one; `persisted` (below)
+    /// separately tracks whether its redb write was confirmed.
+    pub thread: forge_primitives::ReviewThread,
     /// Whether the user authored or edited this comment in THIS overlay
     /// session (vs a thread hydrated from redb for display). Only
     /// session-authored comments are bundled to the agent on Esc, so a
     /// read-only reopen of a branch's history never re-prompts.
     pub authored_this_session: bool,
     /// Whether a redb write for this comment's thread has been confirmed.
-    /// `false` for ephemeral comments and for durable comments whose
-    /// write was skipped (no branch / no db) or failed - those stay in
-    /// the at-risk bucket the force-clear path warns about.
+    /// `false` for a comment whose write was skipped (no branch / no db)
+    /// or failed - those stay in the at-risk bucket the force-clear path
+    /// warns about.
     pub persisted: bool,
 }
 
@@ -411,13 +412,13 @@ pub struct ActiveCommentInput {
 /// (a commit or "All changes") installed into an already-open overlay.
 #[derive(Debug)]
 pub enum DiffScanKind {
-    /// The overlay's initial open. `commits` empty ⇒ whole-diff mode
-    /// (`files` is the whole-branch diff); non-empty ⇒ commit mode
-    /// (`files` is the first commit's diff) unless `whole_diff` forces
-    /// the whole-branch view (`files` is the whole diff, scope opens on
-    /// "All changes") because the branch has persisted review threads.
-    /// `branch` names the branch under review for the stepper header.
-    Initial { commits: Vec<CommitMeta>, branch: Option<String>, whole_diff: bool },
+    /// The overlay's initial open. `scope` is the resolved landing scope:
+    /// `Commit(i)` when opening on a commit (`files` is that commit's
+    /// diff, cached at slot `i`), `WholeDiff` when opening "All changes"
+    /// (`files` is the whole-branch diff). `commits` is the stepper list
+    /// (empty in whole-diff-only mode); `branch` names the branch under
+    /// review for the stepper header.
+    Initial { commits: Vec<CommitMeta>, branch: Option<String>, scope: DiffScope },
     /// A lazily-scanned scope, installed into the open overlay's cache
     /// (and swapped into view if still current). `files` is that scope's
     /// diff.
@@ -451,43 +452,85 @@ pub struct DiffOverlayEvent {
     pub commit_body: Option<String>,
 }
 
+/// Which scope the initial `/diff` open should land on, resolved from the
+/// branch's persisted review threads so a reopen shows the user's
+/// comments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InitialScope {
+    /// A whole-diff thread exists; open on "All changes".
+    WholeDiff,
+    /// Only commit-scoped threads exist; open on the commit carrying the
+    /// most-recently-updated one (its sha).
+    Commit(String),
+    /// No threads; open on the first commit when the branch has commits
+    /// ahead, else whole-diff.
+    Default,
+}
+
+/// Pick the initial scope from the branch's persisted threads: whole-diff
+/// when any whole-diff thread exists (the pre-scope behavior), else the
+/// commit carrying the most-recently-updated comment, else the default.
+fn initial_scope_from_threads(threads: &[forge_primitives::ReviewThread]) -> InitialScope {
+    if threads.iter().any(|t| t.commit.is_none()) {
+        return InitialScope::WholeDiff;
+    }
+    threads
+        .iter()
+        .max_by(|a, b| a.updated_at.cmp(&b.updated_at))
+        .and_then(|t| t.commit.clone())
+        .map_or(InitialScope::Default, InitialScope::Commit)
+}
+
+/// Resolve an [`InitialScope`] against a freshly-scanned commit list into
+/// the commit to open (index + sha), or `None` for whole-diff. A chosen
+/// sha no longer in the list falls back to the first commit.
+fn resolve_initial_commit(
+    initial: &InitialScope,
+    commits: &[CommitMeta],
+) -> Option<(usize, String)> {
+    match initial {
+        InitialScope::WholeDiff => None,
+        InitialScope::Default => commits.first().map(|c| (0, c.sha.clone())),
+        InitialScope::Commit(sha) => commits
+            .iter()
+            .position(|c| &c.sha == sha)
+            .map(|idx| (idx, sha.clone()))
+            .or_else(|| commits.first().map(|c| (0, c.sha.clone()))),
+    }
+}
+
 /// Spawn the initial `/diff` scan and post a [`DiffOverlayEvent`] when
 /// it completes. Best-effort send - receiver going away (app shutdown)
-/// just drops the result. Scans the commit list first: when the target
-/// has commits ahead the overlay opens in commit mode on the first
-/// commit (its diff is scanned upfront; the rest lazily on navigation);
-/// otherwise it scans the whole diff and opens whole-diff mode - today's
-/// behavior. `branch` names the branch under review for the stepper.
+/// just drops the result. Scans the commit list first, then resolves
+/// `initial` against it: a commit scope scans that commit's diff upfront
+/// (the rest lazily on navigation) and opens on it; otherwise it scans
+/// the whole diff and opens whole-diff mode. `branch` names the branch
+/// under review for the stepper.
 pub fn spawn_fetch(
     cwd: PathBuf,
     target: String,
     branch: Option<String>,
-    prefer_whole_diff: bool,
+    initial: InitialScope,
     seq: u64,
     tx: std_mpsc::Sender<DiffOverlayEvent>,
 ) {
     tokio::task::spawn_local(async move {
         let commits = forge_workspace::env::git_diff::hunks::scan_commits(&cwd, &target).await;
-        // Clone the first sha so `commits` isn't borrowed across the
-        // scan (it moves into the event below).
-        let first_sha = commits.first().map(|c| c.sha.clone());
-        // `prefer_whole_diff` (the branch already has persisted review
-        // threads) opens on the whole-branch diff so a reopen lands on
-        // the durable-review surface; otherwise a branch with commits
-        // opens on the first commit as before.
-        let (files, scanner_ok, untracked_suppressed, commit_body, whole_diff) = match first_sha {
-            Some(sha) if !prefer_whole_diff => {
+        // Resolve the initial scope against the freshly-scanned commits:
+        // `Some((idx, sha))` opens on that commit (its diff scanned
+        // upfront), `None` opens the whole-branch diff.
+        let open_commit = resolve_initial_commit(&initial, &commits);
+        let (files, scanner_ok, untracked_suppressed, commit_body, scope) =
+            if let Some((idx, sha)) = open_commit {
                 let o = forge_workspace::env::git_diff::hunks::scan_commit(&cwd, &sha).await;
                 let body =
                     forge_workspace::env::git_diff::hunks::scan_commit_body(&cwd, &sha).await;
-                (o.files, o.scanner_ok, 0, Some(body), false)
-            }
-            _ => {
+                (o.files, o.scanner_ok, 0, Some(body), DiffScope::Commit(idx))
+            } else {
                 let ScanOutcome { files, scanner_ok, untracked_suppressed } =
                     forge_workspace::env::git_diff::hunks::scan(&cwd, &target).await;
-                (files, scanner_ok, untracked_suppressed, None, true)
-            }
-        };
+                (files, scanner_ok, untracked_suppressed, None, DiffScope::WholeDiff)
+            };
         let _ = tx.send(DiffOverlayEvent {
             cwd,
             target,
@@ -495,7 +538,7 @@ pub fn spawn_fetch(
             scanner_ok,
             untracked_suppressed,
             seq,
-            kind: DiffScanKind::Initial { commits, branch, whole_diff },
+            kind: DiffScanKind::Initial { commits, branch, scope },
             commit_body,
         });
     });
@@ -649,17 +692,22 @@ pub fn open_with_target(app: &mut App, target: String) {
                 _ => None,
             },
         );
-    // Open on the whole-branch diff when the branch already has
-    // persisted review threads, so a reopen lands on the durable-review
-    // surface instead of the first commit.
-    let prefer_whole_diff = if let (Some(project), Some(branch), Some(workspace)) = (
+    // Open on the scope that holds the branch's persisted review threads,
+    // so a reopen lands where the user's comments are instead of the first
+    // commit.
+    let initial = if let (Some(project), Some(branch), Some(workspace)) = (
         app.active_session().and_then(|s| s.project.clone()),
         branch.clone(),
         app.workspace.clone(),
     ) {
-        !workspace.load_review_threads(&project, &branch).is_empty()
+        // A load failure here just falls back to the default scope; the
+        // post-open `hydrate_threads` hits the same error and surfaces the
+        // notice against the now-open overlay.
+        workspace
+            .load_review_threads(&project, &branch)
+            .map_or(InitialScope::Default, |threads| initial_scope_from_threads(&threads))
     } else {
-        false
+        InitialScope::Default
     };
     // Bump the seq before spawning so the new scan's events
     // outrank anything still in flight from an earlier /diff call.
@@ -667,7 +715,7 @@ pub fn open_with_target(app: &mut App, target: String) {
     // dropped by drain_events as superseded.
     app.diff_scan_seq = app.diff_scan_seq.wrapping_add(1);
     let seq = app.diff_scan_seq;
-    spawn_fetch(cwd, target, branch, prefer_whole_diff, seq, app.diff_overlay_event_tx.clone());
+    spawn_fetch(cwd, target, branch, initial, seq, app.diff_overlay_event_tx.clone());
 }
 
 /// Resolve the cwd a diff scan should run against for the active
@@ -832,18 +880,22 @@ pub fn drain_events(app: &mut App) {
             }
             let state = DiffOverlayState::new_initial(event);
             open(app, state);
-            // Load + re-anchor persisted threads when the initial open
-            // landed on the whole-diff scope (no-op otherwise).
+            // Load + re-anchor persisted threads for whatever scope the
+            // initial open landed on.
             hydrate_threads(app);
         } else if let DiffScanKind::Scope(scope) = event.kind {
             // A lazy per-scope scan lands into the already-open overlay
             // (view == Diff). If it closed while the scan ran, drop it.
             if let Some(overlay) = app.diff_overlay.as_mut() {
+                // `install_scan` swaps the files into view only when the
+                // landed scope is the one currently shown; hydrate that
+                // scope's persisted threads against those files. An
+                // out-of-order scan that only cached off-scope is skipped -
+                // hydrating it would re-anchor against the wrong files.
+                let landed_current = overlay.scope == scope;
                 overlay.install_scan(scope, event.files, event.scanner_ok, event.commit_body);
                 app.needs_redraw = true;
-                // First navigation to the whole diff makes its files
-                // available; hydrate the persisted threads against them.
-                if scope == DiffScope::WholeDiff {
+                if landed_current {
                     hydrate_threads(app);
                 }
             } else {
@@ -1031,6 +1083,11 @@ pub struct DiffOverlayState {
     /// a click on it into "open the dropdown". `None` until the first
     /// commit-mode render.
     pub jump_hint_span: Option<(u16, u16, u16)>,
+    /// Set when loading this branch's persisted review threads failed
+    /// (a decode / IO error on an existing redb row), cleared on a
+    /// successful load. Drives a visible "review comments failed to load"
+    /// notice so a genuine failure doesn't read as an empty review pane.
+    pub review_load_error: Option<String>,
 }
 
 impl DiffOverlayState {
@@ -1243,12 +1300,7 @@ impl DiffOverlayState {
             .enumerate()
             .filter(|(_, c)| c.key.file_idx == idx && c.commit == sha)
             .filter_map(|(pos, c)| {
-                let side = c
-                    .thread
-                    .as_ref()
-                    .map(|t| t.anchor.side)
-                    .or_else(|| c.hunk_context.first().map(|dl| anchor_side(dl.kind)))
-                    .unwrap_or(ReviewSide::New);
+                let side = c.thread.anchor.side;
                 find_line_key(file, idx, side, c.line).map(|key| (pos, key))
             })
             .collect();
@@ -1455,6 +1507,7 @@ impl DiffOverlayState {
             jump_open: false,
             jump_selected: 0,
             jump_hint_span: None,
+            review_load_error: None,
         };
         state.capture_wide_and_narrow();
         state
@@ -1480,30 +1533,30 @@ impl DiffOverlayState {
         reorder_files_to_tree(&mut files);
         // drain_events only routes Initial events here; a Scope event
         // would be a bug, so fall back to whole-diff defensively.
-        let (mut commits, branch, whole_diff) = match kind {
-            DiffScanKind::Initial { commits, branch, whole_diff } => (commits, branch, whole_diff),
-            DiffScanKind::Scope(_) => (Vec::new(), None, true),
+        let (mut commits, branch, initial_scope) = match kind {
+            DiffScanKind::Initial { commits, branch, scope } => (commits, branch, scope),
+            DiffScanKind::Scope(_) => (Vec::new(), None, DiffScope::WholeDiff),
         };
-        // First commit's body arrives with its upfront-scanned diff.
-        if let Some(body) = commit_body
-            && let Some(first) = commits.first_mut()
+        // The opened commit's body arrives with its upfront-scanned diff.
+        if let (Some(body), DiffScope::Commit(idx)) = (commit_body, initial_scope)
+            && let Some(commit) = commits.get_mut(idx)
         {
-            first.body = body;
+            commit.body = body;
         }
         let file_count = files.len();
-        // Open on the whole diff when there are no commits ahead OR the
-        // branch has persisted review threads (`whole_diff`); `files` is
-        // then the whole-branch diff. Otherwise open on the first commit.
-        let (scope, commit_cache, whole_diff_cache) = if commits.is_empty() || whole_diff {
-            (
+        // Open on the resolved scope: a commit caches `files` at its slot;
+        // whole-diff (or a stale index) caches `files` as the whole diff.
+        let (scope, commit_cache, whole_diff_cache) = match initial_scope {
+            DiffScope::Commit(idx) if idx < commits.len() => {
+                let mut cache = vec![None; commits.len()];
+                cache[idx] = Some(CachedScan { files: files.clone(), scanner_ok });
+                (DiffScope::Commit(idx), cache, None)
+            }
+            _ => (
                 DiffScope::WholeDiff,
                 vec![None; commits.len()],
                 Some(CachedScan { files: files.clone(), scanner_ok }),
-            )
-        } else {
-            let mut cache = vec![None; commits.len()];
-            cache[0] = Some(CachedScan { files: files.clone(), scanner_ok });
-            (DiffScope::Commit(0), cache, None)
+            ),
         };
         let mut state = Self {
             cwd,
@@ -1543,6 +1596,7 @@ impl DiffOverlayState {
             jump_open: false,
             jump_selected: 0,
             jump_hint_span: None,
+            review_load_error: None,
         };
         state.capture_wide_and_narrow();
         state
@@ -1694,37 +1748,50 @@ fn thread_text(thread: &forge_primitives::ReviewThread) -> String {
         .unwrap_or_default()
 }
 
-/// Load persisted review threads for the current whole-diff scope,
-/// re-anchor each against the fresh scan, and install them as the
-/// overlay's whole-diff comments (replacing the prior whole-diff set,
-/// leaving commit-scoped comments untouched). Moved-line updates and
-/// drift-to-`Outdated` flips are written back to redb. No-op outside
-/// whole-diff scope or without a workspace / project / branch.
+/// Load persisted review threads for the current scope (the active
+/// commit's sha, or whole-diff when `None`), re-anchor each against the
+/// fresh scan, and install them as the overlay's comments for that scope
+/// (replacing the prior in-scope set, leaving other scopes' comments
+/// untouched). Moved-line updates and drift-to-`Outdated` flips are
+/// written back to redb. No-op without a workspace / project / branch.
 fn hydrate_threads(app: &mut App) {
     let project = app.active_session().and_then(|s| s.project.clone());
     let workspace = app.workspace.clone();
     let Some(overlay) = app.diff_overlay.as_mut() else {
         return;
     };
-    if overlay.scope != DiffScope::WholeDiff {
-        return;
-    }
     let (Some(project), Some(branch), Some(workspace)) =
         (project, overlay.branch.clone(), workspace)
     else {
         return;
     };
 
-    let loaded = workspace.load_review_threads(&project, &branch);
-    // Threads are keyed by (project, branch) across every diff target;
-    // process only those authored against the current target, and keep
-    // the rest untouched so the whole-row writeback below preserves them
-    // instead of silently dropping other-target threads.
+    // Surface a load failure as a visible notice rather than a silent
+    // empty pane; a successful load clears any prior notice.
+    let loaded = match workspace.load_review_threads(&project, &branch) {
+        Ok(threads) => {
+            overlay.review_load_error = None;
+            threads
+        }
+        Err(error) => {
+            overlay.review_load_error = Some(error);
+            app.needs_redraw = true;
+            return;
+        }
+    };
+    // Threads are keyed by (project, branch) across every scope; process
+    // only those in the current scope (the active commit's sha, or
+    // whole-diff threads against the current target), keeping the rest
+    // untouched so the whole-row writeback below preserves them instead of
+    // silently dropping other scopes' threads.
+    let scope_commit = overlay.current_commit_sha();
     let target = overlay.target.clone();
-    let (mine, others): (Vec<_>, Vec<_>) =
-        loaded.into_iter().partition(|t| t.anchor.base_ref == target);
-    let had_whole_diff = overlay.comments.iter().any(|c| c.commit.is_none());
-    if mine.is_empty() && !had_whole_diff {
+    let (mine, others): (Vec<_>, Vec<_>) = loaded.into_iter().partition(|t| match &scope_commit {
+        Some(sha) => t.commit.as_deref() == Some(sha.as_str()),
+        None => t.commit.is_none() && t.anchor.base_ref == target,
+    });
+    let had_in_scope = overlay.comments.iter().any(|c| c.commit == scope_commit);
+    if mine.is_empty() && !had_in_scope {
         return;
     }
 
@@ -1769,8 +1836,8 @@ fn hydrate_threads(app: &mut App) {
                     line,
                     hunk_context: resolved.map(|dl| vec![dl.clone()]).unwrap_or_default(),
                     comment_text: thread_text(&thread),
-                    commit: None,
-                    thread: Some(thread.clone()),
+                    commit: scope_commit.clone(),
+                    thread: thread.clone(),
                     authored_this_session: false,
                     persisted: true,
                 });
@@ -1808,15 +1875,15 @@ fn hydrate_threads(app: &mut App) {
             line: thread.anchor.line,
             hunk_context,
             comment_text: thread_text(&thread),
-            commit: None,
-            thread: Some(thread.clone()),
+            commit: scope_commit.clone(),
+            thread: thread.clone(),
             authored_this_session: false,
             persisted: true,
         });
         persist.push(thread);
     }
 
-    overlay.comments.retain(|c| c.commit.is_some());
+    overlay.comments.retain(|c| c.commit != scope_commit);
     overlay.comments.extend(rebuilt);
     overlay.recompute_comment_counts();
     if changed {
@@ -1913,14 +1980,14 @@ fn set_thread_status_by_key(
     };
     // Scope-qualify: on a single-commit branch the whole-diff and commit
     // diffs are identical, so keys collide across scopes. Match the
-    // current scope's comment or the button lands on the wrong thread
-    // (e.g. the ephemeral commit-scoped one with no durable thread).
+    // current scope's comment or the button lands on a co-located thread
+    // in another scope.
     let sha = overlay.current_commit_sha();
     let Some(thread) = overlay
         .comments
         .iter_mut()
         .find(|c| c.key == key && c.commit == sha)
-        .and_then(|c| c.thread.as_mut())
+        .map(|c| &mut c.thread)
         .filter(|t| allowed_from.contains(&t.status))
     else {
         return;
@@ -2183,11 +2250,10 @@ fn save_active_input(app: &mut App) {
         // from redb, else hydrate resurrects it next open. `comment_counts`
         // already excludes the prior (removed at reopen).
         if let Some(prior) = input.prior_comment
-            && let Some(thread) = prior.thread
             && let (Some(project), Some(branch), Some(workspace)) =
                 (project.as_deref(), branch.as_deref(), workspace.as_ref())
         {
-            workspace.remove_review_thread(project, branch, &thread.id);
+            workspace.remove_review_thread(project, branch, &prior.thread.id);
         }
         app.needs_redraw = true;
         return;
@@ -2257,44 +2323,38 @@ fn save_active_input(app: &mut App) {
     let side = anchor_side(diff_line.kind);
     let content_hash = resolver::content_hash(&diff_line.text);
     let context = resolver::capture_context(hunk, key.line_idx, CONTEXT_RADIUS);
-    let prior_thread = input.prior_comment.as_ref().and_then(|c| c.thread.clone());
-    // Durable review thread only in whole-diff scope (commit == None);
-    // commit sub-scopes keep today's ephemeral comments. Editing an
-    // existing chip reuses the prior thread's identity + comment chain.
-    let thread = commit.is_none().then(|| {
-        let anchor = ReviewAnchor {
-            path: path.clone(),
-            side,
-            line: line_no,
-            content_hash,
-            context,
-            base_ref: target,
-        };
-        build_thread(prior_thread, anchor, &text)
-    });
+    let prior_thread = input.prior_comment.as_ref().map(|c| c.thread.clone());
+    // Every scope persists a durable thread; `commit` records the scope
+    // (the current sha, or `None` in whole-diff). Editing an existing chip
+    // reuses the prior thread's identity + comment chain.
+    let anchor = ReviewAnchor {
+        path: path.clone(),
+        side,
+        line: line_no,
+        content_hash,
+        context,
+        base_ref: target,
+    };
+    let mut thread = build_thread(prior_thread, anchor, &text);
+    thread.commit.clone_from(&commit);
     // Persist FIRST so `persisted` reflects a confirmed write. A durable
     // comment whose write is skipped (no branch / project / store) or
     // fails stays at-risk - view.rs counts it as droppable - rather than
     // being marked durable on scope alone.
-    let persisted = match &thread {
-        Some(thread) => {
-            if let (Some(project), Some(branch), Some(workspace)) =
-                (project.as_deref(), branch.as_deref(), workspace.as_ref())
-            {
-                workspace.upsert_review_thread(project, branch, thread.clone())
-            } else {
-                tracing::warn!(
-                    target: crate::logging::targets::APP_SESSION,
-                    event_name = "diff_overlay_review_thread_not_persisted",
-                    message = "whole-diff review comment could not be persisted (no branch / project / store); kept in-memory only",
-                    outcome = "at_risk",
-                    has_branch = branch.is_some(),
-                    has_project = project.is_some(),
-                );
-                false
-            }
-        }
-        None => false,
+    let persisted = if let (Some(project), Some(branch), Some(workspace)) =
+        (project.as_deref(), branch.as_deref(), workspace.as_ref())
+    {
+        workspace.upsert_review_thread(project, branch, thread.clone())
+    } else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "diff_overlay_review_thread_not_persisted",
+            message = "review comment could not be persisted (no branch / project / store); kept in-memory only",
+            outcome = "at_risk",
+            has_branch = branch.is_some(),
+            has_project = project.is_some(),
+        );
+        false
     };
     let comment = HunkComment {
         key,
@@ -2323,12 +2383,13 @@ fn anchor_side(kind: DiffLineKind) -> ReviewSide {
     }
 }
 
-/// Build (or update) a durable [`ReviewThread`] for a whole-diff
-/// comment. Reuses `prior`'s id / status / timestamps and comment chain
-/// when editing an existing thread - only the user's own comment text is
+/// Build (or update) a durable [`ReviewThread`] for a review comment.
+/// Reuses `prior`'s id / status / timestamps and comment chain when
+/// editing an existing thread - only the user's own comment text is
 /// replaced, so any agent replies survive the edit. Mints a fresh Open
-/// thread otherwise. The store stamps `created_at` / `updated_at` and any
-/// empty comment `at` on write, so they start empty here.
+/// thread otherwise; the caller stamps the scope `commit`. The store
+/// stamps `created_at` / `updated_at` and any empty comment `at` on
+/// write, so they start empty here.
 fn build_thread(
     prior: Option<forge_primitives::ReviewThread>,
     anchor: ReviewAnchor,
@@ -2358,6 +2419,7 @@ fn build_thread(
             status: ReviewStatus::Open,
             created_at: String::new(),
             updated_at: String::new(),
+            commit: None,
         },
     }
 }
@@ -2702,15 +2764,10 @@ fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> Mouse
 
 /// Whether a comment belongs in the agent bundle on Esc: authored or
 /// edited THIS session (a hydrated thread from a prior review is never
-/// re-sent) and not already Resolved / Outdated. Ephemeral commit-scoped
-/// comments (no thread) are always authored this session, so they bundle
-/// as before.
+/// re-sent) and not already Resolved / Outdated.
 fn is_bundle_eligible(comment: &HunkComment) -> bool {
     comment.authored_this_session
-        && comment
-            .thread
-            .as_ref()
-            .is_none_or(|t| !matches!(t.status, ReviewStatus::Resolved | ReviewStatus::Outdated))
+        && !matches!(comment.thread.status, ReviewStatus::Resolved | ReviewStatus::Outdated)
 }
 
 /// Close the overlay; if there are pending comments, bundle them
@@ -3253,7 +3310,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "needs unwrap fix".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -3289,7 +3346,7 @@ mod tests {
                 }],
                 comment_text: "use ? instead of unwrap_or_die".into(),
                 commit: None,
-                thread: None,
+                thread: stock_thread(),
                 authored_this_session: true,
                 persisted: false,
             },
@@ -3305,7 +3362,7 @@ mod tests {
                 }],
                 comment_text: "good, panic was unsafe".into(),
                 commit: None,
-                thread: None,
+                thread: stock_thread(),
                 authored_this_session: true,
                 persisted: false,
             },
@@ -3316,7 +3373,7 @@ mod tests {
                 hunk_context: vec![],
                 comment_text: "missing rationale".into(),
                 commit: None,
-                thread: None,
+                thread: stock_thread(),
                 authored_this_session: true,
                 persisted: false,
             },
@@ -3361,7 +3418,7 @@ mod tests {
                 }],
                 comment_text: "name it _without_overage".into(),
                 commit: Some("a3f9c1e".into()),
-                thread: None,
+                thread: stock_thread(),
                 authored_this_session: true,
                 persisted: false,
             },
@@ -3377,7 +3434,7 @@ mod tests {
                 }],
                 comment_text: "hoist this".into(),
                 commit: Some("e55f210".into()),
-                thread: None,
+                thread: stock_thread(),
                 authored_this_session: true,
                 persisted: false,
             },
@@ -3413,7 +3470,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "x".into(),
             commit: Some("a3f9c1e".into()),
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         }];
@@ -3435,7 +3492,7 @@ mod tests {
                 hunk_context: vec![],
                 comment_text: "on commit".into(),
                 commit: Some("a3f9c1e".into()),
-                thread: None,
+                thread: stock_thread(),
                 authored_this_session: true,
                 persisted: false,
             },
@@ -3446,7 +3503,7 @@ mod tests {
                 hunk_context: vec![],
                 comment_text: "on whole diff".into(),
                 commit: None,
-                thread: None,
+                thread: stock_thread(),
                 authored_this_session: true,
                 persisted: false,
             },
@@ -3467,7 +3524,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "x".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -3478,7 +3535,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "y".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -3489,7 +3546,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "z".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -3527,7 +3584,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "needs unwrap fix".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -3560,7 +3617,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "I want to keep this".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -3607,7 +3664,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "saved".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -3647,7 +3704,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "A".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -3658,7 +3715,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "B".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -3687,7 +3744,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "A".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -3724,7 +3781,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "original text".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         };
@@ -3752,7 +3809,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "exactly this".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         };
@@ -3808,7 +3865,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "soon-to-be-deleted".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         };
@@ -3844,7 +3901,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "important review note".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         };
@@ -3894,7 +3951,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "to be preserved".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         };
@@ -4276,7 +4333,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "on first".into(),
             commit: Some("aaa".into()),
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -4300,7 +4357,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "a".into(),
             commit: Some("aaa".into()),
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -4311,7 +4368,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "b".into(),
             commit: Some("bbb".into()),
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -4495,7 +4552,7 @@ mod tests {
             hunk_context: vec![diff_line(DiffLineKind::Added, None, Some(5))],
             comment_text: "note".to_owned(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -4747,7 +4804,7 @@ mod tests {
             kind: DiffScanKind::Initial {
                 commits: vec![commit_meta("aaa", "first"), commit_meta("bbb", "second")],
                 branch: Some("feat".into()),
-                whole_diff: false,
+                scope: DiffScope::Commit(0),
             },
             commit_body: Some("the first commit's body".to_owned()),
         };
@@ -4771,7 +4828,11 @@ mod tests {
             scanner_ok: true,
             untracked_suppressed: 2,
             seq: 1,
-            kind: DiffScanKind::Initial { commits: Vec::new(), branch: None, whole_diff: false },
+            kind: DiffScanKind::Initial {
+                commits: Vec::new(),
+                branch: None,
+                scope: DiffScope::WholeDiff,
+            },
             commit_body: None,
         };
         let state = DiffOverlayState::new_initial(event);
@@ -4780,6 +4841,84 @@ mod tests {
         assert!(state.commit_cache.is_empty());
         assert!(state.whole_diff_cache.is_some());
         assert_eq!(state.untracked_suppressed, 2, "whole-diff keeps the untracked cap count");
+    }
+
+    // ---- initial-scope selection from persisted threads ----
+
+    fn scope_thread(
+        id: &str,
+        commit: Option<&str>,
+        updated_at: &str,
+    ) -> forge_primitives::ReviewThread {
+        forge_primitives::ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 1,
+                content_hash: 0,
+                context: Vec::new(),
+                base_ref: "main".to_owned(),
+            },
+            comments: Vec::new(),
+            status: ReviewStatus::Open,
+            created_at: "t0".to_owned(),
+            updated_at: updated_at.to_owned(),
+            commit: commit.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn open_prefers_whole_diff_when_whole_diff_threads_exist() {
+        // A whole-diff thread keeps priority even alongside commit-scoped
+        // ones - the pre-scope behavior. No threads at all -> default.
+        let threads = [scope_thread("cs", Some("sha1"), "t2"), scope_thread("wd", None, "t1")];
+        assert_eq!(initial_scope_from_threads(&threads), InitialScope::WholeDiff);
+        assert_eq!(initial_scope_from_threads(&[]), InitialScope::Default);
+    }
+
+    #[test]
+    fn open_lands_on_commit_with_persisted_thread() {
+        // No whole-diff thread: the most-recently-updated commit-scoped
+        // thread's commit is chosen, and it maps to that commit's index.
+        let threads = [
+            scope_thread("a", Some("sha0"), "2026-07-20T10:00:00Z"),
+            scope_thread("b", Some("sha1"), "2026-07-21T10:00:00Z"),
+        ];
+        let pref = initial_scope_from_threads(&threads);
+        assert_eq!(pref, InitialScope::Commit("sha1".to_owned()), "newest commit-scoped wins");
+
+        let commits = vec![commit_meta("sha0", "first"), commit_meta("sha1", "second")];
+        assert_eq!(
+            resolve_initial_commit(&pref, &commits),
+            Some((1, "sha1".to_owned())),
+            "the chosen sha maps to Commit(1)",
+        );
+    }
+
+    #[test]
+    fn resolve_initial_commit_defaults_and_falls_back() {
+        let commits = vec![commit_meta("sha0", "first"), commit_meta("sha1", "second")];
+        assert_eq!(
+            resolve_initial_commit(&InitialScope::Default, &commits),
+            Some((0, "sha0".to_owned())),
+            "default opens the first commit when the branch has commits",
+        );
+        assert_eq!(
+            resolve_initial_commit(&InitialScope::Default, &[]),
+            None,
+            "default with no commits opens whole-diff",
+        );
+        assert_eq!(
+            resolve_initial_commit(&InitialScope::WholeDiff, &commits),
+            None,
+            "whole-diff never resolves to a commit",
+        );
+        assert_eq!(
+            resolve_initial_commit(&InitialScope::Commit("gone".to_owned()), &commits),
+            Some((0, "sha0".to_owned())),
+            "a vanished commit sha falls back to the first commit",
+        );
     }
 
     // ---- durable review threads (persist / re-anchor / drift) ----
@@ -4805,6 +4944,27 @@ mod tests {
                 new_count: 0,
                 lines,
             }],
+        }
+    }
+
+    /// A minimal Open review thread for tests that build a `HunkComment`
+    /// without caring about the thread's own contents.
+    fn stock_thread() -> forge_primitives::ReviewThread {
+        forge_primitives::ReviewThread {
+            id: "stock".to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 0,
+                content_hash: 0,
+                context: Vec::new(),
+                base_ref: "main".to_owned(),
+            },
+            comments: Vec::new(),
+            status: ReviewStatus::Open,
+            created_at: String::new(),
+            updated_at: String::new(),
+            commit: None,
         }
     }
 
@@ -4849,19 +5009,23 @@ mod tests {
         save_active_input(&mut app);
 
         let ws = app.workspace.clone().expect("ws");
-        let threads = ws.load_review_threads("forge", "feat");
+        let threads = ws.load_review_threads("forge", "feat").expect("load");
         assert_eq!(threads.len(), 1, "the whole-diff comment persisted a thread");
         assert_eq!(threads[0].anchor.line, 10);
         assert_eq!(threads[0].anchor.side, ReviewSide::New);
         assert_eq!(threads[0].status, ReviewStatus::Open);
+        assert_eq!(threads[0].commit, None, "a whole-diff thread carries no commit scope");
         assert_eq!(threads[0].comments[0].text, "needs a bound check");
         assert!(!threads[0].created_at.is_empty(), "store stamped created_at");
         let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
-        assert!(comment.thread.is_some(), "the in-memory comment carries its durable thread");
+        assert_eq!(
+            comment.thread.commit, None,
+            "the in-memory comment carries a whole-diff thread"
+        );
     }
 
     #[test]
-    fn save_active_input_skips_persist_in_commit_scope() {
+    fn save_active_input_persists_a_commit_scoped_thread() {
         let (mut app, _dir) = review_app();
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("z", 3)])];
         let mut overlay =
@@ -4875,11 +5039,17 @@ mod tests {
         save_active_input(&mut app);
 
         let ws = app.workspace.clone().expect("ws");
-        assert!(
-            ws.load_review_threads("forge", "feat").is_empty(),
-            "commit-scope comment is ephemeral"
+        let threads = ws.load_review_threads("forge", "feat").expect("load");
+        assert_eq!(threads.len(), 1, "the commit-scoped comment persisted a thread");
+        assert_eq!(threads[0].commit.as_deref(), Some("aaa"), "the thread carries the commit sha");
+        assert_eq!(threads[0].comments[0].text, "commit note");
+        let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
+        assert!(comment.persisted, "the in-memory comment is a confirmed durable write");
+        assert_eq!(
+            comment.thread.commit.as_deref(),
+            Some("aaa"),
+            "the in-memory comment's thread carries the commit sha",
         );
-        assert_eq!(app.diff_overlay.as_ref().expect("overlay").comments.len(), 1, "still bundled");
     }
 
     #[test]
@@ -4901,7 +5071,7 @@ mod tests {
         app.diff_overlay = None;
         let ws = app.workspace.clone().expect("ws");
         assert_eq!(
-            ws.load_review_threads("forge", "feat").len(),
+            ws.load_review_threads("forge", "feat").expect("load").len(),
             1,
             "the thread outlives the overlay"
         );
@@ -4929,6 +5099,7 @@ mod tests {
             status: ReviewStatus::Open,
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
+            commit: None,
         };
         ws.save_review_threads(
             "forge",
@@ -4961,13 +5132,8 @@ mod tests {
         hydrate_threads(&mut app);
 
         let overlay = app.diff_overlay.as_ref().expect("overlay");
-        let by_id = |id: &str| {
-            overlay
-                .comments
-                .iter()
-                .find(|c| c.thread.as_ref().map(|t| t.id.as_str()) == Some(id))
-                .expect("comment for id")
-        };
+        let by_id =
+            |id: &str| overlay.comments.iter().find(|c| c.thread.id == id).expect("comment for id");
         let keep = by_id("keep");
         assert_eq!(keep.key, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }, "in place");
         assert_eq!(keep.line, 5);
@@ -4982,7 +5148,7 @@ mod tests {
             LineKey { file_idx: 0, hunk_idx: 0, line_idx: 4 },
             "inline outdated"
         );
-        assert_eq!(changed.thread.as_ref().expect("thread").status, ReviewStatus::Outdated);
+        assert_eq!(changed.thread.status, ReviewStatus::Outdated);
         // Line number gone (99): the nearest line (20 = line_idx 4) is
         // already taken by "changed", so it falls to the next free line
         // (line_idx 2), still rendered and flagged Outdated.
@@ -4992,11 +5158,11 @@ mod tests {
             LineKey { file_idx: 0, hunk_idx: 0, line_idx: 2 },
             "next free line"
         );
-        assert_eq!(vanished.thread.as_ref().expect("thread").status, ReviewStatus::Outdated);
+        assert_eq!(vanished.thread.status, ReviewStatus::Outdated);
         assert_ne!(vanished.key, changed.key, "outdated threads do not collide");
 
         // The move + outdated flips are written back to redb.
-        let reloaded = ws.load_review_threads("forge", "feat");
+        let reloaded = ws.load_review_threads("forge", "feat").expect("load");
         let find = |id: &str| reloaded.iter().find(|t| t.id == id).expect("thread");
         assert_eq!(find("move").anchor.line, 8, "moved line persisted");
         assert_eq!(find("changed").status, ReviewStatus::Outdated, "outdated flip persisted");
@@ -5029,6 +5195,7 @@ mod tests {
             status: ReviewStatus::Open,
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
+            commit: None,
         };
         ws.save_review_threads("forge", "feat", &[seed("live", "keep"), seed("stale", "old_body")]);
         // "keep" is live at line 10; "old_body" is gone.
@@ -5043,12 +5210,7 @@ mod tests {
         hydrate_threads(&mut app);
 
         let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
-        let by_id = |id: &str| {
-            comments
-                .iter()
-                .find(|c| c.thread.as_ref().map(|t| t.id.as_str()) == Some(id))
-                .expect("comment")
-        };
+        let by_id = |id: &str| comments.iter().find(|c| c.thread.id == id).expect("comment");
         let live = by_id("live");
         let stale = by_id("stale");
         assert_eq!(
@@ -5061,7 +5223,7 @@ mod tests {
             LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 },
             "outdated thread avoids the live key, taking the next free line",
         );
-        assert_eq!(stale.thread.as_ref().expect("thread").status, ReviewStatus::Outdated);
+        assert_eq!(stale.thread.status, ReviewStatus::Outdated);
     }
 
     #[test]
@@ -5089,6 +5251,7 @@ mod tests {
                 status: ReviewStatus::Open,
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
+                commit: None,
             }],
         );
         // The commented file is no longer in the diff.
@@ -5104,11 +5267,11 @@ mod tests {
             LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
             "absent file falls back to the document's first line",
         );
-        assert_eq!(comment.thread.as_ref().expect("thread").status, ReviewStatus::Outdated);
+        assert_eq!(comment.thread.status, ReviewStatus::Outdated);
     }
 
     #[test]
-    fn new_initial_whole_diff_flag_opens_all_changes_with_commits() {
+    fn new_initial_whole_diff_scope_opens_all_changes_with_commits() {
         let event = DiffOverlayEvent {
             cwd: PathBuf::from("/tmp"),
             target: "main".into(),
@@ -5119,7 +5282,7 @@ mod tests {
             kind: DiffScanKind::Initial {
                 commits: vec![commit_meta("aaa", "first"), commit_meta("bbb", "second")],
                 branch: Some("feat".into()),
-                whole_diff: true,
+                scope: DiffScope::WholeDiff,
             },
             commit_body: None,
         };
@@ -5130,14 +5293,41 @@ mod tests {
         assert!(state.commit_cache.iter().all(Option::is_none), "commits scanned lazily");
     }
 
+    #[test]
+    fn new_initial_opens_on_the_given_commit_index() {
+        // A commit-scoped reopen lands on the carrying commit, not commit 0:
+        // its diff caches at that slot and its body fills that commit.
+        let event = DiffOverlayEvent {
+            cwd: PathBuf::from("/tmp"),
+            target: "main".into(),
+            files: vec![one_file("b.rs", FileStatus::Modified)],
+            scanner_ok: true,
+            untracked_suppressed: 0,
+            seq: 1,
+            kind: DiffScanKind::Initial {
+                commits: vec![commit_meta("aaa", "first"), commit_meta("bbb", "second")],
+                branch: Some("feat".into()),
+                scope: DiffScope::Commit(1),
+            },
+            commit_body: Some("second commit body".to_owned()),
+        };
+        let state = DiffOverlayState::new_initial(event);
+        assert_eq!(state.scope, DiffScope::Commit(1), "opens on the carrying commit");
+        assert!(state.commit_cache[0].is_none(), "commit 0 stays lazy");
+        assert!(state.commit_cache[1].is_some(), "the opened commit's diff is cached");
+        assert!(state.whole_diff_cache.is_none());
+        assert_eq!(state.commits[1].body, "second commit body", "body filled on the opened commit");
+    }
+
     fn thread_status(app: &App) -> ReviewStatus {
         app.diff_overlay
             .as_ref()
             .expect("overlay")
             .comments
-            .iter()
-            .find_map(|c| c.thread.as_ref().map(|t| t.status))
-            .expect("a durable thread")
+            .first()
+            .expect("a comment")
+            .thread
+            .status
     }
 
     #[test]
@@ -5156,7 +5346,7 @@ mod tests {
         apply_thread_action(&mut app, key, ThreadAction::Resolve);
         assert_eq!(thread_status(&app), ReviewStatus::Resolved, "in-memory resolves");
         assert_eq!(
-            ws.load_review_threads("forge", "feat")[0].status,
+            ws.load_review_threads("forge", "feat").expect("load")[0].status,
             ReviewStatus::Resolved,
             "persisted"
         );
@@ -5164,7 +5354,7 @@ mod tests {
         apply_thread_action(&mut app, key, ThreadAction::Reopen);
         assert_eq!(thread_status(&app), ReviewStatus::Open, "in-memory reopens");
         assert_eq!(
-            ws.load_review_threads("forge", "feat")[0].status,
+            ws.load_review_threads("forge", "feat").expect("load")[0].status,
             ReviewStatus::Open,
             "persisted"
         );
@@ -5190,19 +5380,13 @@ mod tests {
         apply_thread_action(&mut app, kb, ThreadAction::Resolve);
 
         let overlay = app.diff_overlay.as_ref().expect("overlay");
-        let status_of = |key: LineKey| {
-            overlay
-                .comments
-                .iter()
-                .find(|c| c.key == key)
-                .and_then(|c| c.thread.as_ref())
-                .map(|t| t.status)
-        };
+        let status_of =
+            |key: LineKey| overlay.comments.iter().find(|c| c.key == key).map(|c| c.thread.status);
         assert_eq!(status_of(kb), Some(ReviewStatus::Resolved), "the clicked thread resolves");
         assert_eq!(status_of(ka), Some(ReviewStatus::Open), "the other thread is untouched");
 
         let ws = app.workspace.clone().expect("ws");
-        let threads = ws.load_review_threads("forge", "feat");
+        let threads = ws.load_review_threads("forge", "feat").expect("load");
         let persisted =
             |line: u32| threads.iter().find(|t| t.anchor.line == line).map(|t| t.status);
         assert_eq!(persisted(11), Some(ReviewStatus::Resolved), "B persisted resolved");
@@ -5241,7 +5425,7 @@ mod tests {
             ThreadAction::Resolve,
         );
         let ws = app.workspace.clone().expect("ws");
-        assert!(ws.load_review_threads("forge", "feat").is_empty());
+        assert!(ws.load_review_threads("forge", "feat").expect("load").is_empty());
     }
 
     #[test]
@@ -5276,10 +5460,9 @@ mod tests {
     #[test]
     fn comment_button_resolves_current_scope_thread_on_key_collision() {
         // On a single-commit branch the whole-diff and commit diffs share
-        // a file layout, so a whole-diff durable comment and an ephemeral
-        // commit-scoped one can land on the same key (hydrate keeps the
-        // ephemeral and adds the durable). The button must act on the
-        // current scope's thread, not whichever `.find` hits first.
+        // a file layout, so a whole-diff comment and a commit-scoped one -
+        // both durable now - can land on the same key. The button must act
+        // on the current scope's thread, not whichever `.find` hits first.
         let (mut app, _dir) = review_app();
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])];
         let mut overlay =
@@ -5288,17 +5471,36 @@ mod tests {
         overlay.commits = vec![commit_meta("aaa", "first")];
         overlay.scope = DiffScope::WholeDiff;
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
-        // Ephemeral commit-scoped comment pushed FIRST (no durable thread).
+        // Commit-scoped comment pushed FIRST, with its own durable thread.
         overlay.comments.push(HunkComment {
             key,
             path: "src/x.rs".to_owned(),
             line: 10,
             hunk_context: Vec::new(),
-            comment_text: "ephemeral".to_owned(),
+            comment_text: "commit note".to_owned(),
             commit: Some("aaa".to_owned()),
-            thread: None,
-            authored_this_session: true,
-            persisted: false,
+            thread: forge_primitives::ReviewThread {
+                id: "tc".to_owned(),
+                anchor: ReviewAnchor {
+                    path: "src/x.rs".to_owned(),
+                    side: ReviewSide::New,
+                    line: 10,
+                    content_hash: 0,
+                    context: Vec::new(),
+                    base_ref: "main".to_owned(),
+                },
+                comments: vec![ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "commit note".to_owned(),
+                    at: String::new(),
+                }],
+                status: ReviewStatus::Open,
+                created_at: String::new(),
+                updated_at: String::new(),
+                commit: Some("aaa".to_owned()),
+            },
+            authored_this_session: false,
+            persisted: true,
         });
         // Durable whole-diff thread at the SAME key.
         overlay.comments.push(HunkComment {
@@ -5308,7 +5510,7 @@ mod tests {
             hunk_context: Vec::new(),
             comment_text: "durable".to_owned(),
             commit: None,
-            thread: Some(forge_primitives::ReviewThread {
+            thread: forge_primitives::ReviewThread {
                 id: "t1".to_owned(),
                 anchor: ReviewAnchor {
                     path: "src/x.rs".to_owned(),
@@ -5326,7 +5528,8 @@ mod tests {
                 status: ReviewStatus::Open,
                 created_at: String::new(),
                 updated_at: String::new(),
-            }),
+                commit: None,
+            },
             authored_this_session: false,
             persisted: true,
         });
@@ -5336,14 +5539,18 @@ mod tests {
         apply_thread_action(&mut app, key, ThreadAction::Resolve);
 
         let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
-        let durable = comments.iter().find(|c| c.commit.is_none()).expect("durable comment");
+        let durable = comments.iter().find(|c| c.commit.is_none()).expect("whole-diff comment");
         assert_eq!(
-            durable.thread.as_ref().map(|t| t.status),
-            Some(ReviewStatus::Resolved),
-            "the current scope's durable thread resolved despite the key collision",
+            durable.thread.status,
+            ReviewStatus::Resolved,
+            "the current scope's thread resolved despite the key collision",
         );
-        let ephemeral = comments.iter().find(|c| c.commit.is_some()).expect("ephemeral comment");
-        assert!(ephemeral.thread.is_none(), "the ephemeral comment is untouched");
+        let commit_scoped = comments.iter().find(|c| c.commit.is_some()).expect("commit comment");
+        assert_eq!(
+            commit_scoped.thread.status,
+            ReviewStatus::Open,
+            "the other scope's thread is untouched",
+        );
     }
 
     #[test]
@@ -5365,7 +5572,7 @@ mod tests {
 
         let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
         assert_eq!(comment.key, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }, "InPlace");
-        assert_eq!(comment.thread.as_ref().expect("thread").status, ReviewStatus::Open);
+        assert_eq!(comment.thread.status, ReviewStatus::Open);
         assert!(!comment.authored_this_session, "hydrated, not authored this session");
         assert!(comment.persisted, "hydrated comment is durable");
     }
@@ -5382,7 +5589,7 @@ mod tests {
         app.diff_overlay = Some(overlay);
         save_active_input(&mut app);
         let ws = app.workspace.clone().expect("ws");
-        assert_eq!(ws.load_review_threads("forge", "feat").len(), 1, "saved");
+        assert_eq!(ws.load_review_threads("forge", "feat").expect("load").len(), 1, "saved");
 
         // Reopen the chip, clear the text, save empty -> delete.
         if let Some(o) = app.diff_overlay.as_mut() {
@@ -5393,7 +5600,10 @@ mod tests {
         }
         save_active_input(&mut app);
 
-        assert!(ws.load_review_threads("forge", "feat").is_empty(), "delete removed it from redb");
+        assert!(
+            ws.load_review_threads("forge", "feat").expect("load").is_empty(),
+            "delete removed it from redb"
+        );
         // A subsequent hydrate must not resurrect it.
         hydrate_threads(&mut app);
         assert!(app.diff_overlay.as_ref().expect("overlay").comments.is_empty(), "not resurrected");
@@ -5416,13 +5626,13 @@ mod tests {
         let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
         assert!(comment.authored_this_session);
         assert!(!comment.persisted, "no branch -> write skipped -> at risk");
-        assert!(comment.thread.is_some(), "still a whole-diff thread, just not durable");
+        assert_eq!(comment.thread.commit, None, "still a whole-diff thread, just not durable");
     }
 
     #[test]
     fn bundle_excludes_hydrated_and_resolved_comments() {
-        let make = |authored: bool, status: Option<ReviewStatus>| {
-            let thread = status.map(|status| forge_primitives::ReviewThread {
+        let make = |authored: bool, status: ReviewStatus| {
+            let thread = forge_primitives::ReviewThread {
                 id: "t".to_owned(),
                 anchor: ReviewAnchor {
                     path: "a.rs".to_owned(),
@@ -5436,7 +5646,8 @@ mod tests {
                 status,
                 created_at: String::new(),
                 updated_at: String::new(),
-            });
+                commit: None,
+            };
             HunkComment {
                 key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
                 path: "a.rs".to_owned(),
@@ -5449,15 +5660,13 @@ mod tests {
                 persisted: true,
             }
         };
-        // Fresh open thread: bundled.
-        assert!(is_bundle_eligible(&make(true, Some(ReviewStatus::Open))));
-        // Ephemeral commit-scoped (no thread), authored: bundled.
-        assert!(is_bundle_eligible(&make(true, None)));
+        // Fresh open thread, authored this session: bundled.
+        assert!(is_bundle_eligible(&make(true, ReviewStatus::Open)));
         // Hydrated from a prior session: never re-sent.
-        assert!(!is_bundle_eligible(&make(false, Some(ReviewStatus::Open))));
+        assert!(!is_bundle_eligible(&make(false, ReviewStatus::Open)));
         // Resolved / outdated: never bundled even if touched this session.
-        assert!(!is_bundle_eligible(&make(true, Some(ReviewStatus::Resolved))));
-        assert!(!is_bundle_eligible(&make(true, Some(ReviewStatus::Outdated))));
+        assert!(!is_bundle_eligible(&make(true, ReviewStatus::Resolved)));
+        assert!(!is_bundle_eligible(&make(true, ReviewStatus::Outdated)));
     }
 
     #[test]
@@ -5482,12 +5691,15 @@ mod tests {
             status: ReviewStatus::Open,
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
+            commit: None,
         };
-        // Same branch, two diff targets.
+        // Same branch, two whole-diff targets plus a commit-scoped thread.
+        let mut c = seed("c", "main", "let c = 3;");
+        c.commit = Some("deadbeef".to_owned());
         ws.save_review_threads(
             "forge",
             "feat",
-            &[seed("a", "main", "let a = 1;"), seed("b", "HEAD", "let b = 2;")],
+            &[seed("a", "main", "let a = 1;"), seed("b", "HEAD", "let b = 2;"), c],
         );
 
         // Open against "main"; its thread drifts (line 5 -> 8), forcing a
@@ -5502,16 +5714,452 @@ mod tests {
         // Only the current-target thread renders.
         let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
         assert_eq!(comments.len(), 1, "only the main-target thread renders");
-        assert_eq!(comments[0].thread.as_ref().expect("thread").id, "a");
+        assert_eq!(comments[0].thread.id, "a");
 
-        let reloaded = ws.load_review_threads("forge", "feat");
-        assert_eq!(reloaded.len(), 2, "the HEAD-target thread survived the writeback");
+        let reloaded = ws.load_review_threads("forge", "feat").expect("load");
+        assert_eq!(reloaded.len(), 3, "the other-target and commit-scoped threads survived");
         assert_eq!(
             reloaded.iter().find(|t| t.id == "a").expect("a").anchor.line,
             8,
             "the main-target thread re-anchored to the moved line",
         );
         assert!(reloaded.iter().any(|t| t.id == "b"), "the HEAD-target thread is preserved");
+        assert!(
+            reloaded.iter().any(|t| t.id == "c"),
+            "the commit-scoped thread is preserved despite sharing the target base_ref",
+        );
+    }
+
+    #[test]
+    fn hydrate_shows_commit_scoped_thread_on_its_commit() {
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads(
+            "forge",
+            "feat",
+            &[forge_primitives::ReviewThread {
+                id: "c0".to_owned(),
+                anchor: ReviewAnchor {
+                    path: "src/x.rs".to_owned(),
+                    side: ReviewSide::New,
+                    line: 5,
+                    content_hash: resolver::content_hash("let a = 1;"),
+                    context: Vec::new(),
+                    base_ref: "main".to_owned(),
+                },
+                comments: vec![ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "on commit zero".to_owned(),
+                    at: String::new(),
+                }],
+                status: ReviewStatus::Open,
+                created_at: "t0".to_owned(),
+                updated_at: "t0".to_owned(),
+                commit: Some("sha0".to_owned()),
+            }],
+        );
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        overlay.commits = vec![commit_meta("sha0", "first")];
+        overlay.scope = DiffScope::Commit(0);
+        app.diff_overlay = Some(overlay);
+        hydrate_threads(&mut app);
+
+        let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
+        assert_eq!(comments.len(), 1, "the commit-scoped thread hydrated onto its commit");
+        let c = &comments[0];
+        assert_eq!(c.thread.id, "c0");
+        assert_eq!(c.commit.as_deref(), Some("sha0"), "rebuilt comment carries the scope sha");
+        assert!(c.persisted, "hydrated comment is durable");
+        assert!(!c.authored_this_session, "hydrated, not authored this session");
+    }
+
+    #[test]
+    fn hydrate_isolates_by_commit_scope() {
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        let seed = |id: &str, sha: &str, line: u32, text: &str| forge_primitives::ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line,
+                content_hash: resolver::content_hash(text),
+                context: Vec::new(),
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: text.to_owned(),
+                at: String::new(),
+            }],
+            status: ReviewStatus::Open,
+            created_at: "t0".to_owned(),
+            updated_at: "t0".to_owned(),
+            commit: Some(sha.to_owned()),
+        };
+        // The sha0 thread drifts (line 5 -> 8) so a writeback fires; the
+        // sha1 thread must survive that writeback untouched.
+        ws.save_review_threads(
+            "forge",
+            "feat",
+            &[seed("c0", "sha0", 5, "let a = 1;"), seed("c1", "sha1", 5, "let b = 2;")],
+        );
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 8)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        overlay.commits = vec![commit_meta("sha0", "first"), commit_meta("sha1", "second")];
+        overlay.scope = DiffScope::Commit(0);
+        app.diff_overlay = Some(overlay);
+        hydrate_threads(&mut app);
+
+        let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
+        assert_eq!(comments.len(), 1, "only the current commit's thread renders");
+        assert_eq!(comments[0].thread.id, "c0");
+
+        let reloaded = ws.load_review_threads("forge", "feat").expect("load");
+        assert_eq!(reloaded.len(), 2, "the other commit's thread survives the writeback");
+        assert_eq!(
+            reloaded.iter().find(|t| t.id == "c0").expect("c0").anchor.line,
+            8,
+            "the current commit's thread re-anchored to the moved line",
+        );
+        assert!(reloaded.iter().any(|t| t.id == "c1"), "the sha1 thread is preserved");
+    }
+
+    #[test]
+    fn hydrate_isolates_by_commit_scope_reverse() {
+        // The mirror of the above from the other side: in Commit(1) scope
+        // only the sha1 thread renders; the sha0 thread stays out.
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        let seed = |id: &str, sha: &str, text: &str| forge_primitives::ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 5,
+                content_hash: resolver::content_hash(text),
+                context: Vec::new(),
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: text.to_owned(),
+                at: String::new(),
+            }],
+            status: ReviewStatus::Open,
+            created_at: "t0".to_owned(),
+            updated_at: "t0".to_owned(),
+            commit: Some(sha.to_owned()),
+        };
+        ws.save_review_threads(
+            "forge",
+            "feat",
+            &[seed("c0", "sha0", "let b = 2;"), seed("c1", "sha1", "let a = 1;")],
+        );
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        overlay.commits = vec![commit_meta("sha0", "first"), commit_meta("sha1", "second")];
+        overlay.scope = DiffScope::Commit(1);
+        app.diff_overlay = Some(overlay);
+        hydrate_threads(&mut app);
+
+        let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
+        assert_eq!(comments.len(), 1, "only the sha1 thread renders in Commit(1)");
+        assert_eq!(comments[0].thread.id, "c1");
+        assert!(
+            comments.iter().all(|c| c.thread.id != "c0"),
+            "the sha0 thread stays out of the Commit(1) scope",
+        );
+        assert!(
+            ws.load_review_threads("forge", "feat").expect("load").iter().any(|t| t.id == "c0"),
+            "the sha0 thread is preserved in the store",
+        );
+    }
+
+    #[test]
+    fn commit_scoped_thread_hydrates_back_resolved() {
+        // End-to-end state survival: a Resolved commit-scoped thread
+        // reopened on its commit hydrates back Resolved.
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads(
+            "forge",
+            "feat",
+            &[forge_primitives::ReviewThread {
+                id: "c0".to_owned(),
+                anchor: ReviewAnchor {
+                    path: "src/x.rs".to_owned(),
+                    side: ReviewSide::New,
+                    line: 5,
+                    content_hash: resolver::content_hash("let a = 1;"),
+                    context: Vec::new(),
+                    base_ref: "main".to_owned(),
+                },
+                comments: vec![ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "resolved earlier".to_owned(),
+                    at: String::new(),
+                }],
+                status: ReviewStatus::Resolved,
+                created_at: "t0".to_owned(),
+                updated_at: "t0".to_owned(),
+                commit: Some("sha0".to_owned()),
+            }],
+        );
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        overlay.commits = vec![commit_meta("sha0", "first")];
+        overlay.scope = DiffScope::Commit(0);
+        app.diff_overlay = Some(overlay);
+        hydrate_threads(&mut app);
+
+        let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
+        assert_eq!(
+            comment.thread.status,
+            ReviewStatus::Resolved,
+            "the commit-scoped thread hydrated back Resolved",
+        );
+    }
+
+    #[test]
+    fn hydrate_surfaces_a_review_load_error() {
+        // A corrupt persisted row makes the load fail; hydrate must set the
+        // visible-notice state rather than leave a silently-empty pane.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("test workspace");
+        let db = forge_workspace::store::Db::open(&dir.path().join("db.redb")).expect("open db");
+        forge_workspace::store::review::write_corrupt_row_for_test(&db, "forge", "feat")
+            .expect("write corrupt row");
+        workspace.install_db_for_test(db);
+        let key = forge_workspace::SessionKey::from_session_id("review-session");
+        let mut session = crate::app::session::UiSession::new(key.clone());
+        session.project = Some("forge".to_owned());
+        session.cwd_raw = "/tmp/repo".into();
+        app.sessions.insert(key.clone(), session);
+        app.active_session_key = Some(key);
+
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+
+        hydrate_threads(&mut app);
+
+        assert!(
+            app.diff_overlay.as_ref().expect("overlay").review_load_error.is_some(),
+            "a load failure surfaces the review-load notice state, not a blank pane",
+        );
+    }
+
+    #[test]
+    fn hydrate_whole_diff_ignores_commit_scoped() {
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        let seed = |id: &str, commit: Option<&str>, text: &str| forge_primitives::ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 5,
+                content_hash: resolver::content_hash(text),
+                context: Vec::new(),
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: text.to_owned(),
+                at: String::new(),
+            }],
+            status: ReviewStatus::Open,
+            created_at: "t0".to_owned(),
+            updated_at: "t0".to_owned(),
+            commit: commit.map(str::to_owned),
+        };
+        // The whole-diff thread drifts (line 5 -> 8) forcing a writeback;
+        // the commit-scoped thread must not render here and must survive.
+        ws.save_review_threads(
+            "forge",
+            "feat",
+            &[seed("wd", None, "let a = 1;"), seed("cs", Some("sha0"), "let a = 1;")],
+        );
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 8)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+        hydrate_threads(&mut app);
+
+        let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
+        assert_eq!(comments.len(), 1, "only the whole-diff thread renders in whole-diff scope");
+        assert_eq!(comments[0].commit, None);
+        assert_eq!(comments[0].thread.id, "wd");
+
+        let reloaded = ws.load_review_threads("forge", "feat").expect("load");
+        assert_eq!(reloaded.len(), 2, "both threads survive");
+        assert!(reloaded.iter().any(|t| t.id == "cs"), "the commit-scoped thread is preserved");
+    }
+
+    #[test]
+    fn drain_hydrates_commit_scoped_thread_on_navigation() {
+        // The REAL path: a lazy Commit(1) scan lands via drain_events after
+        // the user stepped to that commit. Its persisted thread must
+        // hydrate against the just-installed files - the bug was
+        // drain_events gating hydration on whole-diff scope, so navigating
+        // to a commit never re-anchored its threads.
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads(
+            "forge",
+            "feat",
+            &[forge_primitives::ReviewThread {
+                id: "c1".to_owned(),
+                anchor: ReviewAnchor {
+                    path: "src/x.rs".to_owned(),
+                    side: ReviewSide::New,
+                    line: 5,
+                    content_hash: resolver::content_hash("let a = 1;"),
+                    context: Vec::new(),
+                    base_ref: "main".to_owned(),
+                },
+                comments: vec![ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "on commit one".to_owned(),
+                    at: String::new(),
+                }],
+                status: ReviewStatus::Open,
+                created_at: "t0".to_owned(),
+                updated_at: "t0".to_owned(),
+                commit: Some("sha1".to_owned()),
+            }],
+        );
+
+        // Overlay open in commit mode; the user has navigated to Commit(1)
+        // (scope already set), its scan in flight.
+        let mut overlay = DiffOverlayState::new(
+            PathBuf::from("/tmp/repo"),
+            "main".to_owned(),
+            vec![single_hunk_file("src/x.rs", vec![added_line("noop", 1)])],
+        );
+        overlay.branch = Some("feat".to_owned());
+        overlay.commits = vec![commit_meta("sha0", "first"), commit_meta("sha1", "second")];
+        overlay.commit_cache = vec![None, None];
+        overlay.scope = DiffScope::Commit(1);
+        app.diff_overlay = Some(overlay);
+
+        // The lazy Commit(1) scan lands with sha1's file content.
+        app.diff_overlay_event_tx
+            .send(DiffOverlayEvent {
+                cwd: PathBuf::from("/tmp/repo"),
+                target: "main".to_owned(),
+                files: vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])],
+                scanner_ok: true,
+                untracked_suppressed: 0,
+                seq: app.diff_scan_seq,
+                kind: DiffScanKind::Scope(DiffScope::Commit(1)),
+                commit_body: Some("second".to_owned()),
+            })
+            .expect("send scope event");
+
+        drain_events(&mut app);
+
+        let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
+        assert_eq!(comments.len(), 1, "the commit's persisted thread hydrated on navigation");
+        assert_eq!(comments[0].thread.id, "c1");
+        assert_eq!(comments[0].commit.as_deref(), Some("sha1"));
+        assert!(comments[0].persisted, "hydrated from redb");
+    }
+
+    #[test]
+    fn hydrate_replaces_only_the_current_scope_and_keeps_others() {
+        // `retain(|c| c.commit != scope_commit)` must drop ONLY the current
+        // scope's in-memory comments (replaced by the rebuilt set) and keep
+        // other scopes' comments. An inverted retain or a blanket clear
+        // would strand the other-scope comment.
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads(
+            "forge",
+            "feat",
+            &[forge_primitives::ReviewThread {
+                id: "wd".to_owned(),
+                anchor: ReviewAnchor {
+                    path: "src/x.rs".to_owned(),
+                    side: ReviewSide::New,
+                    line: 5,
+                    content_hash: resolver::content_hash("let a = 1;"),
+                    context: Vec::new(),
+                    base_ref: "main".to_owned(),
+                },
+                comments: vec![ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "hydrated".to_owned(),
+                    at: String::new(),
+                }],
+                status: ReviewStatus::Open,
+                created_at: "t0".to_owned(),
+                updated_at: "t0".to_owned(),
+                commit: None,
+            }],
+        );
+
+        let mut overlay = DiffOverlayState::new(
+            PathBuf::from("/tmp/repo"),
+            "main".to_owned(),
+            vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])],
+        );
+        overlay.branch = Some("feat".to_owned());
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        // An OTHER-scope (commit sha1) comment that must survive, and a stale
+        // current-scope (whole-diff) comment the hydrate replaces.
+        overlay.comments.push(HunkComment {
+            key,
+            path: "src/x.rs".to_owned(),
+            line: 9,
+            hunk_context: Vec::new(),
+            comment_text: "on sha1".to_owned(),
+            commit: Some("sha1".to_owned()),
+            thread: stock_thread(),
+            authored_this_session: true,
+            persisted: false,
+        });
+        overlay.comments.push(HunkComment {
+            key,
+            path: "src/x.rs".to_owned(),
+            line: 5,
+            hunk_context: Vec::new(),
+            comment_text: "stale whole-diff".to_owned(),
+            commit: None,
+            thread: stock_thread(),
+            authored_this_session: true,
+            persisted: false,
+        });
+        app.diff_overlay = Some(overlay);
+
+        hydrate_threads(&mut app);
+
+        let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
+        let other = comments
+            .iter()
+            .find(|c| c.commit.as_deref() == Some("sha1"))
+            .expect("the other-scope comment survives");
+        assert_eq!(other.comment_text, "on sha1");
+        let whole: Vec<_> = comments.iter().filter(|c| c.commit.is_none()).collect();
+        assert_eq!(whole.len(), 1, "one whole-diff comment after hydrate");
+        assert_eq!(
+            whole[0].thread.id, "wd",
+            "the stale in-memory whole-diff comment was replaced by the hydrated thread",
+        );
     }
 
     #[test]
@@ -5526,10 +6174,8 @@ mod tests {
         app.diff_overlay = Some(overlay);
         save_active_input(&mut app);
         // Simulate the thread having drifted to Outdated.
-        if let Some(o) = app.diff_overlay.as_mut()
-            && let Some(thread) = o.comments[0].thread.as_mut()
-        {
-            thread.status = ReviewStatus::Outdated;
+        if let Some(o) = app.diff_overlay.as_mut() {
+            o.comments[0].thread.status = ReviewStatus::Outdated;
         }
         apply_thread_action(&mut app, key, ThreadAction::Resolve);
         assert_eq!(thread_status(&app), ReviewStatus::Resolved, "outdated resolves to resolved");
@@ -5559,7 +6205,7 @@ mod tests {
         let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
         assert!(comment.authored_this_session);
         assert!(!comment.persisted, "a failed write with all present stays at-risk");
-        assert!(comment.thread.is_some(), "still a whole-diff thread");
+        assert_eq!(comment.thread.commit, None, "still a whole-diff thread");
     }
 
     #[test]
@@ -5590,6 +6236,7 @@ mod tests {
                 status: ReviewStatus::Open,
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
+                commit: None,
             }],
         );
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("keep", 10)])];
@@ -5628,7 +6275,7 @@ mod tests {
         assert!(app.diff_overlay.is_none(), "overlay force-cleared");
         let ws = app.workspace.clone().expect("ws");
         assert_eq!(
-            ws.load_review_threads("forge", "feat").len(),
+            ws.load_review_threads("forge", "feat").expect("load").len(),
             1,
             "the persisted thread survives the force-clear",
         );

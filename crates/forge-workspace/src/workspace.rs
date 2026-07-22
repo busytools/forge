@@ -3373,12 +3373,21 @@ impl Workspace {
     /// project NAME (worktree-agnostic). Query-style, so this is a direct
     /// method - review-thread persistence is local redb IO, not an
     /// agent-driving action that needs the `Command` bus.
-    pub fn load_review_threads(&self, project: &str, branch: &str) -> Vec<ReviewThread> {
+    /// Load the persisted review threads for `(project, branch)`. `Ok`
+    /// with an empty vec when the store isn't open or the branch has no
+    /// row; `Err` with a display string when an existing row fails to
+    /// decode / read, so the overlay can surface the failure instead of
+    /// showing a silently-empty review pane.
+    pub fn load_review_threads(
+        &self,
+        project: &str,
+        branch: &str,
+    ) -> Result<Vec<ReviewThread>, String> {
         let guard = self.db.lock();
         let Some(db) = guard.as_ref() else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        crate::store::review::load(db, project, branch).unwrap_or_else(|error| {
+        crate::store::review::load(db, project, branch).map_err(|error| {
             tracing::warn!(
                 target: "forge_workspace::workspace",
                 %error,
@@ -3386,7 +3395,7 @@ impl Workspace {
                 branch = %branch,
                 "loading review threads failed",
             );
-            Vec::new()
+            format!("{error:#}")
         })
     }
 
@@ -5899,6 +5908,7 @@ mod tests {
             status: ReviewStatus::Open,
             created_at: "2026-07-19T10:00:00Z".to_owned(),
             updated_at: "2026-07-19T10:00:00Z".to_owned(),
+            commit: None,
         };
 
         let dir = tempdir().expect("tempdir");
@@ -5907,25 +5917,36 @@ mod tests {
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
 
-        assert!(ws.load_review_threads("forge", "feat").is_empty(), "empty on miss");
+        assert!(ws.load_review_threads("forge", "feat").expect("load").is_empty(), "empty on miss");
 
         ws.upsert_review_thread("forge", "feat", make("a", 10));
         ws.upsert_review_thread("forge", "feat", make("b", 20));
-        assert_eq!(ws.load_review_threads("forge", "feat").len(), 2);
+        assert_eq!(ws.load_review_threads("forge", "feat").expect("load").len(), 2);
 
         ws.set_review_thread_status("forge", "feat", "a", ReviewStatus::Resolved);
-        let loaded = ws.load_review_threads("forge", "feat");
+        let loaded = ws.load_review_threads("forge", "feat").expect("load");
         assert_eq!(loaded.iter().find(|t| t.id == "a").expect("a").status, ReviewStatus::Resolved);
         assert_eq!(loaded.iter().find(|t| t.id == "b").expect("b").status, ReviewStatus::Open);
 
         // A different (project, branch) is scoped separately.
         ws.save_review_threads("forge", "other", &[make("c", 30)]);
-        assert_eq!(ws.load_review_threads("forge", "feat").len(), 2, "other branch is isolated");
-        assert_eq!(ws.load_review_threads("forge", "other").len(), 1);
+        assert_eq!(
+            ws.load_review_threads("forge", "feat").expect("load").len(),
+            2,
+            "other branch is isolated"
+        );
+        assert_eq!(ws.load_review_threads("forge", "other").expect("load").len(), 1);
 
         ws.delete_review_threads("forge", "feat");
-        assert!(ws.load_review_threads("forge", "feat").is_empty(), "teardown clears the branch");
-        assert_eq!(ws.load_review_threads("forge", "other").len(), 1, "delete is scoped");
+        assert!(
+            ws.load_review_threads("forge", "feat").expect("load").is_empty(),
+            "teardown clears the branch"
+        );
+        assert_eq!(
+            ws.load_review_threads("forge", "other").expect("load").len(),
+            1,
+            "delete is scoped"
+        );
     }
 
     fn usage_workspace() -> (tempfile::TempDir, Arc<Workspace>) {

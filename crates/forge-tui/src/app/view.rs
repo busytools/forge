@@ -59,9 +59,8 @@ fn clear_transient_view_state(app: &mut App) {
     if app.active_view == ActiveView::Diff {
         // Confirmed-persisted review threads (and hydrated history) are
         // durable in redb, so this forced transition (e.g. a session swap
-        // mid-review) can't lose them. At risk here: session-authored
-        // comments not yet confirmed-written (ephemeral commit-scoped
-        // ones, and durable ones whose write was skipped/failed) plus an
+        // mid-review) can't lose them. At risk here: any session-authored
+        // comment whose write was skipped or failed (in any scope) plus an
         // in-progress editor's unsent text. Warn so those stay greppable.
         let dropped_at_risk = app.diff_overlay.as_ref().map_or(0, |o| {
             o.comments.iter().filter(|c| c.authored_this_session && !c.persisted).count()

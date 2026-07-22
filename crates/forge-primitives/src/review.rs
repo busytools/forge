@@ -55,7 +55,9 @@ pub struct ReviewAnchor {
 }
 
 /// A persisted review thread: an anchor plus its comment chain and
-/// lifecycle state; `created_at` / `updated_at` are rfc3339.
+/// lifecycle state; `created_at` / `updated_at` are rfc3339. `commit` is
+/// the sha the thread was authored under (`None` = whole-diff scope);
+/// `#[serde(default)]` loads pre-scope threads as whole-diff.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewThread {
     pub id: String,
@@ -64,6 +66,8 @@ pub struct ReviewThread {
     pub status: ReviewStatus,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub commit: Option<String>,
 }
 
 #[cfg(test)]
@@ -100,6 +104,7 @@ mod tests {
             status: ReviewStatus::Resolved,
             created_at: "2026-07-19T10:00:00Z".to_owned(),
             updated_at: "2026-07-19T10:05:00Z".to_owned(),
+            commit: None,
         }
     }
 
@@ -119,6 +124,38 @@ mod tests {
         let json = serde_json::to_string(&thread).expect("serialize");
         let back: ReviewThread = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.anchor.content_hash, u64::MAX);
+    }
+
+    #[test]
+    fn commit_scoped_thread_round_trips() {
+        let mut thread = sample_thread();
+        thread.commit = Some("abc123".to_owned());
+        let json = serde_json::to_string(&thread).expect("serialize");
+        let back: ReviewThread = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.commit, Some("abc123".to_owned()));
+    }
+
+    #[test]
+    fn thread_without_commit_key_defaults_to_none() {
+        // A whole-diff thread persisted before the scope field existed has
+        // no `commit` key on disk; it must load as `None`, not error.
+        let json = r#"{
+            "id": "t1",
+            "anchor": {
+                "path": "a.rs",
+                "side": "New",
+                "line": 1,
+                "content_hash": 0,
+                "context": [],
+                "base_ref": "main"
+            },
+            "comments": [],
+            "status": "Open",
+            "created_at": "2026-07-19T10:00:00Z",
+            "updated_at": "2026-07-19T10:00:00Z"
+        }"#;
+        let back: ReviewThread = serde_json::from_str(json).expect("deserialize legacy thread");
+        assert_eq!(back.commit, None);
     }
 
     #[test]
