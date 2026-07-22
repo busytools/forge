@@ -99,6 +99,10 @@ pub struct SDKSessionInfo {
     /// Working directory for the session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// On-disk project-key directory (`projects/<KEY>/`) this session was
+    /// scanned from - the storage folder, independent of the head-read `cwd`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub storage_key: String,
     /// User-set tag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,

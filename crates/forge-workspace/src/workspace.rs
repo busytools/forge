@@ -2247,9 +2247,9 @@ impl Workspace {
     /// project's session list to match the most-recent-first ordering
     /// the scan produces.
     pub fn record_connected_session(&self, cwd: &str, session_id: &str, summary: Option<String>) {
-        let key = ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
-            Some(cwd),
-        ));
+        let storage_key =
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(cwd));
+        let key = ProjectKey::new(storage_key.clone());
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
@@ -2262,6 +2262,7 @@ impl Workspace {
             first_prompt: None,
             git_branch: None,
             cwd: Some(cwd.to_owned()),
+            storage_key,
             tag: None,
             created_at: None,
         };
@@ -5533,6 +5534,7 @@ mod resolver_tests {
             first_prompt: None,
             git_branch: None,
             cwd: None,
+            storage_key: String::new(),
             tag: tag.map(str::to_owned),
             created_at: None,
         }
@@ -10218,6 +10220,9 @@ mod build_resume_map_tests {
             first_prompt: None,
             git_branch: None,
             cwd: cwd.map(str::to_owned),
+            storage_key: cwd
+                .map(|c| forge_agent::userdata::catalog::scan::project_key_for_directory(Some(c)))
+                .unwrap_or_default(),
             tag: tag.map(str::to_owned),
             created_at: None,
         }
