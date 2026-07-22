@@ -329,9 +329,9 @@ pub enum BodyRowKey {
     /// L<line>: ..."). Click → re-open the saved comment for edit.
     CommentChip(LineKey),
     /// A comment box's button row (`[ Resolve ]` / `[ Reopen ]`). Click
-    /// runs `action` on THAT thread by `key`, not the focused thread, but
-    /// only when the click column falls in `[col_start, col_end)` - the
-    /// active button's span - so the dim inactive button no-ops.
+    /// runs `action` on the thread at `key`, but only when the click column
+    /// falls in `[col_start, col_end)` - the active button's span - so the
+    /// dim inactive button no-ops.
     CommentButton { key: LineKey, action: ThreadAction, col_start: u16, col_end: u16 },
     /// Inline TextArea row for the currently-open comment editor.
     /// Multiple consecutive rows when the comment spans more than
