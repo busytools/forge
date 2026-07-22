@@ -674,7 +674,15 @@ pub(crate) fn should_skip_first_prompt(s: &str) -> bool {
 fn read_session_info(path: &Path) -> Option<SDKSessionInfo> {
     let session_id = path.file_stem().and_then(|s| s.to_str())?.to_string();
     let lite = read_session_lite(path)?;
-    parse_session_info_from_lite(&session_id, &lite, None)
+    let storage_key = path
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_owned();
+    let mut info = parse_session_info_from_lite(&session_id, &lite, None)?;
+    info.storage_key = storage_key;
+    Some(info)
 }
 
 /// Build an [`SDKSessionInfo`] from a lite head/tail read. Skips
@@ -729,6 +737,7 @@ fn parse_session_info_from_lite(
         first_prompt,
         git_branch,
         cwd,
+        storage_key: String::new(),
         tag,
         created_at,
     })
@@ -975,6 +984,7 @@ mod tests {
             first_prompt: None,
             git_branch: None,
             cwd: None,
+            storage_key: String::new(),
             tag: tag.map(str::to_string),
             created_at: None,
         }
@@ -1108,6 +1118,27 @@ mod tests {
 
         let info = read_session_info(&path).expect("session info parsed");
         assert_eq!(info.tag.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn read_session_info_reports_storage_dir_key() {
+        // The storage key is the `projects/<KEY>/` dir the transcript
+        // physically lives in - ground truth, unlike the head-read cwd.
+        let tmp = tempfile::tempdir().unwrap();
+        let storage_key = "-Users-me-Projects-playground--claude-worktrees-gpt-tutor";
+        let project_dir = tmp.path().join(storage_key);
+        fs::create_dir_all(&project_dir).unwrap();
+        let path = write_session_jsonl(
+            &project_dir,
+            "abc",
+            "{\"type\":\"user\",\"timestamp\":\"2026-04-22T00:00:00.000Z\",\"message\":{\"content\":\"hi\"}}\n",
+        );
+
+        let info = read_session_info(&path).expect("session info parsed");
+        assert_eq!(
+            info.storage_key, storage_key,
+            "the scanned session reports the projects/<KEY>/ dir it lives in",
+        );
     }
 
     /// A resumed git worker anchors its history read at the worktree run
