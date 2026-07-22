@@ -874,18 +874,22 @@ pub fn drain_events(app: &mut App) {
             }
             let state = DiffOverlayState::new_initial(event);
             open(app, state);
-            // Load + re-anchor persisted threads when the initial open
-            // landed on the whole-diff scope (no-op otherwise).
+            // Load + re-anchor persisted threads for whatever scope the
+            // initial open landed on.
             hydrate_threads(app);
         } else if let DiffScanKind::Scope(scope) = event.kind {
             // A lazy per-scope scan lands into the already-open overlay
             // (view == Diff). If it closed while the scan ran, drop it.
             if let Some(overlay) = app.diff_overlay.as_mut() {
+                // `install_scan` swaps the files into view only when the
+                // landed scope is the one currently shown; hydrate that
+                // scope's persisted threads against those files. An
+                // out-of-order scan that only cached off-scope is skipped -
+                // hydrating it would re-anchor against the wrong files.
+                let landed_current = overlay.scope == scope;
                 overlay.install_scan(scope, event.files, event.scanner_ok, event.commit_body);
                 app.needs_redraw = true;
-                // First navigation to the whole diff makes its files
-                // available; hydrate the persisted threads against them.
-                if scope == DiffScope::WholeDiff {
+                if landed_current {
                     hydrate_threads(app);
                 }
             } else {
@@ -5847,6 +5851,76 @@ mod tests {
         let reloaded = ws.load_review_threads("forge", "feat");
         assert_eq!(reloaded.len(), 2, "both threads survive");
         assert!(reloaded.iter().any(|t| t.id == "cs"), "the commit-scoped thread is preserved");
+    }
+
+    #[test]
+    fn drain_hydrates_commit_scoped_thread_on_navigation() {
+        // The REAL path: a lazy Commit(1) scan lands via drain_events after
+        // the user stepped to that commit. Its persisted thread must
+        // hydrate against the just-installed files - the bug was
+        // drain_events gating hydration on whole-diff scope, so navigating
+        // to a commit never re-anchored its threads.
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads(
+            "forge",
+            "feat",
+            &[forge_primitives::ReviewThread {
+                id: "c1".to_owned(),
+                anchor: ReviewAnchor {
+                    path: "src/x.rs".to_owned(),
+                    side: ReviewSide::New,
+                    line: 5,
+                    content_hash: resolver::content_hash("let a = 1;"),
+                    context: Vec::new(),
+                    base_ref: "main".to_owned(),
+                },
+                comments: vec![ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "on commit one".to_owned(),
+                    at: String::new(),
+                }],
+                status: ReviewStatus::Open,
+                created_at: "t0".to_owned(),
+                updated_at: "t0".to_owned(),
+                commit: Some("sha1".to_owned()),
+            }],
+        );
+
+        // Overlay open in commit mode; the user has navigated to Commit(1)
+        // (scope already set), its scan in flight.
+        let mut overlay = DiffOverlayState::new(
+            PathBuf::from("/tmp/repo"),
+            "main".to_owned(),
+            vec![single_hunk_file("src/x.rs", vec![added_line("noop", 1)])],
+        );
+        overlay.branch = Some("feat".to_owned());
+        overlay.commits = vec![commit_meta("sha0", "first"), commit_meta("sha1", "second")];
+        overlay.commit_cache = vec![None, None];
+        overlay.scope = DiffScope::Commit(1);
+        app.diff_overlay = Some(overlay);
+
+        // The lazy Commit(1) scan lands with sha1's file content.
+        app.diff_overlay_event_tx
+            .send(DiffOverlayEvent {
+                cwd: PathBuf::from("/tmp/repo"),
+                target: "main".to_owned(),
+                files: vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])],
+                scanner_ok: true,
+                untracked_suppressed: 0,
+                seq: app.diff_scan_seq,
+                kind: DiffScanKind::Scope(DiffScope::Commit(1)),
+                commit_body: Some("second".to_owned()),
+            })
+            .expect("send scope event");
+
+        drain_events(&mut app);
+
+        let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
+        assert_eq!(comments.len(), 1, "the commit's persisted thread hydrated on navigation");
+        assert_eq!(comments[0].thread.as_ref().expect("thread").id, "c1");
+        assert_eq!(comments[0].commit.as_deref(), Some("sha1"));
+        assert!(comments[0].persisted, "hydrated from redb");
     }
 
     #[test]
