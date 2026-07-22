@@ -5130,7 +5130,7 @@ mod tests {
         assert!(state.commit_cache.iter().all(Option::is_none), "commits scanned lazily");
     }
 
-    fn focused_status(app: &App) -> ReviewStatus {
+    fn thread_status(app: &App) -> ReviewStatus {
         app.diff_overlay
             .as_ref()
             .expect("overlay")
@@ -5154,7 +5154,7 @@ mod tests {
         let ws = app.workspace.clone().expect("ws");
 
         apply_thread_action(&mut app, key, ThreadAction::Resolve);
-        assert_eq!(focused_status(&app), ReviewStatus::Resolved, "in-memory resolves");
+        assert_eq!(thread_status(&app), ReviewStatus::Resolved, "in-memory resolves");
         assert_eq!(
             ws.load_review_threads("forge", "feat")[0].status,
             ReviewStatus::Resolved,
@@ -5162,7 +5162,7 @@ mod tests {
         );
 
         apply_thread_action(&mut app, key, ThreadAction::Reopen);
-        assert_eq!(focused_status(&app), ReviewStatus::Open, "in-memory reopens");
+        assert_eq!(thread_status(&app), ReviewStatus::Open, "in-memory reopens");
         assert_eq!(
             ws.load_review_threads("forge", "feat")[0].status,
             ReviewStatus::Open,
@@ -5223,11 +5223,7 @@ mod tests {
 
         // Reopen only moves a Resolved thread; an Open one is left alone.
         apply_thread_action(&mut app, key, ThreadAction::Reopen);
-        assert_eq!(
-            focused_status(&app),
-            ReviewStatus::Open,
-            "reopen does not touch an open thread"
-        );
+        assert_eq!(thread_status(&app), ReviewStatus::Open, "reopen does not touch an open thread");
     }
 
     #[test]
@@ -5536,7 +5532,7 @@ mod tests {
             thread.status = ReviewStatus::Outdated;
         }
         apply_thread_action(&mut app, key, ThreadAction::Resolve);
-        assert_eq!(focused_status(&app), ReviewStatus::Resolved, "outdated resolves to resolved");
+        assert_eq!(thread_status(&app), ReviewStatus::Resolved, "outdated resolves to resolved");
     }
 
     #[test]
