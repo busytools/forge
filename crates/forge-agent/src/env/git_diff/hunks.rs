@@ -411,7 +411,7 @@ async fn fetch_file_hunks(cwd: &Path, ref_spec: &str, path: &str) -> FileScanOut
 
 /// Re-fetch one file's hunks at a wider unified-diff context radius, for
 /// the `/diff` overlay's on-demand context expansion. Sibling to
-/// [`fetch_file_hunks`], but passes `-U<context>` so git emits more
+/// `fetch_file_hunks`, but passes `-U<context>` so git emits more
 /// surrounding lines (and folds hunks whose gap the wider context now
 /// spans into one). `commit_sha` selects the scope, matching the two
 /// scan entry points: `None` re-fetches against the whole-branch range

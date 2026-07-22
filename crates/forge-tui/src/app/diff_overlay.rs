@@ -965,7 +965,7 @@ pub struct DiffOverlayState {
     /// an empty cache. Length tracks `files`.
     pub highlighted: Vec<Option<FileHighlight>>,
     /// Per-file unified-diff context radius currently shown. Starts at
-    /// [`DEFAULT_CONTEXT`]; an expander click bumps it by [`CONTEXT_STEP`]
+    /// the default context; an expander click bumps it by `CONTEXT_STEP`
     /// and re-fetches that file's hunks at the wider `-U<level>`. Length
     /// tracks `files`; reset on scope change (a fresh file set scans at
     /// the default context).
