@@ -1573,7 +1573,6 @@ const CHIP_BG: Color = Color::Rgb(35, 23, 10);
 fn review_state_style(status: Option<ReviewStatus>) -> (Color, Option<&'static str>) {
     match status {
         None | Some(ReviewStatus::Open) => (theme::RUST_ORANGE, status.map(|_| "OPEN")),
-        Some(ReviewStatus::Addressed) => (theme::SUBAGENT_TOKEN, Some("ADDRESSED")),
         Some(ReviewStatus::Resolved) => (theme::REVIEW_RESOLVED, Some("RESOLVED")),
         Some(ReviewStatus::Outdated) => (theme::STATUS_WARNING, Some("OUTDATED")),
     }

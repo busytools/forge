@@ -8,13 +8,12 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Lifecycle state of a review thread. `Addressed` is the agent's
-/// reply-and-flag (only the user ever `Resolved`s); `Outdated` marks a
-/// thread whose anchored line drifted out from under it.
+/// Lifecycle state of a review thread. Only the user ever `Resolved`s;
+/// `Outdated` marks a thread whose anchored line drifted out from under
+/// it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReviewStatus {
     Open,
-    Addressed,
     Resolved,
     Outdated,
 }
@@ -98,7 +97,7 @@ mod tests {
                     at: "2026-07-19T10:05:00Z".to_owned(),
                 },
             ],
-            status: ReviewStatus::Addressed,
+            status: ReviewStatus::Resolved,
             created_at: "2026-07-19T10:00:00Z".to_owned(),
             updated_at: "2026-07-19T10:05:00Z".to_owned(),
         }
@@ -124,12 +123,7 @@ mod tests {
 
     #[test]
     fn all_status_variants_round_trip() {
-        for status in [
-            ReviewStatus::Open,
-            ReviewStatus::Addressed,
-            ReviewStatus::Resolved,
-            ReviewStatus::Outdated,
-        ] {
+        for status in [ReviewStatus::Open, ReviewStatus::Resolved, ReviewStatus::Outdated] {
             let json = serde_json::to_string(&status).expect("serialize");
             let back: ReviewStatus = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(status, back);

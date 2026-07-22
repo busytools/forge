@@ -1577,13 +1577,13 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// `r`: resolve the focused thread (Open / Addressed / Outdated →
-/// Resolved). Only the user resolves.
+/// `r`: resolve the focused thread (Open / Outdated → Resolved). Only
+/// the user resolves.
 fn resolve_focused_thread(app: &mut App) {
     set_focused_thread_status(
         app,
         ReviewStatus::Resolved,
-        &[ReviewStatus::Open, ReviewStatus::Addressed, ReviewStatus::Outdated],
+        &[ReviewStatus::Open, ReviewStatus::Outdated],
     );
 }
 
