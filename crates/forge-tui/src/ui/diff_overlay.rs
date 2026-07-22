@@ -1703,13 +1703,12 @@ fn index_comments_by_key<'a>(
 const CHIP_BG: Color = Color::Rgb(35, 23, 10);
 
 /// Border colour + uppercase state label for a comment box, keyed off
-/// its durable review-thread status. `None` (an ephemeral commit-scoped
-/// comment) keeps the classic orange box with no state label.
-fn review_state_style(status: Option<ReviewStatus>) -> (Color, Option<&'static str>) {
+/// its durable review-thread status.
+fn review_state_style(status: ReviewStatus) -> (Color, &'static str) {
     match status {
-        None | Some(ReviewStatus::Open) => (theme::RUST_ORANGE, status.map(|_| "OPEN")),
-        Some(ReviewStatus::Resolved) => (theme::REVIEW_RESOLVED, Some("RESOLVED")),
-        Some(ReviewStatus::Outdated) => (theme::STATUS_WARNING, Some("OUTDATED")),
+        ReviewStatus::Open => (theme::RUST_ORANGE, "OPEN"),
+        ReviewStatus::Resolved => (theme::REVIEW_RESOLVED, "RESOLVED"),
+        ReviewStatus::Outdated => (theme::STATUS_WARNING, "OUTDATED"),
     }
 }
 
@@ -1721,7 +1720,7 @@ fn render_comment_chip(
     lines: &mut Vec<Line<'static>>,
     keys: &mut Vec<BodyRowKey>,
 ) {
-    let status = comment.thread.as_ref().map(|t| t.status);
+    let status = comment.thread.status;
     let (accent, state_label) = review_state_style(status);
     let indent_cols = gutter_width + 4;
     let indent = " ".repeat(indent_cols);
@@ -1742,10 +1741,7 @@ fn render_comment_chip(
     // column width. Without this the top border would land 1 cell
     // further right than the body's `│` border, making the box
     // look stepped.
-    let title = match state_label {
-        Some(label) => format!(" 💬 line {} · {label} ", comment.line),
-        None => format!(" 💬 Comment on line {} ", comment.line),
-    };
+    let title = format!(" 💬 line {} · {state_label} ", comment.line);
     let title_visual = title.chars().count() + 1; // +1 for 💬's 2nd cell
     let dash_after = box_width.saturating_sub(3 + title_visual + 1);
     let top = format!("┌──{title}{}┐", "─".repeat(dash_after));
@@ -1761,7 +1757,7 @@ fn render_comment_chip(
     // wrap simple: break on the box width and on explicit newlines.
     let inner_width = box_width.saturating_sub(4);
     let mut body_rows = wrap_chip_body(&comment.comment_text, inner_width);
-    if status == Some(ReviewStatus::Outdated) {
+    if status == ReviewStatus::Outdated {
         // The anchored line drifted; the box renders against the
         // captured context, so name that instead of implying the line
         // is live.
@@ -1770,7 +1766,7 @@ fn render_comment_chip(
     for (idx, row) in body_rows.iter().enumerate() {
         let row_chars = row.chars().count();
         let pad = inner_width.saturating_sub(row_chars);
-        let is_note = status == Some(ReviewStatus::Outdated) && idx == body_rows.len() - 1;
+        let is_note = status == ReviewStatus::Outdated && idx == body_rows.len() - 1;
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::raw(indent.clone()),
@@ -1782,35 +1778,33 @@ fn render_comment_chip(
         keys.push(BodyRowKey::CommentChip(key));
     }
 
-    // Button row (durable threads only) - the state's active transition
-    // in accent-bold plus the other, dim, so every state reads as the
-    // same three-part box. A click routes to this exact thread by `key`.
-    if let Some(status) = status {
-        let (active_label, action, other_label) = match status {
-            ReviewStatus::Resolved => ("[ Reopen ]", ThreadAction::Reopen, "[ Resolve ]"),
-            ReviewStatus::Open | ReviewStatus::Outdated => {
-                ("[ Resolve ]", ThreadAction::Resolve, "[ Reopen ]")
-            }
-        };
-        let active_style = border_style.add_modifier(Modifier::BOLD);
-        let content_w = active_label.width() + 2 + other_label.width();
-        let pad = inner_width.saturating_sub(content_w);
-        // Pane-relative span of the active button so a click on the dim
-        // inactive one no-ops: 2 leading + indent + `│ ` (2) then the label.
-        let col_start = u16::try_from(2 + indent_cols + 2).unwrap_or(u16::MAX);
-        let col_end = col_start.saturating_add(u16::try_from(active_label.width()).unwrap_or(0));
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::raw(indent.clone()),
-            Span::styled("│ ", border_style),
-            Span::styled(active_label, active_style),
-            Span::styled("  ", body_style),
-            Span::styled(other_label, note_style),
-            Span::styled(" ".repeat(pad), body_style),
-            Span::styled(" │", border_style),
-        ]));
-        keys.push(BodyRowKey::CommentButton { key, action, col_start, col_end });
-    }
+    // Button row - the state's active transition in accent-bold plus the
+    // other, dim, so every state reads as the same three-part box. A click
+    // routes to this exact thread by `key`.
+    let (active_label, action, other_label) = match status {
+        ReviewStatus::Resolved => ("[ Reopen ]", ThreadAction::Reopen, "[ Resolve ]"),
+        ReviewStatus::Open | ReviewStatus::Outdated => {
+            ("[ Resolve ]", ThreadAction::Resolve, "[ Reopen ]")
+        }
+    };
+    let active_style = border_style.add_modifier(Modifier::BOLD);
+    let content_w = active_label.width() + 2 + other_label.width();
+    let pad = inner_width.saturating_sub(content_w);
+    // Pane-relative span of the active button so a click on the dim
+    // inactive one no-ops: 2 leading + indent + `│ ` (2) then the label.
+    let col_start = u16::try_from(2 + indent_cols + 2).unwrap_or(u16::MAX);
+    let col_end = col_start.saturating_add(u16::try_from(active_label.width()).unwrap_or(0));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::raw(indent.clone()),
+        Span::styled("│ ", border_style),
+        Span::styled(active_label, active_style),
+        Span::styled("  ", body_style),
+        Span::styled(other_label, note_style),
+        Span::styled(" ".repeat(pad), body_style),
+        Span::styled(" │", border_style),
+    ]));
+    keys.push(BodyRowKey::CommentButton { key, action, col_start, col_end });
 
     // Bottom border.
     let bottom = format!("└{}┘", "─".repeat(box_width.saturating_sub(2)));
@@ -3153,8 +3147,8 @@ mod tests {
         assert!(full.contains("all changes / back"), "footer shows the `a` toggle hint");
     }
 
-    fn chip_comment(line: u32, text: &str, status: Option<ReviewStatus>) -> HunkComment {
-        let thread = status.map(|status| forge_primitives::ReviewThread {
+    fn chip_comment(line: u32, text: &str, status: ReviewStatus) -> HunkComment {
+        let thread = forge_primitives::ReviewThread {
             id: "t1".to_owned(),
             anchor: forge_primitives::ReviewAnchor {
                 path: "a.rs".to_owned(),
@@ -3173,7 +3167,7 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
             commit: None,
-        });
+        };
         HunkComment {
             key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
             path: "a.rs".to_owned(),
@@ -3197,8 +3191,7 @@ mod tests {
 
     #[test]
     fn comment_chip_open_box_titles_and_tints_by_state() {
-        let (lines, _) =
-            render_chip(&chip_comment(7, "needs a bound check", Some(ReviewStatus::Open)));
+        let (lines, _) = render_chip(&chip_comment(7, "needs a bound check", ReviewStatus::Open));
         let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(
             joined.contains("\u{1f4ac} line 7 \u{b7} OPEN"),
@@ -3215,7 +3208,7 @@ mod tests {
     #[test]
     fn comment_chip_outdated_box_is_yellow_with_a_note() {
         let (lines, _) =
-            render_chip(&chip_comment(72, "guard the None case", Some(ReviewStatus::Outdated)));
+            render_chip(&chip_comment(72, "guard the None case", ReviewStatus::Outdated));
         let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(joined.contains("\u{b7} OUTDATED"), "outdated title");
         assert!(joined.contains("line changed"), "outdated note names the drift");
@@ -3229,7 +3222,7 @@ mod tests {
     #[test]
     fn comment_chip_resolved_renders_full_box_with_reopen_button() {
         let (lines, keys) =
-            render_chip(&chip_comment(88, "rename tok to token", Some(ReviewStatus::Resolved)));
+            render_chip(&chip_comment(88, "rename tok to token", ReviewStatus::Resolved));
         let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(
             joined.contains("\u{1f4ac} line 88 \u{b7} RESOLVED"),
@@ -3253,7 +3246,7 @@ mod tests {
     #[test]
     fn comment_box_button_matches_state() {
         for status in [ReviewStatus::Open, ReviewStatus::Outdated] {
-            let (_, keys) = render_chip(&chip_comment(1, "note", Some(status)));
+            let (_, keys) = render_chip(&chip_comment(1, "note", status));
             assert!(
                 keys.iter().any(|k| matches!(
                     k,
@@ -3262,7 +3255,7 @@ mod tests {
                 "{status:?} offers Resolve",
             );
         }
-        let (_, keys) = render_chip(&chip_comment(1, "note", Some(ReviewStatus::Resolved)));
+        let (_, keys) = render_chip(&chip_comment(1, "note", ReviewStatus::Resolved));
         assert!(
             keys.iter().any(|k| matches!(
                 k,
@@ -3277,7 +3270,7 @@ mod tests {
         // Every durable state renders the same three-part box: a top
         // border (┌), a button row, and a bottom border (└).
         for status in [ReviewStatus::Open, ReviewStatus::Resolved, ReviewStatus::Outdated] {
-            let (lines, keys) = render_chip(&chip_comment(1, "note", Some(status)));
+            let (lines, keys) = render_chip(&chip_comment(1, "note", status));
             assert!(line_text(&lines[0]).contains('\u{250c}'), "{status:?} opens with ┌");
             assert!(
                 line_text(lines.last().expect("bottom")).contains('\u{2514}'),
@@ -3294,20 +3287,12 @@ mod tests {
     fn multiple_comments_on_one_line_all_index() {
         // An outdated thread re-placed onto a line that already carries a
         // comment must not clobber it - both live under the shared key.
-        let a = chip_comment(5, "first", Some(ReviewStatus::Open));
-        let b = chip_comment(5, "drifted here", Some(ReviewStatus::Outdated));
+        let a = chip_comment(5, "first", ReviewStatus::Open);
+        let b = chip_comment(5, "drifted here", ReviewStatus::Outdated);
         let refs = vec![&a, &b];
         let map = index_comments_by_key(&refs);
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
         assert_eq!(map.get(&key).map(Vec::len), Some(2), "both comments indexed at the shared key");
-    }
-
-    #[test]
-    fn comment_chip_ephemeral_keeps_classic_title() {
-        let (lines, _) = render_chip(&chip_comment(3, "commit-scoped", None));
-        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
-        assert!(joined.contains("Comment on line 3"), "no-thread comment keeps the classic title");
-        assert!(!joined.contains("\u{b7} OPEN"), "and carries no state label");
     }
 
     #[test]

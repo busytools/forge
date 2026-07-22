@@ -374,8 +374,9 @@ pub struct HunkComment {
     /// lifecycle state persisted to redb. The flat fields above carry the
     /// current-scan view (re-resolved each open); `thread.anchor` carries
     /// the durable last-known location and `thread.status` drives the
-    /// box's state tint.
-    pub thread: Option<forge_primitives::ReviewThread>,
+    /// box's state tint. Every comment carries one; `persisted` (below)
+    /// separately tracks whether its redb write was confirmed.
+    pub thread: forge_primitives::ReviewThread,
     /// Whether the user authored or edited this comment in THIS overlay
     /// session (vs a thread hydrated from redb for display). Only
     /// session-authored comments are bundled to the agent on Esc, so a
@@ -1299,12 +1300,7 @@ impl DiffOverlayState {
             .enumerate()
             .filter(|(_, c)| c.key.file_idx == idx && c.commit == sha)
             .filter_map(|(pos, c)| {
-                let side = c
-                    .thread
-                    .as_ref()
-                    .map(|t| t.anchor.side)
-                    .or_else(|| c.hunk_context.first().map(|dl| anchor_side(dl.kind)))
-                    .unwrap_or(ReviewSide::New);
+                let side = c.thread.anchor.side;
                 find_line_key(file, idx, side, c.line).map(|key| (pos, key))
             })
             .collect();
@@ -1841,7 +1837,7 @@ fn hydrate_threads(app: &mut App) {
                     hunk_context: resolved.map(|dl| vec![dl.clone()]).unwrap_or_default(),
                     comment_text: thread_text(&thread),
                     commit: scope_commit.clone(),
-                    thread: Some(thread.clone()),
+                    thread: thread.clone(),
                     authored_this_session: false,
                     persisted: true,
                 });
@@ -1880,7 +1876,7 @@ fn hydrate_threads(app: &mut App) {
             hunk_context,
             comment_text: thread_text(&thread),
             commit: scope_commit.clone(),
-            thread: Some(thread.clone()),
+            thread: thread.clone(),
             authored_this_session: false,
             persisted: true,
         });
@@ -1991,7 +1987,7 @@ fn set_thread_status_by_key(
         .comments
         .iter_mut()
         .find(|c| c.key == key && c.commit == sha)
-        .and_then(|c| c.thread.as_mut())
+        .map(|c| &mut c.thread)
         .filter(|t| allowed_from.contains(&t.status))
     else {
         return;
@@ -2254,11 +2250,10 @@ fn save_active_input(app: &mut App) {
         // from redb, else hydrate resurrects it next open. `comment_counts`
         // already excludes the prior (removed at reopen).
         if let Some(prior) = input.prior_comment
-            && let Some(thread) = prior.thread
             && let (Some(project), Some(branch), Some(workspace)) =
                 (project.as_deref(), branch.as_deref(), workspace.as_ref())
         {
-            workspace.remove_review_thread(project, branch, &thread.id);
+            workspace.remove_review_thread(project, branch, &prior.thread.id);
         }
         app.needs_redraw = true;
         return;
@@ -2328,7 +2323,7 @@ fn save_active_input(app: &mut App) {
     let side = anchor_side(diff_line.kind);
     let content_hash = resolver::content_hash(&diff_line.text);
     let context = resolver::capture_context(hunk, key.line_idx, CONTEXT_RADIUS);
-    let prior_thread = input.prior_comment.as_ref().and_then(|c| c.thread.clone());
+    let prior_thread = input.prior_comment.as_ref().map(|c| c.thread.clone());
     // Every scope persists a durable thread; `commit` records the scope
     // (the current sha, or `None` in whole-diff). Editing an existing chip
     // reuses the prior thread's identity + comment chain.
@@ -2368,7 +2363,7 @@ fn save_active_input(app: &mut App) {
         hunk_context,
         comment_text: text,
         commit,
-        thread: Some(thread),
+        thread,
         authored_this_session: true,
         persisted,
     };
@@ -2769,15 +2764,10 @@ fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> Mouse
 
 /// Whether a comment belongs in the agent bundle on Esc: authored or
 /// edited THIS session (a hydrated thread from a prior review is never
-/// re-sent) and not already Resolved / Outdated. Ephemeral commit-scoped
-/// comments (no thread) are always authored this session, so they bundle
-/// as before.
+/// re-sent) and not already Resolved / Outdated.
 fn is_bundle_eligible(comment: &HunkComment) -> bool {
     comment.authored_this_session
-        && comment
-            .thread
-            .as_ref()
-            .is_none_or(|t| !matches!(t.status, ReviewStatus::Resolved | ReviewStatus::Outdated))
+        && !matches!(comment.thread.status, ReviewStatus::Resolved | ReviewStatus::Outdated)
 }
 
 /// Close the overlay; if there are pending comments, bundle them
@@ -3320,7 +3310,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "needs unwrap fix".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -3356,7 +3346,7 @@ mod tests {
                 }],
                 comment_text: "use ? instead of unwrap_or_die".into(),
                 commit: None,
-                thread: None,
+                thread: stock_thread(),
                 authored_this_session: true,
                 persisted: false,
             },
@@ -3372,7 +3362,7 @@ mod tests {
                 }],
                 comment_text: "good, panic was unsafe".into(),
                 commit: None,
-                thread: None,
+                thread: stock_thread(),
                 authored_this_session: true,
                 persisted: false,
             },
@@ -3383,7 +3373,7 @@ mod tests {
                 hunk_context: vec![],
                 comment_text: "missing rationale".into(),
                 commit: None,
-                thread: None,
+                thread: stock_thread(),
                 authored_this_session: true,
                 persisted: false,
             },
@@ -3428,7 +3418,7 @@ mod tests {
                 }],
                 comment_text: "name it _without_overage".into(),
                 commit: Some("a3f9c1e".into()),
-                thread: None,
+                thread: stock_thread(),
                 authored_this_session: true,
                 persisted: false,
             },
@@ -3444,7 +3434,7 @@ mod tests {
                 }],
                 comment_text: "hoist this".into(),
                 commit: Some("e55f210".into()),
-                thread: None,
+                thread: stock_thread(),
                 authored_this_session: true,
                 persisted: false,
             },
@@ -3480,7 +3470,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "x".into(),
             commit: Some("a3f9c1e".into()),
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         }];
@@ -3502,7 +3492,7 @@ mod tests {
                 hunk_context: vec![],
                 comment_text: "on commit".into(),
                 commit: Some("a3f9c1e".into()),
-                thread: None,
+                thread: stock_thread(),
                 authored_this_session: true,
                 persisted: false,
             },
@@ -3513,7 +3503,7 @@ mod tests {
                 hunk_context: vec![],
                 comment_text: "on whole diff".into(),
                 commit: None,
-                thread: None,
+                thread: stock_thread(),
                 authored_this_session: true,
                 persisted: false,
             },
@@ -3534,7 +3524,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "x".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -3545,7 +3535,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "y".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -3556,7 +3546,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "z".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -3594,7 +3584,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "needs unwrap fix".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -3627,7 +3617,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "I want to keep this".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -3674,7 +3664,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "saved".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -3714,7 +3704,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "A".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -3725,7 +3715,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "B".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -3754,7 +3744,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "A".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -3791,7 +3781,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "original text".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         };
@@ -3819,7 +3809,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "exactly this".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         };
@@ -3875,7 +3865,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "soon-to-be-deleted".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         };
@@ -3911,7 +3901,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "important review note".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         };
@@ -3961,7 +3951,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "to be preserved".into(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         };
@@ -4343,7 +4333,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "on first".into(),
             commit: Some("aaa".into()),
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -4367,7 +4357,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "a".into(),
             commit: Some("aaa".into()),
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -4378,7 +4368,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "b".into(),
             commit: Some("bbb".into()),
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -4562,7 +4552,7 @@ mod tests {
             hunk_context: vec![diff_line(DiffLineKind::Added, None, Some(5))],
             comment_text: "note".to_owned(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -4957,6 +4947,27 @@ mod tests {
         }
     }
 
+    /// A minimal Open review thread for tests that build a `HunkComment`
+    /// without caring about the thread's own contents.
+    fn stock_thread() -> forge_primitives::ReviewThread {
+        forge_primitives::ReviewThread {
+            id: "stock".to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 0,
+                content_hash: 0,
+                context: Vec::new(),
+                base_ref: "main".to_owned(),
+            },
+            comments: Vec::new(),
+            status: ReviewStatus::Open,
+            created_at: String::new(),
+            updated_at: String::new(),
+            commit: None,
+        }
+    }
+
     /// App wired with a workspace + redb + an active session under
     /// project "forge", ready for review-thread persistence tests.
     fn review_app() -> (App, tempfile::TempDir) {
@@ -5007,7 +5018,10 @@ mod tests {
         assert_eq!(threads[0].comments[0].text, "needs a bound check");
         assert!(!threads[0].created_at.is_empty(), "store stamped created_at");
         let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
-        assert!(comment.thread.is_some(), "the in-memory comment carries its durable thread");
+        assert_eq!(
+            comment.thread.commit, None,
+            "the in-memory comment carries a whole-diff thread"
+        );
     }
 
     #[test]
@@ -5032,7 +5046,7 @@ mod tests {
         let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
         assert!(comment.persisted, "the in-memory comment is a confirmed durable write");
         assert_eq!(
-            comment.thread.as_ref().expect("thread").commit.as_deref(),
+            comment.thread.commit.as_deref(),
             Some("aaa"),
             "the in-memory comment's thread carries the commit sha",
         );
@@ -5118,13 +5132,8 @@ mod tests {
         hydrate_threads(&mut app);
 
         let overlay = app.diff_overlay.as_ref().expect("overlay");
-        let by_id = |id: &str| {
-            overlay
-                .comments
-                .iter()
-                .find(|c| c.thread.as_ref().map(|t| t.id.as_str()) == Some(id))
-                .expect("comment for id")
-        };
+        let by_id =
+            |id: &str| overlay.comments.iter().find(|c| c.thread.id == id).expect("comment for id");
         let keep = by_id("keep");
         assert_eq!(keep.key, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }, "in place");
         assert_eq!(keep.line, 5);
@@ -5139,7 +5148,7 @@ mod tests {
             LineKey { file_idx: 0, hunk_idx: 0, line_idx: 4 },
             "inline outdated"
         );
-        assert_eq!(changed.thread.as_ref().expect("thread").status, ReviewStatus::Outdated);
+        assert_eq!(changed.thread.status, ReviewStatus::Outdated);
         // Line number gone (99): the nearest line (20 = line_idx 4) is
         // already taken by "changed", so it falls to the next free line
         // (line_idx 2), still rendered and flagged Outdated.
@@ -5149,7 +5158,7 @@ mod tests {
             LineKey { file_idx: 0, hunk_idx: 0, line_idx: 2 },
             "next free line"
         );
-        assert_eq!(vanished.thread.as_ref().expect("thread").status, ReviewStatus::Outdated);
+        assert_eq!(vanished.thread.status, ReviewStatus::Outdated);
         assert_ne!(vanished.key, changed.key, "outdated threads do not collide");
 
         // The move + outdated flips are written back to redb.
@@ -5201,12 +5210,7 @@ mod tests {
         hydrate_threads(&mut app);
 
         let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
-        let by_id = |id: &str| {
-            comments
-                .iter()
-                .find(|c| c.thread.as_ref().map(|t| t.id.as_str()) == Some(id))
-                .expect("comment")
-        };
+        let by_id = |id: &str| comments.iter().find(|c| c.thread.id == id).expect("comment");
         let live = by_id("live");
         let stale = by_id("stale");
         assert_eq!(
@@ -5219,7 +5223,7 @@ mod tests {
             LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 },
             "outdated thread avoids the live key, taking the next free line",
         );
-        assert_eq!(stale.thread.as_ref().expect("thread").status, ReviewStatus::Outdated);
+        assert_eq!(stale.thread.status, ReviewStatus::Outdated);
     }
 
     #[test]
@@ -5263,7 +5267,7 @@ mod tests {
             LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
             "absent file falls back to the document's first line",
         );
-        assert_eq!(comment.thread.as_ref().expect("thread").status, ReviewStatus::Outdated);
+        assert_eq!(comment.thread.status, ReviewStatus::Outdated);
     }
 
     #[test]
@@ -5320,9 +5324,10 @@ mod tests {
             .as_ref()
             .expect("overlay")
             .comments
-            .iter()
-            .find_map(|c| c.thread.as_ref().map(|t| t.status))
-            .expect("a durable thread")
+            .first()
+            .expect("a comment")
+            .thread
+            .status
     }
 
     #[test]
@@ -5375,14 +5380,8 @@ mod tests {
         apply_thread_action(&mut app, kb, ThreadAction::Resolve);
 
         let overlay = app.diff_overlay.as_ref().expect("overlay");
-        let status_of = |key: LineKey| {
-            overlay
-                .comments
-                .iter()
-                .find(|c| c.key == key)
-                .and_then(|c| c.thread.as_ref())
-                .map(|t| t.status)
-        };
+        let status_of =
+            |key: LineKey| overlay.comments.iter().find(|c| c.key == key).map(|c| c.thread.status);
         assert_eq!(status_of(kb), Some(ReviewStatus::Resolved), "the clicked thread resolves");
         assert_eq!(status_of(ka), Some(ReviewStatus::Open), "the other thread is untouched");
 
@@ -5480,7 +5479,7 @@ mod tests {
             hunk_context: Vec::new(),
             comment_text: "commit note".to_owned(),
             commit: Some("aaa".to_owned()),
-            thread: Some(forge_primitives::ReviewThread {
+            thread: forge_primitives::ReviewThread {
                 id: "tc".to_owned(),
                 anchor: ReviewAnchor {
                     path: "src/x.rs".to_owned(),
@@ -5499,7 +5498,7 @@ mod tests {
                 created_at: String::new(),
                 updated_at: String::new(),
                 commit: Some("aaa".to_owned()),
-            }),
+            },
             authored_this_session: false,
             persisted: true,
         });
@@ -5511,7 +5510,7 @@ mod tests {
             hunk_context: Vec::new(),
             comment_text: "durable".to_owned(),
             commit: None,
-            thread: Some(forge_primitives::ReviewThread {
+            thread: forge_primitives::ReviewThread {
                 id: "t1".to_owned(),
                 anchor: ReviewAnchor {
                     path: "src/x.rs".to_owned(),
@@ -5530,7 +5529,7 @@ mod tests {
                 created_at: String::new(),
                 updated_at: String::new(),
                 commit: None,
-            }),
+            },
             authored_this_session: false,
             persisted: true,
         });
@@ -5542,14 +5541,14 @@ mod tests {
         let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
         let durable = comments.iter().find(|c| c.commit.is_none()).expect("whole-diff comment");
         assert_eq!(
-            durable.thread.as_ref().map(|t| t.status),
-            Some(ReviewStatus::Resolved),
+            durable.thread.status,
+            ReviewStatus::Resolved,
             "the current scope's thread resolved despite the key collision",
         );
         let commit_scoped = comments.iter().find(|c| c.commit.is_some()).expect("commit comment");
         assert_eq!(
-            commit_scoped.thread.as_ref().map(|t| t.status),
-            Some(ReviewStatus::Open),
+            commit_scoped.thread.status,
+            ReviewStatus::Open,
             "the other scope's thread is untouched",
         );
     }
@@ -5573,7 +5572,7 @@ mod tests {
 
         let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
         assert_eq!(comment.key, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }, "InPlace");
-        assert_eq!(comment.thread.as_ref().expect("thread").status, ReviewStatus::Open);
+        assert_eq!(comment.thread.status, ReviewStatus::Open);
         assert!(!comment.authored_this_session, "hydrated, not authored this session");
         assert!(comment.persisted, "hydrated comment is durable");
     }
@@ -5627,13 +5626,13 @@ mod tests {
         let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
         assert!(comment.authored_this_session);
         assert!(!comment.persisted, "no branch -> write skipped -> at risk");
-        assert!(comment.thread.is_some(), "still a whole-diff thread, just not durable");
+        assert_eq!(comment.thread.commit, None, "still a whole-diff thread, just not durable");
     }
 
     #[test]
     fn bundle_excludes_hydrated_and_resolved_comments() {
-        let make = |authored: bool, status: Option<ReviewStatus>| {
-            let thread = status.map(|status| forge_primitives::ReviewThread {
+        let make = |authored: bool, status: ReviewStatus| {
+            let thread = forge_primitives::ReviewThread {
                 id: "t".to_owned(),
                 anchor: ReviewAnchor {
                     path: "a.rs".to_owned(),
@@ -5648,7 +5647,7 @@ mod tests {
                 created_at: String::new(),
                 updated_at: String::new(),
                 commit: None,
-            });
+            };
             HunkComment {
                 key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
                 path: "a.rs".to_owned(),
@@ -5661,15 +5660,13 @@ mod tests {
                 persisted: true,
             }
         };
-        // Fresh open thread: bundled.
-        assert!(is_bundle_eligible(&make(true, Some(ReviewStatus::Open))));
-        // Ephemeral commit-scoped (no thread), authored: bundled.
-        assert!(is_bundle_eligible(&make(true, None)));
+        // Fresh open thread, authored this session: bundled.
+        assert!(is_bundle_eligible(&make(true, ReviewStatus::Open)));
         // Hydrated from a prior session: never re-sent.
-        assert!(!is_bundle_eligible(&make(false, Some(ReviewStatus::Open))));
+        assert!(!is_bundle_eligible(&make(false, ReviewStatus::Open)));
         // Resolved / outdated: never bundled even if touched this session.
-        assert!(!is_bundle_eligible(&make(true, Some(ReviewStatus::Resolved))));
-        assert!(!is_bundle_eligible(&make(true, Some(ReviewStatus::Outdated))));
+        assert!(!is_bundle_eligible(&make(true, ReviewStatus::Resolved)));
+        assert!(!is_bundle_eligible(&make(true, ReviewStatus::Outdated)));
     }
 
     #[test]
@@ -5717,7 +5714,7 @@ mod tests {
         // Only the current-target thread renders.
         let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
         assert_eq!(comments.len(), 1, "only the main-target thread renders");
-        assert_eq!(comments[0].thread.as_ref().expect("thread").id, "a");
+        assert_eq!(comments[0].thread.id, "a");
 
         let reloaded = ws.load_review_threads("forge", "feat").expect("load");
         assert_eq!(reloaded.len(), 3, "the other-target and commit-scoped threads survived");
@@ -5773,7 +5770,7 @@ mod tests {
         let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
         assert_eq!(comments.len(), 1, "the commit-scoped thread hydrated onto its commit");
         let c = &comments[0];
-        assert_eq!(c.thread.as_ref().expect("thread").id, "c0");
+        assert_eq!(c.thread.id, "c0");
         assert_eq!(c.commit.as_deref(), Some("sha0"), "rebuilt comment carries the scope sha");
         assert!(c.persisted, "hydrated comment is durable");
         assert!(!c.authored_this_session, "hydrated, not authored this session");
@@ -5821,7 +5818,7 @@ mod tests {
 
         let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
         assert_eq!(comments.len(), 1, "only the current commit's thread renders");
-        assert_eq!(comments[0].thread.as_ref().expect("thread").id, "c0");
+        assert_eq!(comments[0].thread.id, "c0");
 
         let reloaded = ws.load_review_threads("forge", "feat").expect("load");
         assert_eq!(reloaded.len(), 2, "the other commit's thread survives the writeback");
@@ -5875,9 +5872,9 @@ mod tests {
 
         let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
         assert_eq!(comments.len(), 1, "only the sha1 thread renders in Commit(1)");
-        assert_eq!(comments[0].thread.as_ref().expect("thread").id, "c1");
+        assert_eq!(comments[0].thread.id, "c1");
         assert!(
-            comments.iter().all(|c| c.thread.as_ref().map(|t| t.id.as_str()) != Some("c0")),
+            comments.iter().all(|c| c.thread.id != "c0"),
             "the sha0 thread stays out of the Commit(1) scope",
         );
         assert!(
@@ -5927,7 +5924,7 @@ mod tests {
 
         let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
         assert_eq!(
-            comment.thread.as_ref().expect("thread").status,
+            comment.thread.status,
             ReviewStatus::Resolved,
             "the commit-scoped thread hydrated back Resolved",
         );
@@ -6006,7 +6003,7 @@ mod tests {
         let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
         assert_eq!(comments.len(), 1, "only the whole-diff thread renders in whole-diff scope");
         assert_eq!(comments[0].commit, None);
-        assert_eq!(comments[0].thread.as_ref().expect("thread").id, "wd");
+        assert_eq!(comments[0].thread.id, "wd");
 
         let reloaded = ws.load_review_threads("forge", "feat").expect("load");
         assert_eq!(reloaded.len(), 2, "both threads survive");
@@ -6078,7 +6075,7 @@ mod tests {
 
         let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
         assert_eq!(comments.len(), 1, "the commit's persisted thread hydrated on navigation");
-        assert_eq!(comments[0].thread.as_ref().expect("thread").id, "c1");
+        assert_eq!(comments[0].thread.id, "c1");
         assert_eq!(comments[0].commit.as_deref(), Some("sha1"));
         assert!(comments[0].persisted, "hydrated from redb");
     }
@@ -6132,7 +6129,7 @@ mod tests {
             hunk_context: Vec::new(),
             comment_text: "on sha1".to_owned(),
             commit: Some("sha1".to_owned()),
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -6143,7 +6140,7 @@ mod tests {
             hunk_context: Vec::new(),
             comment_text: "stale whole-diff".to_owned(),
             commit: None,
-            thread: None,
+            thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
         });
@@ -6160,8 +6157,7 @@ mod tests {
         let whole: Vec<_> = comments.iter().filter(|c| c.commit.is_none()).collect();
         assert_eq!(whole.len(), 1, "one whole-diff comment after hydrate");
         assert_eq!(
-            whole[0].thread.as_ref().expect("thread").id,
-            "wd",
+            whole[0].thread.id, "wd",
             "the stale in-memory whole-diff comment was replaced by the hydrated thread",
         );
     }
@@ -6178,10 +6174,8 @@ mod tests {
         app.diff_overlay = Some(overlay);
         save_active_input(&mut app);
         // Simulate the thread having drifted to Outdated.
-        if let Some(o) = app.diff_overlay.as_mut()
-            && let Some(thread) = o.comments[0].thread.as_mut()
-        {
-            thread.status = ReviewStatus::Outdated;
+        if let Some(o) = app.diff_overlay.as_mut() {
+            o.comments[0].thread.status = ReviewStatus::Outdated;
         }
         apply_thread_action(&mut app, key, ThreadAction::Resolve);
         assert_eq!(thread_status(&app), ReviewStatus::Resolved, "outdated resolves to resolved");
@@ -6211,7 +6205,7 @@ mod tests {
         let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
         assert!(comment.authored_this_session);
         assert!(!comment.persisted, "a failed write with all present stays at-risk");
-        assert!(comment.thread.is_some(), "still a whole-diff thread");
+        assert_eq!(comment.thread.commit, None, "still a whole-diff thread");
     }
 
     #[test]
