@@ -10416,13 +10416,15 @@ mod build_resume_map_tests {
     }
 
     /// Non-regression guard for the working durable workers
-    /// (steward / credit-supply / wgpu-pr): their newest tagged session
-    /// already lives in the worktree, so scoping the candidate set to the
-    /// worktree dir picks the SAME session the old "newest under project"
-    /// logic did. steward additionally carries an older stray repo-root
-    /// session to prove the worktree pick is unchanged even then.
+    /// (steward / credit-supply / wgpu-pr): the fix must keep them
+    /// resuming their worktree session. steward carries a stray repo-root
+    /// session that is NEWER than its worktree session - the exact
+    /// gpt-tutor shape, where the removed "newest under project" logic
+    /// would pick the root session and break the resume. Exact run-dir
+    /// matching still resumes steward's worktree session. credit-supply
+    /// and wgpu-pr have only their worktree session.
     #[test]
-    fn build_resume_map_unchanged_for_worktree_newest_workers() {
+    fn build_resume_map_working_workers_pick_worktree_over_newer_root() {
         let project_dir = std::path::Path::new("/Users/me/Projects/granite");
         let wt = |label: &str| format!("/Users/me/Projects/granite/.claude/worktrees/{label}");
         let mut steward_wt =
@@ -10433,7 +10435,7 @@ mod build_resume_map_tests {
             Some("/Users/me/Projects/granite"),
             Some("forge:worker:steward"),
         );
-        steward_root.last_modified = 100;
+        steward_root.last_modified = 400;
         let credit_wt =
             mk_info("credit-wt", Some(&wt("credit-supply")), Some("forge:worker:credit-supply"));
         let wgpu_wt = mk_info("wgpu-wt", Some(&wt("wgpu-pr")), Some("forge:worker:wgpu-pr"));
