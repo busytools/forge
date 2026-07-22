@@ -852,8 +852,6 @@ fn footer_line(overlay: &DiffOverlayState, mode: DiffViewMode, width: u16) -> Li
         }
         hints.push(("t", "split/unified"));
         hints.push(("click line", "comment"));
-        hints.push(("r", "resolve"));
-        hints.push(("o", "reopen"));
         if !commit_mode {
             hints.push(("click file", "jump"));
         }
@@ -3274,5 +3272,25 @@ mod tests {
         let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(joined.contains("Comment on line 3"), "no-thread comment keeps the classic title");
         assert!(!joined.contains("\u{b7} OPEN"), "and carries no state label");
+    }
+
+    #[test]
+    fn footer_omits_resolve_and_reopen_hints() {
+        // Resolve / reopen are per-comment box buttons; the footer no
+        // longer advertises them as global keys.
+        let state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp/repo"),
+            "HEAD".to_owned(),
+            vec![FileHunks {
+                path: "a.rs".into(),
+                status: FileStatus::Modified,
+                oversize: false,
+                hunks: Vec::new(),
+            }],
+        );
+        let text = line_text(&footer_line(&state, DiffViewMode::Unified, 160));
+        assert!(text.contains("comment"), "still hints click-to-comment");
+        assert!(!text.contains("resolve"), "no global resolve hint");
+        assert!(!text.contains("reopen"), "no global reopen hint");
     }
 }
