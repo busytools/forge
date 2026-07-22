@@ -5924,6 +5924,89 @@ mod tests {
     }
 
     #[test]
+    fn hydrate_replaces_only_the_current_scope_and_keeps_others() {
+        // `retain(|c| c.commit != scope_commit)` must drop ONLY the current
+        // scope's in-memory comments (replaced by the rebuilt set) and keep
+        // other scopes' comments. An inverted retain or a blanket clear
+        // would strand the other-scope comment.
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads(
+            "forge",
+            "feat",
+            &[forge_primitives::ReviewThread {
+                id: "wd".to_owned(),
+                anchor: ReviewAnchor {
+                    path: "src/x.rs".to_owned(),
+                    side: ReviewSide::New,
+                    line: 5,
+                    content_hash: resolver::content_hash("let a = 1;"),
+                    context: Vec::new(),
+                    base_ref: "main".to_owned(),
+                },
+                comments: vec![ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "hydrated".to_owned(),
+                    at: String::new(),
+                }],
+                status: ReviewStatus::Open,
+                created_at: "t0".to_owned(),
+                updated_at: "t0".to_owned(),
+                commit: None,
+            }],
+        );
+
+        let mut overlay = DiffOverlayState::new(
+            PathBuf::from("/tmp/repo"),
+            "main".to_owned(),
+            vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])],
+        );
+        overlay.branch = Some("feat".to_owned());
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        // An OTHER-scope (commit sha1) comment that must survive, and a stale
+        // current-scope (whole-diff) comment the hydrate replaces.
+        overlay.comments.push(HunkComment {
+            key,
+            path: "src/x.rs".to_owned(),
+            line: 9,
+            hunk_context: Vec::new(),
+            comment_text: "on sha1".to_owned(),
+            commit: Some("sha1".to_owned()),
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
+        });
+        overlay.comments.push(HunkComment {
+            key,
+            path: "src/x.rs".to_owned(),
+            line: 5,
+            hunk_context: Vec::new(),
+            comment_text: "stale whole-diff".to_owned(),
+            commit: None,
+            thread: None,
+            authored_this_session: true,
+            persisted: false,
+        });
+        app.diff_overlay = Some(overlay);
+
+        hydrate_threads(&mut app);
+
+        let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
+        let other = comments
+            .iter()
+            .find(|c| c.commit.as_deref() == Some("sha1"))
+            .expect("the other-scope comment survives");
+        assert_eq!(other.comment_text, "on sha1");
+        let whole: Vec<_> = comments.iter().filter(|c| c.commit.is_none()).collect();
+        assert_eq!(whole.len(), 1, "one whole-diff comment after hydrate");
+        assert_eq!(
+            whole[0].thread.as_ref().expect("thread").id,
+            "wd",
+            "the stale in-memory whole-diff comment was replaced by the hydrated thread",
+        );
+    }
+
+    #[test]
     fn resolve_flips_an_outdated_thread_to_resolved() {
         let (mut app, _dir) = review_app();
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = 1;", 10)])];
