@@ -256,6 +256,9 @@ pub enum BodyRowKey {
     /// The single-line summary chip showing a saved comment ("💬
     /// L<line>: ..."). Click → re-open the saved comment for edit.
     CommentChip(LineKey),
+    /// A comment box's button row (`[ Resolve ]` / `[ Reopen ]`). Click
+    /// runs `action` on THAT thread by `key`, not the focused thread.
+    CommentButton { key: LineKey, action: ThreadAction },
     /// Inline TextArea row for the currently-open comment editor.
     /// Multiple consecutive rows when the comment spans more than
     /// one visual line.
@@ -263,6 +266,15 @@ pub enum BodyRowKey {
     /// A row of the commit-message block shown above the diff in commit
     /// mode (the leading rule, subject, or a body line). Non-interactive.
     CommitMessage,
+}
+
+/// The lifecycle transition a comment box's button fires. `Resolve`
+/// moves an Open / Outdated thread to Resolved; `Reopen` moves a
+/// Resolved thread back to Open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadAction {
+    Resolve,
+    Reopen,
 }
 
 /// A saved per-line comment. `path` / `line` / `hunk_context` are
@@ -1824,16 +1836,44 @@ fn reopen_focused_thread(app: &mut App) {
     set_focused_thread_status(app, ReviewStatus::Open, &[ReviewStatus::Resolved]);
 }
 
-/// Flip the focused thread's status when it is currently in one of
-/// `allowed_from`, updating the in-memory box and persisting the change.
-/// No-op when nothing is focused, the focused comment has no durable
-/// thread, or its status isn't a legal source for this transition.
+/// Flip the focused thread's status - the `r` / `o` keyboard path. Acts
+/// on the last-clicked / saved box; a no-op when nothing is focused.
 fn set_focused_thread_status(app: &mut App, next: ReviewStatus, allowed_from: &[ReviewStatus]) {
+    let Some(key) = app.diff_overlay.as_ref().and_then(|o| o.focused_thread) else {
+        return;
+    };
+    set_thread_status_by_key(app, key, next, allowed_from);
+}
+
+/// Map a comment-button click to its transition and run it on the clicked
+/// thread. Distinct from the `r` / `o` keys in that it targets `key`
+/// directly rather than the focused thread, so a click resolves exactly
+/// the box it landed on.
+fn apply_thread_action(app: &mut App, key: LineKey, action: ThreadAction) {
+    let (next, allowed_from): (ReviewStatus, &[ReviewStatus]) = match action {
+        ThreadAction::Resolve => {
+            (ReviewStatus::Resolved, &[ReviewStatus::Open, ReviewStatus::Outdated])
+        }
+        ThreadAction::Reopen => (ReviewStatus::Open, &[ReviewStatus::Resolved]),
+    };
+    set_thread_status_by_key(app, key, next, allowed_from);
+}
+
+/// Flip the thread anchored at `key` to `next` when it is currently in
+/// one of `allowed_from`, updating the in-memory box, focusing it (so the
+/// `r` / `o` keys follow), and persisting the change. No-op when the key
+/// has no durable thread or its status isn't a legal source.
+fn set_thread_status_by_key(
+    app: &mut App,
+    key: LineKey,
+    next: ReviewStatus,
+    allowed_from: &[ReviewStatus],
+) {
     let project = app.active_session().and_then(|s| s.project.clone());
     let Some(overlay) = app.diff_overlay.as_mut() else {
         return;
     };
-    let (Some(key), Some(branch)) = (overlay.focused_thread, overlay.branch.clone()) else {
+    let Some(branch) = overlay.branch.clone() else {
         return;
     };
     let Some(thread) = overlay
@@ -1847,6 +1887,7 @@ fn set_focused_thread_status(app: &mut App, next: ReviewStatus, allowed_from: &[
     };
     thread.status = next;
     let id = thread.id.clone();
+    overlay.focused_thread = Some(key);
     app.needs_redraw = true;
     if let Some(project) = project
         && let Some(workspace) = app.workspace.as_ref()
@@ -2331,6 +2372,10 @@ struct MouseEffect {
     /// `handle_mouse` spawns the wider-context re-fetch (which needs the
     /// App's event channel the inner overlay borrow can't reach).
     expand: Option<(usize, u32)>,
+    /// A comment-button click: run `action` on the thread at this key.
+    /// Surfaced to the outer handler because persisting the status needs
+    /// the App's workspace, which the inner overlay borrow can't reach.
+    thread_action: Option<(LineKey, ThreadAction)>,
 }
 
 /// Handle a mouse event while the diff overlay is active.
@@ -2367,6 +2412,9 @@ pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
     };
     if let Some((file_idx, level)) = effect.expand {
         request_context_expand(app, file_idx, level);
+    }
+    if let Some((key, action)) = effect.thread_action {
+        apply_thread_action(app, key, action);
     }
     if effect.redraw {
         app.needs_redraw = true;
@@ -2425,7 +2473,7 @@ fn handle_scroll(
     } else {
         overlay.doc_scroll = overlay.doc_scroll.saturating_sub(u32::from(SCROLL_LINES_PER_NOTCH));
     }
-    MouseEffect { redraw: true, expand: None }
+    MouseEffect { redraw: true, expand: None, thread_action: None }
 }
 
 /// Resolve a left-click to an action. Returns the effect (redraw +
@@ -2449,12 +2497,12 @@ fn handle_left_click(
         } else {
             overlay.open_jump();
         }
-        return MouseEffect { redraw: true, expand: None };
+        return MouseEffect { redraw: true, expand: None, thread_action: None };
     }
     // Any other click with the dropdown open closes it (click-away).
     if overlay.jump_open {
         overlay.jump_open = false;
-        return MouseEffect { redraw: true, expand: None };
+        return MouseEffect { redraw: true, expand: None, thread_action: None };
     }
     // Rail click: column inside the rail → rail row hit-test.
     if column_in_rail(overlay, column, content_width) {
@@ -2502,7 +2550,7 @@ fn handle_rail_click(overlay: &mut DiffOverlayState, row: u16) -> MouseEffect {
     // prior comment.
     overlay.doc_scroll = overlay.doc_offsets().starts.get(file_idx).copied().unwrap_or(0);
     close_active_input_preserving_prior(overlay);
-    MouseEffect { redraw: true, expand: None }
+    MouseEffect { redraw: true, expand: None, thread_action: None }
 }
 
 /// Hit-test a left-click against the narrow-tier `◀ ▶` cycle
@@ -2554,6 +2602,9 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
             }
         }
         BodyRowKey::CommentChip(line_key) => reopen_comment_for_key(overlay, line_key),
+        BodyRowKey::CommentButton { key, action } => {
+            MouseEffect { redraw: true, expand: None, thread_action: Some((key, action)) }
+        }
         BodyRowKey::FileHeader { file_idx } | BodyRowKey::DeletedCollapsed { file_idx } => {
             toggle_deleted_collapse(overlay, file_idx)
         }
@@ -2575,7 +2626,7 @@ fn expand_context(overlay: &mut DiffOverlayState, file_idx: usize) -> MouseEffec
     };
     *level = level.saturating_add(CONTEXT_STEP);
     let requested = *level;
-    MouseEffect { redraw: true, expand: Some((file_idx, requested)) }
+    MouseEffect { redraw: true, expand: Some((file_idx, requested)), thread_action: None }
 }
 
 /// Toggle a deleted file's expanded state (collapse <-> full body).
@@ -2592,7 +2643,7 @@ fn toggle_deleted_collapse(overlay: &mut DiffOverlayState, file_idx: usize) -> M
     if let Some(slot) = overlay.measured_heights.get_mut(file_idx) {
         *slot = None;
     }
-    MouseEffect { redraw: true, expand: None }
+    MouseEffect { redraw: true, expand: None, thread_action: None }
 }
 
 fn open_input_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffect {
@@ -2610,7 +2661,7 @@ fn open_input_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffe
     close_active_input_preserving_prior(overlay);
     let editor = TextArea::default();
     overlay.active_input = Some(ActiveCommentInput { key, editor, prior_comment: None });
-    MouseEffect { redraw: true, expand: None }
+    MouseEffect { redraw: true, expand: None, thread_action: None }
 }
 
 fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffect {
@@ -2637,7 +2688,7 @@ fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> Mouse
     overlay.focused_thread = Some(key);
     overlay.active_input =
         Some(ActiveCommentInput { key: comment.key, editor, prior_comment: Some(comment) });
-    MouseEffect { redraw: true, expand: None }
+    MouseEffect { redraw: true, expand: None, thread_action: None }
 }
 
 /// Whether a comment belongs in the agent bundle on Esc: authored or
@@ -5044,6 +5095,46 @@ mod tests {
             ReviewStatus::Open,
             "persisted"
         );
+    }
+
+    #[test]
+    fn comment_button_click_resolves_only_the_clicked_thread() {
+        let (mut app, _dir) = review_app();
+        let files =
+            vec![single_hunk_file("src/x.rs", vec![added_line("a", 10), added_line("b", 11)])];
+        let overlay = DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        app.diff_overlay = Some(overlay);
+        app.diff_overlay.as_mut().expect("overlay").branch = Some("feat".to_owned());
+        let ka = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let kb = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 };
+        with_editor(app.diff_overlay.as_mut().expect("overlay"), ka, "thread A");
+        save_active_input(&mut app);
+        with_editor(app.diff_overlay.as_mut().expect("overlay"), kb, "thread B");
+        save_active_input(&mut app);
+
+        // Focus A, then click B's Resolve button: the click must target B
+        // by key, not the focused thread.
+        app.diff_overlay.as_mut().expect("overlay").focused_thread = Some(ka);
+        apply_thread_action(&mut app, kb, ThreadAction::Resolve);
+
+        let overlay = app.diff_overlay.as_ref().expect("overlay");
+        let status_of = |key: LineKey| {
+            overlay
+                .comments
+                .iter()
+                .find(|c| c.key == key)
+                .and_then(|c| c.thread.as_ref())
+                .map(|t| t.status)
+        };
+        assert_eq!(status_of(kb), Some(ReviewStatus::Resolved), "the clicked thread resolves");
+        assert_eq!(status_of(ka), Some(ReviewStatus::Open), "the other thread is untouched");
+
+        let ws = app.workspace.clone().expect("ws");
+        let threads = ws.load_review_threads("forge", "feat");
+        let persisted =
+            |line: u32| threads.iter().find(|t| t.anchor.line == line).map(|t| t.status);
+        assert_eq!(persisted(11), Some(ReviewStatus::Resolved), "B persisted resolved");
+        assert_eq!(persisted(10), Some(ReviewStatus::Open), "A stays open in redb");
     }
 
     #[test]

@@ -32,7 +32,7 @@ use forge_workspace::env::git_diff::hunks::{DiffLineKind, FileHunks, FileStatus,
 
 use crate::app::diff_overlay::{
     ActiveCommentInput, BodyRowKey, DiffScope, DiffViewMode, FileHighlight, HunkComment, LineKey,
-    RailRowKey, rail_width_for,
+    RailRowKey, ThreadAction, rail_width_for,
 };
 use pairing::{PairedDiffRow, pair_hunk_lines};
 use ratatui::Frame;
@@ -1678,11 +1678,6 @@ fn render_comment_chip(
     keys: &mut Vec<BodyRowKey>,
 ) {
     let status = comment.thread.as_ref().map(|t| t.status);
-    // Resolved threads collapse to a single green one-liner.
-    if status == Some(ReviewStatus::Resolved) {
-        render_resolved_chip(comment, key, gutter_width, pane_width, lines, keys);
-        return;
-    }
     let (accent, state_label) = review_state_style(status);
     let indent_cols = gutter_width + 4;
     let indent = " ".repeat(indent_cols);
@@ -1743,41 +1738,38 @@ fn render_comment_chip(
         keys.push(BodyRowKey::CommentChip(key));
     }
 
+    // Button row (durable threads only) - the state's active transition
+    // in accent-bold plus the other, dim, so every state reads as the
+    // same three-part box. A click routes to this exact thread by `key`.
+    if let Some(status) = status {
+        let (active_label, action, other_label) = match status {
+            ReviewStatus::Resolved => ("[ Reopen ]", ThreadAction::Reopen, "[ Resolve ]"),
+            ReviewStatus::Open | ReviewStatus::Outdated => {
+                ("[ Resolve ]", ThreadAction::Resolve, "[ Reopen ]")
+            }
+        };
+        let active_style = border_style.add_modifier(Modifier::BOLD);
+        let content_w = active_label.width() + 2 + other_label.width();
+        let pad = inner_width.saturating_sub(content_w);
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::raw(indent.clone()),
+            Span::styled("│ ", border_style),
+            Span::styled(active_label, active_style),
+            Span::styled("  ", body_style),
+            Span::styled(other_label, note_style),
+            Span::styled(" ".repeat(pad), body_style),
+            Span::styled(" │", border_style),
+        ]));
+        keys.push(BodyRowKey::CommentButton { key, action });
+    }
+
     // Bottom border.
     let bottom = format!("└{}┘", "─".repeat(box_width.saturating_sub(2)));
     lines.push(Line::from(vec![
         Span::raw("  "),
         Span::raw(indent),
         Span::styled(bottom, border_style),
-    ]));
-    keys.push(BodyRowKey::CommentChip(key));
-}
-
-/// A resolved thread collapses to one green row: `└─ ✓ line N ·
-/// RESOLVED  <text>  · [o] reopen`. Truncated to the pane width; the
-/// whole row is a [`BodyRowKey::CommentChip`] so a click reopens it.
-fn render_resolved_chip(
-    comment: &HunkComment,
-    key: LineKey,
-    gutter_width: usize,
-    pane_width: u16,
-    lines: &mut Vec<Line<'static>>,
-    keys: &mut Vec<BodyRowKey>,
-) {
-    let indent_cols = gutter_width + 4;
-    let indent = " ".repeat(indent_cols);
-    let green = Style::default().fg(theme::REVIEW_RESOLVED);
-    let dim = Style::default().fg(theme::DIM);
-    let head = format!("└─ ✓ line {} · RESOLVED  ", comment.line);
-    let avail = usize::from(pane_width).saturating_sub(2 + indent_cols + head.chars().count() + 12);
-    let text = comment.comment_text.replace('\n', " ");
-    let snippet: String = text.chars().take(avail.max(8)).collect();
-    lines.push(Line::from(vec![
-        Span::raw("  "),
-        Span::raw(indent),
-        Span::styled(head, green),
-        Span::styled(snippet, dim),
-        Span::styled("  · [o] reopen", dim),
     ]));
     keys.push(BodyRowKey::CommentChip(key));
 }
@@ -3080,17 +3072,67 @@ mod tests {
     }
 
     #[test]
-    fn comment_chip_resolved_collapses_to_one_green_row() {
+    fn comment_chip_resolved_renders_full_box_with_reopen_button() {
         let (lines, keys) =
             render_chip(&chip_comment(88, "rename tok to token", Some(ReviewStatus::Resolved)));
-        assert_eq!(lines.len(), 1, "resolved collapses to a single row");
-        assert_eq!(keys.len(), 1);
-        let text = line_text(&lines[0]);
+        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(
-            text.contains("\u{2713} line 88 \u{b7} RESOLVED"),
-            "resolved one-liner; got: {text}"
+            joined.contains("\u{1f4ac} line 88 \u{b7} RESOLVED"),
+            "resolved uses the unified box title; got:\n{joined}"
         );
-        assert!(text.contains("[o] reopen"), "reopen hint present");
+        assert!(joined.contains("[ Reopen ]"), "resolved box offers the Reopen button");
+        assert_eq!(
+            lines.first().expect("top").spans.last().expect("border").style.fg,
+            Some(theme::REVIEW_RESOLVED),
+            "resolved border is green",
+        );
+        assert!(
+            keys.iter().any(|k| matches!(
+                k,
+                BodyRowKey::CommentButton { action: ThreadAction::Reopen, .. }
+            )),
+            "the button row routes to Reopen",
+        );
+    }
+
+    #[test]
+    fn comment_box_button_matches_state() {
+        for status in [ReviewStatus::Open, ReviewStatus::Outdated] {
+            let (_, keys) = render_chip(&chip_comment(1, "note", Some(status)));
+            assert!(
+                keys.iter().any(|k| matches!(
+                    k,
+                    BodyRowKey::CommentButton { action: ThreadAction::Resolve, .. }
+                )),
+                "{status:?} offers Resolve",
+            );
+        }
+        let (_, keys) = render_chip(&chip_comment(1, "note", Some(ReviewStatus::Resolved)));
+        assert!(
+            keys.iter().any(|k| matches!(
+                k,
+                BodyRowKey::CommentButton { action: ThreadAction::Reopen, .. }
+            )),
+            "Resolved offers Reopen",
+        );
+    }
+
+    #[test]
+    fn comment_box_shape_is_identical_across_states() {
+        // Every durable state renders the same three-part box: a top
+        // border (┌), a button row, and a bottom border (└).
+        for status in [ReviewStatus::Open, ReviewStatus::Resolved, ReviewStatus::Outdated] {
+            let (lines, keys) = render_chip(&chip_comment(1, "note", Some(status)));
+            assert!(line_text(&lines[0]).contains('\u{250c}'), "{status:?} opens with ┌");
+            assert!(
+                line_text(lines.last().expect("bottom")).contains('\u{2514}'),
+                "{status:?} closes with └",
+            );
+            assert!(
+                keys.iter().any(|k| matches!(k, BodyRowKey::CommentButton { .. })),
+                "{status:?} carries a button row",
+            );
+        }
     }
 
     #[test]
