@@ -10227,9 +10227,9 @@ mod build_resume_map_tests {
     /// workers spawned with `--worktree=<label>` `chdir` into
     /// `<project>/.claude/worktrees/<label>/` which is indexed under
     /// a SIBLING `<config_dir>/projects/<sanitize(worktree_path)>/`
-    /// subdir. A `directory=Some(<project>)` scan misses them. The
-    /// cwd-prefix filter catches them because every worktree cwd
-    /// starts with `<project>`.
+    /// subdir. A `directory=Some(<project>)` scan misses them. Matching
+    /// each worker's cwd against its `worker_tag_dir` run dir catches
+    /// them: every worktree cwd equals `<project>/.claude/worktrees/<label>`.
     #[test]
     fn build_resume_map_finds_workers_in_worktree_subdirs() {
         let project_dir = std::path::Path::new("/Users/me/Projects/forge");
@@ -10257,7 +10257,7 @@ mod build_resume_map_tests {
     }
 
     /// Workers from OTHER projects must NOT appear in this project's
-    /// resume map - their cwd doesn't start with `project_dir`.
+    /// resume map - their cwd doesn't equal this project's run dir.
     #[test]
     fn build_resume_map_filters_out_workers_from_other_projects() {
         let project_dir = std::path::Path::new("/Users/me/Projects/forge");
@@ -10278,13 +10278,12 @@ mod build_resume_map_tests {
         assert_eq!(map.get("planner"), Some(&"ours".to_owned()));
     }
 
-    /// Path-prefix matching must be component-aware: a project at
-    /// `/Users/me/Projects/forge` MUST NOT match workers from a
-    /// sibling project at `/Users/me/Projects/forge-old` whose cwd
-    /// shares the `forge` byte-prefix. `Path::starts_with` (not
-    /// `str::starts_with`) handles this correctly. Without the
-    /// component-aware check, `forge-old`'s workers would silently
-    /// migrate into `forge`'s resume map - same bug class as #157.
+    /// Exact run-dir matching keeps a project at
+    /// `/Users/me/Projects/forge` from picking up workers of a sibling
+    /// project at `/Users/me/Projects/forge-old`: the sibling's worktree
+    /// cwd never equals this project's `worker_tag_dir` run dir, so
+    /// `forge-old`'s workers can't migrate into `forge`'s resume map even
+    /// though the two paths share a byte-prefix.
     #[test]
     fn build_resume_map_filters_out_workers_with_overlapping_path_prefix() {
         let project_dir = std::path::Path::new("/Users/me/Projects/forge");
@@ -10344,8 +10343,8 @@ mod build_resume_map_tests {
     }
 
     /// Non-git project: workers run in the project's main cwd (no
-    /// worktree). The cwd-prefix filter still catches them since
-    /// project's main cwd == project_dir.
+    /// worktree), so `worker_tag_dir` leaves the run dir at
+    /// `project_dir` and the exact-match filter catches them.
     #[test]
     fn build_resume_map_finds_workers_in_non_git_project() {
         let project_dir = std::path::Path::new("/Users/me/Projects/non-git");
