@@ -370,11 +370,11 @@ pub struct HunkComment {
     /// the comment: navigating between commits keeps every comment but
     /// only those matching the current scope render and count.
     pub commit: Option<String>,
-    /// Durable review-thread record when this is a whole-diff comment
-    /// persisted to redb; `None` for ephemeral commit-scoped comments.
-    /// The flat fields above carry the current-scan view (re-resolved
-    /// each open); `thread.anchor` carries the durable last-known
-    /// location and `thread.status` drives the box's state tint.
+    /// Durable review-thread record: the anchor, comment chain, and
+    /// lifecycle state persisted to redb. The flat fields above carry the
+    /// current-scan view (re-resolved each open); `thread.anchor` carries
+    /// the durable last-known location and `thread.status` drives the
+    /// box's state tint.
     pub thread: Option<forge_primitives::ReviewThread>,
     /// Whether the user authored or edited this comment in THIS overlay
     /// session (vs a thread hydrated from redb for display). Only
@@ -382,9 +382,9 @@ pub struct HunkComment {
     /// read-only reopen of a branch's history never re-prompts.
     pub authored_this_session: bool,
     /// Whether a redb write for this comment's thread has been confirmed.
-    /// `false` for ephemeral comments and for durable comments whose
-    /// write was skipped (no branch / no db) or failed - those stay in
-    /// the at-risk bucket the force-clear path warns about.
+    /// `false` for a comment whose write was skipped (no branch / no db)
+    /// or failed - those stay in the at-risk bucket the force-clear path
+    /// warns about.
     pub persisted: bool,
 }
 
@@ -2258,43 +2258,37 @@ fn save_active_input(app: &mut App) {
     let content_hash = resolver::content_hash(&diff_line.text);
     let context = resolver::capture_context(hunk, key.line_idx, CONTEXT_RADIUS);
     let prior_thread = input.prior_comment.as_ref().and_then(|c| c.thread.clone());
-    // Durable review thread only in whole-diff scope (commit == None);
-    // commit sub-scopes keep today's ephemeral comments. Editing an
-    // existing chip reuses the prior thread's identity + comment chain.
-    let thread = commit.is_none().then(|| {
-        let anchor = ReviewAnchor {
-            path: path.clone(),
-            side,
-            line: line_no,
-            content_hash,
-            context,
-            base_ref: target,
-        };
-        build_thread(prior_thread, anchor, &text)
-    });
+    // Every scope persists a durable thread; `commit` records the scope
+    // (the current sha, or `None` in whole-diff). Editing an existing chip
+    // reuses the prior thread's identity + comment chain.
+    let anchor = ReviewAnchor {
+        path: path.clone(),
+        side,
+        line: line_no,
+        content_hash,
+        context,
+        base_ref: target,
+    };
+    let mut thread = build_thread(prior_thread, anchor, &text);
+    thread.commit.clone_from(&commit);
     // Persist FIRST so `persisted` reflects a confirmed write. A durable
     // comment whose write is skipped (no branch / project / store) or
     // fails stays at-risk - view.rs counts it as droppable - rather than
     // being marked durable on scope alone.
-    let persisted = match &thread {
-        Some(thread) => {
-            if let (Some(project), Some(branch), Some(workspace)) =
-                (project.as_deref(), branch.as_deref(), workspace.as_ref())
-            {
-                workspace.upsert_review_thread(project, branch, thread.clone())
-            } else {
-                tracing::warn!(
-                    target: crate::logging::targets::APP_SESSION,
-                    event_name = "diff_overlay_review_thread_not_persisted",
-                    message = "whole-diff review comment could not be persisted (no branch / project / store); kept in-memory only",
-                    outcome = "at_risk",
-                    has_branch = branch.is_some(),
-                    has_project = project.is_some(),
-                );
-                false
-            }
-        }
-        None => false,
+    let persisted = if let (Some(project), Some(branch), Some(workspace)) =
+        (project.as_deref(), branch.as_deref(), workspace.as_ref())
+    {
+        workspace.upsert_review_thread(project, branch, thread.clone())
+    } else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "diff_overlay_review_thread_not_persisted",
+            message = "review comment could not be persisted (no branch / project / store); kept in-memory only",
+            outcome = "at_risk",
+            has_branch = branch.is_some(),
+            has_project = project.is_some(),
+        );
+        false
     };
     let comment = HunkComment {
         key,
@@ -2303,7 +2297,7 @@ fn save_active_input(app: &mut App) {
         hunk_context,
         comment_text: text,
         commit,
-        thread,
+        thread: Some(thread),
         authored_this_session: true,
         persisted,
     };
@@ -2323,12 +2317,13 @@ fn anchor_side(kind: DiffLineKind) -> ReviewSide {
     }
 }
 
-/// Build (or update) a durable [`ReviewThread`] for a whole-diff
-/// comment. Reuses `prior`'s id / status / timestamps and comment chain
-/// when editing an existing thread - only the user's own comment text is
+/// Build (or update) a durable [`ReviewThread`] for a review comment.
+/// Reuses `prior`'s id / status / timestamps and comment chain when
+/// editing an existing thread - only the user's own comment text is
 /// replaced, so any agent replies survive the edit. Mints a fresh Open
-/// thread otherwise. The store stamps `created_at` / `updated_at` and any
-/// empty comment `at` on write, so they start empty here.
+/// thread otherwise; the caller stamps the scope `commit`. The store
+/// stamps `created_at` / `updated_at` and any empty comment `at` on
+/// write, so they start empty here.
 fn build_thread(
     prior: Option<forge_primitives::ReviewThread>,
     anchor: ReviewAnchor,
@@ -4862,7 +4857,7 @@ mod tests {
     }
 
     #[test]
-    fn save_active_input_skips_persist_in_commit_scope() {
+    fn save_active_input_persists_a_commit_scoped_thread() {
         let (mut app, _dir) = review_app();
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("z", 3)])];
         let mut overlay =
@@ -4876,11 +4871,17 @@ mod tests {
         save_active_input(&mut app);
 
         let ws = app.workspace.clone().expect("ws");
-        assert!(
-            ws.load_review_threads("forge", "feat").is_empty(),
-            "commit-scope comment is ephemeral"
+        let threads = ws.load_review_threads("forge", "feat");
+        assert_eq!(threads.len(), 1, "the commit-scoped comment persisted a thread");
+        assert_eq!(threads[0].commit.as_deref(), Some("aaa"), "the thread carries the commit sha");
+        assert_eq!(threads[0].comments[0].text, "commit note");
+        let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
+        assert!(comment.persisted, "the in-memory comment is a confirmed durable write");
+        assert_eq!(
+            comment.thread.as_ref().expect("thread").commit.as_deref(),
+            Some("aaa"),
+            "the in-memory comment's thread carries the commit sha",
         );
-        assert_eq!(app.diff_overlay.as_ref().expect("overlay").comments.len(), 1, "still bundled");
     }
 
     #[test]
