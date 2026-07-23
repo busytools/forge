@@ -3167,6 +3167,7 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
             commit: None,
+            review_id: None,
         };
         HunkComment {
             key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },

@@ -2039,6 +2039,7 @@ config_dir = "~/.claude-subspace"
             created_at: "t".to_owned(),
             updated_at: "t".to_owned(),
             commit: None,
+            review_id: None,
         };
         workspace.save_review_threads("forge", &branch, &[thread("a")]);
         workspace.save_review_threads("forge", "survivor", &[thread("b")]);
@@ -2090,6 +2091,7 @@ config_dir = "~/.claude-subspace"
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
                 commit: None,
+                review_id: None,
             }],
         );
 

@@ -57,7 +57,10 @@ pub struct ReviewAnchor {
 /// A persisted review thread: an anchor plus its comment chain and
 /// lifecycle state; `created_at` / `updated_at` are rfc3339. `commit` is
 /// the sha the thread was authored under (`None` = whole-diff scope);
-/// `#[serde(default)]` loads pre-scope threads as whole-diff.
+/// `#[serde(default)]` loads pre-scope threads as whole-diff. `review_id`
+/// is the [`ReviewSet`] this comment was filed into (`None` = unfiled,
+/// not yet in a submitted review); `#[serde(default)]` loads pre-sets
+/// threads as unfiled.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewThread {
     pub id: String,
@@ -68,6 +71,21 @@ pub struct ReviewThread {
     pub updated_at: String,
     #[serde(default)]
     pub commit: Option<String>,
+    #[serde(default)]
+    pub review_id: Option<String>,
+}
+
+/// A submitted review: the sealed grouping of the comments filed under
+/// one pass, plus an optional overview. Persisted per `(project, branch)`.
+/// `number` is the human-facing 1-based sequence (`R1`, `R2`, ...) minted
+/// as the branch's review count + 1; `id` is the stable key threads
+/// carry in [`ReviewThread::review_id`]. `created_at` is rfc3339.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewSet {
+    pub id: String,
+    pub number: u32,
+    pub summary: Option<String>,
+    pub created_at: String,
 }
 
 #[cfg(test)]
@@ -105,6 +123,7 @@ mod tests {
             created_at: "2026-07-19T10:00:00Z".to_owned(),
             updated_at: "2026-07-19T10:05:00Z".to_owned(),
             commit: None,
+            review_id: None,
         }
     }
 
@@ -156,6 +175,64 @@ mod tests {
         }"#;
         let back: ReviewThread = serde_json::from_str(json).expect("deserialize legacy thread");
         assert_eq!(back.commit, None);
+    }
+
+    #[test]
+    fn review_id_defaults_to_none_when_absent() {
+        // A thread persisted before review-sets has no `review_id` key on
+        // disk; it must load as unfiled (`None`), not error.
+        let json = r#"{
+            "id": "t1",
+            "anchor": {
+                "path": "a.rs",
+                "side": "New",
+                "line": 1,
+                "content_hash": 0,
+                "context": [],
+                "base_ref": "main"
+            },
+            "comments": [],
+            "status": "Open",
+            "created_at": "2026-07-19T10:00:00Z",
+            "updated_at": "2026-07-19T10:00:00Z"
+        }"#;
+        let back: ReviewThread = serde_json::from_str(json).expect("deserialize pre-sets thread");
+        assert_eq!(back.review_id, None);
+    }
+
+    #[test]
+    fn filed_thread_round_trips_its_review_id() {
+        let mut thread = sample_thread();
+        thread.review_id = Some("review-7".to_owned());
+        let json = serde_json::to_string(&thread).expect("serialize");
+        let back: ReviewThread = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.review_id, Some("review-7".to_owned()));
+    }
+
+    #[test]
+    fn review_set_round_trips_through_json() {
+        let review = ReviewSet {
+            id: "review-1".to_owned(),
+            number: 3,
+            summary: Some("Two nits on error handling.".to_owned()),
+            created_at: "2026-07-23T10:00:00Z".to_owned(),
+        };
+        let json = serde_json::to_string(&review).expect("serialize");
+        let back: ReviewSet = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(review, back);
+    }
+
+    #[test]
+    fn review_set_without_summary_round_trips() {
+        let review = ReviewSet {
+            id: "review-2".to_owned(),
+            number: 1,
+            summary: None,
+            created_at: "2026-07-23T10:00:00Z".to_owned(),
+        };
+        let json = serde_json::to_string(&review).expect("serialize");
+        let back: ReviewSet = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.summary, None);
     }
 
     #[test]

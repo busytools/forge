@@ -2420,6 +2420,7 @@ fn build_thread(
             created_at: String::new(),
             updated_at: String::new(),
             commit: None,
+            review_id: None,
         },
     }
 }
@@ -4865,6 +4866,7 @@ mod tests {
             created_at: "t0".to_owned(),
             updated_at: updated_at.to_owned(),
             commit: commit.map(str::to_owned),
+            review_id: None,
         }
     }
 
@@ -4965,6 +4967,7 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
             commit: None,
+            review_id: None,
         }
     }
 
@@ -5100,6 +5103,7 @@ mod tests {
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
             commit: None,
+            review_id: None,
         };
         ws.save_review_threads(
             "forge",
@@ -5196,6 +5200,7 @@ mod tests {
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
             commit: None,
+            review_id: None,
         };
         ws.save_review_threads("forge", "feat", &[seed("live", "keep"), seed("stale", "old_body")]);
         // "keep" is live at line 10; "old_body" is gone.
@@ -5252,6 +5257,7 @@ mod tests {
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
                 commit: None,
+                review_id: None,
             }],
         );
         // The commented file is no longer in the diff.
@@ -5498,6 +5504,7 @@ mod tests {
                 created_at: String::new(),
                 updated_at: String::new(),
                 commit: Some("aaa".to_owned()),
+                review_id: None,
             },
             authored_this_session: false,
             persisted: true,
@@ -5529,6 +5536,7 @@ mod tests {
                 created_at: String::new(),
                 updated_at: String::new(),
                 commit: None,
+                review_id: None,
             },
             authored_this_session: false,
             persisted: true,
@@ -5647,6 +5655,7 @@ mod tests {
                 created_at: String::new(),
                 updated_at: String::new(),
                 commit: None,
+                review_id: None,
             };
             HunkComment {
                 key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
@@ -5692,6 +5701,7 @@ mod tests {
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
             commit: None,
+            review_id: None,
         };
         // Same branch, two whole-diff targets plus a commit-scoped thread.
         let mut c = seed("c", "main", "let c = 3;");
@@ -5756,6 +5766,7 @@ mod tests {
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
                 commit: Some("sha0".to_owned()),
+                review_id: None,
             }],
         );
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
@@ -5799,6 +5810,7 @@ mod tests {
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
             commit: Some(sha.to_owned()),
+            review_id: None,
         };
         // The sha0 thread drifts (line 5 -> 8) so a writeback fires; the
         // sha1 thread must survive that writeback untouched.
@@ -5855,6 +5867,7 @@ mod tests {
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
             commit: Some(sha.to_owned()),
+            review_id: None,
         };
         ws.save_review_threads(
             "forge",
@@ -5911,6 +5924,7 @@ mod tests {
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
                 commit: Some("sha0".to_owned()),
+                review_id: None,
             }],
         );
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
@@ -5985,6 +5999,7 @@ mod tests {
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
             commit: commit.map(str::to_owned),
+            review_id: None,
         };
         // The whole-diff thread drifts (line 5 -> 8) forcing a writeback;
         // the commit-scoped thread must not render here and must survive.
@@ -6041,6 +6056,7 @@ mod tests {
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
                 commit: Some("sha1".to_owned()),
+                review_id: None,
             }],
         );
 
@@ -6110,6 +6126,7 @@ mod tests {
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
                 commit: None,
+                review_id: None,
             }],
         );
 
@@ -6237,6 +6254,7 @@ mod tests {
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
                 commit: None,
+                review_id: None,
             }],
         );
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("keep", 10)])];

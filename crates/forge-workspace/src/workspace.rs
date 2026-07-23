@@ -5909,6 +5909,7 @@ mod tests {
             created_at: "2026-07-19T10:00:00Z".to_owned(),
             updated_at: "2026-07-19T10:00:00Z".to_owned(),
             commit: None,
+            review_id: None,
         };
 
         let dir = tempdir().expect("tempdir");

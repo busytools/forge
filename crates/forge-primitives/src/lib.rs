@@ -121,7 +121,7 @@ pub use question::{
     QuestionAnnotation, QuestionOption, QuestionOutcome, QuestionPrompt, QuestionRequest,
 };
 pub use review::{
-    ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+    ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSet, ReviewSide, ReviewStatus, ReviewThread,
 };
 pub use runtime::{
     ApiRetryError, ApiRetryUpdate, AvailableAgent, AvailableCommand, AvailableModel,
