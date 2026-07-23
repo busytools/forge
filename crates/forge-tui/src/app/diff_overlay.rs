@@ -4074,7 +4074,15 @@ mod tests {
 
         close_with_submit(&mut app);
         assert!(app.diff_overlay.is_none(), "edit-only close skips the modal and closes");
-        assert!(rx.try_recv().is_ok(), "the edited comment still reached the agent");
+        match rx.try_recv().expect("the edited comment still reached the agent") {
+            forge_primitives::AgentCommand::PromptWithImages { text, .. } => {
+                assert!(
+                    text.contains("tweaked note"),
+                    "the edited text is in the bundle; got: {text}"
+                );
+            }
+            other => panic!("expected PromptWithImages, got {other:?}"),
+        }
         assert!(
             ws.load_reviews("forge", "feat").expect("load").is_empty(),
             "no review was minted for an edit-only session",
