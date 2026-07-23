@@ -27,7 +27,7 @@
 
 mod pairing;
 
-use forge_primitives::ReviewStatus;
+use forge_primitives::{ReviewSet, ReviewStatus};
 use forge_workspace::env::git_diff::hunks::{DiffLineKind, FileHunks, FileStatus, Hunk};
 
 use crate::app::diff_overlay::{
@@ -1610,7 +1610,15 @@ fn push_unified_body(
                 push_unified_diff_rows(&row, spans, gutter_width, content_width, lines, keys);
                 if let Some(key) = line_key {
                     for comment in comments_by_key.get(&key).into_iter().flatten() {
-                        render_comment_chip(comment, key, gutter_width, pane_width, lines, keys);
+                        render_comment_chip(
+                            comment,
+                            key,
+                            gutter_width,
+                            pane_width,
+                            &overlay.reviews,
+                            lines,
+                            keys,
+                        );
                     }
                     if let Some(input) = overlay.active_input.as_ref().filter(|i| i.key == key) {
                         render_active_input(
@@ -1715,7 +1723,15 @@ fn push_split_body(
             }
             for side_key in sides {
                 for comment in comments_by_key.get(&side_key).into_iter().flatten() {
-                    render_comment_chip(comment, side_key, gutter_width, pane_width, lines, keys);
+                    render_comment_chip(
+                        comment,
+                        side_key,
+                        gutter_width,
+                        pane_width,
+                        &overlay.reviews,
+                        lines,
+                        keys,
+                    );
                 }
                 if let Some(input) = overlay.active_input.as_ref().filter(|i| i.key == side_key) {
                     let diff_line = &file.hunks[side_key.hunk_idx].lines[side_key.line_idx];
@@ -1837,11 +1853,21 @@ fn review_state_style(status: ReviewStatus) -> (Color, &'static str) {
     }
 }
 
+/// The dim chip tag for a comment: `R{number}` when filed into a review,
+/// else `unfiled` (not yet submitted, or a `review_id` with no matching
+/// review row).
+fn review_tag(review_id: Option<&str>, reviews: &[ReviewSet]) -> String {
+    review_id
+        .and_then(|id| reviews.iter().find(|r| r.id == id))
+        .map_or_else(|| "unfiled".to_owned(), |r| format!("R{}", r.number))
+}
+
 fn render_comment_chip(
     comment: &HunkComment,
     key: LineKey,
     gutter_width: usize,
     pane_width: u16,
+    reviews: &[ReviewSet],
     lines: &mut Vec<Line<'static>>,
     keys: &mut Vec<BodyRowKey>,
 ) {
@@ -1866,14 +1892,19 @@ fn render_comment_chip(
     // column width. Without this the top border would land 1 cell
     // further right than the body's `│` border, making the box
     // look stepped.
+    // The review tag (`· R3` filed, `· unfiled` otherwise) is a dim span
+    // between the state label and the trailing dashes.
     let title = format!(" 💬 line {} · {state_label} ", comment.line);
     let title_visual = title.chars().count() + 1; // +1 for 💬's 2nd cell
-    let dash_after = box_width.saturating_sub(3 + title_visual + 1);
-    let top = format!("┌──{title}{}┐", "─".repeat(dash_after));
+    let tag = format!("\u{b7} {} ", review_tag(comment.thread.review_id.as_deref(), reviews));
+    let tag_visual = tag.chars().count();
+    let dash_after = box_width.saturating_sub(3 + title_visual + tag_visual + 1);
     lines.push(Line::from(vec![
         Span::raw("  "),
         Span::raw(indent.clone()),
-        Span::styled(top, border_style),
+        Span::styled(format!("┌──{title}"), border_style),
+        Span::styled(tag, note_style),
+        Span::styled(format!("{}┐", "─".repeat(dash_after)), border_style),
     ]));
     keys.push(BodyRowKey::CommentChip(key));
 
@@ -2301,6 +2332,21 @@ mod tests {
     // `rail_width_for` tests live next to the function definition in
     // `crate::app::diff_overlay::tests` - this module only tests the
     // renderer-local helpers below.
+
+    #[test]
+    fn review_tag_labels_filed_and_unfiled_comments() {
+        let reviews = vec![
+            ReviewSet { id: "r-a".to_owned(), number: 1, summary: None, created_at: String::new() },
+            ReviewSet { id: "r-b".to_owned(), number: 3, summary: None, created_at: String::new() },
+        ];
+        assert_eq!(review_tag(Some("r-b"), &reviews), "R3", "a filed comment shows its number");
+        assert_eq!(review_tag(None, &reviews), "unfiled", "an unfiled comment reads unfiled");
+        assert_eq!(
+            review_tag(Some("gone"), &reviews),
+            "unfiled",
+            "an orphan id degrades to unfiled"
+        );
+    }
 
     #[test]
     fn truncate_path_front_keeps_short_paths_intact() {
@@ -3308,10 +3354,17 @@ mod tests {
     }
 
     fn render_chip(comment: &HunkComment) -> (Vec<Line<'static>>, Vec<BodyRowKey>) {
+        render_chip_with_reviews(comment, &[])
+    }
+
+    fn render_chip_with_reviews(
+        comment: &HunkComment,
+        reviews: &[ReviewSet],
+    ) -> (Vec<Line<'static>>, Vec<BodyRowKey>) {
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
         let mut lines = Vec::new();
         let mut keys = Vec::new();
-        render_comment_chip(comment, key, 4, 80, &mut lines, &mut keys);
+        render_comment_chip(comment, key, 4, 80, reviews, &mut lines, &mut keys);
         (lines, keys)
     }
 
@@ -3329,6 +3382,29 @@ mod tests {
             Some(theme::RUST_ORANGE),
             "open border is rust-orange",
         );
+    }
+
+    #[test]
+    fn comment_chip_title_shows_review_tag() {
+        let reviews = vec![ReviewSet {
+            id: "r2".to_owned(),
+            number: 2,
+            summary: None,
+            created_at: String::new(),
+        }];
+        let mut filed = chip_comment(41, "() on empty input?", ReviewStatus::Open);
+        filed.thread.review_id = Some("r2".to_owned());
+        let (lines, _) = render_chip_with_reviews(&filed, &reviews);
+        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(
+            joined.contains("\u{b7} R2"),
+            "a filed chip shows its review number; got:\n{joined}"
+        );
+
+        let unfiled = chip_comment(41, "() on empty input?", ReviewStatus::Open);
+        let (lines, _) = render_chip_with_reviews(&unfiled, &reviews);
+        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("\u{b7} unfiled"), "an unfiled chip reads unfiled; got:\n{joined}");
     }
 
     #[test]

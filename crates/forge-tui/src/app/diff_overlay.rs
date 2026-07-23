@@ -1104,6 +1104,10 @@ pub struct DiffOverlayState {
     /// `[ Submit review ]` button, stashed each render so a click can
     /// resolve onto it. `None` until the modal first renders.
     pub finish_submit_span: Option<(u16, u16, u16)>,
+    /// Submitted reviews for `(project, branch)`, loaded alongside the
+    /// threads on hydrate. Maps a comment's `review_id` to its `R{number}`
+    /// chip tag and backs the `l` reviews list.
+    pub reviews: Vec<forge_primitives::ReviewSet>,
 }
 
 impl DiffOverlayState {
@@ -1526,6 +1530,7 @@ impl DiffOverlayState {
             review_load_error: None,
             finish_review: None,
             finish_submit_span: None,
+            reviews: Vec::new(),
         };
         state.capture_wide_and_narrow();
         state
@@ -1617,6 +1622,7 @@ impl DiffOverlayState {
             review_load_error: None,
             finish_review: None,
             finish_submit_span: None,
+            reviews: Vec::new(),
         };
         state.capture_wide_and_narrow();
         state
@@ -1785,6 +1791,11 @@ fn hydrate_threads(app: &mut App) {
     else {
         return;
     };
+
+    // Reviews are branch-global (scope-independent); refresh them here so
+    // chip tags and the `l` list reflect what's on disk. Best-effort - a
+    // load error still surfaces via the threads path below.
+    overlay.reviews = workspace.load_reviews(&project, &branch).unwrap_or_default();
 
     // Surface a load failure as a visible notice rather than a silent
     // empty pane; a successful load clears any prior notice.
