@@ -3795,7 +3795,7 @@ impl Workspace {
                 Ok(rows) => rows,
                 Err(error) => {
                     // Surface the decode / IO failure rather than swallowing
-                    // it into a silently-skipped notice (#439/#441 anti-pattern).
+                    // it into a silently-skipped notice.
                     tracing::warn!(
                         target: "forge_workspace::workspace",
                         %error,
