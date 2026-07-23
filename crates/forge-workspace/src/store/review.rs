@@ -7,7 +7,9 @@
 //! (worktree-agnostic), never the directory-hash key.
 
 use anyhow::Context;
-use forge_primitives::review::{ReviewSet, ReviewStatus, ReviewThread};
+use forge_primitives::review::{
+    ReviewAuthor, ReviewComment, ReviewSet, ReviewStatus, ReviewThread,
+};
 use redb::{ReadableTable, TableDefinition};
 
 use super::Db;
@@ -151,6 +153,64 @@ pub fn set_status(
     };
     txn.commit()?;
     Ok(found)
+}
+
+/// Look up one thread by its globally-unique `id` in `(project, branch)`.
+/// `None` when the branch has no such thread (or no row). `comment_id` in
+/// the review MCP maps to this `id`.
+pub fn find_thread_by_id(
+    db: &Db,
+    project: &str,
+    branch: &str,
+    id: &str,
+) -> anyhow::Result<Option<ReviewThread>> {
+    Ok(load(db, project, branch)?.into_iter().find(|t| t.id == id))
+}
+
+/// Append an agent reply to the thread `id` in `(project, branch)`: push a
+/// `ReviewComment` authored by `Agent { label: author_label }`, flip an
+/// `Open` thread to `Addressed` (a Resolved / Outdated / already-Addressed
+/// thread keeps its state), bump `updated_at`, and persist in one write
+/// transaction. Returns the thread's status after the append. Errors when
+/// no thread carries `id`, so a stale comment_id surfaces rather than
+/// silently no-op'ing. An empty `at` is stamped with the current instant.
+pub fn append_reply(
+    db: &Db,
+    project: &str,
+    branch: &str,
+    id: &str,
+    author_label: &str,
+    text: &str,
+    at: &str,
+) -> anyhow::Result<ReviewStatus> {
+    let stamp = if at.is_empty() { rfc3339_now() } else { at.to_owned() };
+    let txn = db.database().begin_write()?;
+    let status = {
+        let mut table = txn.open_table(REVIEW_THREADS)?;
+        let mut threads = match table.get((project, branch))? {
+            Some(value) => decode(value.value(), project, branch)?,
+            None => Vec::new(),
+        };
+        let thread = threads
+            .iter_mut()
+            .find(|t| t.id == id)
+            .with_context(|| format!("no review thread {id} in ({project}, {branch})"))?;
+        thread.comments.push(ReviewComment {
+            author: ReviewAuthor::Agent { label: author_label.to_owned() },
+            text: text.to_owned(),
+            at: stamp.clone(),
+        });
+        if thread.status == ReviewStatus::Open {
+            thread.status = ReviewStatus::Addressed;
+        }
+        thread.updated_at = stamp;
+        let status = thread.status;
+        let encoded = serde_json::to_vec(&threads).context("serialize review threads")?;
+        table.insert((project, branch), encoded.as_slice())?;
+        status
+    };
+    txn.commit()?;
+    Ok(status)
 }
 
 /// Delete the whole thread set for `(project, branch)`. Returns whether
@@ -485,6 +545,69 @@ mod tests {
         save(&db, "forge", "feat", &[thread("a", 10)]).expect("save");
         save(&db, "forge", "feat", &[]).expect("save empty");
         assert!(load(&db, "forge", "feat").expect("load").is_empty());
+    }
+
+    #[test]
+    fn append_reply_appends_agent_comment_and_flips_open_to_addressed() {
+        let (_dir, db) = open_db();
+        save(&db, "forge", "feat", &[thread("a", 10)]).expect("save");
+        let status = append_reply(
+            &db,
+            "forge",
+            "feat",
+            "a",
+            "implementer",
+            "fixed it",
+            "2026-07-23T11:00:00Z",
+        )
+        .expect("append");
+        assert_eq!(status, ReviewStatus::Addressed, "an Open thread flips to Addressed on reply");
+        let loaded = load(&db, "forge", "feat").expect("load");
+        let a = loaded.iter().find(|t| t.id == "a").expect("a present");
+        assert_eq!(a.comments.len(), 2, "the agent reply appends to the thread");
+        assert_eq!(a.comments[1].author, ReviewAuthor::Agent { label: "implementer".to_owned() });
+        assert_eq!(a.comments[1].text, "fixed it");
+        assert_eq!(a.comments[1].at, "2026-07-23T11:00:00Z");
+        assert_eq!(a.status, ReviewStatus::Addressed);
+    }
+
+    #[test]
+    fn append_reply_on_resolved_thread_appends_but_keeps_resolved() {
+        let (_dir, db) = open_db();
+        let mut t = thread("a", 10);
+        t.status = ReviewStatus::Resolved;
+        save(&db, "forge", "feat", &[t]).expect("save");
+        let status =
+            append_reply(&db, "forge", "feat", "a", "impl", "more", "2026-07-23T11:00:00Z")
+                .expect("append");
+        assert_eq!(status, ReviewStatus::Resolved, "a resolved thread stays resolved");
+        let loaded = load(&db, "forge", "feat").expect("load");
+        let a = loaded.iter().find(|t| t.id == "a").expect("a");
+        assert_eq!(a.comments.len(), 2, "the reply still appends");
+        assert_eq!(a.status, ReviewStatus::Resolved);
+    }
+
+    #[test]
+    fn append_reply_unknown_id_errors() {
+        let (_dir, db) = open_db();
+        save(&db, "forge", "feat", &[thread("a", 10)]).expect("save");
+        assert!(
+            append_reply(&db, "forge", "feat", "missing", "impl", "x", "2026-07-23T11:00:00Z")
+                .is_err(),
+            "an unknown comment_id is an error, not a silent no-op",
+        );
+    }
+
+    #[test]
+    fn find_thread_by_id_returns_the_thread_or_none() {
+        let (_dir, db) = open_db();
+        save(&db, "forge", "feat", &[thread("a", 10), thread("b", 20)]).expect("save");
+        let found = find_thread_by_id(&db, "forge", "feat", "b").expect("lookup");
+        assert_eq!(found.map(|t| t.id), Some("b".to_owned()));
+        assert!(
+            find_thread_by_id(&db, "forge", "feat", "missing").expect("lookup").is_none(),
+            "an unknown id resolves to None",
+        );
     }
 
     fn review(number: u32, summary: Option<&str>) -> ReviewSet {
