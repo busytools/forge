@@ -3686,6 +3686,13 @@ mod tests {
         assert!(joined.contains("() on empty input"), "the reviewer's text renders");
         assert!(joined.contains("returns Err now."), "the worker's reply renders");
         assert!(joined.contains('\u{25cf}'), "each turn hangs off a dot on the rail");
+        // Turns render in chronological order - the reviewer's row precedes
+        // the worker's reply (a reversed-turn impl would fail here).
+        let row = |needle: &str| lines.iter().position(|l| line_text(l).contains(needle));
+        assert!(
+            row("() on empty input") < row("returns Err now."),
+            "the reviewer's turn renders above the worker's reply",
+        );
         // Voices are colour-coded: amber for you, blue for the worker.
         assert!(
             lines.iter().any(|l| line_has_fg(l, theme::RUST_ORANGE)),
