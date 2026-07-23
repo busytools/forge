@@ -9,6 +9,8 @@
 //!   render as `mcp__forge__peers__ask_agent` and similar.
 //! - `workers` - project-internal child-agent coordination (spawn /
 //!   list / tell / ask). Tools render as `mcp__forge__workers__<name>`.
+//! - `review` - the review-conversation loop (list / get / reply /
+//!   resolve). Tools render as `mcp__forge__review__<name>`.
 //!
 //! Tool surface depends on the calling session's kind:
 //!
@@ -35,6 +37,7 @@ use forge_sdk::mcp::server::{McpServer, McpServerBuilder};
 use crate::mcp::cron::facade::CronFacade;
 use crate::mcp::gotify::facade::GotifyFacade;
 use crate::mcp::peers::facade::{CallerKeyResolver, WorkspaceFacade};
+use crate::mcp::review::facade::ReviewFacade;
 use crate::mcp::workers::facade::WorkerFacade;
 
 pub(crate) mod caller_context;
@@ -60,13 +63,14 @@ pub enum SessionKind {
 /// `forge` carrying the coordination tool groups appropriate for the
 /// calling session's [`SessionKind`]:
 ///
-/// - [`SessionKind::Lead`] → peers + workers + cron + gotify.
-/// - [`SessionKind::Worker`] → workers + cron + gotify (no cross-project
-///   peers).
+/// - [`SessionKind::Lead`] → peers + workers + review + cron + gotify.
+/// - [`SessionKind::Worker`] → workers + review + cron + gotify (no
+///   cross-project peers).
 ///
-/// `cron` and `gotify` are any-caller (every session manages its own
-/// project's crons + subscriptions), so they register for both kinds -
-/// unlike `peers`, which is lead-only.
+/// `review`, `cron`, and `gotify` are any-caller (every session manages
+/// its own project's reviews / crons / subscriptions), so they register
+/// for both kinds - unlike `peers`, which is lead-only. A worker is
+/// exactly the session a review nudge lands on, so it needs `review__*`.
 ///
 /// All submodules share the server name so the LLM sees a single
 /// namespace (`mcp__forge__<group>__*`) and the auto-approve fast-path
@@ -81,6 +85,7 @@ pub enum SessionKind {
 pub fn build_forge_server(
     workspace_facade: Arc<dyn WorkspaceFacade>,
     worker_facade: Arc<dyn WorkerFacade>,
+    review_facade: Arc<dyn ReviewFacade>,
     cron_facade: Arc<dyn CronFacade>,
     gotify_facade: Arc<dyn GotifyFacade>,
     caller_key: CallerKeyResolver,
@@ -91,6 +96,7 @@ pub fn build_forge_server(
         builder = peers::add_tools(builder, workspace_facade, caller_key.clone());
     }
     builder = workers::add_tools(builder, worker_facade, caller_key.clone());
+    builder = review::add_tools(builder, review_facade, caller_key.clone());
     builder = cron::add_tools(builder, cron_facade, caller_key.clone());
     builder = gotify::add_tools(builder, gotify_facade, caller_key);
     builder.build()
@@ -103,6 +109,7 @@ mod tests {
     use crate::mcp::cron::facade::MockCronFacade;
     use crate::mcp::gotify::facade::MockGotifyFacade;
     use crate::mcp::peers::facade::MockWorkspaceFacade;
+    use crate::mcp::review::facade::MockReviewFacade;
     use crate::mcp::workers::facade::MockWorkerFacade;
 
     fn fake_key(s: &str) -> SessionKey {
@@ -110,15 +117,17 @@ mod tests {
     }
 
     #[test]
-    fn build_forge_server_lead_registers_peers_workers_cron_and_gotify() {
+    fn build_forge_server_lead_registers_peers_workers_review_cron_and_gotify() {
         let workspace_facade = MockWorkspaceFacade::new().into_arc();
         let worker_facade = MockWorkerFacade::new().into_arc();
+        let review_facade = MockReviewFacade::new().into_arc();
         let cron_facade = MockCronFacade::new().into_arc();
         let gotify_facade = MockGotifyFacade::new().into_arc();
         let resolver = CallerKeyResolver::from_fixed(fake_key("test"));
         let server = build_forge_server(
             workspace_facade,
             worker_facade,
+            review_facade,
             cron_facade,
             gotify_facade,
             resolver,
@@ -134,6 +143,10 @@ mod tests {
             "workers__list",
             "workers__tell",
             "workers__ask",
+            "review__list",
+            "review__get",
+            "review__reply",
+            "review__resolve",
             "cron__create",
             "cron__list",
             "cron__delete",
@@ -155,22 +168,25 @@ mod tests {
     }
 
     #[test]
-    fn build_forge_server_worker_registers_workers_cron_and_gotify_but_not_peers() {
+    fn build_forge_server_worker_registers_workers_review_cron_and_gotify_but_not_peers() {
         let workspace_facade = MockWorkspaceFacade::new().into_arc();
         let worker_facade = MockWorkerFacade::new().into_arc();
+        let review_facade = MockReviewFacade::new().into_arc();
         let cron_facade = MockCronFacade::new().into_arc();
         let gotify_facade = MockGotifyFacade::new().into_arc();
         let resolver = CallerKeyResolver::from_fixed(fake_key("test"));
         let server = build_forge_server(
             workspace_facade,
             worker_facade,
+            review_facade,
             cron_facade,
             gotify_facade,
             resolver,
             SessionKind::Worker,
         );
         let debug = format!("{server:?}");
-        // Workers see workers__* (talk to sibling workers) and cron__* /
+        // Workers see workers__* (talk to sibling workers), review__* (a
+        // review nudge lands on the worker being reviewed), and cron__* /
         // gotify__* (both any-caller - a worker may schedule or subscribe
         // for its project).
         for expected in [
@@ -178,6 +194,10 @@ mod tests {
             "workers__list",
             "workers__tell",
             "workers__ask",
+            "review__list",
+            "review__get",
+            "review__reply",
+            "review__resolve",
             "cron__create",
             "cron__list",
             "cron__delete",
