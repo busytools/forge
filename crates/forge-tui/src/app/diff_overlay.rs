@@ -3133,26 +3133,25 @@ fn finalize_review_close(app: &mut App, overview: Option<&str>, seal_ids: &[Stri
         let workspace = app.workspace.clone();
         let branch = app.diff_overlay.as_ref().and_then(|o| o.branch.clone());
         if let (Some(project), Some(branch), Some(workspace)) = (project, branch, workspace) {
-            // The review-set write is at-risk the same way a comment upsert
-            // is: `None` means the txn failed / rolled back. Hold rather than
-            // send an unfiled bundle whose overview would be lost - the
-            // overview lives only in the (still-open) modal editor.
+            // `None` = the review-set write failed / the store is absent. The
+            // comments are already persisted unfiled at save-time and the
+            // bundle (with the overview) still reaches the agent, so only the
+            // local l-list record is lost. Degrade like the comment-save path
+            // rather than hold: warn the user, then send + close as usual.
             if workspace
                 .submit_review(&project, &branch, overview.map(str::to_owned), seal_ids)
                 .is_none()
             {
                 tracing::warn!(
                     target: crate::logging::targets::APP_SESSION,
-                    event_name = "diff_overlay_submit_held_seal_failed",
-                    message = "diff review submit held: the review could not be sealed",
-                    outcome = "held",
+                    event_name = "diff_overlay_review_not_sealed",
+                    message = "diff review could not be sealed locally; comments still dispatched",
+                    outcome = "degraded",
                 );
                 crate::app::slash::push_system_message(
                     app,
-                    "Review submit held: the review couldn't be saved (store write failed). Your overview is kept - submit again.",
+                    "Review couldn't be saved locally (store error) - comments were still sent to the agent but won't show in the reviews list.",
                 );
-                app.needs_redraw = true;
-                return;
             }
         }
     }
@@ -4424,11 +4423,13 @@ mod tests {
     }
 
     #[test]
-    fn submit_finish_review_holds_when_the_seal_fails() {
-        // A store write failure (here a corrupt threads row rolls back the
-        // submit txn, so submit_review returns None) must NOT send an
-        // unfiled bundle or close: the review isn't sealed, so the modal
-        // stays open with the overview intact.
+    fn submit_finish_review_degrades_when_the_seal_fails() {
+        // When the seal write fails (here a corrupt threads row rolls back
+        // the submit txn, so submit_review returns None) the comments are
+        // already persisted unfiled and the bundle still carries the
+        // overview, so submit degrades gracefully: it dispatches + closes
+        // as before, and pushes a system message so the failure isn't
+        // silent. It must NOT hold - a store-down session would dead-end.
         let dir = tempfile::tempdir().expect("tempdir");
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("ws");
@@ -4467,10 +4468,17 @@ mod tests {
         submit_finish_review(&mut app);
 
         assert!(
-            app.diff_overlay.as_ref().is_some_and(|o| o.finish_review.is_some()),
-            "the modal stays open on a seal failure",
+            app.diff_overlay.is_none(),
+            "the overlay closes (no dead-end hold) on a seal failure"
         );
-        assert!(rx.try_recv().is_err(), "no bundle dispatched when the seal failed");
+        assert!(
+            matches!(rx.try_recv(), Ok(forge_primitives::AgentCommand::PromptWithImages { .. })),
+            "the bundle is still dispatched to the agent",
+        );
+        assert!(
+            app.messages().iter().any(|m| matches!(m.role, crate::app::MessageRole::System(None))),
+            "a system message warns that the review wasn't saved locally",
+        );
     }
 
     #[test]
