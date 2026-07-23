@@ -10371,13 +10371,11 @@ mod team_spawn_tests {
         std::fs::create_dir_all(&dir).expect("mkdir");
         std::fs::write(dir.join("charter.md"), "description: Generic code-writer\n")
             .expect("write");
-        let prev = crate::team::roles::set_forge_team_root_for_test(Some(tmp.path().to_path_buf()));
+        let _guard = crate::team::override_forge_team_root_for_test(tmp.path().to_path_buf());
 
         let text = Workspace::build_delegation_catalog("forge");
         assert!(text.contains("workers__spawn"));
         assert!(text.contains("implementer - Generic code-writer"));
-
-        crate::team::roles::set_forge_team_root_for_test(prev);
     }
 
     #[test]
@@ -10432,7 +10430,7 @@ mod team_spawn_tests {
         std::fs::create_dir_all(&steward).expect("mkdir");
         std::fs::write(steward.join("charter.md"), "description: Hub steward\n").expect("charter");
         std::fs::write(steward.join("kick.md"), "go\n").expect("kick");
-        let prev = crate::team::set_forge_team_root_for_test(Some(tmp.path().to_path_buf()));
+        let _guard = crate::team::override_forge_team_root_for_test(tmp.path().to_path_buf());
 
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
@@ -10455,8 +10453,6 @@ mod team_spawn_tests {
             assert_eq!(label, "steward", "worker label stays BARE, not hub-modules/steward");
             assert!(charter.contains("Hub steward"), "charter loaded from the project-scoped dir");
         }
-
-        crate::team::set_forge_team_root_for_test(prev);
     }
 
     #[test]
@@ -10470,7 +10466,7 @@ mod team_spawn_tests {
         std::fs::create_dir_all(&steward).expect("mkdir");
         std::fs::write(steward.join("charter.md"), "description: Hub steward\n").expect("charter");
         std::fs::write(steward.join("kick.md"), "go\n").expect("kick");
-        let prev = crate::team::set_forge_team_root_for_test(Some(tmp.path().to_path_buf()));
+        let _guard = crate::team::override_forge_team_root_for_test(tmp.path().to_path_buf());
 
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
@@ -10490,8 +10486,6 @@ mod team_spawn_tests {
         if let Command::SpawnWorker { resume_existing, .. } = spawns[0] {
             assert!(resume_existing.is_none(), "force_new => worker spawns fresh (no resume)");
         }
-
-        crate::team::set_forge_team_root_for_test(prev);
     }
 
     #[test]

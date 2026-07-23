@@ -2207,19 +2207,20 @@ mod team_hook_tests {
     use crate::Workspace;
     use crate::protocol::Command;
     use crate::target::ProjectKey;
-    use crate::team::{DEFAULT_LEAD_CHARTER, set_forge_team_root_for_test};
+    use crate::team::{DEFAULT_LEAD_CHARTER, override_forge_team_root_for_test};
     use std::sync::OnceLock;
 
     fn synth_lead_key(project_name: &str) -> SessionKey {
         SessionKey::from_session_id(format!("__spawn_{project_name}__"))
     }
 
-    /// One-time setup writing the canonical shipped default charters
-    /// (implementer + lead) to a shared tempdir + redirecting
-    /// `forge_team_root()` to it for the rest of the process. All
-    /// tests in this module call `ensure_test_charter_root()` before
-    /// exercising the team-spawn or kick paths.
-    fn ensure_test_charter_root() {
+    /// Seed the canonical shipped default charters (implementer + lead)
+    /// into a process-persistent tempdir (written once) and return a
+    /// guard that points `forge_team_root()` at it under the shared
+    /// team-root lock. Every test here binds the returned guard (`let
+    /// _g = ensure_test_charter_root();`) so the override is held only
+    /// for that test - serialising against the other team-root tests.
+    fn ensure_test_charter_root() -> crate::team::ForgeTeamRootTestGuard {
         static ROOT: OnceLock<tempfile::TempDir> = OnceLock::new();
         let dir = ROOT.get_or_init(|| {
             let tmp = tempfile::tempdir().expect("tempdir");
@@ -2243,20 +2244,16 @@ mod team_hook_tests {
                 std::fs::write(dir.join("charter.md"), charter).expect("write charter");
                 std::fs::write(dir.join("kick.md"), kick).expect("write kick");
             }
-            set_forge_team_root_for_test(Some(root.to_owned()));
             tmp
         });
-        // The first caller initialised the override; subsequent
-        // callers just need to confirm the override is still set
-        // (defensive against test ordering rewriting it).
-        let _ = dir;
+        override_forge_team_root_for_test(dir.path().to_owned())
     }
 
     /// A lead Connected for a project carrying a team config
     /// triggers one `Command::SpawnWorker` per configured label.
     #[test]
     fn lead_connected_with_team_triggers_team_spawn() {
-        ensure_test_charter_root();
+        let _charter_root = ensure_test_charter_root();
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
         workspace.seed_test_project_with_static_workers(
@@ -2312,7 +2309,7 @@ mod team_hook_tests {
     /// gate trips and the trigger no-ops.
     #[test]
     fn second_lead_connected_does_not_double_spawn() {
-        ensure_test_charter_root();
+        let _charter_root = ensure_test_charter_root();
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
         workspace.seed_test_project_with_static_workers(
@@ -2372,7 +2369,7 @@ mod team_hook_tests {
     /// the drainer one step.
     #[tokio::test(start_paused = true)]
     async fn worker_connected_for_role_label_dispatches_kick_prompt() {
-        ensure_test_charter_root();
+        let _charter_root = ensure_test_charter_root();
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
         workspace.start_kick_dispatcher();
@@ -2417,7 +2414,7 @@ mod team_hook_tests {
         std::fs::create_dir_all(&steward).expect("mkdir");
         std::fs::write(steward.join("charter.md"), "description: Hub steward\n").expect("charter");
         std::fs::write(steward.join("kick.md"), "STEWARD-KICK: tend the modules\n").expect("kick");
-        let prev = crate::team::set_forge_team_root_for_test(Some(tmp.path().to_path_buf()));
+        let _guard = crate::team::override_forge_team_root_for_test(tmp.path().to_path_buf());
 
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
@@ -2453,8 +2450,6 @@ mod team_hook_tests {
                 "kick resolved from hub-modules/steward/kick.md; got: {text}",
             );
         }
-
-        crate::team::set_forge_team_root_for_test(prev);
     }
 
     /// Helper: insert a live ad-hoc worker carrying `kick` under the

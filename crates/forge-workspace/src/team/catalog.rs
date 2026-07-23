@@ -127,7 +127,7 @@ pub fn render_catalog(roles: &[RoleSummary]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::team::roles::set_forge_team_root_for_test;
+    use crate::team::roles::override_forge_team_root_for_test;
     use std::fs;
 
     #[test]
@@ -150,7 +150,7 @@ mod tests {
         // project namespaces
         write_charter(root, "hub-modules/steward", "description: Hub steward\n");
         write_charter(root, "forge/probe", "description: Forge probe\n");
-        let prev = set_forge_team_root_for_test(Some(root.to_path_buf()));
+        let _guard = override_forge_team_root_for_test(root.to_path_buf());
 
         let forge = scan_catalog(Some("forge"));
         let labels: Vec<_> = forge.iter().map(|r| r.label.as_str()).collect();
@@ -160,8 +160,6 @@ mod tests {
         assert!(!labels.contains(&"forge/probe")); // never namespaced in the catalog
         assert!(!labels.contains(&"steward")); // other project's role hidden
         assert!(!labels.contains(&"lead")); // reserved
-
-        set_forge_team_root_for_test(prev);
     }
 
     #[test]
@@ -170,14 +168,12 @@ mod tests {
         let root = tmp.path();
         write_charter(root, "implementer", "description: Global implementer\n");
         write_charter(root, "forge/implementer", "description: Forge implementer\n");
-        let prev = set_forge_team_root_for_test(Some(root.to_path_buf()));
+        let _guard = override_forge_team_root_for_test(root.to_path_buf());
 
         let forge = scan_catalog(Some("forge"));
         let implementers: Vec<_> = forge.iter().filter(|r| r.label == "implementer").collect();
         assert_eq!(implementers.len(), 1, "shadowed global shows once, by its bare name");
         assert_eq!(implementers[0].description, "Forge implementer", "project role wins");
-
-        set_forge_team_root_for_test(prev);
     }
 
     fn write_charter(root: &std::path::Path, label: &str, body: &str) {
