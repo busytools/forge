@@ -635,12 +635,15 @@ fn render_finish_review(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlay
     overlay.finish_submit_span = Some((btn_row_y, col_start, col_end));
 }
 
-/// The `N open · M resolved · K outdated` rollup, omitting zero counts;
-/// empty when a review has no member comments.
-fn rollup_str(open: usize, resolved: usize, outdated: usize) -> String {
+/// The `N open · M addressed · K resolved · J outdated` rollup, omitting
+/// zero counts; empty when a review has no member comments.
+fn rollup_str(open: usize, addressed: usize, resolved: usize, outdated: usize) -> String {
     let mut parts = Vec::new();
     if open > 0 {
         parts.push(format!("{open} open"));
+    }
+    if addressed > 0 {
+        parts.push(format!("{addressed} addressed"));
     }
     if resolved > 0 {
         parts.push(format!("{resolved} resolved"));
@@ -679,10 +682,12 @@ fn render_reviews_list(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState
         lines.push(Line::from(Span::styled("  no reviews yet", dim)));
     }
 
-    let (mut total, mut open, mut resolved, mut outdated) = (0usize, 0usize, 0usize, 0usize);
+    let (mut total, mut open, mut addressed, mut resolved, mut outdated) =
+        (0usize, 0usize, 0usize, 0usize, 0usize);
     for (idx, row) in overlay.review_rows.iter().enumerate() {
         total += row.total;
         open += row.open;
+        addressed += row.addressed;
         resolved += row.resolved;
         outdated += row.outdated;
         let head = format!(
@@ -691,7 +696,7 @@ fn render_reviews_list(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState
             row.age,
             row.total,
             if row.total == 1 { "" } else { "s" },
-            rollup_str(row.open, row.resolved, row.outdated),
+            rollup_str(row.open, row.addressed, row.resolved, row.outdated),
         );
         let style = if idx == overlay.reviews_selected { accent_bold } else { plain };
         lines.push(Line::from(Span::styled(fit_box_content(&head, width), style)));
@@ -704,7 +709,7 @@ fn render_reviews_list(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState
     }
 
     lines.push(Line::from(Span::styled(rule, dim)));
-    let footer_rollup = rollup_str(open, resolved, outdated);
+    let footer_rollup = rollup_str(open, addressed, resolved, outdated);
     let count = overlay.review_rows.len();
     let footer = format!(
         "  {total} comment{} across {count} review{}{}",
@@ -1945,6 +1950,7 @@ const CHIP_BG: Color = Color::Rgb(35, 23, 10);
 fn review_state_style(status: ReviewStatus) -> (Color, &'static str) {
     match status {
         ReviewStatus::Open => (theme::RUST_ORANGE, "OPEN"),
+        ReviewStatus::Addressed => (theme::REVIEW_ADDRESSED, "ADDRESSED"),
         ReviewStatus::Resolved => (theme::REVIEW_RESOLVED, "RESOLVED"),
         ReviewStatus::Outdated => (theme::STATUS_WARNING, "OUTDATED"),
     }
@@ -2036,7 +2042,7 @@ fn render_comment_chip(
     // routes to this exact thread by `key`.
     let (active_label, action, other_label) = match status {
         ReviewStatus::Resolved => ("[ Reopen ]", ThreadAction::Reopen, "[ Resolve ]"),
-        ReviewStatus::Open | ReviewStatus::Outdated => {
+        ReviewStatus::Open | ReviewStatus::Addressed | ReviewStatus::Outdated => {
             ("[ Resolve ]", ThreadAction::Resolve, "[ Reopen ]")
         }
     };
@@ -2447,9 +2453,13 @@ mod tests {
 
     #[test]
     fn rollup_str_omits_zero_counts() {
-        assert_eq!(rollup_str(2, 1, 1), "2 open \u{b7} 1 resolved \u{b7} 1 outdated");
-        assert_eq!(rollup_str(0, 3, 0), "3 resolved");
-        assert_eq!(rollup_str(0, 0, 0), "", "a review with no members has an empty rollup");
+        assert_eq!(
+            rollup_str(2, 1, 1, 1),
+            "2 open \u{b7} 1 addressed \u{b7} 1 resolved \u{b7} 1 outdated",
+        );
+        assert_eq!(rollup_str(0, 0, 3, 0), "3 resolved");
+        assert_eq!(rollup_str(0, 4, 0, 0), "4 addressed");
+        assert_eq!(rollup_str(0, 0, 0, 0), "", "a review with no members has an empty rollup");
     }
 
     #[test]

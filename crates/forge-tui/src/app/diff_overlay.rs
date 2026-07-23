@@ -1126,6 +1126,7 @@ pub struct ReviewListRow {
     pub age: String,
     pub total: usize,
     pub open: usize,
+    pub addressed: usize,
     pub resolved: usize,
     pub outdated: usize,
     pub summary: Option<String>,
@@ -2080,11 +2081,13 @@ fn compute_review_rows(
                 .filter(|t| t.review_id.as_deref() == Some(review.id.as_str()))
                 .collect();
             let mut open = 0;
+            let mut addressed = 0;
             let mut resolved = 0;
             let mut outdated = 0;
             for t in &members {
                 match t.status {
                     ReviewStatus::Open => open += 1,
+                    ReviewStatus::Addressed => addressed += 1,
                     ReviewStatus::Resolved => resolved += 1,
                     ReviewStatus::Outdated => outdated += 1,
                 }
@@ -2098,6 +2101,7 @@ fn compute_review_rows(
                 age,
                 total: members.len(),
                 open,
+                addressed,
                 resolved,
                 outdated,
                 summary: review.summary.clone().filter(|s| !s.trim().is_empty()),
@@ -5767,6 +5771,7 @@ mod tests {
         let threads = vec![
             mk("a", "r1", ReviewStatus::Resolved),
             mk("b", "r1", ReviewStatus::Open),
+            mk("d", "r1", ReviewStatus::Addressed),
             mk("c", "r2", ReviewStatus::Outdated),
         ];
         let now = parse_rfc3339("2026-07-23T12:00:00Z").expect("now parses");
@@ -5779,8 +5784,9 @@ mod tests {
         assert_eq!(rows[0].outdated, 1);
         assert_eq!(rows[0].age, "2h", "created two hours before now");
         assert_eq!(rows[1].number, 1);
-        assert_eq!(rows[1].total, 2, "both r1 threads tally");
+        assert_eq!(rows[1].total, 3, "all three r1 threads tally");
         assert_eq!(rows[1].open, 1);
+        assert_eq!(rows[1].addressed, 1, "the addressed thread tallies into its own bucket");
         assert_eq!(rows[1].resolved, 1);
         assert_eq!(rows[1].summary.as_deref(), Some("first pass"));
         assert_eq!(rows[1].first_path.as_deref(), Some("src/a.rs"));
