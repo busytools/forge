@@ -3756,10 +3756,12 @@ impl Workspace {
 
     /// Drain `caller`'s accumulated review activity into one
     /// [`SessionUpdate::ReviewActivityNotice`] per touched review, routed to
-    /// the review's submit origin (falling back to `caller` when no origin
-    /// was recorded). Called at the caller's turn end so a multi-comment
-    /// review turn produces a single batched tally instead of one line per
-    /// reply. Empty when the caller took no review actions this turn.
+    /// the review's submit origin. A review with no recorded origin is
+    /// dropped (the reviewer still sees the state on `/diff` reopen) rather
+    /// than mis-routed to the caller. Called at the caller's turn end so a
+    /// multi-comment review turn produces a single batched tally instead of
+    /// one line per reply. Empty when the caller took no review actions this
+    /// turn.
     pub(crate) fn drain_review_activity(&self, caller: &SessionKey) -> Vec<SessionUpdate> {
         let touches = { self.review_activity.lock().remove(caller).unwrap_or_default() };
         if touches.is_empty() {
