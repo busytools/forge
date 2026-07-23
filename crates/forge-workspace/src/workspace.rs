@@ -3530,9 +3530,9 @@ impl Workspace {
 
     /// Seal a new review for `(project, branch)`, filing the listed
     /// still-unfiled threads into it and appending it with the optional
-    /// summary. Returns the minted [`ReviewSet`] (`None` when the store
-    /// isn't open or the write failed) so the caller can surface its
-    /// number.
+    /// summary. Returns the minted [`forge_primitives::ReviewSet`] (`None`
+    /// when the store isn't open or the write failed) so the caller can
+    /// surface its number.
     pub fn submit_review(
         &self,
         project: &str,
