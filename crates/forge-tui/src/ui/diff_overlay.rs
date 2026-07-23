@@ -39,7 +39,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Clear, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::App;
@@ -261,6 +261,13 @@ fn render_diff_body(frame: &mut Frame, area: Rect, app: &mut App) {
                 render_jump_dropdown(frame, area, o);
             }
         }
+    }
+
+    // The Finish-review modal draws over the whole body when open.
+    if app.diff_overlay.as_ref().is_some_and(|o| o.finish_review.is_some())
+        && let Some(o) = app.diff_overlay.as_mut()
+    {
+        render_finish_review(frame, area, o);
     }
 }
 
@@ -506,6 +513,122 @@ fn render_jump_dropdown(frame: &mut Frame, area: Rect, overlay: &DiffOverlayStat
     }
     let rect = Rect { x: area.x + indent, y: area.y + menu_top, width: box_width, height };
     frame.render_widget(Paragraph::new(lines), rect);
+}
+
+/// One `│ <text> │` content row of the Finish-review modal, fitted to the
+/// box's inner width.
+fn finish_row(text: &str, inner: usize, border: Style, style: Style) -> Line<'static> {
+    let fitted = fit_box_content(text, inner);
+    let pad = inner.saturating_sub(fitted.width());
+    Line::from(vec![
+        Span::styled("\u{2502} ", border),
+        Span::styled(fitted, style),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(" \u{2502}", border),
+    ])
+}
+
+/// Render the Finish-review modal centered over the diff: the session's
+/// comment count + a short list, the optional overview editor, and the
+/// `[ Submit review ]` button. Stashes the button's screen span on the
+/// overlay so a click can resolve onto it. Keyboard-driven otherwise
+/// (Ctrl+Enter submit, Esc back - see [`crate::app::diff_overlay`]).
+fn render_finish_review(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlayState) {
+    // Caps on the two variable-length regions so a large review can't
+    // grow the modal past the screen.
+    const MAX_LIST: usize = 6;
+    const EDITOR_ROWS: usize = 4;
+    let orange = Style::default().fg(theme::RUST_ORANGE);
+    let dim = Style::default().fg(theme::DIM);
+    let accent_bold = orange.add_modifier(Modifier::BOLD);
+    let plain = Style::default();
+
+    let authored: Vec<&HunkComment> =
+        overlay.comments.iter().filter(|c| c.authored_this_session).collect();
+    let count = authored.len();
+
+    let box_width = area.width.saturating_sub(8).clamp(44, 68);
+    let bw = usize::from(box_width);
+    let inner = bw.saturating_sub(4);
+
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    let title = " Finish review ";
+    let dash = bw.saturating_sub(3 + title.chars().count() + 1);
+    rows.push(Line::from(Span::styled(
+        format!("\u{250c}\u{2500}{title}{}\u{2510}", "\u{2500}".repeat(dash)),
+        orange,
+    )));
+
+    rows.push(finish_row(
+        &format!(" {count} comment{} in this review", if count == 1 { "" } else { "s" }),
+        inner,
+        orange,
+        plain,
+    ));
+    for c in authored.iter().take(MAX_LIST) {
+        let name = c.path.rsplit('/').next().unwrap_or(c.path.as_str());
+        let snippet = c.comment_text.lines().next().unwrap_or("");
+        rows.push(finish_row(
+            &format!("   \u{b7} {name}:{}   {snippet}", c.line),
+            inner,
+            orange,
+            dim,
+        ));
+    }
+    if count > MAX_LIST {
+        rows.push(finish_row(&format!("   +{} more", count - MAX_LIST), inner, orange, dim));
+    }
+
+    rows.push(finish_row("", inner, orange, plain));
+    rows.push(finish_row(" Overview (optional)", inner, orange, plain));
+    let editor_lines =
+        overlay.finish_review.as_ref().map(|f| f.editor.lines().to_vec()).unwrap_or_default();
+    if editor_lines.iter().all(String::is_empty) {
+        rows.push(finish_row("   a short summary, sent with the review", inner, orange, dim));
+        for _ in 1..EDITOR_ROWS {
+            rows.push(finish_row("", inner, orange, plain));
+        }
+    } else {
+        for line in editor_lines.iter().take(EDITOR_ROWS) {
+            rows.push(finish_row(&format!("   {line}"), inner, orange, plain));
+        }
+    }
+
+    rows.push(finish_row("", inner, orange, plain));
+
+    // Button row, built with explicit spans so the submit hit-span is known.
+    let btn = "[ Submit review ]";
+    let hint = "Ctrl+Enter submit \u{b7} Esc back";
+    let used = 1 + btn.width() + 5 + hint.width();
+    let pad = inner.saturating_sub(used.min(inner));
+    rows.push(Line::from(vec![
+        Span::styled("\u{2502} ", orange),
+        Span::raw(" "),
+        Span::styled(btn, accent_bold),
+        Span::raw("     "),
+        Span::styled(hint, dim),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(" \u{2502}", orange),
+    ]));
+    let button_row_idx = rows.len() - 1;
+
+    rows.push(Line::from(Span::styled(
+        format!("\u{2514}{}\u{2518}", "\u{2500}".repeat(bw.saturating_sub(2))),
+        orange,
+    )));
+
+    let box_height = u16::try_from(rows.len()).unwrap_or(u16::MAX).min(area.height);
+    let x = area.x + area.width.saturating_sub(box_width) / 2;
+    let y = area.y + area.height.saturating_sub(box_height) / 2;
+    let rect = Rect { x, y, width: box_width, height: box_height };
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new(rows), rect);
+
+    // Submit span: "\u{2502} " (2) + leading space (1) precede the button.
+    let btn_row_y = y.saturating_add(u16::try_from(button_row_idx).unwrap_or(0));
+    let col_start = x.saturating_add(3);
+    let col_end = col_start.saturating_add(u16::try_from(btn.width()).unwrap_or(0));
+    overlay.finish_submit_span = Some((btn_row_y, col_start, col_end));
 }
 
 /// Render the FILES rail as a box-drawing tree (mirroring the
@@ -859,8 +982,10 @@ fn footer_line(overlay: &DiffOverlayState, mode: DiffViewMode, width: u16) -> Li
         spans.push(Span::styled("cancel input", dim));
     } else {
         let commit_mode = !overlay.commits.is_empty();
-        let esc_label = if count > 0 {
-            if commit_mode { "submit all" } else { "save & close" }
+        // A session that authored a comment finishes into a review on Esc;
+        // a look-only session just closes.
+        let esc_label = if overlay.comments.iter().any(|c| c.authored_this_session) {
+            "finish review"
         } else {
             "close"
         };
