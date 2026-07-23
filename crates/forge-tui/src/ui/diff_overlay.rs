@@ -1071,9 +1071,14 @@ fn footer_line(overlay: &DiffOverlayState, mode: DiffViewMode, width: u16) -> Li
         spans.push(Span::styled("cancel input", dim));
     } else {
         let commit_mode = !overlay.commits.is_empty();
-        // A session that authored a comment finishes into a review on Esc;
-        // a look-only session just closes.
-        let esc_label = if overlay.comments.iter().any(|c| c.authored_this_session) {
+        // Esc opens the Finish-review modal only when a comment would file
+        // (authored this session AND not already in a review) - mirror that
+        // trigger so an edit-only session doesn't read "finish review".
+        let esc_label = if overlay
+            .comments
+            .iter()
+            .any(|c| c.authored_this_session && c.thread.review_id.is_none())
+        {
             "finish review"
         } else {
             "close"
@@ -3614,5 +3619,28 @@ mod tests {
         assert!(text.contains("comment"), "still hints click-to-comment");
         assert!(!text.contains("resolve"), "no global resolve hint");
         assert!(!text.contains("reopen"), "no global reopen hint");
+    }
+
+    #[test]
+    fn footer_esc_label_matches_the_would_file_trigger() {
+        let mut state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp/repo"),
+            "HEAD".to_owned(),
+            Vec::new(),
+        );
+        let mut comment = chip_comment(1, "note", ReviewStatus::Open);
+        comment.authored_this_session = true;
+
+        // Edit-only (already filed): Esc closes straight through, not "finish review".
+        comment.thread.review_id = Some("rev".to_owned());
+        state.comments = vec![comment];
+        let text = line_text(&footer_line(&state, DiffViewMode::Unified, 200));
+        assert!(text.contains("close"), "edit-only footer reads close; got: {text}");
+        assert!(!text.contains("finish review"), "edit-only must not read finish review");
+
+        // Unfiled authored comment: the modal will open, so read "finish review".
+        state.comments[0].thread.review_id = None;
+        let text = line_text(&footer_line(&state, DiffViewMode::Unified, 200));
+        assert!(text.contains("finish review"), "an unfiled authored comment reads finish review");
     }
 }
