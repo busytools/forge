@@ -3815,13 +3815,28 @@ impl Workspace {
         }
 
         // Map each review to its notice target under a short `review_origin`
-        // lock (no db lock held here).
+        // lock (no db lock held here). When no origin was recorded (e.g. the
+        // review was submitted before a restart - the map is in-memory only),
+        // DROP the notice rather than falling back to the caller: routing a
+        // "worker addressed review #N" line into the worker's own chat is
+        // worse than not firing. The reviewer still sees the state on /diff
+        // reopen (it persists in the store).
         let origins = self.review_origin.lock();
         messages
             .into_iter()
-            .map(|(scope, message)| {
-                let key = origins.get(&scope).cloned().unwrap_or_else(|| caller.clone());
-                SessionUpdate::ReviewActivityNotice { key, message }
+            .filter_map(|(scope, message)| {
+                if let Some(key) = origins.get(&scope) {
+                    Some(SessionUpdate::ReviewActivityNotice { key: key.clone(), message })
+                } else {
+                    tracing::debug!(
+                        target: "forge_workspace::workspace",
+                        project = %scope.0,
+                        branch = %scope.1,
+                        caller = %caller.as_str(),
+                        "review-activity notice dropped: no submit origin recorded",
+                    );
+                    None
+                }
             })
             .collect()
     }
@@ -6494,6 +6509,65 @@ mod tests {
         }
         // The buffer is drained - a second flush is empty.
         assert!(ws.drain_review_activity(&worker).is_empty(), "the turn buffer drained");
+    }
+
+    #[test]
+    fn drain_drops_notice_when_no_submit_origin_recorded() {
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSet, ReviewSide, ReviewStatus,
+            ReviewThread,
+        };
+        // Post-restart shape: a thread already filed into a review on disk
+        // (review_id set) + its reviews row, but `review_origin` is empty
+        // (in-memory, cleared by the restart) because we seed the store
+        // directly instead of calling submit_review. A worker reply must
+        // then drain to NO notice - never mis-routed to the worker.
+        let dir = tempdir().expect("tempdir");
+        let db = crate::store::Db::open(&dir.path().join("db.redb")).expect("open db");
+        let thread = ReviewThread {
+            id: "a".to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 1,
+                content_hash: 1,
+                context: vec!["ctx".to_owned()],
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: "look".to_owned(),
+                at: "2026-07-23T10:00:00Z".to_owned(),
+            }],
+            status: ReviewStatus::Open,
+            created_at: "2026-07-23T10:00:00Z".to_owned(),
+            updated_at: "2026-07-23T10:00:00Z".to_owned(),
+            commit: None,
+            review_id: Some("r1".to_owned()),
+        };
+        crate::store::review::save(&db, "forge", "feat", &[thread]).expect("seed threads");
+        crate::store::review::save_reviews(
+            &db,
+            "forge",
+            "feat",
+            &[ReviewSet {
+                id: "r1".to_owned(),
+                number: 1,
+                summary: None,
+                created_at: "2026-07-23T10:00:00Z".to_owned(),
+            }],
+        )
+        .expect("seed reviews");
+
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.install_db_for_test(db);
+        let worker = SessionKey::from_session_id("worker");
+        ws.review_reply(&worker, "forge", "feat", "a", "impl", "fixed", "t").expect("reply");
+
+        assert!(
+            ws.drain_review_activity(&worker).is_empty(),
+            "with no recorded origin the notice is dropped, not mis-routed to the worker",
+        );
     }
 
     #[test]
