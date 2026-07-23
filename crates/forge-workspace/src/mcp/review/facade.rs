@@ -21,12 +21,15 @@ use crate::workspace::Workspace;
 
 /// The caller's resolved review context. `(project, branch)` is the store
 /// key both the `/diff` overlay and these tools address; `author_label` is
-/// how a `review__reply` from this caller is attributed in the thread.
+/// how a `review__reply` from this caller is attributed in the thread;
+/// `caller` is the session whose turn buffer accumulates the activity so
+/// the reviewer gets one batched notice at turn end.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReviewScope {
     pub project: String,
     pub branch: String,
     pub author_label: String,
+    pub caller: SessionKey,
 }
 
 /// Narrow surface the review-conversation tools depend on. `resolve_scope`
@@ -84,7 +87,7 @@ impl ReviewFacade for ProdReviewFacade {
         let scan_cwd = ws.git_scan_cwd_for_session(caller, std::path::Path::new(&cwd_raw));
         let branch = forge_agent::env::git_diff::current_branch(&scan_cwd).await?;
         let author_label = cx.worker_label.unwrap_or_else(|| "agent".to_owned());
-        Some(ReviewScope { project: cx.project_name, branch, author_label })
+        Some(ReviewScope { project: cx.project_name, branch, author_label, caller: caller.clone() })
     }
 
     fn list(&self, scope: &ReviewScope) -> Result<Vec<ReviewSummary>, String> {
@@ -105,12 +108,20 @@ impl ReviewFacade for ProdReviewFacade {
         at: &str,
     ) -> Result<ReviewStatus, String> {
         let ws = self.0.upgrade().ok_or_else(|| "workspace unavailable".to_owned())?;
-        ws.review_reply(&scope.project, &scope.branch, comment_id, &scope.author_label, text, at)
+        ws.review_reply(
+            &scope.caller,
+            &scope.project,
+            &scope.branch,
+            comment_id,
+            &scope.author_label,
+            text,
+            at,
+        )
     }
 
     fn resolve(&self, scope: &ReviewScope, comment_id: &str) -> Result<(), String> {
         let ws = self.0.upgrade().ok_or_else(|| "workspace unavailable".to_owned())?;
-        ws.review_resolve(&scope.project, &scope.branch, comment_id)
+        ws.review_resolve(&scope.caller, &scope.project, &scope.branch, comment_id)
     }
 }
 
@@ -141,6 +152,7 @@ impl MockReviewFacade {
                 project: "forge".to_owned(),
                 branch: "feat".to_owned(),
                 author_label: "implementer".to_owned(),
+                caller: SessionKey::from_session_id("caller"),
             })),
             summaries: parking_lot::Mutex::new(Vec::new()),
             detail: parking_lot::Mutex::new(None),

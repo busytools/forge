@@ -78,6 +78,27 @@ pub struct ReviewTurnView {
     pub at: String,
 }
 
+/// One worker review action recorded during a turn, accumulated per
+/// caller and drained at the turn's end into a single notice per review.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReviewActivity {
+    pub project: String,
+    pub branch: String,
+    pub review_id: String,
+    /// `true` for a reply, `false` for a resolve.
+    pub replied: bool,
+}
+
+/// The reviewer-facing one-line summary a worker's review turn produces:
+/// `worker addressed review #N - A replied, B resolved, C open. Open /diff.`
+/// `open` is the review's current open-comment count after the turn.
+pub(crate) fn notice_message(number: u32, replied: usize, resolved: usize, open: usize) -> String {
+    format!(
+        "worker addressed review #{number} - {replied} replied, {resolved} resolved, \
+         {open} open. Open /diff."
+    )
+}
+
 fn side_str(side: ReviewSide) -> &'static str {
     match side {
         ReviewSide::Old => "old",
@@ -565,6 +586,14 @@ mod tests {
     fn detail_is_none_for_unknown_review() {
         let reviews = vec![review("r1", 1, None)];
         assert!(detail(&reviews, &[], "nope").is_none());
+    }
+
+    #[test]
+    fn notice_message_reads_as_a_tally_line() {
+        assert_eq!(
+            notice_message(3, 2, 1, 4),
+            "worker addressed review #3 - 2 replied, 1 resolved, 4 open. Open /diff.",
+        );
     }
 
     use crate::SessionKey;

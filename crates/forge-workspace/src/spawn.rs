@@ -2046,8 +2046,13 @@ config_dir = "~/.claude-subspace"
         workspace.save_review_threads("forge", &branch, &[thread("a")]);
         workspace.save_review_threads("forge", "survivor", &[thread("b")]);
         // Seal a review on each branch (empty thread set just mints the row).
-        workspace.submit_review("forge", &branch, None, &[]).expect("seal torn-down review");
-        workspace.submit_review("forge", "survivor", None, &[]).expect("seal survivor review");
+        let origin = SessionKey::from_session_id("reviewer");
+        workspace
+            .submit_review("forge", &branch, None, &[], origin.clone())
+            .expect("seal torn-down review");
+        workspace
+            .submit_review("forge", "survivor", None, &[], origin)
+            .expect("seal survivor review");
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);

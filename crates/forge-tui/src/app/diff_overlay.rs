@@ -3131,6 +3131,12 @@ fn finalize_review_close(app: &mut App, overview: Option<&str>, seal_ids: &[Stri
         return;
     }
 
+    // The reviewer's session is the notice target when a worker later
+    // addresses this review; record it as the submit origin.
+    let origin = app
+        .active_session_key
+        .clone()
+        .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(String::new()));
     let scope = (
         app.active_session().and_then(|s| s.project.clone()),
         app.diff_overlay.as_ref().and_then(|o| o.branch.clone()),
@@ -3139,8 +3145,13 @@ fn finalize_review_close(app: &mut App, overview: Option<&str>, seal_ids: &[Stri
     let review_number = if let (false, (Some(project), Some(branch), Some(workspace))) =
         (seal_ids.is_empty(), scope)
     {
-        let review =
-            workspace.submit_review(&project, &branch, overview.map(str::to_owned), seal_ids);
+        let review = workspace.submit_review(
+            &project,
+            &branch,
+            overview.map(str::to_owned),
+            seal_ids,
+            origin,
+        );
         if review.is_none() {
             // The store write failed. Comments are already persisted unfiled
             // at save-time; only the local reviews-list record and the agent
@@ -6445,8 +6456,14 @@ mod tests {
         // which hydrate fills from the store - pin that it actually lands.
         let (mut app, _dir) = review_app();
         let ws = app.workspace.clone().expect("ws");
-        ws.submit_review("forge", "feat", Some("first pass".to_owned()), &[])
-            .expect("seal a review");
+        ws.submit_review(
+            "forge",
+            "feat",
+            Some("first pass".to_owned()),
+            &[],
+            forge_workspace::SessionKey::from_session_id("reviewer"),
+        )
+        .expect("seal a review");
 
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
         let mut overlay =

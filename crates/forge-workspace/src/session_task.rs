@@ -506,8 +506,19 @@ impl SessionTask {
                 // ends. `Message::Result` is the SDK's signal that the
                 // assistant turn has fully completed.
                 if matches!(msg, forge_primitives::Message::Result { .. }) {
-                    let mut guard = self.domain.lock();
-                    guard.turn_pending = false;
+                    let caller = {
+                        let mut guard = self.domain.lock();
+                        guard.turn_pending = false;
+                        guard.key.clone()
+                    };
+                    // Turn end: flush this session's accumulated review
+                    // actions into one batched notice per review, routed to
+                    // each review's submit origin.
+                    if let Some(ws) = self.workspace.upgrade() {
+                        for update in ws.drain_review_activity(&caller) {
+                            self.emit(update);
+                        }
+                    }
                 }
                 self.note_rate_limit_from_message(&msg);
                 self.emit(SessionUpdate::ChatAppended { session_id, msg });

@@ -214,6 +214,16 @@ pub struct Workspace {
     /// `SessionUpdate::PeerInflightStatsChanged` which the TUI
     /// reducer turns into sidebar peer-activity badges.
     pub(crate) peer_stats: Mutex<HashMap<SessionKey, PeerInflightStats>>,
+    /// The session that submitted the reviews on a `(project, branch)` -
+    /// the target for a worker's review-activity notice. Set by
+    /// [`Self::submit_review`]; latest submit wins (the reviewer is one
+    /// human whose session may rekey across a resume).
+    review_origin: Mutex<HashMap<(String, String), SessionKey>>,
+    /// Review actions a caller took during its current turn, keyed by the
+    /// caller's [`SessionKey`]. Appended by [`Self::review_reply`] /
+    /// [`Self::review_resolve`] and drained into one notice per review at
+    /// the caller's turn end ([`Self::drain_review_activity`]).
+    review_activity: Mutex<HashMap<SessionKey, Vec<crate::mcp::review::ReviewActivity>>>,
     /// Set the first time [`Self::start_usage_poller`] runs. Subsequent
     /// calls early-return to avoid spawning duplicate poller tasks.
     usage_poller_started: std::sync::atomic::AtomicBool,
@@ -719,6 +729,8 @@ impl Workspace {
             domain_handles: Mutex::new(HashMap::new()),
             inflight_asks: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
+            review_origin: Mutex::new(HashMap::new()),
+            review_activity: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
@@ -3549,20 +3561,25 @@ impl Workspace {
 
     /// Seal a new review for `(project, branch)`, filing the listed
     /// still-unfiled threads into it and appending it with the optional
-    /// summary. Returns the minted [`forge_primitives::ReviewSet`] (`None`
-    /// when the store isn't open or the write failed) so the caller can
-    /// surface its number.
+    /// summary. Records `origin` as the notice target for the branch (the
+    /// reviewer's session, so a later worker review-turn pings it). Returns
+    /// the minted [`forge_primitives::ReviewSet`] (`None` when the store
+    /// isn't open or the write failed) so the caller can surface its number.
     pub fn submit_review(
         &self,
         project: &str,
         branch: &str,
         summary: Option<String>,
         thread_ids: &[String],
+        origin: SessionKey,
     ) -> Option<forge_primitives::ReviewSet> {
         let guard = self.db.lock();
         let db = guard.as_ref()?;
         match crate::store::review::submit_review(db, project, branch, summary, thread_ids) {
-            Ok(review) => Some(review),
+            Ok(review) => {
+                self.review_origin.lock().insert((project.to_owned(), branch.to_owned()), origin);
+                Some(review)
+            }
             Err(error) => {
                 tracing::warn!(
                     target: "forge_workspace::workspace",
@@ -3608,11 +3625,14 @@ impl Workspace {
 
     /// Append a worker reply to `comment_id` on `(project, branch)` and
     /// return the thread's status after the append (Open -> Addressed;
-    /// Resolved / Outdated unchanged). `Err` when the store is closed, the
-    /// write fails, or no comment with that id exists in this scope, so a
-    /// stale or cross-branch id is rejected rather than silently ignored.
+    /// Resolved / Outdated unchanged). Records the reply in `caller`'s
+    /// turn activity buffer so the reviewer is notified at turn end. `Err`
+    /// when the store is closed, the write fails, or no comment with that
+    /// id exists in this scope, so a stale or cross-branch id is rejected
+    /// rather than silently ignored.
     pub fn review_reply(
         &self,
+        caller: &SessionKey,
         project: &str,
         branch: &str,
         comment_id: &str,
@@ -3620,9 +3640,18 @@ impl Workspace {
         text: &str,
         at: &str,
     ) -> Result<ReviewStatus, String> {
-        let guard = self.db.lock();
-        let db = guard.as_ref().ok_or_else(|| "review store is unavailable".to_owned())?;
-        crate::store::review::append_reply(db, project, branch, comment_id, author_label, text, at)
+        let status = {
+            let guard = self.db.lock();
+            let db = guard.as_ref().ok_or_else(|| "review store is unavailable".to_owned())?;
+            crate::store::review::append_reply(
+                db,
+                project,
+                branch,
+                comment_id,
+                author_label,
+                text,
+                at,
+            )
             .map_err(|error| {
                 tracing::warn!(
                     target: "forge_workspace::workspace",
@@ -3633,41 +3662,141 @@ impl Workspace {
                     "appending a review reply failed",
                 );
                 format!("{error:#}")
-            })
+            })?
+        };
+        self.note_review_activity(caller, project, branch, comment_id, true);
+        Ok(status)
     }
 
-    /// Mark `comment_id` on `(project, branch)` Resolved. `Err` when the
-    /// store is closed, the write fails, or no comment with that id exists
-    /// in this scope.
+    /// Mark `comment_id` on `(project, branch)` Resolved and record the
+    /// resolve in `caller`'s turn activity buffer. `Err` when the store is
+    /// closed, the write fails, or no comment with that id exists in this
+    /// scope.
     pub fn review_resolve(
         &self,
+        caller: &SessionKey,
         project: &str,
         branch: &str,
         comment_id: &str,
     ) -> Result<(), String> {
-        let guard = self.db.lock();
-        let db = guard.as_ref().ok_or_else(|| "review store is unavailable".to_owned())?;
-        match crate::store::review::set_status(
-            db,
-            project,
-            branch,
-            comment_id,
-            ReviewStatus::Resolved,
-        ) {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(format!("no review comment {comment_id} on ({project}, {branch})")),
-            Err(error) => {
-                tracing::warn!(
-                    target: "forge_workspace::workspace",
-                    %error,
-                    project = %project,
-                    branch = %branch,
-                    comment_id = %comment_id,
-                    "resolving a review comment failed",
-                );
-                Err(format!("{error:#}"))
+        {
+            let guard = self.db.lock();
+            let db = guard.as_ref().ok_or_else(|| "review store is unavailable".to_owned())?;
+            match crate::store::review::set_status(
+                db,
+                project,
+                branch,
+                comment_id,
+                ReviewStatus::Resolved,
+            ) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(format!("no review comment {comment_id} on ({project}, {branch})"));
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        %error,
+                        project = %project,
+                        branch = %branch,
+                        comment_id = %comment_id,
+                        "resolving a review comment failed",
+                    );
+                    return Err(format!("{error:#}"));
+                }
             }
         }
+        self.note_review_activity(caller, project, branch, comment_id, false);
+        Ok(())
+    }
+
+    /// Append one review action to `caller`'s turn buffer, resolving the
+    /// comment's owning review. A comment with no `review_id` (unfiled) is
+    /// skipped - there's no review to notify about.
+    fn note_review_activity(
+        &self,
+        caller: &SessionKey,
+        project: &str,
+        branch: &str,
+        comment_id: &str,
+        replied: bool,
+    ) {
+        let review_id = {
+            let guard = self.db.lock();
+            let Some(db) = guard.as_ref() else { return };
+            match crate::store::review::find_thread_by_id(db, project, branch, comment_id) {
+                Ok(Some(thread)) => thread.review_id,
+                Ok(None) => None,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        %error,
+                        "resolving a review comment's owning review failed",
+                    );
+                    None
+                }
+            }
+        };
+        let Some(review_id) = review_id else { return };
+        self.review_activity.lock().entry(caller.clone()).or_default().push(
+            crate::mcp::review::ReviewActivity {
+                project: project.to_owned(),
+                branch: branch.to_owned(),
+                review_id,
+                replied,
+            },
+        );
+    }
+
+    /// Drain `caller`'s accumulated review activity into one
+    /// [`SessionUpdate::ReviewActivityNotice`] per touched review, routed to
+    /// the review's submit origin (falling back to `caller` when no origin
+    /// was recorded). Called at the caller's turn end so a multi-comment
+    /// review turn produces a single batched tally instead of one line per
+    /// reply. Empty when the caller took no review actions this turn.
+    pub(crate) fn drain_review_activity(&self, caller: &SessionKey) -> Vec<SessionUpdate> {
+        let touches = { self.review_activity.lock().remove(caller).unwrap_or_default() };
+        if touches.is_empty() {
+            return Vec::new();
+        }
+        // Aggregate per review, preserving first-touched order.
+        let mut order: Vec<String> = Vec::new();
+        let mut by_review: HashMap<String, (String, String, usize, usize)> = HashMap::new();
+        for touch in touches {
+            let entry = by_review.entry(touch.review_id.clone()).or_insert_with(|| {
+                order.push(touch.review_id.clone());
+                (touch.project, touch.branch, 0, 0)
+            });
+            if touch.replied {
+                entry.2 += 1;
+            } else {
+                entry.3 += 1;
+            }
+        }
+        let origins = self.review_origin.lock();
+        order
+            .into_iter()
+            .filter_map(|review_id| {
+                let (project, branch, replied, resolved) = by_review.remove(&review_id)?;
+                // Number + current open count from the live store view.
+                let summary = self
+                    .review_list(&project, &branch)
+                    .ok()?
+                    .into_iter()
+                    .find(|s| s.review_id == review_id)?;
+                let key =
+                    origins.get(&(project, branch)).cloned().unwrap_or_else(|| caller.clone());
+                Some(SessionUpdate::ReviewActivityNotice {
+                    key,
+                    message: crate::mcp::review::notice_message(
+                        summary.number,
+                        replied,
+                        resolved,
+                        summary.open,
+                    ),
+                })
+            })
+            .collect()
     }
 
     /// Scan the shared session-JSONL pool into a `UsageReport` for the
@@ -5439,6 +5568,8 @@ impl Workspace {
             domain_handles: Mutex::new(HashMap::new()),
             inflight_asks: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
+            review_origin: Mutex::new(HashMap::new()),
+            review_activity: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
@@ -6162,12 +6293,14 @@ mod tests {
                 .review_id
         };
 
+        let origin = SessionKey::from_session_id("reviewer");
         let r1 = ws
             .submit_review(
                 "forge",
                 "feat",
                 Some("first".to_owned()),
                 &["a".to_owned(), "b".to_owned()],
+                origin.clone(),
             )
             .expect("submit mints a review");
         assert_eq!(r1.number, 1);
@@ -6176,7 +6309,8 @@ mod tests {
         assert_eq!(filed("c"), None, "c unlisted stays unfiled");
         assert_eq!(ws.load_reviews("forge", "feat").expect("load").len(), 1);
 
-        let r2 = ws.submit_review("forge", "feat", None, &["c".to_owned()]).expect("submit 2");
+        let r2 =
+            ws.submit_review("forge", "feat", None, &["c".to_owned()], origin).expect("submit 2");
         assert_eq!(r2.number, 2, "the number increments");
         assert_eq!(filed("a"), Some(r1.id.clone()), "a stays in r1");
         assert_eq!(filed("c"), Some(r2.id), "c filed into r2");
@@ -6215,12 +6349,14 @@ mod tests {
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
         ws.save_review_threads("forge", "feat", &[make("a"), make("b")]);
+        let caller = SessionKey::from_session_id("worker");
         let r1 = ws
             .submit_review(
                 "forge",
                 "feat",
                 Some("overview".to_owned()),
                 &["a".to_owned(), "b".to_owned()],
+                SessionKey::from_session_id("reviewer"),
             )
             .expect("submit");
 
@@ -6236,20 +6372,101 @@ mod tests {
         assert!(!detail.comments[0].context.is_empty(), "anchor context is handed back");
 
         let status = ws
-            .review_reply("forge", "feat", "a", "implementer", "fixed", "2026-07-23T12:00:00Z")
+            .review_reply(
+                &caller,
+                "forge",
+                "feat",
+                "a",
+                "implementer",
+                "fixed",
+                "2026-07-23T12:00:00Z",
+            )
             .expect("reply");
         assert_eq!(status, ReviewStatus::Addressed, "a reply flips Open -> Addressed");
         let list = ws.review_list("forge", "feat").expect("list");
         assert_eq!((list[0].open, list[0].addressed), (1, 1));
 
-        ws.review_resolve("forge", "feat", "a").expect("resolve");
+        ws.review_resolve(&caller, "forge", "feat", "a").expect("resolve");
         let list = ws.review_list("forge", "feat").expect("list");
         assert_eq!((list[0].addressed, list[0].resolved), (0, 1));
 
         // An unknown / cross-branch comment id is rejected, not a no-op.
-        assert!(ws.review_reply("forge", "feat", "missing", "x", "y", "z").is_err());
-        assert!(ws.review_resolve("forge", "feat", "missing").is_err());
-        assert!(ws.review_resolve("forge", "other", "a").is_err(), "a lives on feat, not other");
+        assert!(ws.review_reply(&caller, "forge", "feat", "missing", "x", "y", "z").is_err());
+        assert!(ws.review_resolve(&caller, "forge", "feat", "missing").is_err());
+        assert!(
+            ws.review_resolve(&caller, "forge", "other", "a").is_err(),
+            "a lives on feat, not other",
+        );
+    }
+
+    #[test]
+    fn drain_review_activity_batches_one_notice_per_review_routed_to_origin() {
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+        };
+        let make = |id: &str| ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 1,
+                content_hash: 1,
+                context: vec!["ctx".to_owned()],
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: format!("look at {id}"),
+                at: "2026-07-23T10:00:00Z".to_owned(),
+            }],
+            status: ReviewStatus::Open,
+            created_at: "2026-07-23T10:00:00Z".to_owned(),
+            updated_at: "2026-07-23T10:00:00Z".to_owned(),
+            commit: None,
+            review_id: None,
+        };
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.save_review_threads("forge", "feat", &[make("a"), make("b"), make("c")]);
+        let reviewer = SessionKey::from_session_id("reviewer");
+        let worker = SessionKey::from_session_id("worker");
+        ws.submit_review(
+            "forge",
+            "feat",
+            None,
+            &["a".to_owned(), "b".to_owned(), "c".to_owned()],
+            reviewer.clone(),
+        )
+        .expect("submit");
+
+        // Nothing before the worker acts.
+        assert!(ws.drain_review_activity(&worker).is_empty(), "no activity, no notice");
+
+        // Worker replies to one comment and resolves another in one turn,
+        // leaving the third (c) untouched so an open count survives.
+        ws.review_reply(&worker, "forge", "feat", "a", "impl", "fixed a", "t").expect("reply a");
+        ws.review_resolve(&worker, "forge", "feat", "b").expect("resolve b");
+
+        let notices = ws.drain_review_activity(&worker);
+        assert_eq!(notices.len(), 1, "one batched notice for the single touched review");
+        match &notices[0] {
+            SessionUpdate::ReviewActivityNotice { key, message } => {
+                assert_eq!(key, &reviewer, "routed to the submit origin, not the worker");
+                // a -> Addressed (1 replied), b -> Resolved (1 resolved), c untouched (1 open).
+                assert!(message.contains("1 replied"), "tally counts the reply: {message}");
+                assert!(message.contains("1 resolved"), "tally counts the resolve: {message}");
+                assert!(
+                    message.contains("1 open"),
+                    "tally reflects the store's open count: {message}"
+                );
+            }
+            other => panic!("expected ReviewActivityNotice, got {other:?}"),
+        }
+        // The buffer is drained - a second flush is empty.
+        assert!(ws.drain_review_activity(&worker).is_empty(), "the turn buffer drained");
     }
 
     fn usage_workspace() -> (tempfile::TempDir, Arc<Workspace>) {
