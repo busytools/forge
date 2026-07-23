@@ -2262,7 +2262,7 @@ this recomputes every render - hoist it into the snapshot instead
     <p>On <kbd>Esc</kbd> (or the banner <code>✕</code>), a session with at least one comment that <em>would file</em> - authored this pass and not already in a review - gets the <strong>Finish-review modal</strong> instead of closing: it lists the session's comments, offers an optional <code>Overview</code> cover note, and seals on <code>[ Submit review ]</code> / <kbd>Ctrl+Enter</kbd> - minting the review, filing <em>this session's</em> comments into it, then firing the existing agent bundle (with the overview prepended when non-empty). <kbd>Esc</kbd> dismisses the modal back to the diff (keep reviewing). A look-only session, and an edit-only session (every authored comment already lives in a review), both skip the modal and take the plain close path - so neither mints an empty review, and an edit-only session's still-open comments reach the agent exactly as before.</p>
 
     <div class="term"><pre class="indent">
-<span class="dim">╭─ Finish review ────────────────────────────────────────────╮</span>
+<span class="dim">┌─ Finish review ────────────────────────────────────────────┐</span>
 <span class="dim">│</span>  3 comments in this review                                  <span class="dim">│</span>
 <span class="dim">│</span>    <span class="dim">· error.rs:88    swallows the decode error, no signal</span>    <span class="dim">│</span>
 <span class="dim">│</span>    <span class="dim">· retry.rs:212   is the backoff actually capped?</span>       <span class="dim">│</span>
@@ -2273,7 +2273,7 @@ this recomputes every render - hoist it into the snapshot instead
 <span class="dim">│</span>    question on the retry path.                              <span class="dim">│</span>
 <span class="dim">│</span>                                                             <span class="dim">│</span>
 <span class="dim">│</span>  <span class="accent-bold">[ Submit review ]</span>     <span class="dim">Ctrl+Enter submit · Esc back</span>       <span class="dim">│</span>
-<span class="dim">╰─────────────────────────────────────────────────────────────╯</span></pre></div>
+<span class="dim">└─────────────────────────────────────────────────────────────┘</span></pre></div>
 
     <p>Pressing <kbd>l</kbd> opens the <strong>REVIEWS list</strong> - the branch's submitted reviews, newest first, each with its relative age (<code>2h</code> / <code>1d</code> / ...), member-comment count, and a state rollup (tallied over the review's current comment states, zero counts omitted); a totals footer sums across every review. <kbd>↑↓</kbd> move the highlight, <kbd>Enter</kbd> jumps the diff to the selected review's first comment (switching to its scope when it's in another commit), <kbd>l</kbd> / <kbd>Esc</kbd> (or a click away) close back to the diff. It's the only home for review overviews - they never render inline in the diff.</p>
 
