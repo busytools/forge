@@ -2046,8 +2046,13 @@ config_dir = "~/.claude-subspace"
         workspace.save_review_threads("forge", &branch, &[thread("a")]);
         workspace.save_review_threads("forge", "survivor", &[thread("b")]);
         // Seal a review on each branch (empty thread set just mints the row).
-        workspace.submit_review("forge", &branch, None, &[]).expect("seal torn-down review");
-        workspace.submit_review("forge", "survivor", None, &[]).expect("seal survivor review");
+        let origin = SessionKey::from_session_id("reviewer");
+        workspace
+            .submit_review("forge", &branch, None, &[], origin.clone())
+            .expect("seal torn-down review");
+        workspace
+            .submit_review("forge", "survivor", None, &[], origin)
+            .expect("seal survivor review");
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
@@ -2497,7 +2502,7 @@ config_dir = "~/.claude-subspace"
 #[cfg(test)]
 mod team_charter_tests {
     use super::*;
-    use crate::team::{DEFAULT_LEAD_CHARTER, set_forge_team_root_for_test};
+    use crate::team::{DEFAULT_LEAD_CHARTER, override_forge_team_root_for_test};
 
     /// A lead with no charter set gets one stamped regardless of
     /// `team`; the user override on disk wins when present.
@@ -2507,12 +2512,11 @@ mod team_charter_tests {
         let lead = tmp.path().join("lead");
         std::fs::create_dir_all(&lead).expect("lead dir");
         std::fs::write(lead.join("charter.md"), "user lead charter").expect("charter");
-        let prior = set_forge_team_root_for_test(Some(tmp.path().to_owned()));
+        let _guard = override_forge_team_root_for_test(tmp.path().to_owned());
 
         let mut settings = SessionLaunchSettings::default();
         apply_lead_charter(&mut settings);
 
-        set_forge_team_root_for_test(prior);
         assert_eq!(settings.charter.as_deref(), Some("user lead charter"));
     }
 
@@ -2533,12 +2537,11 @@ mod team_charter_tests {
     #[test]
     fn missing_user_charter_falls_back_to_bundled_default() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let prior = set_forge_team_root_for_test(Some(tmp.path().to_owned()));
+        let _guard = override_forge_team_root_for_test(tmp.path().to_owned());
 
         let mut settings = SessionLaunchSettings::default();
         apply_lead_charter(&mut settings);
 
-        set_forge_team_root_for_test(prior);
         assert_eq!(settings.charter.as_deref(), Some(DEFAULT_LEAD_CHARTER));
     }
 
@@ -2550,12 +2553,11 @@ mod team_charter_tests {
         let lead = tmp.path().join("lead");
         std::fs::create_dir_all(&lead).expect("lead dir");
         std::fs::write(lead.join("charter.md"), [0xff, 0xfe, 0xfd]).expect("charter");
-        let prior = set_forge_team_root_for_test(Some(tmp.path().to_owned()));
+        let _guard = override_forge_team_root_for_test(tmp.path().to_owned());
 
         let mut settings = SessionLaunchSettings::default();
         apply_lead_charter(&mut settings);
 
-        set_forge_team_root_for_test(prior);
         assert_eq!(settings.charter.as_deref(), Some(DEFAULT_LEAD_CHARTER));
     }
 }

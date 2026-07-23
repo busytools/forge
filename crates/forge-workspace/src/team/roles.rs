@@ -164,11 +164,48 @@ pub fn forge_team_root() -> Option<PathBuf> {
 /// any) is replaced. Passing `None` clears the override so subsequent
 /// calls fall back to `dirs::home_dir()`. Test-only.
 ///
-/// Returns the prior override so the test can restore it on
-/// teardown (paired use with `std::sync::OnceLock`-style discipline).
+/// Returns the prior override so the test can restore it on teardown.
+///
+/// This does NOT serialise: the override is a process-global, so two
+/// lib tests racing their own set/restore under a single-process runner
+/// (`cargo test`) can clobber each other. Lib tests must go through
+/// [`override_forge_team_root_for_test`], which holds a process-wide
+/// lock. This raw setter is kept for the integration harness, which
+/// runs in its own test binary (no cross-test race).
 #[cfg(any(test, feature = "testing"))]
 pub fn set_forge_team_root_for_test(root: Option<PathBuf>) -> Option<PathBuf> {
     test_forge_team_root::set(root)
+}
+
+/// RAII guard from [`override_forge_team_root_for_test`]: holds the
+/// process-wide team-root test lock for its lifetime and restores the
+/// prior override on drop.
+#[cfg(any(test, feature = "testing"))]
+pub struct ForgeTeamRootTestGuard {
+    prior: Option<PathBuf>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl Drop for ForgeTeamRootTestGuard {
+    fn drop(&mut self) {
+        set_forge_team_root_for_test(self.prior.take());
+    }
+}
+
+/// Install `root` as the `forge_team_root` override under a process-wide
+/// lock, restoring the prior override + releasing the lock on drop. Every
+/// lib test that overrides the team root goes through this so the
+/// set -> use -> restore window is atomic across parallel `cargo test`
+/// threads (nextest's per-process isolation hid the race). Recovers a
+/// poisoned lock (a prior test panicked while holding it) rather than
+/// cascading the panic into every later team-root test.
+#[cfg(any(test, feature = "testing"))]
+pub fn override_forge_team_root_for_test(root: PathBuf) -> ForgeTeamRootTestGuard {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let lock = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let prior = set_forge_team_root_for_test(Some(root));
+    ForgeTeamRootTestGuard { prior, _lock: lock }
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -383,7 +420,7 @@ mod tests {
         mk(root, "implementer"); // global
         mk(root, "hub-modules/steward"); // project
         mk(root, "forge/implementer"); // project override of a global
-        let prev = set_forge_team_root_for_test(Some(root.to_path_buf()));
+        let _guard = override_forge_team_root_for_test(root.to_path_buf());
 
         // bare project role resolves to <ns>/<label> from its own project
         assert_eq!(resolve_role("steward", "hub-modules").as_deref(), Some("hub-modules/steward"));
@@ -393,7 +430,5 @@ mod tests {
         assert_eq!(resolve_role("implementer", "hub-modules").as_deref(), Some("implementer"));
         // project role shadows a global of the same bare name
         assert_eq!(resolve_role("implementer", "forge").as_deref(), Some("forge/implementer"));
-
-        set_forge_team_root_for_test(prev);
     }
 }

@@ -257,6 +257,17 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 session.peer_badges = stats;
             }
         }
+        SessionUpdate::ReviewActivityNotice { key, message } => {
+            // A worker's review turn ended; drop the batched tally into the
+            // reviewer's (submit-origin) session chat. No-op if that session
+            // isn't live here.
+            super::push_system_message_to_session(
+                app,
+                &key,
+                Some(crate::app::SystemSeverity::Info),
+                &message,
+            );
+        }
         SessionUpdate::WorkerStatusChanged { action, status, is_git_repo_at_spawn, .. } => {
             // Workspace owns the authoritative live_workers map; the
             // projects-pane renderer reads from `workspace.list_live_workers`

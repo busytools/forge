@@ -699,6 +699,14 @@ pub enum SessionUpdate {
         session_id: String,
         text: String,
     },
+    /// A worker's review turn addressed review comments; `key` is the
+    /// session that authored the review (the submit origin). The TUI drops
+    /// `message` as a system line into that session's chat so the reviewer
+    /// sees the batched tally.
+    ReviewActivityNotice {
+        key: SessionKey,
+        message: String,
+    },
     FatalError(AppError),
 }
 
@@ -723,6 +731,7 @@ impl SessionUpdate {
             | Self::TurnError { key, .. }
             | Self::ForgeAccountIdentity { key, .. }
             | Self::SessionsListed { key, .. }
+            | Self::ReviewActivityNotice { key, .. }
             | Self::PeerInflightStatsChanged { key, .. } => Some(key.clone()),
             Self::RuntimeReloadCompleted { session_id }
             | Self::RuntimeReloadFailed { session_id, .. }
@@ -884,6 +893,9 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("CronPromptAppended")
                 .field("session_id", session_id)
                 .finish_non_exhaustive(),
+            Self::ReviewActivityNotice { key, .. } => {
+                f.debug_struct("ReviewActivityNotice").field("key", key).finish_non_exhaustive()
+            }
             Self::FatalError(err) => f.debug_struct("FatalError").field("error", err).finish(),
         }
     }

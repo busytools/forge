@@ -397,6 +397,15 @@ pub(crate) fn push_system_message_to_session(
         ));
         session.message_retained_bytes.push(0);
         app.needs_redraw = true;
+    } else {
+        // No live bucket for this key (e.g. a review notice for a session
+        // that isn't open here) - the toast is intentionally dropped, but
+        // trace it so a "why did I get no ping" report is diagnosable.
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            key = %key.as_str(),
+            "system message dropped: no live session bucket for key",
+        );
     }
 }
 

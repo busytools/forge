@@ -12,4 +12,6 @@ pub use roles::{
 };
 
 #[cfg(any(test, feature = "testing"))]
-pub use roles::set_forge_team_root_for_test;
+pub use roles::{
+    ForgeTeamRootTestGuard, override_forge_team_root_for_test, set_forge_team_root_for_test,
+};
