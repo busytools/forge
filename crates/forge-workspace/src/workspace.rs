@@ -3791,11 +3791,22 @@ impl Workspace {
             let Some((project, branch, replied, resolved)) = by_review.remove(&review_id) else {
                 continue;
             };
-            let Some(summary) = self
-                .review_list(&project, &branch)
-                .ok()
-                .and_then(|rows| rows.into_iter().find(|s| s.review_id == review_id))
-            else {
+            let rows = match self.review_list(&project, &branch) {
+                Ok(rows) => rows,
+                Err(error) => {
+                    // Surface the decode / IO failure rather than swallowing
+                    // it into a silently-skipped notice (#439/#441 anti-pattern).
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        %error,
+                        project = %project,
+                        branch = %branch,
+                        "review-activity notice skipped: loading reviews failed",
+                    );
+                    continue;
+                }
+            };
+            let Some(summary) = rows.into_iter().find(|s| s.review_id == review_id) else {
                 continue;
             };
             let message =
