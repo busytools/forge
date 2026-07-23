@@ -1564,8 +1564,7 @@ mod tests {
         let handle = Arc::new(handle);
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
         let (update_tx, mut update_rx) = mpsc::unbounded_channel();
-        let domain =
-            Arc::new(Mutex::new(DomainSession::new(worker.clone(), Some(handle.clone()))));
+        let domain = Arc::new(Mutex::new(DomainSession::new(worker.clone(), Some(handle.clone()))));
         let mut task = SessionTask {
             key: worker.clone(),
             handle,
