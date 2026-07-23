@@ -12,9 +12,9 @@
 //!   [`DiffOverlayState::comments`] and closes the editor; Esc
 //!   cancels the editor (restoring a saved comment if the editor
 //!   was opened via re-clicking a chip).
-//! - With no editor open: Esc bundles all pending comments into a
-//!   single markdown chat message and dispatches it as a fresh
-//!   prompt, then closes the overlay.
+//! - With no editor open: Esc seals this session's authored comments
+//!   into a numbered review and nudges the agent (one line) to address
+//!   it via the review MCP, then closes the overlay.
 //!
 //! Mouse handling: see [`handle_mouse`].
 
@@ -352,8 +352,8 @@ pub enum ThreadAction {
 }
 
 /// A saved per-line comment. `path` / `line` / `hunk_context` are
-/// snapshotted at submit time so the markdown bundle stays stable
-/// even if the user scrolls or switches files before pressing Esc.
+/// snapshotted at save time so the captured context stays stable even
+/// if the user scrolls or switches files before pressing Esc.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HunkComment {
     pub key: LineKey,
@@ -361,8 +361,8 @@ pub struct HunkComment {
     /// Line number from the relevant side of the diff (new-file
     /// line for context / added, old-file line for removed).
     pub line: u32,
-    /// Full hunk the comment is anchored on - included verbatim in
-    /// the markdown bundle so the agent sees the local context.
+    /// Full hunk the comment is anchored on - the captured context the
+    /// agent reads back via `review__get` to locate the code.
     pub hunk_context: Vec<DiffLine>,
     pub comment_text: String,
     /// Commit the comment was made against (the sha), or `None` in
@@ -379,8 +379,8 @@ pub struct HunkComment {
     pub thread: forge_primitives::ReviewThread,
     /// Whether the user authored or edited this comment in THIS overlay
     /// session (vs a thread hydrated from redb for display). Only
-    /// session-authored comments are bundled to the agent on Esc, so a
-    /// read-only reopen of a branch's history never re-prompts.
+    /// session-authored comments are sealed into a review on Esc, so a
+    /// read-only reopen of a branch's history never re-nudges the agent.
     pub authored_this_session: bool,
     /// Whether a redb write for this comment's thread has been confirmed.
     /// `false` for a comment whose write was skipped (no branch / no db)
@@ -930,8 +930,7 @@ pub struct DiffOverlayState {
     /// which project they're reviewing.
     pub cwd: PathBuf,
     /// Diff target passed to `git diff` (`"HEAD"`, branch name,
-    /// SHA). Surfaced in the scan-failed notice and in the markdown
-    /// comment bundle so the agent sees what was reviewed.
+    /// SHA). Surfaced in the scan-failed notice and the stepper header.
     pub target: String,
     /// Files in the diff, in the order the scanner returned them.
     pub files: Vec<FileHunks>,
@@ -1669,10 +1668,10 @@ pub(crate) fn open(app: &mut App, state: DiffOverlayState) {
     app.needs_redraw = true;
 }
 
-/// Drop the overlay state and transition back to chat. The Esc-
-/// bundle submit path lives in [`close_with_submit`] - call this
-/// directly only when comments have already been handled (or the
-/// caller is the Esc-cancel path for the active input editor).
+/// Drop the overlay state and transition back to chat. The Esc submit
+/// path lives in [`close_with_submit`] - call this directly only when
+/// comments have already been handled (or the caller is the Esc-cancel
+/// path for the active input editor).
 pub(crate) fn close(app: &mut App) {
     app.diff_overlay = None;
     set_active_view(app, ActiveView::Chat);
@@ -1970,11 +1969,11 @@ fn hydrate_threads(app: &mut App) {
 ///   - All other keys flow into the TextArea (typing, cursor
 ///     movement, paste-via-bracket, undo/redo, etc.).
 /// - No editor open:
-///   - `Esc` closes the overlay; pending comments are bundled into
-///     a markdown chat message and submitted to the agent before
-///     the close. The submit fires synchronously through
-///     `input_submit::dispatch_diff_comment_bundle` so the user
-///     sees the bubble appear immediately.
+///   - `Esc` closes the overlay; a submit seals this session's authored
+///     comments into a numbered review and nudges the agent (one line)
+///     to address it via the review MCP. The nudge fires synchronously
+///     through `input_submit::dispatch_review_nudge` so the user sees the
+///     bubble appear immediately.
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     // Finish-review modal captures keys while open: type the overview,
     // Ctrl+Enter submits, Esc dismisses back to the diff.
@@ -2495,7 +2494,7 @@ fn cancel_active_input(app: &mut App) {
 
 /// Persist the active editor's text into [`DiffOverlayState::comments`]
 /// and close the editor. The snapshot includes the anchor line's
-/// hunk context so the markdown bundle stays stable even if the
+/// hunk context so the captured context stays stable even if the
 /// user scrolls / switches files later.
 ///
 /// Empty-text save semantics:
@@ -2578,11 +2577,9 @@ fn save_active_input(app: &mut App) {
     }
     .unwrap_or(0);
     // Anchor on the single clicked line, not the whole hunk. A
-    // comment on a brand-new file would otherwise pull the entire
-    // file into the bundle (Added hunks span the file body); now
-    // the bundle stays compact and the agent gets precise
-    // per-line context. Matches GitHub's inline-review markdown
-    // (quote just the line under the `**Line N**` heading).
+    // comment on a brand-new file would otherwise capture the entire
+    // file (Added hunks span the file body); now the captured context
+    // stays compact and the agent gets precise per-line context.
     let commit = overlay.current_commit_sha();
     // Snapshot everything off the anchored line into owned locals so the
     // `overlay.files` borrows drop before the comment is pushed.
@@ -2732,7 +2729,7 @@ pub(crate) fn rail_width_for(terminal_width: u16) -> u16 {
 
 /// Outcome of a mouse interaction. Some interactions need access
 /// to the full App (key event needs to fire `dispatch_prompt` for
-/// the Esc-bundle path) which the inner `handle_*` borrow doesn't
+/// the Esc submit path) which the inner `handle_*` borrow doesn't
 /// have - surface them as effects the outer `handle_mouse` runs.
 #[derive(Debug, Default)]
 struct MouseEffect {
@@ -3054,10 +3051,11 @@ fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> Mouse
     MouseEffect { redraw: true, thread_action: None }
 }
 
-/// Whether a comment belongs in the agent bundle on Esc: authored or
-/// edited THIS session (a hydrated thread from a prior review is never
-/// re-sent) and not already Resolved / Outdated.
-fn is_bundle_eligible(comment: &HunkComment) -> bool {
+/// Whether a comment is actionable on submit: authored or edited THIS
+/// session (a hydrated thread from a prior review isn't re-nudged) and not
+/// already Resolved / Outdated. A review with at least one such comment
+/// nudges the agent on submit.
+fn is_actionable(comment: &HunkComment) -> bool {
     comment.authored_this_session
         && !matches!(comment.thread.status, ReviewStatus::Resolved | ReviewStatus::Outdated)
 }
@@ -3067,8 +3065,8 @@ fn is_bundle_eligible(comment: &HunkComment) -> bool {
 /// into a new review - authored this session AND not already filed. An
 /// edit-only session (every authored comment already carries a
 /// `review_id`) and a look-only session both skip the modal and take the
-/// plain send-and-close path, so neither mints an empty review; edited
-/// comments still reach the agent exactly as before.
+/// plain close path: neither mints a review nor nudges the agent (edits are
+/// already persisted; the agent reads them via the review MCP).
 pub(super) fn close_with_submit(app: &mut App) {
     // Flush the active editor first - a reopened chip parks its saved
     // comment on `active_input.prior_comment`, so `overlay.comments` is
@@ -3090,8 +3088,8 @@ pub(super) fn close_with_submit(app: &mut App) {
 }
 
 /// Submit the Finish-review modal: seal this session's authored comments
-/// into a fresh numbered review (with the optional overview), then fire
-/// the existing agent bundle for the still-open ones and close.
+/// into a fresh numbered review (with the optional overview), then nudge
+/// the agent to address it via the review MCP and close.
 pub(super) fn submit_finish_review(app: &mut App) {
     let overview = app
         .diff_overlay
@@ -3107,14 +3105,15 @@ pub(super) fn submit_finish_review(app: &mut App) {
 
 /// Shared tail for the Finish-review submit and the plain close: hold when
 /// the agent isn't ready (surface stays open so notes survive), else seal
-/// the listed still-unfiled threads into a review (skipped when `seal_ids`
-/// is empty - the edit-only / look-only path mints nothing), bundle the
-/// still-open session comments with the overview prepended, dispatch, and
-/// close. Sealing is best-effort: a session without a branch / store still
-/// bundles and closes, matching pre-review-sets behavior.
+/// the listed still-unfiled threads into a numbered review (skipped when
+/// `seal_ids` is empty - the edit-only / look-only path mints nothing) and
+/// nudge the agent to address it through the review MCP. The overview is
+/// stored on the review, never put in the chat (the agent reads it, and the
+/// comments, via `review__get`). Sealing is best-effort: a session without
+/// a branch / store still closes; only the local reviews-list record and
+/// the nudge are lost.
 fn finalize_review_close(app: &mut App, overview: Option<&str>, seal_ids: &[String]) {
-    let pending =
-        app.diff_overlay.as_ref().is_some_and(|o| o.comments.iter().any(is_bundle_eligible));
+    let pending = app.diff_overlay.as_ref().is_some_and(|o| o.comments.iter().any(is_actionable));
     if pending && (!app.has_active_agent() || app.session_id().is_none()) {
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
@@ -3132,208 +3131,45 @@ fn finalize_review_close(app: &mut App, overview: Option<&str>, seal_ids: &[Stri
         return;
     }
 
-    if !seal_ids.is_empty() {
-        let project = app.active_session().and_then(|s| s.project.clone());
-        let workspace = app.workspace.clone();
-        let branch = app.diff_overlay.as_ref().and_then(|o| o.branch.clone());
-        if let (Some(project), Some(branch), Some(workspace)) = (project, branch, workspace) {
-            // `None` = the review-set write failed / the store is absent. The
-            // comments are already persisted unfiled at save-time and the
-            // bundle (with the overview) still reaches the agent, so only the
-            // local l-list record is lost. Degrade like the comment-save path
-            // rather than hold: warn the user, then send + close as usual.
-            if workspace
-                .submit_review(&project, &branch, overview.map(str::to_owned), seal_ids)
-                .is_none()
-            {
-                tracing::warn!(
-                    target: crate::logging::targets::APP_SESSION,
-                    event_name = "diff_overlay_review_not_sealed",
-                    message = "diff review could not be sealed locally; comments still dispatched",
-                    outcome = "degraded",
-                );
-                crate::app::slash::push_system_message(
-                    app,
-                    "Review couldn't be saved locally (store error) - comments were still sent to the agent but won't show in the reviews list.",
-                );
-            }
-        }
-    }
-
-    let snapshot = app.diff_overlay.as_mut().map(|o| {
-        let bundle: Vec<HunkComment> =
-            std::mem::take(&mut o.comments).into_iter().filter(is_bundle_eligible).collect();
-        (bundle, o.target.clone(), o.cwd.display().to_string(), o.branch.clone(), o.commits.clone())
-    });
-    if let Some((comments, target, cwd_display, branch, commits)) = snapshot
-        && !comments.is_empty()
+    let scope = (
+        app.active_session().and_then(|s| s.project.clone()),
+        app.diff_overlay.as_ref().and_then(|o| o.branch.clone()),
+        app.workspace.clone(),
+    );
+    let review_number = if let (false, (Some(project), Some(branch), Some(workspace))) =
+        (seal_ids.is_empty(), scope)
     {
-        let markdown = format_diff_comments(
-            &target,
-            branch.as_deref(),
-            &cwd_display,
-            &commits,
-            &comments,
-            overview,
+        let review =
+            workspace.submit_review(&project, &branch, overview.map(str::to_owned), seal_ids);
+        if review.is_none() {
+            // The store write failed. Comments are already persisted unfiled
+            // at save-time; only the local reviews-list record and the agent
+            // nudge are lost. Degrade like the comment-save path: warn, close.
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "diff_overlay_review_not_sealed",
+                message = "diff review could not be sealed locally",
+                outcome = "degraded",
+            );
+            crate::app::slash::push_system_message(
+                app,
+                "Review couldn't be saved locally (store error) - it won't show in the reviews list or reach the agent.",
+            );
+        }
+        review.map(|r| r.number)
+    } else {
+        None
+    };
+
+    // A freshly-sealed review with something to act on nudges the agent to
+    // read + address it via the review MCP - one line, not the comments.
+    if pending && let Some(number) = review_number {
+        super::input_submit::dispatch_review_nudge(
+            app,
+            format!("Review #{number} ready - address it via the review MCP (`review__list`)."),
         );
-        super::input_submit::dispatch_diff_comment_bundle(app, markdown);
     }
     close(app);
-}
-
-/// Build the markdown bundle for a set of pending comments. Public
-/// for the Esc-submit path and the test suite. The shape depends on
-/// whether ANY comment is commit-scoped:
-/// - None are (a pure whole-diff session): today's shape exactly -
-///   `## Diff review (target \`<target>\`)` then per-file
-///   `### \`<path>\`` groups. This is the only byte-identical path.
-/// - Some are (commit mode, including a mixed session that also left
-///   comments on "All changes"): the commit-grouped shape - a
-///   `<branch> vs <target>` header with the comment/commit totals, a
-///   `### Commit \`<sha>\` - <subject>` section per commit in stepper
-///   order, and any whole-diff comments trailing under `### All
-///   changes`. An All-changes comment made in a commit-mode session
-///   therefore renders grouped, not in the file-grouped whole-diff
-///   shape.
-///
-/// `overview` is the review's optional cover note; when non-empty it
-/// leads the bundle as an `### Overview` section. An empty / `None`
-/// overview leaves the whole-diff path byte-identical to before.
-pub(crate) fn format_diff_comments(
-    target: &str,
-    branch: Option<&str>,
-    cwd_display: &str,
-    commits: &[CommitMeta],
-    comments: &[HunkComment],
-    overview: Option<&str>,
-) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::new();
-    let commit_scoped = comments.iter().any(|c| c.commit.is_some());
-    if !commit_scoped {
-        // Byte-identical to the pre-stepper bundle when there's no overview.
-        let _ = writeln!(out, "## Diff review (target `{target}`)");
-        out.push('\n');
-        write_repo_line(&mut out, cwd_display);
-        write_overview(&mut out, overview);
-        write_by_file(&mut out, comments.iter());
-        return out;
-    }
-
-    let total = comments.len();
-    let commit_hits = commits
-        .iter()
-        .filter(|c| comments.iter().any(|x| x.commit.as_deref() == Some(&c.sha)))
-        .count();
-    let header_lead = match branch {
-        Some(b) => format!("{b} vs {target}"),
-        None => target.to_owned(),
-    };
-    let _ = writeln!(
-        out,
-        "## Diff review ({header_lead}, {total} comment{} across {commit_hits} commit{})",
-        if total == 1 { "" } else { "s" },
-        if commit_hits == 1 { "" } else { "s" },
-    );
-    out.push('\n');
-    write_repo_line(&mut out, cwd_display);
-    write_overview(&mut out, overview);
-
-    for commit in commits {
-        let mut scoped =
-            comments.iter().filter(|c| c.commit.as_deref() == Some(&commit.sha)).peekable();
-        if scoped.peek().is_none() {
-            continue;
-        }
-        let _ = writeln!(out, "### Commit `{}` - {}", commit.short_sha, commit.subject);
-        out.push('\n');
-        for c in scoped {
-            let _ = writeln!(out, "**`{}` - line {}**", c.path, c.line);
-            out.push('\n');
-            write_anchor_and_text(&mut out, c);
-        }
-    }
-
-    // Any comments left on the whole-branch "All changes" view.
-    let mut whole = comments.iter().filter(|c| c.commit.is_none()).peekable();
-    if whole.peek().is_some() {
-        let _ = writeln!(out, "### All changes");
-        out.push('\n');
-        for c in whole {
-            let _ = writeln!(out, "**`{}` - line {}**", c.path, c.line);
-            out.push('\n');
-            write_anchor_and_text(&mut out, c);
-        }
-    }
-    out
-}
-
-/// Emit the ``Repo: `<cwd>` `` line (blank cwd suppresses it).
-fn write_repo_line(out: &mut String, cwd_display: &str) {
-    use std::fmt::Write as _;
-    if !cwd_display.is_empty() {
-        let _ = writeln!(out, "Repo: `{cwd_display}`");
-        out.push('\n');
-    }
-}
-
-/// Emit the review's `### Overview` section when the cover note is
-/// non-empty; a blank / `None` overview writes nothing.
-fn write_overview(out: &mut String, overview: Option<&str>) {
-    use std::fmt::Write as _;
-    let Some(text) = overview.map(str::trim).filter(|t| !t.is_empty()) else {
-        return;
-    };
-    let _ = writeln!(out, "### Overview");
-    out.push('\n');
-    let _ = writeln!(out, "{text}");
-    out.push('\n');
-}
-
-/// Whole-diff bundle body: group comments by file path (first-seen
-/// order), `### \`<path>\`` then `**Line N**` + the quoted anchor per
-/// comment. This is the exact pre-stepper shape.
-fn write_by_file<'a>(out: &mut String, comments: impl Iterator<Item = &'a HunkComment>) {
-    use std::fmt::Write as _;
-    let mut order: Vec<String> = Vec::new();
-    let mut by_file: std::collections::HashMap<String, Vec<&HunkComment>> =
-        std::collections::HashMap::new();
-    for c in comments {
-        by_file
-            .entry(c.path.clone())
-            .or_insert_with(|| {
-                order.push(c.path.clone());
-                Vec::new()
-            })
-            .push(c);
-    }
-    for path in &order {
-        let _ = writeln!(out, "### `{path}`");
-        out.push('\n');
-        for c in by_file.get(path).into_iter().flatten() {
-            let _ = writeln!(out, "**Line {}**", c.line);
-            out.push('\n');
-            write_anchor_and_text(out, c);
-        }
-    }
-}
-
-/// Emit the quoted anchor-line ```diff block plus the comment text -
-/// the shared tail of both bundle shapes.
-fn write_anchor_and_text(out: &mut String, c: &HunkComment) {
-    use std::fmt::Write as _;
-    out.push_str("```diff\n");
-    for line in &c.hunk_context {
-        let marker = match line.kind {
-            DiffLineKind::Added => '+',
-            DiffLineKind::Removed => '-',
-            DiffLineKind::Context => ' ',
-        };
-        let _ = writeln!(out, "{marker}{}", line.text);
-    }
-    out.push_str("```\n\n");
-    let _ = writeln!(out, "{}", c.comment_text.trim_end());
-    out.push('\n');
 }
 
 #[cfg(test)]
@@ -3686,262 +3522,6 @@ mod tests {
     }
 
     #[test]
-    fn format_diff_comments_groups_by_file_and_includes_hunk_context() {
-        let comments = vec![
-            HunkComment {
-                key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
-                path: "a.rs".into(),
-                line: 12,
-                hunk_context: vec![DiffLine {
-                    kind: DiffLineKind::Added,
-                    text: "let x = unwrap_or_die();".into(),
-                    old_line: None,
-                    new_line: Some(12),
-                }],
-                comment_text: "use ? instead of unwrap_or_die".into(),
-                commit: None,
-                thread: stock_thread(),
-                authored_this_session: true,
-                persisted: false,
-            },
-            HunkComment {
-                key: LineKey { file_idx: 1, hunk_idx: 0, line_idx: 1 },
-                path: "b.rs".into(),
-                line: 4,
-                hunk_context: vec![DiffLine {
-                    kind: DiffLineKind::Removed,
-                    text: "panic!(\"unreachable\");".into(),
-                    old_line: Some(4),
-                    new_line: None,
-                }],
-                comment_text: "good, panic was unsafe".into(),
-                commit: None,
-                thread: stock_thread(),
-                authored_this_session: true,
-                persisted: false,
-            },
-            HunkComment {
-                key: LineKey { file_idx: 0, hunk_idx: 1, line_idx: 0 },
-                path: "a.rs".into(),
-                line: 30,
-                hunk_context: vec![],
-                comment_text: "missing rationale".into(),
-                commit: None,
-                thread: stock_thread(),
-                authored_this_session: true,
-                persisted: false,
-            },
-        ];
-        let md = format_diff_comments("HEAD", None, "/tmp/repo", &[], &comments, None);
-        assert!(md.contains("## Diff review (target `HEAD`)"));
-        assert!(md.contains("Repo: `/tmp/repo`"));
-        // Same-file comments group under one `### `a.rs`` header.
-        let header_count = md.matches("### `a.rs`").count();
-        assert_eq!(header_count, 1, "a.rs comments share one heading");
-        assert!(md.contains("### `b.rs`"));
-        assert!(md.contains("**Line 12**"));
-        assert!(md.contains("**Line 30**"));
-        assert!(md.contains("+let x = unwrap_or_die();"));
-        assert!(md.contains("-panic!(\"unreachable\");"));
-        assert!(md.contains("use ? instead of unwrap_or_die"));
-    }
-
-    #[test]
-    fn format_diff_comments_empty_input_still_includes_header() {
-        let md = format_diff_comments("main", None, "", &[], &[], None);
-        assert!(md.contains("## Diff review (target `main`)"));
-        assert!(!md.contains("Repo: ``"), "blank cwd suppresses the Repo line");
-    }
-
-    #[test]
-    fn format_diff_comments_prepends_overview_when_present() {
-        let comment = HunkComment {
-            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
-            path: "a.rs".into(),
-            line: 12,
-            hunk_context: vec![],
-            comment_text: "nit".into(),
-            commit: None,
-            thread: stock_thread(),
-            authored_this_session: true,
-            persisted: false,
-        };
-        let md = format_diff_comments("HEAD", None, "", &[], &[comment], Some("Solid overall."));
-        assert!(md.contains("### Overview"), "an overview section leads the bundle");
-        assert!(md.contains("Solid overall."), "the overview text is included");
-        let overview_at = md.find("### Overview").expect("overview present");
-        let file_at = md.find("### `a.rs`").expect("file section present");
-        assert!(overview_at < file_at, "the overview precedes the file sections");
-    }
-
-    #[test]
-    fn format_diff_comments_omits_overview_when_empty() {
-        // A whitespace-only overview writes nothing, keeping the bundle
-        // byte-identical to the no-overview path.
-        let with_empty = format_diff_comments("main", None, "", &[], &[], Some("   "));
-        let without = format_diff_comments("main", None, "", &[], &[], None);
-        assert_eq!(with_empty, without, "an empty overview leaves the bundle unchanged");
-        assert!(!with_empty.contains("### Overview"));
-    }
-
-    #[test]
-    fn format_diff_comments_commit_mode_overview_precedes_first_commit() {
-        // /diff opens in commit mode when the branch has commits ahead - the
-        // common case - so the overview must lead the commit-grouped bundle
-        // too, not just the whole-diff shape.
-        let commits = vec![commit_meta("a3f9c1e", "fix the threshold check")];
-        let comments = vec![HunkComment {
-            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
-            path: "app/rate_limit.rs".into(),
-            line: 66,
-            hunk_context: vec![DiffLine {
-                kind: DiffLineKind::Added,
-                text: "fn is_near_threshold() {".into(),
-                old_line: None,
-                new_line: Some(66),
-            }],
-            comment_text: "name it _without_overage".into(),
-            commit: Some("a3f9c1e".into()),
-            thread: stock_thread(),
-            authored_this_session: true,
-            persisted: false,
-        }];
-        let md = format_diff_comments(
-            "main",
-            Some("worker/rate-limit"),
-            "/repo",
-            &commits,
-            &comments,
-            Some("Solid overall."),
-        );
-        let overview_at = md.find("### Overview").expect("overview section present");
-        let commit_at = md.find("### Commit `a3f9c1e`").expect("commit section present");
-        assert!(md.contains("Solid overall."), "the overview text is included");
-        assert!(overview_at < commit_at, "the overview precedes the first commit section");
-    }
-
-    #[test]
-    fn format_diff_comments_groups_by_commit_when_scoped() {
-        let commits = vec![
-            commit_meta("a3f9c1e", "fix the threshold check"),
-            commit_meta("e55f210", "wire the warning banner"),
-        ];
-        let comments = vec![
-            HunkComment {
-                key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
-                path: "app/rate_limit.rs".into(),
-                line: 66,
-                hunk_context: vec![DiffLine {
-                    kind: DiffLineKind::Added,
-                    text: "fn is_near_threshold() {".into(),
-                    old_line: None,
-                    new_line: Some(66),
-                }],
-                comment_text: "name it _without_overage".into(),
-                commit: Some("a3f9c1e".into()),
-                thread: stock_thread(),
-                authored_this_session: true,
-                persisted: false,
-            },
-            HunkComment {
-                key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
-                path: "ui/banner.rs".into(),
-                line: 12,
-                hunk_context: vec![DiffLine {
-                    kind: DiffLineKind::Added,
-                    text: "if snapshot.is_near_threshold() {".into(),
-                    old_line: None,
-                    new_line: Some(12),
-                }],
-                comment_text: "hoist this".into(),
-                commit: Some("e55f210".into()),
-                thread: stock_thread(),
-                authored_this_session: true,
-                persisted: false,
-            },
-        ];
-        let md = format_diff_comments(
-            "main",
-            Some("worker/rate-limit"),
-            "/repo",
-            &commits,
-            &comments,
-            None,
-        );
-        assert!(
-            md.contains("## Diff review (worker/rate-limit vs main, 2 comments across 2 commits)"),
-            "grouped header names the branch, target, and totals; got:\n{md}",
-        );
-        assert!(md.contains("Repo: `/repo`"));
-        assert!(md.contains("### Commit `a3f9c1e` - fix the threshold check"));
-        assert!(md.contains("### Commit `e55f210` - wire the warning banner"));
-        assert!(md.contains("**`app/rate_limit.rs` - line 66**"), "per-comment path+line header");
-        assert!(md.contains("+fn is_near_threshold() {"), "quotes the anchor line");
-        assert!(md.contains("name it _without_overage"));
-        // Commit order follows the stepper (a3f9c1e before e55f210).
-        let first = md.find("a3f9c1e").expect("first commit");
-        let second = md.find("e55f210").expect("second commit");
-        assert!(first < second, "commits render oldest-first");
-        // No whole-diff header when everything is commit-scoped.
-        assert!(!md.contains("## Diff review (target"));
-        assert!(!md.contains("### All changes"));
-    }
-
-    #[test]
-    fn format_diff_comments_singular_counts() {
-        let commits = vec![commit_meta("a3f9c1e", "fix it")];
-        let comments = vec![HunkComment {
-            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
-            path: "a.rs".into(),
-            line: 1,
-            hunk_context: vec![],
-            comment_text: "x".into(),
-            commit: Some("a3f9c1e".into()),
-            thread: stock_thread(),
-            authored_this_session: true,
-            persisted: false,
-        }];
-        let md = format_diff_comments("main", Some("feat"), "", &commits, &comments, None);
-        assert!(
-            md.contains("1 comment across 1 commit)"),
-            "singular comment/commit wording; got:\n{md}",
-        );
-    }
-
-    #[test]
-    fn format_diff_comments_trailing_all_changes_section() {
-        let commits = vec![commit_meta("a3f9c1e", "fix it")];
-        let comments = vec![
-            HunkComment {
-                key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
-                path: "a.rs".into(),
-                line: 1,
-                hunk_context: vec![],
-                comment_text: "on commit".into(),
-                commit: Some("a3f9c1e".into()),
-                thread: stock_thread(),
-                authored_this_session: true,
-                persisted: false,
-            },
-            HunkComment {
-                key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
-                path: "b.rs".into(),
-                line: 2,
-                hunk_context: vec![],
-                comment_text: "on whole diff".into(),
-                commit: None,
-                thread: stock_thread(),
-                authored_this_session: true,
-                persisted: false,
-            },
-        ];
-        let md = format_diff_comments("main", Some("feat"), "", &commits, &comments, None);
-        assert!(md.contains("### Commit `a3f9c1e`"), "commit-scoped comment groups by commit");
-        assert!(md.contains("### All changes"), "whole-diff comment trails under All changes");
-        assert!(md.contains("on whole diff"));
-    }
-
-    #[test]
     fn recompute_comment_counts_zeroes_then_tallies() {
         let mut state = sample_state();
         state.comments.push(HunkComment {
@@ -4050,10 +3630,11 @@ mod tests {
     }
 
     #[test]
-    fn close_with_submit_edit_only_sends_without_minting_a_review() {
-        // A session that only edits an already-filed comment must NOT mint
-        // an empty review: the modal never opens (nothing would file), but
-        // the edited open comment still reaches the agent as today.
+    fn close_with_submit_edit_only_no_ops() {
+        // A session that only edits an already-filed comment must NOT mint a
+        // review (the modal never opens) and must NOT dispatch anything: the
+        // edit is already persisted, and the agent reads it via the review
+        // MCP - there is nothing to nudge.
         let (mut app, mut rx, _dir) = review_app_with_agent();
         let ws = app.workspace.clone().expect("ws");
         let mut overlay =
@@ -4077,15 +3658,7 @@ mod tests {
 
         close_with_submit(&mut app);
         assert!(app.diff_overlay.is_none(), "edit-only close skips the modal and closes");
-        match rx.try_recv().expect("the edited comment still reached the agent") {
-            forge_primitives::AgentCommand::PromptWithImages { text, .. } => {
-                assert!(
-                    text.contains("tweaked note"),
-                    "the edited text is in the bundle; got: {text}"
-                );
-            }
-            other => panic!("expected PromptWithImages, got {other:?}"),
-        }
+        assert!(rx.try_recv().is_err(), "an edit-only close dispatches nothing to the agent");
         assert!(
             ws.load_reviews("forge", "feat").expect("load").is_empty(),
             "no review was minted for an edit-only session",
@@ -4097,7 +3670,7 @@ mod tests {
         // An authored NEW comment resolved before close still trips
         // would_file (it's unfiled), so the modal opens and Submit mints a
         // review filing the Resolved comment - but a resolved comment isn't
-        // bundle-eligible, so nothing is dispatched to the agent.
+        // actionable, so no nudge is dispatched to the agent.
         let (mut app, mut rx, _dir) = review_app_with_agent();
         let ws = app.workspace.clone().expect("ws");
         let mut seeded = stock_thread();
@@ -4429,11 +4002,10 @@ mod tests {
     #[test]
     fn submit_finish_review_degrades_when_the_seal_fails() {
         // When the seal write fails (here a corrupt threads row rolls back
-        // the submit txn, so submit_review returns None) the comments are
-        // already persisted unfiled and the bundle still carries the
-        // overview, so submit degrades gracefully: it dispatches + closes
-        // as before, and pushes a system message so the failure isn't
-        // silent. It must NOT hold - a store-down session would dead-end.
+        // the submit txn, so submit_review returns None) there is no review
+        // number to nudge with, so submit degrades gracefully: it closes
+        // (never holds - a store-down session would dead-end), dispatches no
+        // nudge, and pushes a system message so the failure isn't silent.
         let dir = tempfile::tempdir().expect("tempdir");
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("ws");
@@ -4476,8 +4048,8 @@ mod tests {
             "the overlay closes (no dead-end hold) on a seal failure"
         );
         assert!(
-            matches!(rx.try_recv(), Ok(forge_primitives::AgentCommand::PromptWithImages { .. })),
-            "the bundle is still dispatched to the agent",
+            rx.try_recv().is_err(),
+            "a failed seal has no review number, so nothing is nudged to the agent",
         );
         assert!(
             app.messages().iter().any(|m| matches!(m.role, crate::app::MessageRole::System(None))),
@@ -4486,15 +4058,15 @@ mod tests {
     }
 
     #[test]
-    fn submit_finish_review_flushes_reopened_chip_to_bundle() {
-        // A chip-reopen with an open editor must restore the prior on
-        // close so it reaches the bundle on submit; without the flush the
-        // snapshot's mem::take would pull only from overlay.comments
-        // (empty while the editor is open) and drop the note.
-        let mut app = App::test_default();
-        let mut rx = app.install_testing_stub();
-        app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
+    fn submit_finish_review_flushes_reopened_chip_before_seal() {
+        // A chip-reopen with an open editor must restore the prior on close
+        // so it counts as an actionable comment on submit; without the flush
+        // `overlay.comments` is empty while the editor is open, the review
+        // seals nothing actionable, and no nudge fires. The nudge dispatched
+        // here proves the flush ran.
+        let (mut app, mut rx, _dir) = review_app_with_agent();
         let mut state = sample_state();
+        state.branch = Some("feat".to_owned());
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
         let prior = HunkComment {
             key,
@@ -4524,13 +4096,12 @@ mod tests {
         );
         submit_finish_review(&mut app);
         assert!(app.diff_overlay.is_none(), "overlay closed on submit");
-        // The prior must have made it into the dispatched bundle.
-        let dispatched = rx.try_recv().expect("a prompt was dispatched");
-        match dispatched {
+        // The flush restored an actionable comment, so a nudge fired.
+        match rx.try_recv().expect("a nudge was dispatched") {
             forge_primitives::AgentCommand::PromptWithImages { text, .. } => {
                 assert!(
-                    text.contains("important review note"),
-                    "bundle markdown contains the prior comment text, got: {text}",
+                    text.contains("Review #1") && text.contains("review__list"),
+                    "the nudge points at the sealed review, got: {text}",
                 );
             }
             other => panic!("expected PromptWithImages, got {other:?}"),
@@ -5638,7 +5209,7 @@ mod tests {
     }
 
     #[test]
-    fn submit_finish_review_seals_files_and_bundles() {
+    fn submit_finish_review_seals_files_and_nudges() {
         let (mut app, mut rx, _dir) = review_app_with_agent();
         let ws = app.workspace.clone().expect("ws");
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])];
@@ -5671,12 +5242,15 @@ mod tests {
             "the session comment filed into the review",
         );
 
-        let dispatched = rx.try_recv().expect("prompt dispatched");
+        let dispatched = rx.try_recv().expect("nudge dispatched");
         match dispatched {
             forge_primitives::AgentCommand::PromptWithImages { text, .. } => {
-                assert!(text.contains("### Overview"), "overview section in bundle");
-                assert!(text.contains("Solid overall."), "overview text in bundle");
-                assert!(text.contains("bound check?"), "comment text in bundle");
+                assert!(text.contains("Review #1"), "the nudge names the sealed review");
+                assert!(text.contains("review__list"), "the nudge points at the review MCP");
+                // The overview and comment text stay OUT of the chat - the
+                // agent reads them via review__get.
+                assert!(!text.contains("Solid overall."), "overview stays out of the chat");
+                assert!(!text.contains("bound check?"), "comment text stays out of the chat");
             }
             other => panic!("expected PromptWithImages, got {other:?}"),
         }
@@ -6494,7 +6068,7 @@ mod tests {
     }
 
     #[test]
-    fn bundle_excludes_hydrated_and_resolved_comments() {
+    fn actionable_excludes_hydrated_and_resolved_comments() {
         let make = |authored: bool, status: ReviewStatus| {
             let thread = forge_primitives::ReviewThread {
                 id: "t".to_owned(),
@@ -6525,13 +6099,13 @@ mod tests {
                 persisted: true,
             }
         };
-        // Fresh open thread, authored this session: bundled.
-        assert!(is_bundle_eligible(&make(true, ReviewStatus::Open)));
-        // Hydrated from a prior session: never re-sent.
-        assert!(!is_bundle_eligible(&make(false, ReviewStatus::Open)));
-        // Resolved / outdated: never bundled even if touched this session.
-        assert!(!is_bundle_eligible(&make(true, ReviewStatus::Resolved)));
-        assert!(!is_bundle_eligible(&make(true, ReviewStatus::Outdated)));
+        // Fresh open thread, authored this session: actionable.
+        assert!(is_actionable(&make(true, ReviewStatus::Open)));
+        // Hydrated from a prior session: never re-nudged.
+        assert!(!is_actionable(&make(false, ReviewStatus::Open)));
+        // Resolved / outdated: never actionable even if touched this session.
+        assert!(!is_actionable(&make(true, ReviewStatus::Resolved)));
+        assert!(!is_actionable(&make(true, ReviewStatus::Outdated)));
     }
 
     #[test]
@@ -7138,7 +6712,7 @@ mod tests {
     }
 
     #[test]
-    fn reopen_then_cancel_keeps_a_hydrated_chip_unbundled() {
+    fn reopen_then_cancel_keeps_a_hydrated_chip_non_actionable() {
         // A read-only view of a prior review (hydrated threads) that the
         // user clicks then Esc-cancels must not become session-authored,
         // so closing the overlay re-prompts the agent with nothing.
@@ -7184,7 +6758,7 @@ mod tests {
 
         let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
         assert!(!comment.authored_this_session, "reopen + cancel keeps the chip hydrated");
-        assert!(!is_bundle_eligible(comment), "and never enters the agent bundle");
+        assert!(!is_actionable(comment), "and never nudges the agent");
     }
 
     #[test]

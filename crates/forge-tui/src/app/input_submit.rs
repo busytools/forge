@@ -42,17 +42,15 @@ pub(super) fn submit_input(app: &mut App) {
     dispatch_prompt(app, text);
 }
 
-/// Submit a pre-built diff-review markdown bundle as if the user
-/// typed it into the chat input. Used by the diff overlay's Esc
-/// path (and banner ✕ click) to deliver pending comments to claude
-/// in one shot.
+/// Submit a one-line review nudge as if the user typed it into the
+/// chat input. Used by the diff overlay's submit path (Esc / banner ✕)
+/// to point the agent at a freshly-sealed review, which it reads and
+/// addresses through the `review__*` MCP tools.
 ///
-/// This is a thin wrapper around `dispatch_prompt` - the bundle is
-/// already formatted markdown, so we skip the slash-command try
-/// path and go straight to the agent dispatch. A real chat-input
-/// path would have to handle slash commands; here we know the text
-/// is a review bundle and never a slash command.
-pub(super) fn dispatch_diff_comment_bundle(app: &mut App, text: String) {
+/// This is a thin wrapper around `dispatch_prompt` - the nudge is plain
+/// text, so we skip the slash-command try path and go straight to the
+/// agent dispatch.
+pub(super) fn dispatch_review_nudge(app: &mut App, text: String) {
     if text.trim().is_empty() {
         return;
     }
