@@ -3189,9 +3189,9 @@ fn finalize_review_close(app: &mut App, overview: Option<&str>, seal_ids: &[Stri
         app.diff_overlay.as_ref().and_then(|o| o.branch.clone()),
         app.workspace.clone(),
     );
-    let review_number = if let (false, (Some(project), Some(branch), Some(workspace))) =
-        (seal_ids.is_empty(), scope)
-    {
+    let review_number = if seal_ids.is_empty() {
+        None
+    } else if let (Some(project), Some(branch), Some(workspace)) = scope {
         let review = workspace.submit_review(
             &project,
             &branch,
@@ -3216,6 +3216,21 @@ fn finalize_review_close(app: &mut App, overview: Option<&str>, seal_ids: &[Stri
         }
         review.map(|r| r.number)
     } else {
+        // There are comments to file but no (project, branch, workspace) to
+        // file them under - e.g. a detached HEAD (`branch == None`). They
+        // can't persist or reach the agent, so warn like the store-fail path
+        // rather than dropping them silently (the pre-nudge bundle dispatched
+        // regardless of branch).
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "diff_overlay_review_scope_unresolved",
+            message = "diff review not sealed: no project / branch / workspace",
+            outcome = "dropped",
+        );
+        crate::app::slash::push_system_message(
+            app,
+            "Can't file a review here (no branch - detached HEAD?) - comments won't persist or reach the agent.",
+        );
         None
     };
 
@@ -4112,6 +4127,42 @@ mod tests {
         assert!(
             app.messages().iter().any(|m| matches!(m.role, crate::app::MessageRole::System(None))),
             "a system message warns that the review wasn't saved locally",
+        );
+    }
+
+    #[test]
+    fn submit_finish_review_on_detached_head_warns_not_silently_drops() {
+        // A detached HEAD leaves `overlay.branch == None`, so the review has
+        // no (project, branch) to file under. With pending comments + a ready
+        // agent it must NOT silently drop: it closes but pushes a system
+        // message so the loss is visible (mirrors the store-fail branch).
+        let (mut app, mut rx, _dir) = review_app_with_agent();
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), Vec::new());
+        // No branch set -> detached HEAD.
+        overlay.finish_review = Some(FinishReviewState { editor: TextArea::default() });
+        let mut thread = stock_thread();
+        thread.id = "fresh".to_owned();
+        overlay.comments.push(HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "src/x.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "note".into(),
+            commit: None,
+            thread,
+            authored_this_session: true,
+            persisted: true,
+        });
+        app.diff_overlay = Some(overlay);
+
+        submit_finish_review(&mut app);
+
+        assert!(app.diff_overlay.is_none(), "the overlay closes (no dead-end hold)");
+        assert!(rx.try_recv().is_err(), "no branch to file under, so nothing is dispatched");
+        assert!(
+            app.messages().iter().any(|m| matches!(m.role, crate::app::MessageRole::System(None))),
+            "a system message warns the review couldn't be filed on a detached HEAD",
         );
     }
 
