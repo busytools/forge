@@ -298,6 +298,23 @@ pub fn write_corrupt_row_for_test(db: &Db, project: &str, branch: &str) -> anyho
     Ok(())
 }
 
+/// Test-only sibling of [`write_corrupt_row_for_test`] for the `reviews`
+/// table, so a caller can exercise the reviews load-error path.
+#[cfg(feature = "test-helpers")]
+pub fn write_corrupt_reviews_row_for_test(
+    db: &Db,
+    project: &str,
+    branch: &str,
+) -> anyhow::Result<()> {
+    let txn = db.database().begin_write()?;
+    {
+        let mut table = txn.open_table(REVIEWS)?;
+        table.insert((project, branch), b"not json".as_slice())?;
+    }
+    txn.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

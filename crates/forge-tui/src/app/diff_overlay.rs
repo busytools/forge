@@ -1822,9 +1822,17 @@ fn hydrate_threads(app: &mut App) {
     };
 
     // Reviews are branch-global (scope-independent); refresh them here so
-    // chip tags and the `l` list reflect what's on disk. Best-effort - a
-    // load error still surfaces via the threads path below.
-    overlay.reviews = workspace.load_reviews(&project, &branch).unwrap_or_default();
+    // chip tags and the `l` list reflect what's on disk. A corrupt reviews
+    // row surfaces the same "failed to load" banner as the threads path -
+    // the `reviews` table is a separate row, so its failure is independent.
+    match workspace.load_reviews(&project, &branch) {
+        Ok(reviews) => overlay.reviews = reviews,
+        Err(error) => {
+            overlay.review_load_error = Some(error);
+            app.needs_redraw = true;
+            return;
+        }
+    }
 
     // Surface a load failure as a visible notice rather than a silent
     // empty pane; a successful load clears any prior notice.
@@ -6669,6 +6677,39 @@ mod tests {
         assert!(
             app.diff_overlay.as_ref().expect("overlay").review_load_error.is_some(),
             "a load failure surfaces the review-load notice state, not a blank pane",
+        );
+    }
+
+    #[test]
+    fn hydrate_surfaces_a_corrupt_reviews_row() {
+        // The `reviews` table is a separate row from `review_threads`; a
+        // corrupt reviews blob must surface the same banner, not silently
+        // degrade every chip to `· unfiled`.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("test workspace");
+        let db = forge_workspace::store::Db::open(&dir.path().join("db.redb")).expect("open db");
+        forge_workspace::store::review::write_corrupt_reviews_row_for_test(&db, "forge", "feat")
+            .expect("write corrupt reviews row");
+        workspace.install_db_for_test(db);
+        let key = forge_workspace::SessionKey::from_session_id("review-session");
+        let mut session = crate::app::session::UiSession::new(key.clone());
+        session.project = Some("forge".to_owned());
+        session.cwd_raw = "/tmp/repo".into();
+        app.sessions.insert(key.clone(), session);
+        app.active_session_key = Some(key);
+
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+
+        hydrate_threads(&mut app);
+
+        assert!(
+            app.diff_overlay.as_ref().expect("overlay").review_load_error.is_some(),
+            "a corrupt reviews row surfaces the load notice, not a silent unfiled degrade",
         );
     }
 
