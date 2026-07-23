@@ -6750,6 +6750,29 @@ mod tests {
     }
 
     #[test]
+    fn hydrate_populates_reviews_from_the_store() {
+        // The `· R#` chip tag + the `l` list both read `overlay.reviews`,
+        // which hydrate fills from the store - pin that it actually lands.
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.submit_review("forge", "feat", Some("first pass".to_owned()), &[])
+            .expect("seal a review");
+
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+
+        hydrate_threads(&mut app);
+
+        let reviews = &app.diff_overlay.as_ref().expect("overlay").reviews;
+        assert_eq!(reviews.len(), 1, "hydrate loaded the submitted review");
+        assert_eq!(reviews[0].number, 1);
+        assert_eq!(reviews[0].summary.as_deref(), Some("first pass"));
+    }
+
+    #[test]
     fn hydrate_whole_diff_ignores_commit_scoped() {
         let (mut app, _dir) = review_app();
         let ws = app.workspace.clone().expect("ws");
