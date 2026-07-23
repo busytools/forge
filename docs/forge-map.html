@@ -2275,13 +2275,13 @@ this recomputes every render - hoist it into the snapshot instead
 <span class="dim">│</span>  <span class="accent-bold">[ Submit review ]</span>     <span class="dim">Ctrl+Enter submit · Esc back</span>       <span class="dim">│</span>
 <span class="dim">╰─────────────────────────────────────────────────────────────╯</span></pre></div>
 
-    <p>Pressing <kbd>l</kbd> opens the <strong>REVIEWS list</strong> - the branch's submitted reviews, newest first, each with its relative age (<code>2h</code> / <code>1d</code> …), member-comment count, and a state rollup (tallied over the review's current comment states, zero counts omitted); a totals footer sums across every review. <kbd>↑↓</kbd> move the highlight, <kbd>Enter</kbd> jumps the diff to the selected review's first comment (switching to its scope when it's in another commit), <kbd>l</kbd> / <kbd>Esc</kbd> (or a click away) close back to the diff. It's the only home for review overviews - they never render inline in the diff.</p>
+    <p>Pressing <kbd>l</kbd> opens the <strong>REVIEWS list</strong> - the branch's submitted reviews, newest first, each with its relative age (<code>2h</code> / <code>1d</code> / ...), member-comment count, and a state rollup (tallied over the review's current comment states, zero counts omitted); a totals footer sums across every review. <kbd>↑↓</kbd> move the highlight, <kbd>Enter</kbd> jumps the diff to the selected review's first comment (switching to its scope when it's in another commit), <kbd>l</kbd> / <kbd>Esc</kbd> (or a click away) close back to the diff. It's the only home for review overviews - they never render inline in the diff.</p>
 
     <div class="term"><pre class="indent">
  <span class="accent-bold"> REVIEWS</span>                                                <span class="dim">l  close</span>
  <span class="dim">──────────────────────────────────────────────────────────────</span>
   <span class="accent-bold">#3   2h        4 comments   2 open · 1 resolved · 1 outdated</span>
-       <span class="dim">Solid overall. Two nits on error handling and one ques…</span>
+       <span class="dim">Solid overall. Two nits on error handling and one ques...</span>
   #2   1d        2 comments   2 resolved
        <span class="dim">First pass, mostly style.</span>
   #1   3d        5 comments   5 resolved

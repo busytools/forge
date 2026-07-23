@@ -4255,10 +4255,9 @@ mod tests {
 
     #[test]
     fn submit_finish_review_flushes_reopened_chip_to_bundle() {
-        // SILENT-1 fix, now through the Finish-review modal: banner ✕ /
-        // Esc with an open editor that's a chip-reopen must restore the
-        // prior so it reaches the bundle on submit. Without the flush,
-        // the snapshot's mem::take would pull only from overlay.comments
+        // A chip-reopen with an open editor must restore the prior on
+        // close so it reaches the bundle on submit; without the flush the
+        // snapshot's mem::take would pull only from overlay.comments
         // (empty while the editor is open) and drop the note.
         let mut app = App::test_default();
         let mut rx = app.install_testing_stub();
