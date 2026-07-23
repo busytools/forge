@@ -3573,24 +3573,30 @@ impl Workspace {
         thread_ids: &[String],
         origin: SessionKey,
     ) -> Option<forge_primitives::ReviewSet> {
-        let guard = self.db.lock();
-        let db = guard.as_ref()?;
-        match crate::store::review::submit_review(db, project, branch, summary, thread_ids) {
-            Ok(review) => {
-                self.review_origin.lock().insert((project.to_owned(), branch.to_owned()), origin);
-                Some(review)
+        // Scope the `db` guard to the store write and drop it BEFORE taking
+        // `review_origin` - `drain_review_activity` locks these in the
+        // opposite order (`review_origin` then `db` via `review_list`), so
+        // holding both here would risk an AB-BA deadlock on the concurrent
+        // submit / worker-turn-end paths.
+        let review = {
+            let guard = self.db.lock();
+            let db = guard.as_ref()?;
+            match crate::store::review::submit_review(db, project, branch, summary, thread_ids) {
+                Ok(review) => review,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        %error,
+                        project = %project,
+                        branch = %branch,
+                        "submitting a review failed",
+                    );
+                    return None;
+                }
             }
-            Err(error) => {
-                tracing::warn!(
-                    target: "forge_workspace::workspace",
-                    %error,
-                    project = %project,
-                    branch = %branch,
-                    "submitting a review failed",
-                );
-                None
-            }
-        }
+        };
+        self.review_origin.lock().insert((project.to_owned(), branch.to_owned()), origin);
+        Some(review)
     }
 
     /// The `review__list` view for `(project, branch)`: submitted reviews
@@ -3773,28 +3779,38 @@ impl Workspace {
                 entry.3 += 1;
             }
         }
+
+        // Resolve each review's number + current open count via the store
+        // (each `review_list` call takes `db` briefly and releases it) and
+        // build its notice message BEFORE locking `review_origin`. Never
+        // hold `review_origin` across a db-locking call - `submit_review`
+        // locks db-then-origin, so the opposite order here would risk an
+        // AB-BA deadlock.
+        let mut messages: Vec<((String, String), String)> = Vec::new();
+        for review_id in order {
+            let Some((project, branch, replied, resolved)) = by_review.remove(&review_id) else {
+                continue;
+            };
+            let Some(summary) = self
+                .review_list(&project, &branch)
+                .ok()
+                .and_then(|rows| rows.into_iter().find(|s| s.review_id == review_id))
+            else {
+                continue;
+            };
+            let message =
+                crate::mcp::review::notice_message(summary.number, replied, resolved, summary.open);
+            messages.push(((project, branch), message));
+        }
+
+        // Map each review to its notice target under a short `review_origin`
+        // lock (no db lock held here).
         let origins = self.review_origin.lock();
-        order
+        messages
             .into_iter()
-            .filter_map(|review_id| {
-                let (project, branch, replied, resolved) = by_review.remove(&review_id)?;
-                // Number + current open count from the live store view.
-                let summary = self
-                    .review_list(&project, &branch)
-                    .ok()?
-                    .into_iter()
-                    .find(|s| s.review_id == review_id)?;
-                let key =
-                    origins.get(&(project, branch)).cloned().unwrap_or_else(|| caller.clone());
-                Some(SessionUpdate::ReviewActivityNotice {
-                    key,
-                    message: crate::mcp::review::notice_message(
-                        summary.number,
-                        replied,
-                        resolved,
-                        summary.open,
-                    ),
-                })
+            .map(|(scope, message)| {
+                let key = origins.get(&scope).cloned().unwrap_or_else(|| caller.clone());
+                SessionUpdate::ReviewActivityNotice { key, message }
             })
             .collect()
     }
@@ -6467,6 +6483,81 @@ mod tests {
         }
         // The buffer is drained - a second flush is empty.
         assert!(ws.drain_review_activity(&worker).is_empty(), "the turn buffer drained");
+    }
+
+    #[test]
+    fn submit_and_drain_do_not_deadlock_under_concurrency() {
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+        };
+        let make = |id: &str| ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 1,
+                content_hash: 1,
+                context: vec!["ctx".to_owned()],
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: format!("look at {id}"),
+                at: "2026-07-23T10:00:00Z".to_owned(),
+            }],
+            status: ReviewStatus::Open,
+            created_at: "2026-07-23T10:00:00Z".to_owned(),
+            updated_at: "2026-07-23T10:00:00Z".to_owned(),
+            commit: None,
+            review_id: None,
+        };
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.save_review_threads("forge", "feat", &[make("a"), make("b"), make("c")]);
+        let reviewer = SessionKey::from_session_id("reviewer");
+        let worker = SessionKey::from_session_id("worker");
+        ws.submit_review(
+            "forge",
+            "feat",
+            None,
+            &["a".to_owned(), "b".to_owned(), "c".to_owned()],
+            reviewer.clone(),
+        );
+
+        // Hammer the two lock-ordering-sensitive paths from separate threads:
+        // the TUI submit path (`db` then `review_origin`) and the worker
+        // turn-end path (`review_origin` after `db`). A regression that
+        // reintroduces the opposite order deadlocks; a watchdog channel
+        // fails the test on timeout rather than hanging forever.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ws_submit = ws.clone();
+        let reviewer2 = reviewer.clone();
+        let ws_drain = ws.clone();
+        let worker2 = worker.clone();
+        let coordinator = std::thread::spawn(move || {
+            let submitter = std::thread::spawn(move || {
+                for _ in 0..300 {
+                    ws_submit.submit_review("forge", "feat", None, &[], reviewer2.clone());
+                }
+            });
+            let drainer = std::thread::spawn(move || {
+                for _ in 0..300 {
+                    let _ = ws_drain.review_reply(&worker2, "forge", "feat", "a", "impl", "x", "t");
+                    let _ = ws_drain.drain_review_activity(&worker2);
+                }
+            });
+            let _ = submitter.join();
+            let _ = drainer.join();
+            let _ = tx.send(());
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_secs(20)).is_ok(),
+            "submit_review + drain_review_activity deadlocked (AB-BA on db vs review_origin)",
+        );
+        let _ = coordinator.join();
     }
 
     fn usage_workspace() -> (tempfile::TempDir, Arc<Workspace>) {
