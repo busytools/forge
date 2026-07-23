@@ -2124,7 +2124,18 @@ fn toggle_reviews_list(app: &mut App) {
     let branch = app.diff_overlay.as_ref().and_then(|o| o.branch.clone());
     let threads = match (project, branch, workspace) {
         (Some(project), Some(branch), Some(workspace)) => {
-            workspace.load_review_threads(&project, &branch).unwrap_or_default()
+            match workspace.load_review_threads(&project, &branch) {
+                Ok(threads) => threads,
+                Err(error) => {
+                    // Surface the failure via the banner rather than opening
+                    // the list with silently-empty rollups.
+                    if let Some(o) = app.diff_overlay.as_mut() {
+                        o.review_load_error = Some(error);
+                    }
+                    app.needs_redraw = true;
+                    return;
+                }
+            }
         }
         _ => Vec::new(),
     };
@@ -5733,6 +5744,35 @@ mod tests {
 
         toggle_reviews_list(&mut app);
         assert!(!app.diff_overlay.as_ref().expect("overlay").reviews_open, "toggle closes it");
+    }
+
+    #[test]
+    fn toggle_reviews_list_surfaces_a_load_error() {
+        // The rollup needs every thread; a corrupt threads row must surface
+        // the banner, not open a list with silently-empty rollups.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("ws");
+        let db = forge_workspace::store::Db::open(&dir.path().join("db.redb")).expect("open db");
+        forge_workspace::store::review::write_corrupt_row_for_test(&db, "forge", "feat")
+            .expect("corrupt row");
+        workspace.install_db_for_test(db);
+        let key = forge_workspace::SessionKey::from_session_id("review-session");
+        let mut session = crate::app::session::UiSession::new(key.clone());
+        session.project = Some("forge".to_owned());
+        session.cwd_raw = "/tmp/repo".into();
+        app.sessions.insert(key.clone(), session);
+        app.active_session_key = Some(key);
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), Vec::new());
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+
+        toggle_reviews_list(&mut app);
+
+        let o = app.diff_overlay.as_ref().expect("overlay");
+        assert!(!o.reviews_open, "the list does not open on a thread-load failure");
+        assert!(o.review_load_error.is_some(), "the failure surfaces via the banner");
     }
 
     #[test]
