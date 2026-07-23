@@ -3574,6 +3574,100 @@ impl Workspace {
         }
     }
 
+    /// The `review__list` view for `(project, branch)`: submitted reviews
+    /// with per-review comment tallies, newest first. `Ok` (possibly empty)
+    /// when the store is closed or the branch has no reviews; `Err` when a
+    /// stored row fails to decode, so the MCP surfaces the failure instead
+    /// of a silent empty list.
+    pub fn review_list(
+        &self,
+        project: &str,
+        branch: &str,
+    ) -> Result<Vec<crate::mcp::review::ReviewSummary>, String> {
+        let reviews = self.load_reviews(project, branch)?;
+        let threads = self.load_review_threads(project, branch)?;
+        Ok(crate::mcp::review::summarize(&reviews, &threads))
+    }
+
+    /// The `review__get` view for one review on `(project, branch)`: its
+    /// overview plus the comments filed under it, each carrying the
+    /// anchored code. `Ok(None)` when no such review; `Err` on a decode
+    /// failure.
+    pub fn review_get(
+        &self,
+        project: &str,
+        branch: &str,
+        review_id: &str,
+    ) -> Result<Option<crate::mcp::review::ReviewDetail>, String> {
+        let reviews = self.load_reviews(project, branch)?;
+        let threads = self.load_review_threads(project, branch)?;
+        Ok(crate::mcp::review::detail(&reviews, &threads, review_id))
+    }
+
+    /// Append a worker reply to `comment_id` on `(project, branch)` and
+    /// return the thread's status after the append (Open -> Addressed;
+    /// Resolved / Outdated unchanged). `Err` when the store is closed, the
+    /// write fails, or no comment with that id exists in this scope, so a
+    /// stale or cross-branch id is rejected rather than silently ignored.
+    pub fn review_reply(
+        &self,
+        project: &str,
+        branch: &str,
+        comment_id: &str,
+        author_label: &str,
+        text: &str,
+        at: &str,
+    ) -> Result<ReviewStatus, String> {
+        let guard = self.db.lock();
+        let db = guard.as_ref().ok_or_else(|| "review store is unavailable".to_owned())?;
+        crate::store::review::append_reply(db, project, branch, comment_id, author_label, text, at)
+            .map_err(|error| {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    project = %project,
+                    branch = %branch,
+                    comment_id = %comment_id,
+                    "appending a review reply failed",
+                );
+                format!("{error:#}")
+            })
+    }
+
+    /// Mark `comment_id` on `(project, branch)` Resolved. `Err` when the
+    /// store is closed, the write fails, or no comment with that id exists
+    /// in this scope.
+    pub fn review_resolve(
+        &self,
+        project: &str,
+        branch: &str,
+        comment_id: &str,
+    ) -> Result<(), String> {
+        let guard = self.db.lock();
+        let db = guard.as_ref().ok_or_else(|| "review store is unavailable".to_owned())?;
+        match crate::store::review::set_status(
+            db,
+            project,
+            branch,
+            comment_id,
+            ReviewStatus::Resolved,
+        ) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(format!("no review comment {comment_id} on ({project}, {branch})")),
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    project = %project,
+                    branch = %branch,
+                    comment_id = %comment_id,
+                    "resolving a review comment failed",
+                );
+                Err(format!("{error:#}"))
+            }
+        }
+    }
+
     /// Scan the shared session-JSONL pool into a `UsageReport` for the
     /// `/usage` overlay. Query-style (a direct method, not a Command):
     /// reads the one real `projects` dir, refreshes the incremental
@@ -6084,6 +6178,76 @@ mod tests {
         assert_eq!(r2.number, 2, "the number increments");
         assert_eq!(filed("a"), Some(r1.id.clone()), "a stays in r1");
         assert_eq!(filed("c"), Some(r2.id), "c filed into r2");
+    }
+
+    #[test]
+    fn review_conversation_methods_round_trip_through_the_workspace() {
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+        };
+        let make = |id: &str| ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 12,
+                content_hash: 1,
+                context: vec!["fn f() {".to_owned()],
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: format!("look at {id}"),
+                at: "2026-07-23T10:00:00Z".to_owned(),
+            }],
+            status: ReviewStatus::Open,
+            created_at: "2026-07-23T10:00:00Z".to_owned(),
+            updated_at: "2026-07-23T10:00:00Z".to_owned(),
+            commit: None,
+            review_id: None,
+        };
+
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.save_review_threads("forge", "feat", &[make("a"), make("b")]);
+        let r1 = ws
+            .submit_review(
+                "forge",
+                "feat",
+                Some("overview".to_owned()),
+                &["a".to_owned(), "b".to_owned()],
+            )
+            .expect("submit");
+
+        let list = ws.review_list("forge", "feat").expect("list");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].review_id, r1.id);
+        assert_eq!(list[0].comment_count, 2);
+        assert_eq!(list[0].open, 2);
+
+        let detail = ws.review_get("forge", "feat", &r1.id).expect("get").expect("review present");
+        assert_eq!(detail.comments.len(), 2);
+        assert_eq!(detail.summary.as_deref(), Some("overview"));
+        assert!(!detail.comments[0].context.is_empty(), "anchor context is handed back");
+
+        let status = ws
+            .review_reply("forge", "feat", "a", "implementer", "fixed", "2026-07-23T12:00:00Z")
+            .expect("reply");
+        assert_eq!(status, ReviewStatus::Addressed, "a reply flips Open -> Addressed");
+        let list = ws.review_list("forge", "feat").expect("list");
+        assert_eq!((list[0].open, list[0].addressed), (1, 1));
+
+        ws.review_resolve("forge", "feat", "a").expect("resolve");
+        let list = ws.review_list("forge", "feat").expect("list");
+        assert_eq!((list[0].addressed, list[0].resolved), (0, 1));
+
+        // An unknown / cross-branch comment id is rejected, not a no-op.
+        assert!(ws.review_reply("forge", "feat", "missing", "x", "y", "z").is_err());
+        assert!(ws.review_resolve("forge", "feat", "missing").is_err());
+        assert!(ws.review_resolve("forge", "other", "a").is_err(), "a lives on feat, not other");
     }
 
     fn usage_workspace() -> (tempfile::TempDir, Arc<Workspace>) {

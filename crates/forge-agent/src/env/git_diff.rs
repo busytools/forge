@@ -177,6 +177,18 @@ fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>) {
 /// newly-resolved branch (same `Named(name)`), the prior
 /// `pr` / `closes` carry over without re-running `gh`. Pass `None`
 /// for cold starts.
+/// The caller's current branch name via `git rev-parse --abbrev-ref HEAD`,
+/// or `None` on detached HEAD, a non-git dir, or a scanner failure. Mirrors
+/// the `GitBranch::Named` string [`scan`] derives, so the review MCP can
+/// resolve a caller's `(project, branch)` review scope to the same key the
+/// `/diff` overlay persists under.
+pub async fn current_branch(cwd: &Path) -> Option<String> {
+    match classify_rev_parse(run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await) {
+        Ok(name) if name != "HEAD" && !name.is_empty() => Some(name),
+        _ => None,
+    }
+}
+
 pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot {
     let raw_branch =
         match classify_rev_parse(run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await) {
@@ -843,6 +855,37 @@ mod tests {
         assert!(matches!(snap.worktree, LayerState::Clean));
         assert!(matches!(snap.branch_ahead, LayerState::Clean));
         assert!(snap.default_branch.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn current_branch_reports_named_branch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "feat/x");
+        write_file(&dir, "README.md", "hi\n");
+        commit_all(&dir, "init");
+        assert_eq!(current_branch(dir.path()).await.as_deref(), Some("feat/x"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn current_branch_is_none_on_detached_head() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "main");
+        write_file(&dir, "README.md", "hi\n");
+        commit_all(&dir, "init");
+        let out = StdCommand::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["checkout", "--detach"])
+            .output()
+            .expect("git ok");
+        assert!(out.status.success(), "detach: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(current_branch(dir.path()).await.is_none(), "detached HEAD has no named branch");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn current_branch_is_none_outside_a_repo() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(current_branch(dir.path()).await.is_none(), "a non-git dir has no branch");
     }
 
     #[tokio::test(flavor = "current_thread")]

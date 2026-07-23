@@ -41,6 +41,7 @@ pub(crate) mod caller_context;
 pub mod cron;
 pub mod gotify;
 pub mod peers;
+pub mod review;
 pub mod workers;
 
 /// Identifies which kind of session the MCP server is being built
