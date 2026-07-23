@@ -7,12 +7,16 @@
 //! (worktree-agnostic), never the directory-hash key.
 
 use anyhow::Context;
-use forge_primitives::review::{ReviewStatus, ReviewThread};
+use forge_primitives::review::{ReviewSet, ReviewStatus, ReviewThread};
 use redb::{ReadableTable, TableDefinition};
 
 use super::Db;
 
 const REVIEW_THREADS: TableDefinition<(&str, &str), &[u8]> = TableDefinition::new("review_threads");
+/// Submitted reviews per `(project, branch)` - the sealed groupings a
+/// thread's `review_id` points into. Sibling of [`REVIEW_THREADS`]; the
+/// whole set for a branch is one serde-json blob.
+const REVIEWS: TableDefinition<(&str, &str), &[u8]> = TableDefinition::new("reviews");
 
 /// Load every thread for `(project, branch)`. Empty when the branch has
 /// no row (or the table doesn't exist yet).
@@ -161,12 +165,112 @@ pub fn delete(db: &Db, project: &str, branch: &str) -> anyhow::Result<bool> {
     Ok(existed)
 }
 
+/// Load every submitted review for `(project, branch)`, oldest first.
+/// Empty when the branch has no row (or the table doesn't exist yet).
+pub fn load_reviews(db: &Db, project: &str, branch: &str) -> anyhow::Result<Vec<ReviewSet>> {
+    let txn = db.database().begin_read()?;
+    let table = match txn.open_table(REVIEWS) {
+        Ok(t) => t,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+    match table.get((project, branch))? {
+        Some(value) => decode_reviews(value.value(), project, branch),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Overwrite the whole review set for `(project, branch)`. An empty slice
+/// removes the row rather than storing an empty blob.
+pub fn save_reviews(
+    db: &Db,
+    project: &str,
+    branch: &str,
+    reviews: &[ReviewSet],
+) -> anyhow::Result<()> {
+    let txn = db.database().begin_write()?;
+    {
+        let mut table = txn.open_table(REVIEWS)?;
+        if reviews.is_empty() {
+            table.remove((project, branch))?;
+        } else {
+            let value = serde_json::to_vec(reviews).context("serialize reviews")?;
+            table.insert((project, branch), value.as_slice())?;
+        }
+    }
+    txn.commit()?;
+    Ok(())
+}
+
+/// Seal a new review for `(project, branch)`: mint its number (existing
+/// count + 1), stamp each listed thread that is still unfiled with the
+/// new review id, and append the [`ReviewSet`]. Threads not in
+/// `thread_ids` and threads already filed are untouched (a filed comment
+/// never moves). One write transaction spans both tables so the stamp
+/// and the append land together.
+pub fn submit_review(
+    db: &Db,
+    project: &str,
+    branch: &str,
+    summary: Option<String>,
+    thread_ids: &[String],
+) -> anyhow::Result<ReviewSet> {
+    let now = rfc3339_now();
+    let txn = db.database().begin_write()?;
+    let review = {
+        let mut reviews_table = txn.open_table(REVIEWS)?;
+        let mut reviews = match reviews_table.get((project, branch))? {
+            Some(value) => decode_reviews(value.value(), project, branch)?,
+            None => Vec::new(),
+        };
+        let number = u32::try_from(reviews.len()).unwrap_or(u32::MAX).saturating_add(1);
+        let review =
+            ReviewSet { id: uuid::Uuid::new_v4().to_string(), number, summary, created_at: now };
+        {
+            let mut threads_table = txn.open_table(REVIEW_THREADS)?;
+            // Decode into an owned value so the read guard's borrow ends
+            // before the insert below.
+            let existing = match threads_table.get((project, branch))? {
+                Some(value) => Some(decode(value.value(), project, branch)?),
+                None => None,
+            };
+            if let Some(mut threads) = existing {
+                let mut changed = false;
+                for thread in &mut threads {
+                    if thread.review_id.is_none() && thread_ids.contains(&thread.id) {
+                        thread.review_id = Some(review.id.clone());
+                        changed = true;
+                    }
+                }
+                if changed {
+                    let encoded =
+                        serde_json::to_vec(&threads).context("serialize review threads")?;
+                    threads_table.insert((project, branch), encoded.as_slice())?;
+                }
+            }
+        }
+        reviews.push(review.clone());
+        let encoded = serde_json::to_vec(&reviews).context("serialize reviews")?;
+        reviews_table.insert((project, branch), encoded.as_slice())?;
+        review
+    };
+    txn.commit()?;
+    Ok(review)
+}
+
 /// Decode a stored blob into threads, mapping a decode failure to an
 /// error tagged with the owning `(project, branch)` so a corrupt row is
 /// diagnosable rather than a bare serde message.
 fn decode(bytes: &[u8], project: &str, branch: &str) -> anyhow::Result<Vec<ReviewThread>> {
     serde_json::from_slice(bytes)
         .with_context(|| format!("decode review threads for ({project}, {branch})"))
+}
+
+/// Decode a stored blob into reviews, tagged with the owning `(project,
+/// branch)` on failure so a corrupt row is diagnosable.
+fn decode_reviews(bytes: &[u8], project: &str, branch: &str) -> anyhow::Result<Vec<ReviewSet>> {
+    serde_json::from_slice(bytes)
+        .with_context(|| format!("decode reviews for ({project}, {branch})"))
 }
 
 /// RFC3339 timestamp for the current instant, matching the `mcp::peers`
@@ -197,7 +301,9 @@ pub fn write_corrupt_row_for_test(db: &Db, project: &str, branch: &str) -> anyho
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_primitives::review::{ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide};
+    use forge_primitives::review::{
+        ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSet, ReviewSide,
+    };
     use tempfile::tempdir;
 
     fn thread(id: &str, line: u32) -> ReviewThread {
@@ -355,5 +461,90 @@ mod tests {
         save(&db, "forge", "feat", &[thread("a", 10)]).expect("save");
         save(&db, "forge", "feat", &[]).expect("save empty");
         assert!(load(&db, "forge", "feat").expect("load").is_empty());
+    }
+
+    fn review(number: u32, summary: Option<&str>) -> ReviewSet {
+        ReviewSet {
+            id: format!("review-{number}"),
+            number,
+            summary: summary.map(str::to_owned),
+            created_at: "2026-07-23T10:00:00Z".to_owned(),
+        }
+    }
+
+    #[test]
+    fn reviews_save_then_load_round_trips() {
+        let (_dir, db) = open_db();
+        let reviews = vec![review(1, Some("first")), review(2, None)];
+        save_reviews(&db, "forge", "feat", &reviews).expect("save");
+        assert_eq!(load_reviews(&db, "forge", "feat").expect("load"), reviews);
+    }
+
+    #[test]
+    fn load_reviews_is_empty_on_miss() {
+        let (_dir, db) = open_db();
+        assert!(load_reviews(&db, "forge", "nope").expect("load").is_empty());
+    }
+
+    #[test]
+    fn save_reviews_empty_slice_clears_the_row() {
+        let (_dir, db) = open_db();
+        save_reviews(&db, "forge", "feat", &[review(1, None)]).expect("save");
+        save_reviews(&db, "forge", "feat", &[]).expect("save empty");
+        assert!(load_reviews(&db, "forge", "feat").expect("load").is_empty());
+    }
+
+    #[test]
+    fn submit_review_mints_number_and_files_listed_unfiled_threads() {
+        let (_dir, db) = open_db();
+        save(&db, "forge", "feat", &[thread("a", 10), thread("b", 20), thread("c", 30)])
+            .expect("save threads");
+
+        let filed = |id: &str| {
+            load(&db, "forge", "feat")
+                .expect("load")
+                .into_iter()
+                .find(|t| t.id == id)
+                .expect("thread")
+                .review_id
+        };
+
+        let r1 = submit_review(
+            &db,
+            "forge",
+            "feat",
+            Some("first pass".to_owned()),
+            &["a".to_owned(), "b".to_owned()],
+        )
+        .expect("submit");
+        assert_eq!(r1.number, 1);
+        assert_eq!(r1.summary.as_deref(), Some("first pass"));
+        assert_eq!(filed("a"), Some(r1.id.clone()), "a filed into r1");
+        assert_eq!(filed("b"), Some(r1.id.clone()), "b filed into r1");
+        assert_eq!(filed("c"), None, "c not listed, stays unfiled");
+        assert_eq!(load_reviews(&db, "forge", "feat").expect("load").len(), 1);
+
+        // A second submit mints number 2 and files only c; a/b keep r1.
+        let r2 = submit_review(&db, "forge", "feat", None, &["c".to_owned()]).expect("submit 2");
+        assert_eq!(r2.number, 2);
+        assert_ne!(r2.id, r1.id, "each review has a distinct id");
+        assert_eq!(filed("a"), Some(r1.id.clone()), "a stays in r1");
+        assert_eq!(filed("c"), Some(r2.id.clone()), "c filed into r2");
+        assert_eq!(load_reviews(&db, "forge", "feat").expect("load").len(), 2);
+    }
+
+    #[test]
+    fn submit_review_leaves_an_already_filed_thread_untouched() {
+        let (_dir, db) = open_db();
+        let mut a = thread("a", 10);
+        a.review_id = Some("prior".to_owned());
+        save(&db, "forge", "feat", &[a]).expect("save");
+        let r = submit_review(&db, "forge", "feat", None, &["a".to_owned()]).expect("submit");
+        assert_eq!(
+            load(&db, "forge", "feat").expect("load")[0].review_id,
+            Some("prior".to_owned()),
+            "an already-filed thread is never re-filed",
+        );
+        assert_eq!(r.number, 1, "the review still mints even if it files nothing new");
     }
 }
