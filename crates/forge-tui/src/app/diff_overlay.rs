@@ -3771,6 +3771,42 @@ mod tests {
     }
 
     #[test]
+    fn format_diff_comments_commit_mode_overview_precedes_first_commit() {
+        // /diff opens in commit mode when the branch has commits ahead - the
+        // common case - so the overview must lead the commit-grouped bundle
+        // too, not just the whole-diff shape.
+        let commits = vec![commit_meta("a3f9c1e", "fix the threshold check")];
+        let comments = vec![HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "app/rate_limit.rs".into(),
+            line: 66,
+            hunk_context: vec![DiffLine {
+                kind: DiffLineKind::Added,
+                text: "fn is_near_threshold() {".into(),
+                old_line: None,
+                new_line: Some(66),
+            }],
+            comment_text: "name it _without_overage".into(),
+            commit: Some("a3f9c1e".into()),
+            thread: stock_thread(),
+            authored_this_session: true,
+            persisted: false,
+        }];
+        let md = format_diff_comments(
+            "main",
+            Some("worker/rate-limit"),
+            "/repo",
+            &commits,
+            &comments,
+            Some("Solid overall."),
+        );
+        let overview_at = md.find("### Overview").expect("overview section present");
+        let commit_at = md.find("### Commit `a3f9c1e`").expect("commit section present");
+        assert!(md.contains("Solid overall."), "the overview text is included");
+        assert!(overview_at < commit_at, "the overview precedes the first commit section");
+    }
+
+    #[test]
     fn format_diff_comments_groups_by_commit_when_scoped() {
         let commits = vec![
             commit_meta("a3f9c1e", "fix the threshold check"),
