@@ -3503,6 +3503,60 @@ impl Workspace {
         }
     }
 
+    /// Load the submitted reviews for `(project, branch)`, oldest first.
+    /// `Ok` with an empty vec when the store isn't open or the branch has
+    /// no row; `Err` with a display string when an existing row fails to
+    /// decode, so the overlay can surface the failure.
+    pub fn load_reviews(
+        &self,
+        project: &str,
+        branch: &str,
+    ) -> Result<Vec<forge_primitives::ReviewSet>, String> {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            return Ok(Vec::new());
+        };
+        crate::store::review::load_reviews(db, project, branch).map_err(|error| {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                project = %project,
+                branch = %branch,
+                "loading reviews failed",
+            );
+            format!("{error:#}")
+        })
+    }
+
+    /// Seal a new review for `(project, branch)`, filing the listed
+    /// still-unfiled threads into it and appending it with the optional
+    /// summary. Returns the minted [`ReviewSet`] (`None` when the store
+    /// isn't open or the write failed) so the caller can surface its
+    /// number.
+    pub fn submit_review(
+        &self,
+        project: &str,
+        branch: &str,
+        summary: Option<String>,
+        thread_ids: &[String],
+    ) -> Option<forge_primitives::ReviewSet> {
+        let guard = self.db.lock();
+        let db = guard.as_ref()?;
+        match crate::store::review::submit_review(db, project, branch, summary, thread_ids) {
+            Ok(review) => Some(review),
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    project = %project,
+                    branch = %branch,
+                    "submitting a review failed",
+                );
+                None
+            }
+        }
+    }
+
     /// Scan the shared session-JSONL pool into a `UsageReport` for the
     /// `/usage` overlay. Query-style (a direct method, not a Command):
     /// reads the one real `projects` dir, refreshes the incremental
@@ -5948,6 +6002,71 @@ mod tests {
             1,
             "delete is scoped"
         );
+    }
+
+    #[test]
+    fn submit_review_files_listed_threads_through_the_workspace() {
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+        };
+        let make = |id: &str| ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 1,
+                content_hash: 1,
+                context: vec!["ctx".to_owned()],
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: format!("c{id}"),
+                at: "2026-07-23T10:00:00Z".to_owned(),
+            }],
+            status: ReviewStatus::Open,
+            created_at: "2026-07-23T10:00:00Z".to_owned(),
+            updated_at: "2026-07-23T10:00:00Z".to_owned(),
+            commit: None,
+            review_id: None,
+        };
+
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+
+        assert!(ws.load_reviews("forge", "feat").expect("load").is_empty(), "empty on miss");
+        ws.save_review_threads("forge", "feat", &[make("a"), make("b"), make("c")]);
+
+        let filed = |id: &str| {
+            ws.load_review_threads("forge", "feat")
+                .expect("load")
+                .into_iter()
+                .find(|t| t.id == id)
+                .expect("thread")
+                .review_id
+        };
+
+        let r1 = ws
+            .submit_review(
+                "forge",
+                "feat",
+                Some("first".to_owned()),
+                &["a".to_owned(), "b".to_owned()],
+            )
+            .expect("submit mints a review");
+        assert_eq!(r1.number, 1);
+        assert_eq!(filed("a"), Some(r1.id.clone()), "a filed");
+        assert_eq!(filed("b"), Some(r1.id.clone()), "b filed");
+        assert_eq!(filed("c"), None, "c unlisted stays unfiled");
+        assert_eq!(ws.load_reviews("forge", "feat").expect("load").len(), 1);
+
+        let r2 = ws.submit_review("forge", "feat", None, &["c".to_owned()]).expect("submit 2");
+        assert_eq!(r2.number, 2, "the number increments");
+        assert_eq!(filed("a"), Some(r1.id.clone()), "a stays in r1");
+        assert_eq!(filed("c"), Some(r2.id), "c filed into r2");
     }
 
     fn usage_workspace() -> (tempfile::TempDir, Arc<Workspace>) {
