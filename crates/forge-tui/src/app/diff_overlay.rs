@@ -328,11 +328,12 @@ pub enum BodyRowKey {
     /// The single-line summary chip showing a saved comment ("💬
     /// L<line>: ..."). Click → re-open the saved comment for edit.
     CommentChip(LineKey),
-    /// A comment box's button row (`[ Resolve ]` / `[ Reopen ]`). Click
-    /// runs `action` on the thread at `key`, but only when the click column
-    /// falls in `[col_start, col_end)` - the active button's span - so the
-    /// dim inactive button no-ops.
-    CommentButton { key: LineKey, action: ThreadAction, col_start: u16, col_end: u16 },
+    /// A comment card's button row (`✓ Resolve` / `↺ Reopen`). Each
+    /// action's pane-relative `[start, end)` column span is `Some` only
+    /// when that action applies to the thread's current state; a click
+    /// routes to whichever span it lands in, and a click on the padding or
+    /// an inapplicable (dim) button no-ops.
+    CommentButton { key: LineKey, resolve: Option<(u16, u16)>, reopen: Option<(u16, u16)> },
     /// Inline TextArea row for the currently-open comment editor.
     /// Multiple consecutive rows when the comment spans more than
     /// one visual line.
@@ -342,9 +343,10 @@ pub enum BodyRowKey {
     CommitMessage,
 }
 
-/// The lifecycle transition a comment box's button fires. `Resolve`
-/// moves an Open / Outdated thread to Resolved; `Reopen` moves a
-/// Resolved thread back to Open.
+/// The lifecycle transition a comment card's button fires. `Resolve`
+/// moves an Open / Addressed / Outdated thread to Resolved; `Reopen`
+/// moves an Addressed / Resolved thread back to Open and re-nudges the
+/// worker to take another look.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadAction {
     Resolve,
@@ -2218,33 +2220,41 @@ fn navigate_to_selected_review(app: &mut App) {
 }
 
 /// Map a comment-button click to its transition and run it on the thread
-/// at `key`, so a click resolves exactly the box it landed on.
+/// at `key`, so a click resolves exactly the card it landed on. A Reopen
+/// that actually flips re-nudges the worker to take another look.
 fn apply_thread_action(app: &mut App, key: LineKey, action: ThreadAction) {
     let (next, allowed_from): (ReviewStatus, &[ReviewStatus]) = match action {
-        ThreadAction::Resolve => {
-            (ReviewStatus::Resolved, &[ReviewStatus::Open, ReviewStatus::Outdated])
+        ThreadAction::Resolve => (
+            ReviewStatus::Resolved,
+            &[ReviewStatus::Open, ReviewStatus::Addressed, ReviewStatus::Outdated],
+        ),
+        ThreadAction::Reopen => {
+            (ReviewStatus::Open, &[ReviewStatus::Addressed, ReviewStatus::Resolved])
         }
-        ThreadAction::Reopen => (ReviewStatus::Open, &[ReviewStatus::Resolved]),
     };
-    set_thread_status_by_key(app, key, next, allowed_from);
+    if set_thread_status_by_key(app, key, next, allowed_from)
+        && matches!(action, ThreadAction::Reopen)
+    {
+        renudge_reopened(app, key);
+    }
 }
 
 /// Flip the thread anchored at `key` to `next` when it is currently in
-/// one of `allowed_from`, updating the in-memory box and persisting the
-/// change. No-op when the key has no durable thread or its status isn't a
-/// legal source.
+/// one of `allowed_from`, updating the in-memory card and persisting the
+/// change. Returns whether it flipped. No-op (returns `false`) when the
+/// key has no durable thread or its status isn't a legal source.
 fn set_thread_status_by_key(
     app: &mut App,
     key: LineKey,
     next: ReviewStatus,
     allowed_from: &[ReviewStatus],
-) {
+) -> bool {
     let project = app.active_session().and_then(|s| s.project.clone());
     let Some(overlay) = app.diff_overlay.as_mut() else {
-        return;
+        return false;
     };
     let Some(branch) = overlay.branch.clone() else {
-        return;
+        return false;
     };
     // Scope-qualify: on a single-commit branch the whole-diff and commit
     // diffs are identical, so keys collide across scopes. Match the
@@ -2258,7 +2268,7 @@ fn set_thread_status_by_key(
         .map(|c| &mut c.thread)
         .filter(|t| allowed_from.contains(&t.status))
     else {
-        return;
+        return false;
     };
     thread.status = next;
     let id = thread.id.clone();
@@ -2268,6 +2278,38 @@ fn set_thread_status_by_key(
     {
         workspace.set_review_thread_status(&project, &branch, &id, next);
     }
+    true
+}
+
+/// Nudge the worker after a comment is reopened, so it re-reads the review
+/// and addresses the reopened point. Names the review number when the
+/// reopened thread is filed. A no-op when there's no agent/session to
+/// receive it (the flip + persist already happened).
+fn renudge_reopened(app: &mut App, key: LineKey) {
+    if !app.has_active_agent() || app.session_id().is_none() {
+        return;
+    }
+    let review_tag = app.diff_overlay.as_ref().and_then(|overlay| {
+        let sha = overlay.current_commit_sha();
+        let review_id = overlay
+            .comments
+            .iter()
+            .find(|c| c.key == key && c.commit == sha)?
+            .thread
+            .review_id
+            .clone()?;
+        overlay.reviews.iter().find(|r| r.id == review_id).map(|r| r.number)
+    });
+    let nudge = match review_tag {
+        Some(number) => format!(
+            "Reopened a comment in review #{number} - take another look via the review MCP (`review__get`)."
+        ),
+        None => {
+            "Reopened a review comment - take another look via the review MCP (`review__list`)."
+                .to_owned()
+        }
+    };
+    super::input_submit::dispatch_review_nudge(app, nudge);
 }
 
 /// Route a key while the jump dropdown is open. `↑↓` move the
@@ -2961,12 +3003,17 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
             }
         }
         BodyRowKey::CommentChip(line_key) => reopen_comment_for_key(overlay, line_key),
-        BodyRowKey::CommentButton { key, action, col_start, col_end } => {
-            // Only the active button fires; a click on the dim inactive
-            // button (or the padding) elsewhere on the row no-ops.
+        BodyRowKey::CommentButton { key, resolve, reopen } => {
+            // Route to whichever applicable button the click lands in; a
+            // click on the padding or a dim (inapplicable) action no-ops.
             let pane_col = column.saturating_sub(overlay.pane_origin_col);
-            if pane_col >= col_start && pane_col < col_end {
-                MouseEffect { redraw: true, thread_action: Some((key, action)) }
+            let hits = |span: Option<(u16, u16)>| {
+                span.is_some_and(|(start, end)| pane_col >= start && pane_col < end)
+            };
+            if hits(resolve) {
+                MouseEffect { redraw: true, thread_action: Some((key, ThreadAction::Resolve)) }
+            } else if hits(reopen) {
+                MouseEffect { redraw: true, thread_action: Some((key, ThreadAction::Reopen)) }
             } else {
                 MouseEffect::default()
             }
@@ -5808,6 +5855,56 @@ mod tests {
     }
 
     #[test]
+    fn reopen_flips_addressed_and_renudges_the_worker() {
+        let (mut app, mut rx, _dir) = review_app_with_agent();
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let mut overlay = DiffOverlayState::new(
+            PathBuf::from("/tmp/repo"),
+            "main".to_owned(),
+            vec![single_hunk_file("src/x.rs", vec![added_line("let y = 1;", 10)])],
+        );
+        overlay.branch = Some("feat".to_owned());
+        overlay.reviews = vec![forge_primitives::ReviewSet {
+            id: "rev".to_owned(),
+            number: 1,
+            summary: None,
+            created_at: String::new(),
+        }];
+        let mut thread = stock_thread();
+        thread.status = ReviewStatus::Addressed;
+        thread.review_id = Some("rev".to_owned());
+        overlay.comments.push(HunkComment {
+            key,
+            path: "src/x.rs".into(),
+            line: 10,
+            hunk_context: vec![],
+            comment_text: "look here".into(),
+            commit: None,
+            thread,
+            authored_this_session: false,
+            persisted: true,
+        });
+        app.diff_overlay = Some(overlay);
+
+        apply_thread_action(&mut app, key, ThreadAction::Reopen);
+
+        assert_eq!(
+            app.diff_overlay.as_ref().expect("overlay").comments[0].thread.status,
+            ReviewStatus::Open,
+            "reopen flips an addressed thread back to open",
+        );
+        match rx.try_recv().expect("a re-nudge was dispatched") {
+            forge_primitives::AgentCommand::PromptWithImages { text, .. } => {
+                assert!(
+                    text.contains("Reopened") && text.contains("review #1"),
+                    "the re-nudge names the reopened review: {text}",
+                );
+            }
+            other => panic!("expected PromptWithImages, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn comment_button_click_resolves_only_the_clicked_thread() {
         let (mut app, _dir) = review_app();
         let files =
@@ -5876,7 +5973,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_active_comment_button_is_clickable() {
+    fn comment_button_routes_by_the_span_the_click_lands_in() {
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
         let mut state = DiffOverlayState::new(
             PathBuf::from("/tmp"),
@@ -5887,21 +5984,28 @@ mod tests {
         state.pane_origin_row = 0;
         state.body_head_rows = 0;
         state.body_tail_scroll = 0;
+        // An addressed card offers both buttons at distinct spans.
         state.body_keys = vec![BodyRowKey::CommentButton {
             key,
-            action: ThreadAction::Resolve,
-            col_start: 10,
-            col_end: 21,
+            resolve: Some((10, 19)),
+            reopen: Some((22, 30)),
         }];
 
-        let hit = handle_body_click(&mut state, 15, 0);
         assert_eq!(
-            hit.thread_action,
+            handle_body_click(&mut state, 12, 0).thread_action,
             Some((key, ThreadAction::Resolve)),
-            "a click inside the active button's span fires the action",
+            "a click in the Resolve span fires Resolve",
         );
-        let miss = handle_body_click(&mut state, 25, 0);
-        assert_eq!(miss.thread_action, None, "a click on the dim button / padding no-ops");
+        assert_eq!(
+            handle_body_click(&mut state, 25, 0).thread_action,
+            Some((key, ThreadAction::Reopen)),
+            "a click in the Reopen span fires Reopen",
+        );
+        assert_eq!(
+            handle_body_click(&mut state, 20, 0).thread_action,
+            None,
+            "a click in the gap between the buttons no-ops",
+        );
     }
 
     #[test]

@@ -27,12 +27,12 @@
 
 mod pairing;
 
-use forge_primitives::{ReviewSet, ReviewStatus};
+use forge_primitives::{ReviewAuthor, ReviewSet, ReviewStatus};
 use forge_workspace::env::git_diff::hunks::{DiffLineKind, FileHunks, FileStatus, Hunk};
 
 use crate::app::diff_overlay::{
     ActiveCommentInput, BodyRowKey, DiffScope, DiffViewMode, FileHighlight, HunkComment, LineKey,
-    RailRowKey, ThreadAction, rail_width_for,
+    RailRowKey, rail_width_for,
 };
 use pairing::{PairedDiffRow, pair_hunk_lines};
 use ratatui::Frame;
@@ -1965,6 +1965,43 @@ fn review_tag(review_id: Option<&str>, reviews: &[ReviewSet]) -> String {
         .map_or_else(|| "unfiled".to_owned(), |r| format!("R{}", r.number))
 }
 
+/// The voice colour + label for one turn: the reviewer's own comments are
+/// amber `you`; a worker reply is blue and carries its agent label.
+fn turn_voice(author: &ReviewAuthor) -> (Color, String) {
+    match author {
+        ReviewAuthor::User => (theme::RUST_ORANGE, "you".to_owned()),
+        ReviewAuthor::Agent { label } => (theme::REVIEW_ADDRESSED, label.clone()),
+    }
+}
+
+/// Push one `│ <content> │` card row: pads `content` (already `vis` cells
+/// wide) out to `content_width` and wraps it in the card's side borders.
+fn push_card_row(
+    lines: &mut Vec<Line<'static>>,
+    keys: &mut Vec<BodyRowKey>,
+    indent: &str,
+    card_style: Style,
+    body_style: Style,
+    content_width: usize,
+    mut content: Vec<Span<'static>>,
+    vis: usize,
+    row_key: BodyRowKey,
+) {
+    let pad = content_width.saturating_sub(vis);
+    let mut spans =
+        vec![Span::raw("  "), Span::raw(indent.to_owned()), Span::styled("\u{2502} ", card_style)];
+    spans.append(&mut content);
+    spans.push(Span::styled(" ".repeat(pad), body_style));
+    spans.push(Span::styled(" \u{2502}", card_style));
+    lines.push(Line::from(spans));
+    keys.push(row_key);
+}
+
+/// Render a review comment as a conversation card (mockup option I): a
+/// header (`╭─ 💬 line N · R# ···· <state> ─╮`), an inner rail of turns -
+/// a coloured dot per turn (amber `you`, blue worker) with the text hung
+/// off the rail - then the `✓ Resolve` / `↺ Reopen` actions and a rounded
+/// bottom border. Turns are the thread's comments in order.
 fn render_comment_chip(
     comment: &HunkComment,
     key: LineKey,
@@ -1980,97 +2017,173 @@ fn render_comment_chip(
     let indent = " ".repeat(indent_cols);
     let left_offset = 2 + indent_cols;
     let right_pad = 2usize;
-    let box_width = usize::from(pane_width).saturating_sub(left_offset + right_pad).max(20);
-    let border_style = Style::default().fg(accent).bg(CHIP_BG);
+    let box_width = usize::from(pane_width).saturating_sub(left_offset + right_pad).max(24);
+    // Neutral chrome (border + rail); the state label and turn dots carry
+    // the colour. Whole card is tinted CHIP_BG so it reads as one block.
+    let card_style = Style::default().fg(theme::DIM).bg(CHIP_BG);
     let body_style = Style::default().bg(CHIP_BG);
     let note_style = Style::default().fg(theme::DIM).bg(CHIP_BG);
+    let content_width = box_width.saturating_sub(4);
+    let text_width = content_width.saturating_sub(2);
 
-    // Top border with embedded title. Whole row carries CHIP_BG so
-    // the entire box surface is tinted - eye reads it as one block
-    // regardless of whether the rightmost cells (incl. `┐`) end up
-    // clipped on a narrow viewport.
-    //
-    // Width math: `💬` is a 2-cell glyph but `chars().count()`
-    // returns 1, so we adjust by +1 to get the title's true visual
-    // column width. Without this the top border would land 1 cell
-    // further right than the body's `│` border, making the box
-    // look stepped.
-    // The review tag (`· R3` filed, `· unfiled` otherwise) is a dim span
-    // between the state label and the trailing dashes.
-    let title = format!(" 💬 line {} · {state_label} ", comment.line);
-    let title_visual = title.chars().count() + 1; // +1 for 💬's 2nd cell
-    let tag = format!("\u{b7} {} ", review_tag(comment.thread.review_id.as_deref(), reviews));
-    let tag_visual = tag.chars().count();
-    let dash_after = box_width.saturating_sub(3 + title_visual + tag_visual + 1);
+    // Header: `╭─ 💬 line N · R# ···· <state> ─╮`. `·` fills between the
+    // dim review tag on the left and the state label (accent) on the right.
+    let title = format!("\u{1f4ac} line {}", comment.line);
+    let tag = format!(" \u{b7} {} ", review_tag(comment.thread.review_id.as_deref(), reviews));
+    let state = format!(" {state_label} ");
+    let left_w = 3 + title.width() + tag.width();
+    let right_w = state.width() + 2;
+    let dots = box_width.saturating_sub(left_w + right_w).max(1);
     lines.push(Line::from(vec![
         Span::raw("  "),
         Span::raw(indent.clone()),
-        Span::styled(format!("┌──{title}"), border_style),
+        Span::styled("\u{256d}\u{2500} ", card_style),
+        Span::styled(title, body_style.add_modifier(Modifier::BOLD)),
         Span::styled(tag, note_style),
-        Span::styled(format!("{}┐", "─".repeat(dash_after)), border_style),
+        Span::styled("\u{b7}".repeat(dots), card_style),
+        Span::styled(state, Style::default().fg(accent).bg(CHIP_BG).add_modifier(Modifier::BOLD)),
+        Span::styled("\u{2500}\u{256e}", card_style),
     ]));
     keys.push(BodyRowKey::CommentChip(key));
 
-    // Body - wrap the comment_text into rows that fit the box's
-    // inner width (`│ ... │` consumes 4 cells of chrome). Keep the
-    // wrap simple: break on the box width and on explicit newlines.
-    let inner_width = box_width.saturating_sub(4);
-    let mut body_rows = wrap_chip_body(&comment.comment_text, inner_width);
-    if status == ReviewStatus::Outdated {
-        // The anchored line drifted; the box renders against the
-        // captured context, so name that instead of implying the line
-        // is live.
-        body_rows.push("line changed - resolve, or re-comment on a live line".to_owned());
-    }
-    for (idx, row) in body_rows.iter().enumerate() {
-        let row_chars = row.chars().count();
-        let pad = inner_width.saturating_sub(row_chars);
-        let is_note = status == ReviewStatus::Outdated && idx == body_rows.len() - 1;
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::raw(indent.clone()),
-            Span::styled("│ ", border_style),
-            Span::styled(row.clone(), if is_note { note_style } else { body_style }),
-            Span::styled(" ".repeat(pad), body_style),
-            Span::styled(" │", border_style),
-        ]));
-        keys.push(BodyRowKey::CommentChip(key));
-    }
-
-    // Button row - the state's active transition in accent-bold plus the
-    // other, dim, so every state reads as the same three-part box. A click
-    // routes to this exact thread by `key`.
-    let (active_label, action, other_label) = match status {
-        ReviewStatus::Resolved => ("[ Reopen ]", ThreadAction::Reopen, "[ Resolve ]"),
-        ReviewStatus::Open | ReviewStatus::Addressed | ReviewStatus::Outdated => {
-            ("[ Resolve ]", ThreadAction::Resolve, "[ Reopen ]")
-        }
+    let blank = |lines: &mut Vec<Line<'static>>, keys: &mut Vec<BodyRowKey>| {
+        push_card_row(
+            lines,
+            keys,
+            &indent,
+            card_style,
+            body_style,
+            content_width,
+            Vec::new(),
+            0,
+            BodyRowKey::CommentChip(key),
+        );
     };
-    let active_style = border_style.add_modifier(Modifier::BOLD);
-    let content_w = active_label.width() + 2 + other_label.width();
-    let pad = inner_width.saturating_sub(content_w);
-    // Pane-relative span of the active button so a click on the dim
-    // inactive one no-ops: 2 leading + indent + `│ ` (2) then the label.
-    let col_start = u16::try_from(2 + indent_cols + 2).unwrap_or(u16::MAX);
-    let col_end = col_start.saturating_add(u16::try_from(active_label.width()).unwrap_or(0));
-    lines.push(Line::from(vec![
-        Span::raw("  "),
-        Span::raw(indent.clone()),
-        Span::styled("│ ", border_style),
-        Span::styled(active_label, active_style),
-        Span::styled("  ", body_style),
-        Span::styled(other_label, note_style),
-        Span::styled(" ".repeat(pad), body_style),
-        Span::styled(" │", border_style),
-    ]));
-    keys.push(BodyRowKey::CommentButton { key, action, col_start, col_end });
+    blank(lines, keys);
 
-    // Bottom border.
-    let bottom = format!("└{}┘", "─".repeat(box_width.saturating_sub(2)));
+    // Turns: one dot row (`● author`) then the wrapped text hung off the
+    // rail (`│ text`), except the last turn whose rail ends (spaces). Fall
+    // back to the editor text if the thread somehow carries no comments.
+    let turns = &comment.thread.comments;
+    let last = turns.len().saturating_sub(1);
+    if turns.is_empty() {
+        for row in wrap_chip_body(&comment.comment_text, text_width) {
+            let vis = 2 + row.width();
+            push_card_row(
+                lines,
+                keys,
+                &indent,
+                card_style,
+                body_style,
+                content_width,
+                vec![Span::styled("  ", body_style), Span::styled(row, body_style)],
+                vis,
+                BodyRowKey::CommentChip(key),
+            );
+        }
+    }
+    for (i, turn) in turns.iter().enumerate() {
+        let (voice, label) = turn_voice(&turn.author);
+        let dot_style = Style::default().fg(voice).bg(CHIP_BG);
+        push_card_row(
+            lines,
+            keys,
+            &indent,
+            card_style,
+            body_style,
+            content_width,
+            vec![
+                Span::styled("\u{25cf} ", dot_style),
+                Span::styled(label.clone(), dot_style.add_modifier(Modifier::BOLD)),
+            ],
+            2 + label.width(),
+            BodyRowKey::CommentChip(key),
+        );
+        let rail = if i == last { " " } else { "\u{2502}" };
+        for row in wrap_chip_body(&turn.text, text_width) {
+            let vis = 2 + row.width();
+            push_card_row(
+                lines,
+                keys,
+                &indent,
+                card_style,
+                body_style,
+                content_width,
+                vec![Span::styled(format!("{rail} "), note_style), Span::styled(row, body_style)],
+                vis,
+                BodyRowKey::CommentChip(key),
+            );
+        }
+    }
+
+    if status == ReviewStatus::Outdated {
+        // The anchored line drifted; name that instead of implying it's live.
+        let note = "line changed - resolve, or re-comment on a live line";
+        let vis = 2 + note.width();
+        push_card_row(
+            lines,
+            keys,
+            &indent,
+            card_style,
+            body_style,
+            content_width,
+            vec![Span::styled("  ", note_style), Span::styled(note, note_style)],
+            vis,
+            BodyRowKey::CommentChip(key),
+        );
+    }
+
+    blank(lines, keys);
+
+    // Actions: `✓ Resolve   ↺ Reopen`. Resolve applies to Open / Addressed
+    // / Outdated (accent, primary); Reopen applies to Addressed (secondary)
+    // and Resolved (accent, primary). An inapplicable action is dim + not
+    // clickable. Each clickable action carries its pane-relative span.
+    let resolve_ok =
+        matches!(status, ReviewStatus::Open | ReviewStatus::Addressed | ReviewStatus::Outdated);
+    let reopen_ok = matches!(status, ReviewStatus::Addressed | ReviewStatus::Resolved);
+    let resolve_label = "\u{2713} Resolve";
+    let reopen_label = "\u{21ba} Reopen";
+    let gap = "   ";
+    let accent_style =
+        Style::default().fg(theme::RUST_ORANGE).bg(CHIP_BG).add_modifier(Modifier::BOLD);
+    let resolve_style = if resolve_ok { accent_style } else { note_style };
+    let reopen_style = match status {
+        ReviewStatus::Resolved => accent_style,
+        ReviewStatus::Addressed => body_style,
+        _ => note_style,
+    };
+    let base = u16::try_from(left_offset + 2).unwrap_or(u16::MAX);
+    let resolve_end = base.saturating_add(u16::try_from(resolve_label.width()).unwrap_or(0));
+    let reopen_start = resolve_end.saturating_add(u16::try_from(gap.width()).unwrap_or(0));
+    let reopen_end = reopen_start.saturating_add(u16::try_from(reopen_label.width()).unwrap_or(0));
+    let content_w = resolve_label.width() + gap.width() + reopen_label.width();
+    push_card_row(
+        lines,
+        keys,
+        &indent,
+        card_style,
+        body_style,
+        content_width,
+        vec![
+            Span::styled(resolve_label, resolve_style),
+            Span::styled(gap, body_style),
+            Span::styled(reopen_label, reopen_style),
+        ],
+        content_w,
+        BodyRowKey::CommentButton {
+            key,
+            resolve: resolve_ok.then_some((base, resolve_end)),
+            reopen: reopen_ok.then_some((reopen_start, reopen_end)),
+        },
+    );
+
+    // Rounded bottom border.
+    let bottom = format!("\u{2570}{}\u{256f}", "\u{2500}".repeat(box_width.saturating_sub(2)));
     lines.push(Line::from(vec![
         Span::raw("  "),
         Span::raw(indent),
-        Span::styled(bottom, border_style),
+        Span::styled(bottom, card_style),
     ]));
     keys.push(BodyRowKey::CommentChip(key));
 }
@@ -3482,24 +3595,46 @@ mod tests {
         (lines, keys)
     }
 
+    /// A comment whose thread carries the given turns (author label, text)
+    /// in order, so tests can exercise the multi-turn conversation render.
+    fn chip_comment_with_turns(
+        line: u32,
+        turns: &[(ReviewAuthor, &str)],
+        status: ReviewStatus,
+    ) -> HunkComment {
+        let mut comment = chip_comment(line, turns.first().map_or("", |(_, t)| t), status);
+        comment.thread.comments = turns
+            .iter()
+            .map(|(author, text)| forge_primitives::ReviewComment {
+                author: author.clone(),
+                text: (*text).to_owned(),
+                at: String::new(),
+            })
+            .collect();
+        comment
+    }
+
+    /// True when some span in `line` carries `fg`.
+    fn line_has_fg(line: &Line, fg: Color) -> bool {
+        line.spans.iter().any(|s| s.style.fg == Some(fg))
+    }
+
     #[test]
-    fn comment_chip_open_box_titles_and_tints_by_state() {
+    fn comment_card_header_carries_line_and_state_colour() {
         let (lines, _) = render_chip(&chip_comment(7, "needs a bound check", ReviewStatus::Open));
+        let header = lines.first().expect("header");
         let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("\u{1f4ac} line 7"), "header names the line; got:\n{joined}");
+        assert!(joined.contains("OPEN"), "header carries the state label");
+        assert!(line_text(header).starts_with("  ") && line_text(header).contains('\u{256d}'));
         assert!(
-            joined.contains("\u{1f4ac} line 7 \u{b7} OPEN"),
-            "open title carries state; got:\n{joined}"
-        );
-        let top = lines.first().expect("top border");
-        assert_eq!(
-            top.spans.last().expect("border span").style.fg,
-            Some(theme::RUST_ORANGE),
-            "open border is rust-orange",
+            line_has_fg(header, theme::RUST_ORANGE),
+            "the open state label is rust-orange in the header",
         );
     }
 
     #[test]
-    fn comment_chip_title_shows_review_tag() {
+    fn comment_card_shows_review_tag() {
         let reviews = vec![ReviewSet {
             id: "r2".to_owned(),
             number: 2,
@@ -3512,85 +3647,117 @@ mod tests {
         let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(
             joined.contains("\u{b7} R2"),
-            "a filed chip shows its review number; got:\n{joined}"
+            "a filed card shows its review number; got:\n{joined}"
         );
 
         let unfiled = chip_comment(41, "() on empty input?", ReviewStatus::Open);
         let (lines, _) = render_chip_with_reviews(&unfiled, &reviews);
         let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
-        assert!(joined.contains("\u{b7} unfiled"), "an unfiled chip reads unfiled; got:\n{joined}");
+        assert!(joined.contains("\u{b7} unfiled"), "an unfiled card reads unfiled; got:\n{joined}");
     }
 
     #[test]
-    fn comment_chip_outdated_box_is_yellow_with_a_note() {
+    fn comment_card_outdated_is_yellow_with_a_note() {
         let (lines, _) =
             render_chip(&chip_comment(72, "guard the None case", ReviewStatus::Outdated));
         let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
-        assert!(joined.contains("\u{b7} OUTDATED"), "outdated title");
+        assert!(joined.contains("OUTDATED"), "outdated state label");
         assert!(joined.contains("line changed"), "outdated note names the drift");
-        assert_eq!(
-            lines.first().expect("top").spans.last().expect("border").style.fg,
-            Some(theme::STATUS_WARNING),
-            "outdated border is yellow",
+        assert!(
+            line_has_fg(lines.first().expect("header"), theme::STATUS_WARNING),
+            "outdated state label is yellow",
         );
     }
 
     #[test]
-    fn comment_chip_resolved_renders_full_box_with_reopen_button() {
-        let (lines, keys) =
-            render_chip(&chip_comment(88, "rename tok to token", ReviewStatus::Resolved));
+    fn comment_card_renders_a_multi_turn_conversation() {
+        let comment = chip_comment_with_turns(
+            41,
+            &[
+                (ReviewAuthor::User, "() on empty input - intended?"),
+                (ReviewAuthor::Agent { label: "implementer".to_owned() }, "returns Err now."),
+            ],
+            ReviewStatus::Addressed,
+        );
+        let (lines, _) = render_chip(&comment);
         let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("you"), "the reviewer's turn is labelled 'you'");
+        assert!(joined.contains("implementer"), "the worker's turn carries its label");
+        assert!(joined.contains("() on empty input"), "the reviewer's text renders");
+        assert!(joined.contains("returns Err now."), "the worker's reply renders");
+        assert!(joined.contains('\u{25cf}'), "each turn hangs off a dot on the rail");
+        // Voices are colour-coded: amber for you, blue for the worker.
         assert!(
-            joined.contains("\u{1f4ac} line 88 \u{b7} RESOLVED"),
-            "resolved uses the unified box title; got:\n{joined}"
+            lines.iter().any(|l| line_has_fg(l, theme::RUST_ORANGE)),
+            "a turn carries the you (amber) voice",
         );
-        assert!(joined.contains("[ Reopen ]"), "resolved box offers the Reopen button");
-        assert_eq!(
-            lines.first().expect("top").spans.last().expect("border").style.fg,
-            Some(theme::REVIEW_RESOLVED),
-            "resolved border is green",
+        assert!(
+            lines.iter().any(|l| line_has_fg(l, theme::REVIEW_ADDRESSED)),
+            "a turn carries the worker (blue) voice",
         );
+    }
+
+    #[test]
+    fn comment_card_addressed_offers_both_resolve_and_reopen() {
+        let (lines, keys) = render_chip(&chip_comment(50, "look here", ReviewStatus::Addressed));
+        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("ADDRESSED"), "the addressed state label shows");
+        assert!(
+            lines.iter().any(|l| line_has_fg(l, theme::REVIEW_ADDRESSED)),
+            "the addressed state label is blue",
+        );
+        assert!(joined.contains("\u{2713} Resolve") && joined.contains("\u{21ba} Reopen"));
+        // An addressed thread can be resolved OR reopened, so both spans exist.
         assert!(
             keys.iter().any(|k| matches!(
                 k,
-                BodyRowKey::CommentButton { action: ThreadAction::Reopen, .. }
+                BodyRowKey::CommentButton { resolve: Some(_), reopen: Some(_), .. }
             )),
-            "the button row routes to Reopen",
+            "addressed offers both Resolve and Reopen",
         );
     }
 
     #[test]
-    fn comment_box_button_matches_state() {
+    fn comment_card_resolved_offers_reopen_only() {
+        let (_, keys) = render_chip(&chip_comment(88, "rename tok", ReviewStatus::Resolved));
+        assert!(
+            keys.iter().any(|k| matches!(
+                k,
+                BodyRowKey::CommentButton { resolve: None, reopen: Some(_), .. }
+            )),
+            "a resolved thread offers Reopen but not Resolve",
+        );
+    }
+
+    #[test]
+    fn comment_card_open_offers_resolve_only() {
         for status in [ReviewStatus::Open, ReviewStatus::Outdated] {
             let (_, keys) = render_chip(&chip_comment(1, "note", status));
             assert!(
                 keys.iter().any(|k| matches!(
                     k,
-                    BodyRowKey::CommentButton { action: ThreadAction::Resolve, .. }
+                    BodyRowKey::CommentButton { resolve: Some(_), reopen: None, .. }
                 )),
-                "{status:?} offers Resolve",
+                "{status:?} offers Resolve but not Reopen",
             );
         }
-        let (_, keys) = render_chip(&chip_comment(1, "note", ReviewStatus::Resolved));
-        assert!(
-            keys.iter().any(|k| matches!(
-                k,
-                BodyRowKey::CommentButton { action: ThreadAction::Reopen, .. }
-            )),
-            "Resolved offers Reopen",
-        );
     }
 
     #[test]
-    fn comment_box_shape_is_identical_across_states() {
-        // Every durable state renders the same three-part box: a top
-        // border (┌), a button row, and a bottom border (└).
-        for status in [ReviewStatus::Open, ReviewStatus::Resolved, ReviewStatus::Outdated] {
+    fn comment_card_shape_is_consistent_across_states() {
+        // Every durable state renders the same card: a rounded top border
+        // (╭), a button row, and a rounded bottom border (╰).
+        for status in [
+            ReviewStatus::Open,
+            ReviewStatus::Addressed,
+            ReviewStatus::Resolved,
+            ReviewStatus::Outdated,
+        ] {
             let (lines, keys) = render_chip(&chip_comment(1, "note", status));
-            assert!(line_text(&lines[0]).contains('\u{250c}'), "{status:?} opens with ┌");
+            assert!(line_text(&lines[0]).contains('\u{256d}'), "{status:?} opens with ╭");
             assert!(
-                line_text(lines.last().expect("bottom")).contains('\u{2514}'),
-                "{status:?} closes with └",
+                line_text(lines.last().expect("bottom")).contains('\u{2570}'),
+                "{status:?} closes with ╰",
             );
             assert!(
                 keys.iter().any(|k| matches!(k, BodyRowKey::CommentButton { .. })),
