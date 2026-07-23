@@ -3114,7 +3114,27 @@ fn finalize_review_close(app: &mut App, overview: Option<&str>, seal_ids: &[Stri
         let workspace = app.workspace.clone();
         let branch = app.diff_overlay.as_ref().and_then(|o| o.branch.clone());
         if let (Some(project), Some(branch), Some(workspace)) = (project, branch, workspace) {
-            workspace.submit_review(&project, &branch, overview.map(str::to_owned), seal_ids);
+            // The review-set write is at-risk the same way a comment upsert
+            // is: `None` means the txn failed / rolled back. Hold rather than
+            // send an unfiled bundle whose overview would be lost - the
+            // overview lives only in the (still-open) modal editor.
+            if workspace
+                .submit_review(&project, &branch, overview.map(str::to_owned), seal_ids)
+                .is_none()
+            {
+                tracing::warn!(
+                    target: crate::logging::targets::APP_SESSION,
+                    event_name = "diff_overlay_submit_held_seal_failed",
+                    message = "diff review submit held: the review could not be sealed",
+                    outcome = "held",
+                );
+                crate::app::slash::push_system_message(
+                    app,
+                    "Review submit held: the review couldn't be saved (store write failed). Your overview is kept - submit again.",
+                );
+                app.needs_redraw = true;
+                return;
+            }
         }
     }
 
@@ -4284,6 +4304,56 @@ mod tests {
         let after = app.diff_overlay.as_ref().expect("overlay still set");
         assert!(after.active_input.is_none());
         assert!(after.comments.is_empty(), "prior dropped via clear+save = delete");
+    }
+
+    #[test]
+    fn submit_finish_review_holds_when_the_seal_fails() {
+        // A store write failure (here a corrupt threads row rolls back the
+        // submit txn, so submit_review returns None) must NOT send an
+        // unfiled bundle or close: the review isn't sealed, so the modal
+        // stays open with the overview intact.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("ws");
+        let db = forge_workspace::store::Db::open(&dir.path().join("db.redb")).expect("open db");
+        forge_workspace::store::review::write_corrupt_row_for_test(&db, "forge", "feat")
+            .expect("corrupt row");
+        workspace.install_db_for_test(db);
+        let mut rx = app.install_testing_stub();
+        app.set_session_id(Some(crate::agent::model::SessionId::new("review-session")));
+        if let Some(key) = app.active_session_key.clone()
+            && let Some(session) = app.sessions.get_mut(&key)
+        {
+            session.project = Some("forge".to_owned());
+            session.cwd_raw = "/tmp/repo".into();
+        }
+
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), Vec::new());
+        overlay.branch = Some("feat".to_owned());
+        overlay.finish_review = Some(FinishReviewState { editor: TextArea::default() });
+        let mut thread = stock_thread();
+        thread.id = "fresh".to_owned();
+        overlay.comments.push(HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "src/x.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "note".into(),
+            commit: None,
+            thread,
+            authored_this_session: true,
+            persisted: true,
+        });
+        app.diff_overlay = Some(overlay);
+
+        submit_finish_review(&mut app);
+
+        assert!(
+            app.diff_overlay.as_ref().is_some_and(|o| o.finish_review.is_some()),
+            "the modal stays open on a seal failure",
+        );
+        assert!(rx.try_recv().is_err(), "no bundle dispatched when the seal failed");
     }
 
     #[test]
