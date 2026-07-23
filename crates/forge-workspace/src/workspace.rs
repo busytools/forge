@@ -3503,6 +3503,23 @@ impl Workspace {
         }
     }
 
+    /// Delete the whole review set for `(project, branch)`. Called beside
+    /// [`Self::delete_review_threads`] on branch/worktree teardown so a
+    /// reused branch doesn't inherit phantom reviews.
+    pub fn delete_reviews(&self, project: &str, branch: &str) {
+        if let Some(db) = self.db.lock().as_ref()
+            && let Err(error) = crate::store::review::delete_reviews(db, project, branch)
+        {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                project = %project,
+                branch = %branch,
+                "deleting reviews failed",
+            );
+        }
+    }
+
     /// Load the submitted reviews for `(project, branch)`, oldest first.
     /// `Ok` with an empty vec when the store isn't open or the branch has
     /// no row; `Err` with a display string when an existing row fails to

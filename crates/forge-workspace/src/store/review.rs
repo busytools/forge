@@ -202,6 +202,13 @@ pub fn save_reviews(
     Ok(())
 }
 
+/// Delete the whole review set for `(project, branch)` on branch/worktree
+/// teardown, so a reused branch doesn't inherit phantom reviews. Routes
+/// through [`save_reviews`] with an empty slice (which drops the row).
+pub fn delete_reviews(db: &Db, project: &str, branch: &str) -> anyhow::Result<()> {
+    save_reviews(db, project, branch, &[])
+}
+
 /// Seal a new review for `(project, branch)`: mint its number (existing
 /// count + 1), stamp each listed thread that is still unfiled with the
 /// new review id, and append the [`ReviewSet`]. Threads not in
