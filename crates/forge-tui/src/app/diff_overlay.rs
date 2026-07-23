@@ -3040,10 +3040,12 @@ fn is_bundle_eligible(comment: &HunkComment) -> bool {
 }
 
 /// Close path for the overlay (banner ✕ click and `handle_key`'s Esc).
-/// A look-only session closes straight through; a session that authored
-/// (or edited) a comment opens the Finish-review modal instead, so the
-/// pass seals into a review on exit. The actual seal + agent bundle runs
-/// in [`submit_finish_review`] when the user confirms.
+/// Opens the Finish-review modal only when at least one comment WOULD file
+/// into a new review - authored this session AND not already filed. An
+/// edit-only session (every authored comment already carries a
+/// `review_id`) and a look-only session both skip the modal and take the
+/// plain send-and-close path, so neither mints an empty review; edited
+/// comments still reach the agent exactly as before.
 pub(super) fn close_with_submit(app: &mut App) {
     // Flush the active editor first - a reopened chip parks its saved
     // comment on `active_input.prior_comment`, so `overlay.comments` is
@@ -3051,25 +3053,22 @@ pub(super) fn close_with_submit(app: &mut App) {
     if let Some(o) = app.diff_overlay.as_mut() {
         let _ = close_active_input_preserving_prior(o);
     }
-    let authored = app
-        .diff_overlay
-        .as_ref()
-        .is_some_and(|o| o.comments.iter().any(|c| c.authored_this_session));
-    if authored {
+    let would_file = app.diff_overlay.as_ref().is_some_and(|o| {
+        o.comments.iter().any(|c| c.authored_this_session && c.thread.review_id.is_none())
+    });
+    if would_file {
         if let Some(o) = app.diff_overlay.as_mut() {
             o.finish_review = Some(FinishReviewState { editor: TextArea::default() });
             app.needs_redraw = true;
         }
         return;
     }
-    close(app);
+    finalize_review_close(app, None, &[]);
 }
 
 /// Submit the Finish-review modal: seal this session's authored comments
 /// into a fresh numbered review (with the optional overview), then fire
-/// the existing agent bundle for the still-open ones and close. Held
-/// (nothing sealed, modal stays open) when there are sendable comments
-/// but the agent isn't ready, so the user's notes aren't lost.
+/// the existing agent bundle for the still-open ones and close.
 pub(super) fn submit_finish_review(app: &mut App) {
     let overview = app
         .diff_overlay
@@ -3077,49 +3076,48 @@ pub(super) fn submit_finish_review(app: &mut App) {
         .and_then(|o| o.finish_review.as_ref())
         .map(|f| f.editor.lines().join("\n"));
     let overview = overview.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
+    let seal_ids: Vec<String> = app.diff_overlay.as_ref().map_or_else(Vec::new, |o| {
+        o.comments.iter().filter(|c| c.authored_this_session).map(|c| c.thread.id.clone()).collect()
+    });
+    finalize_review_close(app, overview.as_deref(), &seal_ids);
+}
 
-    // Pre-flight: sendable comments but no agent -> hold. Mirrors the
-    // pre-modal close guard so a pre-Connect submit doesn't drop notes.
+/// Shared tail for the Finish-review submit and the plain close: hold when
+/// the agent isn't ready (surface stays open so notes survive), else seal
+/// the listed still-unfiled threads into a review (skipped when `seal_ids`
+/// is empty - the edit-only / look-only path mints nothing), bundle the
+/// still-open session comments with the overview prepended, dispatch, and
+/// close. Sealing is best-effort: a session without a branch / store still
+/// bundles and closes, matching pre-review-sets behavior.
+fn finalize_review_close(app: &mut App, overview: Option<&str>, seal_ids: &[String]) {
     let pending =
         app.diff_overlay.as_ref().is_some_and(|o| o.comments.iter().any(is_bundle_eligible));
     if pending && (!app.has_active_agent() || app.session_id().is_none()) {
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
-            event_name = "diff_overlay_submit_held_no_agent",
-            message = "diff review submit held: agent not ready, comments preserved",
+            event_name = "diff_overlay_close_held_no_agent",
+            message = "diff review close held: agent not ready, comments preserved",
             outcome = "held",
             has_agent = app.has_active_agent(),
             has_session_id = app.session_id().is_some(),
         );
         crate::app::slash::push_system_message(
             app,
-            "Review submit held: agent not ready. Wait for the session to connect, then submit again.",
+            "Review submit held: agent not ready. Wait for the session to connect, then Esc again to submit.",
         );
         app.needs_redraw = true;
         return;
     }
 
-    // Seal: file every comment authored this session into a new review.
-    // Best-effort - a session without a branch / store still bundles and
-    // closes, matching pre-review-sets behavior.
-    let project = app.active_session().and_then(|s| s.project.clone());
-    let workspace = app.workspace.clone();
-    let seal = app.diff_overlay.as_ref().map(|o| {
-        let ids: Vec<String> = o
-            .comments
-            .iter()
-            .filter(|c| c.authored_this_session)
-            .map(|c| c.thread.id.clone())
-            .collect();
-        (o.branch.clone(), ids)
-    });
-    if let (Some(project), Some(workspace), Some((Some(branch), ids))) = (project, workspace, seal)
-        && !ids.is_empty()
-    {
-        workspace.submit_review(&project, &branch, overview.clone(), &ids);
+    if !seal_ids.is_empty() {
+        let project = app.active_session().and_then(|s| s.project.clone());
+        let workspace = app.workspace.clone();
+        let branch = app.diff_overlay.as_ref().and_then(|o| o.branch.clone());
+        if let (Some(project), Some(branch), Some(workspace)) = (project, branch, workspace) {
+            workspace.submit_review(&project, &branch, overview.map(str::to_owned), seal_ids);
+        }
     }
 
-    // Bundle + dispatch the still-open comments with the overview, close.
     let snapshot = app.diff_overlay.as_mut().map(|o| {
         let bundle: Vec<HunkComment> =
             std::mem::take(&mut o.comments).into_iter().filter(is_bundle_eligible).collect();
@@ -3134,7 +3132,7 @@ pub(super) fn submit_finish_review(app: &mut App) {
             &cwd_display,
             &commits,
             &comments,
-            overview.as_deref(),
+            overview,
         );
         super::input_submit::dispatch_diff_comment_bundle(app, markdown);
     }
@@ -3971,6 +3969,41 @@ mod tests {
         close_with_submit(&mut app);
         assert!(app.diff_overlay.is_none(), "look-only close drops the overlay");
         assert_eq!(app.active_view, ActiveView::Chat, "view returns to chat");
+    }
+
+    #[test]
+    fn close_with_submit_edit_only_sends_without_minting_a_review() {
+        // A session that only edits an already-filed comment must NOT mint
+        // an empty review: the modal never opens (nothing would file), but
+        // the edited open comment still reaches the agent as today.
+        let (mut app, mut rx, _dir) = review_app_with_agent();
+        let ws = app.workspace.clone().expect("ws");
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), Vec::new());
+        overlay.branch = Some("feat".to_owned());
+        let mut thread = stock_thread();
+        thread.id = "filed".to_owned();
+        thread.review_id = Some("rev".to_owned());
+        overlay.comments.push(HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "src/x.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "tweaked note".into(),
+            commit: None,
+            thread,
+            authored_this_session: true,
+            persisted: true,
+        });
+        app.diff_overlay = Some(overlay);
+
+        close_with_submit(&mut app);
+        assert!(app.diff_overlay.is_none(), "edit-only close skips the modal and closes");
+        assert!(rx.try_recv().is_ok(), "the edited comment still reached the agent");
+        assert!(
+            ws.load_reviews("forge", "feat").expect("load").is_empty(),
+            "no review was minted for an edit-only session",
+        );
     }
 
     #[test]
