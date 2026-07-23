@@ -630,6 +630,13 @@ mod tests_options_build {
         assert!(pred("mcp__forge__cron__create"));
         assert!(pred("mcp__forge__cron__list"));
         assert!(pred("mcp__forge__cron__delete"));
+        // Review-conversation tools share the same namespace, so a future
+        // narrowing of this prefix must not silently start prompting for
+        // them - pin them here.
+        assert!(pred("mcp__forge__review__list"));
+        assert!(pred("mcp__forge__review__get"));
+        assert!(pred("mcp__forge__review__reply"));
+        assert!(pred("mcp__forge__review__resolve"));
         assert!(pred("mcp__forge__"));
         // Sibling prefixes must NOT match (no partial-string fuzz).
         assert!(!pred("mcp__forgery__steal_secrets"));

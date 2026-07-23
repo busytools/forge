@@ -27,6 +27,12 @@ pub const SUBAGENT_TOKEN: Color = Color::LightBlue;
 // addition surface, for the collapsed "✓ RESOLVED" review-comment row.
 pub const REVIEW_RESOLVED: Color = Color::Rgb(130, 199, 107);
 
+// Addressed review-thread accent - a blue for a thread a worker replied
+// to (Open -> Addressed), and the worker turn's dot on the conversation
+// rail. Distinct from REVIEW_RESOLVED (green) and RUST_ORANGE (the
+// user's own turn).
+pub const REVIEW_ADDRESSED: Color = Color::Rgb(97, 160, 224);
+
 // Amber accent for the `/account` picker's experimental tag. Distinct
 // from the yellow reset-ETA (STATUS_WARNING) so the two never blur.
 pub const EXPERIMENTAL: Color = Color::Rgb(201, 161, 59);

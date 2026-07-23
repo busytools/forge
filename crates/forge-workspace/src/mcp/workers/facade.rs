@@ -1021,17 +1021,15 @@ mod mock_tests {
     fn resolution_scopes_project_role_to_its_own_project() {
         // A project role resolves only from its own project; resolution
         // IS the scope check now (a project sees its own roles + globals).
-        use crate::team::roles::{resolve_role, set_forge_team_root_for_test};
+        use crate::team::roles::{override_forge_team_root_for_test, resolve_role};
         let tmp = tempfile::tempdir().expect("tmp");
         let steward = tmp.path().join("data-modules").join("steward");
         std::fs::create_dir_all(&steward).expect("mkdir");
         std::fs::write(steward.join("charter.md"), "description: Hub steward\n").expect("charter");
-        let prev = set_forge_team_root_for_test(Some(tmp.path().to_path_buf()));
+        let _guard = override_forge_team_root_for_test(tmp.path().to_path_buf());
 
         assert_eq!(resolve_role("steward", "data-modules").as_deref(), Some("data-modules/steward"));
         assert_eq!(resolve_role("steward", "forge"), None);
-
-        set_forge_team_root_for_test(prev);
     }
 
     #[test]

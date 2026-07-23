@@ -2368,24 +2368,8 @@ mod tests {
         );
     }
 
-    /// RAII guard that restores the prior `forge_team_root` override
-    /// on drop so a panicking test doesn't leak a stale tempdir
-    /// override onto its neighbours. The Mutex inside
-    /// `test_forge_team_root` keeps the override globally consistent
-    /// while we hold the guard.
-    struct ForgeTeamRootGuard {
-        prior: Option<std::path::PathBuf>,
-    }
-
-    impl Drop for ForgeTeamRootGuard {
-        fn drop(&mut self) {
-            crate::team::set_forge_team_root_for_test(self.prior.take());
-        }
-    }
-
-    fn redirect_forge_team_root(root: std::path::PathBuf) -> ForgeTeamRootGuard {
-        let prior = crate::team::set_forge_team_root_for_test(Some(root));
-        ForgeTeamRootGuard { prior }
+    fn redirect_forge_team_root(root: std::path::PathBuf) -> crate::team::ForgeTeamRootTestGuard {
+        crate::team::override_forge_team_root_for_test(root)
     }
 
     fn lead_create_role_tool(mock: Arc<MockWorkerFacade>) -> CreateRole {

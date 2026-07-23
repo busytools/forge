@@ -214,6 +214,16 @@ pub struct Workspace {
     /// `SessionUpdate::PeerInflightStatsChanged` which the TUI
     /// reducer turns into sidebar peer-activity badges.
     pub(crate) peer_stats: Mutex<HashMap<SessionKey, PeerInflightStats>>,
+    /// The session that submitted the reviews on a `(project, branch)` -
+    /// the target for a worker's review-activity notice. Set by
+    /// [`Self::submit_review`]; latest submit wins (the reviewer is one
+    /// human whose session may rekey across a resume).
+    review_origin: Mutex<HashMap<(String, String), SessionKey>>,
+    /// Review actions a caller took during its current turn, keyed by the
+    /// caller's [`SessionKey`]. Appended by [`Self::review_reply`] /
+    /// [`Self::review_resolve`] and drained into one notice per review at
+    /// the caller's turn end ([`Self::drain_review_activity`]).
+    review_activity: Mutex<HashMap<SessionKey, Vec<crate::mcp::review::ReviewActivity>>>,
     /// Set the first time [`Self::start_usage_poller`] runs. Subsequent
     /// calls early-return to avoid spawning duplicate poller tasks.
     usage_poller_started: std::sync::atomic::AtomicBool,
@@ -719,6 +729,8 @@ impl Workspace {
             domain_handles: Mutex::new(HashMap::new()),
             inflight_asks: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
+            review_origin: Mutex::new(HashMap::new()),
+            review_activity: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
@@ -1061,12 +1073,14 @@ impl Workspace {
         let forge_server = {
             let workspace_facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(self);
             let worker_facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(self);
+            let review_facade = crate::mcp::review::facade::ProdReviewFacade::from_arc(self);
             let cron_facade = crate::mcp::cron::facade::ProdCronFacade::from_arc(self);
             let gotify_facade = crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(self);
             let resolver = crate::mcp::peers::facade::CallerKeyResolver::from_domain(&domain_arc);
             crate::mcp::build_forge_server(
                 workspace_facade,
                 worker_facade,
+                review_facade,
                 cron_facade,
                 gotify_facade,
                 resolver,
@@ -3547,31 +3561,286 @@ impl Workspace {
 
     /// Seal a new review for `(project, branch)`, filing the listed
     /// still-unfiled threads into it and appending it with the optional
-    /// summary. Returns the minted [`forge_primitives::ReviewSet`] (`None`
-    /// when the store isn't open or the write failed) so the caller can
-    /// surface its number.
+    /// summary. Records `origin` as the notice target for the branch (the
+    /// reviewer's session, so a later worker review-turn pings it). Returns
+    /// the minted [`forge_primitives::ReviewSet`] (`None` when the store
+    /// isn't open or the write failed) so the caller can surface its number.
     pub fn submit_review(
         &self,
         project: &str,
         branch: &str,
         summary: Option<String>,
         thread_ids: &[String],
+        origin: SessionKey,
     ) -> Option<forge_primitives::ReviewSet> {
-        let guard = self.db.lock();
-        let db = guard.as_ref()?;
-        match crate::store::review::submit_review(db, project, branch, summary, thread_ids) {
-            Ok(review) => Some(review),
-            Err(error) => {
+        // Scope the `db` guard to the store write and drop it BEFORE taking
+        // `review_origin` - `drain_review_activity` locks these in the
+        // opposite order (`review_origin` then `db` via `review_list`), so
+        // holding both here would risk an AB-BA deadlock on the concurrent
+        // submit / worker-turn-end paths.
+        let review = {
+            let guard = self.db.lock();
+            let db = guard.as_ref()?;
+            match crate::store::review::submit_review(db, project, branch, summary, thread_ids) {
+                Ok(review) => review,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        %error,
+                        project = %project,
+                        branch = %branch,
+                        "submitting a review failed",
+                    );
+                    return None;
+                }
+            }
+        };
+        self.review_origin.lock().insert((project.to_owned(), branch.to_owned()), origin);
+        Some(review)
+    }
+
+    /// The `review__list` view for `(project, branch)`: submitted reviews
+    /// with per-review comment tallies, newest first. `Ok` (possibly empty)
+    /// when the store is closed or the branch has no reviews; `Err` when a
+    /// stored row fails to decode, so the MCP surfaces the failure instead
+    /// of a silent empty list.
+    pub fn review_list(
+        &self,
+        project: &str,
+        branch: &str,
+    ) -> Result<Vec<crate::mcp::review::ReviewSummary>, String> {
+        let reviews = self.load_reviews(project, branch)?;
+        let threads = self.load_review_threads(project, branch)?;
+        Ok(crate::mcp::review::summarize(&reviews, &threads))
+    }
+
+    /// The `review__get` view for one review on `(project, branch)`: its
+    /// overview plus the comments filed under it, each carrying the
+    /// anchored code. `Ok(None)` when no such review; `Err` on a decode
+    /// failure.
+    pub fn review_get(
+        &self,
+        project: &str,
+        branch: &str,
+        review_id: &str,
+    ) -> Result<Option<crate::mcp::review::ReviewDetail>, String> {
+        let reviews = self.load_reviews(project, branch)?;
+        let threads = self.load_review_threads(project, branch)?;
+        Ok(crate::mcp::review::detail(&reviews, &threads, review_id))
+    }
+
+    /// Append a worker reply to `comment_id` on `(project, branch)` and
+    /// return the thread's status after the append (Open -> Addressed;
+    /// Resolved / Outdated unchanged). Records the reply in `caller`'s
+    /// turn activity buffer so the reviewer is notified at turn end. `Err`
+    /// when the store is closed, the write fails, or no comment with that
+    /// id exists in this scope, so a stale or cross-branch id is rejected
+    /// rather than silently ignored.
+    pub fn review_reply(
+        &self,
+        caller: &SessionKey,
+        project: &str,
+        branch: &str,
+        comment_id: &str,
+        author_label: &str,
+        text: &str,
+        at: &str,
+    ) -> Result<ReviewStatus, String> {
+        let status = {
+            let guard = self.db.lock();
+            let db = guard.as_ref().ok_or_else(|| "review store is unavailable".to_owned())?;
+            crate::store::review::append_reply(
+                db,
+                project,
+                branch,
+                comment_id,
+                author_label,
+                text,
+                at,
+            )
+            .map_err(|error| {
                 tracing::warn!(
                     target: "forge_workspace::workspace",
                     %error,
                     project = %project,
                     branch = %branch,
-                    "submitting a review failed",
+                    comment_id = %comment_id,
+                    "appending a review reply failed",
                 );
-                None
+                format!("{error:#}")
+            })?
+        };
+        self.note_review_activity(caller, project, branch, comment_id, true);
+        Ok(status)
+    }
+
+    /// Mark `comment_id` on `(project, branch)` Resolved and record the
+    /// resolve in `caller`'s turn activity buffer. `Err` when the store is
+    /// closed, the write fails, or no comment with that id exists in this
+    /// scope.
+    pub fn review_resolve(
+        &self,
+        caller: &SessionKey,
+        project: &str,
+        branch: &str,
+        comment_id: &str,
+    ) -> Result<(), String> {
+        {
+            let guard = self.db.lock();
+            let db = guard.as_ref().ok_or_else(|| "review store is unavailable".to_owned())?;
+            match crate::store::review::set_status(
+                db,
+                project,
+                branch,
+                comment_id,
+                ReviewStatus::Resolved,
+            ) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(format!("no review comment {comment_id} on ({project}, {branch})"));
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        %error,
+                        project = %project,
+                        branch = %branch,
+                        comment_id = %comment_id,
+                        "resolving a review comment failed",
+                    );
+                    return Err(format!("{error:#}"));
+                }
             }
         }
+        self.note_review_activity(caller, project, branch, comment_id, false);
+        Ok(())
+    }
+
+    /// Append one review action to `caller`'s turn buffer, resolving the
+    /// comment's owning review. A comment with no `review_id` (unfiled) is
+    /// skipped - there's no review to notify about.
+    fn note_review_activity(
+        &self,
+        caller: &SessionKey,
+        project: &str,
+        branch: &str,
+        comment_id: &str,
+        replied: bool,
+    ) {
+        let review_id = {
+            let guard = self.db.lock();
+            let Some(db) = guard.as_ref() else { return };
+            match crate::store::review::find_thread_by_id(db, project, branch, comment_id) {
+                Ok(Some(thread)) => thread.review_id,
+                Ok(None) => None,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        %error,
+                        "resolving a review comment's owning review failed",
+                    );
+                    None
+                }
+            }
+        };
+        let Some(review_id) = review_id else { return };
+        self.review_activity.lock().entry(caller.clone()).or_default().push(
+            crate::mcp::review::ReviewActivity {
+                project: project.to_owned(),
+                branch: branch.to_owned(),
+                review_id,
+                replied,
+            },
+        );
+    }
+
+    /// Drain `caller`'s accumulated review activity into one
+    /// [`SessionUpdate::ReviewActivityNotice`] per touched review, routed to
+    /// the review's submit origin. A review with no recorded origin is
+    /// dropped (the reviewer still sees the state on `/diff` reopen) rather
+    /// than mis-routed to the caller. Called at the caller's turn end so a
+    /// multi-comment review turn produces a single batched tally instead of
+    /// one line per reply. Empty when the caller took no review actions this
+    /// turn.
+    pub(crate) fn drain_review_activity(&self, caller: &SessionKey) -> Vec<SessionUpdate> {
+        let touches = { self.review_activity.lock().remove(caller).unwrap_or_default() };
+        if touches.is_empty() {
+            return Vec::new();
+        }
+        // Aggregate per review, preserving first-touched order.
+        let mut order: Vec<String> = Vec::new();
+        let mut by_review: HashMap<String, (String, String, usize, usize)> = HashMap::new();
+        for touch in touches {
+            let entry = by_review.entry(touch.review_id.clone()).or_insert_with(|| {
+                order.push(touch.review_id.clone());
+                (touch.project, touch.branch, 0, 0)
+            });
+            if touch.replied {
+                entry.2 += 1;
+            } else {
+                entry.3 += 1;
+            }
+        }
+
+        // Resolve each review's number + current open count via the store
+        // (each `review_list` call takes `db` briefly and releases it) and
+        // build its notice message BEFORE locking `review_origin`. Never
+        // hold `review_origin` across a db-locking call - `submit_review`
+        // locks db-then-origin, so the opposite order here would risk an
+        // AB-BA deadlock.
+        let mut messages: Vec<((String, String), String)> = Vec::new();
+        for review_id in order {
+            let Some((project, branch, replied, resolved)) = by_review.remove(&review_id) else {
+                continue;
+            };
+            let rows = match self.review_list(&project, &branch) {
+                Ok(rows) => rows,
+                Err(error) => {
+                    // Surface the decode / IO failure rather than swallowing
+                    // it into a silently-skipped notice.
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        %error,
+                        project = %project,
+                        branch = %branch,
+                        "review-activity notice skipped: loading reviews failed",
+                    );
+                    continue;
+                }
+            };
+            let Some(summary) = rows.into_iter().find(|s| s.review_id == review_id) else {
+                continue;
+            };
+            let message =
+                crate::mcp::review::notice_message(summary.number, replied, resolved, summary.open);
+            messages.push(((project, branch), message));
+        }
+
+        // Map each review to its notice target under a short `review_origin`
+        // lock (no db lock held here). When no origin was recorded (e.g. the
+        // review was submitted before a restart - the map is in-memory only),
+        // DROP the notice rather than falling back to the caller: routing a
+        // "worker addressed review #N" line into the worker's own chat is
+        // worse than not firing. The reviewer still sees the state on /diff
+        // reopen (it persists in the store).
+        let origins = self.review_origin.lock();
+        messages
+            .into_iter()
+            .filter_map(|(scope, message)| {
+                if let Some(key) = origins.get(&scope) {
+                    Some(SessionUpdate::ReviewActivityNotice { key: key.clone(), message })
+                } else {
+                    tracing::debug!(
+                        target: "forge_workspace::workspace",
+                        project = %scope.0,
+                        branch = %scope.1,
+                        caller = %caller.as_str(),
+                        "review-activity notice dropped: no submit origin recorded",
+                    );
+                    None
+                }
+            })
+            .collect()
     }
 
     /// Scan the shared session-JSONL pool into a `UsageReport` for the
@@ -5343,6 +5612,8 @@ impl Workspace {
             domain_handles: Mutex::new(HashMap::new()),
             inflight_asks: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
+            review_origin: Mutex::new(HashMap::new()),
+            review_activity: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
@@ -6066,12 +6337,14 @@ mod tests {
                 .review_id
         };
 
+        let origin = SessionKey::from_session_id("reviewer");
         let r1 = ws
             .submit_review(
                 "forge",
                 "feat",
                 Some("first".to_owned()),
                 &["a".to_owned(), "b".to_owned()],
+                origin.clone(),
             )
             .expect("submit mints a review");
         assert_eq!(r1.number, 1);
@@ -6080,10 +6353,303 @@ mod tests {
         assert_eq!(filed("c"), None, "c unlisted stays unfiled");
         assert_eq!(ws.load_reviews("forge", "feat").expect("load").len(), 1);
 
-        let r2 = ws.submit_review("forge", "feat", None, &["c".to_owned()]).expect("submit 2");
+        let r2 =
+            ws.submit_review("forge", "feat", None, &["c".to_owned()], origin).expect("submit 2");
         assert_eq!(r2.number, 2, "the number increments");
         assert_eq!(filed("a"), Some(r1.id.clone()), "a stays in r1");
         assert_eq!(filed("c"), Some(r2.id), "c filed into r2");
+    }
+
+    #[test]
+    fn review_conversation_methods_round_trip_through_the_workspace() {
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+        };
+        let make = |id: &str| ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 12,
+                content_hash: 1,
+                context: vec!["fn f() {".to_owned()],
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: format!("look at {id}"),
+                at: "2026-07-23T10:00:00Z".to_owned(),
+            }],
+            status: ReviewStatus::Open,
+            created_at: "2026-07-23T10:00:00Z".to_owned(),
+            updated_at: "2026-07-23T10:00:00Z".to_owned(),
+            commit: None,
+            review_id: None,
+        };
+
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.save_review_threads("forge", "feat", &[make("a"), make("b")]);
+        let caller = SessionKey::from_session_id("worker");
+        let r1 = ws
+            .submit_review(
+                "forge",
+                "feat",
+                Some("overview".to_owned()),
+                &["a".to_owned(), "b".to_owned()],
+                SessionKey::from_session_id("reviewer"),
+            )
+            .expect("submit");
+
+        let list = ws.review_list("forge", "feat").expect("list");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].review_id, r1.id);
+        assert_eq!(list[0].comment_count, 2);
+        assert_eq!(list[0].open, 2);
+
+        let detail = ws.review_get("forge", "feat", &r1.id).expect("get").expect("review present");
+        assert_eq!(detail.comments.len(), 2);
+        assert_eq!(detail.summary.as_deref(), Some("overview"));
+        assert!(!detail.comments[0].context.is_empty(), "anchor context is handed back");
+
+        let status = ws
+            .review_reply(
+                &caller,
+                "forge",
+                "feat",
+                "a",
+                "implementer",
+                "fixed",
+                "2026-07-23T12:00:00Z",
+            )
+            .expect("reply");
+        assert_eq!(status, ReviewStatus::Addressed, "a reply flips Open -> Addressed");
+        let list = ws.review_list("forge", "feat").expect("list");
+        assert_eq!((list[0].open, list[0].addressed), (1, 1));
+
+        ws.review_resolve(&caller, "forge", "feat", "a").expect("resolve");
+        let list = ws.review_list("forge", "feat").expect("list");
+        assert_eq!((list[0].addressed, list[0].resolved), (0, 1));
+
+        // An unknown / cross-branch comment id is rejected, not a no-op -
+        // for reply (append_reply path) and resolve (set_status path) alike.
+        assert!(ws.review_reply(&caller, "forge", "feat", "missing", "x", "y", "z").is_err());
+        assert!(ws.review_resolve(&caller, "forge", "feat", "missing").is_err());
+        assert!(
+            ws.review_reply(&caller, "forge", "other", "a", "x", "y", "z").is_err(),
+            "reply: a lives on feat, not other",
+        );
+        assert!(
+            ws.review_resolve(&caller, "forge", "other", "a").is_err(),
+            "resolve: a lives on feat, not other",
+        );
+    }
+
+    #[test]
+    fn drain_review_activity_batches_one_notice_per_review_routed_to_origin() {
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+        };
+        let make = |id: &str| ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 1,
+                content_hash: 1,
+                context: vec!["ctx".to_owned()],
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: format!("look at {id}"),
+                at: "2026-07-23T10:00:00Z".to_owned(),
+            }],
+            status: ReviewStatus::Open,
+            created_at: "2026-07-23T10:00:00Z".to_owned(),
+            updated_at: "2026-07-23T10:00:00Z".to_owned(),
+            commit: None,
+            review_id: None,
+        };
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.save_review_threads("forge", "feat", &[make("a"), make("b"), make("c")]);
+        let reviewer = SessionKey::from_session_id("reviewer");
+        let worker = SessionKey::from_session_id("worker");
+        ws.submit_review(
+            "forge",
+            "feat",
+            None,
+            &["a".to_owned(), "b".to_owned(), "c".to_owned()],
+            reviewer.clone(),
+        )
+        .expect("submit");
+
+        // Nothing before the worker acts.
+        assert!(ws.drain_review_activity(&worker).is_empty(), "no activity, no notice");
+
+        // Worker replies to one comment and resolves another in one turn,
+        // leaving the third (c) untouched so an open count survives.
+        ws.review_reply(&worker, "forge", "feat", "a", "impl", "fixed a", "t").expect("reply a");
+        ws.review_resolve(&worker, "forge", "feat", "b").expect("resolve b");
+
+        let notices = ws.drain_review_activity(&worker);
+        assert_eq!(notices.len(), 1, "one batched notice for the single touched review");
+        match &notices[0] {
+            SessionUpdate::ReviewActivityNotice { key, message } => {
+                assert_eq!(key, &reviewer, "routed to the submit origin, not the worker");
+                // a -> Addressed (1 replied), b -> Resolved (1 resolved), c untouched (1 open).
+                assert!(message.contains("1 replied"), "tally counts the reply: {message}");
+                assert!(message.contains("1 resolved"), "tally counts the resolve: {message}");
+                assert!(
+                    message.contains("1 open"),
+                    "tally reflects the store's open count: {message}"
+                );
+            }
+            other => panic!("expected ReviewActivityNotice, got {other:?}"),
+        }
+        // The buffer is drained - a second flush is empty.
+        assert!(ws.drain_review_activity(&worker).is_empty(), "the turn buffer drained");
+    }
+
+    #[test]
+    fn drain_drops_notice_when_no_submit_origin_recorded() {
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSet, ReviewSide, ReviewStatus,
+            ReviewThread,
+        };
+        // Post-restart shape: a thread already filed into a review on disk
+        // (review_id set) + its reviews row, but `review_origin` is empty
+        // (in-memory, cleared by the restart) because we seed the store
+        // directly instead of calling submit_review. A worker reply must
+        // then drain to NO notice - never mis-routed to the worker.
+        let dir = tempdir().expect("tempdir");
+        let db = crate::store::Db::open(&dir.path().join("db.redb")).expect("open db");
+        let thread = ReviewThread {
+            id: "a".to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 1,
+                content_hash: 1,
+                context: vec!["ctx".to_owned()],
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: "look".to_owned(),
+                at: "2026-07-23T10:00:00Z".to_owned(),
+            }],
+            status: ReviewStatus::Open,
+            created_at: "2026-07-23T10:00:00Z".to_owned(),
+            updated_at: "2026-07-23T10:00:00Z".to_owned(),
+            commit: None,
+            review_id: Some("r1".to_owned()),
+        };
+        crate::store::review::save(&db, "forge", "feat", &[thread]).expect("seed threads");
+        crate::store::review::save_reviews(
+            &db,
+            "forge",
+            "feat",
+            &[ReviewSet {
+                id: "r1".to_owned(),
+                number: 1,
+                summary: None,
+                created_at: "2026-07-23T10:00:00Z".to_owned(),
+            }],
+        )
+        .expect("seed reviews");
+
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.install_db_for_test(db);
+        let worker = SessionKey::from_session_id("worker");
+        ws.review_reply(&worker, "forge", "feat", "a", "impl", "fixed", "t").expect("reply");
+
+        assert!(
+            ws.drain_review_activity(&worker).is_empty(),
+            "with no recorded origin the notice is dropped, not mis-routed to the worker",
+        );
+    }
+
+    #[test]
+    fn submit_and_drain_do_not_deadlock_under_concurrency() {
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+        };
+        let make = |id: &str| ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 1,
+                content_hash: 1,
+                context: vec!["ctx".to_owned()],
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: format!("look at {id}"),
+                at: "2026-07-23T10:00:00Z".to_owned(),
+            }],
+            status: ReviewStatus::Open,
+            created_at: "2026-07-23T10:00:00Z".to_owned(),
+            updated_at: "2026-07-23T10:00:00Z".to_owned(),
+            commit: None,
+            review_id: None,
+        };
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.save_review_threads("forge", "feat", &[make("a"), make("b"), make("c")]);
+        let reviewer = SessionKey::from_session_id("reviewer");
+        let worker = SessionKey::from_session_id("worker");
+        ws.submit_review(
+            "forge",
+            "feat",
+            None,
+            &["a".to_owned(), "b".to_owned(), "c".to_owned()],
+            reviewer.clone(),
+        );
+
+        // Hammer the two lock-ordering-sensitive paths from separate threads:
+        // the TUI submit path (`db` then `review_origin`) and the worker
+        // turn-end path (`review_origin` after `db`). A regression that
+        // reintroduces the opposite order deadlocks; a watchdog channel
+        // fails the test on timeout rather than hanging forever.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ws_submit = ws.clone();
+        let reviewer2 = reviewer.clone();
+        let ws_drain = ws.clone();
+        let worker2 = worker.clone();
+        let coordinator = std::thread::spawn(move || {
+            let submitter = std::thread::spawn(move || {
+                for _ in 0..300 {
+                    ws_submit.submit_review("forge", "feat", None, &[], reviewer2.clone());
+                }
+            });
+            let drainer = std::thread::spawn(move || {
+                for _ in 0..300 {
+                    let _ = ws_drain.review_reply(&worker2, "forge", "feat", "a", "impl", "x", "t");
+                    let _ = ws_drain.drain_review_activity(&worker2);
+                }
+            });
+            let _ = submitter.join();
+            let _ = drainer.join();
+            let _ = tx.send(());
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_secs(20)).is_ok(),
+            "submit_review + drain_review_activity deadlocked (AB-BA on db vs review_origin)",
+        );
+        let _ = coordinator.join();
     }
 
     fn usage_workspace() -> (tempfile::TempDir, Arc<Workspace>) {
@@ -9988,13 +10554,11 @@ mod team_spawn_tests {
         std::fs::create_dir_all(&dir).expect("mkdir");
         std::fs::write(dir.join("charter.md"), "description: Generic code-writer\n")
             .expect("write");
-        let prev = crate::team::roles::set_forge_team_root_for_test(Some(tmp.path().to_path_buf()));
+        let _guard = crate::team::override_forge_team_root_for_test(tmp.path().to_path_buf());
 
         let text = Workspace::build_delegation_catalog("forge");
         assert!(text.contains("workers__spawn"));
         assert!(text.contains("implementer - Generic code-writer"));
-
-        crate::team::roles::set_forge_team_root_for_test(prev);
     }
 
     #[test]
@@ -10049,7 +10613,7 @@ mod team_spawn_tests {
         std::fs::create_dir_all(&steward).expect("mkdir");
         std::fs::write(steward.join("charter.md"), "description: Hub steward\n").expect("charter");
         std::fs::write(steward.join("kick.md"), "go\n").expect("kick");
-        let prev = crate::team::set_forge_team_root_for_test(Some(tmp.path().to_path_buf()));
+        let _guard = crate::team::override_forge_team_root_for_test(tmp.path().to_path_buf());
 
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
@@ -10072,8 +10636,6 @@ mod team_spawn_tests {
             assert_eq!(label, "steward", "worker label stays BARE, not data-modules/steward");
             assert!(charter.contains("Hub steward"), "charter loaded from the project-scoped dir");
         }
-
-        crate::team::set_forge_team_root_for_test(prev);
     }
 
     #[test]
@@ -10087,7 +10649,7 @@ mod team_spawn_tests {
         std::fs::create_dir_all(&steward).expect("mkdir");
         std::fs::write(steward.join("charter.md"), "description: Hub steward\n").expect("charter");
         std::fs::write(steward.join("kick.md"), "go\n").expect("kick");
-        let prev = crate::team::set_forge_team_root_for_test(Some(tmp.path().to_path_buf()));
+        let _guard = crate::team::override_forge_team_root_for_test(tmp.path().to_path_buf());
 
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
@@ -10107,8 +10669,6 @@ mod team_spawn_tests {
         if let Command::SpawnWorker { resume_existing, .. } = spawns[0] {
             assert!(resume_existing.is_none(), "force_new => worker spawns fresh (no resume)");
         }
-
-        crate::team::set_forge_team_root_for_test(prev);
     }
 
     #[test]

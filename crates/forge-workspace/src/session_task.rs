@@ -506,8 +506,19 @@ impl SessionTask {
                 // ends. `Message::Result` is the SDK's signal that the
                 // assistant turn has fully completed.
                 if matches!(msg, forge_primitives::Message::Result { .. }) {
-                    let mut guard = self.domain.lock();
-                    guard.turn_pending = false;
+                    let caller = {
+                        let mut guard = self.domain.lock();
+                        guard.turn_pending = false;
+                        guard.key.clone()
+                    };
+                    // Turn end: flush this session's accumulated review
+                    // actions into one batched notice per review, routed to
+                    // each review's submit origin.
+                    if let Some(ws) = self.workspace.upgrade() {
+                        for update in ws.drain_review_activity(&caller) {
+                            self.emit(update);
+                        }
+                    }
                 }
                 self.note_rate_limit_from_message(&msg);
                 self.emit(SessionUpdate::ChatAppended { session_id, msg });
@@ -1501,6 +1512,97 @@ mod tests {
         }
     }
 
+    /// Turn-end wiring: a `Message::Result` on a worker session drains its
+    /// accumulated review activity into one `ReviewActivityNotice` routed to
+    /// the submit origin. Guards the seam - a wrong `Message::Result` arm
+    /// kills the whole notification with every unit test still green.
+    #[tokio::test]
+    async fn turn_end_result_drains_review_activity_to_a_notice() {
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        workspace.save_review_threads(
+            "forge",
+            "feat",
+            &[ReviewThread {
+                id: "a".to_owned(),
+                anchor: ReviewAnchor {
+                    path: "src/x.rs".to_owned(),
+                    side: ReviewSide::New,
+                    line: 1,
+                    content_hash: 1,
+                    context: vec!["ctx".to_owned()],
+                    base_ref: "main".to_owned(),
+                },
+                comments: vec![ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "look".to_owned(),
+                    at: "t".to_owned(),
+                }],
+                status: ReviewStatus::Open,
+                created_at: "t".to_owned(),
+                updated_at: "t".to_owned(),
+                commit: None,
+                review_id: None,
+            }],
+        );
+        let reviewer = SessionKey::from_session_id("reviewer");
+        let worker = SessionKey::from_session_id("worker");
+        workspace.submit_review("forge", "feat", None, &["a".to_owned()], reviewer.clone());
+        workspace
+            .review_reply(&worker, "forge", "feat", "a", "implementer", "fixed", "t")
+            .expect("reply recorded as this turn's activity");
+
+        // A SessionTask for the worker session, capturing its emitted updates.
+        let (handle, _cmds) = Agent::testing_stub();
+        let handle = Arc::new(handle);
+        let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
+        let (update_tx, mut update_rx) = mpsc::unbounded_channel();
+        let domain = Arc::new(Mutex::new(DomainSession::new(worker.clone(), Some(handle.clone()))));
+        let mut task = SessionTask {
+            key: worker.clone(),
+            handle,
+            command_rx,
+            domain,
+            update_tx,
+            spawn_key: None,
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        let result_msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1,
+            "duration_api_ms": 1,
+            "is_error": false,
+            "num_turns": 1,
+            "session_id": "worker"
+        }))
+        .expect("parse result message");
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "worker".to_owned(),
+            msg: result_msg,
+        });
+
+        let mut notice = None;
+        while let Ok(update) = update_rx.try_recv() {
+            if let SessionUpdate::ReviewActivityNotice { key, message } = update {
+                notice = Some((key, message));
+            }
+        }
+        let (key, message) = notice.expect("a ReviewActivityNotice emits on the turn's Result");
+        assert_eq!(key, reviewer, "the notice routes to the submit origin, not the worker");
+        assert!(message.contains("review #1"), "the notice names the review: {message}");
+        assert!(message.contains("1 replied"), "the tally counts the reply: {message}");
+    }
+
     /// End-to-end glue: a 429 on a session whose `config_dir` IS a
     /// tracked account rotates that account via
     /// `note_rate_limit_from_message` (upgrade + handle.config_dir() +
@@ -2196,19 +2298,20 @@ mod team_hook_tests {
     use crate::Workspace;
     use crate::protocol::Command;
     use crate::target::ProjectKey;
-    use crate::team::{DEFAULT_LEAD_CHARTER, set_forge_team_root_for_test};
+    use crate::team::{DEFAULT_LEAD_CHARTER, override_forge_team_root_for_test};
     use std::sync::OnceLock;
 
     fn synth_lead_key(project_name: &str) -> SessionKey {
         SessionKey::from_session_id(format!("__spawn_{project_name}__"))
     }
 
-    /// One-time setup writing the canonical shipped default charters
-    /// (implementer + lead) to a shared tempdir + redirecting
-    /// `forge_team_root()` to it for the rest of the process. All
-    /// tests in this module call `ensure_test_charter_root()` before
-    /// exercising the team-spawn or kick paths.
-    fn ensure_test_charter_root() {
+    /// Seed the canonical shipped default charters (implementer + lead)
+    /// into a process-persistent tempdir (written once) and return a
+    /// guard that points `forge_team_root()` at it under the shared
+    /// team-root lock. Every test here binds the returned guard (`let
+    /// _g = ensure_test_charter_root();`) so the override is held only
+    /// for that test - serialising against the other team-root tests.
+    fn ensure_test_charter_root() -> crate::team::ForgeTeamRootTestGuard {
         static ROOT: OnceLock<tempfile::TempDir> = OnceLock::new();
         let dir = ROOT.get_or_init(|| {
             let tmp = tempfile::tempdir().expect("tempdir");
@@ -2232,20 +2335,16 @@ mod team_hook_tests {
                 std::fs::write(dir.join("charter.md"), charter).expect("write charter");
                 std::fs::write(dir.join("kick.md"), kick).expect("write kick");
             }
-            set_forge_team_root_for_test(Some(root.to_owned()));
             tmp
         });
-        // The first caller initialised the override; subsequent
-        // callers just need to confirm the override is still set
-        // (defensive against test ordering rewriting it).
-        let _ = dir;
+        override_forge_team_root_for_test(dir.path().to_owned())
     }
 
     /// A lead Connected for a project carrying a team config
     /// triggers one `Command::SpawnWorker` per configured label.
     #[test]
     fn lead_connected_with_team_triggers_team_spawn() {
-        ensure_test_charter_root();
+        let _charter_root = ensure_test_charter_root();
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
         workspace.seed_test_project_with_static_workers(
@@ -2301,7 +2400,7 @@ mod team_hook_tests {
     /// gate trips and the trigger no-ops.
     #[test]
     fn second_lead_connected_does_not_double_spawn() {
-        ensure_test_charter_root();
+        let _charter_root = ensure_test_charter_root();
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
         workspace.seed_test_project_with_static_workers(
@@ -2361,7 +2460,7 @@ mod team_hook_tests {
     /// the drainer one step.
     #[tokio::test(start_paused = true)]
     async fn worker_connected_for_role_label_dispatches_kick_prompt() {
-        ensure_test_charter_root();
+        let _charter_root = ensure_test_charter_root();
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
         workspace.start_kick_dispatcher();
@@ -2406,7 +2505,7 @@ mod team_hook_tests {
         std::fs::create_dir_all(&steward).expect("mkdir");
         std::fs::write(steward.join("charter.md"), "description: Hub steward\n").expect("charter");
         std::fs::write(steward.join("kick.md"), "STEWARD-KICK: tend the modules\n").expect("kick");
-        let prev = crate::team::set_forge_team_root_for_test(Some(tmp.path().to_path_buf()));
+        let _guard = crate::team::override_forge_team_root_for_test(tmp.path().to_path_buf());
 
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
@@ -2442,8 +2541,6 @@ mod team_hook_tests {
                 "kick resolved from data-modules/steward/kick.md; got: {text}",
             );
         }
-
-        crate::team::set_forge_team_root_for_test(prev);
     }
 
     /// Helper: insert a live ad-hoc worker carrying `kick` under the
