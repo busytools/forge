@@ -24,7 +24,7 @@ use std::sync::mpsc as std_mpsc;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use forge_primitives::git_diff::RepoGate;
 use forge_primitives::review::{
-    ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus,
+    ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
 };
 use forge_workspace::env::git_diff::hunks::ScanOutcome;
 use forge_workspace::env::git_diff::hunks::{
@@ -1108,6 +1108,29 @@ pub struct DiffOverlayState {
     /// threads on hydrate. Maps a comment's `review_id` to its `R{number}`
     /// chip tag and backs the `l` reviews list.
     pub reviews: Vec<forge_primitives::ReviewSet>,
+    /// Whether the `l` REVIEWS list overlay is open.
+    pub reviews_open: bool,
+    /// Highlighted row in the open reviews list (index into `review_rows`).
+    pub reviews_selected: usize,
+    /// Snapshot rows for the reviews list, computed on open from every
+    /// thread's current state (newest review first). Empty while closed.
+    pub review_rows: Vec<ReviewListRow>,
+}
+
+/// One rendered row of the `l` REVIEWS list: a review's number, relative
+/// age, member-comment tally by state, optional overview, and the scope +
+/// path of its first member comment (so Enter can navigate to it).
+#[derive(Debug, Clone)]
+pub struct ReviewListRow {
+    pub number: u32,
+    pub age: String,
+    pub total: usize,
+    pub open: usize,
+    pub resolved: usize,
+    pub outdated: usize,
+    pub summary: Option<String>,
+    pub first_commit: Option<String>,
+    pub first_path: Option<String>,
 }
 
 impl DiffOverlayState {
@@ -1531,6 +1554,9 @@ impl DiffOverlayState {
             finish_review: None,
             finish_submit_span: None,
             reviews: Vec::new(),
+            reviews_open: false,
+            reviews_selected: 0,
+            review_rows: Vec::new(),
         };
         state.capture_wide_and_narrow();
         state
@@ -1623,6 +1649,9 @@ impl DiffOverlayState {
             finish_review: None,
             finish_submit_span: None,
             reviews: Vec::new(),
+            reviews_open: false,
+            reviews_selected: 0,
+            review_rows: Vec::new(),
         };
         state.capture_wide_and_narrow();
         state
@@ -1944,6 +1973,12 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         handle_finish_review_key(app, key);
         return;
     }
+    // The reviews list captures keys while open: navigate rows, Enter to
+    // jump, `l` / Esc to close.
+    if app.diff_overlay.as_ref().is_some_and(|o| o.reviews_open) {
+        handle_reviews_list_key(app, key);
+        return;
+    }
     let has_input = app.diff_overlay.as_ref().is_some_and(|o| o.active_input.is_some());
     if has_input {
         match key.code {
@@ -1982,6 +2017,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char(']') | KeyCode::Right => step_commit(app, true),
         KeyCode::Char('a') => toggle_all_changes(app),
         KeyCode::Char('j') => open_jump(app),
+        KeyCode::Char('l') => toggle_reviews_list(app),
         _ => {}
     }
 }
@@ -2008,6 +2044,154 @@ fn handle_finish_review_key(app: &mut App, key: KeyEvent) {
                 app.needs_redraw = true;
             }
         }
+    }
+}
+
+/// Parse an rfc3339 timestamp into a `SystemTime`, or `None` when it is
+/// empty / malformed.
+fn parse_rfc3339(text: &str) -> Option<std::time::SystemTime> {
+    use time::format_description::well_known::Rfc3339;
+    time::OffsetDateTime::parse(text, &Rfc3339).ok().map(std::time::SystemTime::from)
+}
+
+/// Build the reviews-list rows from the branch's reviews plus every
+/// thread's current state, newest review first. Each row tallies the
+/// review's member threads (those whose `review_id` points at it) by
+/// status and records the first member's scope + path for navigation.
+fn compute_review_rows(
+    reviews: &[forge_primitives::ReviewSet],
+    threads: &[ReviewThread],
+    now: std::time::SystemTime,
+) -> Vec<ReviewListRow> {
+    reviews
+        .iter()
+        .rev()
+        .map(|review| {
+            let members: Vec<&ReviewThread> = threads
+                .iter()
+                .filter(|t| t.review_id.as_deref() == Some(review.id.as_str()))
+                .collect();
+            let mut open = 0;
+            let mut resolved = 0;
+            let mut outdated = 0;
+            for t in &members {
+                match t.status {
+                    ReviewStatus::Open => open += 1,
+                    ReviewStatus::Resolved => resolved += 1,
+                    ReviewStatus::Outdated => outdated += 1,
+                }
+            }
+            let age = parse_rfc3339(&review.created_at)
+                .map(|at| crate::ui::format::relative_time(at, now))
+                .unwrap_or_default();
+            let first = members.first();
+            ReviewListRow {
+                number: review.number,
+                age,
+                total: members.len(),
+                open,
+                resolved,
+                outdated,
+                summary: review.summary.clone().filter(|s| !s.trim().is_empty()),
+                first_commit: first.and_then(|t| t.commit.clone()),
+                first_path: first.map(|t| t.anchor.path.clone()),
+            }
+        })
+        .collect()
+}
+
+/// Toggle the `l` REVIEWS list. Opening snapshots every thread's current
+/// state into per-review rollups (newest first); closing drops the rows.
+fn toggle_reviews_list(app: &mut App) {
+    if app.diff_overlay.as_ref().is_some_and(|o| o.reviews_open) {
+        if let Some(o) = app.diff_overlay.as_mut() {
+            o.reviews_open = false;
+            o.review_rows.clear();
+        }
+        app.needs_redraw = true;
+        return;
+    }
+    let project = app.active_session().and_then(|s| s.project.clone());
+    let workspace = app.workspace.clone();
+    let branch = app.diff_overlay.as_ref().and_then(|o| o.branch.clone());
+    let threads = match (project, branch, workspace) {
+        (Some(project), Some(branch), Some(workspace)) => {
+            workspace.load_review_threads(&project, &branch).unwrap_or_default()
+        }
+        _ => Vec::new(),
+    };
+    let now = std::time::SystemTime::now();
+    if let Some(o) = app.diff_overlay.as_mut() {
+        o.review_rows = compute_review_rows(&o.reviews, &threads, now);
+        o.reviews_selected = 0;
+        o.reviews_open = true;
+    }
+    app.needs_redraw = true;
+}
+
+/// Route a key while the reviews list is open: `↑↓` move the highlight,
+/// Enter navigates to the selected review's first comment, `l` / Esc
+/// close the list.
+fn handle_reviews_list_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('l') => toggle_reviews_list(app),
+        KeyCode::Up => {
+            if let Some(o) = app.diff_overlay.as_mut() {
+                o.reviews_selected = o.reviews_selected.saturating_sub(1);
+                app.needs_redraw = true;
+            }
+        }
+        KeyCode::Down => {
+            if let Some(o) = app.diff_overlay.as_mut() {
+                let last = o.review_rows.len().saturating_sub(1);
+                o.reviews_selected = o.reviews_selected.saturating_add(1).min(last);
+                app.needs_redraw = true;
+            }
+        }
+        KeyCode::Enter => navigate_to_selected_review(app),
+        _ => {}
+    }
+}
+
+/// Close the list and scroll the diff to the selected review's first
+/// comment: jump to its file when it's in the current scope, else switch
+/// to its scope (the comment surfaces once that scan + hydrate land).
+fn navigate_to_selected_review(app: &mut App) {
+    let target = app.diff_overlay.as_ref().and_then(|o| {
+        o.review_rows
+            .get(o.reviews_selected)
+            .map(|r| (r.first_commit.clone(), r.first_path.clone()))
+    });
+    if let Some(o) = app.diff_overlay.as_mut() {
+        o.reviews_open = false;
+        o.review_rows.clear();
+    }
+    app.needs_redraw = true;
+    let Some((first_commit, first_path)) = target else { return };
+
+    let scopes = app.diff_overlay.as_ref().map(|o| {
+        let target_scope = match &first_commit {
+            None => DiffScope::WholeDiff,
+            Some(sha) => {
+                o.commits.iter().position(|c| &c.sha == sha).map_or(o.scope, DiffScope::Commit)
+            }
+        };
+        (target_scope, o.scope)
+    });
+    let Some((target_scope, current_scope)) = scopes else { return };
+    if target_scope != current_scope {
+        let outcome = app.diff_overlay.as_mut().map(|o| o.select_scope(target_scope));
+        if let Some(outcome) = outcome {
+            after_nav(app, outcome);
+        }
+        return;
+    }
+    if let Some(path) = first_path
+        && let Some(o) = app.diff_overlay.as_mut()
+        && let Some(file_idx) = o.files.iter().position(|f| f.path == path)
+    {
+        let file_start = o.doc_offsets().starts.get(file_idx).copied().unwrap_or(0);
+        o.doc_scroll = o.message_rows.saturating_add(file_start);
     }
 }
 
@@ -2562,6 +2746,14 @@ pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
             if hit {
                 submit_finish_review(app);
             }
+        }
+        return;
+    }
+    // Reviews list open: any click closes it (click-away), matching the
+    // jump dropdown; row selection stays keyboard-driven.
+    if app.diff_overlay.as_ref().is_some_and(|o| o.reviews_open) {
+        if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
+            toggle_reviews_list(app);
         }
         return;
     }
@@ -5319,6 +5511,82 @@ mod tests {
         };
         assert!(is_filed("authored"), "the session-authored comment filed into the review");
         assert!(!is_filed("hydrated"), "the hydrated comment was NOT swept into the review");
+    }
+
+    #[test]
+    fn compute_review_rows_tallies_newest_first() {
+        let reviews = vec![
+            forge_primitives::ReviewSet {
+                id: "r1".to_owned(),
+                number: 1,
+                summary: Some("first pass".to_owned()),
+                created_at: "2026-07-23T08:00:00Z".to_owned(),
+            },
+            forge_primitives::ReviewSet {
+                id: "r2".to_owned(),
+                number: 2,
+                summary: None,
+                created_at: "2026-07-23T10:00:00Z".to_owned(),
+            },
+        ];
+        let mk = |id: &str, review: &str, status: ReviewStatus| {
+            let mut t = stock_thread();
+            t.id = id.to_owned();
+            t.review_id = Some(review.to_owned());
+            t.status = status;
+            t.anchor.path = "src/a.rs".to_owned();
+            t
+        };
+        let threads = vec![
+            mk("a", "r1", ReviewStatus::Resolved),
+            mk("b", "r1", ReviewStatus::Open),
+            mk("c", "r2", ReviewStatus::Outdated),
+        ];
+        let now = parse_rfc3339("2026-07-23T12:00:00Z").expect("now parses");
+        let rows = compute_review_rows(&reviews, &threads, now);
+
+        assert_eq!(rows.len(), 2);
+        // Newest review first.
+        assert_eq!(rows[0].number, 2, "review 2 leads");
+        assert_eq!(rows[0].total, 1);
+        assert_eq!(rows[0].outdated, 1);
+        assert_eq!(rows[0].age, "2h", "created two hours before now");
+        assert_eq!(rows[1].number, 1);
+        assert_eq!(rows[1].total, 2, "both r1 threads tally");
+        assert_eq!(rows[1].open, 1);
+        assert_eq!(rows[1].resolved, 1);
+        assert_eq!(rows[1].summary.as_deref(), Some("first pass"));
+        assert_eq!(rows[1].first_path.as_deref(), Some("src/a.rs"));
+    }
+
+    #[test]
+    fn toggle_reviews_list_opens_with_rows_then_closes() {
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        let mut filed = stock_thread();
+        filed.id = "a".to_owned();
+        filed.review_id = Some("rev".to_owned());
+        ws.save_review_threads("forge", "feat", &[filed]);
+
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), Vec::new());
+        overlay.branch = Some("feat".to_owned());
+        overlay.reviews = vec![forge_primitives::ReviewSet {
+            id: "rev".to_owned(),
+            number: 1,
+            summary: None,
+            created_at: String::new(),
+        }];
+        app.diff_overlay = Some(overlay);
+
+        toggle_reviews_list(&mut app);
+        let o = app.diff_overlay.as_ref().expect("overlay");
+        assert!(o.reviews_open, "the list opened");
+        assert_eq!(o.review_rows.len(), 1);
+        assert_eq!(o.review_rows[0].total, 1, "the filed thread tallies into the review");
+
+        toggle_reviews_list(&mut app);
+        assert!(!app.diff_overlay.as_ref().expect("overlay").reviews_open, "toggle closes it");
     }
 
     #[test]

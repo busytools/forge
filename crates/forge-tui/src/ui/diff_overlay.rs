@@ -269,6 +269,10 @@ fn render_diff_body(frame: &mut Frame, area: Rect, app: &mut App) {
     {
         render_finish_review(frame, area, o);
     }
+    // The reviews list takes over the body when open.
+    if let Some(o) = app.diff_overlay.as_ref().filter(|o| o.reviews_open) {
+        render_reviews_list(frame, area, o);
+    }
 }
 
 /// The full-width notice shown when this branch's persisted review
@@ -629,6 +633,91 @@ fn render_finish_review(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlay
     let col_start = x.saturating_add(3);
     let col_end = col_start.saturating_add(u16::try_from(btn.width()).unwrap_or(0));
     overlay.finish_submit_span = Some((btn_row_y, col_start, col_end));
+}
+
+/// The `N open · M resolved · K outdated` rollup, omitting zero counts;
+/// empty when a review has no member comments.
+fn rollup_str(open: usize, resolved: usize, outdated: usize) -> String {
+    let mut parts = Vec::new();
+    if open > 0 {
+        parts.push(format!("{open} open"));
+    }
+    if resolved > 0 {
+        parts.push(format!("{resolved} resolved"));
+    }
+    if outdated > 0 {
+        parts.push(format!("{outdated} outdated"));
+    }
+    parts.join(" \u{b7} ")
+}
+
+/// Render the `l` REVIEWS list over the diff body: newest review first,
+/// each a header row (`#N  age  K comments  <rollup>`) plus a dim summary
+/// line, framed by rules with a totals footer. The highlighted row is
+/// accent-bold. Keyboard-driven (see [`crate::app::diff_overlay`]).
+fn render_reviews_list(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
+    let orange = Style::default().fg(theme::RUST_ORANGE);
+    let dim = Style::default().fg(theme::DIM);
+    let accent_bold = orange.add_modifier(Modifier::BOLD);
+    let plain = Style::default();
+
+    let width = usize::from(area.width);
+    let rule = "\u{2500}".repeat(width);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let header_left = " REVIEWS";
+    let header_right = "l  close ";
+    let header_pad = width.saturating_sub(header_left.width() + header_right.width());
+    lines.push(Line::from(vec![
+        Span::styled(header_left, accent_bold),
+        Span::raw(" ".repeat(header_pad)),
+        Span::styled(header_right, dim),
+    ]));
+    lines.push(Line::from(Span::styled(rule.clone(), dim)));
+
+    if overlay.review_rows.is_empty() {
+        lines.push(Line::from(Span::styled("  no reviews yet", dim)));
+    }
+
+    let (mut total, mut open, mut resolved, mut outdated) = (0usize, 0usize, 0usize, 0usize);
+    for (idx, row) in overlay.review_rows.iter().enumerate() {
+        total += row.total;
+        open += row.open;
+        resolved += row.resolved;
+        outdated += row.outdated;
+        let head = format!(
+            "  #{:<3} {:<9} {} comment{}   {}",
+            row.number,
+            row.age,
+            row.total,
+            if row.total == 1 { "" } else { "s" },
+            rollup_str(row.open, row.resolved, row.outdated),
+        );
+        let style = if idx == overlay.reviews_selected { accent_bold } else { plain };
+        lines.push(Line::from(Span::styled(fit_box_content(&head, width), style)));
+        if let Some(summary) = &row.summary {
+            lines.push(Line::from(Span::styled(
+                fit_box_content(&format!("       {summary}"), width),
+                dim,
+            )));
+        }
+    }
+
+    lines.push(Line::from(Span::styled(rule, dim)));
+    let footer_rollup = rollup_str(open, resolved, outdated);
+    let count = overlay.review_rows.len();
+    let footer = format!(
+        "  {total} comment{} across {count} review{}{}",
+        if total == 1 { "" } else { "s" },
+        if count == 1 { "" } else { "s" },
+        if footer_rollup.is_empty() { String::new() } else { format!("  \u{b7}  {footer_rollup}") },
+    );
+    lines.push(Line::from(Span::styled(fit_box_content(&footer, width), dim)));
+
+    let height = u16::try_from(lines.len()).unwrap_or(u16::MAX).min(area.height);
+    let rect = Rect { x: area.x, y: area.y, width: area.width, height };
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new(lines), rect);
 }
 
 /// Render the FILES rail as a box-drawing tree (mirroring the
@@ -1003,6 +1092,9 @@ fn footer_line(overlay: &DiffOverlayState, mode: DiffViewMode, width: u16) -> Li
         hints.push(("click line", "comment"));
         if !commit_mode {
             hints.push(("click file", "jump"));
+        }
+        if !overlay.reviews.is_empty() {
+            hints.push(("l", "reviews"));
         }
         hints.push(("Esc", esc_label));
         for (idx, (key, label)) in hints.iter().enumerate() {
@@ -2346,6 +2438,13 @@ mod tests {
             "unfiled",
             "an orphan id degrades to unfiled"
         );
+    }
+
+    #[test]
+    fn rollup_str_omits_zero_counts() {
+        assert_eq!(rollup_str(2, 1, 1), "2 open \u{b7} 1 resolved \u{b7} 1 outdated");
+        assert_eq!(rollup_str(0, 3, 0), "3 resolved");
+        assert_eq!(rollup_str(0, 0, 0), "", "a review with no members has an empty rollup");
     }
 
     #[test]
