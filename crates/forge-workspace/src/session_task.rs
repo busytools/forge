@@ -1512,6 +1512,98 @@ mod tests {
         }
     }
 
+    /// Turn-end wiring: a `Message::Result` on a worker session drains its
+    /// accumulated review activity into one `ReviewActivityNotice` routed to
+    /// the submit origin. Guards the seam - a wrong `Message::Result` arm
+    /// kills the whole notification with every unit test still green.
+    #[tokio::test]
+    async fn turn_end_result_drains_review_activity_to_a_notice() {
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        workspace.save_review_threads(
+            "forge",
+            "feat",
+            &[ReviewThread {
+                id: "a".to_owned(),
+                anchor: ReviewAnchor {
+                    path: "src/x.rs".to_owned(),
+                    side: ReviewSide::New,
+                    line: 1,
+                    content_hash: 1,
+                    context: vec!["ctx".to_owned()],
+                    base_ref: "main".to_owned(),
+                },
+                comments: vec![ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "look".to_owned(),
+                    at: "t".to_owned(),
+                }],
+                status: ReviewStatus::Open,
+                created_at: "t".to_owned(),
+                updated_at: "t".to_owned(),
+                commit: None,
+                review_id: None,
+            }],
+        );
+        let reviewer = SessionKey::from_session_id("reviewer");
+        let worker = SessionKey::from_session_id("worker");
+        workspace.submit_review("forge", "feat", None, &["a".to_owned()], reviewer.clone());
+        workspace
+            .review_reply(&worker, "forge", "feat", "a", "implementer", "fixed", "t")
+            .expect("reply recorded as this turn's activity");
+
+        // A SessionTask for the worker session, capturing its emitted updates.
+        let (handle, _cmds) = Agent::testing_stub();
+        let handle = Arc::new(handle);
+        let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
+        let (update_tx, mut update_rx) = mpsc::unbounded_channel();
+        let domain =
+            Arc::new(Mutex::new(DomainSession::new(worker.clone(), Some(handle.clone()))));
+        let mut task = SessionTask {
+            key: worker.clone(),
+            handle,
+            command_rx,
+            domain,
+            update_tx,
+            spawn_key: None,
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        let result_msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1,
+            "duration_api_ms": 1,
+            "is_error": false,
+            "num_turns": 1,
+            "session_id": "worker"
+        }))
+        .expect("parse result message");
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "worker".to_owned(),
+            msg: result_msg,
+        });
+
+        let mut notice = None;
+        while let Ok(update) = update_rx.try_recv() {
+            if let SessionUpdate::ReviewActivityNotice { key, message } = update {
+                notice = Some((key, message));
+            }
+        }
+        let (key, message) = notice.expect("a ReviewActivityNotice emits on the turn's Result");
+        assert_eq!(key, reviewer, "the notice routes to the submit origin, not the worker");
+        assert!(message.contains("review #1"), "the notice names the review: {message}");
+        assert!(message.contains("1 replied"), "the tally counts the reply: {message}");
+    }
+
     /// End-to-end glue: a 429 on a session whose `config_dir` IS a
     /// tracked account rotates that account via
     /// `note_rate_limit_from_message` (upgrade + handle.config_dir() +
