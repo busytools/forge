@@ -1230,6 +1230,7 @@ pub(crate) fn handle_despawn_worker(
             Ok(()) => {
                 if let Some((project, branch)) = review_key.as_ref() {
                     workspace.delete_review_threads(project, branch);
+                    workspace.delete_reviews(project, branch);
                 }
                 None
             }
@@ -2011,10 +2012,11 @@ config_dir = "~/.claude-stargate"
         assert!(!wt.exists(), "clean worktree removed");
     }
 
-    /// Despawning a git worker deletes the review threads for the
-    /// torn-down worktree's branch, leaving other branches' threads.
+    /// Despawning a git worker deletes both the review threads AND the
+    /// submitted reviews for the torn-down worktree's branch, leaving other
+    /// branches' rows intact (else a reused branch inherits phantoms).
     #[tokio::test]
-    async fn despawn_deletes_that_branch_review_threads() {
+    async fn despawn_deletes_that_branch_reviews_and_threads() {
         use forge_primitives::review::{
             ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
         };
@@ -2039,9 +2041,13 @@ config_dir = "~/.claude-stargate"
             created_at: "t".to_owned(),
             updated_at: "t".to_owned(),
             commit: None,
+            review_id: None,
         };
         workspace.save_review_threads("forge", &branch, &[thread("a")]);
         workspace.save_review_threads("forge", "survivor", &[thread("b")]);
+        // Seal a review on each branch (empty thread set just mints the row).
+        workspace.submit_review("forge", &branch, None, &[]).expect("seal torn-down review");
+        workspace.submit_review("forge", "survivor", None, &[]).expect("seal survivor review");
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
@@ -2051,10 +2057,19 @@ config_dir = "~/.claude-stargate"
             workspace.load_review_threads("forge", &branch).expect("load").is_empty(),
             "the torn-down branch's threads are cleaned",
         );
+        assert!(
+            workspace.load_reviews("forge", &branch).expect("load").is_empty(),
+            "the torn-down branch's reviews are cleaned",
+        );
         assert_eq!(
             workspace.load_review_threads("forge", "survivor").expect("load").len(),
             1,
             "another branch's threads survive",
+        );
+        assert_eq!(
+            workspace.load_reviews("forge", "survivor").expect("load").len(),
+            1,
+            "another branch's reviews survive",
         );
     }
 
@@ -2090,6 +2105,7 @@ config_dir = "~/.claude-stargate"
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
                 commit: None,
+                review_id: None,
             }],
         );
 

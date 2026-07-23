@@ -27,7 +27,7 @@
 
 mod pairing;
 
-use forge_primitives::ReviewStatus;
+use forge_primitives::{ReviewSet, ReviewStatus};
 use forge_workspace::env::git_diff::hunks::{DiffLineKind, FileHunks, FileStatus, Hunk};
 
 use crate::app::diff_overlay::{
@@ -39,7 +39,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Clear, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::App;
@@ -261,6 +261,17 @@ fn render_diff_body(frame: &mut Frame, area: Rect, app: &mut App) {
                 render_jump_dropdown(frame, area, o);
             }
         }
+    }
+
+    // The Finish-review modal draws over the whole body when open.
+    if app.diff_overlay.as_ref().is_some_and(|o| o.finish_review.is_some())
+        && let Some(o) = app.diff_overlay.as_mut()
+    {
+        render_finish_review(frame, area, o);
+    }
+    // The reviews list takes over the body when open.
+    if let Some(o) = app.diff_overlay.as_ref().filter(|o| o.reviews_open) {
+        render_reviews_list(frame, area, o);
     }
 }
 
@@ -505,6 +516,207 @@ fn render_jump_dropdown(frame: &mut Frame, area: Rect, overlay: &DiffOverlayStat
         return;
     }
     let rect = Rect { x: area.x + indent, y: area.y + menu_top, width: box_width, height };
+    frame.render_widget(Paragraph::new(lines), rect);
+}
+
+/// One `│ <text> │` content row of the Finish-review modal, fitted to the
+/// box's inner width.
+fn finish_row(text: &str, inner: usize, border: Style, style: Style) -> Line<'static> {
+    let fitted = fit_box_content(text, inner);
+    let pad = inner.saturating_sub(fitted.width());
+    Line::from(vec![
+        Span::styled("\u{2502} ", border),
+        Span::styled(fitted, style),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(" \u{2502}", border),
+    ])
+}
+
+/// Render the Finish-review modal centered over the diff: the session's
+/// comment count + a short list, the optional overview editor, and the
+/// `[ Submit review ]` button. Stashes the button's screen span on the
+/// overlay so a click can resolve onto it. Keyboard-driven otherwise
+/// (Ctrl+Enter submit, Esc back - see [`crate::app::diff_overlay`]).
+fn render_finish_review(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlayState) {
+    // Caps on the two variable-length regions so a large review can't
+    // grow the modal past the screen.
+    const MAX_LIST: usize = 6;
+    const EDITOR_ROWS: usize = 4;
+    let orange = Style::default().fg(theme::RUST_ORANGE);
+    let dim = Style::default().fg(theme::DIM);
+    let accent_bold = orange.add_modifier(Modifier::BOLD);
+    let plain = Style::default();
+
+    let authored: Vec<&HunkComment> =
+        overlay.comments.iter().filter(|c| c.authored_this_session).collect();
+    let count = authored.len();
+
+    let box_width = area.width.saturating_sub(8).clamp(44, 68);
+    let bw = usize::from(box_width);
+    let inner = bw.saturating_sub(4);
+
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    let title = " Finish review ";
+    let dash = bw.saturating_sub(3 + title.chars().count() + 1);
+    rows.push(Line::from(Span::styled(
+        format!("\u{250c}\u{2500}{title}{}\u{2510}", "\u{2500}".repeat(dash)),
+        orange,
+    )));
+
+    rows.push(finish_row(
+        &format!(" {count} comment{} in this review", if count == 1 { "" } else { "s" }),
+        inner,
+        orange,
+        plain,
+    ));
+    for c in authored.iter().take(MAX_LIST) {
+        let name = c.path.rsplit('/').next().unwrap_or(c.path.as_str());
+        let snippet = c.comment_text.lines().next().unwrap_or("");
+        rows.push(finish_row(
+            &format!("   \u{b7} {name}:{}   {snippet}", c.line),
+            inner,
+            orange,
+            dim,
+        ));
+    }
+    if count > MAX_LIST {
+        rows.push(finish_row(&format!("   +{} more", count - MAX_LIST), inner, orange, dim));
+    }
+
+    rows.push(finish_row("", inner, orange, plain));
+    rows.push(finish_row(" Overview (optional)", inner, orange, plain));
+    let editor_lines =
+        overlay.finish_review.as_ref().map(|f| f.editor.lines().to_vec()).unwrap_or_default();
+    if editor_lines.iter().all(String::is_empty) {
+        rows.push(finish_row("   a short summary, sent with the review", inner, orange, dim));
+        for _ in 1..EDITOR_ROWS {
+            rows.push(finish_row("", inner, orange, plain));
+        }
+    } else {
+        for line in editor_lines.iter().take(EDITOR_ROWS) {
+            rows.push(finish_row(&format!("   {line}"), inner, orange, plain));
+        }
+    }
+
+    rows.push(finish_row("", inner, orange, plain));
+
+    // Button row, built with explicit spans so the submit hit-span is known.
+    let btn = "[ Submit review ]";
+    let hint = "Ctrl+Enter submit \u{b7} Esc back";
+    let used = 1 + btn.width() + 5 + hint.width();
+    let pad = inner.saturating_sub(used.min(inner));
+    rows.push(Line::from(vec![
+        Span::styled("\u{2502} ", orange),
+        Span::raw(" "),
+        Span::styled(btn, accent_bold),
+        Span::raw("     "),
+        Span::styled(hint, dim),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(" \u{2502}", orange),
+    ]));
+    let button_row_idx = rows.len() - 1;
+
+    rows.push(Line::from(Span::styled(
+        format!("\u{2514}{}\u{2518}", "\u{2500}".repeat(bw.saturating_sub(2))),
+        orange,
+    )));
+
+    let box_height = u16::try_from(rows.len()).unwrap_or(u16::MAX).min(area.height);
+    let x = area.x + area.width.saturating_sub(box_width) / 2;
+    let y = area.y + area.height.saturating_sub(box_height) / 2;
+    let rect = Rect { x, y, width: box_width, height: box_height };
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new(rows), rect);
+
+    // Submit span: "\u{2502} " (2) + leading space (1) precede the button.
+    let btn_row_y = y.saturating_add(u16::try_from(button_row_idx).unwrap_or(0));
+    let col_start = x.saturating_add(3);
+    let col_end = col_start.saturating_add(u16::try_from(btn.width()).unwrap_or(0));
+    overlay.finish_submit_span = Some((btn_row_y, col_start, col_end));
+}
+
+/// The `N open · M resolved · K outdated` rollup, omitting zero counts;
+/// empty when a review has no member comments.
+fn rollup_str(open: usize, resolved: usize, outdated: usize) -> String {
+    let mut parts = Vec::new();
+    if open > 0 {
+        parts.push(format!("{open} open"));
+    }
+    if resolved > 0 {
+        parts.push(format!("{resolved} resolved"));
+    }
+    if outdated > 0 {
+        parts.push(format!("{outdated} outdated"));
+    }
+    parts.join(" \u{b7} ")
+}
+
+/// Render the `l` REVIEWS list over the diff body: newest review first,
+/// each a header row (`#N  age  K comments  <rollup>`) plus a dim summary
+/// line, framed by rules with a totals footer. The highlighted row is
+/// accent-bold. Keyboard-driven (see [`crate::app::diff_overlay`]).
+fn render_reviews_list(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
+    let orange = Style::default().fg(theme::RUST_ORANGE);
+    let dim = Style::default().fg(theme::DIM);
+    let accent_bold = orange.add_modifier(Modifier::BOLD);
+    let plain = Style::default();
+
+    let width = usize::from(area.width);
+    let rule = "\u{2500}".repeat(width);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let header_left = " REVIEWS";
+    let header_right = "l  close ";
+    let header_pad = width.saturating_sub(header_left.width() + header_right.width());
+    lines.push(Line::from(vec![
+        Span::styled(header_left, accent_bold),
+        Span::raw(" ".repeat(header_pad)),
+        Span::styled(header_right, dim),
+    ]));
+    lines.push(Line::from(Span::styled(rule.clone(), dim)));
+
+    if overlay.review_rows.is_empty() {
+        lines.push(Line::from(Span::styled("  no reviews yet", dim)));
+    }
+
+    let (mut total, mut open, mut resolved, mut outdated) = (0usize, 0usize, 0usize, 0usize);
+    for (idx, row) in overlay.review_rows.iter().enumerate() {
+        total += row.total;
+        open += row.open;
+        resolved += row.resolved;
+        outdated += row.outdated;
+        let head = format!(
+            "  #{:<3} {:<9} {} comment{}   {}",
+            row.number,
+            row.age,
+            row.total,
+            if row.total == 1 { "" } else { "s" },
+            rollup_str(row.open, row.resolved, row.outdated),
+        );
+        let style = if idx == overlay.reviews_selected { accent_bold } else { plain };
+        lines.push(Line::from(Span::styled(fit_box_content(&head, width), style)));
+        if let Some(summary) = &row.summary {
+            lines.push(Line::from(Span::styled(
+                fit_box_content(&format!("       {summary}"), width),
+                dim,
+            )));
+        }
+    }
+
+    lines.push(Line::from(Span::styled(rule, dim)));
+    let footer_rollup = rollup_str(open, resolved, outdated);
+    let count = overlay.review_rows.len();
+    let footer = format!(
+        "  {total} comment{} across {count} review{}{}",
+        if total == 1 { "" } else { "s" },
+        if count == 1 { "" } else { "s" },
+        if footer_rollup.is_empty() { String::new() } else { format!("  \u{b7}  {footer_rollup}") },
+    );
+    lines.push(Line::from(Span::styled(fit_box_content(&footer, width), dim)));
+
+    let height = u16::try_from(lines.len()).unwrap_or(u16::MAX).min(area.height);
+    let rect = Rect { x: area.x, y: area.y, width: area.width, height };
+    frame.render_widget(Clear, rect);
     frame.render_widget(Paragraph::new(lines), rect);
 }
 
@@ -859,8 +1071,15 @@ fn footer_line(overlay: &DiffOverlayState, mode: DiffViewMode, width: u16) -> Li
         spans.push(Span::styled("cancel input", dim));
     } else {
         let commit_mode = !overlay.commits.is_empty();
-        let esc_label = if count > 0 {
-            if commit_mode { "submit all" } else { "save & close" }
+        // Esc opens the Finish-review modal only when a comment would file
+        // (authored this session AND not already in a review) - mirror that
+        // trigger so an edit-only session doesn't read "finish review".
+        let esc_label = if overlay
+            .comments
+            .iter()
+            .any(|c| c.authored_this_session && c.thread.review_id.is_none())
+        {
+            "finish review"
         } else {
             "close"
         };
@@ -878,6 +1097,9 @@ fn footer_line(overlay: &DiffOverlayState, mode: DiffViewMode, width: u16) -> Li
         hints.push(("click line", "comment"));
         if !commit_mode {
             hints.push(("click file", "jump"));
+        }
+        if !overlay.reviews.is_empty() {
+            hints.push(("l", "reviews"));
         }
         hints.push(("Esc", esc_label));
         for (idx, (key, label)) in hints.iter().enumerate() {
@@ -1485,7 +1707,15 @@ fn push_unified_body(
                 push_unified_diff_rows(&row, spans, gutter_width, content_width, lines, keys);
                 if let Some(key) = line_key {
                     for comment in comments_by_key.get(&key).into_iter().flatten() {
-                        render_comment_chip(comment, key, gutter_width, pane_width, lines, keys);
+                        render_comment_chip(
+                            comment,
+                            key,
+                            gutter_width,
+                            pane_width,
+                            &overlay.reviews,
+                            lines,
+                            keys,
+                        );
                     }
                     if let Some(input) = overlay.active_input.as_ref().filter(|i| i.key == key) {
                         render_active_input(
@@ -1590,7 +1820,15 @@ fn push_split_body(
             }
             for side_key in sides {
                 for comment in comments_by_key.get(&side_key).into_iter().flatten() {
-                    render_comment_chip(comment, side_key, gutter_width, pane_width, lines, keys);
+                    render_comment_chip(
+                        comment,
+                        side_key,
+                        gutter_width,
+                        pane_width,
+                        &overlay.reviews,
+                        lines,
+                        keys,
+                    );
                 }
                 if let Some(input) = overlay.active_input.as_ref().filter(|i| i.key == side_key) {
                     let diff_line = &file.hunks[side_key.hunk_idx].lines[side_key.line_idx];
@@ -1712,11 +1950,21 @@ fn review_state_style(status: ReviewStatus) -> (Color, &'static str) {
     }
 }
 
+/// The dim chip tag for a comment: `R{number}` when filed into a review,
+/// else `unfiled` (not yet submitted, or a `review_id` with no matching
+/// review row).
+fn review_tag(review_id: Option<&str>, reviews: &[ReviewSet]) -> String {
+    review_id
+        .and_then(|id| reviews.iter().find(|r| r.id == id))
+        .map_or_else(|| "unfiled".to_owned(), |r| format!("R{}", r.number))
+}
+
 fn render_comment_chip(
     comment: &HunkComment,
     key: LineKey,
     gutter_width: usize,
     pane_width: u16,
+    reviews: &[ReviewSet],
     lines: &mut Vec<Line<'static>>,
     keys: &mut Vec<BodyRowKey>,
 ) {
@@ -1741,14 +1989,19 @@ fn render_comment_chip(
     // column width. Without this the top border would land 1 cell
     // further right than the body's `│` border, making the box
     // look stepped.
+    // The review tag (`· R3` filed, `· unfiled` otherwise) is a dim span
+    // between the state label and the trailing dashes.
     let title = format!(" 💬 line {} · {state_label} ", comment.line);
     let title_visual = title.chars().count() + 1; // +1 for 💬's 2nd cell
-    let dash_after = box_width.saturating_sub(3 + title_visual + 1);
-    let top = format!("┌──{title}{}┐", "─".repeat(dash_after));
+    let tag = format!("\u{b7} {} ", review_tag(comment.thread.review_id.as_deref(), reviews));
+    let tag_visual = tag.chars().count();
+    let dash_after = box_width.saturating_sub(3 + title_visual + tag_visual + 1);
     lines.push(Line::from(vec![
         Span::raw("  "),
         Span::raw(indent.clone()),
-        Span::styled(top, border_style),
+        Span::styled(format!("┌──{title}"), border_style),
+        Span::styled(tag, note_style),
+        Span::styled(format!("{}┐", "─".repeat(dash_after)), border_style),
     ]));
     keys.push(BodyRowKey::CommentChip(key));
 
@@ -2176,6 +2429,28 @@ mod tests {
     // `rail_width_for` tests live next to the function definition in
     // `crate::app::diff_overlay::tests` - this module only tests the
     // renderer-local helpers below.
+
+    #[test]
+    fn review_tag_labels_filed_and_unfiled_comments() {
+        let reviews = vec![
+            ReviewSet { id: "r-a".to_owned(), number: 1, summary: None, created_at: String::new() },
+            ReviewSet { id: "r-b".to_owned(), number: 3, summary: None, created_at: String::new() },
+        ];
+        assert_eq!(review_tag(Some("r-b"), &reviews), "R3", "a filed comment shows its number");
+        assert_eq!(review_tag(None, &reviews), "unfiled", "an unfiled comment reads unfiled");
+        assert_eq!(
+            review_tag(Some("gone"), &reviews),
+            "unfiled",
+            "an orphan id degrades to unfiled"
+        );
+    }
+
+    #[test]
+    fn rollup_str_omits_zero_counts() {
+        assert_eq!(rollup_str(2, 1, 1), "2 open \u{b7} 1 resolved \u{b7} 1 outdated");
+        assert_eq!(rollup_str(0, 3, 0), "3 resolved");
+        assert_eq!(rollup_str(0, 0, 0), "", "a review with no members has an empty rollup");
+    }
 
     #[test]
     fn truncate_path_front_keeps_short_paths_intact() {
@@ -3167,6 +3442,7 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
             commit: None,
+            review_id: None,
         };
         HunkComment {
             key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
@@ -3182,10 +3458,17 @@ mod tests {
     }
 
     fn render_chip(comment: &HunkComment) -> (Vec<Line<'static>>, Vec<BodyRowKey>) {
+        render_chip_with_reviews(comment, &[])
+    }
+
+    fn render_chip_with_reviews(
+        comment: &HunkComment,
+        reviews: &[ReviewSet],
+    ) -> (Vec<Line<'static>>, Vec<BodyRowKey>) {
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
         let mut lines = Vec::new();
         let mut keys = Vec::new();
-        render_comment_chip(comment, key, 4, 80, &mut lines, &mut keys);
+        render_comment_chip(comment, key, 4, 80, reviews, &mut lines, &mut keys);
         (lines, keys)
     }
 
@@ -3203,6 +3486,29 @@ mod tests {
             Some(theme::RUST_ORANGE),
             "open border is rust-orange",
         );
+    }
+
+    #[test]
+    fn comment_chip_title_shows_review_tag() {
+        let reviews = vec![ReviewSet {
+            id: "r2".to_owned(),
+            number: 2,
+            summary: None,
+            created_at: String::new(),
+        }];
+        let mut filed = chip_comment(41, "() on empty input?", ReviewStatus::Open);
+        filed.thread.review_id = Some("r2".to_owned());
+        let (lines, _) = render_chip_with_reviews(&filed, &reviews);
+        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(
+            joined.contains("\u{b7} R2"),
+            "a filed chip shows its review number; got:\n{joined}"
+        );
+
+        let unfiled = chip_comment(41, "() on empty input?", ReviewStatus::Open);
+        let (lines, _) = render_chip_with_reviews(&unfiled, &reviews);
+        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("\u{b7} unfiled"), "an unfiled chip reads unfiled; got:\n{joined}");
     }
 
     #[test]
@@ -3313,5 +3619,28 @@ mod tests {
         assert!(text.contains("comment"), "still hints click-to-comment");
         assert!(!text.contains("resolve"), "no global resolve hint");
         assert!(!text.contains("reopen"), "no global reopen hint");
+    }
+
+    #[test]
+    fn footer_esc_label_matches_the_would_file_trigger() {
+        let mut state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp/repo"),
+            "HEAD".to_owned(),
+            Vec::new(),
+        );
+        let mut comment = chip_comment(1, "note", ReviewStatus::Open);
+        comment.authored_this_session = true;
+
+        // Edit-only (already filed): Esc closes straight through, not "finish review".
+        comment.thread.review_id = Some("rev".to_owned());
+        state.comments = vec![comment];
+        let text = line_text(&footer_line(&state, DiffViewMode::Unified, 200));
+        assert!(text.contains("close"), "edit-only footer reads close; got: {text}");
+        assert!(!text.contains("finish review"), "edit-only must not read finish review");
+
+        // Unfiled authored comment: the modal will open, so read "finish review".
+        state.comments[0].thread.review_id = None;
+        let text = line_text(&footer_line(&state, DiffViewMode::Unified, 200));
+        assert!(text.contains("finish review"), "an unfiled authored comment reads finish review");
     }
 }
