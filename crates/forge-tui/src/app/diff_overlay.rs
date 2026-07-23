@@ -4090,6 +4090,60 @@ mod tests {
     }
 
     #[test]
+    fn submit_finish_review_files_a_resolved_comment_without_dispatch() {
+        // An authored NEW comment resolved before close still trips
+        // would_file (it's unfiled), so the modal opens and Submit mints a
+        // review filing the Resolved comment - but a resolved comment isn't
+        // bundle-eligible, so nothing is dispatched to the agent.
+        let (mut app, mut rx, _dir) = review_app_with_agent();
+        let ws = app.workspace.clone().expect("ws");
+        let mut seeded = stock_thread();
+        seeded.id = "r".to_owned();
+        seeded.status = ReviewStatus::Resolved;
+        ws.save_review_threads("forge", "feat", &[seeded.clone()]);
+
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), Vec::new());
+        overlay.branch = Some("feat".to_owned());
+        overlay.comments.push(HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "src/x.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "resolved before close".into(),
+            commit: None,
+            thread: seeded,
+            authored_this_session: true,
+            persisted: true,
+        });
+        app.diff_overlay = Some(overlay);
+
+        close_with_submit(&mut app);
+        assert!(
+            app.diff_overlay.as_ref().is_some_and(|o| o.finish_review.is_some()),
+            "an unfiled authored comment opens the modal even when resolved",
+        );
+        submit_finish_review(&mut app);
+
+        assert!(app.diff_overlay.is_none(), "overlay closed on submit");
+        let reviews = ws.load_reviews("forge", "feat").expect("load reviews");
+        assert_eq!(reviews.len(), 1, "a review was minted");
+        let filed = ws
+            .load_review_threads("forge", "feat")
+            .expect("load")
+            .into_iter()
+            .find(|t| t.id == "r")
+            .expect("thread")
+            .review_id;
+        assert_eq!(
+            filed,
+            Some(reviews[0].id.clone()),
+            "the resolved comment filed into the review"
+        );
+        assert!(rx.try_recv().is_err(), "a resolved comment is not dispatched to the agent");
+    }
+
+    #[test]
     fn reopen_then_cancel_restores_saved_comment() {
         // F1 fix: clicking a chip stashes the saved comment on
         // active_input.prior_comment; Esc-cancel must restore it
