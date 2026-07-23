@@ -24,7 +24,7 @@ use std::sync::mpsc as std_mpsc;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use forge_primitives::git_diff::RepoGate;
 use forge_primitives::review::{
-    ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus,
+    ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
 };
 use forge_workspace::env::git_diff::hunks::ScanOutcome;
 use forge_workspace::env::git_diff::hunks::{
@@ -404,6 +404,14 @@ pub struct ActiveCommentInput {
     pub key: LineKey,
     pub editor: TextArea<'static>,
     pub prior_comment: Option<HunkComment>,
+}
+
+/// The Finish-review modal, opened on overlay close when this session
+/// authored a comment. Seals the session's comments into a numbered
+/// review on submit; `editor` holds the optional overview cover note.
+#[derive(Debug, Clone)]
+pub struct FinishReviewState {
+    pub editor: TextArea<'static>,
 }
 
 /// What a completed scan event carries beyond its files: either the
@@ -1088,6 +1096,41 @@ pub struct DiffOverlayState {
     /// successful load. Drives a visible "review comments failed to load"
     /// notice so a genuine failure doesn't read as an empty review pane.
     pub review_load_error: Option<String>,
+    /// The Finish-review modal when open (this session authored a comment
+    /// and the user is closing the overlay); `None` otherwise. Captures
+    /// keys/clicks and holds the optional overview editor.
+    pub finish_review: Option<FinishReviewState>,
+    /// Screen span `(row, col_start, col_end)` of the modal's
+    /// `[ Submit review ]` button, stashed each render so a click can
+    /// resolve onto it. `None` until the modal first renders.
+    pub finish_submit_span: Option<(u16, u16, u16)>,
+    /// Submitted reviews for `(project, branch)`, loaded alongside the
+    /// threads on hydrate. Maps a comment's `review_id` to its `R{number}`
+    /// chip tag and backs the `l` reviews list.
+    pub reviews: Vec<forge_primitives::ReviewSet>,
+    /// Whether the `l` REVIEWS list overlay is open.
+    pub reviews_open: bool,
+    /// Highlighted row in the open reviews list (index into `review_rows`).
+    pub reviews_selected: usize,
+    /// Snapshot rows for the reviews list, computed on open from every
+    /// thread's current state (newest review first). Empty while closed.
+    pub review_rows: Vec<ReviewListRow>,
+}
+
+/// One rendered row of the `l` REVIEWS list: a review's number, relative
+/// age, member-comment tally by state, optional overview, and the scope +
+/// path of its first member comment (so Enter can navigate to it).
+#[derive(Debug, Clone)]
+pub struct ReviewListRow {
+    pub number: u32,
+    pub age: String,
+    pub total: usize,
+    pub open: usize,
+    pub resolved: usize,
+    pub outdated: usize,
+    pub summary: Option<String>,
+    pub first_commit: Option<String>,
+    pub first_path: Option<String>,
 }
 
 impl DiffOverlayState {
@@ -1508,6 +1551,12 @@ impl DiffOverlayState {
             jump_selected: 0,
             jump_hint_span: None,
             review_load_error: None,
+            finish_review: None,
+            finish_submit_span: None,
+            reviews: Vec::new(),
+            reviews_open: false,
+            reviews_selected: 0,
+            review_rows: Vec::new(),
         };
         state.capture_wide_and_narrow();
         state
@@ -1597,6 +1646,12 @@ impl DiffOverlayState {
             jump_selected: 0,
             jump_hint_span: None,
             review_load_error: None,
+            finish_review: None,
+            finish_submit_span: None,
+            reviews: Vec::new(),
+            reviews_open: false,
+            reviews_selected: 0,
+            review_rows: Vec::new(),
         };
         state.capture_wide_and_narrow();
         state
@@ -1766,6 +1821,19 @@ fn hydrate_threads(app: &mut App) {
         return;
     };
 
+    // Reviews are branch-global (scope-independent); refresh them here so
+    // chip tags and the `l` list reflect what's on disk. A corrupt reviews
+    // row surfaces the same "failed to load" banner as the threads path -
+    // the `reviews` table is a separate row, so its failure is independent.
+    match workspace.load_reviews(&project, &branch) {
+        Ok(reviews) => overlay.reviews = reviews,
+        Err(error) => {
+            overlay.review_load_error = Some(error);
+            app.needs_redraw = true;
+            return;
+        }
+    }
+
     // Surface a load failure as a visible notice rather than a silent
     // empty pane; a successful load clears any prior notice.
     let loaded = match workspace.load_review_threads(&project, &branch) {
@@ -1907,6 +1975,18 @@ fn hydrate_threads(app: &mut App) {
 ///     `input_submit::dispatch_diff_comment_bundle` so the user
 ///     sees the bubble appear immediately.
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
+    // Finish-review modal captures keys while open: type the overview,
+    // Ctrl+Enter submits, Esc dismisses back to the diff.
+    if app.diff_overlay.as_ref().is_some_and(|o| o.finish_review.is_some()) {
+        handle_finish_review_key(app, key);
+        return;
+    }
+    // The reviews list captures keys while open: navigate rows, Enter to
+    // jump, `l` / Esc to close.
+    if app.diff_overlay.as_ref().is_some_and(|o| o.reviews_open) {
+        handle_reviews_list_key(app, key);
+        return;
+    }
     let has_input = app.diff_overlay.as_ref().is_some_and(|o| o.active_input.is_some());
     if has_input {
         match key.code {
@@ -1945,7 +2025,192 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char(']') | KeyCode::Right => step_commit(app, true),
         KeyCode::Char('a') => toggle_all_changes(app),
         KeyCode::Char('j') => open_jump(app),
+        KeyCode::Char('l') => toggle_reviews_list(app),
         _ => {}
+    }
+}
+
+/// Route a key while the Finish-review modal is open: Esc dismisses it
+/// back to the diff (keep editing), Ctrl+Enter submits, everything else
+/// flows into the overview editor.
+fn handle_finish_review_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => {
+            if let Some(o) = app.diff_overlay.as_mut() {
+                o.finish_review = None;
+                app.needs_redraw = true;
+            }
+        }
+        KeyCode::Enter if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+            submit_finish_review(app);
+        }
+        _ => {
+            if let Some(o) = app.diff_overlay.as_mut()
+                && let Some(finish) = o.finish_review.as_mut()
+            {
+                finish.editor.input(key);
+                app.needs_redraw = true;
+            }
+        }
+    }
+}
+
+/// Parse an rfc3339 timestamp into a `SystemTime`, or `None` when it is
+/// empty / malformed.
+fn parse_rfc3339(text: &str) -> Option<std::time::SystemTime> {
+    use time::format_description::well_known::Rfc3339;
+    time::OffsetDateTime::parse(text, &Rfc3339).ok().map(std::time::SystemTime::from)
+}
+
+/// Build the reviews-list rows from the branch's reviews plus every
+/// thread's current state, newest review first. Each row tallies the
+/// review's member threads (those whose `review_id` points at it) by
+/// status and records the first member's scope + path for navigation.
+fn compute_review_rows(
+    reviews: &[forge_primitives::ReviewSet],
+    threads: &[ReviewThread],
+    now: std::time::SystemTime,
+) -> Vec<ReviewListRow> {
+    reviews
+        .iter()
+        .rev()
+        .map(|review| {
+            let members: Vec<&ReviewThread> = threads
+                .iter()
+                .filter(|t| t.review_id.as_deref() == Some(review.id.as_str()))
+                .collect();
+            let mut open = 0;
+            let mut resolved = 0;
+            let mut outdated = 0;
+            for t in &members {
+                match t.status {
+                    ReviewStatus::Open => open += 1,
+                    ReviewStatus::Resolved => resolved += 1,
+                    ReviewStatus::Outdated => outdated += 1,
+                }
+            }
+            let age = parse_rfc3339(&review.created_at)
+                .map(|at| crate::ui::format::relative_time(at, now))
+                .unwrap_or_default();
+            let first = members.first();
+            ReviewListRow {
+                number: review.number,
+                age,
+                total: members.len(),
+                open,
+                resolved,
+                outdated,
+                summary: review.summary.clone().filter(|s| !s.trim().is_empty()),
+                first_commit: first.and_then(|t| t.commit.clone()),
+                first_path: first.map(|t| t.anchor.path.clone()),
+            }
+        })
+        .collect()
+}
+
+/// Toggle the `l` REVIEWS list. Opening snapshots every thread's current
+/// state into per-review rollups (newest first); closing drops the rows.
+fn toggle_reviews_list(app: &mut App) {
+    if app.diff_overlay.as_ref().is_some_and(|o| o.reviews_open) {
+        if let Some(o) = app.diff_overlay.as_mut() {
+            o.reviews_open = false;
+            o.review_rows.clear();
+        }
+        app.needs_redraw = true;
+        return;
+    }
+    let project = app.active_session().and_then(|s| s.project.clone());
+    let workspace = app.workspace.clone();
+    let branch = app.diff_overlay.as_ref().and_then(|o| o.branch.clone());
+    let threads = match (project, branch, workspace) {
+        (Some(project), Some(branch), Some(workspace)) => {
+            match workspace.load_review_threads(&project, &branch) {
+                Ok(threads) => threads,
+                Err(error) => {
+                    // Surface the failure via the banner rather than opening
+                    // the list with silently-empty rollups.
+                    if let Some(o) = app.diff_overlay.as_mut() {
+                        o.review_load_error = Some(error);
+                    }
+                    app.needs_redraw = true;
+                    return;
+                }
+            }
+        }
+        _ => Vec::new(),
+    };
+    let now = std::time::SystemTime::now();
+    if let Some(o) = app.diff_overlay.as_mut() {
+        o.review_rows = compute_review_rows(&o.reviews, &threads, now);
+        o.reviews_selected = 0;
+        o.reviews_open = true;
+    }
+    app.needs_redraw = true;
+}
+
+/// Route a key while the reviews list is open: `↑↓` move the highlight,
+/// Enter navigates to the selected review's first comment, `l` / Esc
+/// close the list.
+fn handle_reviews_list_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('l') => toggle_reviews_list(app),
+        KeyCode::Up => {
+            if let Some(o) = app.diff_overlay.as_mut() {
+                o.reviews_selected = o.reviews_selected.saturating_sub(1);
+                app.needs_redraw = true;
+            }
+        }
+        KeyCode::Down => {
+            if let Some(o) = app.diff_overlay.as_mut() {
+                let last = o.review_rows.len().saturating_sub(1);
+                o.reviews_selected = o.reviews_selected.saturating_add(1).min(last);
+                app.needs_redraw = true;
+            }
+        }
+        KeyCode::Enter => navigate_to_selected_review(app),
+        _ => {}
+    }
+}
+
+/// Close the list and scroll the diff to the selected review's first
+/// comment: jump to its file when it's in the current scope, else switch
+/// to its scope (the comment surfaces once that scan + hydrate land).
+fn navigate_to_selected_review(app: &mut App) {
+    let target = app.diff_overlay.as_ref().and_then(|o| {
+        o.review_rows
+            .get(o.reviews_selected)
+            .map(|r| (r.first_commit.clone(), r.first_path.clone()))
+    });
+    if let Some(o) = app.diff_overlay.as_mut() {
+        o.reviews_open = false;
+        o.review_rows.clear();
+    }
+    app.needs_redraw = true;
+    let Some((first_commit, first_path)) = target else { return };
+
+    let scopes = app.diff_overlay.as_ref().map(|o| {
+        let target_scope = match &first_commit {
+            None => DiffScope::WholeDiff,
+            Some(sha) => {
+                o.commits.iter().position(|c| &c.sha == sha).map_or(o.scope, DiffScope::Commit)
+            }
+        };
+        (target_scope, o.scope)
+    });
+    let Some((target_scope, current_scope)) = scopes else { return };
+    if target_scope != current_scope {
+        let outcome = app.diff_overlay.as_mut().map(|o| o.select_scope(target_scope));
+        if let Some(outcome) = outcome {
+            after_nav(app, outcome);
+        }
+        return;
+    }
+    if let Some(path) = first_path
+        && let Some(o) = app.diff_overlay.as_mut()
+        && let Some(file_idx) = o.files.iter().position(|f| f.path == path)
+    {
+        let file_start = o.doc_offsets().starts.get(file_idx).copied().unwrap_or(0);
+        o.doc_scroll = o.message_rows.saturating_add(file_start);
     }
 }
 
@@ -2420,6 +2685,7 @@ fn build_thread(
             created_at: String::new(),
             updated_at: String::new(),
             commit: None,
+            review_id: None,
         },
     }
 }
@@ -2488,6 +2754,28 @@ struct MouseEffect {
 ///   editing.
 /// - Left click on a collapsed deleted file's header → expand it.
 pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
+    // Finish-review modal: only its `[ Submit review ]` button is
+    // clickable; every other click / scroll is swallowed so the diff
+    // behind it can't be driven while the modal is up.
+    if app.diff_overlay.as_ref().is_some_and(|o| o.finish_review.is_some()) {
+        if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
+            let hit = app.diff_overlay.as_ref().and_then(|o| o.finish_submit_span).is_some_and(
+                |(r, c0, c1)| mouse.row == r && mouse.column >= c0 && mouse.column < c1,
+            );
+            if hit {
+                submit_finish_review(app);
+            }
+        }
+        return;
+    }
+    // Reviews list open: any click closes it (click-away), matching the
+    // jump dropdown; row selection stays keyboard-driven.
+    if app.diff_overlay.as_ref().is_some_and(|o| o.reviews_open) {
+        if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
+            toggle_reviews_list(app);
+        }
+        return;
+    }
     // The diff renders inside the page border, so its content width is
     // the frame minus the two border columns.
     let content_width = app.cached_frame_area.width.saturating_sub(2);
@@ -2770,69 +3058,105 @@ fn is_bundle_eligible(comment: &HunkComment) -> bool {
         && !matches!(comment.thread.status, ReviewStatus::Resolved | ReviewStatus::Outdated)
 }
 
-/// Close the overlay; if there are pending comments, bundle them
-/// into a markdown user message and dispatch it as a prompt before
-/// closing. Used by the banner ✕ click and by `handle_key`'s Esc
-/// path.
-///
-/// Pre-flight: if comments are pending AND the agent isn't ready
-/// to receive a prompt (no active session, pre-Connect), the close
-/// is REFUSED - a system message tells the user to retry once the
-/// session connects + a WARN log lets an operator grep for the
-/// held state. Without this, `dispatch_prompt`'s silent no-agent
-/// path would drop the bundle on the floor and the user would
-/// lose their review notes.
+/// Close path for the overlay (banner ✕ click and `handle_key`'s Esc).
+/// Opens the Finish-review modal only when at least one comment WOULD file
+/// into a new review - authored this session AND not already filed. An
+/// edit-only session (every authored comment already carries a
+/// `review_id`) and a look-only session both skip the modal and take the
+/// plain send-and-close path, so neither mints an empty review; edited
+/// comments still reach the agent exactly as before.
 pub(super) fn close_with_submit(app: &mut App) {
-    // Flush the active editor BEFORE the pending check - a reopened
-    // chip moves its saved comment onto `active_input.prior_comment`,
-    // so `overlay.comments` is empty while the editor is open. If we
-    // checked pending first, a held-no-agent state with only a
-    // reopened-chip-in-flight would BYPASS the held branch (pending
-    // = false), fall through to dispatch_prompt's silent no-agent
-    // path, and lose the user's saved review note. The helper
-    // restores the prior to `o.comments` so the post-flush pending
-    // check sees the complete set.
+    // Flush the active editor first - a reopened chip parks its saved
+    // comment on `active_input.prior_comment`, so `overlay.comments` is
+    // incomplete while the editor is open; the helper restores it.
     if let Some(o) = app.diff_overlay.as_mut() {
         let _ = close_active_input_preserving_prior(o);
     }
+    let would_file = app.diff_overlay.as_ref().is_some_and(|o| {
+        o.comments.iter().any(|c| c.authored_this_session && c.thread.review_id.is_none())
+    });
+    if would_file {
+        if let Some(o) = app.diff_overlay.as_mut() {
+            o.finish_review = Some(FinishReviewState { editor: TextArea::default() });
+            app.needs_redraw = true;
+        }
+        return;
+    }
+    finalize_review_close(app, None, &[]);
+}
+
+/// Submit the Finish-review modal: seal this session's authored comments
+/// into a fresh numbered review (with the optional overview), then fire
+/// the existing agent bundle for the still-open ones and close.
+pub(super) fn submit_finish_review(app: &mut App) {
+    let overview = app
+        .diff_overlay
+        .as_ref()
+        .and_then(|o| o.finish_review.as_ref())
+        .map(|f| f.editor.lines().join("\n"));
+    let overview = overview.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
+    let seal_ids: Vec<String> = app.diff_overlay.as_ref().map_or_else(Vec::new, |o| {
+        o.comments.iter().filter(|c| c.authored_this_session).map(|c| c.thread.id.clone()).collect()
+    });
+    finalize_review_close(app, overview.as_deref(), &seal_ids);
+}
+
+/// Shared tail for the Finish-review submit and the plain close: hold when
+/// the agent isn't ready (surface stays open so notes survive), else seal
+/// the listed still-unfiled threads into a review (skipped when `seal_ids`
+/// is empty - the edit-only / look-only path mints nothing), bundle the
+/// still-open session comments with the overview prepended, dispatch, and
+/// close. Sealing is best-effort: a session without a branch / store still
+/// bundles and closes, matching pre-review-sets behavior.
+fn finalize_review_close(app: &mut App, overview: Option<&str>, seal_ids: &[String]) {
     let pending =
         app.diff_overlay.as_ref().is_some_and(|o| o.comments.iter().any(is_bundle_eligible));
     if pending && (!app.has_active_agent() || app.session_id().is_none()) {
-        let comment_count = app
-            .diff_overlay
-            .as_ref()
-            .map_or(0, |o| o.comments.iter().filter(|c| is_bundle_eligible(c)).count());
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "diff_overlay_close_held_no_agent",
-            message = "diff overlay close held: agent not ready, comments preserved",
+            message = "diff review close held: agent not ready, comments preserved",
             outcome = "held",
             has_agent = app.has_active_agent(),
             has_session_id = app.session_id().is_some(),
-            pending_comments = comment_count,
         );
         crate::app::slash::push_system_message(
             app,
-            "Diff overlay close held: agent not ready. Wait for the session to connect, then press Esc again to submit your comments.",
+            "Review submit held: agent not ready. Wait for the session to connect, then Esc again to submit.",
         );
-        // Leave the overlay open so the user can retry. The user's
-        // comments stay intact on `overlay.comments` (including any
-        // prior restored by the flush above). They can also abandon
-        // by clearing chips one by one (click chip + Esc-cancel-input),
-        // though that's a long path.
         app.needs_redraw = true;
         return;
     }
-    // Single-pass snapshot of everything we need from overlay state
-    // BEFORE close() drops it. Avoids the previous two-step (take
-    // comments, then re-read target/cwd) where the second read
-    // relied on `unwrap_or_default()` for a value that's never None
-    // in practice - confusing for future maintainers.
+
+    if !seal_ids.is_empty() {
+        let project = app.active_session().and_then(|s| s.project.clone());
+        let workspace = app.workspace.clone();
+        let branch = app.diff_overlay.as_ref().and_then(|o| o.branch.clone());
+        if let (Some(project), Some(branch), Some(workspace)) = (project, branch, workspace) {
+            // `None` = the review-set write failed / the store is absent. The
+            // comments are already persisted unfiled at save-time and the
+            // bundle (with the overview) still reaches the agent, so only the
+            // local l-list record is lost. Degrade like the comment-save path
+            // rather than hold: warn the user, then send + close as usual.
+            if workspace
+                .submit_review(&project, &branch, overview.map(str::to_owned), seal_ids)
+                .is_none()
+            {
+                tracing::warn!(
+                    target: crate::logging::targets::APP_SESSION,
+                    event_name = "diff_overlay_review_not_sealed",
+                    message = "diff review could not be sealed locally; comments still dispatched",
+                    outcome = "degraded",
+                );
+                crate::app::slash::push_system_message(
+                    app,
+                    "Review couldn't be saved locally (store error) - comments were still sent to the agent but won't show in the reviews list.",
+                );
+            }
+        }
+    }
+
     let snapshot = app.diff_overlay.as_mut().map(|o| {
-        // Take all comments (the overlay is closing), but bundle only the
-        // session-authored, still-open ones - hydrated history and
-        // resolved/outdated threads are durable in redb and must not be
-        // re-sent to the agent.
         let bundle: Vec<HunkComment> =
             std::mem::take(&mut o.comments).into_iter().filter(is_bundle_eligible).collect();
         (bundle, o.target.clone(), o.cwd.display().to_string(), o.branch.clone(), o.commits.clone())
@@ -2840,8 +3164,14 @@ pub(super) fn close_with_submit(app: &mut App) {
     if let Some((comments, target, cwd_display, branch, commits)) = snapshot
         && !comments.is_empty()
     {
-        let markdown =
-            format_diff_comments(&target, branch.as_deref(), &cwd_display, &commits, &comments);
+        let markdown = format_diff_comments(
+            &target,
+            branch.as_deref(),
+            &cwd_display,
+            &commits,
+            &comments,
+            overview,
+        );
         super::input_submit::dispatch_diff_comment_bundle(app, markdown);
     }
     close(app);
@@ -2861,21 +3191,27 @@ pub(super) fn close_with_submit(app: &mut App) {
 ///   changes`. An All-changes comment made in a commit-mode session
 ///   therefore renders grouped, not in the file-grouped whole-diff
 ///   shape.
+///
+/// `overview` is the review's optional cover note; when non-empty it
+/// leads the bundle as an `### Overview` section. An empty / `None`
+/// overview leaves the whole-diff path byte-identical to before.
 pub(crate) fn format_diff_comments(
     target: &str,
     branch: Option<&str>,
     cwd_display: &str,
     commits: &[CommitMeta],
     comments: &[HunkComment],
+    overview: Option<&str>,
 ) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
     let commit_scoped = comments.iter().any(|c| c.commit.is_some());
     if !commit_scoped {
-        // Byte-identical to the pre-stepper bundle.
+        // Byte-identical to the pre-stepper bundle when there's no overview.
         let _ = writeln!(out, "## Diff review (target `{target}`)");
         out.push('\n');
         write_repo_line(&mut out, cwd_display);
+        write_overview(&mut out, overview);
         write_by_file(&mut out, comments.iter());
         return out;
     }
@@ -2897,6 +3233,7 @@ pub(crate) fn format_diff_comments(
     );
     out.push('\n');
     write_repo_line(&mut out, cwd_display);
+    write_overview(&mut out, overview);
 
     for commit in commits {
         let mut scoped =
@@ -2934,6 +3271,19 @@ fn write_repo_line(out: &mut String, cwd_display: &str) {
         let _ = writeln!(out, "Repo: `{cwd_display}`");
         out.push('\n');
     }
+}
+
+/// Emit the review's `### Overview` section when the cover note is
+/// non-empty; a blank / `None` overview writes nothing.
+fn write_overview(out: &mut String, overview: Option<&str>) {
+    use std::fmt::Write as _;
+    let Some(text) = overview.map(str::trim).filter(|t| !t.is_empty()) else {
+        return;
+    };
+    let _ = writeln!(out, "### Overview");
+    out.push('\n');
+    let _ = writeln!(out, "{text}");
+    out.push('\n');
 }
 
 /// Whole-diff bundle body: group comments by file path (first-seen
@@ -3378,7 +3728,7 @@ mod tests {
                 persisted: false,
             },
         ];
-        let md = format_diff_comments("HEAD", None, "/tmp/repo", &[], &comments);
+        let md = format_diff_comments("HEAD", None, "/tmp/repo", &[], &comments, None);
         assert!(md.contains("## Diff review (target `HEAD`)"));
         assert!(md.contains("Repo: `/tmp/repo`"));
         // Same-file comments group under one `### `a.rs`` header.
@@ -3394,9 +3744,76 @@ mod tests {
 
     #[test]
     fn format_diff_comments_empty_input_still_includes_header() {
-        let md = format_diff_comments("main", None, "", &[], &[]);
+        let md = format_diff_comments("main", None, "", &[], &[], None);
         assert!(md.contains("## Diff review (target `main`)"));
         assert!(!md.contains("Repo: ``"), "blank cwd suppresses the Repo line");
+    }
+
+    #[test]
+    fn format_diff_comments_prepends_overview_when_present() {
+        let comment = HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "a.rs".into(),
+            line: 12,
+            hunk_context: vec![],
+            comment_text: "nit".into(),
+            commit: None,
+            thread: stock_thread(),
+            authored_this_session: true,
+            persisted: false,
+        };
+        let md = format_diff_comments("HEAD", None, "", &[], &[comment], Some("Solid overall."));
+        assert!(md.contains("### Overview"), "an overview section leads the bundle");
+        assert!(md.contains("Solid overall."), "the overview text is included");
+        let overview_at = md.find("### Overview").expect("overview present");
+        let file_at = md.find("### `a.rs`").expect("file section present");
+        assert!(overview_at < file_at, "the overview precedes the file sections");
+    }
+
+    #[test]
+    fn format_diff_comments_omits_overview_when_empty() {
+        // A whitespace-only overview writes nothing, keeping the bundle
+        // byte-identical to the no-overview path.
+        let with_empty = format_diff_comments("main", None, "", &[], &[], Some("   "));
+        let without = format_diff_comments("main", None, "", &[], &[], None);
+        assert_eq!(with_empty, without, "an empty overview leaves the bundle unchanged");
+        assert!(!with_empty.contains("### Overview"));
+    }
+
+    #[test]
+    fn format_diff_comments_commit_mode_overview_precedes_first_commit() {
+        // /diff opens in commit mode when the branch has commits ahead - the
+        // common case - so the overview must lead the commit-grouped bundle
+        // too, not just the whole-diff shape.
+        let commits = vec![commit_meta("a3f9c1e", "fix the threshold check")];
+        let comments = vec![HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "app/rate_limit.rs".into(),
+            line: 66,
+            hunk_context: vec![DiffLine {
+                kind: DiffLineKind::Added,
+                text: "fn is_near_threshold() {".into(),
+                old_line: None,
+                new_line: Some(66),
+            }],
+            comment_text: "name it _without_overage".into(),
+            commit: Some("a3f9c1e".into()),
+            thread: stock_thread(),
+            authored_this_session: true,
+            persisted: false,
+        }];
+        let md = format_diff_comments(
+            "main",
+            Some("worker/rate-limit"),
+            "/repo",
+            &commits,
+            &comments,
+            Some("Solid overall."),
+        );
+        let overview_at = md.find("### Overview").expect("overview section present");
+        let commit_at = md.find("### Commit `a3f9c1e`").expect("commit section present");
+        assert!(md.contains("Solid overall."), "the overview text is included");
+        assert!(overview_at < commit_at, "the overview precedes the first commit section");
     }
 
     #[test]
@@ -3439,8 +3856,14 @@ mod tests {
                 persisted: false,
             },
         ];
-        let md =
-            format_diff_comments("main", Some("worker/rate-limit"), "/repo", &commits, &comments);
+        let md = format_diff_comments(
+            "main",
+            Some("worker/rate-limit"),
+            "/repo",
+            &commits,
+            &comments,
+            None,
+        );
         assert!(
             md.contains("## Diff review (worker/rate-limit vs main, 2 comments across 2 commits)"),
             "grouped header names the branch, target, and totals; got:\n{md}",
@@ -3474,7 +3897,7 @@ mod tests {
             authored_this_session: true,
             persisted: false,
         }];
-        let md = format_diff_comments("main", Some("feat"), "", &commits, &comments);
+        let md = format_diff_comments("main", Some("feat"), "", &commits, &comments, None);
         assert!(
             md.contains("1 comment across 1 commit)"),
             "singular comment/commit wording; got:\n{md}",
@@ -3508,7 +3931,7 @@ mod tests {
                 persisted: false,
             },
         ];
-        let md = format_diff_comments("main", Some("feat"), "", &commits, &comments);
+        let md = format_diff_comments("main", Some("feat"), "", &commits, &comments, None);
         assert!(md.contains("### Commit `a3f9c1e`"), "commit-scoped comment groups by commit");
         assert!(md.contains("### All changes"), "whole-diff comment trails under All changes");
         assert!(md.contains("on whole diff"));
@@ -3571,10 +3994,11 @@ mod tests {
     }
 
     #[test]
-    fn close_with_submit_refuses_when_agent_not_ready() {
-        // No active agent in the test default - close_with_submit
-        // with pending comments must keep the overlay open + push
-        // a system message rather than silently dropping comments.
+    fn close_with_submit_opens_finish_review_when_authored() {
+        // A session that authored a comment opens the Finish-review modal
+        // on close instead of closing - the pass seals into a review on
+        // exit. Agent-agnostic: the modal opens whether or not the agent
+        // is ready (the send happens on submit).
         let mut app = App::test_default();
         let mut state = sample_state();
         state.comments.push(HunkComment {
@@ -3591,14 +4015,131 @@ mod tests {
         app.diff_overlay = Some(state);
         set_active_view(&mut app, ActiveView::Diff);
         close_with_submit(&mut app);
-        // Overlay still open + comment still alive - user can retry.
-        assert!(app.diff_overlay.is_some(), "overlay stays open when dispatch would silently fail");
-        assert_eq!(
-            app.diff_overlay.as_ref().map(|o| o.comments.len()),
-            Some(1),
-            "comments preserved on hold"
-        );
+        let overlay = app.diff_overlay.as_ref().expect("overlay stays open");
+        assert!(overlay.finish_review.is_some(), "the Finish-review modal opened");
+        assert_eq!(overlay.comments.len(), 1, "the authored comment is preserved");
         assert_eq!(app.active_view, ActiveView::Diff, "view stays on Diff");
+    }
+
+    #[test]
+    fn close_with_submit_closes_directly_when_look_only() {
+        // A look-only session (only hydrated comments, nothing authored
+        // this session) closes straight through - no modal, no re-send.
+        let mut app = App::test_default();
+        let mut state = sample_state();
+        state.comments.push(HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "a.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "hydrated from a prior review".into(),
+            commit: None,
+            thread: stock_thread(),
+            authored_this_session: false,
+            persisted: true,
+        });
+        app.diff_overlay = Some(state);
+        set_active_view(&mut app, ActiveView::Diff);
+        close_with_submit(&mut app);
+        assert!(app.diff_overlay.is_none(), "look-only close drops the overlay");
+        assert_eq!(app.active_view, ActiveView::Chat, "view returns to chat");
+    }
+
+    #[test]
+    fn close_with_submit_edit_only_sends_without_minting_a_review() {
+        // A session that only edits an already-filed comment must NOT mint
+        // an empty review: the modal never opens (nothing would file), but
+        // the edited open comment still reaches the agent as today.
+        let (mut app, mut rx, _dir) = review_app_with_agent();
+        let ws = app.workspace.clone().expect("ws");
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), Vec::new());
+        overlay.branch = Some("feat".to_owned());
+        let mut thread = stock_thread();
+        thread.id = "filed".to_owned();
+        thread.review_id = Some("rev".to_owned());
+        overlay.comments.push(HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "src/x.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "tweaked note".into(),
+            commit: None,
+            thread,
+            authored_this_session: true,
+            persisted: true,
+        });
+        app.diff_overlay = Some(overlay);
+
+        close_with_submit(&mut app);
+        assert!(app.diff_overlay.is_none(), "edit-only close skips the modal and closes");
+        match rx.try_recv().expect("the edited comment still reached the agent") {
+            forge_primitives::AgentCommand::PromptWithImages { text, .. } => {
+                assert!(
+                    text.contains("tweaked note"),
+                    "the edited text is in the bundle; got: {text}"
+                );
+            }
+            other => panic!("expected PromptWithImages, got {other:?}"),
+        }
+        assert!(
+            ws.load_reviews("forge", "feat").expect("load").is_empty(),
+            "no review was minted for an edit-only session",
+        );
+    }
+
+    #[test]
+    fn submit_finish_review_files_a_resolved_comment_without_dispatch() {
+        // An authored NEW comment resolved before close still trips
+        // would_file (it's unfiled), so the modal opens and Submit mints a
+        // review filing the Resolved comment - but a resolved comment isn't
+        // bundle-eligible, so nothing is dispatched to the agent.
+        let (mut app, mut rx, _dir) = review_app_with_agent();
+        let ws = app.workspace.clone().expect("ws");
+        let mut seeded = stock_thread();
+        seeded.id = "r".to_owned();
+        seeded.status = ReviewStatus::Resolved;
+        ws.save_review_threads("forge", "feat", &[seeded.clone()]);
+
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), Vec::new());
+        overlay.branch = Some("feat".to_owned());
+        overlay.comments.push(HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "src/x.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "resolved before close".into(),
+            commit: None,
+            thread: seeded,
+            authored_this_session: true,
+            persisted: true,
+        });
+        app.diff_overlay = Some(overlay);
+
+        close_with_submit(&mut app);
+        assert!(
+            app.diff_overlay.as_ref().is_some_and(|o| o.finish_review.is_some()),
+            "an unfiled authored comment opens the modal even when resolved",
+        );
+        submit_finish_review(&mut app);
+
+        assert!(app.diff_overlay.is_none(), "overlay closed on submit");
+        let reviews = ws.load_reviews("forge", "feat").expect("load reviews");
+        assert_eq!(reviews.len(), 1, "a review was minted");
+        let filed = ws
+            .load_review_threads("forge", "feat")
+            .expect("load")
+            .into_iter()
+            .find(|t| t.id == "r")
+            .expect("thread")
+            .review_id;
+        assert_eq!(
+            filed,
+            Some(reviews[0].id.clone()),
+            "the resolved comment filed into the review"
+        );
+        assert!(rx.try_recv().is_err(), "a resolved comment is not dispatched to the agent");
     }
 
     #[test]
@@ -3882,13 +4423,70 @@ mod tests {
     }
 
     #[test]
-    fn close_with_submit_flushes_reopened_chip_to_bundle() {
-        // SILENT-1 fix: banner ✕ / Esc with an open editor that's a
-        // chip-reopen must restore the prior to the bundle. Without
-        // the pre-flight flush, the prior would be dropped silently
-        // because the snapshot's mem::take pulls only from
-        // overlay.comments. Verify by inspecting the dispatched
-        // Command::PromptWithImages's text for the prior's content.
+    fn submit_finish_review_degrades_when_the_seal_fails() {
+        // When the seal write fails (here a corrupt threads row rolls back
+        // the submit txn, so submit_review returns None) the comments are
+        // already persisted unfiled and the bundle still carries the
+        // overview, so submit degrades gracefully: it dispatches + closes
+        // as before, and pushes a system message so the failure isn't
+        // silent. It must NOT hold - a store-down session would dead-end.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("ws");
+        let db = forge_workspace::store::Db::open(&dir.path().join("db.redb")).expect("open db");
+        forge_workspace::store::review::write_corrupt_row_for_test(&db, "forge", "feat")
+            .expect("corrupt row");
+        workspace.install_db_for_test(db);
+        let mut rx = app.install_testing_stub();
+        app.set_session_id(Some(crate::agent::model::SessionId::new("review-session")));
+        if let Some(key) = app.active_session_key.clone()
+            && let Some(session) = app.sessions.get_mut(&key)
+        {
+            session.project = Some("forge".to_owned());
+            session.cwd_raw = "/tmp/repo".into();
+        }
+
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), Vec::new());
+        overlay.branch = Some("feat".to_owned());
+        overlay.finish_review = Some(FinishReviewState { editor: TextArea::default() });
+        let mut thread = stock_thread();
+        thread.id = "fresh".to_owned();
+        overlay.comments.push(HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "src/x.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "note".into(),
+            commit: None,
+            thread,
+            authored_this_session: true,
+            persisted: true,
+        });
+        app.diff_overlay = Some(overlay);
+
+        submit_finish_review(&mut app);
+
+        assert!(
+            app.diff_overlay.is_none(),
+            "the overlay closes (no dead-end hold) on a seal failure"
+        );
+        assert!(
+            matches!(rx.try_recv(), Ok(forge_primitives::AgentCommand::PromptWithImages { .. })),
+            "the bundle is still dispatched to the agent",
+        );
+        assert!(
+            app.messages().iter().any(|m| matches!(m.role, crate::app::MessageRole::System(None))),
+            "a system message warns that the review wasn't saved locally",
+        );
+    }
+
+    #[test]
+    fn submit_finish_review_flushes_reopened_chip_to_bundle() {
+        // A chip-reopen with an open editor must restore the prior on
+        // close so it reaches the bundle on submit; without the flush the
+        // snapshot's mem::take would pull only from overlay.comments
+        // (empty while the editor is open) and drop the note.
         let mut app = App::test_default();
         let mut rx = app.install_testing_stub();
         app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
@@ -3913,11 +4511,16 @@ mod tests {
             Some(ActiveCommentInput { key, editor, prior_comment: Some(prior.clone()) });
         app.diff_overlay = Some(state);
         set_active_view(&mut app, ActiveView::Diff);
+        // Close flushes the editor (restoring the prior) and opens the
+        // modal because the prior is authored this session.
         close_with_submit(&mut app);
-        assert!(app.diff_overlay.is_none(), "overlay closed");
-        // The prior must have made it into the dispatched bundle -
-        // inspect the Command::PromptWithImages text the stub
-        // receiver picked up.
+        assert!(
+            app.diff_overlay.as_ref().is_some_and(|o| o.finish_review.is_some()),
+            "the Finish-review modal opened",
+        );
+        submit_finish_review(&mut app);
+        assert!(app.diff_overlay.is_none(), "overlay closed on submit");
+        // The prior must have made it into the dispatched bundle.
         let dispatched = rx.try_recv().expect("a prompt was dispatched");
         match dispatched {
             forge_primitives::AgentCommand::PromptWithImages { text, .. } => {
@@ -3931,21 +4534,17 @@ mod tests {
     }
 
     #[test]
-    fn close_with_submit_holds_on_reopened_chip_with_no_agent() {
-        // Pre-flight-after-flush fix: if the agent isn't ready and
-        // the only "pending" content is a reopened chip's prior
-        // (so overlay.comments is empty at entry), the OLD pending
-        // check would bypass the held branch and dispatch_prompt
-        // would silently drop the note. The fixed order (flush
-        // first, then pending check) restores the prior into
-        // overlay.comments BEFORE the pending check, so the held
-        // branch fires correctly.
+    fn submit_finish_review_holds_when_agent_not_ready() {
+        // Submitting a review with sendable comments but no ready agent
+        // must NOT close - it holds (modal stays, comments preserved,
+        // nothing dispatched) so the notes survive until the session
+        // connects. Mirrors the pre-modal no-agent guard at the new
+        // submit layer.
         let mut app = App::test_default();
         // No install_testing_stub → has_active_agent = false.
         let mut state = sample_state();
-        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
-        let prior = HunkComment {
-            key,
+        state.comments.push(HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
             path: "a.rs".into(),
             line: 1,
             hunk_context: vec![],
@@ -3954,19 +4553,20 @@ mod tests {
             thread: stock_thread(),
             authored_this_session: true,
             persisted: false,
-        };
-        let mut editor = TextArea::default();
-        editor.insert_str("to be preserved");
-        state.active_input = Some(ActiveCommentInput { key, editor, prior_comment: Some(prior) });
+        });
         app.diff_overlay = Some(state);
         set_active_view(&mut app, ActiveView::Diff);
         close_with_submit(&mut app);
-        // Overlay stays open + prior restored to comments so user
-        // can retry once the agent connects.
-        let after = app.diff_overlay.as_ref().expect("overlay held");
-        assert_eq!(after.comments.len(), 1, "prior restored on held path");
+        assert!(
+            app.diff_overlay.as_ref().is_some_and(|o| o.finish_review.is_some()),
+            "the modal opened",
+        );
+        submit_finish_review(&mut app);
+        let after = app.diff_overlay.as_ref().expect("overlay held open");
+        assert!(after.finish_review.is_some(), "modal stays open on the no-agent hold");
+        assert_eq!(after.comments.len(), 1, "the comment is preserved");
         assert_eq!(after.comments[0].comment_text, "to be preserved");
-        assert!(after.active_input.is_none(), "editor closed by the flush");
+        assert_eq!(app.active_view, ActiveView::Diff, "view stays on Diff");
     }
 
     #[test]
@@ -4865,6 +5465,7 @@ mod tests {
             created_at: "t0".to_owned(),
             updated_at: updated_at.to_owned(),
             commit: commit.map(str::to_owned),
+            review_id: None,
         }
     }
 
@@ -4965,6 +5566,7 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
             commit: None,
+            review_id: None,
         }
     }
 
@@ -4990,6 +5592,257 @@ mod tests {
         let mut editor = TextArea::default();
         editor.insert_str(text);
         overlay.active_input = Some(ActiveCommentInput { key, editor, prior_comment: None });
+    }
+
+    /// [`review_app`]-style workspace + redb, plus a live agent stub and a
+    /// session id wired through `set_session_id` so `dispatch_command`
+    /// reaches the stub. The Finish-review submit path then seals +
+    /// dispatches instead of holding on the no-agent guard.
+    fn review_app_with_agent() -> (
+        App,
+        tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>,
+        tempfile::TempDir,
+    ) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("test workspace");
+        workspace.install_db_for_test(
+            forge_workspace::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let rx = app.install_testing_stub();
+        app.set_session_id(Some(crate::agent::model::SessionId::new("review-session")));
+        if let Some(key) = app.active_session_key.clone()
+            && let Some(session) = app.sessions.get_mut(&key)
+        {
+            session.project = Some("forge".to_owned());
+            session.cwd_raw = "/tmp/repo".into();
+        }
+        (app, rx, dir)
+    }
+
+    #[test]
+    fn finish_review_esc_dismisses_back_to_diff() {
+        let mut app = App::test_default();
+        let mut state = sample_state();
+        state.finish_review = Some(FinishReviewState { editor: TextArea::default() });
+        app.diff_overlay = Some(state);
+        set_active_view(&mut app, ActiveView::Diff);
+        handle_key(&mut app, KeyEvent::from(KeyCode::Esc));
+        let after = app.diff_overlay.as_ref().expect("overlay stays open");
+        assert!(after.finish_review.is_none(), "Esc dismisses the modal");
+        assert_eq!(app.active_view, ActiveView::Diff, "still reviewing the diff");
+    }
+
+    #[test]
+    fn submit_finish_review_seals_files_and_bundles() {
+        let (mut app, mut rx, _dir) = review_app_with_agent();
+        let ws = app.workspace.clone().expect("ws");
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        with_editor(
+            &mut overlay,
+            LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            "bound check?",
+        );
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+
+        close_with_submit(&mut app);
+        if let Some(o) = app.diff_overlay.as_mut() {
+            o.finish_review.as_mut().expect("modal open").editor.insert_str("Solid overall.");
+        }
+        submit_finish_review(&mut app);
+        assert!(app.diff_overlay.is_none(), "overlay closed on submit");
+
+        let reviews = ws.load_reviews("forge", "feat").expect("load reviews");
+        assert_eq!(reviews.len(), 1, "a review was sealed");
+        assert_eq!(reviews[0].number, 1);
+        assert_eq!(reviews[0].summary.as_deref(), Some("Solid overall."), "overview stored");
+        let threads = ws.load_review_threads("forge", "feat").expect("load threads");
+        assert_eq!(
+            threads[0].review_id.as_ref(),
+            Some(&reviews[0].id),
+            "the session comment filed into the review",
+        );
+
+        let dispatched = rx.try_recv().expect("prompt dispatched");
+        match dispatched {
+            forge_primitives::AgentCommand::PromptWithImages { text, .. } => {
+                assert!(text.contains("### Overview"), "overview section in bundle");
+                assert!(text.contains("Solid overall."), "overview text in bundle");
+                assert!(text.contains("bound check?"), "comment text in bundle");
+            }
+            other => panic!("expected PromptWithImages, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn submit_finish_review_files_only_this_sessions_comments() {
+        let (mut app, _rx, _dir) = review_app_with_agent();
+        let ws = app.workspace.clone().expect("ws");
+        let seed = |id: &str| forge_primitives::ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 10,
+                content_hash: 0,
+                context: Vec::new(),
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: "note".to_owned(),
+                at: "t0".to_owned(),
+            }],
+            status: ReviewStatus::Open,
+            created_at: "t0".to_owned(),
+            updated_at: "t0".to_owned(),
+            commit: None,
+            review_id: None,
+        };
+        // Both threads exist in redb; the overlay carries one authored this
+        // session and one hydrated from a prior pass.
+        ws.save_review_threads("forge", "feat", &[seed("authored"), seed("hydrated")]);
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        let comment = |line_idx: usize, id: &str, authored: bool| HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx },
+            path: "src/x.rs".into(),
+            line: 10,
+            hunk_context: vec![],
+            comment_text: "note".into(),
+            commit: None,
+            thread: seed(id),
+            authored_this_session: authored,
+            persisted: true,
+        };
+        overlay.comments.push(comment(0, "authored", true));
+        overlay.comments.push(comment(1, "hydrated", false));
+        app.diff_overlay = Some(overlay);
+
+        close_with_submit(&mut app);
+        assert!(
+            app.diff_overlay.as_ref().is_some_and(|o| o.finish_review.is_some()),
+            "an authored comment opens the modal",
+        );
+        submit_finish_review(&mut app);
+
+        let threads = ws.load_review_threads("forge", "feat").expect("load");
+        let is_filed = |id: &str| {
+            threads.iter().find(|t| t.id == id).expect("thread present").review_id.is_some()
+        };
+        assert!(is_filed("authored"), "the session-authored comment filed into the review");
+        assert!(!is_filed("hydrated"), "the hydrated comment was NOT swept into the review");
+    }
+
+    #[test]
+    fn compute_review_rows_tallies_newest_first() {
+        let reviews = vec![
+            forge_primitives::ReviewSet {
+                id: "r1".to_owned(),
+                number: 1,
+                summary: Some("first pass".to_owned()),
+                created_at: "2026-07-23T08:00:00Z".to_owned(),
+            },
+            forge_primitives::ReviewSet {
+                id: "r2".to_owned(),
+                number: 2,
+                summary: None,
+                created_at: "2026-07-23T10:00:00Z".to_owned(),
+            },
+        ];
+        let mk = |id: &str, review: &str, status: ReviewStatus| {
+            let mut t = stock_thread();
+            t.id = id.to_owned();
+            t.review_id = Some(review.to_owned());
+            t.status = status;
+            t.anchor.path = "src/a.rs".to_owned();
+            t
+        };
+        let threads = vec![
+            mk("a", "r1", ReviewStatus::Resolved),
+            mk("b", "r1", ReviewStatus::Open),
+            mk("c", "r2", ReviewStatus::Outdated),
+        ];
+        let now = parse_rfc3339("2026-07-23T12:00:00Z").expect("now parses");
+        let rows = compute_review_rows(&reviews, &threads, now);
+
+        assert_eq!(rows.len(), 2);
+        // Newest review first.
+        assert_eq!(rows[0].number, 2, "review 2 leads");
+        assert_eq!(rows[0].total, 1);
+        assert_eq!(rows[0].outdated, 1);
+        assert_eq!(rows[0].age, "2h", "created two hours before now");
+        assert_eq!(rows[1].number, 1);
+        assert_eq!(rows[1].total, 2, "both r1 threads tally");
+        assert_eq!(rows[1].open, 1);
+        assert_eq!(rows[1].resolved, 1);
+        assert_eq!(rows[1].summary.as_deref(), Some("first pass"));
+        assert_eq!(rows[1].first_path.as_deref(), Some("src/a.rs"));
+    }
+
+    #[test]
+    fn toggle_reviews_list_opens_with_rows_then_closes() {
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        let mut filed = stock_thread();
+        filed.id = "a".to_owned();
+        filed.review_id = Some("rev".to_owned());
+        ws.save_review_threads("forge", "feat", &[filed]);
+
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), Vec::new());
+        overlay.branch = Some("feat".to_owned());
+        overlay.reviews = vec![forge_primitives::ReviewSet {
+            id: "rev".to_owned(),
+            number: 1,
+            summary: None,
+            created_at: String::new(),
+        }];
+        app.diff_overlay = Some(overlay);
+
+        toggle_reviews_list(&mut app);
+        let o = app.diff_overlay.as_ref().expect("overlay");
+        assert!(o.reviews_open, "the list opened");
+        assert_eq!(o.review_rows.len(), 1);
+        assert_eq!(o.review_rows[0].total, 1, "the filed thread tallies into the review");
+
+        toggle_reviews_list(&mut app);
+        assert!(!app.diff_overlay.as_ref().expect("overlay").reviews_open, "toggle closes it");
+    }
+
+    #[test]
+    fn toggle_reviews_list_surfaces_a_load_error() {
+        // The rollup needs every thread; a corrupt threads row must surface
+        // the banner, not open a list with silently-empty rollups.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("ws");
+        let db = forge_workspace::store::Db::open(&dir.path().join("db.redb")).expect("open db");
+        forge_workspace::store::review::write_corrupt_row_for_test(&db, "forge", "feat")
+            .expect("corrupt row");
+        workspace.install_db_for_test(db);
+        let key = forge_workspace::SessionKey::from_session_id("review-session");
+        let mut session = crate::app::session::UiSession::new(key.clone());
+        session.project = Some("forge".to_owned());
+        session.cwd_raw = "/tmp/repo".into();
+        app.sessions.insert(key.clone(), session);
+        app.active_session_key = Some(key);
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), Vec::new());
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+
+        toggle_reviews_list(&mut app);
+
+        let o = app.diff_overlay.as_ref().expect("overlay");
+        assert!(!o.reviews_open, "the list does not open on a thread-load failure");
+        assert!(o.review_load_error.is_some(), "the failure surfaces via the banner");
     }
 
     #[test]
@@ -5100,6 +5953,7 @@ mod tests {
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
             commit: None,
+            review_id: None,
         };
         ws.save_review_threads(
             "forge",
@@ -5196,6 +6050,7 @@ mod tests {
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
             commit: None,
+            review_id: None,
         };
         ws.save_review_threads("forge", "feat", &[seed("live", "keep"), seed("stale", "old_body")]);
         // "keep" is live at line 10; "old_body" is gone.
@@ -5252,6 +6107,7 @@ mod tests {
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
                 commit: None,
+                review_id: None,
             }],
         );
         // The commented file is no longer in the diff.
@@ -5498,6 +6354,7 @@ mod tests {
                 created_at: String::new(),
                 updated_at: String::new(),
                 commit: Some("aaa".to_owned()),
+                review_id: None,
             },
             authored_this_session: false,
             persisted: true,
@@ -5529,6 +6386,7 @@ mod tests {
                 created_at: String::new(),
                 updated_at: String::new(),
                 commit: None,
+                review_id: None,
             },
             authored_this_session: false,
             persisted: true,
@@ -5647,6 +6505,7 @@ mod tests {
                 created_at: String::new(),
                 updated_at: String::new(),
                 commit: None,
+                review_id: None,
             };
             HunkComment {
                 key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
@@ -5692,6 +6551,7 @@ mod tests {
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
             commit: None,
+            review_id: None,
         };
         // Same branch, two whole-diff targets plus a commit-scoped thread.
         let mut c = seed("c", "main", "let c = 3;");
@@ -5756,6 +6616,7 @@ mod tests {
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
                 commit: Some("sha0".to_owned()),
+                review_id: None,
             }],
         );
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
@@ -5799,6 +6660,7 @@ mod tests {
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
             commit: Some(sha.to_owned()),
+            review_id: None,
         };
         // The sha0 thread drifts (line 5 -> 8) so a writeback fires; the
         // sha1 thread must survive that writeback untouched.
@@ -5855,6 +6717,7 @@ mod tests {
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
             commit: Some(sha.to_owned()),
+            review_id: None,
         };
         ws.save_review_threads(
             "forge",
@@ -5911,6 +6774,7 @@ mod tests {
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
                 commit: Some("sha0".to_owned()),
+                review_id: None,
             }],
         );
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
@@ -5963,6 +6827,62 @@ mod tests {
     }
 
     #[test]
+    fn hydrate_surfaces_a_corrupt_reviews_row() {
+        // The `reviews` table is a separate row from `review_threads`; a
+        // corrupt reviews blob must surface the same banner, not silently
+        // degrade every chip to `· unfiled`.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("test workspace");
+        let db = forge_workspace::store::Db::open(&dir.path().join("db.redb")).expect("open db");
+        forge_workspace::store::review::write_corrupt_reviews_row_for_test(&db, "forge", "feat")
+            .expect("write corrupt reviews row");
+        workspace.install_db_for_test(db);
+        let key = forge_workspace::SessionKey::from_session_id("review-session");
+        let mut session = crate::app::session::UiSession::new(key.clone());
+        session.project = Some("forge".to_owned());
+        session.cwd_raw = "/tmp/repo".into();
+        app.sessions.insert(key.clone(), session);
+        app.active_session_key = Some(key);
+
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+
+        hydrate_threads(&mut app);
+
+        assert!(
+            app.diff_overlay.as_ref().expect("overlay").review_load_error.is_some(),
+            "a corrupt reviews row surfaces the load notice, not a silent unfiled degrade",
+        );
+    }
+
+    #[test]
+    fn hydrate_populates_reviews_from_the_store() {
+        // The `· R#` chip tag + the `l` list both read `overlay.reviews`,
+        // which hydrate fills from the store - pin that it actually lands.
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.submit_review("forge", "feat", Some("first pass".to_owned()), &[])
+            .expect("seal a review");
+
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+
+        hydrate_threads(&mut app);
+
+        let reviews = &app.diff_overlay.as_ref().expect("overlay").reviews;
+        assert_eq!(reviews.len(), 1, "hydrate loaded the submitted review");
+        assert_eq!(reviews[0].number, 1);
+        assert_eq!(reviews[0].summary.as_deref(), Some("first pass"));
+    }
+
+    #[test]
     fn hydrate_whole_diff_ignores_commit_scoped() {
         let (mut app, _dir) = review_app();
         let ws = app.workspace.clone().expect("ws");
@@ -5985,6 +6905,7 @@ mod tests {
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
             commit: commit.map(str::to_owned),
+            review_id: None,
         };
         // The whole-diff thread drifts (line 5 -> 8) forcing a writeback;
         // the commit-scoped thread must not render here and must survive.
@@ -6041,6 +6962,7 @@ mod tests {
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
                 commit: Some("sha1".to_owned()),
+                review_id: None,
             }],
         );
 
@@ -6110,6 +7032,7 @@ mod tests {
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
                 commit: None,
+                review_id: None,
             }],
         );
 
@@ -6237,6 +7160,7 @@ mod tests {
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
                 commit: None,
+                review_id: None,
             }],
         );
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("keep", 10)])];
