@@ -6432,12 +6432,17 @@ mod tests {
         let list = ws.review_list("forge", "feat").expect("list");
         assert_eq!((list[0].addressed, list[0].resolved), (0, 1));
 
-        // An unknown / cross-branch comment id is rejected, not a no-op.
+        // An unknown / cross-branch comment id is rejected, not a no-op -
+        // for reply (append_reply path) and resolve (set_status path) alike.
         assert!(ws.review_reply(&caller, "forge", "feat", "missing", "x", "y", "z").is_err());
         assert!(ws.review_resolve(&caller, "forge", "feat", "missing").is_err());
         assert!(
+            ws.review_reply(&caller, "forge", "other", "a", "x", "y", "z").is_err(),
+            "reply: a lives on feat, not other",
+        );
+        assert!(
             ws.review_resolve(&caller, "forge", "other", "a").is_err(),
-            "a lives on feat, not other",
+            "resolve: a lives on feat, not other",
         );
     }
 
