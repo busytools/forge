@@ -885,4 +885,49 @@ mod tests {
             "playwright"
         );
     }
+
+    #[test]
+    fn configured_mcp_servers_extracts_command_only_server() {
+        // A stdio server with a command and no args extracts with empty args.
+        let servers =
+            vec![mcp_status("fs", Some(serde_json::json!({"type": "stdio", "command": "mcp-fs"})))];
+        assert_eq!(configured_mcp_servers(&servers), vec![configured("fs", "mcp-fs", &[])]);
+    }
+
+    #[test]
+    fn resolve_infra_label_matches_bare_command_server() {
+        // A server configured as a bare command (no args) matches a process
+        // whose cmdline contains that command, taking the configured name.
+        let servers = vec![configured("ctx-custom", "context7-mcp", &[])];
+        let label = resolve_infra_label("npm exec @upstash/context7-mcp", &servers).expect("ctx");
+        assert_eq!(label.name, "ctx-custom");
+    }
+
+    #[test]
+    fn resolve_infra_label_near_miss_falls_back_to_package() {
+        // A single configured server on the right package but a DIFFERENT
+        // --cdp-endpoint than the process: the endpoint token is absent, so
+        // the every-token match fails and the package name wins. An
+        // any-token match would wrongly pick "pw-hub".
+        let servers = vec![configured(
+            "pw-hub",
+            "npx",
+            &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://10.10.2.8:9222"],
+        )];
+        let label = resolve_infra_label(
+            "npm exec @playwright/mcp@latest --cdp-endpoint http://127.0.0.1:9222",
+            &servers,
+        )
+        .expect("pw");
+        assert_eq!(label.name, "playwright");
+    }
+
+    #[test]
+    fn resolve_infra_label_empty_config_does_not_match_everything() {
+        // A degenerate config (empty command, no args) must not match every
+        // process; it falls back to the package name.
+        let servers = vec![configured("blank", "", &[])];
+        let label = resolve_infra_label("npm exec @upstash/context7-mcp", &servers).expect("ctx");
+        assert_eq!(label.name, "context7");
+    }
 }
