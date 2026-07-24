@@ -2598,6 +2598,14 @@ fn save_active_input(app: &mut App) {
                     {
                         workspace.upsert_review_thread(project, branch, prior.thread.clone())
                     } else {
+                        tracing::warn!(
+                            target: crate::logging::targets::APP_SESSION,
+                            event_name = "diff_overlay_review_thread_not_persisted",
+                            message = "trimmed review thread could not be persisted (no branch / project / store); kept in-memory only",
+                            outcome = "at_risk",
+                            has_branch = branch.is_some(),
+                            has_project = project.is_some(),
+                        );
                         false
                     };
                     prior.comment_text = prior
@@ -2616,6 +2624,15 @@ fn save_active_input(app: &mut App) {
                         (project.as_deref(), branch.as_deref(), workspace.as_ref())
                     {
                         workspace.remove_review_thread(project, branch, &prior.thread.id);
+                    } else {
+                        tracing::warn!(
+                            target: crate::logging::targets::APP_SESSION,
+                            event_name = "diff_overlay_review_thread_not_removed",
+                            message = "review thread delete skipped (no branch / project / store); may resurrect on next open",
+                            outcome = "skipped",
+                            has_branch = branch.is_some(),
+                            has_project = project.is_some(),
+                        );
                     }
                 }
             } else {
@@ -2778,12 +2795,29 @@ fn build_thread(
             thread.anchor = anchor;
             match edit_turn {
                 // Rewrite the targeted turn in place; an agent turn or an
-                // out-of-range index is rejected (left untouched).
+                // out-of-range index is rejected - warn so the dropped text
+                // is observable (unreachable via the UI, which only offers
+                // your own turns as edit targets).
                 Some(idx) => {
-                    if let Some(turn) = thread.comments.get_mut(idx)
-                        && matches!(turn.author, ReviewAuthor::User)
-                    {
-                        text.clone_into(&mut turn.text);
+                    let turn_count = thread.comments.len();
+                    let editable = thread
+                        .comments
+                        .get(idx)
+                        .is_some_and(|c| matches!(c.author, ReviewAuthor::User));
+                    if editable {
+                        if let Some(turn) = thread.comments.get_mut(idx) {
+                            text.clone_into(&mut turn.text);
+                        }
+                    } else {
+                        tracing::warn!(
+                            target: crate::logging::targets::APP_SESSION,
+                            event_name = "diff_overlay_edit_turn_rejected",
+                            message = "edit targeted a non-editable turn (agent or out-of-range) - text dropped",
+                            outcome = "skipped",
+                            turn_idx = idx,
+                            turn_count,
+                            lost_chars = text.chars().count(),
+                        );
                     }
                 }
                 // Reply: append the user's text as a new turn.
