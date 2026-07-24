@@ -875,11 +875,15 @@ mod tests {
                 },
             ],
         };
+        // Real config shape: `npx -y @playwright/mcp@latest --cdp-endpoint <url>`.
+        // The leading `-y` is stripped when npx re-execs into the `npm exec`
+        // process above, so the matcher must not require it.
         let configured = vec![
             ConfiguredMcpServer {
                 name: "playwright".to_owned(),
                 command: "npx".to_owned(),
                 args: vec![
+                    "-y".to_owned(),
                     "@playwright/mcp@latest".to_owned(),
                     "--cdp-endpoint".to_owned(),
                     "http://10.10.2.8:9222".to_owned(),
@@ -889,6 +893,7 @@ mod tests {
                 name: "playwright-local".to_owned(),
                 command: "npx".to_owned(),
                 args: vec![
+                    "-y".to_owned(),
                     "@playwright/mcp@latest".to_owned(),
                     "--cdp-endpoint".to_owned(),
                     "http://127.0.0.1:9222".to_owned(),
@@ -899,6 +904,8 @@ mod tests {
         // Both node children collapse under their npm parent -> exactly two rows.
         assert_eq!(rows.len(), 2, "redundant playwright-mcp children must collapse, no stray rows");
         assert!(rows.iter().all(|r| r.kind == ProcessKind::McpServer));
+        // The surviving rows are the npm parents (roots), not the node children.
+        assert!(rows.iter().all(|r| r.depth == 0));
         let names: std::collections::BTreeSet<&str> =
             rows.iter().map(|r| r.headline.as_str()).collect();
         assert_eq!(names, ["playwright", "playwright-local"].into_iter().collect());

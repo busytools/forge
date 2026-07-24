@@ -427,14 +427,20 @@ pub fn resolve_infra_label(
 }
 
 /// True when `haystack` (a whitespace-normalized process cmdline) contains
-/// every distinguishing token of `server` - its `args` when present (they
-/// carry the package spec plus the flags that separate same-package
-/// servers), else its bare `command`. Substring containment tolerates the
-/// `@version` and `npx`→`npm exec` rewrites the process table applies.
+/// every match token of `server`. Leading `npx`/`npm` passthrough flags
+/// (e.g. `-y`) are dropped first: `npx -y <pkg>` re-execs into `npm exec
+/// <pkg>` with the flag stripped, so the tokens are the package spec (the
+/// first non-flag arg) plus everything after it - where the real
+/// distinguisher `--cdp-endpoint <url>` lives and survives into the process
+/// cmdline. Empty / all-flag args fall back to the bare `command`. Substring
+/// containment tolerates the process-side `@version` suffix.
 fn configured_server_matches(haystack: &str, server: &ConfiguredMcpServer) -> bool {
-    let tokens: &[String] =
-        if server.args.is_empty() { std::slice::from_ref(&server.command) } else { &server.args };
-    !tokens.is_empty() && tokens.iter().all(|t| !t.is_empty() && haystack.contains(t.as_str()))
+    let mut tokens = server.args.iter().skip_while(|arg| arg.starts_with('-')).peekable();
+    if tokens.peek().is_none() {
+        let command = server.command.as_str();
+        return !command.is_empty() && haystack.contains(command);
+    }
+    tokens.all(|token| !token.is_empty() && haystack.contains(token.as_str()))
 }
 
 #[cfg(test)]
@@ -763,28 +769,33 @@ mod tests {
     }
 
     fn playwright_pair() -> Vec<ConfiguredMcpServer> {
+        // Real config shape: `npx -y @playwright/mcp@latest --cdp-endpoint <url>`.
+        // npx re-execs into `npm exec ...` and STRIPS the leading `-y`, so the
+        // live process (the match haystack) never carries it.
         vec![
             configured(
                 "playwright",
                 "npx",
-                &["@playwright/mcp@latest", "--cdp-endpoint", "http://10.10.2.8:9222"],
+                &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://10.10.2.8:9222"],
             ),
             configured(
                 "playwright-local",
                 "npx",
-                &["@playwright/mcp@latest", "--cdp-endpoint", "http://127.0.0.1:9222"],
+                &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://127.0.0.1:9222"],
             ),
         ]
     }
 
     #[test]
     fn configured_mcp_servers_extracts_stdio_command_and_args() {
+        // Extraction is verbatim - the leading `-y` is preserved here; it's
+        // only dropped at match time (npx strips it re-execing to npm exec).
         let servers = vec![mcp_status(
             "playwright",
             Some(serde_json::json!({
                 "type": "stdio",
                 "command": "npx",
-                "args": ["@playwright/mcp@latest", "--cdp-endpoint", "http://10.10.2.8:9222"],
+                "args": ["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://10.10.2.8:9222"],
                 "env": {},
             })),
         )];
@@ -793,7 +804,7 @@ mod tests {
             vec![configured(
                 "playwright",
                 "npx",
-                &["@playwright/mcp@latest", "--cdp-endpoint", "http://10.10.2.8:9222"],
+                &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://10.10.2.8:9222"],
             )]
         );
     }
