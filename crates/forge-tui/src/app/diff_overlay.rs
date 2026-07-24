@@ -2564,12 +2564,14 @@ fn cancel_active_input(app: &mut App) {
 /// Empty-text save semantics:
 /// - Fresh line-click editor (no `prior_comment`): treated as
 ///   cancel - saving a blank comment would render an empty chip.
-/// - Turn-edit editor (`prior_comment` + `edit_turn = Some`): treated
-///   as delete - the user cleared a turn and pressed Enter to remove
-///   the saved comment. The prior is NOT restored.
-/// - Reply editor (`prior_comment` + `edit_turn = None`): treated as
-///   cancel - an empty reply adds nothing, so the prior is restored
-///   untouched (no delete, no new turn).
+/// - Turn-edit editor (`prior_comment` + `edit_turn = Some(idx)` on a
+///   `User` turn): clearing removes just THAT turn and re-saves the
+///   surviving chain, so an earlier note and any worker replies stay.
+///   The whole thread is deleted only when no `User` turn would remain
+///   (so an orphaned agent reply never lingers).
+/// - Reply editor (`prior_comment` + `edit_turn = None`), or a clear
+///   aimed at a non-editable turn: restore the prior untouched (no
+///   delete, no new turn).
 fn save_active_input(app: &mut App) {
     // Project name is read before the overlay borrow so the persist call
     // below can reach `app.workspace` without a borrow conflict.
@@ -2580,19 +2582,45 @@ fn save_active_input(app: &mut App) {
     let Some(input) = overlay.active_input.take() else { return };
     let text = input.editor.lines().join("\n");
     if text.trim().is_empty() {
-        if let Some(prior) = input.prior_comment {
-            if input.edit_turn.is_some() {
-                // Cleared an existing turn: delete the thread. A durable
-                // thread must also leave redb, else hydrate resurrects it
-                // next open. `comment_counts` already excludes the prior
-                // (removed at reopen).
-                if let (Some(project), Some(branch), Some(workspace)) =
-                    (project.as_deref(), branch.as_deref(), workspace.as_ref())
-                {
-                    workspace.remove_review_thread(project, branch, &prior.thread.id);
+        let edit_turn = input.edit_turn;
+        if let Some(mut prior) = input.prior_comment {
+            let clears_user_turn = edit_turn
+                .and_then(|idx| prior.thread.comments.get(idx))
+                .is_some_and(|c| matches!(c.author, ReviewAuthor::User));
+            if let (true, Some(idx)) = (clears_user_turn, edit_turn) {
+                prior.thread.comments.remove(idx);
+                let user_turn_remains =
+                    prior.thread.comments.iter().any(|c| matches!(c.author, ReviewAuthor::User));
+                if user_turn_remains {
+                    // Trim just this turn; re-save the surviving chain.
+                    let persisted = if let (Some(project), Some(branch), Some(workspace)) =
+                        (project.as_deref(), branch.as_deref(), workspace.as_ref())
+                    {
+                        workspace.upsert_review_thread(project, branch, prior.thread.clone())
+                    } else {
+                        false
+                    };
+                    prior.comment_text = prior
+                        .thread
+                        .comments
+                        .iter()
+                        .find(|c| matches!(c.author, ReviewAuthor::User))
+                        .map_or_else(String::new, |c| c.text.clone());
+                    prior.persisted = persisted;
+                    overlay.comments.push(prior);
+                    overlay.recompute_comment_counts();
+                } else {
+                    // No user turn left: delete the whole thread (durable too,
+                    // else hydrate resurrects it next open).
+                    if let (Some(project), Some(branch), Some(workspace)) =
+                        (project.as_deref(), branch.as_deref(), workspace.as_ref())
+                    {
+                        workspace.remove_review_thread(project, branch, &prior.thread.id);
+                    }
                 }
             } else {
-                // Empty reply: restore the prior untouched.
+                // Empty reply, or a clear aimed at a non-editable turn:
+                // restore the prior untouched.
                 overlay.comments.push(prior);
                 overlay.recompute_comment_counts();
             }
@@ -4132,8 +4160,7 @@ mod tests {
 
     #[test]
     fn save_empty_reopened_chip_deletes_saved_comment() {
-        // F8: reopen chip (prior Some) + clear text + Enter →
-        // saved comment deleted.
+        // Clearing the only user turn + Enter removes the whole card.
         let mut app = App::test_default();
         let mut state = sample_state();
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
@@ -4144,7 +4171,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "soon-to-be-deleted".into(),
             commit: None,
-            thread: stock_thread(),
+            thread: user_thread("soon-to-be-deleted"),
             authored_this_session: true,
             persisted: false,
         };
@@ -4158,7 +4185,7 @@ mod tests {
         save_active_input(&mut app);
         let after = app.diff_overlay.as_ref().expect("overlay still set");
         assert!(after.active_input.is_none());
-        assert!(after.comments.is_empty(), "prior dropped via clear+save = delete");
+        assert!(after.comments.is_empty(), "clearing the only user turn deletes the card");
     }
 
     #[test]
@@ -5805,6 +5832,104 @@ mod tests {
         assert_eq!(comment.thread.comments[0].text, "first note", "turn 0 is untouched");
         assert_eq!(comment.thread.comments[1].text, "second note EDITED", "turn 1 was rewritten");
         assert_eq!(comment.comment_text, "first note", "the snippet still mirrors the first turn");
+    }
+
+    /// Build an overlay + persisted thread, then an empty editor over
+    /// `edit_turn`, ready to exercise the clear-a-turn save path.
+    fn clear_turn_setup(
+        turns: Vec<ReviewComment>,
+        edit_turn: usize,
+    ) -> (App, std::sync::Arc<forge_workspace::Workspace>, tempfile::TempDir) {
+        let (mut app, dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let mut thread = user_thread("seed");
+        thread.id = "t-clear".to_owned();
+        thread.comments = turns;
+        ws.upsert_review_thread("forge", "feat", thread.clone());
+        let prior = HunkComment {
+            key,
+            path: "src/x.rs".into(),
+            line: 10,
+            hunk_context: vec![],
+            comment_text: thread.comments.first().map(|c| c.text.clone()).unwrap_or_default(),
+            commit: None,
+            thread,
+            authored_this_session: true,
+            persisted: true,
+        };
+        overlay.active_input = Some(ActiveCommentInput {
+            key,
+            editor: TextArea::default(),
+            prior_comment: Some(prior),
+            edit_turn: Some(edit_turn),
+        });
+        app.diff_overlay = Some(overlay);
+        (app, ws, dir)
+    }
+
+    #[test]
+    fn clearing_a_middle_turn_trims_it_and_keeps_the_thread() {
+        let (mut app, ws, _dir) = clear_turn_setup(
+            vec![
+                ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "first".into(),
+                    at: String::new(),
+                },
+                agent_turn("reply"),
+                ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "third".into(),
+                    at: String::new(),
+                },
+            ],
+            2,
+        );
+
+        save_active_input(&mut app);
+
+        let o = app.diff_overlay.as_ref().expect("overlay");
+        assert_eq!(o.comments.len(), 1, "the card survives");
+        let c = &o.comments[0];
+        assert_eq!(c.thread.comments.len(), 2, "only the cleared turn was removed");
+        assert_eq!(c.thread.comments[0].text, "first");
+        assert!(
+            matches!(c.thread.comments[1].author, ReviewAuthor::Agent { .. }),
+            "the agent reply survives",
+        );
+        assert_eq!(c.comment_text, "first", "comment_text still mirrors the first user turn");
+        let threads = ws.load_review_threads("forge", "feat").expect("load");
+        assert_eq!(threads.len(), 1, "the thread survives in redb");
+        assert_eq!(threads[0].comments.len(), 2, "redb thread trimmed to two turns");
+    }
+
+    #[test]
+    fn clearing_the_last_user_turn_deletes_the_whole_thread() {
+        let (mut app, ws, _dir) = clear_turn_setup(
+            vec![
+                ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "only".into(),
+                    at: String::new(),
+                },
+                agent_turn("reply"),
+            ],
+            0,
+        );
+
+        save_active_input(&mut app);
+
+        let o = app.diff_overlay.as_ref().expect("overlay");
+        assert!(o.comments.is_empty(), "no user turn remains, so the card is gone");
+        assert!(
+            ws.load_review_threads("forge", "feat").expect("load").is_empty(),
+            "an orphaned agent reply is not left behind in redb",
+        );
     }
 
     #[test]
