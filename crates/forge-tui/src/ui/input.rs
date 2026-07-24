@@ -461,11 +461,30 @@ mod tests {
     use super::{
         CANCEL_HINT_LINES, INPUT_BORDER_LINES, LOGIN_HINT_LINES, MAX_INPUT_HEIGHT,
         MIN_INPUT_INTERIOR_LINES, PROMPT_SUGGESTION_HINT_LINES, compute_render_geometry,
-        slash_command_range, visual_line_count,
+        configure_input_textarea, slash_command_range, visual_line_count,
     };
     use crate::app::subagent::find_subagent_spans;
     use crate::app::{App, LoginHint};
     use ratatui::layout::Rect;
+    use ratatui::style::{Modifier, Style};
+
+    #[test]
+    fn chat_cursor_style_follows_the_blink_phase() {
+        let mut app = App::test_default();
+        app.cursor_blink_on = true;
+        configure_input_textarea(&mut app);
+        assert!(
+            app.input().editor().cursor_style().add_modifier.contains(Modifier::REVERSED),
+            "on-phase paints a reverse-video block cursor",
+        );
+        app.cursor_blink_on = false;
+        configure_input_textarea(&mut app);
+        assert_eq!(
+            app.input().editor().cursor_style(),
+            Style::default(),
+            "off-phase hides the cursor",
+        );
+    }
 
     #[test]
     fn slash_range_matches_leading_command_token() {

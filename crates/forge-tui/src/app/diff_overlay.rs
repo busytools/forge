@@ -5868,6 +5868,61 @@ mod tests {
         assert_eq!(comment.comment_text, "first note", "the snippet still mirrors the first turn");
     }
 
+    #[test]
+    fn save_edit_turn_persists_through_redb_keeping_the_agent_reply() {
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let mut thread = user_thread("first");
+        thread.id = "t-e2e".to_owned();
+        thread.comments = vec![
+            ReviewComment { author: ReviewAuthor::User, text: "first".into(), at: String::new() },
+            agent_turn("addressed"),
+            ReviewComment { author: ReviewAuthor::User, text: "third".into(), at: String::new() },
+        ];
+        ws.upsert_review_thread("forge", "feat", thread.clone());
+        let prior = HunkComment {
+            key,
+            path: "src/x.rs".into(),
+            line: 10,
+            hunk_context: vec![],
+            comment_text: "first".into(),
+            commit: None,
+            thread,
+            authored_this_session: true,
+            persisted: true,
+        };
+        let mut editor = TextArea::default();
+        editor.insert_str("third EDITED");
+        overlay.active_input = Some(ActiveCommentInput {
+            key,
+            editor,
+            prior_comment: Some(prior),
+            edit_turn: Some(2),
+        });
+        app.diff_overlay = Some(overlay);
+
+        save_active_input(&mut app);
+
+        let threads = ws.load_review_threads("forge", "feat").expect("load");
+        assert_eq!(threads.len(), 1);
+        let t = &threads[0];
+        assert_eq!(t.comments.len(), 3, "the chain length is preserved through the reload");
+        assert_eq!(t.comments[0].text, "first", "turn 0 intact");
+        assert!(
+            matches!(t.comments[1].author, ReviewAuthor::Agent { .. }),
+            "the interleaved agent reply survived",
+        );
+        assert_eq!(t.comments[1].text, "addressed", "the agent reply text is intact");
+        assert_eq!(t.comments[2].text, "third EDITED", "turn 2 was rewritten");
+        let c = &app.diff_overlay.as_ref().expect("overlay").comments[0];
+        assert_eq!(c.comment_text, "first", "comment_text mirrors the first user turn");
+    }
+
     /// Build an overlay + persisted thread, then an empty editor over
     /// `edit_turn`, ready to exercise the clear-a-turn save path.
     fn clear_turn_setup(

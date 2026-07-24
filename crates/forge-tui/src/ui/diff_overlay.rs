@@ -3868,6 +3868,51 @@ mod tests {
     }
 
     #[test]
+    fn editor_row_content_stays_field_wide_at_every_cursor_position() {
+        let field = 12;
+        let short = "hi there"; // fits within the field
+        let long = "abcdefghijklmnopqrst"; // forces truncation
+        for row in [short, long] {
+            for cursor in [None, Some(0), Some(4), Some(row.chars().count()), Some(99)] {
+                let spans = editor_row_content(row, field, false, cursor);
+                let width: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+                assert_eq!(width, field, "row={row:?} cursor={cursor:?} must stay field-wide");
+            }
+        }
+    }
+
+    #[test]
+    fn editor_row_content_reverses_only_the_char_under_the_cursor() {
+        let spans = editor_row_content("hello", 12, false, Some(1));
+        let reversed: Vec<&str> = spans
+            .iter()
+            .filter(|s| s.style.add_modifier.contains(Modifier::REVERSED))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(reversed, vec!["e"], "the block reverses exactly the char at the cursor");
+    }
+
+    #[test]
+    fn active_input_cursor_paints_only_its_own_row() {
+        let mut editor = tui_textarea::TextArea::default();
+        editor.insert_str("line one\nline two"); // cursor lands on the second row
+        let input = ActiveCommentInput {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            editor,
+            prior_comment: None,
+            edit_turn: None,
+        };
+        let mut lines = Vec::new();
+        let mut keys = Vec::new();
+        render_active_input(&input, 4, 10, 80, true, &mut lines, &mut keys);
+        let reversed_rows = lines
+            .iter()
+            .filter(|l| l.spans.iter().any(|s| s.style.add_modifier.contains(Modifier::REVERSED)))
+            .count();
+        assert_eq!(reversed_rows, 1, "only the cursor's row carries the block");
+    }
+
+    #[test]
     fn comment_card_addressed_offers_both_resolve_and_reopen() {
         let (lines, keys) = render_chip(&chip_comment(50, "look here", ReviewStatus::Addressed));
         let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
