@@ -422,7 +422,15 @@ pub fn resolve_infra_label(
         configured.iter().filter(|server| configured_server_matches(&haystack, server)).collect();
     match matched.as_slice() {
         [only] => Some(InfraLabel { name: only.name.clone(), kind: InfraKind::McpServer }),
-        _ => Some(package),
+        [] => Some(package),
+        many => {
+            tracing::debug!(
+                candidates = ?many.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+                cmdline = %cmdline,
+                "MCP process matched multiple configured servers; using package name"
+            );
+            Some(package)
+        }
     }
 }
 
