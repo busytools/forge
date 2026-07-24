@@ -33,6 +33,7 @@
 
 use std::time::SystemTime;
 
+use forge_primitives::McpServerStatus;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 /// Snapshot of `claude`'s descendant processes at one point in time.
@@ -375,6 +376,67 @@ fn mcp_name_from_node(cmdline: &str) -> Option<String> {
     })
 }
 
+/// A configured MCP server distilled to what the process matcher needs:
+/// the configured `name` plus the stdio launch `command` + `args` used to
+/// match it against a live process cmdline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfiguredMcpServer {
+    pub name: String,
+    pub command: String,
+    pub args: Vec<String>,
+}
+
+/// Extract the stdio-launched configured MCP servers from an mcp-status
+/// snapshot. A server contributes `(name, command, args)` only when its
+/// `config` blob carries a string `command` (the stdio shape); url-only
+/// (http/sse) servers have no local process, so they're skipped.
+pub fn configured_mcp_servers(servers: &[McpServerStatus]) -> Vec<ConfiguredMcpServer> {
+    servers
+        .iter()
+        .filter_map(|server| {
+            let config = server.config.as_ref()?;
+            let command = config.get("command")?.as_str()?.to_owned();
+            let args = config
+                .get("args")
+                .and_then(serde_json::Value::as_array)
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+                .unwrap_or_default();
+            Some(ConfiguredMcpServer { name: server.name.clone(), command, args })
+        })
+        .collect()
+}
+
+/// Friendly label for a known-infra process, preferring the CONFIGURED
+/// MCP server name when the process's command + args uniquely match one of
+/// `configured`, otherwise the package-derived name from
+/// [`classify_known_infra`]. `None` when the process isn't a recognized
+/// MCP server at all.
+pub fn resolve_infra_label(
+    cmdline: &str,
+    configured: &[ConfiguredMcpServer],
+) -> Option<InfraLabel> {
+    let inner = extract_inner_command(cmdline).unwrap_or_else(|| cmdline.to_owned());
+    let package = classify_known_infra(&inner)?;
+    let haystack = normalize_ws(&inner);
+    let matched: Vec<&ConfiguredMcpServer> =
+        configured.iter().filter(|server| configured_server_matches(&haystack, server)).collect();
+    match matched.as_slice() {
+        [only] => Some(InfraLabel { name: only.name.clone(), kind: InfraKind::McpServer }),
+        _ => Some(package),
+    }
+}
+
+/// True when `haystack` (a whitespace-normalized process cmdline) contains
+/// every distinguishing token of `server` - its `args` when present (they
+/// carry the package spec plus the flags that separate same-package
+/// servers), else its bare `command`. Substring containment tolerates the
+/// `@version` and `npx`→`npm exec` rewrites the process table applies.
+fn configured_server_matches(haystack: &str, server: &ConfiguredMcpServer) -> bool {
+    let tokens: &[String] =
+        if server.args.is_empty() { std::slice::from_ref(&server.command) } else { &server.args };
+    !tokens.is_empty() && tokens.iter().all(|t| !t.is_empty() && haystack.contains(t.as_str()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -676,5 +738,132 @@ mod tests {
         // self_pid filter applies.
         let me = std::process::id();
         let _ = scan(me, &[]);
+    }
+
+    fn mcp_status(name: &str, config: Option<serde_json::Value>) -> McpServerStatus {
+        McpServerStatus {
+            name: name.to_owned(),
+            status: forge_primitives::McpServerConnectionStatus::Connected,
+            server_info: None,
+            error: None,
+            config,
+            scope: None,
+            tools: None,
+            sampling_configured: None,
+            sampling_required: None,
+        }
+    }
+
+    fn configured(name: &str, command: &str, args: &[&str]) -> ConfiguredMcpServer {
+        ConfiguredMcpServer {
+            name: name.to_owned(),
+            command: command.to_owned(),
+            args: args.iter().map(|a| (*a).to_owned()).collect(),
+        }
+    }
+
+    fn playwright_pair() -> Vec<ConfiguredMcpServer> {
+        vec![
+            configured(
+                "playwright",
+                "npx",
+                &["@playwright/mcp@latest", "--cdp-endpoint", "http://10.10.2.8:9222"],
+            ),
+            configured(
+                "playwright-local",
+                "npx",
+                &["@playwright/mcp@latest", "--cdp-endpoint", "http://127.0.0.1:9222"],
+            ),
+        ]
+    }
+
+    #[test]
+    fn configured_mcp_servers_extracts_stdio_command_and_args() {
+        let servers = vec![mcp_status(
+            "playwright",
+            Some(serde_json::json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["@playwright/mcp@latest", "--cdp-endpoint", "http://10.10.2.8:9222"],
+                "env": {},
+            })),
+        )];
+        assert_eq!(
+            configured_mcp_servers(&servers),
+            vec![configured(
+                "playwright",
+                "npx",
+                &["@playwright/mcp@latest", "--cdp-endpoint", "http://10.10.2.8:9222"],
+            )]
+        );
+    }
+
+    #[test]
+    fn configured_mcp_servers_skips_url_only_and_configless() {
+        let servers = vec![
+            // http (url-only) server has no local process to name.
+            mcp_status("remote", Some(serde_json::json!({"type": "http", "url": "https://x/mcp"}))),
+            // no config blob at all.
+            mcp_status("bare", None),
+        ];
+        assert!(configured_mcp_servers(&servers).is_empty());
+    }
+
+    #[test]
+    fn resolve_infra_label_uses_configured_name_for_same_package_distinct_args() {
+        // Two servers on the same @playwright/mcp package, distinguished
+        // only by --cdp-endpoint. Package-only naming collapses both to
+        // "playwright"; the configured match keeps them distinct.
+        let servers = playwright_pair();
+        let hub = "npm exec @playwright/mcp@latest --cdp-endpoint http://10.10.2.8:9222";
+        let local = "npm exec @playwright/mcp@latest --cdp-endpoint http://127.0.0.1:9222";
+        assert_eq!(resolve_infra_label(hub, &servers).expect("hub").name, "playwright");
+        assert_eq!(resolve_infra_label(local, &servers).expect("local").name, "playwright-local");
+    }
+
+    #[test]
+    fn resolve_infra_label_falls_back_to_package_name_when_unmatched() {
+        // A running MCP process with no configured match keeps the
+        // package-derived name.
+        let ctx = resolve_infra_label("npm exec @upstash/context7-mcp", &playwright_pair())
+            .expect("context7");
+        assert_eq!(ctx.name, "context7");
+        assert_eq!(ctx.kind, InfraKind::McpServer);
+    }
+
+    #[test]
+    fn resolve_infra_label_falls_back_on_ambiguous_match() {
+        // Two configured servers whose args both match one process: an
+        // ambiguous tie falls back to the package name rather than guessing.
+        let servers = vec![
+            configured("pw-a", "npx", &["@playwright/mcp@latest"]),
+            configured("pw-b", "npx", &["@playwright/mcp@latest"]),
+        ];
+        let label = resolve_infra_label(
+            "npm exec @playwright/mcp@latest --cdp-endpoint http://10.10.2.8:9222",
+            &servers,
+        )
+        .expect("playwright");
+        assert_eq!(label.name, "playwright");
+    }
+
+    #[test]
+    fn resolve_infra_label_is_none_for_non_mcp_process() {
+        // A non-MCP process stays unclassified even when servers are configured.
+        assert!(resolve_infra_label("rustc --crate-name forge_tui", &playwright_pair()).is_none());
+    }
+
+    #[test]
+    fn resolve_infra_label_without_configured_matches_package_name() {
+        // No configured servers -> identical to classify_known_infra.
+        assert_eq!(
+            resolve_infra_label(
+                "npm exec @playwright/mcp@latest --cdp-endpoint http://10.10.2.8:9222",
+                &[],
+            )
+            .expect("playwright")
+            .name,
+            "playwright"
+        );
     }
 }
