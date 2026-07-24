@@ -21,8 +21,9 @@
 use std::collections::{HashMap, HashSet};
 
 use forge_workspace::env::processes::{
-    InfraLabel, ProcessEntry, ProcessSnapshot, basename_exe, classify_known_infra,
-    extract_inner_command, process_cmdline_matches_tool_input,
+    ConfiguredMcpServer, InfraLabel, ProcessEntry, ProcessSnapshot, basename_exe,
+    classify_known_infra, configured_mcp_servers, extract_inner_command,
+    process_cmdline_matches_tool_input, resolve_infra_label,
 };
 use serde_json::Value;
 
@@ -206,7 +207,8 @@ pub fn collect_active_processes(app: &App) -> ProcessCollection {
     // RUNNING). CronCreate registrations live in the dedicated
     // SCHEDULES Inspector section, not here.
     if let Some(snapshot) = session.process_snapshot.as_ref() {
-        rows.extend(rows_from_os_snapshot(snapshot, &wire_alive));
+        let configured = configured_mcp_servers(&app.mcp().servers);
+        rows.extend(rows_from_os_snapshot(snapshot, &wire_alive, &configured));
     }
 
     rows.truncate(PROCESSES_MAX);
@@ -314,6 +316,7 @@ fn synthetic_background_bash_row(description: &str, task_type: &str) -> ProcessR
 fn rows_from_os_snapshot<'a>(
     snapshot: &'a ProcessSnapshot,
     wire_alive: &'a [&'a ToolCallInfo],
+    configured: &[ConfiguredMcpServer],
 ) -> Vec<ProcessRow> {
     // Index by pid + build a parent → children adjacency list.
     let by_pid: HashMap<u32, &ProcessEntry> =
@@ -349,6 +352,7 @@ fn rows_from_os_snapshot<'a>(
             &[],
             &children_of,
             wire_alive,
+            configured,
             &mut rows,
         );
     }
@@ -366,9 +370,10 @@ fn emit_with_descendants<'a>(
     ancestor_has_more: &[bool],
     children_of: &std::collections::HashMap<u32, Vec<&'a ProcessEntry>>,
     wire_alive: &[&ToolCallInfo],
+    configured: &[ConfiguredMcpServer],
     out: &mut Vec<ProcessRow>,
 ) {
-    let mut row = build_row_for_entry(entry, wire_alive);
+    let mut row = build_row_for_entry(entry, wire_alive, configured);
     row.depth = depth;
     // Supervisor (depth-0) rows show the whole subtree's resident
     // memory; a bare parent's own RSS (a 2 MB zsh over a 256 MB cargo
@@ -426,6 +431,7 @@ fn emit_with_descendants<'a>(
             &next_ancestors,
             children_of,
             wire_alive,
+            configured,
             out,
         );
     }
@@ -498,7 +504,11 @@ fn wire_match<'a>(
 /// against the alive tool calls. Tree position (`depth`,
 /// `is_last_sibling`, `ancestor_has_more`) is initialised to
 /// defaults; the DFS walker overwrites them.
-fn build_row_for_entry(entry: &ProcessEntry, wire_alive: &[&ToolCallInfo]) -> ProcessRow {
+fn build_row_for_entry(
+    entry: &ProcessEntry,
+    wire_alive: &[&ToolCallInfo],
+    configured: &[ConfiguredMcpServer],
+) -> ProcessRow {
     let matched = wire_match(entry, wire_alive);
     match matched {
         // Monitor's authoritative surface is the
@@ -511,8 +521,9 @@ fn build_row_for_entry(entry: &ProcessEntry, wire_alive: &[&ToolCallInfo]) -> Pr
         Some(tc) if is_monitor_tool_name(&tc.sdk_tool_name) => generic_os_row(entry),
         Some(tc) if is_execute_tool_name(&tc.sdk_tool_name) => enriched_bash_row(tc, entry),
         // No wire match: a known-infra process (MCP server) gets a
-        // friendly-labeled row; everything else is a generic OS row.
-        _ => match classify_known_infra(&entry.command) {
+        // friendly-labeled row - its CONFIGURED name when it uniquely
+        // matches one, else the package name; everything else is generic.
+        _ => match resolve_infra_label(&entry.command, configured) {
             Some(infra) => mcp_server_row(entry, &infra),
             None => generic_os_row(entry),
         },
@@ -812,7 +823,7 @@ mod tests {
                 },
             ],
         };
-        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        let rows = rows_from_os_snapshot(&snapshot, &[], &[]);
         assert_eq!(rows.len(), 1, "the redundant same-name MCP child is not emitted");
         assert_eq!(rows[0].kind, ProcessKind::McpServer);
         assert_eq!(rows[0].headline, "context7");
@@ -821,11 +832,91 @@ mod tests {
     }
 
     #[test]
+    fn rows_from_os_snapshot_names_same_package_servers_by_configured_name() {
+        // Two playwright MCP servers on the same @playwright/mcp package,
+        // distinguished only by --cdp-endpoint. Each parent's redundant
+        // `node .../playwright-mcp` child collapses (classify-based), so the
+        // two surviving parent rows must carry their DISTINCT configured
+        // names, not both "playwright" (the package-only bug).
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                ProcessEntry {
+                    pid: 200,
+                    parent_pid: 1,
+                    name: "npm".to_owned(),
+                    command: "npm exec @playwright/mcp@latest --cdp-endpoint http://10.10.2.8:9222"
+                        .to_owned(),
+                    memory_bytes: 40 * 1024 * 1024,
+                },
+                ProcessEntry {
+                    pid: 201,
+                    parent_pid: 200,
+                    name: "node".to_owned(),
+                    command: "node /Users/x/.npm/_npx/abc/.bin/playwright-mcp --cdp-endpoint http://10.10.2.8:9222"
+                        .to_owned(),
+                    memory_bytes: 40 * 1024 * 1024,
+                },
+                ProcessEntry {
+                    pid: 300,
+                    parent_pid: 1,
+                    name: "npm".to_owned(),
+                    command: "npm exec @playwright/mcp@latest --cdp-endpoint http://127.0.0.1:9222"
+                        .to_owned(),
+                    memory_bytes: 40 * 1024 * 1024,
+                },
+                ProcessEntry {
+                    pid: 301,
+                    parent_pid: 300,
+                    name: "node".to_owned(),
+                    command: "node /Users/x/.npm/_npx/def/.bin/playwright-mcp --cdp-endpoint http://127.0.0.1:9222"
+                        .to_owned(),
+                    memory_bytes: 40 * 1024 * 1024,
+                },
+            ],
+        };
+        // Real config shape: `npx -y @playwright/mcp@latest --cdp-endpoint <url>`.
+        // The leading `-y` is stripped when npx re-execs into the `npm exec`
+        // process above, so the matcher must not require it.
+        let configured = vec![
+            ConfiguredMcpServer {
+                name: "playwright".to_owned(),
+                command: "npx".to_owned(),
+                args: vec![
+                    "-y".to_owned(),
+                    "@playwright/mcp@latest".to_owned(),
+                    "--cdp-endpoint".to_owned(),
+                    "http://10.10.2.8:9222".to_owned(),
+                ],
+            },
+            ConfiguredMcpServer {
+                name: "playwright-local".to_owned(),
+                command: "npx".to_owned(),
+                args: vec![
+                    "-y".to_owned(),
+                    "@playwright/mcp@latest".to_owned(),
+                    "--cdp-endpoint".to_owned(),
+                    "http://127.0.0.1:9222".to_owned(),
+                ],
+            },
+        ];
+        let rows = rows_from_os_snapshot(&snapshot, &[], &configured);
+        // Both node children collapse under their npm parent -> exactly two rows.
+        assert_eq!(rows.len(), 2, "redundant playwright-mcp children must collapse, no stray rows");
+        assert!(rows.iter().all(|r| r.kind == ProcessKind::McpServer));
+        // The surviving rows are the npm parents (roots), not the node children.
+        assert!(rows.iter().all(|r| r.depth == 0));
+        let names: std::collections::BTreeSet<&str> =
+            rows.iter().map(|r| r.headline.as_str()).collect();
+        assert_eq!(names, ["playwright", "playwright-local"].into_iter().collect());
+    }
+
+    #[test]
     fn build_row_classifies_mcp_server_with_friendly_name() {
         // An MCP server process (no wire match) gets a friendly name +
         // McpServer kind, and stays visible (not filtered).
         let entry = fake_entry(50, "npm", "npm exec @upstash/context7-mcp", 46 * 1024 * 1024);
-        let row = build_row_for_entry(&entry, &[]);
+        let row = build_row_for_entry(&entry, &[], &[]);
         assert_eq!(row.kind, ProcessKind::McpServer);
         assert_eq!(row.headline, "context7");
         assert!(row.metadata.contains("MCP server"));
@@ -878,7 +969,7 @@ mod tests {
         );
         let snapshot =
             ProcessSnapshot { processes: vec![entry], scanned_at: std::time::SystemTime::now() };
-        let rows = rows_from_os_snapshot(&snapshot, &tcs[..]);
+        let rows = rows_from_os_snapshot(&snapshot, &tcs[..], &[]);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].kind, ProcessKind::BashBackgrounded);
         assert_eq!(rows[0].headline, "Run unit tests");
@@ -892,7 +983,7 @@ mod tests {
         let entry = fake_entry(100, "rustc", "rustc --crate-name forge_tui ...", 256 * 1024 * 1024);
         let snapshot =
             ProcessSnapshot { processes: vec![entry], scanned_at: std::time::SystemTime::now() };
-        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        let rows = rows_from_os_snapshot(&snapshot, &[], &[]);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].kind, ProcessKind::Process);
         // Unmatched supervisors use the cmdline as headline so the
@@ -925,7 +1016,7 @@ mod tests {
         let entry = fake_entry(7, "gh", "gh run watch 12345 --exit-status", 8 * 1024 * 1024);
         let snapshot =
             ProcessSnapshot { processes: vec![entry], scanned_at: std::time::SystemTime::now() };
-        let rows = rows_from_os_snapshot(&snapshot, &tcs[..]);
+        let rows = rows_from_os_snapshot(&snapshot, &tcs[..], &[]);
         assert_eq!(rows[0].kind, ProcessKind::Process);
         assert_eq!(rows[0].headline, "gh run watch 12345 --exit-status");
         assert!(!rows[0].metadata.contains("persistent"));
@@ -978,7 +1069,7 @@ mod tests {
     #[test]
     fn rows_from_os_snapshot_emits_dfs_order_with_correct_depth() {
         let snapshot = tree_snapshot();
-        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        let rows = rows_from_os_snapshot(&snapshot, &[], &[]);
         // DFS pre-order: zsh (d0) → cargo (d1) → rustc (d2) → rustc (d2)
         assert_eq!(rows.len(), 4);
         assert_eq!(rows[0].depth, 0);
@@ -998,7 +1089,7 @@ mod tests {
         // own 2 MB zsh parent over heavy children is misleading);
         // descendants keep their own RSS.
         let snapshot = tree_snapshot();
-        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        let rows = rows_from_os_snapshot(&snapshot, &[], &[]);
         let subtree = (8 + 256 + 512 + 384) * 1024 * 1024;
         assert_eq!(rows[0].depth, 0);
         assert_eq!(rows[0].memory_bytes, Some(subtree), "depth-0 = subtree total");
@@ -1039,7 +1130,7 @@ mod tests {
             ],
         };
         let tcs = [&tc];
-        let rows = rows_from_os_snapshot(&snapshot, &tcs[..]);
+        let rows = rows_from_os_snapshot(&snapshot, &tcs[..], &[]);
         // zsh is matched; node is not. Matched root sorts first
         // despite node having more memory.
         assert_eq!(rows[0].kind, ProcessKind::BashBackgrounded);
@@ -1081,7 +1172,7 @@ mod tests {
                 },
             ],
         };
-        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        let rows = rows_from_os_snapshot(&snapshot, &[], &[]);
         assert_eq!(rows[0].depth, 0);
         assert_eq!(rows[0].headline, "run the build", "heavy-subtree root sorts first");
         assert_eq!(rows[0].memory_bytes, Some(1002 * 1024 * 1024));
@@ -1102,7 +1193,7 @@ mod tests {
                 fake_entry(300, "medium", "node medium", 128 * 1024 * 1024),
             ],
         };
-        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        let rows = rows_from_os_snapshot(&snapshot, &[], &[]);
         assert_eq!(rows[0].headline, "node huge");
         assert_eq!(rows[1].headline, "node medium");
         assert_eq!(rows[2].headline, "node small");
@@ -1133,7 +1224,7 @@ mod tests {
                 fake_entry(100, "zsh", "/bin/zsh -c -l eval 'cargo nextest run'", 10 * 1024 * 1024),
             ],
         };
-        let rows = rows_from_os_snapshot(&snapshot, &[&tc]);
+        let rows = rows_from_os_snapshot(&snapshot, &[&tc], &[]);
         assert_eq!(rows[0].kind, ProcessKind::BashBackgrounded, "matched pins top; got {rows:?}");
         assert_eq!(
             rows[1].kind,
@@ -1156,7 +1247,7 @@ mod tests {
                 fake_entry(100, "node", "node a.mjs", 64 * 1024 * 1024),
             ],
         };
-        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        let rows = rows_from_os_snapshot(&snapshot, &[], &[]);
         assert_eq!(rows[0].headline, "node a.mjs", "lower PID first on equal memory");
         assert_eq!(rows[1].headline, "node b.mjs");
     }
@@ -1182,7 +1273,7 @@ mod tests {
                 fake_entry(200, "npm", "npm exec @upstash/context7-mcp", 200 * 1024 * 1024),
             ],
         };
-        let rows = rows_from_os_snapshot(&snapshot, &[&mon]);
+        let rows = rows_from_os_snapshot(&snapshot, &[&mon], &[]);
         let mcp_idx = rows.iter().position(|r| r.kind == ProcessKind::McpServer).expect("mcp row");
         let mon_idx = rows
             .iter()
@@ -1214,7 +1305,7 @@ mod tests {
                 fake_entry(200, "zsh", "/bin/zsh -c -l eval 'cargo nextest run'", 16 * 1024 * 1024),
             ],
         };
-        let rows = rows_from_os_snapshot(&snapshot, &[&tc]);
+        let rows = rows_from_os_snapshot(&snapshot, &[&tc], &[]);
         // Matched zsh first (despite tiny memory), heavy node second.
         assert_eq!(rows[0].kind, ProcessKind::BashBackgrounded);
         assert_eq!(rows[1].headline, "node /path/big-server");
@@ -1223,7 +1314,7 @@ mod tests {
     #[test]
     fn rows_from_os_snapshot_marks_last_sibling_and_ancestor_has_more() {
         let snapshot = tree_snapshot();
-        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        let rows = rows_from_os_snapshot(&snapshot, &[], &[]);
         // zsh root: only root → is_last_sibling = true, no ancestors.
         assert!(rows[0].is_last_sibling);
         assert!(rows[0].ancestor_has_more.is_empty());
@@ -1268,7 +1359,7 @@ mod tests {
             });
         }
         let snapshot = ProcessSnapshot { processes, scanned_at: std::time::SystemTime::now() };
-        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        let rows = rows_from_os_snapshot(&snapshot, &[], &[]);
         // 1 supervisor + 4 visible children + 1 overflow = 6 rows.
         assert_eq!(rows.len(), 6);
         assert_eq!(rows[0].depth, 0);
@@ -1304,7 +1395,7 @@ mod tests {
             });
         }
         let snapshot = ProcessSnapshot { processes, scanned_at: std::time::SystemTime::now() };
-        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        let rows = rows_from_os_snapshot(&snapshot, &[], &[]);
         assert_eq!(rows.len(), 6);
         assert!(rows.iter().all(|r| r.kind != ProcessKind::Overflow));
     }
@@ -1316,7 +1407,7 @@ mod tests {
         // an empty `processes` vec without panicking.
         let snapshot =
             ProcessSnapshot { processes: Vec::new(), scanned_at: std::time::SystemTime::now() };
-        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        let rows = rows_from_os_snapshot(&snapshot, &[], &[]);
         assert!(rows.is_empty());
     }
 
