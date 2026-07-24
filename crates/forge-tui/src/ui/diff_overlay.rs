@@ -2084,7 +2084,23 @@ fn render_comment_chip(
     }
     for (i, turn) in turns.iter().enumerate() {
         let (voice, label) = turn_voice(&turn.author);
+        // Your turns are clickable to edit in place (dim ✎ affordance);
+        // an agent's turn is read-only chrome.
+        let editable = matches!(turn.author, ReviewAuthor::User);
+        let row_key = if editable {
+            BodyRowKey::CommentTurn { key, turn_idx: i }
+        } else {
+            BodyRowKey::CommentChip(key)
+        };
         let dot_style = Style::default().fg(voice).bg(CHIP_BG);
+        let pencil = if editable { "  \u{270e}" } else { "" };
+        let mut dot_spans = vec![
+            Span::styled("\u{25cf} ", dot_style),
+            Span::styled(label.clone(), dot_style.add_modifier(Modifier::BOLD)),
+        ];
+        if editable {
+            dot_spans.push(Span::styled(pencil, note_style));
+        }
         push_card_row(
             lines,
             keys,
@@ -2092,12 +2108,9 @@ fn render_comment_chip(
             card_style,
             body_style,
             content_width,
-            vec![
-                Span::styled("\u{25cf} ", dot_style),
-                Span::styled(label.clone(), dot_style.add_modifier(Modifier::BOLD)),
-            ],
-            2 + label.width(),
-            BodyRowKey::CommentChip(key),
+            dot_spans,
+            2 + label.width() + pencil.width(),
+            row_key,
         );
         let rail = if i == last { " " } else { "\u{2502}" };
         for row in wrap_chip_body(&turn.text, text_width) {
@@ -2111,7 +2124,7 @@ fn render_comment_chip(
                 content_width,
                 vec![Span::styled(format!("{rail} "), note_style), Span::styled(row, body_style)],
                 vis,
-                BodyRowKey::CommentChip(key),
+                row_key,
             );
         }
     }
@@ -3701,6 +3714,41 @@ mod tests {
         assert!(
             lines.iter().any(|l| line_has_fg(l, theme::REVIEW_ADDRESSED)),
             "a turn carries the worker (blue) voice",
+        );
+    }
+
+    #[test]
+    fn your_turns_are_editable_agent_turns_are_read_only() {
+        let comment = chip_comment_with_turns(
+            41,
+            &[
+                (ReviewAuthor::User, "first"),
+                (ReviewAuthor::Agent { label: "implementer".to_owned() }, "reply"),
+                (ReviewAuthor::User, "second"),
+            ],
+            ReviewStatus::Addressed,
+        );
+        let (lines, keys) = render_chip(&comment);
+        // Each of your turns carries a CommentTurn edit key with its index;
+        // the agent's turn carries none.
+        assert!(keys.iter().any(|k| matches!(k, BodyRowKey::CommentTurn { turn_idx: 0, .. })));
+        assert!(keys.iter().any(|k| matches!(k, BodyRowKey::CommentTurn { turn_idx: 2, .. })));
+        assert!(
+            !keys.iter().any(|k| matches!(k, BodyRowKey::CommentTurn { turn_idx: 1, .. })),
+            "the agent turn is not an edit target",
+        );
+        // Clicking turn 2's text row resolves to turn_idx 2.
+        let row = lines.iter().position(|l| line_text(l).contains("second")).expect("turn 2 row");
+        assert!(
+            matches!(keys[row], BodyRowKey::CommentTurn { turn_idx: 2, .. }),
+            "the row rendering turn 2 targets turn 2",
+        );
+        // A dim ✎ marks each of your turns (two here); the agent gets none.
+        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert_eq!(
+            joined.matches('\u{270e}').count(),
+            2,
+            "one ✎ per your-turn, none for the agent"
         );
     }
 
