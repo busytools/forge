@@ -33,6 +33,7 @@
 
 use std::time::SystemTime;
 
+use forge_primitives::McpServerStatus;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 /// Snapshot of `claude`'s descendant processes at one point in time.
@@ -375,6 +376,81 @@ fn mcp_name_from_node(cmdline: &str) -> Option<String> {
     })
 }
 
+/// A configured MCP server distilled to what the process matcher needs:
+/// the configured `name` plus the stdio launch `command` + `args` used to
+/// match it against a live process cmdline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfiguredMcpServer {
+    pub name: String,
+    pub command: String,
+    pub args: Vec<String>,
+}
+
+/// Extract the stdio-launched configured MCP servers from an mcp-status
+/// snapshot. A server contributes `(name, command, args)` only when its
+/// `config` blob carries a string `command` (the stdio shape); url-only
+/// (http/sse) servers have no local process, so they're skipped.
+pub fn configured_mcp_servers(servers: &[McpServerStatus]) -> Vec<ConfiguredMcpServer> {
+    servers
+        .iter()
+        .filter_map(|server| {
+            let config = server.config.as_ref()?;
+            let command = config.get("command")?.as_str()?.to_owned();
+            let args = config
+                .get("args")
+                .and_then(serde_json::Value::as_array)
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+                .unwrap_or_default();
+            Some(ConfiguredMcpServer { name: server.name.clone(), command, args })
+        })
+        .collect()
+}
+
+/// Friendly label for a known-infra process, preferring the CONFIGURED
+/// MCP server name when the process's command + args uniquely match one of
+/// `configured`, otherwise the package-derived name from
+/// [`classify_known_infra`]. `None` when the process isn't a recognized
+/// MCP server at all.
+pub fn resolve_infra_label(
+    cmdline: &str,
+    configured: &[ConfiguredMcpServer],
+) -> Option<InfraLabel> {
+    let inner = extract_inner_command(cmdline).unwrap_or_else(|| cmdline.to_owned());
+    let package = classify_known_infra(&inner)?;
+    let haystack = normalize_ws(&inner);
+    let matched: Vec<&ConfiguredMcpServer> =
+        configured.iter().filter(|server| configured_server_matches(&haystack, server)).collect();
+    match matched.as_slice() {
+        [only] => Some(InfraLabel { name: only.name.clone(), kind: InfraKind::McpServer }),
+        [] => Some(package),
+        many => {
+            tracing::debug!(
+                candidates = ?many.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+                cmdline = %cmdline,
+                "MCP process matched multiple configured servers; using package name"
+            );
+            Some(package)
+        }
+    }
+}
+
+/// True when `haystack` (a whitespace-normalized process cmdline) contains
+/// every match token of `server`. Leading `npx`/`npm` passthrough flags
+/// (e.g. `-y`) are dropped first: `npx -y <pkg>` re-execs into `npm exec
+/// <pkg>` with the flag stripped, so the tokens are the package spec (the
+/// first non-flag arg) plus everything after it - where the real
+/// distinguisher `--cdp-endpoint <url>` lives and survives into the process
+/// cmdline. Empty / all-flag args fall back to the bare `command`. Substring
+/// containment tolerates the process-side `@version` suffix.
+fn configured_server_matches(haystack: &str, server: &ConfiguredMcpServer) -> bool {
+    let mut tokens = server.args.iter().skip_while(|arg| arg.starts_with('-')).peekable();
+    if tokens.peek().is_none() {
+        let command = server.command.as_str();
+        return !command.is_empty() && haystack.contains(command);
+    }
+    tokens.all(|token| !token.is_empty() && haystack.contains(token.as_str()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -676,5 +752,182 @@ mod tests {
         // self_pid filter applies.
         let me = std::process::id();
         let _ = scan(me, &[]);
+    }
+
+    fn mcp_status(name: &str, config: Option<serde_json::Value>) -> McpServerStatus {
+        McpServerStatus {
+            name: name.to_owned(),
+            status: forge_primitives::McpServerConnectionStatus::Connected,
+            server_info: None,
+            error: None,
+            config,
+            scope: None,
+            tools: None,
+            sampling_configured: None,
+            sampling_required: None,
+        }
+    }
+
+    fn configured(name: &str, command: &str, args: &[&str]) -> ConfiguredMcpServer {
+        ConfiguredMcpServer {
+            name: name.to_owned(),
+            command: command.to_owned(),
+            args: args.iter().map(|a| (*a).to_owned()).collect(),
+        }
+    }
+
+    fn playwright_pair() -> Vec<ConfiguredMcpServer> {
+        // Real config shape: `npx -y @playwright/mcp@latest --cdp-endpoint <url>`.
+        // npx re-execs into `npm exec ...` and STRIPS the leading `-y`, so the
+        // live process (the match haystack) never carries it.
+        vec![
+            configured(
+                "playwright",
+                "npx",
+                &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://192.0.2.5:9222"],
+            ),
+            configured(
+                "playwright-local",
+                "npx",
+                &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://127.0.0.1:9222"],
+            ),
+        ]
+    }
+
+    #[test]
+    fn configured_mcp_servers_extracts_stdio_command_and_args() {
+        // Extraction is verbatim - the leading `-y` is preserved here; it's
+        // only dropped at match time (npx strips it re-execing to npm exec).
+        let servers = vec![mcp_status(
+            "playwright",
+            Some(serde_json::json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://192.0.2.5:9222"],
+                "env": {},
+            })),
+        )];
+        assert_eq!(
+            configured_mcp_servers(&servers),
+            vec![configured(
+                "playwright",
+                "npx",
+                &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://192.0.2.5:9222"],
+            )]
+        );
+    }
+
+    #[test]
+    fn configured_mcp_servers_skips_url_only_and_configless() {
+        let servers = vec![
+            // http (url-only) server has no local process to name.
+            mcp_status("remote", Some(serde_json::json!({"type": "http", "url": "https://x/mcp"}))),
+            // no config blob at all.
+            mcp_status("bare", None),
+        ];
+        assert!(configured_mcp_servers(&servers).is_empty());
+    }
+
+    #[test]
+    fn resolve_infra_label_uses_configured_name_for_same_package_distinct_args() {
+        // Two servers on the same @playwright/mcp package, distinguished
+        // only by --cdp-endpoint. Package-only naming collapses both to
+        // "playwright"; the configured match keeps them distinct.
+        let servers = playwright_pair();
+        let hub = "npm exec @playwright/mcp@latest --cdp-endpoint http://192.0.2.5:9222";
+        let local = "npm exec @playwright/mcp@latest --cdp-endpoint http://127.0.0.1:9222";
+        assert_eq!(resolve_infra_label(hub, &servers).expect("hub").name, "playwright");
+        assert_eq!(resolve_infra_label(local, &servers).expect("local").name, "playwright-local");
+    }
+
+    #[test]
+    fn resolve_infra_label_falls_back_to_package_name_when_unmatched() {
+        // A running MCP process with no configured match keeps the
+        // package-derived name.
+        let ctx = resolve_infra_label("npm exec @upstash/context7-mcp", &playwright_pair())
+            .expect("context7");
+        assert_eq!(ctx.name, "context7");
+        assert_eq!(ctx.kind, InfraKind::McpServer);
+    }
+
+    #[test]
+    fn resolve_infra_label_falls_back_on_ambiguous_match() {
+        // Two configured servers whose args both match one process: an
+        // ambiguous tie falls back to the package name rather than guessing.
+        let servers = vec![
+            configured("pw-a", "npx", &["@playwright/mcp@latest"]),
+            configured("pw-b", "npx", &["@playwright/mcp@latest"]),
+        ];
+        let label = resolve_infra_label(
+            "npm exec @playwright/mcp@latest --cdp-endpoint http://192.0.2.5:9222",
+            &servers,
+        )
+        .expect("playwright");
+        assert_eq!(label.name, "playwright");
+    }
+
+    #[test]
+    fn resolve_infra_label_is_none_for_non_mcp_process() {
+        // A non-MCP process stays unclassified even when servers are configured.
+        assert!(resolve_infra_label("rustc --crate-name forge_tui", &playwright_pair()).is_none());
+    }
+
+    #[test]
+    fn resolve_infra_label_without_configured_matches_package_name() {
+        // No configured servers -> identical to classify_known_infra.
+        assert_eq!(
+            resolve_infra_label(
+                "npm exec @playwright/mcp@latest --cdp-endpoint http://192.0.2.5:9222",
+                &[],
+            )
+            .expect("playwright")
+            .name,
+            "playwright"
+        );
+    }
+
+    #[test]
+    fn configured_mcp_servers_extracts_command_only_server() {
+        // A stdio server with a command and no args extracts with empty args.
+        let servers =
+            vec![mcp_status("fs", Some(serde_json::json!({"type": "stdio", "command": "mcp-fs"})))];
+        assert_eq!(configured_mcp_servers(&servers), vec![configured("fs", "mcp-fs", &[])]);
+    }
+
+    #[test]
+    fn resolve_infra_label_matches_bare_command_server() {
+        // A server configured as a bare command (no args) matches a process
+        // whose cmdline contains that command, taking the configured name.
+        let servers = vec![configured("ctx-custom", "context7-mcp", &[])];
+        let label = resolve_infra_label("npm exec @upstash/context7-mcp", &servers).expect("ctx");
+        assert_eq!(label.name, "ctx-custom");
+    }
+
+    #[test]
+    fn resolve_infra_label_near_miss_falls_back_to_package() {
+        // A single configured server on the right package but a DIFFERENT
+        // --cdp-endpoint than the process: the endpoint token is absent, so
+        // the every-token match fails and the package name wins. An
+        // any-token match would wrongly pick "pw-hub".
+        let servers = vec![configured(
+            "pw-hub",
+            "npx",
+            &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://192.0.2.5:9222"],
+        )];
+        let label = resolve_infra_label(
+            "npm exec @playwright/mcp@latest --cdp-endpoint http://127.0.0.1:9222",
+            &servers,
+        )
+        .expect("pw");
+        assert_eq!(label.name, "playwright");
+    }
+
+    #[test]
+    fn resolve_infra_label_empty_config_does_not_match_everything() {
+        // A degenerate config (empty command, no args) must not match every
+        // process; it falls back to the package name.
+        let servers = vec![configured("blank", "", &[])];
+        let label = resolve_infra_label("npm exec @upstash/context7-mcp", &servers).expect("ctx");
+        assert_eq!(label.name, "context7");
     }
 }
