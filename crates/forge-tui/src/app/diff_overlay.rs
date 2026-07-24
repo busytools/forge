@@ -335,6 +335,9 @@ pub enum BodyRowKey {
     /// reopen the editor seeded with that turn's text to rewrite it in
     /// place. Only `User`-authored turns emit this key.
     CommentTurn { key: LineKey, turn_idx: usize },
+    /// A comment card's reply line. Click → open an empty editor that
+    /// appends a new user turn on save (no state change, no nudge).
+    CommentReply { key: LineKey },
     /// A comment card's button row (`✓ Resolve` / `↺ Reopen`). Each
     /// action's pane-relative `[start, end)` column span is `Some` only
     /// when that action applies to the thread's current state; a click
@@ -3047,6 +3050,7 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
         BodyRowKey::CommentTurn { key, turn_idx } => {
             reopen_comment_for_turn(overlay, key, Some(turn_idx))
         }
+        BodyRowKey::CommentReply { key } => reopen_comment_for_turn(overlay, key, None),
         BodyRowKey::CommentButton { key, resolve, reopen } => {
             // Route to whichever applicable button the click lands in; a
             // click on the padding or a dim (inapplicable) action no-ops.
@@ -5795,6 +5799,142 @@ mod tests {
         assert_eq!(comment.thread.comments[0].text, "first note", "turn 0 is untouched");
         assert_eq!(comment.thread.comments[1].text, "second note EDITED", "turn 1 was rewritten");
         assert_eq!(comment.comment_text, "first note", "the snippet still mirrors the first turn");
+    }
+
+    #[test]
+    fn reply_appends_a_new_user_turn_without_changing_state() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let prior = HunkComment {
+            key,
+            path: "src/x.rs".into(),
+            line: 10,
+            hunk_context: vec![],
+            comment_text: "first note".into(),
+            commit: None,
+            thread: user_thread("first note"),
+            authored_this_session: true,
+            persisted: true,
+        };
+        let mut editor = TextArea::default();
+        editor.insert_str("second thought");
+        overlay.active_input =
+            Some(ActiveCommentInput { key, editor, prior_comment: Some(prior), edit_turn: None });
+        app.diff_overlay = Some(overlay);
+
+        save_active_input(&mut app);
+
+        let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
+        assert_eq!(comment.thread.comments.len(), 2, "the reply appended a turn");
+        assert_eq!(comment.thread.comments[0].text, "first note");
+        assert_eq!(comment.thread.comments[1].text, "second thought");
+        assert!(matches!(comment.thread.comments[1].author, ReviewAuthor::User));
+        assert_eq!(comment.thread.status, ReviewStatus::Open, "a reply never changes state");
+    }
+
+    #[test]
+    fn a_second_reply_appends_a_second_turn() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        overlay.comments.push(HunkComment {
+            key,
+            path: "src/x.rs".into(),
+            line: 10,
+            hunk_context: vec![],
+            comment_text: "note".into(),
+            commit: None,
+            thread: user_thread("note"),
+            authored_this_session: true,
+            persisted: true,
+        });
+        app.diff_overlay = Some(overlay);
+
+        for reply in ["one", "two"] {
+            if let Some(o) = app.diff_overlay.as_mut() {
+                reopen_comment_for_turn(o, key, None);
+                if let Some(input) = o.active_input.as_mut() {
+                    input.editor.insert_str(reply);
+                }
+            }
+            save_active_input(&mut app);
+        }
+
+        let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
+        let texts: Vec<&str> = comment.thread.comments.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, vec!["note", "one", "two"], "each reply appends another turn");
+    }
+
+    #[test]
+    fn empty_reply_restores_the_thread_untouched() {
+        let mut app = App::test_default();
+        let mut state = sample_state();
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let prior = HunkComment {
+            key,
+            path: "a.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "keep me".into(),
+            commit: None,
+            thread: user_thread("keep me"),
+            authored_this_session: true,
+            persisted: false,
+        };
+        state.active_input = Some(ActiveCommentInput {
+            key,
+            editor: TextArea::default(),
+            prior_comment: Some(prior),
+            edit_turn: None,
+        });
+        app.diff_overlay = Some(state);
+
+        save_active_input(&mut app);
+
+        let after = app.diff_overlay.as_ref().expect("overlay");
+        assert!(after.active_input.is_none());
+        assert_eq!(after.comments.len(), 1, "an empty reply restores the comment");
+        assert_eq!(after.comments[0].thread.comments.len(), 1, "no empty turn appended");
+        assert_eq!(after.comments[0].comment_text, "keep me");
+    }
+
+    #[test]
+    fn body_click_on_reply_opens_an_empty_editor() {
+        let mut state = sample_state();
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        state.comments.push(HunkComment {
+            key,
+            path: "a.rs".into(),
+            line: 7,
+            hunk_context: vec![],
+            comment_text: "note".into(),
+            commit: None,
+            thread: user_thread("note"),
+            authored_this_session: true,
+            persisted: false,
+        });
+        state.body_keys = vec![
+            BodyRowKey::FileHeader { file_idx: 0 },
+            BodyRowKey::HunkHeader { file_idx: 0, hunk_idx: 0 },
+            BodyRowKey::HunkRow { left: Some(key), right: Some(key) },
+            BodyRowKey::CommentReply { key },
+        ];
+        state.pane_origin_row = 0;
+        state.pane_origin_col = 41;
+        state.pane_width = 119;
+        let effect = handle_left_click(&mut state, 60, 3, 160);
+        assert!(effect.redraw);
+        let input = state.active_input.expect("reply editor opened");
+        assert_eq!(input.edit_turn, None, "a reply has no edit target");
+        assert!(input.prior_comment.is_some(), "the thread is stashed for restore");
+        assert!(input.editor.lines().join("\n").is_empty(), "the reply editor starts empty");
     }
 
     #[test]

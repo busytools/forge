@@ -2146,6 +2146,25 @@ fn render_comment_chip(
         );
     }
 
+    // Reply line: appends a new user turn on click (no state change, no
+    // nudge). A dim hint doubles as the affordance label.
+    let reply_label = "\u{21b3} reply";
+    let reply_hint = "  add a note";
+    push_card_row(
+        lines,
+        keys,
+        &indent,
+        card_style,
+        body_style,
+        content_width,
+        vec![
+            Span::styled(reply_label, note_style.add_modifier(Modifier::BOLD)),
+            Span::styled(reply_hint, note_style),
+        ],
+        reply_label.width() + reply_hint.width(),
+        BodyRowKey::CommentReply { key },
+    );
+
     blank(lines, keys);
 
     // Actions: `✓ Resolve   ↺ Reopen`. Resolve applies to Open / Addressed
@@ -3750,6 +3769,17 @@ mod tests {
             2,
             "one ✎ per your-turn, none for the agent"
         );
+    }
+
+    #[test]
+    fn card_shows_a_reply_affordance() {
+        let (lines, keys) = render_chip(&chip_comment(9, "take a look", ReviewStatus::Open));
+        assert!(
+            keys.iter().any(|k| matches!(k, BodyRowKey::CommentReply { .. })),
+            "the card carries a reply hit-region",
+        );
+        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("reply"), "the card hints at reply; got:\n{joined}");
     }
 
     #[test]
