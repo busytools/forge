@@ -5,7 +5,6 @@ pub(crate) mod cli_version;
 pub(crate) mod clipboard_image;
 pub(crate) mod config;
 pub(crate) mod connect;
-pub(crate) mod cursor_blink;
 mod dialog;
 pub(crate) mod diff_overlay;
 pub(crate) mod events;
@@ -326,7 +325,6 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         if !is_animating && app.needs_redraw {
             tab_title::update_tab_title(&app.status, app.spinner_frame, app.cwd());
         }
-        drive_cursor_blink(app, Instant::now());
         // Smooth scroll still settling - viewport row index (usize)
         // converts to f32 for sub-pixel scroll comparison; loss is bounded
         // by terminal height so precision is irrelevant here.
@@ -445,34 +443,6 @@ fn advance_spinner_frame(app: &mut App, now: Instant) {
             app.spinner_frame = app.spinner_frame.wrapping_add(1);
             app.spinner_last_advance_at = Some(now);
         }
-    }
-}
-
-/// Whether a text input currently has focus (and should show a blinking
-/// cursor): the main chat editor in Chat view, or the /diff comment
-/// editor when its inline input is open.
-fn has_focused_text_input(app: &App) -> bool {
-    match app.active_view {
-        ActiveView::Chat => true,
-        ActiveView::Diff => app.diff_overlay.as_ref().is_some_and(|o| o.active_input.is_some()),
-        ActiveView::Launchpad | ActiveView::Plugins | ActiveView::Mcp | ActiveView::Usage => false,
-    }
-}
-
-/// Advance the focused-input cursor blink. Forces a redraw when the
-/// phase flips so an otherwise-idle focused editor keeps animating, and
-/// resets the epoch when focus is lost so the block starts visible on
-/// the next focus.
-fn drive_cursor_blink(app: &mut App, now: Instant) {
-    if has_focused_text_input(app) {
-        let epoch = *app.cursor_blink_epoch.get_or_insert(now);
-        let on = cursor_blink::blink_on(now.saturating_duration_since(epoch));
-        if on != app.cursor_blink_on {
-            app.cursor_blink_on = on;
-            app.needs_redraw = true;
-        }
-    } else {
-        app.cursor_blink_epoch = None;
     }
 }
 
@@ -1161,49 +1131,5 @@ mod tests {
         assert_eq!(app.spinner_frame, 1);
         advance_spinner_frame(&mut app, base + Duration::from_millis(121));
         assert_eq!(app.spinner_frame, 2);
-    }
-
-    #[test]
-    fn focused_text_input_depends_on_the_view_and_editor() {
-        let mut app = App::test_default();
-        app.active_view = ActiveView::Chat;
-        assert!(has_focused_text_input(&app), "the chat editor is focused in chat");
-        app.active_view = ActiveView::Usage;
-        assert!(!has_focused_text_input(&app), "an overlay with no text input is not focused");
-    }
-
-    #[test]
-    fn cursor_blink_toggles_and_requests_redraw_while_focused() {
-        let mut app = App::test_default();
-        app.active_view = ActiveView::Chat;
-        let t0 = Instant::now();
-        app.needs_redraw = false;
-        drive_cursor_blink(&mut app, t0);
-        assert!(app.cursor_blink_on, "cursor starts visible on focus");
-        assert!(app.cursor_blink_epoch.is_some());
-
-        app.needs_redraw = false;
-        drive_cursor_blink(&mut app, t0 + cursor_blink::CURSOR_BLINK_INTERVAL);
-        assert!(!app.cursor_blink_on, "the phase flips off after one interval");
-        assert!(app.needs_redraw, "a phase flip forces a redraw so the block animates");
-
-        app.needs_redraw = false;
-        drive_cursor_blink(
-            &mut app,
-            t0 + cursor_blink::CURSOR_BLINK_INTERVAL + Duration::from_millis(1),
-        );
-        assert!(!app.cursor_blink_on);
-        assert!(!app.needs_redraw, "no redraw while the phase is unchanged");
-    }
-
-    #[test]
-    fn cursor_blink_epoch_clears_when_no_input_is_focused() {
-        let mut app = App::test_default();
-        app.active_view = ActiveView::Chat;
-        drive_cursor_blink(&mut app, Instant::now());
-        assert!(app.cursor_blink_epoch.is_some());
-        app.active_view = ActiveView::Usage;
-        drive_cursor_blink(&mut app, Instant::now());
-        assert!(app.cursor_blink_epoch.is_none(), "the epoch clears when nothing is focused");
     }
 }

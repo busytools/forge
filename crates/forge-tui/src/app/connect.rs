@@ -220,8 +220,6 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         spinner_last_advance_at: None,
         spinner_style,
         spinner_epoch: std::time::Instant::now(),
-        cursor_blink_epoch: None,
-        cursor_blink_on: true,
         spinner_picker: None,
         account_picker: None,
         tools_collapsed: true,

@@ -988,10 +988,6 @@ pub struct DiffOverlayState {
     /// or `None` when nothing's being edited. Keys flow to this
     /// editor while it's open; Enter saves, Esc cancels.
     pub active_input: Option<ActiveCommentInput>,
-    /// Current cursor blink phase, mirrored from `App` each render so the
-    /// inline comment editor can paint a blinking block cursor (it is
-    /// hand-rendered into the scroll body, not a `TextArea` widget).
-    pub cursor_blink_on: bool,
     /// Parallel index to the renderer's body lines: for every row
     /// the right pane drew, what does that row represent. The mouse
     /// handler reads this to resolve a click into a `BodyRowKey`.
@@ -1546,7 +1542,6 @@ impl DiffOverlayState {
             rail_scroll: 0,
             comments: Vec::new(),
             active_input: None,
-            cursor_blink_on: true,
             body_keys: Vec::new(),
             pane_origin_row: 0,
             pane_origin_col: 0,
@@ -1642,7 +1637,6 @@ impl DiffOverlayState {
             rail_scroll: 0,
             comments: Vec::new(),
             active_input: None,
-            cursor_blink_on: true,
             body_keys: Vec::new(),
             pane_origin_row: 0,
             pane_origin_col: 0,

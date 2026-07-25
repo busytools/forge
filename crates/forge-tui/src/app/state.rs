@@ -376,14 +376,6 @@ pub struct App {
     /// Monotonic start anchor for the time-based spinner. Frame index
     /// derives from `spinner_epoch.elapsed() / cadence_ms`.
     pub spinner_epoch: Instant,
-    /// Blink epoch for the focused-input cursor: set when a text input
-    /// gains focus, cleared when none is focused. `None` = no focused
-    /// input this frame.
-    pub cursor_blink_epoch: Option<Instant>,
-    /// Last-computed cursor blink phase (`true` = block visible). The
-    /// render loop refreshes it each frame; the input renderers read it
-    /// to style the cursor cell.
-    pub cursor_blink_on: bool,
     /// Open `/spinner` picker overlay state; `None` when closed.
     pub spinner_picker: Option<crate::app::spinner_picker::SpinnerPickerState>,
     /// Open `/account` picker overlay state; `None` when closed.
@@ -3148,8 +3140,6 @@ impl App {
             spinner_last_advance_at: None,
             spinner_style: forge_workspace::SpinnerStyle::default(),
             spinner_epoch: Instant::now(),
-            cursor_blink_epoch: None,
-            cursor_blink_on: true,
             spinner_picker: None,
             account_picker: None,
             tools_collapsed: true,

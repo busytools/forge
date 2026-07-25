@@ -76,13 +76,6 @@ const STEPPER_HEIGHT: u16 = 4;
 pub fn render(frame: &mut Frame, app: &mut App) {
     app.cached_frame_area = frame.area();
 
-    // Mirror the blink phase onto the overlay so the inline comment editor
-    // (hand-rendered into the scroll body) can paint its cursor cell.
-    let blink_on = app.cursor_blink_on;
-    if let Some(overlay) = app.diff_overlay.as_mut() {
-        overlay.cursor_blink_on = blink_on;
-    }
-
     let Some(overlay) = app.diff_overlay.as_ref() else {
         super::page::render_page(frame, "Diff review", None, Line::default(), |frame, body| {
             render_missing_state(frame, body);
@@ -1735,7 +1728,6 @@ fn push_unified_body(
                             gutter_width,
                             row.line_no.unwrap_or(0),
                             pane_width,
-                            overlay.cursor_blink_on,
                             lines,
                             keys,
                         );
@@ -1851,15 +1843,7 @@ fn push_split_body(
                             diff_line.new_line.unwrap_or(0)
                         }
                     };
-                    render_active_input(
-                        input,
-                        gutter_width,
-                        anchor_line,
-                        pane_width,
-                        overlay.cursor_blink_on,
-                        lines,
-                        keys,
-                    );
+                    render_active_input(input, gutter_width, anchor_line, pane_width, lines, keys);
                 }
             }
         }
@@ -2281,7 +2265,6 @@ fn render_active_input(
     gutter_width: usize,
     anchor_line: u32,
     pane_width: u16,
-    blink_on: bool,
     lines: &mut Vec<Line<'static>>,
     keys: &mut Vec<BodyRowKey>,
 ) {
@@ -2317,17 +2300,19 @@ fn render_active_input(
         } else {
             editor_lines.to_vec()
         };
-    let field = inner_width.saturating_sub(2);
-    let (cursor_row, cursor_col) = input.editor.cursor();
-    for (row_idx, body_row) in body_rows.iter().enumerate() {
+    for body_row in &body_rows {
         let placeholder = body_rows.len() == 1 && body_row == "(type your comment)";
-        // The block cursor paints on the on-phase, on the row holding it.
-        let cursor_here = (blink_on && row_idx == cursor_row).then_some(cursor_col);
-        let mut spans =
-            vec![Span::raw("  "), Span::raw(indent.clone()), Span::styled("│ ", orange)];
-        spans.extend(editor_row_content(body_row, field, placeholder, cursor_here));
-        spans.push(Span::styled(" │", orange));
-        lines.push(Line::from(spans));
+        let fitted = fit_box_content(body_row, inner_width.saturating_sub(2));
+        let fitted_chars = fitted.chars().count();
+        let pad = inner_width.saturating_sub(2).saturating_sub(fitted_chars);
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::raw(indent.clone()),
+            Span::styled("│ ", orange),
+            if placeholder { Span::styled(fitted, dim) } else { Span::raw(fitted) },
+            Span::raw(" ".repeat(pad)),
+            Span::styled(" │", orange),
+        ]));
         keys.push(BodyRowKey::InputRow(input.key));
     }
 
@@ -2350,51 +2335,6 @@ fn render_active_input(
     let bottom = format!("└{}┘", "─".repeat(box_width.saturating_sub(2)));
     lines.push(Line::from(vec![Span::raw("  "), Span::raw(indent), Span::styled(bottom, orange)]));
     keys.push(BodyRowKey::InputRow(input.key));
-}
-
-/// Content spans for one editor body row, padded to exactly `field`
-/// columns. `cursor` paints a reverse-video block at that column (a
-/// spare cell is reserved when the cursor sits at end-of-line so the
-/// row width is unchanged); `None` renders text only. The placeholder
-/// row renders dim.
-fn editor_row_content(
-    row: &str,
-    field: usize,
-    placeholder: bool,
-    cursor: Option<usize>,
-) -> Vec<Span<'static>> {
-    let base = if placeholder { Style::default().fg(theme::DIM) } else { Style::default() };
-    let reversed = Style::default().add_modifier(Modifier::REVERSED);
-    let Some(col) = cursor else {
-        let fitted = fit_box_content(row, field);
-        let pad = field.saturating_sub(fitted.chars().count());
-        return vec![Span::styled(fitted, base), Span::raw(" ".repeat(pad))];
-    };
-    // Cursor over an existing char: split the fitted row around it.
-    if col < row.chars().count() {
-        let fitted = fit_box_content(row, field);
-        let fchars: Vec<char> = fitted.chars().collect();
-        if col < fchars.len() {
-            let before: String = fchars[..col].iter().collect();
-            let at: String = fchars[col..=col].iter().collect();
-            let after: String = fchars[col + 1..].iter().collect();
-            let pad = field.saturating_sub(fchars.len());
-            return vec![
-                Span::styled(before, base),
-                Span::styled(at, reversed),
-                Span::styled(after, base),
-                Span::raw(" ".repeat(pad)),
-            ];
-        }
-    }
-    // Cursor at end of line: text (leaving one cell) then a block cursor.
-    let fitted = fit_box_content(row, field.saturating_sub(1));
-    let pad = field.saturating_sub(fitted.chars().count() + 1);
-    vec![
-        Span::styled(fitted, base),
-        Span::styled(" ".to_owned(), reversed),
-        Span::raw(" ".repeat(pad)),
-    ]
 }
 
 /// Trim `text` to fit within `max_chars` columns. Used by the
@@ -3840,76 +3780,6 @@ mod tests {
         );
         let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(joined.contains("reply"), "the card hints at reply; got:\n{joined}");
-    }
-
-    #[test]
-    fn active_input_blinks_a_block_cursor() {
-        let mut editor = tui_textarea::TextArea::default();
-        editor.insert_str("hi");
-        let input = ActiveCommentInput {
-            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
-            editor,
-            prior_comment: None,
-            edit_turn: None,
-        };
-        let has_reverse = |ls: &[Line<'static>]| {
-            ls.iter()
-                .any(|l| l.spans.iter().any(|s| s.style.add_modifier.contains(Modifier::REVERSED)))
-        };
-        let mut on_lines = Vec::new();
-        let mut on_keys = Vec::new();
-        render_active_input(&input, 4, 10, 80, true, &mut on_lines, &mut on_keys);
-        assert!(has_reverse(&on_lines), "the on-phase paints a reverse-video block cursor");
-
-        let mut off_lines = Vec::new();
-        let mut off_keys = Vec::new();
-        render_active_input(&input, 4, 10, 80, false, &mut off_lines, &mut off_keys);
-        assert!(!has_reverse(&off_lines), "the off-phase hides the cursor");
-    }
-
-    #[test]
-    fn editor_row_content_stays_field_wide_at_every_cursor_position() {
-        let field = 12;
-        let short = "hi there"; // fits within the field
-        let long = "abcdefghijklmnopqrst"; // forces truncation
-        for row in [short, long] {
-            for cursor in [None, Some(0), Some(4), Some(row.chars().count()), Some(99)] {
-                let spans = editor_row_content(row, field, false, cursor);
-                let width: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-                assert_eq!(width, field, "row={row:?} cursor={cursor:?} must stay field-wide");
-            }
-        }
-    }
-
-    #[test]
-    fn editor_row_content_reverses_only_the_char_under_the_cursor() {
-        let spans = editor_row_content("hello", 12, false, Some(1));
-        let reversed: Vec<&str> = spans
-            .iter()
-            .filter(|s| s.style.add_modifier.contains(Modifier::REVERSED))
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert_eq!(reversed, vec!["e"], "the block reverses exactly the char at the cursor");
-    }
-
-    #[test]
-    fn active_input_cursor_paints_only_its_own_row() {
-        let mut editor = tui_textarea::TextArea::default();
-        editor.insert_str("line one\nline two"); // cursor lands on the second row
-        let input = ActiveCommentInput {
-            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
-            editor,
-            prior_comment: None,
-            edit_turn: None,
-        };
-        let mut lines = Vec::new();
-        let mut keys = Vec::new();
-        render_active_input(&input, 4, 10, 80, true, &mut lines, &mut keys);
-        let reversed_rows = lines
-            .iter()
-            .filter(|l| l.spans.iter().any(|s| s.style.add_modifier.contains(Modifier::REVERSED)))
-            .count();
-        assert_eq!(reversed_rows, 1, "only the cursor's row carries the block");
     }
 
     #[test]
