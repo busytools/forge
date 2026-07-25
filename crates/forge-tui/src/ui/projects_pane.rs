@@ -1,18 +1,17 @@
 //! Projects pane (left side, Wide + Medium tiers).
 //!
 //! Renders projects from
-//! [`forge_workspace::Workspace::list_projects`] with the active
-//! project highlighted; the active project's sessions drill down
-//! immediately under its row. Each row stamps a [`PaneHitTarget`]
-//! into [`App::pane_hit_targets`] for the mouse handler (next
-//! commit) to read on click events.
+//! [`forge_workspace::Workspace::list_projects`], grouped by org,
+//! with the active project highlighted; a project's live workers
+//! drill down immediately under its row. Each row stamps a
+//! [`PaneHitTarget`] into [`App::pane_hit_targets`] for the mouse
+//! handler to read on click events.
 //!
-//! Width handling: project + session labels are head-truncated with
-//! a trailing `…` when they overflow the available row width. At
-//! Wide tier (26ch) truncation is rare; at Medium tier (20ch) it is
-//! routine. Hit-target stamps always carry the *un-truncated*
-//! identifier so click routing keeps working regardless of
-//! truncation.
+//! Width handling: project + worker labels are head-truncated with
+//! a trailing `…` when they overflow the available row width -
+//! rare at Wide tier (32ch pane), routine at Medium (24ch).
+//! Hit-target stamps always carry the *un-truncated* identifier so
+//! click routing keeps working regardless of truncation.
 
 use std::time::{Instant, SystemTime};
 
@@ -271,7 +270,7 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App, projects: &[
 /// sort alphabetically; orgs themselves sort alphabetically. The
 /// per-row glyph distinguishes live sessions (spinner - RUST_ORANGE
 /// when focused, terminal-default otherwise) from idle catalog
-/// entries (`○` DIM). Live rows carry a `⏻` close affordance at
+/// entries (`○` DIM). Live rows carry an `x` close affordance at
 /// the right edge; idle rows show last-activity timestamp instead.
 ///
 /// Tree connectors mirror the GIT / PROCESSES sections (`├─` /
@@ -429,7 +428,7 @@ fn append_project_rows(
                 spinner_glyph,
                 now,
             );
-            append_worker_tree_children(lines, area, app, project, spinner_glyph);
+            append_worker_tree_children(lines, area, app, project, is_last, spinner_glyph);
             // Deadzone gap row between adjacent projects in the
             // same org - emits the `│  ` tree continuation so the
             // connector lines visually link across the breathing
@@ -598,11 +597,15 @@ fn append_org_project_row(
 /// Source of truth is `workspace.list_live_workers(project_key)`;
 /// the TUI never caches this so the snapshot stays fresh between
 /// `SessionUpdate::WorkerStatusChanged` events.
+///
+/// `parent_is_last` mirrors the project row's own last-in-org flag so
+/// the subtree knows whether the org trunk is still open above it.
 fn append_worker_tree_children(
     lines: &mut Vec<Line<'static>>,
     area: Rect,
     app: &mut App,
     project: &ProjectView,
+    parent_is_last: bool,
     spinner_glyph: char,
 ) {
     let Some(workspace) = app.workspace.as_ref() else {
@@ -625,16 +628,14 @@ fn append_worker_tree_children(
     for (idx, worker) in workers.iter().enumerate() {
         // Leading breathing gap above the FIRST worker so the tree
         // connector visually links the project lead row to probe-a.
-        // TWO `│` glyphs are needed: one at col 1 (the org
-        // continuation, mirrors what worker rows emit), and one at
-        // col 4 (the worker-subtree continuation, drops down to the
-        // first worker's `├─`). Without the col-4 `│`, probe-a's
-        // tree connector appears to start mid-air - the vertical
-        // line of its branch has no parent above it.
+        // The col-4 `│` is the worker-subtree continuation dropping
+        // down to the first worker's `├─`; without it probe-a's
+        // connector appears to start mid-air. The col-1 cell is the
+        // org continuation, blank once the parent closed the trunk.
         if idx == 0 {
             lines.push(Line::from(vec![
                 Span::raw(" "),
-                Span::styled("\u{2502}  ".to_owned(), Style::default().fg(theme::DIM)),
+                org_trunk_span(parent_is_last),
                 Span::styled("\u{2502}".to_owned(), Style::default().fg(theme::DIM)),
             ]));
         }
@@ -718,16 +719,16 @@ fn append_worker_tree_children(
             glyph_for_lifecycle(lifecycle, is_focused, has_background_work, spinner_glyph)
         };
 
-        // Left-indent (1) + `│  ` (3) so the worker's tree connector
-        // hangs off the active project's column rather than the org
-        // column. Then connector, glyph, label, pad, close button,
-        // gutter. Close affordance: ` x ` 3-cell button on USER_MSG_BG
-        // slate. Same shape and column as the active project row's
-        // close button so the worker rows visually align with the
-        // parent.
+        // Left-indent (1) + org trunk column (3) so the worker's tree
+        // connector hangs off the active project's column rather than
+        // the org column. Then connector, glyph, label, pad, close
+        // button, gutter. Close affordance: ` x ` 3-cell button on
+        // USER_MSG_BG slate. Same shape and column as the active
+        // project row's close button so the worker rows visually align
+        // with the parent.
         let mut spans: Vec<Span<'static>> = vec![
             Span::raw(" "),
-            Span::styled("\u{2502}  ".to_owned(), Style::default().fg(theme::DIM)),
+            org_trunk_span(parent_is_last),
             Span::styled(tree_glyph.to_owned(), Style::default().fg(theme::DIM)),
             Span::styled(glyph, Style::default().fg(glyph_color)),
             Span::raw(" "),
@@ -789,26 +790,36 @@ fn append_worker_tree_children(
             x_end: close_x_end,
         });
 
-        // Inter-row breathing gap: two `│` glyphs to keep both the
-        // org-continuation (col 1) and the worker-subtree
-        // continuation (col 4) painting through the blank band.
-        // Skipped after the last worker - the project-to-project
-        // deadzone (or the org break) takes its place; from there on
-        // only the org `│` matters because the worker subtree has
-        // ended.
+        // Inter-row breathing gap: the worker-subtree continuation
+        // (col 4) plus the org continuation (col 1) when the parent
+        // still has siblings below it. Skipped after the last worker -
+        // the project-to-project deadzone (or the org break) takes its
+        // place, and the subtree has ended so only the org trunk can
+        // still be owed.
         if !is_last {
             lines.push(Line::from(vec![
                 Span::raw(" "),
-                Span::styled("\u{2502}  ".to_owned(), Style::default().fg(theme::DIM)),
+                org_trunk_span(parent_is_last),
                 Span::styled("\u{2502}".to_owned(), Style::default().fg(theme::DIM)),
             ]));
         }
     }
 }
 
+/// The 3-cell org-trunk column a worker subtree sits behind: `│  `
+/// while more projects follow in the org, blank once the parent
+/// project's `└─` closed the trunk.
+fn org_trunk_span(parent_is_last: bool) -> Span<'static> {
+    if parent_is_last {
+        Span::raw("   ")
+    } else {
+        Span::styled("\u{2502}  ".to_owned(), Style::default().fg(theme::DIM))
+    }
+}
+
 /// Chrome budget for an org-grouped row:
 /// `<1 PANE_PAD><3 connector><1 glyph><1 sp><name><1 sp><RIGHT col><1 right pad>`
-/// where RIGHT col = 3 cells (` ⏻ ` button for active rows / 3-char
+/// where RIGHT col = 3 cells (` x ` button for active rows / 3-char
 /// `Xm`/`Xh`/`Xd` time for idle rows). Total = 6 left chrome + 1 sep
 /// + 3 right col + 1 right pad = 11 chars per row.
 fn name_budget_org_row(area_width: u16) -> usize {
@@ -1430,15 +1441,6 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-/// Append a 12-cell-bar row + a DIM right-justified ETA row for one
-/// usage window. When the window is missing (no snapshot yet, account
-/// has no Anthropic plan, etc.) the bar renders at 0% and the ETA
-/// row shows ` - ` right-justified - so the panel's total row count
-/// stays at `ACCOUNT_PANEL_HEIGHT`.
-///
-/// `width` is the full pane width so the ETA can be right-justified
-/// against the right edge (matches the percent column of the bar row
-/// above it).
 /// Append two rows for one usage window: a bar+percent row, then a
 /// DIM ETA row right-justified to the panel's content right edge
 /// (col `width - PANEL_RIGHT_GUTTER`). The bar stretches to fill
@@ -1880,7 +1882,7 @@ mod tests {
         );
         let area = Rect { x: 0, y: 0, width: 40, height: 20 };
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_worker_tree_children(&mut lines, area, &mut app, &project, '\u{280B}');
+        append_worker_tree_children(&mut lines, area, &mut app, &project, false, '\u{280B}');
 
         let joined: Vec<String> = lines
             .iter()
@@ -1932,7 +1934,7 @@ mod tests {
             ProjectView::new_for_test(project_key.clone(), "forge", "~/Projects/forge", Vec::new());
         let area = Rect { x: 0, y: 0, width: 32, height: 20 };
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_worker_tree_children(&mut lines, area, &mut app, &project, '\u{280B}');
+        append_worker_tree_children(&mut lines, area, &mut app, &project, false, '\u{280B}');
 
         assert!(lines.is_empty(), "zero workers must render zero rows");
         let workers_targets: Vec<_> = app
@@ -1987,7 +1989,7 @@ mod tests {
             );
             let area = Rect { x: 0, y: 0, width: 32, height: 20 };
             let mut lines: Vec<Line<'static>> = Vec::new();
-            append_worker_tree_children(&mut lines, area, &mut app, &project, '\u{280B}');
+            append_worker_tree_children(&mut lines, area, &mut app, &project, false, '\u{280B}');
             // One worker → 2 lines: leading spacer (`│  ` bridge from
             // project lead) + worker row.
             assert_eq!(lines.len(), 2, "baseline: one worker = leading spacer + one row");
@@ -2013,7 +2015,7 @@ mod tests {
             ProjectView::new_for_test(project_key, "forge", "~/Projects/forge", Vec::new());
         let area = Rect { x: 0, y: 0, width: 32, height: 20 };
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_worker_tree_children(&mut lines, area, &mut app, &project, '\u{280B}');
+        append_worker_tree_children(&mut lines, area, &mut app, &project, false, '\u{280B}');
         assert!(lines.is_empty(), "after Removed, render shows no worker rows");
     }
 
@@ -2063,7 +2065,7 @@ mod tests {
             ProjectView::new_for_test(project_key.clone(), "forge", "~/Projects/forge", Vec::new());
         let area = Rect { x: 0, y: 0, width: 32, height: 20 };
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_worker_tree_children(&mut lines, area, &mut app, &project, '\u{280B}');
+        append_worker_tree_children(&mut lines, area, &mut app, &project, false, '\u{280B}');
 
         // Two workers → 4 lines: leading spacer (bridge from project
         // lead) + worker + inter-row spacer + worker.
@@ -2192,7 +2194,7 @@ mod tests {
             ProjectView::new_for_test(project_key, "forge", "~/Projects/forge", Vec::new());
         let area = Rect { x: 0, y: 0, width: 32, height: 20 };
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_worker_tree_children(&mut lines, area, &mut app, &project, '\u{280B}');
+        append_worker_tree_children(&mut lines, area, &mut app, &project, false, '\u{280B}');
 
         // First line is the leading spacer (bridge from project lead);
         // second line is the worker row.
@@ -2248,7 +2250,7 @@ mod tests {
             ProjectView::new_for_test(project_key, "forge", "~/Projects/forge", Vec::new());
         let area = Rect { x: 0, y: 0, width: 32, height: 20 };
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_worker_tree_children(&mut lines, area, &mut app, &project, '\u{280B}');
+        append_worker_tree_children(&mut lines, area, &mut app, &project, false, '\u{280B}');
 
         assert_eq!(lines.len(), 2);
         let any_triangle =
@@ -2381,7 +2383,7 @@ mod tests {
             ProjectView::new_for_test(project_key, "forge", "~/Projects/forge", Vec::new());
         let area = Rect { x: 0, y: 0, width: 40, height: 20 };
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_worker_tree_children(&mut lines, area, &mut app, &project, '\u{280B}');
+        append_worker_tree_children(&mut lines, area, &mut app, &project, false, '\u{280B}');
 
         // Expect: leading spacer + worker row + diagnostic sub-row.
         assert_eq!(lines.len(), 3, "Failed worker row should include a diagnostic sub-line");
@@ -2430,7 +2432,7 @@ mod tests {
             ProjectView::new_for_test(project_key, "forge", "~/Projects/forge", Vec::new());
         let area = Rect { x: 0, y: 0, width: 40, height: 20 };
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_worker_tree_children(&mut lines, area, &mut app, &project, '\u{280B}');
+        append_worker_tree_children(&mut lines, area, &mut app, &project, false, '\u{280B}');
 
         let sub_row: String = lines[2].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
@@ -2694,7 +2696,7 @@ mod tests {
         let area = Rect { x: 0, y: 0, width: 44, height: 20 };
         let spinner = '\u{280B}';
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_worker_tree_children(&mut lines, area, &mut app, &project, spinner);
+        append_worker_tree_children(&mut lines, area, &mut app, &project, false, spinner);
 
         let row = lines
             .iter()
@@ -2708,6 +2710,124 @@ mod tests {
         assert!(
             !row.contains('\u{25cf}'),
             "worker with background work must not show the idle bullet; got: {row}"
+        );
+    }
+
+    const ORG_TREE_PANE_WIDTH: u16 = 44;
+
+    /// Render one org ("Test", the `new_for_test` default) holding two
+    /// projects - alphabetical order puts `zzz-project` last - with two
+    /// live workers hung off `owner`. Returns the joined lines plus the
+    /// index of `owner`'s project row, so a test can slice the worker
+    /// subtree that follows it.
+    fn render_two_project_org(owner: &str) -> (Vec<String>, usize) {
+        use forge_workspace::{ProjectKey, SessionKey, WorkerEntry};
+        use std::time::SystemTime;
+
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("test_default seeds a workspace stub");
+        let projects: Vec<ProjectView> = ["aaa-project", "zzz-project"]
+            .into_iter()
+            .map(|name| {
+                let key = ProjectKey::new_for_test(name);
+                if name == owner {
+                    for (idx, label) in ["probe-a", "probe-b"].into_iter().enumerate() {
+                        workspace.insert_live_worker(
+                            &key,
+                            WorkerEntry {
+                                label: label.into(),
+                                charter: "org-trunk-test".into(),
+                                session_key: SessionKey::from_session_id(format!("worker-{idx}")),
+                                status: forge_primitives::WorkerLiveness::Running,
+                                spawned_at: SystemTime::UNIX_EPOCH,
+                                spawned_by_session_id: "lead".into(),
+                                needs_tag: false,
+                                is_git_repo_at_spawn: false,
+                                diagnostic: None,
+                                kick: None,
+                            },
+                        );
+                    }
+                }
+                ProjectView::new_for_test(key, name, format!("/tmp/{name}"), Vec::new())
+            })
+            .collect();
+
+        let area = Rect { x: 0, y: 0, width: ORG_TREE_PANE_WIDTH, height: 30 };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_project_rows(&mut lines, area, &mut app, &projects);
+        let joined: Vec<String> =
+            lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect()).collect();
+        let owner_row =
+            joined.iter().position(|l| l.contains(owner)).expect("owner project row renders");
+        (joined, owner_row)
+    }
+
+    /// Reproduce-first: a project that is LAST in its org closed the org
+    /// trunk with its own `└─`, so its worker rows and the breathing gaps
+    /// around them must leave the org column blank. Fails today - the
+    /// worker renderer paints `│` there unconditionally, leaving a
+    /// vertical line hanging under the last worker.
+    #[test]
+    fn last_in_org_project_worker_subtree_drops_the_org_trunk() {
+        let (lines, owner_row) = render_two_project_org("zzz-project");
+        let subtree = &lines[owner_row + 1..];
+        assert_eq!(subtree.len(), 4, "leading gap + two worker rows + inter-row gap: {subtree:?}");
+
+        for (idx, line) in subtree.iter().enumerate() {
+            assert_eq!(
+                line.chars().nth(1),
+                Some(' '),
+                "org column must be blank once the parent's └─ closed the trunk \
+                 (subtree line {idx}): {line:?}"
+            );
+        }
+        // Breathing gaps keep the col-4 worker-subtree trunk - only the
+        // org column goes blank.
+        assert_eq!(subtree[0], "    \u{2502}", "leading gap: subtree trunk intact");
+        assert_eq!(subtree[2], "    \u{2502}", "inter-row gap: subtree trunk intact");
+        // Worker rows: connector still lands at col 4 and the row is
+        // still exactly pane-wide, so dropping the trunk shifts nothing.
+        assert!(
+            subtree[1].starts_with("    \u{251C}\u{2500} "),
+            "first worker row indent unchanged: {:?}",
+            subtree[1]
+        );
+        assert!(
+            subtree[3].starts_with("    \u{2514}\u{2500} "),
+            "last worker row indent unchanged: {:?}",
+            subtree[3]
+        );
+        assert_eq!(subtree[1].chars().count(), usize::from(ORG_TREE_PANE_WIDTH));
+        assert_eq!(subtree[3].chars().count(), usize::from(ORG_TREE_PANE_WIDTH));
+    }
+
+    /// Regression guard: while more projects follow in the org, the
+    /// worker subtree keeps painting the org trunk at col 1 alongside
+    /// its own trunk at col 4.
+    #[test]
+    fn non_last_project_worker_subtree_keeps_the_org_trunk() {
+        let (lines, owner_row) = render_two_project_org("aaa-project");
+        let subtree = &lines[owner_row + 1..owner_row + 5];
+
+        for (idx, line) in subtree.iter().enumerate() {
+            assert_eq!(
+                line.chars().nth(1),
+                Some('\u{2502}'),
+                "org trunk stays while more projects follow (subtree line {idx}): {line:?}"
+            );
+        }
+        assert_eq!(subtree[0], " \u{2502}  \u{2502}", "leading gap carries both trunks");
+        assert_eq!(subtree[2], " \u{2502}  \u{2502}", "inter-row gap carries both trunks");
+        assert!(
+            subtree[1].starts_with(" \u{2502}  \u{251C}\u{2500} "),
+            "first worker row: {:?}",
+            subtree[1]
+        );
+        assert!(
+            subtree[3].starts_with(" \u{2502}  \u{2514}\u{2500} "),
+            "last worker row: {:?}",
+            subtree[3]
         );
     }
 }
