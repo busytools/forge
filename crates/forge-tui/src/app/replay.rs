@@ -253,7 +253,7 @@ mod tests {
         );
     }
 
-    /// Wire-driven monitor drain: the 2.1.204 capture carries a
+    /// Wire-driven monitor drain: the 2.1.220 capture carries a
     /// `system/task_notification` for the monitor, so the whole
     /// lifecycle runs end to end through real captured frames.
     ///
@@ -332,7 +332,7 @@ mod tests {
     /// it onto the latest Assistant ChatMessage so the
     /// `Forge - N.Ns` chip in `role_label_line` re-renders. This test
     /// drives a real captured baseline (Result event with
-    /// `duration_ms = 14308`) through the production reducer and
+    /// `duration_ms = 10917`) through the production reducer and
     /// asserts the stamp lands.
     #[test]
     fn replay_permission_suggestions_edit_stamps_turn_duration() {
@@ -348,7 +348,7 @@ mod tests {
             .expect("baseline produces at least one assistant message");
         assert_eq!(
             latest.turn_duration_ms,
-            Some(14_308),
+            Some(10_917),
             "Result.duration_ms must stamp onto the latest assistant; got {:?}",
             latest.turn_duration_ms,
         );
