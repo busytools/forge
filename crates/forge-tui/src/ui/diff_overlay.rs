@@ -76,6 +76,13 @@ const STEPPER_HEIGHT: u16 = 4;
 pub fn render(frame: &mut Frame, app: &mut App) {
     app.cached_frame_area = frame.area();
 
+    // Mirror the blink phase onto the overlay so the inline comment editor
+    // (hand-rendered into the scroll body) can paint its cursor cell.
+    let blink_on = app.cursor_blink_on;
+    if let Some(overlay) = app.diff_overlay.as_mut() {
+        overlay.cursor_blink_on = blink_on;
+    }
+
     let Some(overlay) = app.diff_overlay.as_ref() else {
         super::page::render_page(frame, "Diff review", None, Line::default(), |frame, body| {
             render_missing_state(frame, body);
@@ -1728,6 +1735,7 @@ fn push_unified_body(
                             gutter_width,
                             row.line_no.unwrap_or(0),
                             pane_width,
+                            overlay.cursor_blink_on,
                             lines,
                             keys,
                         );
@@ -1843,7 +1851,15 @@ fn push_split_body(
                             diff_line.new_line.unwrap_or(0)
                         }
                     };
-                    render_active_input(input, gutter_width, anchor_line, pane_width, lines, keys);
+                    render_active_input(
+                        input,
+                        gutter_width,
+                        anchor_line,
+                        pane_width,
+                        overlay.cursor_blink_on,
+                        lines,
+                        keys,
+                    );
                 }
             }
         }
@@ -2084,7 +2100,23 @@ fn render_comment_chip(
     }
     for (i, turn) in turns.iter().enumerate() {
         let (voice, label) = turn_voice(&turn.author);
+        // Your turns are clickable to edit in place (dim ✎ affordance);
+        // an agent's turn is read-only chrome.
+        let editable = matches!(turn.author, ReviewAuthor::User);
+        let row_key = if editable {
+            BodyRowKey::CommentTurn { key, turn_idx: i }
+        } else {
+            BodyRowKey::CommentChip(key)
+        };
         let dot_style = Style::default().fg(voice).bg(CHIP_BG);
+        let pencil = if editable { "  \u{270e}" } else { "" };
+        let mut dot_spans = vec![
+            Span::styled("\u{25cf} ", dot_style),
+            Span::styled(label.clone(), dot_style.add_modifier(Modifier::BOLD)),
+        ];
+        if editable {
+            dot_spans.push(Span::styled(pencil, note_style));
+        }
         push_card_row(
             lines,
             keys,
@@ -2092,12 +2124,9 @@ fn render_comment_chip(
             card_style,
             body_style,
             content_width,
-            vec![
-                Span::styled("\u{25cf} ", dot_style),
-                Span::styled(label.clone(), dot_style.add_modifier(Modifier::BOLD)),
-            ],
-            2 + label.width(),
-            BodyRowKey::CommentChip(key),
+            dot_spans,
+            2 + label.width() + pencil.width(),
+            row_key,
         );
         let rail = if i == last { " " } else { "\u{2502}" };
         for row in wrap_chip_body(&turn.text, text_width) {
@@ -2111,7 +2140,7 @@ fn render_comment_chip(
                 content_width,
                 vec![Span::styled(format!("{rail} "), note_style), Span::styled(row, body_style)],
                 vis,
-                BodyRowKey::CommentChip(key),
+                row_key,
             );
         }
     }
@@ -2132,6 +2161,25 @@ fn render_comment_chip(
             BodyRowKey::CommentChip(key),
         );
     }
+
+    // Reply line: appends a new user turn on click (no state change, no
+    // nudge). A dim hint doubles as the affordance label.
+    let reply_label = "\u{21b3} reply";
+    let reply_hint = "  add a note";
+    push_card_row(
+        lines,
+        keys,
+        &indent,
+        card_style,
+        body_style,
+        content_width,
+        vec![
+            Span::styled(reply_label, note_style.add_modifier(Modifier::BOLD)),
+            Span::styled(reply_hint, note_style),
+        ],
+        reply_label.width() + reply_hint.width(),
+        BodyRowKey::CommentReply { key },
+    );
 
     blank(lines, keys);
 
@@ -2233,6 +2281,7 @@ fn render_active_input(
     gutter_width: usize,
     anchor_line: u32,
     pane_width: u16,
+    blink_on: bool,
     lines: &mut Vec<Line<'static>>,
     keys: &mut Vec<BodyRowKey>,
 ) {
@@ -2268,19 +2317,17 @@ fn render_active_input(
         } else {
             editor_lines.to_vec()
         };
-    for body_row in &body_rows {
+    let field = inner_width.saturating_sub(2);
+    let (cursor_row, cursor_col) = input.editor.cursor();
+    for (row_idx, body_row) in body_rows.iter().enumerate() {
         let placeholder = body_rows.len() == 1 && body_row == "(type your comment)";
-        let fitted = fit_box_content(body_row, inner_width.saturating_sub(2));
-        let fitted_chars = fitted.chars().count();
-        let pad = inner_width.saturating_sub(2).saturating_sub(fitted_chars);
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::raw(indent.clone()),
-            Span::styled("│ ", orange),
-            if placeholder { Span::styled(fitted, dim) } else { Span::raw(fitted) },
-            Span::raw(" ".repeat(pad)),
-            Span::styled(" │", orange),
-        ]));
+        // The block cursor paints on the on-phase, on the row holding it.
+        let cursor_here = (blink_on && row_idx == cursor_row).then_some(cursor_col);
+        let mut spans =
+            vec![Span::raw("  "), Span::raw(indent.clone()), Span::styled("│ ", orange)];
+        spans.extend(editor_row_content(body_row, field, placeholder, cursor_here));
+        spans.push(Span::styled(" │", orange));
+        lines.push(Line::from(spans));
         keys.push(BodyRowKey::InputRow(input.key));
     }
 
@@ -2303,6 +2350,51 @@ fn render_active_input(
     let bottom = format!("└{}┘", "─".repeat(box_width.saturating_sub(2)));
     lines.push(Line::from(vec![Span::raw("  "), Span::raw(indent), Span::styled(bottom, orange)]));
     keys.push(BodyRowKey::InputRow(input.key));
+}
+
+/// Content spans for one editor body row, padded to exactly `field`
+/// columns. `cursor` paints a reverse-video block at that column (a
+/// spare cell is reserved when the cursor sits at end-of-line so the
+/// row width is unchanged); `None` renders text only. The placeholder
+/// row renders dim.
+fn editor_row_content(
+    row: &str,
+    field: usize,
+    placeholder: bool,
+    cursor: Option<usize>,
+) -> Vec<Span<'static>> {
+    let base = if placeholder { Style::default().fg(theme::DIM) } else { Style::default() };
+    let reversed = Style::default().add_modifier(Modifier::REVERSED);
+    let Some(col) = cursor else {
+        let fitted = fit_box_content(row, field);
+        let pad = field.saturating_sub(fitted.chars().count());
+        return vec![Span::styled(fitted, base), Span::raw(" ".repeat(pad))];
+    };
+    // Cursor over an existing char: split the fitted row around it.
+    if col < row.chars().count() {
+        let fitted = fit_box_content(row, field);
+        let fchars: Vec<char> = fitted.chars().collect();
+        if col < fchars.len() {
+            let before: String = fchars[..col].iter().collect();
+            let at: String = fchars[col..=col].iter().collect();
+            let after: String = fchars[col + 1..].iter().collect();
+            let pad = field.saturating_sub(fchars.len());
+            return vec![
+                Span::styled(before, base),
+                Span::styled(at, reversed),
+                Span::styled(after, base),
+                Span::raw(" ".repeat(pad)),
+            ];
+        }
+    }
+    // Cursor at end of line: text (leaving one cell) then a block cursor.
+    let fitted = fit_box_content(row, field.saturating_sub(1));
+    let pad = field.saturating_sub(fitted.chars().count() + 1);
+    vec![
+        Span::styled(fitted, base),
+        Span::styled(" ".to_owned(), reversed),
+        Span::raw(" ".repeat(pad)),
+    ]
 }
 
 /// Trim `text` to fit within `max_chars` columns. Used by the
@@ -3702,6 +3794,122 @@ mod tests {
             lines.iter().any(|l| line_has_fg(l, theme::REVIEW_ADDRESSED)),
             "a turn carries the worker (blue) voice",
         );
+    }
+
+    #[test]
+    fn your_turns_are_editable_agent_turns_are_read_only() {
+        let comment = chip_comment_with_turns(
+            41,
+            &[
+                (ReviewAuthor::User, "first"),
+                (ReviewAuthor::Agent { label: "implementer".to_owned() }, "reply"),
+                (ReviewAuthor::User, "second"),
+            ],
+            ReviewStatus::Addressed,
+        );
+        let (lines, keys) = render_chip(&comment);
+        // Each of your turns carries a CommentTurn edit key with its index;
+        // the agent's turn carries none.
+        assert!(keys.iter().any(|k| matches!(k, BodyRowKey::CommentTurn { turn_idx: 0, .. })));
+        assert!(keys.iter().any(|k| matches!(k, BodyRowKey::CommentTurn { turn_idx: 2, .. })));
+        assert!(
+            !keys.iter().any(|k| matches!(k, BodyRowKey::CommentTurn { turn_idx: 1, .. })),
+            "the agent turn is not an edit target",
+        );
+        // Clicking turn 2's text row resolves to turn_idx 2.
+        let row = lines.iter().position(|l| line_text(l).contains("second")).expect("turn 2 row");
+        assert!(
+            matches!(keys[row], BodyRowKey::CommentTurn { turn_idx: 2, .. }),
+            "the row rendering turn 2 targets turn 2",
+        );
+        // A dim ✎ marks each of your turns (two here); the agent gets none.
+        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert_eq!(
+            joined.matches('\u{270e}').count(),
+            2,
+            "one ✎ per your-turn, none for the agent"
+        );
+    }
+
+    #[test]
+    fn card_shows_a_reply_affordance() {
+        let (lines, keys) = render_chip(&chip_comment(9, "take a look", ReviewStatus::Open));
+        assert!(
+            keys.iter().any(|k| matches!(k, BodyRowKey::CommentReply { .. })),
+            "the card carries a reply hit-region",
+        );
+        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("reply"), "the card hints at reply; got:\n{joined}");
+    }
+
+    #[test]
+    fn active_input_blinks_a_block_cursor() {
+        let mut editor = tui_textarea::TextArea::default();
+        editor.insert_str("hi");
+        let input = ActiveCommentInput {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            editor,
+            prior_comment: None,
+            edit_turn: None,
+        };
+        let has_reverse = |ls: &[Line<'static>]| {
+            ls.iter()
+                .any(|l| l.spans.iter().any(|s| s.style.add_modifier.contains(Modifier::REVERSED)))
+        };
+        let mut on_lines = Vec::new();
+        let mut on_keys = Vec::new();
+        render_active_input(&input, 4, 10, 80, true, &mut on_lines, &mut on_keys);
+        assert!(has_reverse(&on_lines), "the on-phase paints a reverse-video block cursor");
+
+        let mut off_lines = Vec::new();
+        let mut off_keys = Vec::new();
+        render_active_input(&input, 4, 10, 80, false, &mut off_lines, &mut off_keys);
+        assert!(!has_reverse(&off_lines), "the off-phase hides the cursor");
+    }
+
+    #[test]
+    fn editor_row_content_stays_field_wide_at_every_cursor_position() {
+        let field = 12;
+        let short = "hi there"; // fits within the field
+        let long = "abcdefghijklmnopqrst"; // forces truncation
+        for row in [short, long] {
+            for cursor in [None, Some(0), Some(4), Some(row.chars().count()), Some(99)] {
+                let spans = editor_row_content(row, field, false, cursor);
+                let width: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+                assert_eq!(width, field, "row={row:?} cursor={cursor:?} must stay field-wide");
+            }
+        }
+    }
+
+    #[test]
+    fn editor_row_content_reverses_only_the_char_under_the_cursor() {
+        let spans = editor_row_content("hello", 12, false, Some(1));
+        let reversed: Vec<&str> = spans
+            .iter()
+            .filter(|s| s.style.add_modifier.contains(Modifier::REVERSED))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(reversed, vec!["e"], "the block reverses exactly the char at the cursor");
+    }
+
+    #[test]
+    fn active_input_cursor_paints_only_its_own_row() {
+        let mut editor = tui_textarea::TextArea::default();
+        editor.insert_str("line one\nline two"); // cursor lands on the second row
+        let input = ActiveCommentInput {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            editor,
+            prior_comment: None,
+            edit_turn: None,
+        };
+        let mut lines = Vec::new();
+        let mut keys = Vec::new();
+        render_active_input(&input, 4, 10, 80, true, &mut lines, &mut keys);
+        let reversed_rows = lines
+            .iter()
+            .filter(|l| l.spans.iter().any(|s| s.style.add_modifier.contains(Modifier::REVERSED)))
+            .count();
+        assert_eq!(reversed_rows, 1, "only the cursor's row carries the block");
     }
 
     #[test]

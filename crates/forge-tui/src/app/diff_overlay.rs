@@ -325,9 +325,19 @@ pub enum BodyRowKey {
     /// click column against the pane midpoint. At least one side
     /// is `Some` (the pairing algorithm never emits both-None).
     HunkRow { left: Option<LineKey>, right: Option<LineKey> },
-    /// The single-line summary chip showing a saved comment ("💬
-    /// L<line>: ..."). Click → re-open the saved comment for edit.
+    /// A comment card row that is not itself a your-turn edit target:
+    /// the header, blank spacers, an agent's (read-only) turn, the
+    /// outdated note, and the bottom border. Non-interactive - your
+    /// turns carry [`BodyRowKey::CommentTurn`] and the reply line
+    /// [`BodyRowKey::CommentReply`].
     CommentChip(LineKey),
+    /// One of the reviewer's own turns in a comment card. Click →
+    /// reopen the editor seeded with that turn's text to rewrite it in
+    /// place. Only `User`-authored turns emit this key.
+    CommentTurn { key: LineKey, turn_idx: usize },
+    /// A comment card's reply line. Click → open an empty editor that
+    /// appends a new user turn on save (no state change, no nudge).
+    CommentReply { key: LineKey },
     /// A comment card's button row (`✓ Resolve` / `↺ Reopen`). Each
     /// action's pane-relative `[start, end)` column span is `Some` only
     /// when that action applies to the thread's current state; a click
@@ -401,11 +411,17 @@ pub struct HunkComment {
 /// a misclick on the chip + reflex Esc doesn't destroy the user's
 /// review notes. `None` for fresh line-clicks where there's nothing
 /// to restore.
+///
+/// `edit_turn` names which existing turn the editor rewrites:
+/// `Some(idx)` edits that turn's text in place; `None` either starts
+/// a fresh comment (when `prior_comment` is `None`) or appends a new
+/// user turn as a reply (when `prior_comment` is `Some`).
 #[derive(Debug, Clone)]
 pub struct ActiveCommentInput {
     pub key: LineKey,
     pub editor: TextArea<'static>,
     pub prior_comment: Option<HunkComment>,
+    pub edit_turn: Option<usize>,
 }
 
 /// The Finish-review modal, opened on overlay close when this session
@@ -972,6 +988,10 @@ pub struct DiffOverlayState {
     /// or `None` when nothing's being edited. Keys flow to this
     /// editor while it's open; Enter saves, Esc cancels.
     pub active_input: Option<ActiveCommentInput>,
+    /// Current cursor blink phase, mirrored from `App` each render so the
+    /// inline comment editor can paint a blinking block cursor (it is
+    /// hand-rendered into the scroll body, not a `TextArea` widget).
+    pub cursor_blink_on: bool,
     /// Parallel index to the renderer's body lines: for every row
     /// the right pane drew, what does that row represent. The mouse
     /// handler reads this to resolve a click into a `BodyRowKey`.
@@ -1526,6 +1546,7 @@ impl DiffOverlayState {
             rail_scroll: 0,
             comments: Vec::new(),
             active_input: None,
+            cursor_blink_on: true,
             body_keys: Vec::new(),
             pane_origin_row: 0,
             pane_origin_col: 0,
@@ -1621,6 +1642,7 @@ impl DiffOverlayState {
             rail_scroll: 0,
             comments: Vec::new(),
             active_input: None,
+            cursor_blink_on: true,
             body_keys: Vec::new(),
             pane_origin_row: 0,
             pane_origin_col: 0,
@@ -2542,9 +2564,14 @@ fn cancel_active_input(app: &mut App) {
 /// Empty-text save semantics:
 /// - Fresh line-click editor (no `prior_comment`): treated as
 ///   cancel - saving a blank comment would render an empty chip.
-/// - Reopened chip editor (with `prior_comment`): treated as
-///   delete - the user cleared all text and pressed Enter to
-///   remove the saved comment. The prior is NOT restored.
+/// - Turn-edit editor (`prior_comment` + `edit_turn = Some(idx)` on a
+///   `User` turn): clearing removes just THAT turn and re-saves the
+///   surviving chain, so an earlier note and any worker replies stay.
+///   The whole thread is deleted only when no `User` turn would remain
+///   (so an orphaned agent reply never lingers).
+/// - Reply editor (`prior_comment` + `edit_turn = None`), or a clear
+///   aimed at a non-editable turn: restore the prior untouched (no
+///   delete, no new turn).
 fn save_active_input(app: &mut App) {
     // Project name is read before the overlay borrow so the persist call
     // below can reach `app.workspace` without a borrow conflict.
@@ -2555,15 +2582,65 @@ fn save_active_input(app: &mut App) {
     let Some(input) = overlay.active_input.take() else { return };
     let text = input.editor.lines().join("\n");
     if text.trim().is_empty() {
-        // Empty-text branch: cancel for a fresh editor, delete for a
-        // reopened chip. A reopened DURABLE thread must also be removed
-        // from redb, else hydrate resurrects it next open. `comment_counts`
-        // already excludes the prior (removed at reopen).
-        if let Some(prior) = input.prior_comment
-            && let (Some(project), Some(branch), Some(workspace)) =
-                (project.as_deref(), branch.as_deref(), workspace.as_ref())
-        {
-            workspace.remove_review_thread(project, branch, &prior.thread.id);
+        let edit_turn = input.edit_turn;
+        if let Some(mut prior) = input.prior_comment {
+            let clears_user_turn = edit_turn
+                .and_then(|idx| prior.thread.comments.get(idx))
+                .is_some_and(|c| matches!(c.author, ReviewAuthor::User));
+            if let (true, Some(idx)) = (clears_user_turn, edit_turn) {
+                prior.thread.comments.remove(idx);
+                let user_turn_remains =
+                    prior.thread.comments.iter().any(|c| matches!(c.author, ReviewAuthor::User));
+                if user_turn_remains {
+                    // Trim just this turn; re-save the surviving chain.
+                    let persisted = if let (Some(project), Some(branch), Some(workspace)) =
+                        (project.as_deref(), branch.as_deref(), workspace.as_ref())
+                    {
+                        workspace.upsert_review_thread(project, branch, prior.thread.clone())
+                    } else {
+                        tracing::warn!(
+                            target: crate::logging::targets::APP_SESSION,
+                            event_name = "diff_overlay_review_thread_not_persisted",
+                            message = "trimmed review thread could not be persisted (no branch / project / store); kept in-memory only",
+                            outcome = "at_risk",
+                            has_branch = branch.is_some(),
+                            has_project = project.is_some(),
+                        );
+                        false
+                    };
+                    prior.comment_text = prior
+                        .thread
+                        .comments
+                        .iter()
+                        .find(|c| matches!(c.author, ReviewAuthor::User))
+                        .map_or_else(String::new, |c| c.text.clone());
+                    prior.persisted = persisted;
+                    overlay.comments.push(prior);
+                    overlay.recompute_comment_counts();
+                } else {
+                    // No user turn left: delete the whole thread (durable too,
+                    // else hydrate resurrects it next open).
+                    if let (Some(project), Some(branch), Some(workspace)) =
+                        (project.as_deref(), branch.as_deref(), workspace.as_ref())
+                    {
+                        workspace.remove_review_thread(project, branch, &prior.thread.id);
+                    } else {
+                        tracing::warn!(
+                            target: crate::logging::targets::APP_SESSION,
+                            event_name = "diff_overlay_review_thread_not_removed",
+                            message = "review thread delete skipped (no branch / project / store); may resurrect on next open",
+                            outcome = "skipped",
+                            has_branch = branch.is_some(),
+                            has_project = project.is_some(),
+                        );
+                    }
+                }
+            } else {
+                // Empty reply, or a clear aimed at a non-editable turn:
+                // restore the prior untouched.
+                overlay.comments.push(prior);
+                overlay.recompute_comment_counts();
+            }
         }
         app.needs_redraw = true;
         return;
@@ -2643,8 +2720,15 @@ fn save_active_input(app: &mut App) {
         context,
         base_ref: target,
     };
-    let mut thread = build_thread(prior_thread, anchor, &text);
+    let mut thread = build_thread(prior_thread, anchor, &text, input.edit_turn);
     thread.commit.clone_from(&commit);
+    // The chip snippet / editor fallback mirror the first user turn, which
+    // stays stable whether this save edited a later turn or appended a reply.
+    let comment_text = thread
+        .comments
+        .iter()
+        .find(|c| matches!(c.author, ReviewAuthor::User))
+        .map_or_else(|| text.clone(), |c| c.text.clone());
     // Persist FIRST so `persisted` reflects a confirmed write. A durable
     // comment whose write is skipped (no branch / project / store) or
     // fails stays at-risk - view.rs counts it as droppable - rather than
@@ -2669,7 +2753,7 @@ fn save_active_input(app: &mut App) {
         path,
         line: line_no,
         hunk_context,
-        comment_text: text,
+        comment_text,
         commit,
         thread,
         authored_this_session: true,
@@ -2692,22 +2776,51 @@ fn anchor_side(kind: DiffLineKind) -> ReviewSide {
 }
 
 /// Build (or update) a durable [`ReviewThread`] for a review comment.
-/// Reuses `prior`'s id / status / timestamps and comment chain when
-/// editing an existing thread - only the user's own comment text is
-/// replaced, so any agent replies survive the edit. Mints a fresh Open
-/// thread otherwise; the caller stamps the scope `commit`. The store
-/// stamps `created_at` / `updated_at` and any empty comment `at` on
-/// write, so they start empty here.
+/// Reuses `prior`'s id / status / timestamps and comment chain:
+/// `edit_turn = Some(idx)` rewrites that turn in place (only a
+/// `User`-authored turn in range; an agent turn or out-of-range index
+/// is left untouched), and `edit_turn = None` appends a new user turn
+/// as a reply. Mints a fresh Open thread when there is no prior; the
+/// caller stamps the scope `commit`. The store stamps `created_at` /
+/// `updated_at` and any empty comment `at` on write, so they start
+/// empty here.
 fn build_thread(
     prior: Option<forge_primitives::ReviewThread>,
     anchor: ReviewAnchor,
     text: &str,
+    edit_turn: Option<usize>,
 ) -> forge_primitives::ReviewThread {
     match prior {
         Some(mut thread) => {
             thread.anchor = anchor;
-            match thread.comments.iter_mut().find(|c| matches!(c.author, ReviewAuthor::User)) {
-                Some(existing) => text.clone_into(&mut existing.text),
+            match edit_turn {
+                // Rewrite the targeted turn in place; an agent turn or an
+                // out-of-range index is rejected - warn so the dropped text
+                // is observable (unreachable via the UI, which only offers
+                // your own turns as edit targets).
+                Some(idx) => {
+                    let turn_count = thread.comments.len();
+                    let editable = thread
+                        .comments
+                        .get(idx)
+                        .is_some_and(|c| matches!(c.author, ReviewAuthor::User));
+                    if editable {
+                        if let Some(turn) = thread.comments.get_mut(idx) {
+                            text.clone_into(&mut turn.text);
+                        }
+                    } else {
+                        tracing::warn!(
+                            target: crate::logging::targets::APP_SESSION,
+                            event_name = "diff_overlay_edit_turn_rejected",
+                            message = "edit targeted a non-editable turn (agent or out-of-range) - text dropped",
+                            outcome = "skipped",
+                            turn_idx = idx,
+                            turn_count,
+                            lost_chars = text.chars().count(),
+                        );
+                    }
+                }
+                // Reply: append the user's text as a new turn.
                 None => thread.comments.push(ReviewComment {
                     author: ReviewAuthor::User,
                     text: text.to_owned(),
@@ -3002,7 +3115,10 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
                 None => MouseEffect::default(),
             }
         }
-        BodyRowKey::CommentChip(line_key) => reopen_comment_for_key(overlay, line_key),
+        BodyRowKey::CommentTurn { key, turn_idx } => {
+            reopen_comment_for_turn(overlay, key, Some(turn_idx))
+        }
+        BodyRowKey::CommentReply { key } => reopen_comment_for_turn(overlay, key, None),
         BodyRowKey::CommentButton { key, resolve, reopen } => {
             // Route to whichever applicable button the click lands in; a
             // click on the padding or a dim (inapplicable) action no-ops.
@@ -3023,6 +3139,7 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
         }
         BodyRowKey::ContextExpander { file_idx } => expand_context(overlay, file_idx),
         BodyRowKey::EmptyState
+        | BodyRowKey::CommentChip(_)
         | BodyRowKey::HunkHeader { .. }
         | BodyRowKey::InputRow(_)
         | BodyRowKey::CommitMessage
@@ -3069,18 +3186,24 @@ fn open_input_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffe
     // new one - preserves its prior_comment if it was a reopen.
     close_active_input_preserving_prior(overlay);
     let editor = TextArea::default();
-    overlay.active_input = Some(ActiveCommentInput { key, editor, prior_comment: None });
+    overlay.active_input =
+        Some(ActiveCommentInput { key, editor, prior_comment: None, edit_turn: None });
     MouseEffect { redraw: true, thread_action: None }
 }
 
-fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffect {
-    // Find the saved comment, hydrate a fresh TextArea from its
-    // text, drop the saved entry so the chip vanishes WHILE editing
-    // (but stash it on `prior_comment` so Esc-cancel can restore it
-    // - losing the saved comment to a misclick-and-reflex-Esc would
-    // destroy review notes the user wrote).
-    let position = overlay.comments.iter().position(|c| c.key == key);
-    let Some(pos) = position else {
+/// Reopen the saved comment at `key` for either a turn rewrite
+/// (`edit_turn = Some(idx)` seeds the editor with that turn's text) or
+/// a reply (`edit_turn = None` opens an empty editor that appends on
+/// save). The saved entry is dropped so its chip vanishes WHILE editing
+/// but stashed on `prior_comment` so Esc-cancel restores it - losing
+/// review notes to a misclick-and-reflex-Esc would destroy the user's
+/// work.
+fn reopen_comment_for_turn(
+    overlay: &mut DiffOverlayState,
+    key: LineKey,
+    edit_turn: Option<usize>,
+) -> MouseEffect {
+    let Some(pos) = overlay.comments.iter().position(|c| c.key == key) else {
         return MouseEffect::default();
     };
     let comment = overlay.comments.remove(pos);
@@ -3090,11 +3213,20 @@ fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> Mouse
     // silently dropped when B's reopen runs).
     close_active_input_preserving_prior(overlay);
     let mut editor = TextArea::default();
-    // TextArea::insert_str respects newlines correctly so the
-    // multi-line shape of the saved comment is preserved.
-    editor.insert_str(&comment.comment_text);
-    overlay.active_input =
-        Some(ActiveCommentInput { key: comment.key, editor, prior_comment: Some(comment) });
+    // Seed the editor with the targeted turn's text (rewrite); a reply
+    // starts empty. TextArea::insert_str respects newlines so a saved
+    // turn's multi-line shape is preserved.
+    if let Some(idx) = edit_turn
+        && let Some(turn) = comment.thread.comments.get(idx)
+    {
+        editor.insert_str(&turn.text);
+    }
+    overlay.active_input = Some(ActiveCommentInput {
+        key: comment.key,
+        editor,
+        prior_comment: Some(comment),
+        edit_turn,
+    });
     MouseEffect { redraw: true, thread_action: None }
 }
 
@@ -3563,7 +3695,7 @@ mod tests {
     }
 
     #[test]
-    fn body_click_on_chip_reopens_saved_comment() {
+    fn body_click_on_your_turn_reopens_that_turn() {
         let mut state = sample_state();
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
         state.comments.push(HunkComment {
@@ -3573,7 +3705,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "needs unwrap fix".into(),
             commit: None,
-            thread: stock_thread(),
+            thread: user_thread("needs unwrap fix"),
             authored_this_session: true,
             persisted: false,
         });
@@ -3581,7 +3713,7 @@ mod tests {
             BodyRowKey::FileHeader { file_idx: 0 },
             BodyRowKey::HunkHeader { file_idx: 0, hunk_idx: 0 },
             BodyRowKey::HunkRow { left: Some(key), right: Some(key) },
-            BodyRowKey::CommentChip(key),
+            BodyRowKey::CommentTurn { key, turn_idx: 0 },
         ];
         state.pane_origin_row = 0;
         state.pane_origin_col = 41;
@@ -3591,6 +3723,7 @@ mod tests {
         assert!(state.comments.is_empty(), "saved comment migrates back into the editor");
         let input = state.active_input.expect("editor reopened");
         assert_eq!(input.key, key);
+        assert_eq!(input.edit_turn, Some(0), "the clicked turn is the edit target");
         assert_eq!(input.editor.lines().join("\n"), "needs unwrap fix");
     }
 
@@ -3808,12 +3941,12 @@ mod tests {
             hunk_context: vec![],
             comment_text: "I want to keep this".into(),
             commit: None,
-            thread: stock_thread(),
+            thread: user_thread("I want to keep this"),
             authored_this_session: true,
             persisted: false,
         });
         state.recompute_comment_counts();
-        state.body_keys = vec![BodyRowKey::CommentChip(key)];
+        state.body_keys = vec![BodyRowKey::CommentTurn { key, turn_idx: 0 }];
         state.pane_origin_row = 0;
         state.pane_origin_col = 41;
         state.pane_width = 119;
@@ -3855,16 +3988,16 @@ mod tests {
             hunk_context: vec![],
             comment_text: "saved".into(),
             commit: None,
-            thread: stock_thread(),
+            thread: user_thread("saved"),
             authored_this_session: true,
             persisted: false,
         });
         state.recompute_comment_counts();
-        // Body geometry: chip row at idx 0, hunk header at idx 1,
+        // Body geometry: your-turn row at idx 0, hunk header at idx 1,
         // hunk line at idx 2.
         let key_b = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 };
         state.body_keys = vec![
-            BodyRowKey::CommentChip(key_a),
+            BodyRowKey::CommentTurn { key: key_a, turn_idx: 0 },
             BodyRowKey::HunkHeader { file_idx: 0, hunk_idx: 0 },
             BodyRowKey::HunkRow { left: Some(key_b), right: Some(key_b) },
         ];
@@ -3895,7 +4028,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "A".into(),
             commit: None,
-            thread: stock_thread(),
+            thread: user_thread("A"),
             authored_this_session: true,
             persisted: false,
         });
@@ -3906,12 +4039,15 @@ mod tests {
             hunk_context: vec![],
             comment_text: "B".into(),
             commit: None,
-            thread: stock_thread(),
+            thread: user_thread("B"),
             authored_this_session: true,
             persisted: false,
         });
         state.recompute_comment_counts();
-        state.body_keys = vec![BodyRowKey::CommentChip(key_a), BodyRowKey::CommentChip(key_b)];
+        state.body_keys = vec![
+            BodyRowKey::CommentTurn { key: key_a, turn_idx: 0 },
+            BodyRowKey::CommentTurn { key: key_b, turn_idx: 0 },
+        ];
         state.pane_origin_row = 0;
         state.pane_origin_col = 41;
         state.pane_width = 119;
@@ -3935,12 +4071,12 @@ mod tests {
             hunk_context: vec![],
             comment_text: "A".into(),
             commit: None,
-            thread: stock_thread(),
+            thread: user_thread("A"),
             authored_this_session: true,
             persisted: false,
         });
         state.recompute_comment_counts();
-        state.body_keys = vec![BodyRowKey::CommentChip(key_a)];
+        state.body_keys = vec![BodyRowKey::CommentTurn { key: key_a, turn_idx: 0 }];
         state.pane_origin_row = 0;
         state.pane_origin_col = 41;
         state.pane_width = 119;
@@ -3978,8 +4114,12 @@ mod tests {
         };
         let mut editor = TextArea::default();
         editor.insert_str("original text with user-typed edits");
-        state.active_input =
-            Some(ActiveCommentInput { key, editor, prior_comment: Some(prior.clone()) });
+        state.active_input = Some(ActiveCommentInput {
+            key,
+            editor,
+            prior_comment: Some(prior.clone()),
+            edit_turn: Some(0),
+        });
         let abandoned = close_active_input_preserving_prior(&mut state);
         assert!(abandoned > 0, "user's typed-over text counts as abandoned");
         assert_eq!(state.comments.len(), 1);
@@ -4006,7 +4146,12 @@ mod tests {
         };
         let mut editor = TextArea::default();
         editor.insert_str("exactly this");
-        state.active_input = Some(ActiveCommentInput { key, editor, prior_comment: Some(prior) });
+        state.active_input = Some(ActiveCommentInput {
+            key,
+            editor,
+            prior_comment: Some(prior),
+            edit_turn: Some(0),
+        });
         let abandoned = close_active_input_preserving_prior(&mut state);
         assert_eq!(abandoned, 0, "no divergence → no abandoned text");
         assert_eq!(state.comments.len(), 1);
@@ -4020,7 +4165,8 @@ mod tests {
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
         let mut editor = TextArea::default();
         editor.insert_str("draft typed by user");
-        state.active_input = Some(ActiveCommentInput { key, editor, prior_comment: None });
+        state.active_input =
+            Some(ActiveCommentInput { key, editor, prior_comment: None, edit_turn: None });
         let abandoned = close_active_input_preserving_prior(&mut state);
         assert_eq!(abandoned, "draft typed by user".chars().count());
         assert!(state.comments.is_empty(), "fresh editor's text is not saved");
@@ -4033,8 +4179,12 @@ mod tests {
         let mut app = App::test_default();
         let mut state = sample_state();
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
-        state.active_input =
-            Some(ActiveCommentInput { key, editor: TextArea::default(), prior_comment: None });
+        state.active_input = Some(ActiveCommentInput {
+            key,
+            editor: TextArea::default(),
+            prior_comment: None,
+            edit_turn: None,
+        });
         app.diff_overlay = Some(state);
         save_active_input(&mut app);
         let after = app.diff_overlay.as_ref().expect("overlay still set");
@@ -4044,8 +4194,7 @@ mod tests {
 
     #[test]
     fn save_empty_reopened_chip_deletes_saved_comment() {
-        // F8: reopen chip (prior Some) + clear text + Enter →
-        // saved comment deleted.
+        // Clearing the only user turn + Enter removes the whole card.
         let mut app = App::test_default();
         let mut state = sample_state();
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
@@ -4056,7 +4205,7 @@ mod tests {
             hunk_context: vec![],
             comment_text: "soon-to-be-deleted".into(),
             commit: None,
-            thread: stock_thread(),
+            thread: user_thread("soon-to-be-deleted"),
             authored_this_session: true,
             persisted: false,
         };
@@ -4064,12 +4213,13 @@ mod tests {
             key,
             editor: TextArea::default(), // empty editor
             prior_comment: Some(prior),
+            edit_turn: Some(0),
         });
         app.diff_overlay = Some(state);
         save_active_input(&mut app);
         let after = app.diff_overlay.as_ref().expect("overlay still set");
         assert!(after.active_input.is_none());
-        assert!(after.comments.is_empty(), "prior dropped via clear+save = delete");
+        assert!(after.comments.is_empty(), "clearing the only user turn deletes the card");
     }
 
     #[test]
@@ -4192,8 +4342,12 @@ mod tests {
         editor.insert_str("important review note");
         // Editor open as a chip reopen - prior_comment Some, no
         // unsubmitted comments in overlay.comments yet.
-        state.active_input =
-            Some(ActiveCommentInput { key, editor, prior_comment: Some(prior.clone()) });
+        state.active_input = Some(ActiveCommentInput {
+            key,
+            editor,
+            prior_comment: Some(prior.clone()),
+            edit_turn: Some(0),
+        });
         app.diff_overlay = Some(state);
         set_active_view(&mut app, ActiveView::Diff);
         // Close flushes the editor (restoring the prior) and opens the
@@ -4921,7 +5075,8 @@ mod tests {
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
         let mut editor = TextArea::default();
         editor.insert_str("note");
-        state.active_input = Some(ActiveCommentInput { key, editor, prior_comment: None });
+        state.active_input =
+            Some(ActiveCommentInput { key, editor, prior_comment: None, edit_turn: None });
         app.diff_overlay = Some(state);
         save_active_input(&mut app);
         let o = app.diff_overlay.as_ref().expect("overlay");
@@ -4951,7 +5106,8 @@ mod tests {
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
         let mut editor = TextArea::default();
         editor.insert_str("note");
-        state.active_input = Some(ActiveCommentInput { key, editor, prior_comment: None });
+        state.active_input =
+            Some(ActiveCommentInput { key, editor, prior_comment: None, edit_turn: None });
         app.diff_overlay = Some(state);
         save_active_input(&mut app);
         let o = app.diff_overlay.as_ref().expect("overlay");
@@ -5254,6 +5410,18 @@ mod tests {
         }
     }
 
+    /// A stock thread carrying a single `User` turn with `text`, so a
+    /// per-turn reopen seeds the editor from `thread.comments[0]`.
+    fn user_thread(text: &str) -> forge_primitives::ReviewThread {
+        let mut thread = stock_thread();
+        thread.comments = vec![ReviewComment {
+            author: ReviewAuthor::User,
+            text: text.to_owned(),
+            at: String::new(),
+        }];
+        thread
+    }
+
     /// App wired with a workspace + redb + an active session under
     /// project "forge", ready for review-thread persistence tests.
     fn review_app() -> (App, tempfile::TempDir) {
@@ -5275,7 +5443,8 @@ mod tests {
     fn with_editor(overlay: &mut DiffOverlayState, key: LineKey, text: &str) {
         let mut editor = TextArea::default();
         editor.insert_str(text);
-        overlay.active_input = Some(ActiveCommentInput { key, editor, prior_comment: None });
+        overlay.active_input =
+            Some(ActiveCommentInput { key, editor, prior_comment: None, edit_turn: None });
     }
 
     /// [`review_app`]-style workspace + redb, plus a live agent stub and a
@@ -5592,6 +5761,400 @@ mod tests {
             Some("aaa"),
             "the in-memory comment's thread carries the commit sha",
         );
+    }
+
+    fn test_anchor() -> ReviewAnchor {
+        ReviewAnchor {
+            path: "a.rs".to_owned(),
+            side: ReviewSide::New,
+            line: 1,
+            content_hash: 0,
+            context: Vec::new(),
+            base_ref: "main".to_owned(),
+        }
+    }
+
+    fn agent_turn(text: &str) -> ReviewComment {
+        ReviewComment {
+            author: ReviewAuthor::Agent { label: "impl".to_owned() },
+            text: text.to_owned(),
+            at: String::new(),
+        }
+    }
+
+    #[test]
+    fn build_thread_rewrites_only_the_targeted_turn() {
+        let mut prior = user_thread("a");
+        prior.comments.push(agent_turn("x"));
+        prior.comments.push(ReviewComment {
+            author: ReviewAuthor::User,
+            text: "c".to_owned(),
+            at: String::new(),
+        });
+        let thread = build_thread(Some(prior), test_anchor(), "C!", Some(2));
+        assert_eq!(thread.comments[0].text, "a", "the first turn is untouched");
+        assert_eq!(thread.comments[1].text, "x", "the agent turn is untouched");
+        assert_eq!(thread.comments[2].text, "C!", "only the targeted turn is rewritten");
+    }
+
+    #[test]
+    fn build_thread_rejects_editing_an_agent_turn() {
+        let mut prior = user_thread("a");
+        prior.comments.push(agent_turn("x"));
+        let thread = build_thread(Some(prior), test_anchor(), "hijack", Some(1));
+        assert_eq!(thread.comments.len(), 2, "no turn is added on a rejected edit");
+        assert_eq!(thread.comments[1].text, "x", "an agent turn is not editable");
+    }
+
+    #[test]
+    fn build_thread_appends_a_reply_when_edit_turn_is_none() {
+        let mut prior = user_thread("a");
+        prior.comments.push(agent_turn("x"));
+        let thread = build_thread(Some(prior), test_anchor(), "thanks", None);
+        assert_eq!(thread.comments.len(), 3, "a reply appends a new turn");
+        assert!(matches!(thread.comments[2].author, ReviewAuthor::User));
+        assert_eq!(thread.comments[2].text, "thanks");
+    }
+
+    #[test]
+    fn build_thread_mints_a_fresh_thread_without_a_prior() {
+        let thread = build_thread(None, test_anchor(), "new note", None);
+        assert_eq!(thread.comments.len(), 1);
+        assert!(matches!(thread.comments[0].author, ReviewAuthor::User));
+        assert_eq!(thread.comments[0].text, "new note");
+        assert_eq!(thread.status, ReviewStatus::Open);
+    }
+
+    #[test]
+    fn save_edit_turn_rewrites_that_turn_only() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let mut prior_thread = user_thread("first note");
+        prior_thread.comments.push(ReviewComment {
+            author: ReviewAuthor::User,
+            text: "second note".to_owned(),
+            at: String::new(),
+        });
+        let prior = HunkComment {
+            key,
+            path: "src/x.rs".into(),
+            line: 10,
+            hunk_context: vec![],
+            comment_text: "first note".into(),
+            commit: None,
+            thread: prior_thread,
+            authored_this_session: true,
+            persisted: true,
+        };
+        let mut editor = TextArea::default();
+        editor.insert_str("second note EDITED");
+        overlay.active_input = Some(ActiveCommentInput {
+            key,
+            editor,
+            prior_comment: Some(prior),
+            edit_turn: Some(1),
+        });
+        app.diff_overlay = Some(overlay);
+
+        save_active_input(&mut app);
+
+        let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
+        assert_eq!(comment.thread.comments[0].text, "first note", "turn 0 is untouched");
+        assert_eq!(comment.thread.comments[1].text, "second note EDITED", "turn 1 was rewritten");
+        assert_eq!(comment.comment_text, "first note", "the snippet still mirrors the first turn");
+    }
+
+    #[test]
+    fn save_edit_turn_persists_through_redb_keeping_the_agent_reply() {
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let mut thread = user_thread("first");
+        thread.id = "t-e2e".to_owned();
+        thread.comments = vec![
+            ReviewComment { author: ReviewAuthor::User, text: "first".into(), at: String::new() },
+            agent_turn("addressed"),
+            ReviewComment { author: ReviewAuthor::User, text: "third".into(), at: String::new() },
+        ];
+        ws.upsert_review_thread("forge", "feat", thread.clone());
+        let prior = HunkComment {
+            key,
+            path: "src/x.rs".into(),
+            line: 10,
+            hunk_context: vec![],
+            comment_text: "first".into(),
+            commit: None,
+            thread,
+            authored_this_session: true,
+            persisted: true,
+        };
+        let mut editor = TextArea::default();
+        editor.insert_str("third EDITED");
+        overlay.active_input = Some(ActiveCommentInput {
+            key,
+            editor,
+            prior_comment: Some(prior),
+            edit_turn: Some(2),
+        });
+        app.diff_overlay = Some(overlay);
+
+        save_active_input(&mut app);
+
+        let threads = ws.load_review_threads("forge", "feat").expect("load");
+        assert_eq!(threads.len(), 1);
+        let t = &threads[0];
+        assert_eq!(t.comments.len(), 3, "the chain length is preserved through the reload");
+        assert_eq!(t.comments[0].text, "first", "turn 0 intact");
+        assert!(
+            matches!(t.comments[1].author, ReviewAuthor::Agent { .. }),
+            "the interleaved agent reply survived",
+        );
+        assert_eq!(t.comments[1].text, "addressed", "the agent reply text is intact");
+        assert_eq!(t.comments[2].text, "third EDITED", "turn 2 was rewritten");
+        let c = &app.diff_overlay.as_ref().expect("overlay").comments[0];
+        assert_eq!(c.comment_text, "first", "comment_text mirrors the first user turn");
+    }
+
+    /// Build an overlay + persisted thread, then an empty editor over
+    /// `edit_turn`, ready to exercise the clear-a-turn save path.
+    fn clear_turn_setup(
+        turns: Vec<ReviewComment>,
+        edit_turn: usize,
+    ) -> (App, std::sync::Arc<forge_workspace::Workspace>, tempfile::TempDir) {
+        let (mut app, dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let mut thread = user_thread("seed");
+        thread.id = "t-clear".to_owned();
+        thread.comments = turns;
+        ws.upsert_review_thread("forge", "feat", thread.clone());
+        let prior = HunkComment {
+            key,
+            path: "src/x.rs".into(),
+            line: 10,
+            hunk_context: vec![],
+            comment_text: thread.comments.first().map(|c| c.text.clone()).unwrap_or_default(),
+            commit: None,
+            thread,
+            authored_this_session: true,
+            persisted: true,
+        };
+        overlay.active_input = Some(ActiveCommentInput {
+            key,
+            editor: TextArea::default(),
+            prior_comment: Some(prior),
+            edit_turn: Some(edit_turn),
+        });
+        app.diff_overlay = Some(overlay);
+        (app, ws, dir)
+    }
+
+    #[test]
+    fn clearing_a_middle_turn_trims_it_and_keeps_the_thread() {
+        let (mut app, ws, _dir) = clear_turn_setup(
+            vec![
+                ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "first".into(),
+                    at: String::new(),
+                },
+                agent_turn("reply"),
+                ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "third".into(),
+                    at: String::new(),
+                },
+            ],
+            2,
+        );
+
+        save_active_input(&mut app);
+
+        let o = app.diff_overlay.as_ref().expect("overlay");
+        assert_eq!(o.comments.len(), 1, "the card survives");
+        let c = &o.comments[0];
+        assert_eq!(c.thread.comments.len(), 2, "only the cleared turn was removed");
+        assert_eq!(c.thread.comments[0].text, "first");
+        assert!(
+            matches!(c.thread.comments[1].author, ReviewAuthor::Agent { .. }),
+            "the agent reply survives",
+        );
+        assert_eq!(c.comment_text, "first", "comment_text still mirrors the first user turn");
+        let threads = ws.load_review_threads("forge", "feat").expect("load");
+        assert_eq!(threads.len(), 1, "the thread survives in redb");
+        assert_eq!(threads[0].comments.len(), 2, "redb thread trimmed to two turns");
+    }
+
+    #[test]
+    fn clearing_the_last_user_turn_deletes_the_whole_thread() {
+        let (mut app, ws, _dir) = clear_turn_setup(
+            vec![
+                ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "only".into(),
+                    at: String::new(),
+                },
+                agent_turn("reply"),
+            ],
+            0,
+        );
+
+        save_active_input(&mut app);
+
+        let o = app.diff_overlay.as_ref().expect("overlay");
+        assert!(o.comments.is_empty(), "no user turn remains, so the card is gone");
+        assert!(
+            ws.load_review_threads("forge", "feat").expect("load").is_empty(),
+            "an orphaned agent reply is not left behind in redb",
+        );
+    }
+
+    #[test]
+    fn reply_appends_a_new_user_turn_without_changing_state() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let prior = HunkComment {
+            key,
+            path: "src/x.rs".into(),
+            line: 10,
+            hunk_context: vec![],
+            comment_text: "first note".into(),
+            commit: None,
+            thread: user_thread("first note"),
+            authored_this_session: true,
+            persisted: true,
+        };
+        let mut editor = TextArea::default();
+        editor.insert_str("second thought");
+        overlay.active_input =
+            Some(ActiveCommentInput { key, editor, prior_comment: Some(prior), edit_turn: None });
+        app.diff_overlay = Some(overlay);
+
+        save_active_input(&mut app);
+
+        let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
+        assert_eq!(comment.thread.comments.len(), 2, "the reply appended a turn");
+        assert_eq!(comment.thread.comments[0].text, "first note");
+        assert_eq!(comment.thread.comments[1].text, "second thought");
+        assert!(matches!(comment.thread.comments[1].author, ReviewAuthor::User));
+        assert_eq!(comment.thread.status, ReviewStatus::Open, "a reply never changes state");
+    }
+
+    #[test]
+    fn a_second_reply_appends_a_second_turn() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        overlay.comments.push(HunkComment {
+            key,
+            path: "src/x.rs".into(),
+            line: 10,
+            hunk_context: vec![],
+            comment_text: "note".into(),
+            commit: None,
+            thread: user_thread("note"),
+            authored_this_session: true,
+            persisted: true,
+        });
+        app.diff_overlay = Some(overlay);
+
+        for reply in ["one", "two"] {
+            if let Some(o) = app.diff_overlay.as_mut() {
+                reopen_comment_for_turn(o, key, None);
+                if let Some(input) = o.active_input.as_mut() {
+                    input.editor.insert_str(reply);
+                }
+            }
+            save_active_input(&mut app);
+        }
+
+        let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
+        let texts: Vec<&str> = comment.thread.comments.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, vec!["note", "one", "two"], "each reply appends another turn");
+    }
+
+    #[test]
+    fn empty_reply_restores_the_thread_untouched() {
+        let mut app = App::test_default();
+        let mut state = sample_state();
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let prior = HunkComment {
+            key,
+            path: "a.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "keep me".into(),
+            commit: None,
+            thread: user_thread("keep me"),
+            authored_this_session: true,
+            persisted: false,
+        };
+        state.active_input = Some(ActiveCommentInput {
+            key,
+            editor: TextArea::default(),
+            prior_comment: Some(prior),
+            edit_turn: None,
+        });
+        app.diff_overlay = Some(state);
+
+        save_active_input(&mut app);
+
+        let after = app.diff_overlay.as_ref().expect("overlay");
+        assert!(after.active_input.is_none());
+        assert_eq!(after.comments.len(), 1, "an empty reply restores the comment");
+        assert_eq!(after.comments[0].thread.comments.len(), 1, "no empty turn appended");
+        assert_eq!(after.comments[0].comment_text, "keep me");
+    }
+
+    #[test]
+    fn body_click_on_reply_opens_an_empty_editor() {
+        let mut state = sample_state();
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        state.comments.push(HunkComment {
+            key,
+            path: "a.rs".into(),
+            line: 7,
+            hunk_context: vec![],
+            comment_text: "note".into(),
+            commit: None,
+            thread: user_thread("note"),
+            authored_this_session: true,
+            persisted: false,
+        });
+        state.body_keys = vec![
+            BodyRowKey::FileHeader { file_idx: 0 },
+            BodyRowKey::HunkHeader { file_idx: 0, hunk_idx: 0 },
+            BodyRowKey::HunkRow { left: Some(key), right: Some(key) },
+            BodyRowKey::CommentReply { key },
+        ];
+        state.pane_origin_row = 0;
+        state.pane_origin_col = 41;
+        state.pane_width = 119;
+        let effect = handle_left_click(&mut state, 60, 3, 160);
+        assert!(effect.redraw);
+        let input = state.active_input.expect("reply editor opened");
+        assert_eq!(input.edit_turn, None, "a reply has no edit target");
+        assert!(input.prior_comment.is_some(), "the thread is stashed for restore");
+        assert!(input.editor.lines().join("\n").is_empty(), "the reply editor starts empty");
     }
 
     #[test]
@@ -6197,7 +6760,7 @@ mod tests {
 
         // Reopen the chip, clear the text, save empty -> delete.
         if let Some(o) = app.diff_overlay.as_mut() {
-            reopen_comment_for_key(o, key);
+            reopen_comment_for_turn(o, key, Some(0));
             if let Some(input) = o.active_input.as_mut() {
                 input.editor = TextArea::default();
             }
@@ -6924,7 +7487,7 @@ mod tests {
 
         let key = app.diff_overlay.as_ref().expect("overlay").comments[0].key;
         if let Some(o) = app.diff_overlay.as_mut() {
-            reopen_comment_for_key(o, key);
+            reopen_comment_for_turn(o, key, Some(0));
         }
         cancel_active_input(&mut app);
 
