@@ -1,18 +1,17 @@
 //! Projects pane (left side, Wide + Medium tiers).
 //!
 //! Renders projects from
-//! [`forge_workspace::Workspace::list_projects`] with the active
-//! project highlighted; the active project's sessions drill down
-//! immediately under its row. Each row stamps a [`PaneHitTarget`]
-//! into [`App::pane_hit_targets`] for the mouse handler (next
-//! commit) to read on click events.
+//! [`forge_workspace::Workspace::list_projects`], grouped by org,
+//! with the active project highlighted; a project's live workers
+//! drill down immediately under its row. Each row stamps a
+//! [`PaneHitTarget`] into [`App::pane_hit_targets`] for the mouse
+//! handler to read on click events.
 //!
-//! Width handling: project + session labels are head-truncated with
-//! a trailing `…` when they overflow the available row width. At
-//! Wide tier (26ch) truncation is rare; at Medium tier (20ch) it is
-//! routine. Hit-target stamps always carry the *un-truncated*
-//! identifier so click routing keeps working regardless of
-//! truncation.
+//! Width handling: project + worker labels are head-truncated with
+//! a trailing `…` when they overflow the available row width -
+//! rare at Wide tier (32ch pane), routine at Medium (24ch).
+//! Hit-target stamps always carry the *un-truncated* identifier so
+//! click routing keeps working regardless of truncation.
 
 use std::time::{Instant, SystemTime};
 
@@ -271,7 +270,7 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App, projects: &[
 /// sort alphabetically; orgs themselves sort alphabetically. The
 /// per-row glyph distinguishes live sessions (spinner - RUST_ORANGE
 /// when focused, terminal-default otherwise) from idle catalog
-/// entries (`○` DIM). Live rows carry a `⏻` close affordance at
+/// entries (`○` DIM). Live rows carry an `x` close affordance at
 /// the right edge; idle rows show last-activity timestamp instead.
 ///
 /// Tree connectors mirror the GIT / PROCESSES sections (`├─` /
@@ -820,7 +819,7 @@ fn org_trunk_span(parent_is_last: bool) -> Span<'static> {
 
 /// Chrome budget for an org-grouped row:
 /// `<1 PANE_PAD><3 connector><1 glyph><1 sp><name><1 sp><RIGHT col><1 right pad>`
-/// where RIGHT col = 3 cells (` ⏻ ` button for active rows / 3-char
+/// where RIGHT col = 3 cells (` x ` button for active rows / 3-char
 /// `Xm`/`Xh`/`Xd` time for idle rows). Total = 6 left chrome + 1 sep
 /// + 3 right col + 1 right pad = 11 chars per row.
 fn name_budget_org_row(area_width: u16) -> usize {
@@ -1442,15 +1441,6 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-/// Append a 12-cell-bar row + a DIM right-justified ETA row for one
-/// usage window. When the window is missing (no snapshot yet, account
-/// has no Anthropic plan, etc.) the bar renders at 0% and the ETA
-/// row shows ` - ` right-justified - so the panel's total row count
-/// stays at `ACCOUNT_PANEL_HEIGHT`.
-///
-/// `width` is the full pane width so the ETA can be right-justified
-/// against the right edge (matches the percent column of the bar row
-/// above it).
 /// Append two rows for one usage window: a bar+percent row, then a
 /// DIM ETA row right-justified to the panel's content right edge
 /// (col `width - PANEL_RIGHT_GUTTER`). The bar stretches to fill

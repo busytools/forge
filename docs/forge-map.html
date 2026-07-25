@@ -353,7 +353,7 @@
 <h2 class="section-title" id="layout">Layout</h2>
 
 <p class="intro">
-  forge-tui's main frame is a strict vertical stack composed by <code>layout::compute</code>, flanked by inline side panes at the wider tiers. <strong>This stack only renders in <code>ActiveView::Chat</code>.</strong> When the user opens <code>/config</code>, forge swaps the entire frame to <code>ActiveView::Config</code> - chat / input / side panes all disappear. At terminal widths ≥160 cols the chat frame is flanked by a 40ch <a href="#projects-pane">Projects pane</a> on the left (carrying the account / mode / model / usage / location panel at its bottom) and a 40ch <a href="#inspector-pane">Inspector pane</a> on the right (carrying the live <code>TASKS</code> list from <code>TodoWrite</code>); between 120-159 cols both panes shrink to 30ch with truncation; below 120 cols a single-row top bar replaces both panes - tapping the <code>▤</code> icon (or <kbd>Ctrl+B</kbd>) opens the Projects overlay, tapping <code>▦</code> (or <kbd>Ctrl+E</kbd>) opens the Inspector overlay.
+  forge-tui's main frame is a strict vertical stack composed by <code>layout::compute</code>, flanked by inline side panes at the wider tiers. <strong>This stack only renders in <code>ActiveView::Chat</code>.</strong> When the user opens <code>/config</code>, forge swaps the entire frame to <code>ActiveView::Config</code> - chat / input / side panes all disappear. At terminal widths ≥160 cols the chat frame is flanked by a 32ch <a href="#projects-pane">Projects pane</a> on the left (carrying the account / mode / model / usage / location panel at its bottom) and a 40ch <a href="#inspector-pane">Inspector pane</a> on the right (carrying the live <code>TASKS</code> list from <code>TodoWrite</code>); between 120-159 cols they shrink to 24ch and 30ch respectively, with truncation; below 120 cols a single-row top bar replaces both panes - tapping the <code>▤</code> icon (or <kbd>Ctrl+B</kbd>) opens the Projects overlay, tapping <code>▦</code> (or <kbd>Ctrl+E</kbd>) opens the Inspector overlay.
 </p>
 
 <p class="intro">
@@ -404,62 +404,63 @@
 <div class="surface" id="projects-pane">
   <div class="surface-head">
     <h4>Projects pane (Wide / Medium / Narrow tiers)</h4>
-    <div class="when">visible: at all terminal widths - Wide (≥160) renders a 40ch inline pane, Medium (120-159) a 30ch inline pane, Narrow (&lt;120) a single-line top bar with on-demand full-screen overlay</div>
+    <div class="when">visible: at all terminal widths - Wide (≥160) renders a 32ch inline pane, Medium (120-159) a 24ch inline pane, Narrow (&lt;120) a single-line top bar with on-demand full-screen overlay</div>
   </div>
   <div class="surface-body">
-    <p>Left-side pane, 40ch wide, docked to the left of the chat frame. Lists projects from <code>forge.toml</code>'s <code>[[projects]]</code>. Each project renders as a single bold row; the active project is in <code>RUST_ORANGE</code> bold, background projects use the terminal's default fg + bold. The active project's drilldown (only) renders its sessions immediately beneath: lead first (<code>◆</code>), extras after, with the currently-viewed session marked <code>•</code>. Sort is most-recently-active first; alphabetical tie-break.</p>
-    <p>Project rows are mouse-only; chat input keeps keyboard focus. Click any project header to switch the active session to that project's lead - if the lead is already in-process, the swap is instant; if the project is sleeping (no in-process session yet), the click hands off to <code>workspace.get_agent_handle(SessionTarget::Named(name))</code> and a synthetic <code>__spawn_&lt;project&gt;__</code> bucket fronts a "Waking..." placeholder welcome until <code>Connected</code> arrives and migrates the bucket onto the real session UUID. Click any session row in the active project's drilldown to switch directly to that session.</p>
+    <p>Left-side pane, 32ch wide at Wide tier (24ch at Medium), docked to the left of the chat frame. Lists projects from <code>forge.toml</code>'s <code>[[projects]]</code>, <strong>grouped by org</strong> (the project's <code>[[orgs]].name</code>). Each org contributes a <code>DIM</code>-bold header row plus a <code>│</code> continuation row, then one tree-leaf row per project hanging off that trunk on <code>├─</code> / <code>└─</code> connectors - the same connector language the <a href="#inspector-pane">Inspector pane</a>'s GIT / PROCESSES sections use. Orgs sort alphabetically and so do the projects inside each org; there is no recency sort and <strong>no per-project session drilldown</strong> (a project's only children are its <a href="#projects-pane-workers">live workers</a>). Two blank rows separate one org from the next.</p>
+    <p>Each project row carries a lifecycle glyph, the project name, and a right-edge column that differs by state: a live session gets an <code>x</code> close button, a sleeping one gets its last-activity age (<code>2h</code>) instead - there is nothing to close. The active project's name is <code>RUST_ORANGE</code> bold, other live projects are default fg + bold, sleeping projects are <code>DIM</code> throughout.</p>
+    <p>Project rows are mouse-only; chat input keeps keyboard focus. Click any project row to switch the active session to that project's lead - if the lead is already in-process, the swap is instant; if the project is sleeping (no in-process session yet), the click hands off to <code>workspace.get_agent_handle(SessionTarget::Named(name))</code> and a synthetic <code>__spawn_&lt;project&gt;__</code> bucket fronts a "Waking..." placeholder welcome until <code>Connected</code> arrives and migrates the bucket onto the real session UUID.</p>
     <div class="term">
       <pre class="indent">
   <span class="accent-bold">PROJECTS</span>
-  <span class="dim">─────────────────────────</span>
+  <span class="dim">──────────────────────────────</span>
 
-  <span class="accent-bold">  forge</span>
-  <span class="dim">  ⠋ ◆</span> <span class="accent">•</span> main
-  <span class="dim">  ⠋  </span>   review-loop
-  <span class="bold">  subspace</span>
-  <span class="bold">  granite</span>
-  <span class="bold">  hub-modules</span>
-  <span class="bold">  dotfiles</span>
+  <span class="dim bold">Granite</span>
+  <span class="dim">│  </span>
+  <span class="dim">├─ </span><span class="accent">⠋</span> <span class="accent-bold">granite-backend</span>       <span class="user-band"> x </span> 
+  <span class="dim">│  </span>
+  <span class="dim">└─ ○ hub-modules</span>           <span class="dim"> 2h</span> 
 
 
-
-
-
-
+  <span class="dim bold">Personal</span>
+  <span class="dim">│  </span>
+  <span class="dim">├─ ○ dotfiles</span>              <span class="dim"> 4h</span> 
+  <span class="dim">└─ </span><span class="dim">●</span> <span class="bold">playground</span>            <span class="user-band"> x </span> 
 
 
 
-  <span class="dim">─────────────────────────</span>
-  <span class="dim">  Profile  </span>Subspace
-  <span class="dim">  Org      </span>Autonomys
-  <span class="dim">  ID       </span><span class="dim">550e8400</span>     <span class="dim"> ⧉ </span>
-  <span class="dim">  Mode     </span><span class="warning">[Auto]</span>
-  <span class="dim">  Model    </span>Claude Opus 4.7
-  <span class="dim">  Effort   </span>Max
 
-  <span class="dim">  Ctx   </span><span class="success">▓▓▓</span><span class="warning">▓▓</span><span class="dim">░░░░░░░</span>  39%
-  <span class="dim">                       1M</span>
 
-  <span class="dim">  5h    </span><span class="success">▓▓</span><span class="dim">░░░░░░░░░░</span>  15%
-  <span class="dim">                   1h 48m</span>
+  <span class="dim">──────────────────────────────</span>
+  <span class="dim">Profile</span>  Subspace
+  <span class="dim">Org    </span>  Autonomys
+  <span class="dim">ID     </span>  <span class="dim">550e8400</span>         <span class="user-band"> ⧉  </span> 
+  <span class="dim">Mode   </span>  <span class="warning">[Auto]</span>
+  <span class="dim">Model  </span>  Claude Opus 4.7
+  <span class="dim">Effort </span>  Max
 
-  <span class="dim">  7d    </span><span class="success">▓▓▓</span><span class="warning">▓▓▓</span><span class="accent">▓▓▓</span><span class="error">▓▓</span><span class="dim">░</span>  89%
-  <span class="dim">                    4d 4h</span>
+  <span class="dim">Ctx</span>  <span class="success">▓▓▓▓▓</span><span class="warning">▓▓</span><span class="dim">░░░░░░░░░░░░</span>   39%
+                              <span class="dim">1M</span>
 
-  <span class="dim">  forge    </span>v0.15.1
-  <span class="dim">  claude   </span>v2.0.45<span class="warning">  ↑ v2.0.50</span>
+  <span class="dim">5h </span>  <span class="success">▓▓▓</span><span class="dim">░░░░░░░░░░░░░░░░</span>   15%
+                          <span class="dim">1h 48m</span>
+
+  <span class="dim">7d </span>  <span class="success">▓▓▓▓▓</span><span class="warning">▓▓▓▓▓</span><span class="accent">▓▓▓▓▓</span><span class="error">▓▓</span><span class="dim">░░</span>   89%
+                           <span class="dim">4d 4h</span>
+
+  <span class="dim">forge  </span>  v0.22.29
+  <span class="dim">claude </span>  v2.1.220   <span class="warning">↑ v2.1.225</span>
 </pre>
     </div>
     <p>The pane has <strong>two anchored regions</strong>: the project list grows from the top, and the <strong>account / status panel</strong> is hard-docked at the bottom. The dim <code>─</code> rule between them sits at a fixed row from the bottom - a permanent gutter, not a separator that floats based on list length. <strong>The two never overlap.</strong> When the project list outgrows its region the list scrolls within itself; the panel never gives up its rows. The empty space above the rule in the mockup above shows what a short project list looks like - the panel still sits at the bottom, gravity is preserved.</p>
     <p>The panel's job is to read like <strong>account chrome</strong>, not "current status." Even though Mode / Model / Ctx flip when the user switches to another session in another project, the panel's shape, position, and labelling stay put. The Profile line at the top of the panel is the anchor - when you switch from your <code>Subspace</code> account's forge session to your <code>Granite</code> account's hub-modules session, Profile flips and Mode / Model / Ctx flip with it, but the panel itself doesn't move. The panel renders, in order:</p>
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
       <li><strong>Identity / posture</strong> - <code>Profile</code> (active account display name from <code>forge.toml</code>'s <code>[[accounts]]</code>, via <code>app.active_account_display_name</code>), <code>Org</code> (organization on the active account, sourced from <code>AccountInfo.organization</code> - dim <code>-</code> placeholder until the SDK reports one), <code>ID</code> (first 8 chars of the active <code>session_id</code> with a trailing <code>⧉</code> glyph at the right gutter - click the glyph to copy the full session id to the OS clipboard via <code>arboard</code>), <code>Mode</code> (permission mode badge - same colors as the old footer used: <code>auto</code> / <code>acceptEdits</code> yellow, <code>plan</code> blue, <code>bypassPermissions</code> / <code>dontAsk</code> red, <code>default</code> dim), <code>Model</code> (the SDK's <code>display_name_long</code> with any <code>(... context)</code> wrapper folded inline, e.g. <code>Claude Opus 4.7</code> or <code>Sonnet (200K context)</code> → <code>Sonnet 200K</code>), <code>Effort</code> (always shown on its own row so a long model name can never push it off-screen).</li>
-      <li><strong>Usage bars</strong> - three 12-cell filling bars: <code>Ctx</code> (per-session context %), <code>5h</code> (5-hour plan window), <code>7d</code> (combined 7-day window). The fill colour is a <strong>per-cell position gradient</strong>, not a threshold step: cells 1-3 green, 4-6 yellow, 7-9 orange, 10-12 red, so the rightmost filled cell tells you which zone the bar is in. Empty cells stay <code>░</code> in DIM. The <code>Ctx</code> bar is followed by a DIM, right-justified token-count on the next line (e.g. <code>1M</code> / <code>200K</code>) - the model's raw context-window size from `ContextUsageResponse.raw_max_tokens`. The <code>5h</code> and <code>7d</code> rows are followed by a DIM, right-justified duration on the next line (e.g. <code>1h 48m</code> / <code>4d 4h</code>) - the legacy <code>resets in</code> prose was dropped so the eye lands on the time, not the verb. A single blank row separates each bar group from the next.</li>
+      <li><strong>Usage bars</strong> - three filling bars: <code>Ctx</code> (per-session context %), <code>5h</code> (5-hour plan window), <code>7d</code> (combined 7-day window). Each stretches to the available content width rather than a fixed cell count (<code>bar_cells_for</code>: pane width minus the row's fixed chrome, floored at 6 - so 19 cells in the 32ch Wide pane, 11 at Medium). The fill colour is a <strong>per-cell position gradient</strong>, not a threshold step: the cells split into four zones - green, yellow, orange, red, left to right, with any remainder going to the leftmost zones - so the rightmost filled cell tells you which zone the bar is in. Empty cells stay <code>░</code> in DIM. The <code>Ctx</code> bar is followed by a DIM, right-justified token-count on the next line (e.g. <code>1M</code> / <code>200K</code>) - the model's raw context-window size from `ContextUsageResponse.raw_max_tokens`. The <code>5h</code> and <code>7d</code> rows are followed by a DIM, right-justified duration on the next line (e.g. <code>1h 48m</code> / <code>4d 4h</code>) - the legacy <code>resets in</code> prose was dropped so the eye lands on the time, not the verb. A single blank row separates each bar group from the next.</li>
       <li><strong>Versions</strong> - two trailing rows: <code>forge</code> (the running binary's <code>CARGO_PKG_VERSION</code>) and <code>claude</code> (the version reported by <code>claude --version</code> on the local machine). When the npm registry probe finds a strictly-newer published version under the <code>@anthropic-ai/claude-code</code> <code>latest</code> dist-tag, a <span class="warning">yellow <code>↑ vX.Y.Z</code></span> indicator appends to the <code>claude</code> row. Probes run once at app startup in parallel via <code>Workspace::fetch_cli_version_info</code>; missing values render as <code>-</code> so the row count stays constant.</li>
     </ul>
     <p>The <code>📁 cwd</code> and <code>⎇ branch</code> rows that used to sit at the bottom of this panel moved to the right-hand <a href="#inspector-pane">Inspector pane</a>'s <code>GIT</code> section.</p>
-    <p>At Narrow tier (&lt;120 cols), the inline pane is replaced by a single-line top bar showing <code>▤  &lt;active-project&gt;·&lt;active-session&gt;</code>. Tap <code>▤</code> (or <kbd>Ctrl+B</kbd>) to expand the overlay - full-screen list of projects with the active project's drilldown, the same account / status panel docked at the bottom, and a <code>✕</code> glyph in the banner to dismiss. Picking a project / session row in the overlay switches active session AND closes the overlay in one action. <kbd>Esc</kbd> also closes. Aggregate unread badge on <code>▤</code> is deferred to a follow-up issue.</p>
+    <p>At Narrow tier (&lt;120 cols), the inline pane is replaced by a single-line top bar showing <code>▤  &lt;active-project&gt;·&lt;active-session&gt;</code>. Tap <code>▤</code> (or <kbd>Ctrl+B</kbd>) to expand the overlay - full-screen org-grouped project list, the same account / status panel docked at the bottom, and a <code>✕</code> glyph in the banner to dismiss. Picking a project / worker row in the overlay switches active session AND closes the overlay in one action. <kbd>Esc</kbd> also closes. Aggregate unread badge on <code>▤</code> is deferred to a follow-up issue.</p>
     <div class="term">
       <pre class="indent">
 <span class="dim">▤</span>  forge·main
@@ -467,16 +468,27 @@
 chat continues here...
 </pre>
     </div>
-    <p>Once the overlay is open, the body is replaced by the full project list (same drilldown semantics as the inline pane, just full-width) with the account / status panel docked at the bottom of the overlay:</p>
+    <p>Once the overlay is open, the body is replaced by the full project list (same org-grouped tree as the inline pane, just full-width - the banner and rule span the whole overlay instead of carrying the pane's 1-col left pad) with the account / status panel docked at the bottom of the overlay:</p>
     <div class="term">
       <pre class="indent">
-<span class="accent-bold">▤ PROJECTS</span>                                        <span class="dim">✕</span>
+<span class="accent-bold">▤ PROJECTS</span>                                      <span class="dim">✕</span>
 <span class="dim">─────────────────────────────────────────────────</span>
 
-<span class="accent-bold">  forge</span>
-<span class="dim">  ⠋ ◆</span> <span class="accent">•</span> main
-<span class="bold">  subspace</span>
-<span class="bold">  granite</span>
+ <span class="dim bold">Granite</span>
+ <span class="dim">│  </span>
+ <span class="dim">├─ </span><span class="accent">⠋</span> <span class="accent-bold">granite-backend</span>                        <span class="user-band"> x </span> 
+ <span class="dim">│  │</span>
+ <span class="dim">│  └─ </span><span class="dim">●</span> reviewer                            <span class="user-band"> x </span> 
+ <span class="dim">│  </span>
+ <span class="dim">└─ ○ hub-modules</span>                            <span class="dim"> 2h</span> 
+
+
+ <span class="dim bold">Personal</span>
+ <span class="dim">│  </span>
+ <span class="dim">├─ ○ dotfiles</span>                               <span class="dim"> 4h</span> 
+ <span class="dim">└─ </span><span class="dim">●</span> <span class="bold">playground</span>                             <span class="user-band"> x </span> 
+    <span class="dim">│</span>
+ <span class="dim">   └─ </span><span class="accent">⠋</span> <span class="accent-bold">gpt-tutor</span>                           <span class="user-band"> x </span> 
 
 
 <span class="dim">─────────────────────────────────────────────────</span>
@@ -501,12 +513,12 @@ chat continues here...
     </div>
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/projects_pane.rs::render</code> (inline) · <code>::render_overlay</code> (Narrow overlay) · <code>::render_account_status_footer</code> (the bottom panel, called from both render paths) · <code>crates/forge-tui/src/ui/top_bar.rs::render</code> (Narrow top bar) · click handling in <code>crates/forge-tui/src/app/events/mouse.rs</code> · sleeping-project spawn in <code>crates/forge-tui/src/app/connect.rs::spawn_for_sleeping_project</code></dd>
-      <dt>color</dt><dd>banner (<code>PROJECTS</code> / <code>▤ PROJECTS</code>): <code>RUST_ORANGE</code> bold · rule: <code>DIM</code> · active project: <code>RUST_ORANGE</code> bold · background project: default fg + bold · session-row state glyph + lead marker (<code>◆</code>): <code>DIM</code> · current marker (<code>•</code>): <code>RUST_ORANGE</code> · session label: default fg · top-bar <code>▤</code> icon: <code>DIM</code> when overlay closed, <code>RUST_ORANGE</code> bold when open · overlay <code>✕</code>: <code>DIM</code> · panel labels (<code>Profile</code>, <code>Mode</code>, <code>Model</code>, <code>Effort</code>, <code>Fast</code>, <code>Ctx</code>, <code>5h</code>, <code>7d</code>): <code>DIM</code> · panel values: default fg unless badge-colored (Mode badge follows the legacy footer mode colors; Fast follows the legacy <code>FAST:*</code> colors) · usage bar fill: per-cell position gradient - cells 1-3 <span class="success">green</span>, 4-6 <span class="warning">yellow</span>, 7-9 <span class="accent">orange</span>, 10-12 <span class="error">red</span>; empty cells (<code>░</code>) DIM · ETA duration lines: <code>DIM</code></dd>
-      <dt>state glyphs</dt><dd>each project row carries a lead-session activity glyph read from the row's live <code>UiSession</code> bucket - <code>⠋</code> spinner while the session has an in-progress turn (<code>Running</code> / <code>Spawning</code>), <strong>or when an otherwise-Idle session has a live backgrounded task</strong> (bash / agent / workflow that outlives its turn, via <code>UiSession::has_live_background_work</code> reading the CLI's <code>background_tasks</code> registry), so a project keeps spinning while a backgrounded <code>gh run watch</code> or peer agent is still working after its turn settles · <code>△</code> Attention (pending permission prompt) and <code>⚠</code> AuthRequired keep their own glyph even with a live backgrounded task - the promotion is over the Idle bullet only, so a live task never masks a session that needs the user · <code>●</code> idle bullet when the session is alive but settled with no background work · <code>·</code> Sleeping. The glyph is <code>RUST_ORANGE</code> on the focused row, terminal default on background rows. Worker child rows carry the same activity glyph and likewise spin on their own live background work.</dd>
-      <dt>click</dt><dd>project header → <code>switch_to_project_lead</code>: in-process lead → instant <code>switch_active_session</code>; sleeping lead → <code>spawn_for_sleeping_project</code> (synthetic bucket + async <code>get_agent_handle</code>). Active-project session row → direct <code>switch_active_session</code> on that session. At Narrow tier, both also close the overlay; the <code>▤</code> top-bar icon toggles overlay open/close, and the overlay <code>✕</code> glyph dismisses without switching.</dd>
+      <dt>color</dt><dd>banner (<code>PROJECTS</code> / <code>▤ PROJECTS</code>): <code>RUST_ORANGE</code> bold · rule: <code>DIM</code> · org header: <code>DIM</code> bold · tree connectors (<code>├─</code> / <code>└─</code>) + trunk (<code>│</code>): <code>DIM</code> · active project: <code>RUST_ORANGE</code> bold · background live project: default fg + bold · sleeping project (glyph <code>○</code> + name + last-activity age): <code>DIM</code> · close button (<code> x </code>): gray bold on <code>USER_MSG_BG</code> slate · top-bar <code>▤</code> icon: <code>DIM</code> when overlay closed, <code>RUST_ORANGE</code> bold when open · overlay <code>✕</code>: <code>DIM</code> · panel labels (<code>Profile</code>, <code>Mode</code>, <code>Model</code>, <code>Effort</code>, <code>Fast</code>, <code>Ctx</code>, <code>5h</code>, <code>7d</code>): <code>DIM</code> · panel values: default fg unless badge-colored (Mode badge follows the legacy footer mode colors; Fast follows the legacy <code>FAST:*</code> colors) · usage bar fill: per-cell position gradient - four left-to-right zones, <span class="success">green</span> / <span class="warning">yellow</span> / <span class="accent">orange</span> / <span class="error">red</span>, sized from the bar's cell count; empty cells (<code>░</code>) DIM · ETA duration lines: <code>DIM</code> (bumped to <span class="warning">STATUS_WARNING</span> for the two statuses needing re-login, <code>⚠ expired</code> / <code>unauthorized</code>)</dd>
+      <dt>state glyphs</dt><dd>each project row carries a lead-session activity glyph read from the row's live <code>UiSession</code> bucket - <code>⠋</code> spinner while the session has an in-progress turn (<code>Running</code> / <code>Spawning</code>), <strong>or when an otherwise-Idle session has a live backgrounded task</strong> (bash / agent / workflow that outlives its turn, via <code>UiSession::has_live_background_work</code> reading the CLI's <code>background_tasks</code> registry), so a project keeps spinning while a backgrounded <code>gh run watch</code> or peer agent is still working after its turn settles · <code>△</code> Attention (pending permission prompt) and <code>⚠</code> AuthRequired keep their own glyph even with a live backgrounded task - the promotion is over the Idle bullet only, so a live task never masks a session that needs the user · <code>●</code> idle bullet when the session is alive but settled with no background work · <code>·</code> Sleeping / Failed / LoggedOut. The glyph is <code>RUST_ORANGE</code> on the focused row, terminal default on background rows. A project with <strong>no</strong> live bucket at all is a different row shape entirely - <code>○</code> plus a last-activity age instead of a glyph plus a close button. Worker child rows carry the same activity glyph and likewise spin on their own live background work.</dd>
+      <dt>click</dt><dd>project row → <code>switch_to_project_lead</code>: in-process lead → instant <code>switch_active_session</code>; sleeping lead → <code>spawn_for_sleeping_project</code> (synthetic bucket + async <code>get_agent_handle</code>). The row's <code>x</code> button (plus 1 col of tolerance each side) closes that session instead of switching to it. At Narrow tier both also close the overlay; the <code>▤</code> top-bar icon toggles overlay open/close, and the overlay <code>✕</code> glyph dismisses without switching.</dd>
       <dt>toggle</dt><dd><code>Ctrl+B</code> at Wide / Medium tiers hides / restores the inline pane (in-memory only - each launch starts visible). At Narrow tier <code>Ctrl+B</code> toggles the transient overlay flag. <kbd>Esc</kbd> also closes the overlay.</dd>
-      <dt>scope</dt><dd>All three tiers ship: Wide (≥160) inline 40ch · Medium (120-159) inline 30ch with truncation · Narrow (&lt;120) top-bar + overlay. Click + toggle behaviour tier-agnostic for the inline pane; Narrow uses overlay + <code>✕</code> semantics. Mouse-only interaction in v1 (plus <kbd>Ctrl+B</kbd> / <kbd>Esc</kbd>) - chat input always has keyboard focus.</dd>
-      <dt>layout</dt><dd>The pane is vertically split into two anchored regions: <strong>top</strong> for the project list, <strong>bottom</strong> for the account / status panel. The panel reserves a fixed 17 rows from the bottom up (rule + 5 identity rows + 1 blank + 1 Ctx bar + 1 blank + 2 (5h bar + ETA) + 1 blank + 2 (7d bar + ETA) + 1 blank + 2 version rows). The project list takes everything above. When the project list overflows its region it scrolls within itself; the panel's rows are never reclaimed. If the project list is short, the unused rows in the list region render blank - the panel does NOT slide upward to close the gap. The panel is skipped entirely when the pane height drops below 24 rows so the project list keeps at least 7 rows.</dd>
+      <dt>scope</dt><dd>All three tiers ship: Wide (≥160) inline 32ch · Medium (120-159) inline 24ch with truncation · Narrow (&lt;120) top-bar + overlay. Click + toggle behaviour tier-agnostic for the inline pane; Narrow uses overlay + <code>✕</code> semantics. Mouse-only interaction in v1 (plus <kbd>Ctrl+B</kbd> / <kbd>Esc</kbd>) - chat input always has keyboard focus.</dd>
+      <dt>layout</dt><dd>The pane is vertically split into two anchored regions: <strong>top</strong> for the project list, <strong>bottom</strong> for the account / status panel. The panel reserves a fixed 19 rows from the bottom up (<code>ACCOUNT_PANEL_HEIGHT</code>: rule + 6 identity rows + 1 blank + 2 (Ctx bar + size) + 1 blank + 2 (5h bar + ETA) + 1 blank + 2 (7d bar + ETA) + 1 blank + 2 version rows). The project list takes everything above. When the project list overflows its region it scrolls within itself (per-pane offset advanced by the mouse wheel, with a <code>▐</code> thumb on the right edge once the list is taller than the region); the panel's rows are never reclaimed. If the project list is short, the unused rows in the list region render blank - the panel does NOT slide upward to close the gap. The panel is skipped entirely when the pane height drops below 24 rows (<code>ACCOUNT_PANEL_MIN_PANE_HEIGHT</code>), which leaves the list its banner, rule and a few rows rather than crowding it out.</dd>
     </dl>
   </div>
 </div>
@@ -517,26 +529,38 @@ chat continues here...
     <div class="when">visible: per project in the <a href="#projects-pane">Projects pane</a> when <code>Workspace.live_workers[project_key]</code> is non-empty. Rendered at every tier (Wide / Medium / Narrow overlay).</div>
   </div>
   <div class="surface-body">
-    <p>When a project's lead has spawned workers via <code>mcp__forge__workers__spawn(label, charter, kick?)</code>, the projects pane renders them as indented tree-children immediately below the lead row. Worker rows are flat regardless of who spawned them (a worker spawning a sub-worker still appears as a sibling under the same project). Tree-by-spawner is deferred to v2.</p>
+    <p>When a project's lead has spawned workers via <code>mcp__forge__workers__spawn(label, charter, kick?)</code>, the projects pane renders them as a tree-subtree immediately below the lead row, indented one level past it so the worker connectors sit at column 4 and hang off the project's own column. Worker rows are flat regardless of who spawned them (a worker spawning a sub-worker still appears as a sibling under the same project). Tree-by-spawner is deferred to v2.</p>
+    <p>A worker subtree paints <strong>two independent vertical trunks</strong>, and only one of them is conditional. The <strong>subtree trunk</strong> at column 4 always runs from the lead row down to the last worker's <code>└─</code>, including through the breathing-gap rows, so no worker connector ever starts mid-air. The <strong>org trunk</strong> at column 1 only paints while the parent project still has siblings below it in its org: a project rendered with <code>├─</code> keeps <code>│</code> beside and below its workers (see <code>granite-backend</code> above), but a project rendered with <code>└─</code> has already closed that trunk, so column 1 stays blank for the whole subtree (see <code>playground</code> / <code>gpt-tutor</code>). Blanking it costs no indent - the column is still three cells wide, just unpainted - so nothing shifts between the two cases.</p>
     <p>The optional <code>kick</code> is the worker's first-turn message: when provided it's delivered the moment the worker connects (through the same rate-limited kick dispatcher the file-driven <code>kick.md</code> uses, preferred over <code>kick.md</code> when both exist), so the worker starts working at once. WITHOUT a <code>kick</code> an inline-charter spawn sits idle until the lead sends a <code>workers__tell</code> - a "begin now" line in the charter does not run on its own. The kick lands as a plain first user turn (identical to a file-driven role's <code>kick.md</code>), stashed on the worker's <code>WorkerEntry</code> at spawn and enqueued in <code>maybe_kick_worker_on_connected</code>.</p>
     <div class="term">
       <pre class="indent">
   <span class="accent-bold">PROJECTS</span>
-  <span class="dim">─────────────────────────</span>
+  <span class="dim">──────────────────────────────</span>
 
-  <span class="accent-bold">  forge</span>                  <span class="user-band"> x </span>
-  <span class="dim">  ├─ reviewer</span>          <span class="user-band"> x </span>
-  <span class="dim">  ├─ helper-of-reviewer</span> <span class="user-band"> x </span>
-  <span class="dim">  ├─ migrator</span>           <span class="user-band"> x </span>
-  <span class="dim">  └─ doc-writer</span>         <span class="user-band"> x </span>
-  <span class="bold">  subspace</span>               <span class="user-band"> x </span>
-  <span class="dim">  └─ test-runner</span>        <span class="user-band"> x </span>
-  <span class="bold">  aware</span>                  <span class="user-band"> x </span>
+  <span class="dim bold">Granite</span>
+  <span class="dim">│  </span>
+  <span class="dim">├─ </span><span class="accent">⠋</span> <span class="accent-bold">granite-backend</span>       <span class="user-band"> x </span> 
+  <span class="dim">│  │</span>
+  <span class="dim">│  ├─ </span><span class="dim">●</span> reviewer           <span class="user-band"> x </span> 
+  <span class="dim">│  │</span>
+  <span class="dim">│  └─ </span><span class="dim">⠋</span> migrator           <span class="user-band"> x </span> 
+  <span class="dim">│  </span>
+  <span class="dim">└─ ○ hub-modules</span>           <span class="dim"> 2h</span> 
+
+
+  <span class="dim bold">Personal</span>
+  <span class="dim">│  </span>
+  <span class="dim">├─ ○ dotfiles</span>              <span class="dim"> 4h</span> 
+  <span class="dim">└─ </span><span class="dim">●</span> <span class="bold">playground</span>            <span class="user-band"> x </span> 
+     <span class="dim">│</span>
+  <span class="dim">   └─ </span><span class="accent">⠋</span> <span class="accent-bold">gpt-tutor</span>          <span class="user-band"> x </span> 
 </pre>
     </div>
     <dl>
-      <dt>tree glyph</dt><dd>box-drawing chars in <code>DIM</code>: <code>├─</code> for every entry except the last, <code>└─</code> for the last. Whole prefix renders <code>theme::DIM</code> to recede behind the worker label.</dd>
-      <dt>label</dt><dd>worker's user-supplied <code>label</code> from <code>workers__spawn</code> (the same value that becomes the <code>forge:worker:&lt;label&gt;</code> JSONL tag). Rendered with default fg for <code>Running</code>; <code>DIM</code> for <code>Spawning</code>. Head-truncated with trailing <code>...</code> when overflowing the pane width.</dd>
+      <dt>tree glyph</dt><dd>box-drawing chars in <code>DIM</code>: <code>├─</code> for every entry except the last, <code>└─</code> for the last, at column 4. Whole prefix renders <code>theme::DIM</code> to recede behind the worker label.</dd>
+      <dt>trunks + breathing gaps</dt><dd>a gap row sits above the first worker and between adjacent workers (never after the last one - the project-to-project deadzone or the org break takes its place). Each gap row, and each worker row, re-paints the two trunks: the subtree <code>│</code> at column 4 unconditionally, the org <code>│</code> at column 1 only while the parent project is <strong>not</strong> last in its org. When the parent is last, the org column renders as three blank cells - present for layout, unpainted - so the worker rows keep their exact indent and width while the closed trunk stops hanging past them. Code: <code>org_trunk_span(parent_is_last)</code>, fed the same <code>is_last</code> the project row's own connector uses.</dd>
+      <dt>label</dt><dd>worker's user-supplied <code>label</code> from <code>workers__spawn</code> (the same value that becomes the <code>forge:worker:&lt;label&gt;</code> JSONL tag). Rendered with default fg for <code>Running</code>, <code>DIM</code> for <code>Spawning</code>, <span class="error">STATUS_ERROR</span> for <code>Failed</code>, and <code>RUST_ORANGE</code> bold when that worker is the focused session (mirroring the project row). Head-truncated with trailing <code>...</code> when overflowing the pane width.</dd>
+      <dt>state glyph</dt><dd>same glyph column as the project row, read from the worker's own <code>UiSession</code> bucket (<code>Spawning</code> until its <code>Connected</code> lands, so the column never blanks): <code>⠋</code> spinner while a turn is in progress or a backgrounded task is live, <code>●</code> settled-idle, <code>·</code> sleeping, <code>△</code> in <span class="warning">yellow</span> when a non-focused worker has a prompt waiting, <code>✕</code> in <span class="error">red</span> when the spawn failed. A <code>Failed</code> worker adds one <code>DIM</code> diagnostic sub-row directly beneath its row, indented to the label column and truncated to the pane width, carrying <code>WorkerEntry.diagnostic</code> (or <code>spawn failed</code> when none was recorded).</dd>
       <dt>close affordance</dt><dd>per-row <code>x</code> button right-justified at the row's right edge (mirrors the lead-row close button). Click dispatches <code>Command::CloseWorker { project_key, label }</code>; workspace removes the entry from <code>live_workers</code> and releases the worker's <code>SessionTask</code>. <strong>JSONL on disk is not deleted</strong>: close means "remove from in-memory live state", never "delete from audit trail". The resulting <code>SessionUpdate::WorkerStatusChanged { Removed, is_git_repo_at_spawn }</code> also pushes a system-message toast into the worker's spawning-lead session (its <code>spawned_by_session_id</code>) - not whatever session happens to be focused, so a despawn in one project never leaks its toast into another project's chat; dropped when that lead isn't live in this process: <code>Worker &lt;label&gt; closed. Worktree preserved at .claude/worktrees/&lt;label&gt;/</code> for git-repo workers (so the operator knows the worktree survives), or the bare <code>Worker &lt;label&gt; closed.</code> for non-git workers. Same toast fires for every worker released by the lead-row cascade.</dd>
       <dt>despawn (MCP)</dt><dd><code>workers__despawn(label, force?)</code> is the lead's programmatic clean-close gesture (lead-only) - the MCP counterpart of the per-row <code>x</code> button. It runs the same teardown (kill the subprocess on drop + remove from <code>live_workers</code> + expire inflight asks + emit <code>WorkerStatusChanged { Removed }</code>) AND, unlike the <code>x</code> button, cleans up the worker's git worktree. A <strong>clean</strong> worktree is removed; a <strong>dirty</strong> one (uncommitted/untracked changes OR unpushed commits) <strong>blocks</strong> the despawn - returns <code>{status:"blocked", reason}</code> and the worker stays live - unless <code>force=true</code>, which tears down and discards (<code>git worktree remove --force</code>). Nothing is ever silently discarded. The dirty-check runs BEFORE teardown; the teardown runs before the worktree removal (kill first, then remove); a worktree-cleanup failure surfaces as a <code>worktree_cleanup_warning</code> on the <code>{status:"despawned"}</code> result and never rolls back the kill. The <code>x</code> button (<code>CloseWorker</code>) is unchanged - it does NOT clean the worktree. <em>Auto-close-when-idle is a deferred follow-on</em>; despawn is always explicit. Code: <code>crates/forge-workspace/src/mcp/workers.rs::Despawn</code> + <code>Command::DespawnWorker</code> -&gt; <code>spawn.rs::handle_despawn_worker</code> + worktree helpers in <code>forge-agent::env::worktree</code>.</dd>
       <dt>label click</dt><dd>switches active session to that worker's chat. Routes through <code>App::switch_to_worker</code> which resolves the worker's <code>SessionKey</code> from <code>live_workers</code> and falls through to the standard <code>switch_active_session</code>.</dd>
@@ -2599,13 +2623,13 @@ chat continues here...
     <tr><td class="glyph">⇨</td><td class="codepoint">U+21E8</td><td>RemoteTrigger</td><td>rightward arrow - fire-and-forget remote trigger</td></tr>
     <tr><td class="glyph">⚙</td><td class="codepoint">U+2699</td><td>LSP</td><td>gear - tooling integration (language server protocol calls)</td></tr>
     <tr><td class="glyph">◈</td><td class="codepoint">U+25C8</td><td>MCP-server line in an L2 group summary (<code>mcp__&lt;server&gt;__*</code>)</td><td>diamond-in-square - marks an external MCP-server call apart from local tools; only appears in the grouped summary, keyed per server</td></tr>
-    <tr><td class="glyph">○</td><td class="codepoint">U+25CB</td><td>fallback tool icon · todo Pending · permission/plan-approval unfocused</td><td>open circle - reused across multiple semantics (single code point)</td></tr>
+    <tr><td class="glyph">○</td><td class="codepoint">U+25CB</td><td>fallback tool icon · todo Pending · permission/plan-approval unfocused · Projects pane sleeping-project row glyph</td><td>open circle - reused across multiple semantics (single code point)</td></tr>
     <tr><td class="glyph">✓</td><td class="codepoint">U+2713</td><td>completed status · permission Allow icon · todo Completed</td><td><code>theme::ICON_COMPLETED</code></td></tr>
     <tr><td class="glyph">✗</td><td class="codepoint">U+2717</td><td>failed status · permission Reject icon</td><td><code>theme::ICON_FAILED</code></td></tr>
     <tr><td class="glyph">❯</td><td class="codepoint">U+276F</td><td>input prompt</td><td><code>theme::PROMPT_CHAR</code></td></tr>
-    <tr><td class="glyph">·</td><td class="codepoint">U+00B7</td><td>permission-prompt option separator · Projects pane Sleeping session-state glyph</td><td>middle dot - used to space the inline options in <code>render_permission_lines</code> (<code>"  ·  "</code>, DIM); also the per-session lifecycle glyph for sleeping sessions in the Projects pane drilldown (DIM)</td></tr>
-    <tr><td class="glyph">•</td><td class="codepoint">U+2022</td><td>plan-approval pre-approved actions list · Projects pane current-session marker</td><td>bullet - used in plan-approval prompt's optional pre-approved actions block (DIM); also the marker for the currently-viewed session in the active project's drilldown (RUST_ORANGE)</td></tr>
-    <tr><td class="glyph">◆</td><td class="codepoint">U+25C6</td><td>Projects pane lead-session marker</td><td>black diamond - marks the lead session within the active project's drilldown (DIM); always rendered on the first session row of that project</td></tr>
+    <tr><td class="glyph">·</td><td class="codepoint">U+00B7</td><td>permission-prompt option separator · Projects pane Sleeping / Failed / LoggedOut row glyph</td><td>middle dot - used to space the inline options in <code>render_permission_lines</code> (<code>"  ·  "</code>, DIM); also the lifecycle glyph on a Projects-pane project / worker row whose session is Sleeping, Failed or LoggedOut (DIM)</td></tr>
+    <tr><td class="glyph">•</td><td class="codepoint">U+2022</td><td>plan-approval pre-approved actions list · <code>/account</code> current-account marker</td><td>bullet - used in plan-approval prompt's optional pre-approved actions block (DIM); also marks the account a session is currently running under in the <a href="#account-picker">account-switch overlay</a></td></tr>
+    <tr><td class="glyph">◆</td><td class="codepoint">U+25C6</td><td>Inspector WORKFLOWS entry header</td><td>black diamond - prefixes each <a href="#inspector-pane">WORKFLOWS</a> entry's <code>meta.name</code> header row (bold while running, DIM once collapsed)</td></tr>
     <tr><td class="glyph">△</td><td class="codepoint">U+25B3</td><td>Projects pane Attention session-state glyph</td><td>white up-pointing triangle - session-row lifecycle glyph for a background session paused on a permission prompt (DIM)</td></tr>
     <tr><td class="glyph">▤</td><td class="codepoint">U+25A4</td><td>Narrow-tier Projects top-bar icon</td><td>square with horizontal fill - single-cell pane icon at the top of the chat area; toggles the Projects overlay on click (DIM when closed, RUST_ORANGE bold when open)</td></tr>
     <tr><td class="glyph">✕</td><td class="codepoint">U+2715</td><td>Narrow-tier overlay close glyph</td><td>multiplication x - Projects / Inspector pane: sits at the right edge of the overlay banner; click dismisses the overlay without switching session (DIM).</td></tr>
@@ -2615,9 +2639,9 @@ chat continues here...
     <tr><td class="glyph">?</td><td class="codepoint">U+003F</td><td>question-prompt header marker · help toggle key</td><td>RUST_ORANGE in question header; same key activates help</td></tr>
     <tr class="outlier"><td class="glyph">|</td><td class="codepoint">U+007C</td><td>question-prompt horizontal-options separator</td><td>ASCII pipe used between options in the horizontal question layout (<code>"  |  "</code>, DIM) - sits next to box-drawing <code>│</code>; flagged in #40 for replacement</td></tr>
     <tr><td class="glyph">[ ]</td><td class="codepoint">U+005B / U+005D</td><td>Projects-pane status panel mode badge · multi-select checkbox</td><td>ASCII brackets wrap the panel's <code>Mode</code> badge in the pane footer; the multi-select checkbox in question prompt uses <code>[x]</code> / <code>[ ]</code></td></tr>
-    <tr><td class="glyph">████░░░░</td><td class="codepoint">U+2588 / U+2591</td><td>Projects-pane status panel usage bars</td><td>12-cell filling bar for <code>Ctx</code>, <code>5h</code>, <code>7d</code> rows. Filled cells (<code>█</code>) tinted via <code>gauge_style</code> (orange &lt; 65%, yellow ≥ 65%, red ≥ 85%); empty cells (<code>░</code>) DIM</td></tr>
+    <tr><td class="glyph">▓▓▓▓░░░░</td><td class="codepoint">U+2593 / U+2591</td><td>Projects-pane status panel usage bars</td><td>filling bar for the <code>Ctx</code>, <code>5h</code>, <code>7d</code> rows, stretched to the pane width by <code>bar_cells_for</code>. Filled cells (<code>▓</code>) take their colour from the cell's position in the bar - four left-to-right zones green / yellow / orange / red, not a utilization threshold; empty cells (<code>░</code>) DIM</td></tr>
     <tr><td class="glyph">⎇</td><td class="codepoint">U+2387</td><td>Inspector-pane GIT section branch marker</td><td>alternative-key symbol prefix for the branch row in the right-hand <a href="#inspector-pane">Inspector pane</a>'s GIT section (DIM); branch label DIM on the default branch, RUST_ORANGE on a feature branch, yellow (<code>HEAD</code>) when the snapshot reports detached HEAD</td></tr>
-    <tr><td class="glyph">⠋ ⠙ ⠹</td><td class="codepoint">U+280B...</td><td>spinner frames · Projects pane Running / Spawning session-state glyph</td><td>Braille spinner during in-progress states (10 frames in <code>SPINNER_FRAMES</code>); also the static <code>⠋</code> session-row prefix for Running and Spawning sessions in the active project's drilldown (DIM)</td></tr>
+    <tr><td class="glyph">⠋ ⠙ ⠹</td><td class="codepoint">U+280B...</td><td>spinner frames · Projects pane Running / Spawning row glyph</td><td>Braille spinner during in-progress states (10 frames in <code>SPINNER_FRAMES</code>); also the animated glyph on a Projects-pane project / worker row whose session has a turn in progress or a live backgrounded task (RUST_ORANGE on the focused row, terminal default elsewhere)</td></tr>
     <tr><td class="glyph">▸</td><td class="codepoint">U+25B8</td><td>selection indicator</td><td>permission / question / plan-approval options · todo InProgress · autocomplete selected row</td></tr>
     <tr><td class="glyph">&gt;</td><td class="codepoint">U+003E</td><td>trust prompt selected action · MCP server-list selected marker</td><td>ASCII greater-than (white-on-RUST_ORANGE bold for selected, leading space for unselected)</td></tr>
   </tbody>
