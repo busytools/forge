@@ -2,27 +2,26 @@
 source: crates/forge-tui/src/app/replay.rs
 expression: snapshot
 ---
-Forge · 15.0s
+Forge · 11.9s
   ✓ 1 tool call   ctrl+x to expand
   └─ ⌖ toolsearch select:Monitor,TaskStop
 
-I'll wait for the three event notifications to arrive.
+Monitor armed. Waiting for the three events.
 
-Forge · 2.1s
-That's the first line. Waiting for the remaining two.
+Forge · 3.6s
+Event 1 received (monitor-line-1). Waiting for the remaining two.
 
-Forge · 1.9s
-Second line received. Waiting for the third.
-
-Forge · 6.8s
-All three received. Stopping the monitor.
-The monitor already completed on its own (the script exited after emitting all
-three lines), so there was nothing left to stop.
-
-The three lines I saw:
+Forge · 9.7s
+Event 2 received (monitor-line-2). One more to go.
+All three events arrived:
 
 ```
 monitor-line-1
 monitor-line-2
 monitor-line-3
 ```
+
+The TaskStop call returned "No task found" - the loop had already finished and
+the monitor exited on its own right as I issued the stop (the completion
+notification for bpwt1thgf landed immediately after). So the watch is
+terminated either way, just by natural exit rather than by my cancel.
