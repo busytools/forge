@@ -198,6 +198,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     // wakeup cadence increases (negligible on modern hardware).
     let tick_duration = Duration::from_millis(4);
     let mut last_render = Instant::now();
+    let mut last_spinner_repaint_tick = spinner_repaint_tick(app);
 
     loop {
         start_connection(app);
@@ -317,7 +318,14 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         if is_animating {
             advance_spinner_frame(app, Instant::now());
             tab_title::update_tab_title(&app.status, app.spinner_frame, app.cwd());
-            app.needs_redraw = true;
+            // The loop ticks every 4ms; the animation only moves every
+            // 30ms, so repainting per tick redraws the same glyph ~8
+            // times over.
+            let tick = spinner_repaint_tick(app);
+            if tick != last_spinner_repaint_tick {
+                last_spinner_repaint_tick = tick;
+                app.needs_redraw = true;
+            }
         } else {
             app.spinner_last_advance_at = None;
         }
@@ -430,12 +438,29 @@ fn any_background_activity(app: &App) -> bool {
     })
 }
 
-fn advance_spinner_frame(app: &mut App, now: Instant) {
-    let interval = if app.config.prefers_reduced_motion_effective() {
+/// Which animation step the spinner epoch is on. Rendered glyphs divide
+/// that same epoch by their style cadence, so gating repaints on this
+/// cannot drift against them the way a separately-accumulated counter
+/// would; `spinner_interval` is no coarser than the quickest cadence, so
+/// no animated surface can change between two consecutive ticks.
+fn spinner_repaint_tick(app: &App) -> u128 {
+    spinner_animation_step(app.spinner_epoch.elapsed(), spinner_interval(app))
+}
+
+fn spinner_animation_step(elapsed: Duration, interval: Duration) -> u128 {
+    elapsed.as_millis() / interval.as_millis().max(1)
+}
+
+fn spinner_interval(app: &App) -> Duration {
+    if app.config.prefers_reduced_motion_effective() {
         SPINNER_FRAME_INTERVAL_REDUCED
     } else {
         SPINNER_FRAME_INTERVAL_NORMAL
-    };
+    }
+}
+
+fn advance_spinner_frame(app: &mut App, now: Instant) {
+    let interval = spinner_interval(app);
 
     match app.spinner_last_advance_at {
         Some(last_advance) if now.duration_since(last_advance) < interval => {}
@@ -1106,6 +1131,47 @@ mod tests {
         app.sessions.get_mut(&key).expect("bucket").lifecycle_state =
             SessionLifecycleState::Running;
         assert!(any_background_activity(&app), "a Running session spins, so the gate ticks");
+    }
+
+    /// The repaint gate must be no coarser than the quickest thing it
+    /// gates, or an animation frame lands between two repaints and the
+    /// spinner visibly stutters. Two producers: the per-style glyph
+    /// cadence and the `spinner_frame` counter behind the tab title.
+    #[test]
+    fn spinner_repaint_interval_is_no_coarser_than_any_animation() {
+        let quickest = forge_workspace::SpinnerStyle::ALL_STYLES
+            .iter()
+            .map(|style| style.cadence_ms())
+            .min()
+            .expect("at least one style");
+        let repaint_ms = SPINNER_FRAME_INTERVAL_NORMAL.as_millis();
+        assert!(
+            repaint_ms <= u128::from(quickest),
+            "repaint every {repaint_ms}ms would drop frames from a {quickest}ms style",
+        );
+        assert!(
+            SPINNER_FRAME_INTERVAL_REDUCED
+                <= SPINNER_FRAME_INTERVAL_NORMAL
+                    .max(Duration::from_millis(crate::ui::spinner::REDUCED_FLOOR_MS)),
+            "reduced-motion repaint must still cover the reduced glyph floor",
+        );
+    }
+
+    /// Eight 4ms loop ticks span one 30ms animation step, so the gate
+    /// must let exactly one repaint through rather than eight. Reading
+    /// the step off the epoch (rather than accumulating per advance)
+    /// is what keeps it phase-locked to the rendered glyphs.
+    #[test]
+    fn spinner_repaint_step_advances_once_per_interval() {
+        let interval = SPINNER_FRAME_INTERVAL_NORMAL;
+        let steps: Vec<u128> = (0..=15u64)
+            .map(|tick| spinner_animation_step(Duration::from_millis(tick * 4), interval))
+            .collect();
+
+        let changes = steps.windows(2).filter(|w| w[0] != w[1]).count();
+        assert_eq!(changes, 2, "60ms of 4ms ticks crosses the 30ms cadence twice, not 15 times");
+        assert_eq!(steps[0], 0);
+        assert_eq!(steps[15], 2, "60ms elapsed sits on step 2");
     }
 
     #[test]
