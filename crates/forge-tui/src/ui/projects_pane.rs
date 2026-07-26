@@ -136,7 +136,6 @@ fn shift_body_hit_targets(app: &mut App, start_idx: usize, body_top: u16, offset
     for target in app.pane_hit_targets.iter_mut().skip(start_idx) {
         match target {
             crate::app::PaneHitTarget::ProjectHeader { y, height, .. }
-            | crate::app::PaneHitTarget::SessionRow { y, height, .. }
             | crate::app::PaneHitTarget::CloseSession { y, height, .. }
             | crate::app::PaneHitTarget::CloseWorker { y, height, .. }
             | crate::app::PaneHitTarget::WorkerRow { y, height, .. } => {
