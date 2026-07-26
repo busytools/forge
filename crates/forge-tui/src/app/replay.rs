@@ -58,6 +58,7 @@
 use std::fs;
 use std::path::PathBuf;
 
+use forge_primitives::Message;
 use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
 use forge_workspace::SessionUpdate;
 use ratatui::Frame;
@@ -73,6 +74,7 @@ use crate::app::{App, apply_session_update};
 /// Inspector or chat block into a `TestBackend` buffer.
 pub(crate) struct ReplayHarness {
     app: App,
+    result_duration_ms: Option<u64>,
 }
 
 impl ReplayHarness {
@@ -91,7 +93,14 @@ impl ReplayHarness {
     /// access against a `TestBackend`, which is the part replay-driven
     /// tests use to lock layouts into `insta` snapshots.
     pub(crate) fn from_app(app: App) -> Self {
-        Self { app }
+        Self { app, result_duration_ms: None }
+    }
+
+    /// `duration_ms` from the baseline's own `Message::Result` frame, so
+    /// a duration assertion tracks the capture instead of a literal every
+    /// recapture invalidates. Panics when the baseline has no Result.
+    pub(crate) fn result_duration_ms(&self) -> u64 {
+        self.result_duration_ms.expect("baseline must carry a Message::Result frame")
     }
 
     /// Render the Inspector pane into a `TestBackend` buffer at the
@@ -170,6 +179,7 @@ pub(crate) fn replay_baseline(name: &str) -> ReplayHarness {
     });
 
     let mut app = App::test_default();
+    let mut result_duration_ms = None;
     // Adopt a stable session id BEFORE the reducer runs so the
     // session-id guard inside `apply_session_update` accepts each
     // ChatAppended envelope. The pre-Connect bucket migrates onto
@@ -198,6 +208,9 @@ pub(crate) fn replay_baseline(name: &str) -> ReplayHarness {
         });
         match decoded {
             DecodedLine::Message(msg) => {
+                if let Message::Result { duration_ms, .. } = &msg {
+                    result_duration_ms = Some(*duration_ms);
+                }
                 apply_session_update(
                     &mut app,
                     SessionUpdate::ChatAppended { session_id: "replay-session".to_owned(), msg },
@@ -221,7 +234,7 @@ pub(crate) fn replay_baseline(name: &str) -> ReplayHarness {
         }
     }
 
-    ReplayHarness { app }
+    ReplayHarness { app, result_duration_ms }
 }
 
 fn baseline_path(name: &str) -> PathBuf {
@@ -331,14 +344,15 @@ mod tests {
     /// `handle_result` pulls it out of the destructure and writes
     /// it onto the latest Assistant ChatMessage so the
     /// `Forge - N.Ns` chip in `role_label_line` re-renders. This test
-    /// drives a real captured baseline (Result event with
-    /// `duration_ms = 10917`) through the production reducer and
-    /// asserts the stamp lands.
+    /// drives a real captured baseline through the production reducer
+    /// and asserts the stamp lands, comparing against the Result frame
+    /// the same replay decoded so a recapture needs no edit here.
     #[test]
     fn replay_permission_suggestions_edit_stamps_turn_duration() {
         use crate::app::MessageRole;
 
         let harness = replay_baseline("permission_suggestions_edit");
+        let expected = harness.result_duration_ms();
         let session = harness.default_session();
         let latest = session
             .messages
@@ -348,7 +362,7 @@ mod tests {
             .expect("baseline produces at least one assistant message");
         assert_eq!(
             latest.turn_duration_ms,
-            Some(10_917),
+            Some(expected),
             "Result.duration_ms must stamp onto the latest assistant; got {:?}",
             latest.turn_duration_ms,
         );
