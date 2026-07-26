@@ -421,7 +421,10 @@ pub fn resolve_infra_label(
     let matched: Vec<&ConfiguredMcpServer> =
         configured.iter().filter(|server| configured_server_matches(&haystack, server)).collect();
     match matched.as_slice() {
-        [only] => Some(InfraLabel { name: only.name.clone(), kind: InfraKind::McpServer }),
+        [only] => Some(InfraLabel {
+            name: strip_plugin_namespace(&only.name).to_owned(),
+            kind: InfraKind::McpServer,
+        }),
         [] => Some(package),
         many => {
             tracing::debug!(
@@ -431,6 +434,20 @@ pub fn resolve_infra_label(
             );
             Some(package)
         }
+    }
+}
+
+/// The bare server name inside a plugin-namespaced configured name. The CLI
+/// exposes a plugin-provided MCP server as `plugin:<plugin>:<server>`, which
+/// reads worse than the package-derived name; anything else (including a
+/// plain name that merely contains a colon) is returned verbatim.
+fn strip_plugin_namespace(name: &str) -> &str {
+    let mut parts = name.splitn(3, ':');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some("plugin"), Some(plugin), Some(server)) if !plugin.is_empty() && !server.is_empty() => {
+            server
+        }
+        _ => name,
     }
 }
 
@@ -920,6 +937,34 @@ mod tests {
         )
         .expect("pw");
         assert_eq!(label.name, "playwright");
+    }
+
+    #[test]
+    fn resolve_infra_label_strips_plugin_namespace_from_configured_name() {
+        // A plugin-provided server is namespaced `plugin:<plugin>:<server>`
+        // by the CLI (the `context7` plugin's `.mcp.json` names its server
+        // `context7`, launched as `npx -y @upstash/context7-mcp`), so the
+        // configured name alone reads worse than the package-derived one.
+        let servers = vec![configured(
+            "plugin:context7:context7",
+            "npx",
+            &["-y", "@upstash/context7-mcp"],
+        )];
+        assert_eq!(
+            resolve_infra_label("npm exec @upstash/context7-mcp", &servers).expect("ctx").name,
+            "context7",
+        );
+    }
+
+    #[test]
+    fn resolve_infra_label_keeps_plain_configured_name_with_a_colon() {
+        // Only the `plugin:<plugin>:<server>` shape is stripped; a name that
+        // merely contains a colon survives verbatim.
+        let servers = vec![configured("ctx:7", "npx", &["@upstash/context7-mcp"])];
+        assert_eq!(
+            resolve_infra_label("npm exec @upstash/context7-mcp", &servers).expect("ctx").name,
+            "ctx:7",
+        );
     }
 
     #[test]
