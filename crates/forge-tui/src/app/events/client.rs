@@ -5,12 +5,19 @@ use forge_workspace::{SessionKey, SessionUpdate};
 /// MCP + status + oauth-credentials + context-usage snapshots, and
 /// kick a usage poll so the Projects pane's 5h/7d bars land within
 /// seconds of session start instead of staying on placeholder ` - %`.
-fn post_connect_refreshes(app: &mut App) {
-    crate::app::config::refresh_mcp_snapshot(app);
-    crate::app::session_runtime::request_status_snapshot_refresh(app);
-    crate::app::session_runtime::request_oauth_credentials_snapshot_refresh(app);
-    crate::app::session_runtime::request_context_usage_refresh(app);
-    crate::app::usage::request_refresh_if_needed(app);
+///
+/// Every one of these reads and writes through the active-session
+/// accessors, so they run under an active-bucket pivot onto `key` -
+/// the session that just connected, which is not necessarily the one
+/// the user is looking at.
+fn post_connect_refreshes(app: &mut App, key: &SessionKey) {
+    crate::app::active_bucket_scope::with_pivoted(app, key.clone(), |app| {
+        crate::app::config::refresh_mcp_snapshot(app);
+        crate::app::session_runtime::request_status_snapshot_refresh(app);
+        crate::app::session_runtime::request_oauth_credentials_snapshot_refresh(app);
+        crate::app::session_runtime::request_context_usage_refresh(app);
+        crate::app::usage::request_refresh_if_needed(app);
+    });
 }
 
 /// Apply `f` only when `cwd_raw` matches the app's current cwd; log
@@ -117,7 +124,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 mode,
                 &history,
             );
-            post_connect_refreshes(app);
+            post_connect_refreshes(app, &key);
         }
         SessionUpdate::SessionReplaced {
             key,
@@ -138,7 +145,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 mode,
                 &history,
             );
-            post_connect_refreshes(app);
+            post_connect_refreshes(app, &key);
         }
         SessionUpdate::SessionsListed { key, sessions } => {
             session::apply_session_update_sessions_listed(app, &key, sessions);
@@ -1747,6 +1754,95 @@ mod tests {
             .expect("domain registered by seed_two_sessions");
         let domain_sid = domain.lock().session_id.as_ref().map(std::string::ToString::to_string);
         assert_eq!(domain_sid, Some(background.as_str().to_owned()));
+    }
+
+    fn test_mcp_server() -> forge_primitives::McpServerStatus {
+        forge_primitives::McpServerStatus {
+            name: "test-mcp".into(),
+            status: forge_primitives::McpServerConnectionStatus::Connected,
+            server_info: None,
+            error: None,
+            config: None,
+            scope: None,
+            tools: None,
+            sampling_configured: None,
+            sampling_required: None,
+        }
+    }
+
+    /// A background session's `Connected` must run its post-connect
+    /// refreshes against ITS bucket. Before the pivot they ran against
+    /// whatever was focused: `refresh_mcp_snapshot` wiped the focused
+    /// session's server list (emptying the `/mcp` overlay, and dropping
+    /// the Inspector PROCESSES resolver back to package-derived MCP
+    /// names) while the connecting session's own list never populated.
+    #[test]
+    fn background_connected_refreshes_target_session_not_focused() {
+        let mut app = App::test_default();
+        let (active, background) = seed_two_sessions(&mut app);
+        // `seed_two_sessions` drops its stub command receivers, which makes
+        // every dispatch fail; live ones let the refresh actually land.
+        let workspace = app.workspace.clone().expect("workspace");
+        let _cmds_active = workspace.install_testing_stub(&active);
+        let _cmds_background = workspace.install_testing_stub(&background);
+        app.sessions.get_mut(&active).expect("a").mcp.servers = vec![test_mcp_server()];
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::Connected {
+                key: background.clone(),
+                session_id: forge_primitives::SessionId::new(background.as_str()),
+                cwd: "/bg".to_owned(),
+                current_model: test_current_model(),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+            },
+        );
+
+        let focused = app.sessions.get(&active).expect("a");
+        assert_eq!(focused.mcp.servers.len(), 1, "focused session's MCP list must survive");
+        assert!(!focused.mcp.in_flight, "focused session must not be re-fetched");
+        assert!(
+            !focused.session_usage.context_usage_in_flight,
+            "focused session's context usage must not be re-fetched",
+        );
+
+        let connecting = app.sessions.get(&background).expect("b");
+        assert!(connecting.mcp.in_flight, "connecting session requests its own MCP snapshot");
+        assert!(
+            connecting.session_usage.context_usage_in_flight,
+            "connecting session requests its own context usage",
+        );
+    }
+
+    /// The focused session's own `Connected` still refreshes it - the
+    /// pivot must not skip the active case.
+    #[test]
+    fn active_connected_refreshes_its_own_session() {
+        let mut app = App::test_default();
+        let (active, _background) = seed_two_sessions(&mut app);
+        let workspace = app.workspace.clone().expect("workspace");
+        let _cmds_active = workspace.install_testing_stub(&active);
+        app.sessions.get_mut(&active).expect("a").mcp.servers = vec![test_mcp_server()];
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::Connected {
+                key: active.clone(),
+                session_id: forge_primitives::SessionId::new(active.as_str()),
+                cwd: "/fg".to_owned(),
+                current_model: test_current_model(),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+            },
+        );
+
+        let focused = app.sessions.get(&active).expect("a");
+        assert!(focused.mcp.servers.is_empty(), "its own connect clears the stale list");
+        assert!(focused.mcp.in_flight, "and requests a fresh snapshot");
+        assert_eq!(app.active_session_key.as_ref(), Some(&active), "focus stays put");
     }
 
     /// `SessionUpdate::Spawning` should be idempotent: a second
