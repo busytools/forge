@@ -148,12 +148,6 @@ fn live_and_idle_projects_render_under_same_org_with_distinct_glyphs() {
         .filter(|t| matches!(t, PaneHitTarget::CloseSession { .. }))
         .count();
     assert_eq!(close_count, 1, "only the live row stamps a CloseSession");
-    let session_row_count = app
-        .pane_hit_targets
-        .iter()
-        .filter(|t| matches!(t, PaneHitTarget::SessionRow { .. }))
-        .count();
-    assert_eq!(session_row_count, 0, "no session-row stamps in the simplified pane");
 }
 
 #[test]

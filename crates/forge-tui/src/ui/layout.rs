@@ -72,9 +72,9 @@ pub struct AppLayout {
 
 /// Compute the layout rectangles for one frame.
 ///
-/// `pane_visible` toggles the left Projects pane (persisted state).
-/// `pane_right_visible` toggles the right Inspector pane (same
-/// persistence model, mirror state). Either / both may be true; the
+/// `pane_visible` toggles the left Projects pane, `pane_right_visible`
+/// the right Inspector pane - both in-memory only, re-derived from the
+/// terminal width at each launch. Either / both may be true; the
 /// resulting chat column shrinks accordingly. Both vanish at Narrow
 /// tier - the top bar hosts the icon affordances there instead.
 pub fn compute(

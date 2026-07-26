@@ -855,9 +855,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
                 app.needs_redraw = true;
                 return true;
             }
-            PaneHitTarget::ProjectHeader { .. }
-            | PaneHitTarget::SessionRow { .. }
-            | PaneHitTarget::WorkerRow { .. } => {}
+            PaneHitTarget::ProjectHeader { .. } | PaneHitTarget::WorkerRow { .. } => {}
         }
     }
 
@@ -875,12 +873,6 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
         return match target {
             PaneHitTarget::ProjectHeader { project_name, .. } => {
                 switch_to_project_lead(app, &project_name);
-                app.projects_pane_overlay_open = false;
-                app.needs_redraw = true;
-                true
-            }
-            PaneHitTarget::SessionRow { session_key, .. } => {
-                switch_to_session_or_spawn(app, session_key);
                 app.projects_pane_overlay_open = false;
                 app.needs_redraw = true;
                 true
@@ -925,10 +917,6 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
     match target {
         PaneHitTarget::ProjectHeader { project_name, .. } => {
             switch_to_project_lead(app, &project_name);
-            true
-        }
-        PaneHitTarget::SessionRow { session_key, .. } => {
-            switch_to_session_or_spawn(app, session_key);
             true
         }
         PaneHitTarget::WorkerRow { session_key, .. } => {
@@ -1034,39 +1022,6 @@ fn switch_to_worker(app: &mut App, session_key: forge_workspace::SessionKey) {
             session_id = %session_key.as_str(),
             "switch_to_worker: bucket not yet present, click ignored",
         );
-    }
-}
-
-/// Switch to the clicked session row's bucket, or kick off a fresh
-/// resume spawn when the bucket isn't in `app.sessions` yet.
-///
-/// The Projects-pane drilldown lists every session for the active
-/// project (lead + non-lead) from the on-disk catalog; non-lead
-/// sessions typically aren't pooled in `app.sessions` until the
-/// user clicks them. Without this fallback, clicking a non-lead row
-/// would silently no-op (the closest thing to a useless button).
-///
-/// The lead-session row click still lands here too, but
-/// `switch_active_session` returns immediately when the key matches,
-/// and the spawn helper short-circuits when the key is already
-/// present - so the lead-click path keeps its existing
-/// switch-only semantics.
-fn switch_to_session_or_spawn(app: &mut App, session_key: forge_workspace::SessionKey) {
-    if app.sessions.contains_key(&session_key) {
-        app.switch_active_session(session_key);
-    } else if let Some(workspace) = app.workspace.as_ref() {
-        let launch_settings = crate::app::connect::session_launch_settings_for_resume(app);
-        if let Err(err) = workspace.dispatch(forge_workspace::Command::SpawnSession {
-            session_id: session_key.as_str().to_owned(),
-            launch_settings,
-        }) {
-            tracing::warn!(
-                target: crate::logging::targets::APP_SESSION,
-                session_id = %session_key.as_str(),
-                error = %err,
-                "switch_to_session_or_spawn: dispatch failed",
-            );
-        }
     }
 }
 

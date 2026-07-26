@@ -100,7 +100,7 @@ pub struct TurnNoticeRef {
 /// mouse handler on click. Same render-time-stamp pattern as the
 /// per-tool-call expand/collapse.
 ///
-/// `ProjectHeader` and `SessionRow` are y-only - they span the full
+/// `ProjectHeader` and `WorkerRow` are y-only - they span the full
 /// pane width, so an x-coord doesn't add information. `TopBarIcon`
 /// and `OverlayClose` are x+y bounded - they target a specific glyph
 /// position on a one-row band shared with other content.
@@ -109,9 +109,6 @@ pub enum PaneHitTarget {
     /// Click on a project name row → switch active session to its
     /// lead.
     ProjectHeader { project_name: String, y: u16, height: u16 },
-    /// Click on a session row in the active project's drilldown →
-    /// switch active session to that specific session.
-    SessionRow { session_key: forge_workspace::SessionKey, y: u16, height: u16 },
     /// Click on the `▤` icon in the Narrow-tier top bar → toggle
     /// the Projects overlay.
     TopBarIcon { y: u16, height: u16, x_start: u16, x_end: u16 },
@@ -183,14 +180,13 @@ pub enum PaneHitTarget {
 impl PaneHitTarget {
     /// Whether the target's row range covers `y` (inclusive of `y`,
     /// exclusive of `y + height`). For full-width row targets
-    /// (`ProjectHeader`, `SessionRow`) this is the only check the
+    /// (`ProjectHeader`, `WorkerRow`) this is the only check the
     /// hit-tester needs; for x+y-bounded targets (`TopBarIcon`,
     /// `OverlayClose`) call [`Self::contains`] instead so the column
     /// constraint also applies.
     pub fn contains_y(&self, y: u16) -> bool {
         let (start, height) = match self {
             Self::ProjectHeader { y, height, .. }
-            | Self::SessionRow { y, height, .. }
             | Self::TopBarIcon { y, height, .. }
             | Self::InspectorTopBarIcon { y, height, .. }
             | Self::OverlayClose { y, height, .. }
@@ -213,7 +209,7 @@ impl PaneHitTarget {
             return false;
         }
         match self {
-            Self::ProjectHeader { .. } | Self::SessionRow { .. } | Self::WorkerRow { .. } => true,
+            Self::ProjectHeader { .. } | Self::WorkerRow { .. } => true,
             Self::TopBarIcon { x_start, x_end, .. }
             | Self::InspectorTopBarIcon { x_start, x_end, .. }
             | Self::OverlayClose { x_start, x_end, .. }
