@@ -11,7 +11,7 @@ use crate::app::App;
 /// pulse 100, phase_of_moon 120) clamp up to this so a reduced-motion
 /// preference visibly slows them; ember (180) and forge_dot (1400)
 /// already sit past the floor.
-const REDUCED_FLOOR_MS: u64 = 160;
+pub(crate) const REDUCED_FLOOR_MS: u64 = 160;
 
 /// Frame index for `style` at `elapsed_ms` since the spinner epoch.
 /// `elapsed / cadence`, wrapped to the frame count; under reduced
