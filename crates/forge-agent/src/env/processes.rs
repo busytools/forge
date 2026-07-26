@@ -444,7 +444,9 @@ pub fn resolve_infra_label(
 fn strip_plugin_namespace(name: &str) -> &str {
     let mut parts = name.splitn(3, ':');
     match (parts.next(), parts.next(), parts.next()) {
-        (Some("plugin"), Some(plugin), Some(server)) if !plugin.is_empty() && !server.is_empty() => {
+        (Some("plugin"), Some(plugin), Some(server))
+            if !plugin.is_empty() && !server.is_empty() =>
+        {
             server
         }
         _ => name,
@@ -945,11 +947,8 @@ mod tests {
         // by the CLI (the `context7` plugin's `.mcp.json` names its server
         // `context7`, launched as `npx -y @upstash/context7-mcp`), so the
         // configured name alone reads worse than the package-derived one.
-        let servers = vec![configured(
-            "plugin:context7:context7",
-            "npx",
-            &["-y", "@upstash/context7-mcp"],
-        )];
+        let servers =
+            vec![configured("plugin:context7:context7", "npx", &["-y", "@upstash/context7-mcp"])];
         assert_eq!(
             resolve_infra_label("npm exec @upstash/context7-mcp", &servers).expect("ctx").name,
             "context7",
