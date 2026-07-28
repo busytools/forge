@@ -241,20 +241,14 @@ fn rfc3339_now() -> String {
     })
 }
 
-/// Resolve the caller's review scope or a ready-to-return tool error (no
-/// project / not on a named branch / caller session detached).
+/// Resolve the caller's review scope or a ready-to-return tool error
+/// naming the step that failed (see [`ScopeError`]).
 async fn scope_or_error(
     facade: &Arc<dyn ReviewFacade>,
     caller_key: &CallerKeyResolver,
 ) -> Result<ReviewScope, ToolOutput> {
     let caller = caller_key.current().map_err(|err| tool_error(err.to_string()))?;
-    facade.resolve_scope(&caller).await.ok_or_else(|| {
-        tool_error(
-            "could not resolve your review scope - reviews are keyed by project and git \
-             branch, so this only works from a git repo on a named branch (not detached HEAD)."
-                .to_owned(),
-        )
-    })
+    facade.resolve_scope(&caller).await.map_err(|err| tool_error(err.message()))
 }
 
 /// `review__list` - the submitted reviews on the caller's (project,
@@ -597,7 +591,7 @@ mod tests {
     }
 
     use crate::SessionKey;
-    use crate::mcp::review::facade::MockReviewFacade;
+    use crate::mcp::review::facade::{MockReviewFacade, ScopeError};
 
     fn resolver() -> CallerKeyResolver {
         CallerKeyResolver::from_fixed(SessionKey::from_session_id("caller"))
@@ -631,14 +625,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn review_list_unresolved_scope_is_error() {
+    async fn review_list_unresolved_scope_surfaces_the_failing_step() {
         let mock = Arc::new(MockReviewFacade::new());
-        *mock.scope.lock() = None;
+        *mock.scope.lock() = Err(ScopeError::SessionCwdUnknown);
         let facade: Arc<dyn ReviewFacade> = mock;
         let tool = ReviewList { facade, caller_key: resolver() };
         let out = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(out.is_error, "an unresolved scope must surface as an error");
-        assert!(out.blocks[0].text.contains("branch"), "error names the branch requirement");
+        assert_eq!(out.blocks[0].text, ScopeError::SessionCwdUnknown.message());
+        assert!(
+            !out.blocks[0].text.contains("detached"),
+            "a non-HEAD failure must not claim a detached HEAD: {}",
+            out.blocks[0].text,
+        );
     }
 
     #[tokio::test]
