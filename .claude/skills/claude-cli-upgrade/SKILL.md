@@ -2,9 +2,9 @@
 
 This skill verifies forge stays compatible with the `claude` CLI after an upstream version bump. It catches three failure classes:
 
-1. **Decoder drift** — the new CLI emits stream-json shapes (tool names, event subtypes, fields) that forge-sdk doesn't yet decode, producing `DecodedLine::Unknown` or decode errors. Sessions render incorrectly or break silently.
-2. **Rewriter drift** — the new CLI's wire classification (headers, body keys, telemetry shape) shifted, so the existing forge-side rewriter no longer produces native-equivalent traffic. Hard Rule #16 violated.
-3. **Tool surface drift** — the new CLI adds or removes tool primitives (e.g. `TodoWrite` → `TaskCreate/Update/List/Get` in 2.1.156) that forge-tui's inspector / chat renderers special-case. User-visible features silently regress.
+1. **Decoder drift** - the new CLI emits stream-json shapes (tool names, event subtypes, fields) that forge-sdk doesn't yet decode, producing `DecodedLine::Unknown` or decode errors. Sessions render incorrectly or break silently.
+2. **Rewriter drift** - the new CLI's wire classification (headers, body keys, telemetry shape) shifted, so the existing forge-side rewriter no longer produces native-equivalent traffic. Hard Rule #16 violated.
+3. **Tool surface drift** - the new CLI adds or removes tool primitives (e.g. `TodoWrite` → `TaskCreate/Update/List/Get` in 2.1.156) that forge-tui's inspector / chat renderers special-case. User-visible features silently regress.
 
 The goal state: harness's `PINNED_CLI_VERSION` bumped to the new version, all 22 sdk replay scenarios pass against fresh baselines, wire-equivalence-check still PASSes, and any drift is either decoded/rewritten or explicitly accepted with rationale.
 
@@ -12,9 +12,9 @@ The goal state: harness's `PINNED_CLI_VERSION` bumped to the new version, all 22
 
 - After `brew upgrade claude-code` (or any other claude binary upgrade).
 - When `claude --version` differs from `PINNED_CLI_VERSION` in `crates/forge-test-harness/src/sdk_wire.rs`.
-- Before tagging a forge release — pairs with wire-equivalence-check as the two pre-release wire integrity checks.
+- Before tagging a forge release - pairs with wire-equivalence-check as the two pre-release wire integrity checks.
 - After a user reports forge behaves visibly differently than native on the wire OR a feature stopped rendering (renderer-side surface change).
-- Periodically (monthly) as a drift check — Anthropic ships CLI updates frequently enough that 2-3 versions can stack up between explicit invocations.
+- Periodically (monthly) as a drift check - Anthropic ships CLI updates frequently enough that 2-3 versions can stack up between explicit invocations.
 
 ## Pre-flight (agent runs)
 
@@ -28,7 +28,7 @@ claude --version
 grep -n "PINNED_CLI_VERSION" crates/forge-test-harness/src/sdk_wire.rs
 
 # 3. What baseline directories exist? (anything other than the pinned
-#    version is leftover — note it for cleanup but don't delete yet.)
+#    version is leftover - note it for cleanup but don't delete yet.)
 ls crates/forge-test-harness/baselines/sdk/
 
 # 4. Confirm mitmproxy is available (the rewriter check + capture both
@@ -93,7 +93,7 @@ Compare the output against the previously-known tool set (search `crates/forge-t
 
 - **New tool names** forge-tui doesn't special-case yet. Inspector / chat suppression may need extension. File an issue per cluster.
 - **Removed tool names** the renderer still special-cases. Dead code; mark for cleanup.
-- **Same tool names but different `tool_input` shape** — only visible by capturing a real session and diffing. Phase 4 covers it.
+- **Same tool names but different `tool_input` shape** - only visible by capturing a real session and diffing. Phase 4 covers it.
 
 ### Scenario coverage audit (sub-step of Phase 1)
 
@@ -110,7 +110,7 @@ done
 
 Cross-reference against the Phase 1 tool union. For each tool in the union with NO matching scenario, decide:
 
-- **High-signal wire surface** (new tool family with rich `tool_input` shape — e.g. TaskCreate/Update/List/Get, Workflow): file an issue for a follow-up scenario PR. Not a blocker for the upgrade — additive coverage.
+- **High-signal wire surface** (new tool family with rich `tool_input` shape - e.g. TaskCreate/Update/List/Get, Workflow): file an issue for a follow-up scenario PR. Not a blocker for the upgrade - additive coverage.
 - **Generic / low-shape tool** (e.g. ToolSearch which is a single-arg lookup): low priority; may not need a scenario.
 - **Removed tool** (was covered, no longer in the union): retire the scenario file + delete its baseline.
 
@@ -124,11 +124,11 @@ Run the existing replay test suite while `PINNED_CLI_VERSION` still points at th
 cargo nextest run -p forge-test-harness --test sdk_replay 2>&1 | tail -30
 ```
 
-If any scenario FAILs against its existing baseline, the decoder lost ground — investigate before regenerating. Otherwise proceed to bump + capture.
+If any scenario FAILs against its existing baseline, the decoder lost ground - investigate before regenerating. Otherwise proceed to bump + capture.
 
 ## Phase 3: Bump `PINNED_CLI_VERSION` (agent runs)
 
-**Order matters here.** `baseline_dir()` resolves to `baselines/sdk/<PINNED_CLI_VERSION>/` via the compile-time constant in `crates/forge-test-harness/src/sdk_wire.rs`. If capture runs while PINNED is still the OLD version, captures land in the OLD directory and silently overwrite the existing baselines — destroying the comparison reference. Bump first, capture second.
+**Order matters here.** `baseline_dir()` resolves to `baselines/sdk/<PINNED_CLI_VERSION>/` via the compile-time constant in `crates/forge-test-harness/src/sdk_wire.rs`. If capture runs while PINNED is still the OLD version, captures land in the OLD directory and silently overwrite the existing baselines - destroying the comparison reference. Bump first, capture second.
 
 The OLD baseline directory stays on disk (it's already committed). The bumped constant just makes the harness write to a fresh NEW dir.
 
@@ -146,7 +146,7 @@ grep PINNED_CLI_VERSION crates/forge-test-harness/src/sdk_wire.rs
 ls "crates/forge-test-harness/baselines/sdk/${OLD_VERSION}/" | wc -l
 ```
 
-DO NOT run `cargo nextest run --test sdk_replay` here. It will panic — the harness expects `baselines/sdk/<NEW_VERSION>/<scenario>.jsonl` to exist, and we haven't captured them yet. The replay against new baselines comes in Phase 5.
+DO NOT run `cargo nextest run --test sdk_replay` here. It will panic - the harness expects `baselines/sdk/<NEW_VERSION>/<scenario>.jsonl` to exist, and we haven't captured them yet. The replay against new baselines comes in Phase 5.
 
 ## Phase 4: Baseline regeneration (agent runs)
 
@@ -202,9 +202,9 @@ done
 
 For each scenario with deltas:
 
-- **Added type/subtype** — new wire shape the decoder needs to handle. If the replay test passes against the new baseline (Phase 5 below), the decoder already handles it as a side-effect of the generic stream-json parser. If it fails, extend the decoder.
-- **Removed type/subtype** — Anthropic dropped a shape. Check forge for code paths that depend on it; mark dead.
-- **Same types but different counts** — usually a per-session-volume difference, not a wire change. Spot-check.
+- **Added type/subtype** - new wire shape the decoder needs to handle. If the replay test passes against the new baseline (Phase 5 below), the decoder already handles it as a side-effect of the generic stream-json parser. If it fails, extend the decoder.
+- **Removed type/subtype** - Anthropic dropped a shape. Check forge for code paths that depend on it; mark dead.
+- **Same types but different counts** - usually a per-session-volume difference, not a wire change. Spot-check.
 
 ## Phase 5: Replay against NEW baselines (agent runs)
 
@@ -228,7 +228,7 @@ The decoder-side is now confirmed. Verify the rewriter still produces native-equ
 # See .claude/skills/wire-equivalence-check/SKILL.md for the full flow.
 ```
 
-This is the same routine as a release pre-flight — the difference is that we run it NOW because the CLI changed. Expect WARN/INFO deltas that come from upstream additions; FAIL findings need rewriter fixes in `crates/forge-sdk/src/transport/proxy.rs` before the upgrade is acceptable.
+This is the same routine as a release pre-flight - the difference is that we run it NOW because the CLI changed. Expect WARN/INFO deltas that come from upstream additions; FAIL findings need rewriter fixes in `crates/forge-sdk/src/transport/proxy.rs` before the upgrade is acceptable.
 
 ## Phase 7: Renderer / inspector adjustments (if Phase 1 flagged adds)
 
@@ -242,7 +242,7 @@ One PR with:
 - New baselines under `crates/forge-test-harness/baselines/sdk/<NEW_VERSION>/`.
 - Decoder patches (if any) in `crates/forge-sdk/`.
 - Rewriter patches (if any) in `crates/forge-sdk/src/transport/proxy.rs`.
-- Old baselines (`baselines/sdk/<OLD_VERSION>/`) deleted — they're frozen by `PINNED_CLI_VERSION` and the replay test only reads the pinned dir; keeping stale dirs is rot.
+- Old baselines (`baselines/sdk/<OLD_VERSION>/`) deleted - they're frozen by `PINNED_CLI_VERSION` and the replay test only reads the pinned dir; keeping stale dirs is rot.
 
 PR body should call out:
 - The version delta (old → new).
@@ -253,15 +253,15 @@ PR body should call out:
 
 ## Failure modes
 
-**Tool surface diff is empty across all probed models** — the CLI is exposing the same tools at init. Either nothing changed, or models all happen to expose the same set (rare but possible). Sanity-check by inspecting one full init event dump (`cat /tmp/forge-cli-upgrade-check/init-claude-opus-4-7.jsonl | head -1 | python3 -m json.tool`).
+**Tool surface diff is empty across all probed models** - the CLI is exposing the same tools at init. Either nothing changed, or models all happen to expose the same set (rare but possible). Sanity-check by inspecting one full init event dump (`cat /tmp/forge-cli-upgrade-check/init-claude-opus-4-7.jsonl | head -1 | python3 -m json.tool`).
 
-**Capture mode produces empty `.jsonl` files** — the harness's capture-env didn't trigger. Confirm `FORGE_WIRE_CAPTURE=1` is exported, and that the scenarios are actually `#[ignore]`-gated (only `--run-ignored only` runs them). Check `crates/forge-test-harness/tests/sdk_scenarios_*.rs` for the gate.
+**Capture mode produces empty `.jsonl` files** - the harness's capture-env didn't trigger. Confirm `FORGE_WIRE_CAPTURE=1` is exported, and that the scenarios are actually `#[ignore]`-gated (only `--run-ignored only` runs them). Check `crates/forge-test-harness/tests/sdk_scenarios_*.rs` for the gate.
 
-**Replay test passes against OLD baselines but FAILs against NEW** — most common failure. The new CLI emits a shape the decoder doesn't recognize. Look at the failing scenario's NEW baseline, find the unfamiliar `type/subtype`, extend the decoder.
+**Replay test passes against OLD baselines but FAILs against NEW** - most common failure. The new CLI emits a shape the decoder doesn't recognize. Look at the failing scenario's NEW baseline, find the unfamiliar `type/subtype`, extend the decoder.
 
-**`claude --version` matches `PINNED_CLI_VERSION` but rewriter check FAILs** — likely a forge-sdk regression unrelated to the upgrade. Run wire-equivalence-check directly to isolate.
+**`claude --version` matches `PINNED_CLI_VERSION` but rewriter check FAILs** - likely a forge-sdk regression unrelated to the upgrade. Run wire-equivalence-check directly to isolate.
 
-**Baseline diff shows many scenarios with "removed types"** — Anthropic dropped a wire shape. Search forge source for code paths that depend on it; some may need to be removed or rewritten. Don't just delete the baseline coverage — the decoder still needs to handle the old shape gracefully if any long-lived process on the old CLI might still emit it (e.g. a running forge subprocess that hasn't restarted yet).
+**Baseline diff shows many scenarios with "removed types"** - Anthropic dropped a wire shape. Search forge source for code paths that depend on it; some may need to be removed or rewritten. Don't just delete the baseline coverage - the decoder still needs to handle the old shape gracefully if any long-lived process on the old CLI might still emit it (e.g. a running forge subprocess that hasn't restarted yet).
 
 ## Quick start (one-liner orientation)
 
