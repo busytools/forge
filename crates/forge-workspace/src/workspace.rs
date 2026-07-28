@@ -3559,6 +3559,27 @@ impl Workspace {
         })
     }
 
+    /// The branches under `project` that hold submitted reviews. `Ok`
+    /// with an empty vec when the store isn't open; `Err` on a read
+    /// failure. `review__list` asks this only after its own branch came
+    /// back empty, so a review filed against another branch can't read
+    /// as "no reviews".
+    pub fn review_branches(&self, project: &str) -> Result<Vec<String>, String> {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            return Ok(Vec::new());
+        };
+        crate::store::review::review_branches(db, project).map_err(|error| {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                project = %project,
+                "listing review branches failed",
+            );
+            format!("{error:#}")
+        })
+    }
+
     /// Seal a new review for `(project, branch)`, filing the listed
     /// still-unfiled threads into it and appending it with the optional
     /// summary. Records `origin` as the notice target for the branch (the

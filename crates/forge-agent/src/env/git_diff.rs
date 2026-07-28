@@ -178,15 +178,15 @@ fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>) {
 /// `pr` / `closes` carry over without re-running `gh`. Pass `None`
 /// for cold starts.
 /// The caller's current branch name via `git rev-parse --abbrev-ref HEAD`,
-/// or `None` on detached HEAD, a non-git dir, or a scanner failure. Mirrors
-/// the `GitBranch::Named` string [`scan`] derives, so the review MCP can
-/// resolve a caller's `(project, branch)` review scope to the same key the
-/// `/diff` overlay persists under.
-pub async fn current_branch(cwd: &Path) -> Option<String> {
-    match classify_rev_parse(run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await) {
-        Ok(name) if name != "HEAD" && !name.is_empty() => Some(name),
-        _ => None,
-    }
+/// keeping a detached HEAD apart from a failed read: `Ok(Some(name))` on
+/// a named branch, `Ok(None)` on a detached HEAD, `Err(gate)` when git
+/// reported nothing usable. Mirrors the `GitBranch::Named` string
+/// [`scan`] derives, so the review MCP can resolve a caller's `(project,
+/// branch)` review scope to the same key the `/diff` overlay persists
+/// under - and name the step that failed when it can't.
+pub async fn current_branch(cwd: &Path) -> Result<Option<String>, RepoGate> {
+    let name = classify_rev_parse(run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await)?;
+    Ok((name != "HEAD").then_some(name))
 }
 
 pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot {
@@ -863,11 +863,11 @@ mod tests {
         init_repo(&dir, "feat/x");
         write_file(&dir, "README.md", "hi\n");
         commit_all(&dir, "init");
-        assert_eq!(current_branch(dir.path()).await.as_deref(), Some("feat/x"));
+        assert_eq!(current_branch(dir.path()).await, Ok(Some("feat/x".to_owned())));
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn current_branch_is_none_on_detached_head() {
+    async fn current_branch_is_ok_none_on_detached_head() {
         let dir = tempfile::tempdir().expect("tempdir");
         init_repo(&dir, "main");
         write_file(&dir, "README.md", "hi\n");
@@ -879,13 +879,21 @@ mod tests {
             .output()
             .expect("git ok");
         assert!(out.status.success(), "detach: {}", String::from_utf8_lossy(&out.stderr));
-        assert!(current_branch(dir.path()).await.is_none(), "detached HEAD has no named branch");
+        assert_eq!(
+            current_branch(dir.path()).await,
+            Ok(None),
+            "a detached HEAD is a repo with no branch name, not a failed read",
+        );
     }
 
+    /// `git rev-parse` exits 128 (not 0-with-empty-stdout) outside a
+    /// work tree, so a plain non-repo dir reaches the same gate a broken
+    /// git call does. Callers can't tell the two apart from the return
+    /// value alone; the `run_git` WARN carries git's stderr.
     #[tokio::test(flavor = "current_thread")]
-    async fn current_branch_is_none_outside_a_repo() {
+    async fn current_branch_errs_outside_a_repo() {
         let dir = tempfile::tempdir().expect("tempdir");
-        assert!(current_branch(dir.path()).await.is_none(), "a non-git dir has no branch");
+        assert_eq!(current_branch(dir.path()).await, Err(RepoGate::ScannerFailed));
     }
 
     #[tokio::test(flavor = "current_thread")]
