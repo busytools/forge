@@ -137,6 +137,11 @@ pub trait ReviewFacade: Send + Sync {
     /// `review__list` rows for the scope's branch, newest review first.
     fn list(&self, scope: &ReviewScope) -> Result<Vec<ReviewSummary>, String>;
 
+    /// Branches in the scope's project that hold submitted reviews.
+    /// Consulted only when [`Self::list`] came back empty, to tell "no
+    /// reviews" apart from "the review is on another branch".
+    fn branches_with_reviews(&self, scope: &ReviewScope) -> Vec<String>;
+
     /// `review__get` detail for one review, or `None` when it isn't on the
     /// scope's branch.
     fn get(&self, scope: &ReviewScope, review_id: &str) -> Result<Option<ReviewDetail>, String>;
@@ -225,6 +230,24 @@ impl ReviewFacade for ProdReviewFacade {
         ws.review_list(&scope.project, &scope.branch)
     }
 
+    /// A failure here can only degrade a diagnostic, so it warns and
+    /// reports none rather than failing the `review__list` that already
+    /// succeeded.
+    fn branches_with_reviews(&self, scope: &ReviewScope) -> Vec<String> {
+        let Some(ws) = self.0.upgrade() else {
+            return Vec::new();
+        };
+        ws.review_branches(&scope.project).unwrap_or_else(|error| {
+            tracing::warn!(
+                target: "forge_workspace::review",
+                event_name = "review_branch_probe_failed",
+                project = %scope.project,
+                %error,
+            );
+            Vec::new()
+        })
+    }
+
     fn get(&self, scope: &ReviewScope, review_id: &str) -> Result<Option<ReviewDetail>, String> {
         let ws = self.0.upgrade().ok_or_else(|| "workspace unavailable".to_owned())?;
         ws.review_get(&scope.project, &scope.branch, review_id)
@@ -263,6 +286,8 @@ pub struct MockReviewFacade {
     /// Resolved scope; an `Err` exercises the unresolved-scope path.
     pub scope: parking_lot::Mutex<Result<ReviewScope, ScopeError>>,
     pub summaries: parking_lot::Mutex<Vec<ReviewSummary>>,
+    /// Branches the scope's project holds reviews on.
+    pub review_branches: parking_lot::Mutex<Vec<String>>,
     pub detail: parking_lot::Mutex<Option<ReviewDetail>>,
     /// Captured `(comment_id, text)` reply calls.
     pub reply_calls: parking_lot::Mutex<Vec<(String, String)>>,
@@ -285,6 +310,7 @@ impl MockReviewFacade {
                 caller: SessionKey::from_session_id("caller"),
             })),
             summaries: parking_lot::Mutex::new(Vec::new()),
+            review_branches: parking_lot::Mutex::new(Vec::new()),
             detail: parking_lot::Mutex::new(None),
             reply_calls: parking_lot::Mutex::new(Vec::new()),
             resolve_calls: parking_lot::Mutex::new(Vec::new()),
@@ -307,6 +333,10 @@ impl ReviewFacade for MockReviewFacade {
 
     fn list(&self, _scope: &ReviewScope) -> Result<Vec<ReviewSummary>, String> {
         Ok(self.summaries.lock().clone())
+    }
+
+    fn branches_with_reviews(&self, _scope: &ReviewScope) -> Vec<String> {
+        self.review_branches.lock().clone()
     }
 
     fn get(&self, _scope: &ReviewScope, review_id: &str) -> Result<Option<ReviewDetail>, String> {
@@ -336,16 +366,40 @@ impl ReviewFacade for MockReviewFacade {
     }
 }
 
-/// Drives [`ProdReviewFacade::resolve_scope`] against a real (stub)
-/// `Workspace` so each failure step is asserted where it is produced,
-/// not where a mock replays it.
+/// Drives [`ProdReviewFacade`] against a real (stub) `Workspace` so each
+/// failure step is asserted where it is produced, not where a mock
+/// replays it.
 #[cfg(test)]
 mod resolve_scope_tests {
-    use super::{ProdReviewFacade, ReviewFacade, ScopeError};
+    use super::{ProdReviewFacade, ReviewFacade, ReviewScope, ScopeError};
     use crate::SessionKey;
     use crate::workspace::Workspace;
     use std::path::Path;
     use std::sync::{Arc, Weak};
+
+    #[test]
+    fn branches_with_reviews_reports_the_projects_other_branches() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let reviewer = SessionKey::from_session_id("lead-uuid");
+        ws.submit_review("myproj", "feat/theirs", None, &[], reviewer.clone())
+            .expect("submit theirs");
+        ws.submit_review("other", "feat/elsewhere", None, &[], reviewer).expect("submit elsewhere");
+        let scope = ReviewScope {
+            project: "myproj".to_owned(),
+            branch: "feat/mine".to_owned(),
+            author_label: "implementer".to_owned(),
+            caller: SessionKey::from_session_id("caller-uuid"),
+        };
+        assert_eq!(
+            ProdReviewFacade(Arc::downgrade(&ws)).branches_with_reviews(&scope),
+            vec!["feat/theirs".to_owned()],
+            "only this project's review-bearing branches",
+        );
+    }
 
     fn git(dir: &Path, args: &[&str]) {
         let out = std::process::Command::new("git")
