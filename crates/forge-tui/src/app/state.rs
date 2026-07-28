@@ -1958,10 +1958,25 @@ impl App {
         } else {
             crate::ui::schedule_format::humanize_cron(cron_expr)
         };
+        // A one-shot fires at the expression's first match after creation,
+        // then the CLI auto-deletes it without emitting a CronDelete. That
+        // instant is the entry's own expiry (and its live countdown), so
+        // resolve it here through the same evaluator the durable crons use.
+        // `None` for an unparseable expression - the row is then retained
+        // rather than expired against a guess.
+        let fire_at = (!recurring)
+            .then(|| {
+                forge_workspace::next_fire_after(
+                    &forge_primitives::cron::CronKind::Recurring(cron_expr.to_owned()),
+                    created_at,
+                )
+            })
+            .flatten();
         let schedules = self.schedules_mut();
         if let Some(e) = schedules.iter_mut().find(|e| e.key == tool_use_id) {
             e.schedule = schedule;
             e.kind = crate::app::state::types::ScheduleKind::Cron { recurring };
+            e.fire_at = fire_at;
             return;
         }
         schedules.push(crate::app::state::types::ScheduleEntry {
@@ -1971,7 +1986,7 @@ impl App {
             label: String::new(),
             description: None,
             schedule,
-            fire_at: None,
+            fire_at,
             created_at,
         });
     }
@@ -3892,6 +3907,33 @@ mod tests {
         app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", true, t0);
         app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", true, t0);
         assert_eq!(app.schedules().len(), 1, "re-decoded same tool_use_id stays one entry");
+    }
+
+    #[test]
+    fn one_shot_cron_resolves_a_fire_time_and_then_prunes() {
+        let mut app = App::test_default();
+        let created = std::time::SystemTime::now();
+        // A one-shot pinned to a day-of-month + month, the shape the CLI
+        // emits for "run once at <time>".
+        app.upsert_cron_from_tool_input("tu1", "48 16 24 4 *", false, created);
+
+        let fire = app.schedules()[0].fire_at.expect("one-shot resolves its next occurrence");
+        assert!(fire > created, "the fire time is the first match after creation");
+
+        app.prune_expired_schedules(fire - std::time::Duration::from_secs(1));
+        assert_eq!(app.schedules().len(), 1, "retained while pending");
+        app.prune_expired_schedules(fire);
+        assert!(app.schedules().is_empty(), "dropped once its fire time passes");
+    }
+
+    #[test]
+    fn recurring_cron_carries_no_fire_time() {
+        let mut app = App::test_default();
+        app.upsert_cron_from_tool_input("tu1", "0 9 * * *", true, std::time::SystemTime::now());
+        assert!(
+            app.schedules()[0].fire_at.is_none(),
+            "a recurring cron badges `recurring`; its schedule already carries the timing",
+        );
     }
 
     #[test]

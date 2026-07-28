@@ -176,7 +176,9 @@ pub struct ScheduleEntry {
     /// Cron only: the humanized schedule (`daily at 09:00`, `today
     /// 14:30`). Empty for wakeups.
     pub schedule: String,
-    /// Wakeup: when it fires (now + delaySeconds). Cron: `None`.
+    /// When it fires: `now + delaySeconds` for a wakeup, the resolved
+    /// next occurrence for a one-shot cron. `None` for a recurring cron
+    /// and for a one-shot whose expression didn't parse.
     pub fire_at: Option<std::time::SystemTime>,
     /// When the entry was created. Recurring-cron 7-day-expiry
     /// reference; informational for wakeups.
@@ -187,17 +189,18 @@ impl ScheduleEntry {
     /// Recurring crons auto-expire after 7 days (CLI-documented).
     pub const CRON_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
 
-    /// True when `now` is at/after the entry's validity end: a wakeup
-    /// whose `fire_at` has passed, or a recurring cron older than
-    /// `CRON_MAX_AGE`. One-shot crons hang until `CronDelete` (no
-    /// cron-expr parsing in v1).
+    /// True when `now` is at/after the entry's validity end: a wakeup or
+    /// one-shot cron whose `fire_at` has passed, or a recurring cron
+    /// older than `CRON_MAX_AGE`. A one-shot with no resolvable fire
+    /// time is retained rather than guessed at.
     pub fn is_expired(&self, now: std::time::SystemTime) -> bool {
         match self.kind {
-            ScheduleKind::Wakeup => self.fire_at.is_some_and(|t| now >= t),
-            ScheduleKind::Cron { recurring: true, .. } => {
+            ScheduleKind::Wakeup | ScheduleKind::Cron { recurring: false } => {
+                self.fire_at.is_some_and(|t| now >= t)
+            }
+            ScheduleKind::Cron { recurring: true } => {
                 now.duration_since(self.created_at).is_ok_and(|age| age >= Self::CRON_MAX_AGE)
             }
-            ScheduleKind::Cron { recurring: false, .. } => false,
         }
     }
 }
@@ -677,10 +680,9 @@ mod tests {
     }
 
     #[test]
-    fn schedule_entry_one_shot_cron_hangs_until_explicit_delete() {
-        // No cron-expr parsing in v1; one-shot crons sit until CronDelete
-        // (or the renderer/upstream cleanup) drains them.
+    fn schedule_entry_one_shot_cron_expires_at_its_fire_time() {
         let t0 = std::time::SystemTime::UNIX_EPOCH;
+        let fire = t0 + std::time::Duration::from_secs(3600);
         let e = ScheduleEntry {
             key: "tu3".into(),
             cron_id: Some("job2".into()),
@@ -688,10 +690,28 @@ mod tests {
             label: "0 9 1 1 *".into(),
             description: None,
             schedule: "monthly on the 1st at 09:00".into(),
-            fire_at: None,
+            fire_at: Some(fire),
             created_at: t0,
         };
         assert!(!e.is_expired(t0));
+        assert!(e.is_expired(fire), "a one-shot cron fires once, then auto-deletes upstream");
+    }
+
+    #[test]
+    fn schedule_entry_one_shot_cron_without_a_fire_time_is_retained() {
+        // An unparseable expression yields no fire time; retaining the row
+        // beats guessing an expiry the wire never gave us.
+        let t0 = std::time::SystemTime::UNIX_EPOCH;
+        let e = ScheduleEntry {
+            key: "tu4".into(),
+            cron_id: Some("job3".into()),
+            kind: ScheduleKind::Cron { recurring: false },
+            label: "weird".into(),
+            description: None,
+            schedule: "weird".into(),
+            fire_at: None,
+            created_at: t0,
+        };
         assert!(!e.is_expired(t0 + ScheduleEntry::CRON_MAX_AGE * 2));
     }
 
