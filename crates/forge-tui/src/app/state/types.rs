@@ -147,9 +147,8 @@ pub struct BackgroundTask {
 pub enum ScheduleKind {
     /// One-shot `ScheduleWakeup` (the /loop dynamic-pacing mechanism).
     Wakeup,
-    /// `CronCreate` job. `recurring` distinguishes repeat vs one-shot;
-    /// `durable` mirrors the wire flag.
-    Cron { recurring: bool, durable: bool },
+    /// `CronCreate` job. `recurring` distinguishes repeat vs one-shot.
+    Cron { recurring: bool },
 }
 
 /// A pending time-based schedule surfaced in the Inspector SCHEDULES
@@ -666,7 +665,7 @@ mod tests {
         let e = ScheduleEntry {
             key: "tu2".into(),
             cron_id: Some("job1".into()),
-            kind: ScheduleKind::Cron { recurring: true, durable: false },
+            kind: ScheduleKind::Cron { recurring: true },
             label: "*/5 * * * *".into(),
             description: None,
             schedule: "every 5 minutes".into(),
@@ -685,7 +684,7 @@ mod tests {
         let e = ScheduleEntry {
             key: "tu3".into(),
             cron_id: Some("job2".into()),
-            kind: ScheduleKind::Cron { recurring: false, durable: true },
+            kind: ScheduleKind::Cron { recurring: false },
             label: "0 9 1 1 *".into(),
             description: None,
             schedule: "monthly on the 1st at 09:00".into(),

@@ -1940,20 +1940,17 @@ impl App {
         tool_use_id: &str,
         cron_expr: &str,
         recurring: bool,
-        durable: bool,
         created_at: std::time::SystemTime,
     ) {
-        // #302 redux: session-only crons (durable=false) replayed
-        // during `load_resume_history` are orphans - the CLI killed
-        // the live cron at session close (no CronDelete in the
-        // transcript), so the persisted ScheduleEntry has no
-        // counterpart. Skip the push so the SCHEDULES section
-        // doesn't surface a phantom recurring cron post-resume.
-        // Durable crons survive across sessions by design and
-        // replay normally. Mirrors #291's monitor orphan-
-        // suppression at `set_monitor_status` + the wakeup guard
-        // above.
-        if self.replay_in_progress && !durable {
+        // #302 redux: a native cron replayed during
+        // `load_resume_history` is an orphan - the CLI reports every
+        // `CronCreate` as "Session-only (not written to disk, dies when
+        // Claude exits)" regardless of the requested `durable`, so no
+        // live counterpart survives the resume and no CronDelete lands
+        // in the transcript. Skip the push so SCHEDULES doesn't surface
+        // a phantom. Mirrors #291's monitor orphan-suppression at
+        // `set_monitor_status` + the wakeup guard above.
+        if self.replay_in_progress {
             return;
         }
         let schedule = if cron_expr.is_empty() {
@@ -1964,16 +1961,13 @@ impl App {
         let schedules = self.schedules_mut();
         if let Some(e) = schedules.iter_mut().find(|e| e.key == tool_use_id) {
             e.schedule = schedule;
-            e.kind = crate::app::state::types::ScheduleKind::Cron { recurring, durable };
+            e.kind = crate::app::state::types::ScheduleKind::Cron { recurring };
             return;
         }
-        // A cloud CronCreate carries no description or prompt, so its
-        // headline is empty and the row shows the humanized schedule
-        // on a single line.
         schedules.push(crate::app::state::types::ScheduleEntry {
             key: tool_use_id.to_owned(),
             cron_id: None,
-            kind: crate::app::state::types::ScheduleKind::Cron { recurring, durable },
+            kind: crate::app::state::types::ScheduleKind::Cron { recurring },
             label: String::new(),
             description: None,
             schedule,
@@ -3874,7 +3868,7 @@ mod tests {
         use crate::app::state::types::ScheduleKind;
         let mut app = App::test_default();
         let t0 = std::time::SystemTime::UNIX_EPOCH;
-        app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", true, false, t0);
+        app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", true, t0);
         assert_eq!(app.schedules().len(), 1);
         assert!(matches!(app.schedules()[0].kind, ScheduleKind::Cron { recurring: true, .. }));
         assert_eq!(
@@ -3895,8 +3889,8 @@ mod tests {
     fn cron_upsert_idempotent_on_retry() {
         let mut app = App::test_default();
         let t0 = std::time::SystemTime::UNIX_EPOCH;
-        app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", true, false, t0);
-        app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", true, false, t0);
+        app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", true, t0);
+        app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", true, t0);
         assert_eq!(app.schedules().len(), 1, "re-decoded same tool_use_id stays one entry");
     }
 
@@ -3904,7 +3898,7 @@ mod tests {
     fn cron_upsert_empty_expr_shows_unknown_schedule() {
         let mut app = App::test_default();
         let t0 = std::time::SystemTime::UNIX_EPOCH;
-        app.upsert_cron_from_tool_input("tu1", "", true, false, t0);
+        app.upsert_cron_from_tool_input("tu1", "", true, t0);
         assert_eq!(
             app.schedules()[0].schedule,
             "(unknown schedule)",
@@ -6949,56 +6943,43 @@ mod tests {
     // -----------------------------------------------------------
 
     #[test]
-    fn upsert_cron_during_replay_skips_session_only_cron() {
+    fn upsert_cron_during_replay_skips_recurring_cron() {
         let mut app = make_test_app();
         app.replay_in_progress = true;
         let now = std::time::SystemTime::now();
 
-        app.upsert_cron_from_tool_input(
-            "tu-orphan",
-            "*/5 * * * *",
-            true,  // recurring
-            false, // durable - session-only
-            now,
-        );
+        app.upsert_cron_from_tool_input("tu-orphan", "*/5 * * * *", true, now);
 
         assert!(
             app.schedules().is_empty(),
-            "session-only crons replayed during resume must NOT push an entry; got: {:?}",
+            "recurring crons replayed during resume must NOT push an entry; got: {:?}",
             app.schedules()
         );
     }
 
     #[test]
-    fn upsert_cron_during_replay_keeps_durable_cron() {
+    fn upsert_cron_during_replay_skips_one_shot_cron() {
         let mut app = make_test_app();
         app.replay_in_progress = true;
         let now = std::time::SystemTime::now();
 
-        app.upsert_cron_from_tool_input(
-            "tu-durable",
-            "0 9 * * *",
-            true, // recurring
-            true, // durable - survives across sessions
-            now,
-        );
+        app.upsert_cron_from_tool_input("tu-once", "48 16 24 4 *", false, now);
 
-        assert_eq!(
-            app.schedules().len(),
-            1,
-            "durable crons must replay normally; got: {:?}",
+        assert!(
+            app.schedules().is_empty(),
+            "a replayed one-shot cron already fired and auto-deleted; got: {:?}",
             app.schedules()
         );
     }
 
     #[test]
-    fn upsert_cron_outside_replay_pushes_regardless_of_durable() {
+    fn upsert_cron_outside_replay_pushes_both_kinds() {
         let mut app = make_test_app();
         assert!(!app.replay_in_progress, "live default");
         let now = std::time::SystemTime::now();
 
-        app.upsert_cron_from_tool_input("tu-live-session", "* * * * *", true, false, now);
-        app.upsert_cron_from_tool_input("tu-live-durable", "0 9 * * *", true, true, now);
+        app.upsert_cron_from_tool_input("tu-live-recurring", "* * * * *", true, now);
+        app.upsert_cron_from_tool_input("tu-live-once", "48 16 24 4 *", false, now);
 
         assert_eq!(
             app.schedules().len(),

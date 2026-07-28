@@ -66,14 +66,7 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     {
         let expr = input.get("cron").and_then(serde_json::Value::as_str).unwrap_or("");
         let recurring = input.get("recurring").and_then(serde_json::Value::as_bool).unwrap_or(true);
-        let durable = input.get("durable").and_then(serde_json::Value::as_bool).unwrap_or(false);
-        app.upsert_cron_from_tool_input(
-            &id_str,
-            expr,
-            recurring,
-            durable,
-            std::time::SystemTime::now(),
-        );
+        app.upsert_cron_from_tool_input(&id_str, expr, recurring, std::time::SystemTime::now());
     }
 
     // CronDelete tool_use - remove the matching cron entry by job id.
