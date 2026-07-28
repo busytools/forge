@@ -1674,7 +1674,7 @@ pub(crate) fn forge_cron_to_schedule_entry(
     crate::app::ScheduleEntry {
         key: cron.id.as_str().to_owned(),
         cron_id: Some(cron.id.as_str().to_owned()),
-        kind: crate::app::ScheduleKind::Cron { recurring, durable: true },
+        kind: crate::app::ScheduleKind::Cron { recurring },
         label: first_line(&cron.prompt),
         description: cron.description.clone(),
         schedule,
@@ -2482,10 +2482,7 @@ mod tests {
         assert_eq!(entry.label, "p", "the prompt first line is the headline fallback");
         assert_eq!(entry.description, None, "no description on this cron");
         assert_eq!(entry.fire_at, Some(next), "next_fire carried for the countdown");
-        assert!(matches!(
-            entry.kind,
-            crate::app::ScheduleKind::Cron { recurring: true, durable: true }
-        ));
+        assert!(matches!(entry.kind, crate::app::ScheduleKind::Cron { recurring: true }));
         assert_eq!(entry.cron_id.as_deref(), Some("c1"));
     }
 
@@ -2523,7 +2520,7 @@ mod tests {
         crate::app::ScheduleEntry {
             key: "c1".to_owned(),
             cron_id: Some("c1".to_owned()),
-            kind: crate::app::ScheduleKind::Cron { recurring, durable: true },
+            kind: crate::app::ScheduleKind::Cron { recurring },
             label: label.to_owned(),
             description: description.map(str::to_owned),
             schedule: schedule.to_owned(),

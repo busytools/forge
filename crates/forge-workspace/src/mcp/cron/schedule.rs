@@ -29,7 +29,7 @@ pub(crate) fn validate_cron_expr(expr: &str) -> Result<(), String> {
 /// the host's LOCAL timezone. `None` for a run-once whose instant has
 /// passed, or a recurring expression that fails to parse / has no
 /// upcoming occurrence.
-pub(crate) fn next_fire_after(kind: &CronKind, after: SystemTime) -> Option<SystemTime> {
+pub fn next_fire_after(kind: &CronKind, after: SystemTime) -> Option<SystemTime> {
     next_fire_after_in_tz(kind, after, &Local)
 }
 
