@@ -1939,6 +1939,7 @@ impl App {
         &mut self,
         tool_use_id: &str,
         cron_expr: &str,
+        prompt: &str,
         recurring: bool,
         created_at: std::time::SystemTime,
     ) {
@@ -1972,18 +1973,20 @@ impl App {
                 )
             })
             .flatten();
+        let label = crate::ui::inspector_pane::first_line(prompt);
         let schedules = self.schedules_mut();
         if let Some(e) = schedules.iter_mut().find(|e| e.key == tool_use_id) {
             e.schedule = schedule;
             e.kind = crate::app::state::types::ScheduleKind::Cron { recurring };
             e.fire_at = fire_at;
+            e.label = label;
             return;
         }
         schedules.push(crate::app::state::types::ScheduleEntry {
             key: tool_use_id.to_owned(),
             cron_id: None,
             kind: crate::app::state::types::ScheduleKind::Cron { recurring },
-            label: String::new(),
+            label,
             description: None,
             schedule,
             fire_at,
@@ -3883,7 +3886,13 @@ mod tests {
         use crate::app::state::types::ScheduleKind;
         let mut app = App::test_default();
         let t0 = std::time::SystemTime::UNIX_EPOCH;
-        app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", true, t0);
+        app.upsert_cron_from_tool_input(
+            "tu1",
+            "*/5 * * * *",
+            "Lead heartbeat\nCheck the merge gate.",
+            true,
+            t0,
+        );
         assert_eq!(app.schedules().len(), 1);
         assert!(matches!(app.schedules()[0].kind, ScheduleKind::Cron { recurring: true, .. }));
         assert_eq!(
@@ -3891,7 +3900,11 @@ mod tests {
             "every 5 minutes",
             "a cloud cron humanizes its expression",
         );
-        assert_eq!(app.schedules()[0].label, "", "a cloud cron carries no headline");
+        assert_eq!(
+            app.schedules()[0].label,
+            "Lead heartbeat",
+            "a native cron headlines on its prompt's first line",
+        );
         // Stamp the job id discovered from the CronCreate result.
         app.stamp_cron_id_from_result("tu1", "job-abc");
         assert_eq!(app.schedules()[0].cron_id.as_deref(), Some("job-abc"));
@@ -3904,8 +3917,8 @@ mod tests {
     fn cron_upsert_idempotent_on_retry() {
         let mut app = App::test_default();
         let t0 = std::time::SystemTime::UNIX_EPOCH;
-        app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", true, t0);
-        app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", true, t0);
+        app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", "", true, t0);
+        app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", "", true, t0);
         assert_eq!(app.schedules().len(), 1, "re-decoded same tool_use_id stays one entry");
     }
 
@@ -3915,7 +3928,7 @@ mod tests {
         let created = std::time::SystemTime::now();
         // A one-shot pinned to a day-of-month + month, the shape the CLI
         // emits for "run once at <time>".
-        app.upsert_cron_from_tool_input("tu1", "48 16 24 4 *", false, created);
+        app.upsert_cron_from_tool_input("tu1", "48 16 24 4 *", "", false, created);
 
         let fire = app.schedules()[0].fire_at.expect("one-shot resolves its next occurrence");
         assert!(fire > created, "the fire time is the first match after creation");
@@ -3929,7 +3942,7 @@ mod tests {
     #[test]
     fn recurring_cron_carries_no_fire_time() {
         let mut app = App::test_default();
-        app.upsert_cron_from_tool_input("tu1", "0 9 * * *", true, std::time::SystemTime::now());
+        app.upsert_cron_from_tool_input("tu1", "0 9 * * *", "", true, std::time::SystemTime::now());
         assert!(
             app.schedules()[0].fire_at.is_none(),
             "a recurring cron badges `recurring`; its schedule already carries the timing",
@@ -3940,7 +3953,7 @@ mod tests {
     fn cron_upsert_empty_expr_shows_unknown_schedule() {
         let mut app = App::test_default();
         let t0 = std::time::SystemTime::UNIX_EPOCH;
-        app.upsert_cron_from_tool_input("tu1", "", true, t0);
+        app.upsert_cron_from_tool_input("tu1", "", "", true, t0);
         assert_eq!(
             app.schedules()[0].schedule,
             "(unknown schedule)",
@@ -6990,7 +7003,7 @@ mod tests {
         app.replay_in_progress = true;
         let now = std::time::SystemTime::now();
 
-        app.upsert_cron_from_tool_input("tu-orphan", "*/5 * * * *", true, now);
+        app.upsert_cron_from_tool_input("tu-orphan", "*/5 * * * *", "", true, now);
 
         assert!(
             app.schedules().is_empty(),
@@ -7005,7 +7018,7 @@ mod tests {
         app.replay_in_progress = true;
         let now = std::time::SystemTime::now();
 
-        app.upsert_cron_from_tool_input("tu-once", "48 16 24 4 *", false, now);
+        app.upsert_cron_from_tool_input("tu-once", "48 16 24 4 *", "", false, now);
 
         assert!(
             app.schedules().is_empty(),
@@ -7020,8 +7033,8 @@ mod tests {
         assert!(!app.replay_in_progress, "live default");
         let now = std::time::SystemTime::now();
 
-        app.upsert_cron_from_tool_input("tu-live-recurring", "* * * * *", true, now);
-        app.upsert_cron_from_tool_input("tu-live-once", "48 16 24 4 *", false, now);
+        app.upsert_cron_from_tool_input("tu-live-recurring", "* * * * *", "", true, now);
+        app.upsert_cron_from_tool_input("tu-live-once", "48 16 24 4 *", "", false, now);
 
         assert_eq!(
             app.schedules().len(),
