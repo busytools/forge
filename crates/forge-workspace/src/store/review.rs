@@ -240,6 +240,29 @@ pub fn load_reviews(db: &Db, project: &str, branch: &str) -> anyhow::Result<Vec<
     }
 }
 
+/// The branches under `project` that hold at least one submitted review,
+/// in key order. Seeks straight to the project's first key and stops at
+/// its last, so the `review__list` empty path can ask "is this review
+/// filed against another branch?" without scanning the table.
+pub fn review_branches(db: &Db, project: &str) -> anyhow::Result<Vec<String>> {
+    let txn = db.database().begin_read()?;
+    let table = match txn.open_table(REVIEWS) {
+        Ok(t) => t,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut branches = Vec::new();
+    for row in table.range((project, "")..)? {
+        let (key, _) = row?;
+        let (row_project, branch) = key.value();
+        if row_project != project {
+            break;
+        }
+        branches.push(branch.to_owned());
+    }
+    Ok(branches)
+}
+
 /// Overwrite the whole review set for `(project, branch)`. An empty slice
 /// removes the row rather than storing an empty blob.
 pub fn save_reviews(
@@ -631,6 +654,37 @@ mod tests {
     fn load_reviews_is_empty_on_miss() {
         let (_dir, db) = open_db();
         assert!(load_reviews(&db, "forge", "nope").expect("load").is_empty());
+    }
+
+    #[test]
+    fn review_branches_lists_only_the_projects_own_branches() {
+        let (_dir, db) = open_db();
+        save_reviews(&db, "forge", "feat/a", &[review(1, None)]).expect("save a");
+        save_reviews(&db, "forge", "feat/b", &[review(1, None)]).expect("save b");
+        save_reviews(&db, "elsewhere", "feat/c", &[review(1, None)]).expect("save c");
+        // A branch with threads but no submitted review is not a branch
+        // with reviews.
+        save(&db, "forge", "drafts-only", &[thread("a", 10)]).expect("save threads");
+        assert_eq!(
+            review_branches(&db, "forge").expect("branches"),
+            vec!["feat/a".to_owned(), "feat/b".to_owned()],
+        );
+        assert_eq!(review_branches(&db, "nosuch").expect("branches"), Vec::<String>::new());
+    }
+
+    /// The range starts at the project's first key, so a project that
+    /// sorts after another doesn't pick up its neighbour's rows.
+    #[test]
+    fn review_branches_does_not_bleed_across_adjacent_projects() {
+        let (_dir, db) = open_db();
+        save_reviews(&db, "aaa", "feat/x", &[review(1, None)]).expect("save aaa");
+        save_reviews(&db, "aaa-suffix", "feat/y", &[review(1, None)]).expect("save suffix");
+        save_reviews(&db, "bbb", "feat/z", &[review(1, None)]).expect("save bbb");
+        assert_eq!(review_branches(&db, "aaa").expect("branches"), vec!["feat/x".to_owned()]);
+        assert_eq!(
+            review_branches(&db, "aaa-suffix").expect("branches"),
+            vec!["feat/y".to_owned()]
+        );
     }
 
     #[test]
