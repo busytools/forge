@@ -123,8 +123,9 @@ fn author_str(author: &ReviewAuthor) -> String {
 }
 
 /// Build the `review__list` rows for `reviews` given every thread on the
-/// branch, newest review first. A review's members are the threads whose
-/// `review_id` points at it.
+/// branch, newest review first. A review's members are the threads with a
+/// turn filed into it, so a thread the reviewer replied on across rounds
+/// counts under each of them.
 pub(crate) fn summarize(reviews: &[ReviewSet], threads: &[ReviewThread]) -> Vec<ReviewSummary> {
     reviews
         .iter()
@@ -132,7 +133,7 @@ pub(crate) fn summarize(reviews: &[ReviewSet], threads: &[ReviewThread]) -> Vec<
         .map(|review| {
             let (mut open, mut addressed, mut resolved, mut outdated) = (0, 0, 0, 0);
             let mut count = 0;
-            for t in threads.iter().filter(|t| t.review_id.as_deref() == Some(&review.id)) {
+            for t in threads.iter().filter(|t| t.is_in_review(&review.id)) {
                 count += 1;
                 match t.status {
                     ReviewStatus::Open => open += 1,
@@ -166,7 +167,7 @@ pub(crate) fn detail(
     let review = reviews.iter().find(|r| r.id == review_id)?;
     let comments = threads
         .iter()
-        .filter(|t| t.review_id.as_deref() == Some(review_id))
+        .filter(|t| t.is_in_review(review_id))
         .map(comment_view)
         .collect();
     Some(ReviewDetail {
@@ -538,12 +539,12 @@ mod tests {
                 author: ReviewAuthor::User,
                 text: format!("look at {id}"),
                 at: "2026-07-23T10:00:00Z".to_owned(),
+                review_id: review_id.map(str::to_owned),
             }],
             status,
             created_at: "2026-07-23T10:00:00Z".to_owned(),
             updated_at: "2026-07-23T10:00:00Z".to_owned(),
             commit: None,
-            review_id: review_id.map(str::to_owned),
         }
     }
 
@@ -579,6 +580,7 @@ mod tests {
             author: ReviewAuthor::Agent { label: "implementer".to_owned() },
             text: "done".to_owned(),
             at: "2026-07-23T11:00:00Z".to_owned(),
+            review_id: None,
         });
         let got = detail(&reviews, &[t], "r1").expect("review found");
         assert_eq!(got.number, 1);

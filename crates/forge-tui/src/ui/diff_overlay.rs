@@ -1077,12 +1077,12 @@ fn footer_line(overlay: &DiffOverlayState, mode: DiffViewMode, width: u16) -> Li
     } else {
         let commit_mode = !overlay.commits.is_empty();
         // Esc opens the Finish-review modal only when a comment would file
-        // (authored this session AND not already in a review) - mirror that
-        // trigger so an edit-only session doesn't read "finish review".
+        // (authored this session AND holding an unsealed user turn) - mirror
+        // that trigger so an edit-only session doesn't read "finish review".
         let esc_label = if overlay
             .comments
             .iter()
-            .any(|c| c.authored_this_session && c.thread.review_id.is_none())
+            .any(|c| c.authored_this_session && c.thread.has_unfiled_user_turn())
         {
             "finish review"
         } else {
@@ -1956,11 +1956,12 @@ fn review_state_style(status: ReviewStatus) -> (Color, &'static str) {
     }
 }
 
-/// The dim chip tag for a comment: `R{number}` when filed into a review,
-/// else `unfiled` (not yet submitted, or a `review_id` with no matching
-/// review row).
-fn review_tag(review_id: Option<&str>, reviews: &[ReviewSet]) -> String {
-    review_id
+/// The dim chip tag for a comment: `R{number}` for the review the thread
+/// first appeared in, else `unfiled` (not yet submitted, or a review id
+/// with no matching review row). Anchored on the origin so the tag stays
+/// put as later rounds add turns.
+fn review_tag(origin_review: Option<&str>, reviews: &[ReviewSet]) -> String {
+    origin_review
         .and_then(|id| reviews.iter().find(|r| r.id == id))
         .map_or_else(|| "unfiled".to_owned(), |r| format!("R{}", r.number))
 }
@@ -2029,7 +2030,7 @@ fn render_comment_chip(
     // Header: `╭─ 💬 line N · R# ···· <state> ─╮`. `·` fills between the
     // dim review tag on the left and the state label (accent) on the right.
     let title = format!("\u{1f4ac} line {}", comment.line);
-    let tag = format!(" \u{b7} {} ", review_tag(comment.thread.review_id.as_deref(), reviews));
+    let tag = format!(" \u{b7} {} ", review_tag(comment.thread.origin_review(), reviews));
     let state = format!(" {state_label} ");
     let left_w = 3 + title.width() + tag.width();
     let right_w = state.width() + 2;
@@ -3592,12 +3593,12 @@ mod tests {
                 author: forge_primitives::ReviewAuthor::User,
                 text: text.to_owned(),
                 at: String::new(),
+                review_id: None,
             }],
             status,
             created_at: String::new(),
             updated_at: String::new(),
             commit: None,
-            review_id: None,
         };
         HunkComment {
             key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
@@ -3641,6 +3642,7 @@ mod tests {
                 author: author.clone(),
                 text: (*text).to_owned(),
                 at: String::new(),
+                review_id: None,
             })
             .collect();
         comment
@@ -3674,7 +3676,7 @@ mod tests {
             created_at: String::new(),
         }];
         let mut filed = chip_comment(41, "() on empty input?", ReviewStatus::Open);
-        filed.thread.review_id = Some("r2".to_owned());
+        filed.thread.comments[0].review_id = Some("r2".to_owned());
         let (lines, _) = render_chip_with_reviews(&filed, &reviews);
         let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(
@@ -3894,14 +3896,26 @@ mod tests {
         comment.authored_this_session = true;
 
         // Edit-only (already filed): Esc closes straight through, not "finish review".
-        comment.thread.review_id = Some("rev".to_owned());
+        comment.thread.comments[0].review_id = Some("rev".to_owned());
         state.comments = vec![comment];
         let text = line_text(&footer_line(&state, DiffViewMode::Unified, 200));
         assert!(text.contains("close"), "edit-only footer reads close; got: {text}");
         assert!(!text.contains("finish review"), "edit-only must not read finish review");
 
+        // A reply on the filed thread is unsealed work again, so the label
+        // flips back even though the thread already belongs to a review.
+        state.comments[0].thread.comments.push(forge_primitives::ReviewComment {
+            author: ReviewAuthor::User,
+            text: "still wrong".to_owned(),
+            at: String::new(),
+            review_id: None,
+        });
+        let text = line_text(&footer_line(&state, DiffViewMode::Unified, 200));
+        assert!(text.contains("finish review"), "a reply on a filed thread reads finish review");
+
         // Unfiled authored comment: the modal will open, so read "finish review".
-        state.comments[0].thread.review_id = None;
+        state.comments[0].thread.comments[0].review_id = None;
+        state.comments[0].thread.comments.truncate(1);
         let text = line_text(&footer_line(&state, DiffViewMode::Unified, 200));
         assert!(text.contains("finish review"), "an unfiled authored comment reads finish review");
     }

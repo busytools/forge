@@ -33,12 +33,18 @@ pub enum ReviewAuthor {
     Agent { label: String },
 }
 
-/// One comment in a thread; `at` is an rfc3339 timestamp.
+/// One comment in a thread; `at` is an rfc3339 timestamp. `review_id` is
+/// the [`ReviewSet`] that sealed this turn (`None` = not yet filed);
+/// `#[serde(default)]` loads turns stored before membership moved onto
+/// them. Only user turns are ever filed - an agent reply answers a round
+/// rather than forming one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewComment {
     pub author: ReviewAuthor,
     pub text: String,
     pub at: String,
+    #[serde(default)]
+    pub review_id: Option<String>,
 }
 
 /// Durable, drift-robust location of a review thread, re-resolved to a
@@ -58,10 +64,9 @@ pub struct ReviewAnchor {
 /// A persisted review thread: an anchor plus its comment chain and
 /// lifecycle state; `created_at` / `updated_at` are rfc3339. `commit` is
 /// the sha the thread was authored under (`None` = whole-diff scope);
-/// `#[serde(default)]` loads pre-scope threads as whole-diff. `review_id`
-/// is the [`ReviewSet`] this comment was filed into (`None` = unfiled,
-/// not yet in a submitted review); `#[serde(default)]` loads pre-sets
-/// threads as unfiled.
+/// `#[serde(default)]` loads pre-scope threads as whole-diff. Review
+/// membership lives per-turn on [`ReviewComment::review_id`], so one
+/// thread can span several rounds of a conversation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewThread {
     pub id: String,
@@ -72,8 +77,35 @@ pub struct ReviewThread {
     pub updated_at: String,
     #[serde(default)]
     pub commit: Option<String>,
-    #[serde(default)]
-    pub review_id: Option<String>,
+}
+
+impl ReviewThread {
+    /// Whether any user turn is filed into `review_id`, i.e. whether this
+    /// thread is one of that review's comments.
+    pub fn is_in_review(&self, review_id: &str) -> bool {
+        self.comments.iter().any(|c| c.review_id.as_deref() == Some(review_id))
+    }
+
+    /// The review this thread first appeared in, driving the card's stable
+    /// `R#` tag. `None` while nothing is filed yet.
+    pub fn origin_review(&self) -> Option<&str> {
+        self.comments.iter().find_map(|c| c.review_id.as_deref())
+    }
+
+    /// The most recent review the thread has a turn in - the round a
+    /// re-nudge is about.
+    pub fn latest_review(&self) -> Option<&str> {
+        self.comments.iter().rev().find_map(|c| c.review_id.as_deref())
+    }
+
+    /// Whether the user has written a turn no review has sealed yet. This
+    /// is what makes a thread submittable, whether it is a fresh comment
+    /// or a reply on a thread already filed into an earlier review.
+    pub fn has_unfiled_user_turn(&self) -> bool {
+        self.comments
+            .iter()
+            .any(|c| matches!(c.author, ReviewAuthor::User) && c.review_id.is_none())
+    }
 }
 
 /// A submitted review: the sealed grouping of the comments filed under
@@ -113,18 +145,19 @@ mod tests {
                     author: ReviewAuthor::User,
                     text: "does this fire for the failure-notice path too?".to_owned(),
                     at: "2026-07-19T10:00:00Z".to_owned(),
+                    review_id: None,
                 },
                 ReviewComment {
                     author: ReviewAuthor::Agent { label: "implementer".to_owned() },
                     text: "yes, test added".to_owned(),
                     at: "2026-07-19T10:05:00Z".to_owned(),
+                    review_id: None,
                 },
             ],
             status: ReviewStatus::Resolved,
             created_at: "2026-07-19T10:00:00Z".to_owned(),
             updated_at: "2026-07-19T10:05:00Z".to_owned(),
             commit: None,
-            review_id: None,
         }
     }
 
@@ -179,9 +212,11 @@ mod tests {
     }
 
     #[test]
-    fn review_id_defaults_to_none_when_absent() {
-        // A thread persisted before review-sets has no `review_id` key on
-        // disk; it must load as unfiled (`None`), not error.
+    fn turn_review_id_defaults_to_none_when_absent() {
+        // A turn persisted before membership moved onto turns has no
+        // `review_id` key on disk; it must load as unfiled, not error. The
+        // thread-level `review_id` such a row also carries is ignored here
+        // and lifted by the store on decode.
         let json = r#"{
             "id": "t1",
             "anchor": {
@@ -192,22 +227,68 @@ mod tests {
                 "context": [],
                 "base_ref": "main"
             },
-            "comments": [],
+            "comments": [
+                { "author": "User", "text": "hmm", "at": "2026-07-19T10:00:00Z" }
+            ],
             "status": "Open",
             "created_at": "2026-07-19T10:00:00Z",
-            "updated_at": "2026-07-19T10:00:00Z"
+            "updated_at": "2026-07-19T10:00:00Z",
+            "review_id": "review-3"
         }"#;
-        let back: ReviewThread = serde_json::from_str(json).expect("deserialize pre-sets thread");
-        assert_eq!(back.review_id, None);
+        let back: ReviewThread = serde_json::from_str(json).expect("deserialize pre-turn thread");
+        assert_eq!(back.comments[0].review_id, None);
     }
 
     #[test]
-    fn filed_thread_round_trips_its_review_id() {
+    fn filed_turn_round_trips_its_review_id() {
         let mut thread = sample_thread();
-        thread.review_id = Some("review-7".to_owned());
+        thread.comments[0].review_id = Some("review-7".to_owned());
         let json = serde_json::to_string(&thread).expect("serialize");
         let back: ReviewThread = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(back.review_id, Some("review-7".to_owned()));
+        assert_eq!(back.comments[0].review_id, Some("review-7".to_owned()));
+    }
+
+    #[test]
+    fn membership_spans_every_review_the_turns_were_sealed_into() {
+        let mut thread = sample_thread();
+        thread.comments[0].review_id = Some("review-1".to_owned());
+        thread.comments.push(ReviewComment {
+            author: ReviewAuthor::User,
+            text: "still not right".to_owned(),
+            at: "2026-07-19T11:00:00Z".to_owned(),
+            review_id: Some("review-2".to_owned()),
+        });
+        assert!(thread.is_in_review("review-1"));
+        assert!(thread.is_in_review("review-2"));
+        assert!(!thread.is_in_review("review-3"));
+        assert_eq!(thread.origin_review(), Some("review-1"), "origin is the earliest filed turn");
+        assert_eq!(thread.latest_review(), Some("review-2"));
+        assert!(!thread.has_unfiled_user_turn(), "every user turn is sealed");
+    }
+
+    #[test]
+    fn an_unsealed_reply_makes_the_thread_submittable_again() {
+        let mut thread = sample_thread();
+        thread.comments[0].review_id = Some("review-1".to_owned());
+        assert!(!thread.has_unfiled_user_turn());
+        thread.comments.push(ReviewComment {
+            author: ReviewAuthor::User,
+            text: "reopening this".to_owned(),
+            at: "2026-07-19T11:00:00Z".to_owned(),
+            review_id: None,
+        });
+        assert!(thread.has_unfiled_user_turn(), "the new turn is unfiled work");
+        assert_eq!(thread.origin_review(), Some("review-1"), "origin is unaffected by a new turn");
+    }
+
+    #[test]
+    fn an_unfiled_agent_reply_is_not_submittable_work() {
+        // Only user turns form a review round; an agent reply never carries
+        // membership and must not make the thread look submittable.
+        let mut thread = sample_thread();
+        thread.comments[0].review_id = Some("review-1".to_owned());
+        assert!(!thread.has_unfiled_user_turn());
+        assert_eq!(thread.comments[1].review_id, None, "the agent turn stays unfiled");
     }
 
     #[test]
