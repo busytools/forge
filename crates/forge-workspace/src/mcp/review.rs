@@ -70,12 +70,16 @@ pub struct ReviewCommentView {
 }
 
 /// One turn in a comment thread: `author` is `"you"` for the reviewer or
-/// the agent's label for a worker reply.
+/// the agent's label for a worker reply. `review` is the number of the
+/// review that sealed the turn, so a thread spanning several rounds shows
+/// which turns belong to which; `None` on agent replies and on a turn no
+/// review has sealed yet.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ReviewTurnView {
     pub author: String,
     pub text: String,
     pub at: String,
+    pub review: Option<u32>,
 }
 
 /// One worker review action recorded during a turn, accumulated per
@@ -168,7 +172,7 @@ pub(crate) fn detail(
     let comments = threads
         .iter()
         .filter(|t| t.is_in_review(review_id))
-        .map(comment_view)
+        .map(|t| comment_view(t, reviews))
         .collect();
     Some(ReviewDetail {
         review_id: review.id.clone(),
@@ -178,7 +182,11 @@ pub(crate) fn detail(
     })
 }
 
-fn comment_view(thread: &ReviewThread) -> ReviewCommentView {
+/// Map one thread to its `review__get` view. The whole conversation is
+/// carried, not just the requested review's turns, so the worker reads a
+/// later round with the earlier exchange as context; each turn's `review`
+/// says which round it came from.
+fn comment_view(thread: &ReviewThread, reviews: &[ReviewSet]) -> ReviewCommentView {
     ReviewCommentView {
         comment_id: thread.id.clone(),
         file: thread.anchor.path.clone(),
@@ -193,6 +201,10 @@ fn comment_view(thread: &ReviewThread) -> ReviewCommentView {
                 author: author_str(&c.author),
                 text: c.text.clone(),
                 at: c.at.clone(),
+                review: c
+                    .review_id
+                    .as_deref()
+                    .and_then(|id| reviews.iter().find(|r| r.id == id).map(|r| r.number)),
             })
             .collect(),
     }
@@ -597,6 +609,42 @@ mod tests {
         assert_eq!(c.thread[0].author, "you");
         assert_eq!(c.thread[1].author, "implementer");
         assert_eq!(c.thread[1].text, "done");
+    }
+
+    /// A thread the reviewer replied on after the agent answered belongs to
+    /// both rounds, and each round's view says which turn is new.
+    #[test]
+    fn detail_shows_a_multi_round_thread_under_every_review() {
+        let reviews = vec![review("r1", 1, None), review("r2", 2, Some("round two"))];
+        let mut t = thread("a", Some("r1"), ReviewStatus::Open);
+        t.comments.push(ReviewComment {
+            author: ReviewAuthor::Agent { label: "implementer".to_owned() },
+            text: "done".to_owned(),
+            at: "2026-07-23T11:00:00Z".to_owned(),
+            review_id: None,
+        });
+        t.comments.push(ReviewComment {
+            author: ReviewAuthor::User,
+            text: "still not right".to_owned(),
+            at: "2026-07-23T12:00:00Z".to_owned(),
+            review_id: Some("r2".to_owned()),
+        });
+        let threads = [t];
+
+        for (id, number) in [("r1", 1), ("r2", 2)] {
+            let got = detail(&reviews, &threads, id).expect("review found");
+            assert_eq!(got.number, number);
+            assert_eq!(got.comments.len(), 1, "the thread is a member of {id}");
+            assert_eq!(
+                got.comments[0].thread.iter().map(|t| t.review).collect::<Vec<_>>(),
+                vec![Some(1), None, Some(2)],
+                "the whole conversation is carried, tagged by round",
+            );
+        }
+
+        let rows = summarize(&reviews, &threads);
+        assert_eq!(rows[0].comment_count, 1, "r2 counts it");
+        assert_eq!(rows[1].comment_count, 1, "and so does r1");
     }
 
     #[test]
