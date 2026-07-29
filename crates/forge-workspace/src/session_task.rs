@@ -1544,12 +1544,12 @@ mod tests {
                     author: ReviewAuthor::User,
                     text: "look".to_owned(),
                     at: "t".to_owned(),
+                    review_id: None,
                 }],
                 status: ReviewStatus::Open,
                 created_at: "t".to_owned(),
                 updated_at: "t".to_owned(),
                 commit: None,
-                review_id: None,
             }],
         );
         let reviewer = SessionKey::from_session_id("reviewer");

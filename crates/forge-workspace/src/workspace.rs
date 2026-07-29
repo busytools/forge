@@ -3738,8 +3738,8 @@ impl Workspace {
     }
 
     /// Append one review action to `caller`'s turn buffer, resolving the
-    /// comment's owning review. A comment with no `review_id` (unfiled) is
-    /// skipped - there's no review to notify about.
+    /// review the action answers - the latest round the comment has a turn
+    /// in. An unfiled comment is skipped: there's no review to notify about.
     fn note_review_activity(
         &self,
         caller: &SessionKey,
@@ -3752,7 +3752,7 @@ impl Workspace {
             let guard = self.db.lock();
             let Some(db) = guard.as_ref() else { return };
             match crate::store::review::find_thread_by_id(db, project, branch, comment_id) {
-                Ok(Some(thread)) => thread.review_id,
+                Ok(Some(thread)) => thread.latest_review().map(str::to_owned),
                 Ok(None) => None,
                 Err(error) => {
                     tracing::warn!(
@@ -6267,12 +6267,12 @@ mod tests {
                 author: ReviewAuthor::User,
                 text: format!("c{id}"),
                 at: "2026-07-19T10:00:00Z".to_owned(),
+                review_id: None,
             }],
             status: ReviewStatus::Open,
             created_at: "2026-07-19T10:00:00Z".to_owned(),
             updated_at: "2026-07-19T10:00:00Z".to_owned(),
             commit: None,
-            review_id: None,
         };
 
         let dir = tempdir().expect("tempdir");
@@ -6332,12 +6332,12 @@ mod tests {
                 author: ReviewAuthor::User,
                 text: format!("c{id}"),
                 at: "2026-07-23T10:00:00Z".to_owned(),
+                review_id: None,
             }],
             status: ReviewStatus::Open,
             created_at: "2026-07-23T10:00:00Z".to_owned(),
             updated_at: "2026-07-23T10:00:00Z".to_owned(),
             commit: None,
-            review_id: None,
         };
 
         let dir = tempdir().expect("tempdir");
@@ -6355,7 +6355,8 @@ mod tests {
                 .into_iter()
                 .find(|t| t.id == id)
                 .expect("thread")
-                .review_id
+                .origin_review()
+                .map(str::to_owned)
         };
 
         let origin = SessionKey::from_session_id("reviewer");
@@ -6400,12 +6401,12 @@ mod tests {
                 author: ReviewAuthor::User,
                 text: format!("look at {id}"),
                 at: "2026-07-23T10:00:00Z".to_owned(),
+                review_id: None,
             }],
             status: ReviewStatus::Open,
             created_at: "2026-07-23T10:00:00Z".to_owned(),
             updated_at: "2026-07-23T10:00:00Z".to_owned(),
             commit: None,
-            review_id: None,
         };
 
         let dir = tempdir().expect("tempdir");
@@ -6488,12 +6489,12 @@ mod tests {
                 author: ReviewAuthor::User,
                 text: format!("look at {id}"),
                 at: "2026-07-23T10:00:00Z".to_owned(),
+                review_id: None,
             }],
             status: ReviewStatus::Open,
             created_at: "2026-07-23T10:00:00Z".to_owned(),
             updated_at: "2026-07-23T10:00:00Z".to_owned(),
             commit: None,
-            review_id: None,
         };
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
@@ -6566,12 +6567,12 @@ mod tests {
                 author: ReviewAuthor::User,
                 text: "look".to_owned(),
                 at: "2026-07-23T10:00:00Z".to_owned(),
+                review_id: None,
             }],
             status: ReviewStatus::Open,
             created_at: "2026-07-23T10:00:00Z".to_owned(),
             updated_at: "2026-07-23T10:00:00Z".to_owned(),
             commit: None,
-            review_id: Some("r1".to_owned()),
         };
         crate::store::review::save(&db, "forge", "feat", &[thread]).expect("seed threads");
         crate::store::review::save_reviews(
@@ -6617,12 +6618,12 @@ mod tests {
                 author: ReviewAuthor::User,
                 text: format!("look at {id}"),
                 at: "2026-07-23T10:00:00Z".to_owned(),
+                review_id: None,
             }],
             status: ReviewStatus::Open,
             created_at: "2026-07-23T10:00:00Z".to_owned(),
             updated_at: "2026-07-23T10:00:00Z".to_owned(),
             commit: None,
-            review_id: None,
         };
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());

@@ -16,8 +16,8 @@ use super::Db;
 
 const REVIEW_THREADS: TableDefinition<(&str, &str), &[u8]> = TableDefinition::new("review_threads");
 /// Submitted reviews per `(project, branch)` - the sealed groupings a
-/// thread's `review_id` points into. Sibling of [`REVIEW_THREADS`]; the
-/// whole set for a branch is one serde-json blob.
+/// thread's turns point into. Sibling of [`REVIEW_THREADS`]; the whole set
+/// for a branch is one serde-json blob.
 const REVIEWS: TableDefinition<(&str, &str), &[u8]> = TableDefinition::new("reviews");
 
 /// Load every thread for `(project, branch)`. Empty when the branch has
@@ -199,6 +199,7 @@ pub fn append_reply(
             author: ReviewAuthor::Agent { label: author_label.to_owned() },
             text: text.to_owned(),
             at: stamp.clone(),
+            review_id: None,
         });
         if thread.status == ReviewStatus::Open {
             thread.status = ReviewStatus::Addressed;
@@ -293,11 +294,15 @@ pub fn delete_reviews(db: &Db, project: &str, branch: &str) -> anyhow::Result<()
 }
 
 /// Seal a new review for `(project, branch)`: mint its number (existing
-/// count + 1), stamp each listed thread that is still unfiled with the
-/// new review id, and append the [`ReviewSet`]. Threads not in
-/// `thread_ids` and threads already filed are untouched (a filed comment
-/// never moves). One write transaction spans both tables so the stamp
-/// and the append land together.
+/// count + 1), stamp every still-unfiled user turn on each listed thread
+/// with the new review id, and append the [`ReviewSet`]. Turns already
+/// filed never move, so a thread whose earlier turns went into review 1
+/// and whose reply goes into review 2 belongs to both. A thread that
+/// gains a turn this way is `Addressed` no longer - the agent owes an
+/// answer again - so it flips back to `Open`; a `Resolved` / `Outdated`
+/// thread keeps its state. Agent replies are answers to a round rather
+/// than part of one and are never stamped. One write transaction spans
+/// both tables so the stamp and the append land together.
 pub fn submit_review(
     db: &Db,
     project: &str,
@@ -326,11 +331,20 @@ pub fn submit_review(
             };
             if let Some(mut threads) = existing {
                 let mut changed = false;
-                for thread in &mut threads {
-                    if thread.review_id.is_none() && thread_ids.contains(&thread.id) {
-                        thread.review_id = Some(review.id.clone());
-                        changed = true;
+                for thread in threads.iter_mut().filter(|t| thread_ids.contains(&t.id)) {
+                    let mut sealed = false;
+                    for turn in thread
+                        .comments
+                        .iter_mut()
+                        .filter(|c| matches!(c.author, ReviewAuthor::User) && c.review_id.is_none())
+                    {
+                        turn.review_id = Some(review.id.clone());
+                        sealed = true;
                     }
+                    if sealed && thread.status == ReviewStatus::Addressed {
+                        thread.status = ReviewStatus::Open;
+                    }
+                    changed |= sealed;
                 }
                 if changed {
                     let encoded =
@@ -350,10 +364,42 @@ pub fn submit_review(
 
 /// Decode a stored blob into threads, mapping a decode failure to an
 /// error tagged with the owning `(project, branch)` so a corrupt row is
-/// diagnosable rather than a bare serde message.
+/// diagnosable rather than a bare serde message. Lifts membership off any
+/// row still carrying it on the thread (see [`lift_thread_membership`]).
 fn decode(bytes: &[u8], project: &str, branch: &str) -> anyhow::Result<Vec<ReviewThread>> {
-    serde_json::from_slice(bytes)
-        .with_context(|| format!("decode review threads for ({project}, {branch})"))
+    let mut threads: Vec<ReviewThread> = serde_json::from_slice(bytes)
+        .with_context(|| format!("decode review threads for ({project}, {branch})"))?;
+    lift_thread_membership(bytes, &mut threads);
+    Ok(threads)
+}
+
+/// Membership a row carries on the thread rather than its turns - the
+/// shape stored while a thread could only belong to one review.
+#[derive(serde::Deserialize)]
+struct ThreadMembership {
+    #[serde(default)]
+    review_id: Option<String>,
+}
+
+/// Attribute a pre-per-turn row's history: a thread filed as a whole has
+/// its user turns stamped with that review, so they read as the round they
+/// were actually part of instead of as unfiled. Positional - the mirror
+/// decode ignores every other key, so it aligns with `threads`. Only
+/// applies where no turn is filed yet, leaving a re-saved row's own
+/// membership alone; the new shape persists on the thread's next write.
+fn lift_thread_membership(bytes: &[u8], threads: &mut [ReviewThread]) {
+    let Ok(stored) = serde_json::from_slice::<Vec<ThreadMembership>>(bytes) else {
+        return;
+    };
+    for (thread, legacy) in threads.iter_mut().zip(stored) {
+        let Some(review_id) = legacy.review_id else { continue };
+        if thread.comments.iter().any(|c| c.review_id.is_some()) {
+            continue;
+        }
+        for turn in thread.comments.iter_mut().filter(|c| matches!(c.author, ReviewAuthor::User)) {
+            turn.review_id = Some(review_id.clone());
+        }
+    }
 }
 
 /// Decode a stored blob into reviews, tagged with the owning `(project,
@@ -428,13 +474,27 @@ mod tests {
                 author: ReviewAuthor::User,
                 text: format!("comment {id}"),
                 at: "2026-07-19T10:00:00Z".to_owned(),
+                review_id: None,
             }],
             status: ReviewStatus::Open,
             created_at: "2026-07-19T10:00:00Z".to_owned(),
             updated_at: "2026-07-19T10:00:00Z".to_owned(),
             commit: None,
-            review_id: None,
         }
+    }
+
+    /// Append an unfiled user turn, as the overlay does when the reviewer
+    /// replies on a thread.
+    fn reply(db: &Db, id: &str, text: &str) {
+        let mut thread =
+            find_thread_by_id(db, "forge", "feat", id).expect("load").expect("thread for reply");
+        thread.comments.push(ReviewComment {
+            author: ReviewAuthor::User,
+            text: text.to_owned(),
+            at: String::new(),
+            review_id: None,
+        });
+        upsert(db, "forge", "feat", thread).expect("upsert reply");
     }
 
     fn open_db() -> (tempfile::TempDir, Db) {
@@ -707,7 +767,8 @@ mod tests {
                 .into_iter()
                 .find(|t| t.id == id)
                 .expect("thread")
-                .review_id
+                .origin_review()
+                .map(str::to_owned)
         };
 
         let r1 = submit_review(
@@ -735,17 +796,138 @@ mod tests {
     }
 
     #[test]
-    fn submit_review_leaves_an_already_filed_thread_untouched() {
+    fn submit_review_leaves_an_already_filed_turn_untouched() {
         let (_dir, db) = open_db();
         let mut a = thread("a", 10);
-        a.review_id = Some("prior".to_owned());
+        a.comments[0].review_id = Some("prior".to_owned());
         save(&db, "forge", "feat", &[a]).expect("save");
         let r = submit_review(&db, "forge", "feat", None, &["a".to_owned()]).expect("submit");
+        let stored = load(&db, "forge", "feat").expect("load");
         assert_eq!(
-            load(&db, "forge", "feat").expect("load")[0].review_id,
+            stored[0].comments[0].review_id,
             Some("prior".to_owned()),
-            "an already-filed thread is never re-filed",
+            "a sealed turn never moves to a later review",
         );
+        assert!(!stored[0].is_in_review(&r.id), "with nothing new to seal it joins no review");
         assert_eq!(r.number, 1, "the review still mints even if it files nothing new");
+    }
+
+    #[test]
+    fn a_reply_on_a_filed_thread_joins_the_next_review() {
+        let (_dir, db) = open_db();
+        save(&db, "forge", "feat", &[thread("a", 10)]).expect("save");
+        let r1 = submit_review(&db, "forge", "feat", None, &["a".to_owned()]).expect("submit 1");
+        append_reply(&db, "forge", "feat", "a", "implementer", "done", "").expect("agent reply");
+        reply(&db, "a", "not quite");
+        let r2 = submit_review(&db, "forge", "feat", None, &["a".to_owned()]).expect("submit 2");
+
+        let stored = load(&db, "forge", "feat").expect("load").remove(0);
+        assert!(stored.is_in_review(&r1.id), "the first round stays attributed to r1");
+        assert!(stored.is_in_review(&r2.id), "the reply puts the thread in r2 as well");
+        assert_eq!(
+            stored.comments.iter().map(|c| c.review_id.clone()).collect::<Vec<_>>(),
+            vec![Some(r1.id.clone()), None, Some(r2.id.clone())],
+            "turns are attributed per round; the agent reply carries no membership",
+        );
+        assert_eq!(stored.origin_review(), Some(r1.id.as_str()));
+        assert_eq!(stored.latest_review(), Some(r2.id.as_str()));
+    }
+
+    #[test]
+    fn sealing_a_new_turn_reopens_an_addressed_thread() {
+        let (_dir, db) = open_db();
+        save(&db, "forge", "feat", &[thread("a", 10)]).expect("save");
+        submit_review(&db, "forge", "feat", None, &["a".to_owned()]).expect("submit 1");
+        let status =
+            append_reply(&db, "forge", "feat", "a", "implementer", "done", "").expect("reply");
+        assert_eq!(status, ReviewStatus::Addressed, "the agent's answer addressed it");
+        reply(&db, "a", "not quite");
+        assert_eq!(
+            find_thread_by_id(&db, "forge", "feat", "a").expect("load").expect("thread").status,
+            ReviewStatus::Addressed,
+            "typing a reply alone does not change state",
+        );
+        submit_review(&db, "forge", "feat", None, &["a".to_owned()]).expect("submit 2");
+        assert_eq!(
+            find_thread_by_id(&db, "forge", "feat", "a").expect("load").expect("thread").status,
+            ReviewStatus::Open,
+            "sealing the reply hands the thread back to the agent",
+        );
+    }
+
+    #[test]
+    fn submitting_without_a_new_turn_leaves_an_addressed_thread_addressed() {
+        let (_dir, db) = open_db();
+        save(&db, "forge", "feat", &[thread("a", 10), thread("b", 20)]).expect("save");
+        submit_review(&db, "forge", "feat", None, &["a".to_owned()]).expect("submit 1");
+        append_reply(&db, "forge", "feat", "a", "implementer", "done", "").expect("reply");
+        // A later round that only files another thread must not disturb a
+        // thread the agent has already answered.
+        submit_review(&db, "forge", "feat", None, &["a".to_owned(), "b".to_owned()])
+            .expect("submit 2");
+        assert_eq!(
+            find_thread_by_id(&db, "forge", "feat", "a").expect("load").expect("thread").status,
+            ReviewStatus::Addressed,
+            "no new turn on a, so its state is untouched",
+        );
+    }
+
+    #[test]
+    fn sealing_does_not_reopen_a_resolved_thread() {
+        let (_dir, db) = open_db();
+        save(&db, "forge", "feat", &[thread("a", 10)]).expect("save");
+        submit_review(&db, "forge", "feat", None, &["a".to_owned()]).expect("submit 1");
+        reply(&db, "a", "one more thought");
+        set_status(&db, "forge", "feat", "a", ReviewStatus::Resolved).expect("resolve");
+        submit_review(&db, "forge", "feat", None, &["a".to_owned()]).expect("submit 2");
+        assert_eq!(
+            find_thread_by_id(&db, "forge", "feat", "a").expect("load").expect("thread").status,
+            ReviewStatus::Resolved,
+            "the reviewer's own resolve outranks the reopen nudge",
+        );
+    }
+
+    #[test]
+    fn a_thread_filed_before_per_turn_membership_keeps_its_history() {
+        // A row written while membership lived on the thread: its user turns
+        // must read as part of that review, not as unfiled work that would
+        // re-trip the submit gate.
+        let (_dir, db) = open_db();
+        let stored = serde_json::json!([{
+            "id": "a",
+            "anchor": {
+                "path": "src/x.rs",
+                "side": "New",
+                "line": 10,
+                "content_hash": 10,
+                "context": ["ctx"],
+                "base_ref": "main"
+            },
+            "comments": [
+                { "author": "User", "text": "why?", "at": "2026-07-19T10:00:00Z" },
+                {
+                    "author": { "Agent": { "label": "implementer" } },
+                    "text": "because",
+                    "at": "2026-07-19T10:05:00Z"
+                }
+            ],
+            "status": "Addressed",
+            "created_at": "2026-07-19T10:00:00Z",
+            "updated_at": "2026-07-19T10:05:00Z",
+            "review_id": "review-1"
+        }]);
+        let txn = db.database().begin_write().expect("txn");
+        {
+            let mut table = txn.open_table(REVIEW_THREADS).expect("table");
+            let bytes = serde_json::to_vec(&stored).expect("encode");
+            table.insert(("forge", "feat"), bytes.as_slice()).expect("insert");
+        }
+        txn.commit().expect("commit");
+
+        let loaded = load(&db, "forge", "feat").expect("load").remove(0);
+        assert!(loaded.is_in_review("review-1"), "the thread still belongs to its review");
+        assert_eq!(loaded.comments[0].review_id.as_deref(), Some("review-1"));
+        assert_eq!(loaded.comments[1].review_id, None, "the agent reply gains no membership");
+        assert!(!loaded.has_unfiled_user_turn(), "filed history does not read as pending work");
     }
 }

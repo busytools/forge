@@ -1132,6 +1132,9 @@ pub struct DiffOverlayState {
     /// Snapshot rows for the reviews list, computed on open from every
     /// thread's current state (newest review first). Empty while closed.
     pub review_rows: Vec<ReviewListRow>,
+    /// Footer tally for the reviews list, counting each filed comment once
+    /// across the reviews it appears in. Zeroed while closed.
+    pub review_totals: ReviewListTotals,
 }
 
 /// One rendered row of the `l` REVIEWS list: a review's number, relative
@@ -1149,6 +1152,18 @@ pub struct ReviewListRow {
     pub summary: Option<String>,
     pub first_commit: Option<String>,
     pub first_path: Option<String>,
+}
+
+/// The reviews-list footer tally. Counts each filed comment once even when
+/// its turns span several reviews, so the footer reports how many comments
+/// exist rather than the sum of the per-review rows.
+#[derive(Debug, Clone, Default)]
+pub struct ReviewListTotals {
+    pub comments: usize,
+    pub open: usize,
+    pub addressed: usize,
+    pub resolved: usize,
+    pub outdated: usize,
 }
 
 impl DiffOverlayState {
@@ -1575,6 +1590,7 @@ impl DiffOverlayState {
             reviews_open: false,
             reviews_selected: 0,
             review_rows: Vec::new(),
+            review_totals: ReviewListTotals::default(),
         };
         state.capture_wide_and_narrow();
         state
@@ -1670,6 +1686,7 @@ impl DiffOverlayState {
             reviews_open: false,
             reviews_selected: 0,
             review_rows: Vec::new(),
+            review_totals: ReviewListTotals::default(),
         };
         state.capture_wide_and_narrow();
         state
@@ -2082,8 +2099,9 @@ fn parse_rfc3339(text: &str) -> Option<std::time::SystemTime> {
 
 /// Build the reviews-list rows from the branch's reviews plus every
 /// thread's current state, newest review first. Each row tallies the
-/// review's member threads (those whose `review_id` points at it) by
-/// status and records the first member's scope + path for navigation.
+/// review's member threads (those with a turn filed into it) by status and
+/// records the first member's scope + path for navigation. A thread the
+/// reviewer replied on across rounds is a member of each of them.
 fn compute_review_rows(
     reviews: &[forge_primitives::ReviewSet],
     threads: &[ReviewThread],
@@ -2093,10 +2111,8 @@ fn compute_review_rows(
         .iter()
         .rev()
         .map(|review| {
-            let members: Vec<&ReviewThread> = threads
-                .iter()
-                .filter(|t| t.review_id.as_deref() == Some(review.id.as_str()))
-                .collect();
+            let members: Vec<&ReviewThread> =
+                threads.iter().filter(|t| t.is_in_review(&review.id)).collect();
             let mut open = 0;
             let mut addressed = 0;
             let mut resolved = 0;
@@ -2129,6 +2145,25 @@ fn compute_review_rows(
         .collect()
 }
 
+/// Tally the branch's filed comments for the reviews-list footer, counting
+/// a thread once however many reviews its turns span.
+fn compute_review_totals(
+    reviews: &[forge_primitives::ReviewSet],
+    threads: &[ReviewThread],
+) -> ReviewListTotals {
+    let mut totals = ReviewListTotals::default();
+    for thread in threads.iter().filter(|t| reviews.iter().any(|r| t.is_in_review(&r.id))) {
+        totals.comments += 1;
+        match thread.status {
+            ReviewStatus::Open => totals.open += 1,
+            ReviewStatus::Addressed => totals.addressed += 1,
+            ReviewStatus::Resolved => totals.resolved += 1,
+            ReviewStatus::Outdated => totals.outdated += 1,
+        }
+    }
+    totals
+}
+
 /// Toggle the `l` REVIEWS list. Opening snapshots every thread's current
 /// state into per-review rollups (newest first); closing drops the rows.
 fn toggle_reviews_list(app: &mut App) {
@@ -2136,6 +2171,7 @@ fn toggle_reviews_list(app: &mut App) {
         if let Some(o) = app.diff_overlay.as_mut() {
             o.reviews_open = false;
             o.review_rows.clear();
+            o.review_totals = ReviewListTotals::default();
         }
         app.needs_redraw = true;
         return;
@@ -2163,6 +2199,7 @@ fn toggle_reviews_list(app: &mut App) {
     let now = std::time::SystemTime::now();
     if let Some(o) = app.diff_overlay.as_mut() {
         o.review_rows = compute_review_rows(&o.reviews, &threads, now);
+        o.review_totals = compute_review_totals(&o.reviews, &threads);
         o.reviews_selected = 0;
         o.reviews_open = true;
     }
@@ -2205,6 +2242,7 @@ fn navigate_to_selected_review(app: &mut App) {
     if let Some(o) = app.diff_overlay.as_mut() {
         o.reviews_open = false;
         o.review_rows.clear();
+        o.review_totals = ReviewListTotals::default();
     }
     app.needs_redraw = true;
     let Some((first_commit, first_path)) = target else { return };
@@ -2307,13 +2345,14 @@ fn renudge_reopened(app: &mut App, key: LineKey) {
     }
     let review_tag = app.diff_overlay.as_ref().and_then(|overlay| {
         let sha = overlay.current_commit_sha();
+        // The latest round, not the origin: that is the exchange the
+        // reviewer is unhappy with.
         let review_id = overlay
             .comments
             .iter()
             .find(|c| c.key == key && c.commit == sha)?
             .thread
-            .review_id
-            .clone()?;
+            .latest_review()?;
         overlay.reviews.iter().find(|r| r.id == review_id).map(|r| r.number)
     });
     let nudge = match review_tag {
@@ -2819,6 +2858,7 @@ fn build_thread(
                     author: ReviewAuthor::User,
                     text: text.to_owned(),
                     at: String::new(),
+                    review_id: None,
                 }),
             }
             thread
@@ -2830,12 +2870,12 @@ fn build_thread(
                 author: ReviewAuthor::User,
                 text: text.to_owned(),
                 at: String::new(),
+                review_id: None,
             }],
             status: ReviewStatus::Open,
             created_at: String::new(),
             updated_at: String::new(),
             commit: None,
-            review_id: None,
         },
     }
 }
@@ -3235,11 +3275,13 @@ fn is_actionable(comment: &HunkComment) -> bool {
 
 /// Close path for the overlay (banner ✕ click and `handle_key`'s Esc).
 /// Opens the Finish-review modal only when at least one comment WOULD file
-/// into a new review - authored this session AND not already filed. An
-/// edit-only session (every authored comment already carries a
-/// `review_id`) and a look-only session both skip the modal and take the
-/// plain close path: neither mints a review nor nudges the agent (edits are
-/// already persisted; the agent reads them via the review MCP).
+/// into a new review - authored this session AND carrying a user turn no
+/// review has sealed. A reply on a thread already filed into an earlier
+/// review counts: the conversation moved on and the new turn needs a round
+/// of its own. An edit-only session (every authored turn already sealed)
+/// and a look-only session both skip the modal and take the plain close
+/// path: neither mints a review nor nudges the agent (edits are already
+/// persisted; the agent reads them via the review MCP).
 pub(super) fn close_with_submit(app: &mut App) {
     // Flush the active editor first - a reopened chip parks its saved
     // comment on `active_input.prior_comment`, so `overlay.comments` is
@@ -3248,7 +3290,7 @@ pub(super) fn close_with_submit(app: &mut App) {
         let _ = close_active_input_preserving_prior(o);
     }
     let would_file = app.diff_overlay.as_ref().is_some_and(|o| {
-        o.comments.iter().any(|c| c.authored_this_session && c.thread.review_id.is_none())
+        o.comments.iter().any(|c| c.authored_this_session && c.thread.has_unfiled_user_turn())
     });
     if would_file {
         if let Some(o) = app.diff_overlay.as_mut() {
@@ -3840,9 +3882,8 @@ mod tests {
         let mut overlay =
             DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), Vec::new());
         overlay.branch = Some("feat".to_owned());
-        let mut thread = stock_thread();
+        let mut thread = filed_thread("rev");
         thread.id = "filed".to_owned();
-        thread.review_id = Some("rev".to_owned());
         overlay.comments.push(HunkComment {
             key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
             path: "src/x.rs".into(),
@@ -3863,6 +3904,90 @@ mod tests {
             ws.load_reviews("forge", "feat").expect("load").is_empty(),
             "no review was minted for an edit-only session",
         );
+    }
+
+    /// A review conversation spans several rounds: the reviewer comments,
+    /// the agent answers, the reviewer answers back. That second reply is a
+    /// new unfiled turn, so Esc must offer the modal and Submit must seal a
+    /// second review the thread also belongs to.
+    #[test]
+    fn a_reply_on_a_filed_thread_seals_into_a_second_review() {
+        let (mut app, mut rx, _dir) = review_app_with_agent();
+        let ws = app.workspace.clone().expect("ws");
+        let origin = forge_workspace::SessionKey::from_session_id("review-session");
+
+        let mut thread = user_thread("does this handle the empty case?");
+        thread.id = "t1".to_owned();
+        ws.save_review_threads("forge", "feat", &[thread]);
+        let r1 = ws
+            .submit_review("forge", "feat", None, &["t1".to_owned()], origin.clone())
+            .expect("first review sealed");
+
+        // The agent answers, which flips the thread to Addressed.
+        let status = ws
+            .review_reply(&origin, "forge", "feat", "t1", "implementer", "fixed in b3f1", "")
+            .expect("agent reply");
+        assert_eq!(status, ReviewStatus::Addressed);
+
+        // The reviewer answers back on the already-filed thread.
+        let mut replied =
+            ws.load_review_threads("forge", "feat").expect("load").pop().expect("thread");
+        replied.comments.push(ReviewComment {
+            author: ReviewAuthor::User,
+            text: "the empty case is still unguarded".to_owned(),
+            at: String::new(),
+            review_id: None,
+        });
+        assert!(ws.upsert_review_thread("forge", "feat", replied.clone()), "reply persisted");
+
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), Vec::new());
+        overlay.branch = Some("feat".to_owned());
+        overlay.reviews = ws.load_reviews("forge", "feat").expect("load reviews");
+        overlay.comments.push(HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "src/x.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "does this handle the empty case?".into(),
+            commit: None,
+            thread: replied,
+            authored_this_session: true,
+            persisted: true,
+        });
+        app.diff_overlay = Some(overlay);
+
+        close_with_submit(&mut app);
+        assert!(
+            app.diff_overlay.as_ref().is_some_and(|o| o.finish_review.is_some()),
+            "a reply on a filed thread is unfiled work, so the modal opens",
+        );
+        submit_finish_review(&mut app);
+
+        let reviews = ws.load_reviews("forge", "feat").expect("load reviews");
+        assert_eq!(reviews.len(), 2, "the reply sealed a second review");
+        let r2 = &reviews[1];
+        assert_eq!(r2.number, 2);
+
+        let stored = ws
+            .load_review_threads("forge", "feat")
+            .expect("load")
+            .into_iter()
+            .find(|t| t.id == "t1")
+            .expect("thread");
+        assert!(stored.is_in_review(&r1.id), "the thread stays in the first review");
+        assert!(stored.is_in_review(&r2.id), "and now also belongs to the second");
+        assert_eq!(
+            stored.comments.iter().map(|c| c.review_id.as_deref()).collect::<Vec<_>>(),
+            vec![Some(r1.id.as_str()), None, Some(r2.id.as_str())],
+            "each turn carries the review that sealed it; the agent reply carries none",
+        );
+        assert_eq!(
+            stored.status,
+            ReviewStatus::Open,
+            "the agent owes another answer, so sealing reopens the thread",
+        );
+        assert!(rx.try_recv().is_ok(), "the second review nudges the agent");
     }
 
     #[test]
@@ -3910,7 +4035,8 @@ mod tests {
             .into_iter()
             .find(|t| t.id == "r")
             .expect("thread")
-            .review_id;
+            .origin_review()
+            .map(str::to_owned);
         assert_eq!(
             filed,
             Some(reviews[0].id.clone()),
@@ -5299,7 +5425,6 @@ mod tests {
             created_at: "t0".to_owned(),
             updated_at: updated_at.to_owned(),
             commit: commit.map(str::to_owned),
-            review_id: None,
         }
     }
 
@@ -5384,6 +5509,8 @@ mod tests {
 
     /// A minimal Open review thread for tests that build a `HunkComment`
     /// without caring about the thread's own contents.
+    /// A thread as a saved comment leaves it: one unfiled user turn, which
+    /// is what every production save path writes.
     fn stock_thread() -> forge_primitives::ReviewThread {
         forge_primitives::ReviewThread {
             id: "stock".to_owned(),
@@ -5395,24 +5522,32 @@ mod tests {
                 context: Vec::new(),
                 base_ref: "main".to_owned(),
             },
-            comments: Vec::new(),
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: "stock note".to_owned(),
+                at: String::new(),
+                review_id: None,
+            }],
             status: ReviewStatus::Open,
             created_at: String::new(),
             updated_at: String::new(),
             commit: None,
-            review_id: None,
         }
     }
 
-    /// A stock thread carrying a single `User` turn with `text`, so a
+    /// A stock thread whose single `User` turn carries `text`, so a
     /// per-turn reopen seeds the editor from `thread.comments[0]`.
     fn user_thread(text: &str) -> forge_primitives::ReviewThread {
         let mut thread = stock_thread();
-        thread.comments = vec![ReviewComment {
-            author: ReviewAuthor::User,
-            text: text.to_owned(),
-            at: String::new(),
-        }];
+        thread.comments[0].text = text.to_owned();
+        thread
+    }
+
+    /// A thread whose one user turn is already sealed into `review_id`, as
+    /// a submitted review leaves it.
+    fn filed_thread(review_id: &str) -> forge_primitives::ReviewThread {
+        let mut thread = user_thread("filed note");
+        thread.comments[0].review_id = Some(review_id.to_owned());
         thread
     }
 
@@ -5509,8 +5644,8 @@ mod tests {
         assert_eq!(reviews[0].summary.as_deref(), Some("Solid overall."), "overview stored");
         let threads = ws.load_review_threads("forge", "feat").expect("load threads");
         assert_eq!(
-            threads[0].review_id.as_ref(),
-            Some(&reviews[0].id),
+            threads[0].origin_review(),
+            Some(reviews[0].id.as_str()),
             "the session comment filed into the review",
         );
 
@@ -5546,12 +5681,12 @@ mod tests {
                 author: ReviewAuthor::User,
                 text: "note".to_owned(),
                 at: "t0".to_owned(),
+                review_id: None,
             }],
             status: ReviewStatus::Open,
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
             commit: None,
-            review_id: None,
         };
         // Both threads exist in redb; the overlay carries one authored this
         // session and one hydrated from a prior pass.
@@ -5584,7 +5719,7 @@ mod tests {
 
         let threads = ws.load_review_threads("forge", "feat").expect("load");
         let is_filed = |id: &str| {
-            threads.iter().find(|t| t.id == id).expect("thread present").review_id.is_some()
+            threads.iter().find(|t| t.id == id).expect("thread present").origin_review().is_some()
         };
         assert!(is_filed("authored"), "the session-authored comment filed into the review");
         assert!(!is_filed("hydrated"), "the hydrated comment was NOT swept into the review");
@@ -5607,9 +5742,8 @@ mod tests {
             },
         ];
         let mk = |id: &str, review: &str, status: ReviewStatus| {
-            let mut t = stock_thread();
+            let mut t = filed_thread(review);
             t.id = id.to_owned();
-            t.review_id = Some(review.to_owned());
             t.status = status;
             t.anchor.path = "src/a.rs".to_owned();
             t
@@ -5636,15 +5770,58 @@ mod tests {
         assert_eq!(rows[1].resolved, 1);
         assert_eq!(rows[1].summary.as_deref(), Some("first pass"));
         assert_eq!(rows[1].first_path.as_deref(), Some("src/a.rs"));
+
+        let totals = compute_review_totals(&reviews, &threads);
+        assert_eq!(totals.comments, 4, "four distinct filed comments");
+        assert_eq!((totals.open, totals.addressed), (1, 1));
+    }
+
+    /// A thread the reviewer replied on across rounds is listed under every
+    /// review it has a turn in, and counted once in the footer.
+    #[test]
+    fn a_multi_round_thread_is_listed_under_each_of_its_reviews() {
+        let reviews = vec![
+            forge_primitives::ReviewSet {
+                id: "r1".to_owned(),
+                number: 1,
+                summary: None,
+                created_at: "2026-07-23T08:00:00Z".to_owned(),
+            },
+            forge_primitives::ReviewSet {
+                id: "r2".to_owned(),
+                number: 2,
+                summary: None,
+                created_at: "2026-07-23T10:00:00Z".to_owned(),
+            },
+        ];
+        let mut spanning = filed_thread("r1");
+        spanning.id = "spanning".to_owned();
+        spanning.comments.push(agent_turn("addressed"));
+        spanning.comments.push(ReviewComment {
+            author: ReviewAuthor::User,
+            text: "still not right".to_owned(),
+            at: String::new(),
+            review_id: Some("r2".to_owned()),
+        });
+        let threads = vec![spanning];
+        let now = parse_rfc3339("2026-07-23T12:00:00Z").expect("now parses");
+
+        let rows = compute_review_rows(&reviews, &threads, now);
+        assert_eq!(rows[0].total, 1, "r2 lists it");
+        assert_eq!(rows[1].total, 1, "and so does r1");
+        assert_eq!(
+            compute_review_totals(&reviews, &threads).comments,
+            1,
+            "one comment, not one per review it appears in",
+        );
     }
 
     #[test]
     fn toggle_reviews_list_opens_with_rows_then_closes() {
         let (mut app, _dir) = review_app();
         let ws = app.workspace.clone().expect("ws");
-        let mut filed = stock_thread();
+        let mut filed = filed_thread("rev");
         filed.id = "a".to_owned();
-        filed.review_id = Some("rev".to_owned());
         ws.save_review_threads("forge", "feat", &[filed]);
 
         let mut overlay =
@@ -5773,6 +5950,7 @@ mod tests {
             author: ReviewAuthor::Agent { label: "impl".to_owned() },
             text: text.to_owned(),
             at: String::new(),
+            review_id: None,
         }
     }
 
@@ -5784,6 +5962,7 @@ mod tests {
             author: ReviewAuthor::User,
             text: "c".to_owned(),
             at: String::new(),
+            review_id: None,
         });
         let thread = build_thread(Some(prior), test_anchor(), "C!", Some(2));
         assert_eq!(thread.comments[0].text, "a", "the first turn is untouched");
@@ -5832,6 +6011,7 @@ mod tests {
             author: ReviewAuthor::User,
             text: "second note".to_owned(),
             at: String::new(),
+            review_id: None,
         });
         let prior = HunkComment {
             key,
@@ -5874,9 +6054,19 @@ mod tests {
         let mut thread = user_thread("first");
         thread.id = "t-e2e".to_owned();
         thread.comments = vec![
-            ReviewComment { author: ReviewAuthor::User, text: "first".into(), at: String::new() },
+            ReviewComment {
+                author: ReviewAuthor::User,
+                text: "first".into(),
+                at: String::new(),
+                review_id: None,
+            },
             agent_turn("addressed"),
-            ReviewComment { author: ReviewAuthor::User, text: "third".into(), at: String::new() },
+            ReviewComment {
+                author: ReviewAuthor::User,
+                text: "third".into(),
+                at: String::new(),
+                review_id: None,
+            },
         ];
         ws.upsert_review_thread("forge", "feat", thread.clone());
         let prior = HunkComment {
@@ -5963,12 +6153,14 @@ mod tests {
                     author: ReviewAuthor::User,
                     text: "first".into(),
                     at: String::new(),
+                    review_id: None,
                 },
                 agent_turn("reply"),
                 ReviewComment {
                     author: ReviewAuthor::User,
                     text: "third".into(),
                     at: String::new(),
+                    review_id: None,
                 },
             ],
             2,
@@ -5999,6 +6191,7 @@ mod tests {
                     author: ReviewAuthor::User,
                     text: "only".into(),
                     at: String::new(),
+                    review_id: None,
                 },
                 agent_turn("reply"),
             ],
@@ -6194,12 +6387,12 @@ mod tests {
                 author: ReviewAuthor::User,
                 text: text.to_owned(),
                 at: String::new(),
+                review_id: None,
             }],
             status: ReviewStatus::Open,
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
             commit: None,
-            review_id: None,
         };
         ws.save_review_threads(
             "forge",
@@ -6291,12 +6484,12 @@ mod tests {
                 author: ReviewAuthor::User,
                 text: text.to_owned(),
                 at: String::new(),
+                review_id: None,
             }],
             status: ReviewStatus::Open,
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
             commit: None,
-            review_id: None,
         };
         ws.save_review_threads("forge", "feat", &[seed("live", "keep"), seed("stale", "old_body")]);
         // "keep" is live at line 10; "old_body" is gone.
@@ -6348,12 +6541,12 @@ mod tests {
                     author: ReviewAuthor::User,
                     text: "note".to_owned(),
                     at: String::new(),
+                    review_id: None,
                 }],
                 status: ReviewStatus::Open,
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
                 commit: None,
-                review_id: None,
             }],
         );
         // The commented file is no longer in the diff.
@@ -6478,9 +6671,8 @@ mod tests {
             summary: None,
             created_at: String::new(),
         }];
-        let mut thread = stock_thread();
+        let mut thread = filed_thread("rev");
         thread.status = ReviewStatus::Addressed;
-        thread.review_id = Some("rev".to_owned());
         overlay.comments.push(HunkComment {
             key,
             path: "src/x.rs".into(),
@@ -6652,12 +6844,12 @@ mod tests {
                     author: ReviewAuthor::User,
                     text: "commit note".to_owned(),
                     at: String::new(),
+                    review_id: None,
                 }],
                 status: ReviewStatus::Open,
                 created_at: String::new(),
                 updated_at: String::new(),
                 commit: Some("aaa".to_owned()),
-                review_id: None,
             },
             authored_this_session: false,
             persisted: true,
@@ -6684,12 +6876,12 @@ mod tests {
                     author: ReviewAuthor::User,
                     text: "durable".to_owned(),
                     at: String::new(),
+                    review_id: None,
                 }],
                 status: ReviewStatus::Open,
                 created_at: String::new(),
                 updated_at: String::new(),
                 commit: None,
-                review_id: None,
             },
             authored_this_session: false,
             persisted: true,
@@ -6808,7 +7000,6 @@ mod tests {
                 created_at: String::new(),
                 updated_at: String::new(),
                 commit: None,
-                review_id: None,
             };
             HunkComment {
                 key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
@@ -6849,12 +7040,12 @@ mod tests {
                 author: ReviewAuthor::User,
                 text: text.to_owned(),
                 at: String::new(),
+                review_id: None,
             }],
             status: ReviewStatus::Open,
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
             commit: None,
-            review_id: None,
         };
         // Same branch, two whole-diff targets plus a commit-scoped thread.
         let mut c = seed("c", "main", "let c = 3;");
@@ -6914,12 +7105,12 @@ mod tests {
                     author: ReviewAuthor::User,
                     text: "on commit zero".to_owned(),
                     at: String::new(),
+                    review_id: None,
                 }],
                 status: ReviewStatus::Open,
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
                 commit: Some("sha0".to_owned()),
-                review_id: None,
             }],
         );
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
@@ -6958,12 +7149,12 @@ mod tests {
                 author: ReviewAuthor::User,
                 text: text.to_owned(),
                 at: String::new(),
+                review_id: None,
             }],
             status: ReviewStatus::Open,
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
             commit: Some(sha.to_owned()),
-            review_id: None,
         };
         // The sha0 thread drifts (line 5 -> 8) so a writeback fires; the
         // sha1 thread must survive that writeback untouched.
@@ -7015,12 +7206,12 @@ mod tests {
                 author: ReviewAuthor::User,
                 text: text.to_owned(),
                 at: String::new(),
+                review_id: None,
             }],
             status: ReviewStatus::Open,
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
             commit: Some(sha.to_owned()),
-            review_id: None,
         };
         ws.save_review_threads(
             "forge",
@@ -7072,12 +7263,12 @@ mod tests {
                     author: ReviewAuthor::User,
                     text: "resolved earlier".to_owned(),
                     at: String::new(),
+                    review_id: None,
                 }],
                 status: ReviewStatus::Resolved,
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
                 commit: Some("sha0".to_owned()),
-                review_id: None,
             }],
         );
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
@@ -7209,12 +7400,12 @@ mod tests {
                 author: ReviewAuthor::User,
                 text: text.to_owned(),
                 at: String::new(),
+                review_id: None,
             }],
             status: ReviewStatus::Open,
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
             commit: commit.map(str::to_owned),
-            review_id: None,
         };
         // The whole-diff thread drifts (line 5 -> 8) forcing a writeback;
         // the commit-scoped thread must not render here and must survive.
@@ -7266,12 +7457,12 @@ mod tests {
                     author: ReviewAuthor::User,
                     text: "on commit one".to_owned(),
                     at: String::new(),
+                    review_id: None,
                 }],
                 status: ReviewStatus::Open,
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
                 commit: Some("sha1".to_owned()),
-                review_id: None,
             }],
         );
 
@@ -7336,12 +7527,12 @@ mod tests {
                     author: ReviewAuthor::User,
                     text: "hydrated".to_owned(),
                     at: String::new(),
+                    review_id: None,
                 }],
                 status: ReviewStatus::Open,
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
                 commit: None,
-                review_id: None,
             }],
         );
 
@@ -7464,12 +7655,12 @@ mod tests {
                     author: ReviewAuthor::User,
                     text: "prior".to_owned(),
                     at: "t0".to_owned(),
+                    review_id: None,
                 }],
                 status: ReviewStatus::Open,
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
                 commit: None,
-                review_id: None,
             }],
         );
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("keep", 10)])];

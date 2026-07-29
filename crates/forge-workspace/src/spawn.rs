@@ -2036,12 +2036,12 @@ config_dir = "~/.claude-stargate"
                 author: ReviewAuthor::User,
                 text: "note".to_owned(),
                 at: String::new(),
+                review_id: None,
             }],
             status: ReviewStatus::Open,
             created_at: "t".to_owned(),
             updated_at: "t".to_owned(),
             commit: None,
-            review_id: None,
         };
         workspace.save_review_threads("forge", &branch, &[thread("a")]);
         workspace.save_review_threads("forge", "survivor", &[thread("b")]);
@@ -2105,12 +2105,12 @@ config_dir = "~/.claude-stargate"
                     author: ReviewAuthor::User,
                     text: "note".to_owned(),
                     at: String::new(),
+                    review_id: None,
                 }],
                 status: ReviewStatus::Open,
                 created_at: "t0".to_owned(),
                 updated_at: "t0".to_owned(),
                 commit: None,
-                review_id: None,
             }],
         );
 
