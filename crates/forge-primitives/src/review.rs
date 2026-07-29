@@ -111,8 +111,8 @@ impl ReviewThread {
 /// A submitted review: the sealed grouping of the comments filed under
 /// one pass, plus an optional overview. Persisted per `(project, branch)`.
 /// `number` is the human-facing 1-based sequence (`R1`, `R2`, ...) minted
-/// as the branch's review count + 1; `id` is the stable key threads
-/// carry in [`ReviewThread::review_id`]. `created_at` is rfc3339.
+/// as the branch's review count + 1; `id` is the stable key turns carry in
+/// [`ReviewComment::review_id`]. `created_at` is rfc3339.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewSet {
     pub id: String,

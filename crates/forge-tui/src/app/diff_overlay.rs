@@ -2347,8 +2347,12 @@ fn renudge_reopened(app: &mut App, key: LineKey) {
         let sha = overlay.current_commit_sha();
         // The latest round, not the origin: that is the exchange the
         // reviewer is unhappy with.
-        let review_id =
-            overlay.comments.iter().find(|c| c.key == key && c.commit == sha)?.thread.latest_review()?;
+        let review_id = overlay
+            .comments
+            .iter()
+            .find(|c| c.key == key && c.commit == sha)?
+            .thread
+            .latest_review()?;
         overlay.reviews.iter().find(|r| r.id == review_id).map(|r| r.number)
     });
     let nudge = match review_tag {

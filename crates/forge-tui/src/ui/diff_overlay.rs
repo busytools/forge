@@ -705,8 +705,7 @@ fn render_reviews_list(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState
     // The tally counts each comment once, so a thread carried across rounds
     // doesn't inflate the footer the way summing the rows would.
     let totals = &overlay.review_totals;
-    let footer_rollup =
-        rollup_str(totals.open, totals.addressed, totals.resolved, totals.outdated);
+    let footer_rollup = rollup_str(totals.open, totals.addressed, totals.resolved, totals.outdated);
     let count = overlay.review_rows.len();
     let total = totals.comments;
     let footer = format!(

@@ -16,8 +16,8 @@ use super::Db;
 
 const REVIEW_THREADS: TableDefinition<(&str, &str), &[u8]> = TableDefinition::new("review_threads");
 /// Submitted reviews per `(project, branch)` - the sealed groupings a
-/// thread's `review_id` points into. Sibling of [`REVIEW_THREADS`]; the
-/// whole set for a branch is one serde-json blob.
+/// thread's turns point into. Sibling of [`REVIEW_THREADS`]; the whole set
+/// for a branch is one serde-json blob.
 const REVIEWS: TableDefinition<(&str, &str), &[u8]> = TableDefinition::new("reviews");
 
 /// Load every thread for `(project, branch)`. Empty when the branch has
@@ -333,9 +333,11 @@ pub fn submit_review(
                 let mut changed = false;
                 for thread in threads.iter_mut().filter(|t| thread_ids.contains(&t.id)) {
                     let mut sealed = false;
-                    for turn in thread.comments.iter_mut().filter(|c| {
-                        matches!(c.author, ReviewAuthor::User) && c.review_id.is_none()
-                    }) {
+                    for turn in thread
+                        .comments
+                        .iter_mut()
+                        .filter(|c| matches!(c.author, ReviewAuthor::User) && c.review_id.is_none())
+                    {
                         turn.review_id = Some(review.id.clone());
                         sealed = true;
                     }
@@ -394,9 +396,7 @@ fn lift_thread_membership(bytes: &[u8], threads: &mut [ReviewThread]) {
         if thread.comments.iter().any(|c| c.review_id.is_some()) {
             continue;
         }
-        for turn in
-            thread.comments.iter_mut().filter(|c| matches!(c.author, ReviewAuthor::User))
-        {
+        for turn in thread.comments.iter_mut().filter(|c| matches!(c.author, ReviewAuthor::User)) {
             turn.review_id = Some(review_id.clone());
         }
     }
@@ -486,9 +486,8 @@ mod tests {
     /// Append an unfiled user turn, as the overlay does when the reviewer
     /// replies on a thread.
     fn reply(db: &Db, id: &str, text: &str) {
-        let mut thread = find_thread_by_id(db, "forge", "feat", id)
-            .expect("load")
-            .expect("thread for reply");
+        let mut thread =
+            find_thread_by_id(db, "forge", "feat", id).expect("load").expect("thread for reply");
         thread.comments.push(ReviewComment {
             author: ReviewAuthor::User,
             text: text.to_owned(),
