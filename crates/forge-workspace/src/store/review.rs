@@ -297,10 +297,12 @@ pub fn delete_reviews(db: &Db, project: &str, branch: &str) -> anyhow::Result<()
 /// count + 1), stamp every still-unfiled user turn on each listed thread
 /// with the new review id, and append the [`ReviewSet`]. Turns already
 /// filed never move, so a thread whose earlier turns went into review 1
-/// and whose reply goes into review 2 belongs to both. Agent replies are
-/// answers to a round rather than part of one and are never stamped. One
-/// write transaction spans both tables so the stamp and the append land
-/// together.
+/// and whose reply goes into review 2 belongs to both. A thread that
+/// gains a turn this way is `Addressed` no longer - the agent owes an
+/// answer again - so it flips back to `Open`; a `Resolved` / `Outdated`
+/// thread keeps its state. Agent replies are answers to a round rather
+/// than part of one and are never stamped. One write transaction spans
+/// both tables so the stamp and the append land together.
 pub fn submit_review(
     db: &Db,
     project: &str,
@@ -330,12 +332,17 @@ pub fn submit_review(
             if let Some(mut threads) = existing {
                 let mut changed = false;
                 for thread in threads.iter_mut().filter(|t| thread_ids.contains(&t.id)) {
+                    let mut sealed = false;
                     for turn in thread.comments.iter_mut().filter(|c| {
                         matches!(c.author, ReviewAuthor::User) && c.review_id.is_none()
                     }) {
                         turn.review_id = Some(review.id.clone());
-                        changed = true;
+                        sealed = true;
                     }
+                    if sealed && thread.status == ReviewStatus::Addressed {
+                        thread.status = ReviewStatus::Open;
+                    }
+                    changed |= sealed;
                 }
                 if changed {
                     let encoded =
@@ -825,6 +832,60 @@ mod tests {
         );
         assert_eq!(stored.origin_review(), Some(r1.id.as_str()));
         assert_eq!(stored.latest_review(), Some(r2.id.as_str()));
+    }
+
+    #[test]
+    fn sealing_a_new_turn_reopens_an_addressed_thread() {
+        let (_dir, db) = open_db();
+        save(&db, "forge", "feat", &[thread("a", 10)]).expect("save");
+        submit_review(&db, "forge", "feat", None, &["a".to_owned()]).expect("submit 1");
+        let status =
+            append_reply(&db, "forge", "feat", "a", "implementer", "done", "").expect("reply");
+        assert_eq!(status, ReviewStatus::Addressed, "the agent's answer addressed it");
+        reply(&db, "a", "not quite");
+        assert_eq!(
+            find_thread_by_id(&db, "forge", "feat", "a").expect("load").expect("thread").status,
+            ReviewStatus::Addressed,
+            "typing a reply alone does not change state",
+        );
+        submit_review(&db, "forge", "feat", None, &["a".to_owned()]).expect("submit 2");
+        assert_eq!(
+            find_thread_by_id(&db, "forge", "feat", "a").expect("load").expect("thread").status,
+            ReviewStatus::Open,
+            "sealing the reply hands the thread back to the agent",
+        );
+    }
+
+    #[test]
+    fn submitting_without_a_new_turn_leaves_an_addressed_thread_addressed() {
+        let (_dir, db) = open_db();
+        save(&db, "forge", "feat", &[thread("a", 10), thread("b", 20)]).expect("save");
+        submit_review(&db, "forge", "feat", None, &["a".to_owned()]).expect("submit 1");
+        append_reply(&db, "forge", "feat", "a", "implementer", "done", "").expect("reply");
+        // A later round that only files another thread must not disturb a
+        // thread the agent has already answered.
+        submit_review(&db, "forge", "feat", None, &["a".to_owned(), "b".to_owned()])
+            .expect("submit 2");
+        assert_eq!(
+            find_thread_by_id(&db, "forge", "feat", "a").expect("load").expect("thread").status,
+            ReviewStatus::Addressed,
+            "no new turn on a, so its state is untouched",
+        );
+    }
+
+    #[test]
+    fn sealing_does_not_reopen_a_resolved_thread() {
+        let (_dir, db) = open_db();
+        save(&db, "forge", "feat", &[thread("a", 10)]).expect("save");
+        submit_review(&db, "forge", "feat", None, &["a".to_owned()]).expect("submit 1");
+        reply(&db, "a", "one more thought");
+        set_status(&db, "forge", "feat", "a", ReviewStatus::Resolved).expect("resolve");
+        submit_review(&db, "forge", "feat", None, &["a".to_owned()]).expect("submit 2");
+        assert_eq!(
+            find_thread_by_id(&db, "forge", "feat", "a").expect("load").expect("thread").status,
+            ReviewStatus::Resolved,
+            "the reviewer's own resolve outranks the reopen nudge",
+        );
     }
 
     #[test]

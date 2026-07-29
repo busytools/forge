@@ -3939,6 +3939,11 @@ mod tests {
             vec![Some(r1.id.as_str()), None, Some(r2.id.as_str())],
             "each turn carries the review that sealed it; the agent reply carries none",
         );
+        assert_eq!(
+            stored.status,
+            ReviewStatus::Open,
+            "the agent owes another answer, so sealing reopens the thread",
+        );
         assert!(rx.try_recv().is_ok(), "the second review nudges the agent");
     }
 
