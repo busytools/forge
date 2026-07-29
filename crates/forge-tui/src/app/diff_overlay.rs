@@ -1132,6 +1132,9 @@ pub struct DiffOverlayState {
     /// Snapshot rows for the reviews list, computed on open from every
     /// thread's current state (newest review first). Empty while closed.
     pub review_rows: Vec<ReviewListRow>,
+    /// Footer tally for the reviews list, counting each filed comment once
+    /// across the reviews it appears in. Zeroed while closed.
+    pub review_totals: ReviewListTotals,
 }
 
 /// One rendered row of the `l` REVIEWS list: a review's number, relative
@@ -1149,6 +1152,18 @@ pub struct ReviewListRow {
     pub summary: Option<String>,
     pub first_commit: Option<String>,
     pub first_path: Option<String>,
+}
+
+/// The reviews-list footer tally. Counts each filed comment once even when
+/// its turns span several reviews, so the footer reports how many comments
+/// exist rather than the sum of the per-review rows.
+#[derive(Debug, Clone, Default)]
+pub struct ReviewListTotals {
+    pub comments: usize,
+    pub open: usize,
+    pub addressed: usize,
+    pub resolved: usize,
+    pub outdated: usize,
 }
 
 impl DiffOverlayState {
@@ -1575,6 +1590,7 @@ impl DiffOverlayState {
             reviews_open: false,
             reviews_selected: 0,
             review_rows: Vec::new(),
+            review_totals: ReviewListTotals::default(),
         };
         state.capture_wide_and_narrow();
         state
@@ -1670,6 +1686,7 @@ impl DiffOverlayState {
             reviews_open: false,
             reviews_selected: 0,
             review_rows: Vec::new(),
+            review_totals: ReviewListTotals::default(),
         };
         state.capture_wide_and_narrow();
         state
@@ -2128,6 +2145,25 @@ fn compute_review_rows(
         .collect()
 }
 
+/// Tally the branch's filed comments for the reviews-list footer, counting
+/// a thread once however many reviews its turns span.
+fn compute_review_totals(
+    reviews: &[forge_primitives::ReviewSet],
+    threads: &[ReviewThread],
+) -> ReviewListTotals {
+    let mut totals = ReviewListTotals::default();
+    for thread in threads.iter().filter(|t| reviews.iter().any(|r| t.is_in_review(&r.id))) {
+        totals.comments += 1;
+        match thread.status {
+            ReviewStatus::Open => totals.open += 1,
+            ReviewStatus::Addressed => totals.addressed += 1,
+            ReviewStatus::Resolved => totals.resolved += 1,
+            ReviewStatus::Outdated => totals.outdated += 1,
+        }
+    }
+    totals
+}
+
 /// Toggle the `l` REVIEWS list. Opening snapshots every thread's current
 /// state into per-review rollups (newest first); closing drops the rows.
 fn toggle_reviews_list(app: &mut App) {
@@ -2135,6 +2171,7 @@ fn toggle_reviews_list(app: &mut App) {
         if let Some(o) = app.diff_overlay.as_mut() {
             o.reviews_open = false;
             o.review_rows.clear();
+            o.review_totals = ReviewListTotals::default();
         }
         app.needs_redraw = true;
         return;
@@ -2162,6 +2199,7 @@ fn toggle_reviews_list(app: &mut App) {
     let now = std::time::SystemTime::now();
     if let Some(o) = app.diff_overlay.as_mut() {
         o.review_rows = compute_review_rows(&o.reviews, &threads, now);
+        o.review_totals = compute_review_totals(&o.reviews, &threads);
         o.reviews_selected = 0;
         o.reviews_open = true;
     }
@@ -2204,6 +2242,7 @@ fn navigate_to_selected_review(app: &mut App) {
     if let Some(o) = app.diff_overlay.as_mut() {
         o.reviews_open = false;
         o.review_rows.clear();
+        o.review_totals = ReviewListTotals::default();
     }
     app.needs_redraw = true;
     let Some((first_commit, first_path)) = target else { return };
@@ -5727,6 +5766,50 @@ mod tests {
         assert_eq!(rows[1].resolved, 1);
         assert_eq!(rows[1].summary.as_deref(), Some("first pass"));
         assert_eq!(rows[1].first_path.as_deref(), Some("src/a.rs"));
+
+        let totals = compute_review_totals(&reviews, &threads);
+        assert_eq!(totals.comments, 4, "four distinct filed comments");
+        assert_eq!((totals.open, totals.addressed), (1, 1));
+    }
+
+    /// A thread the reviewer replied on across rounds is listed under every
+    /// review it has a turn in, and counted once in the footer.
+    #[test]
+    fn a_multi_round_thread_is_listed_under_each_of_its_reviews() {
+        let reviews = vec![
+            forge_primitives::ReviewSet {
+                id: "r1".to_owned(),
+                number: 1,
+                summary: None,
+                created_at: "2026-07-23T08:00:00Z".to_owned(),
+            },
+            forge_primitives::ReviewSet {
+                id: "r2".to_owned(),
+                number: 2,
+                summary: None,
+                created_at: "2026-07-23T10:00:00Z".to_owned(),
+            },
+        ];
+        let mut spanning = filed_thread("r1");
+        spanning.id = "spanning".to_owned();
+        spanning.comments.push(agent_turn("addressed"));
+        spanning.comments.push(ReviewComment {
+            author: ReviewAuthor::User,
+            text: "still not right".to_owned(),
+            at: String::new(),
+            review_id: Some("r2".to_owned()),
+        });
+        let threads = vec![spanning];
+        let now = parse_rfc3339("2026-07-23T12:00:00Z").expect("now parses");
+
+        let rows = compute_review_rows(&reviews, &threads, now);
+        assert_eq!(rows[0].total, 1, "r2 lists it");
+        assert_eq!(rows[1].total, 1, "and so does r1");
+        assert_eq!(
+            compute_review_totals(&reviews, &threads).comments,
+            1,
+            "one comment, not one per review it appears in",
+        );
     }
 
     #[test]

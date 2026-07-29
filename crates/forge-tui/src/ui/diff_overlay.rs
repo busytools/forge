@@ -682,14 +682,7 @@ fn render_reviews_list(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState
         lines.push(Line::from(Span::styled("  no reviews yet", dim)));
     }
 
-    let (mut total, mut open, mut addressed, mut resolved, mut outdated) =
-        (0usize, 0usize, 0usize, 0usize, 0usize);
     for (idx, row) in overlay.review_rows.iter().enumerate() {
-        total += row.total;
-        open += row.open;
-        addressed += row.addressed;
-        resolved += row.resolved;
-        outdated += row.outdated;
         let head = format!(
             "  #{:<3} {:<9} {} comment{}   {}",
             row.number,
@@ -709,8 +702,13 @@ fn render_reviews_list(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState
     }
 
     lines.push(Line::from(Span::styled(rule, dim)));
-    let footer_rollup = rollup_str(open, addressed, resolved, outdated);
+    // The tally counts each comment once, so a thread carried across rounds
+    // doesn't inflate the footer the way summing the rows would.
+    let totals = &overlay.review_totals;
+    let footer_rollup =
+        rollup_str(totals.open, totals.addressed, totals.resolved, totals.outdated);
     let count = overlay.review_rows.len();
+    let total = totals.comments;
     let footer = format!(
         "  {total} comment{} across {count} review{}{}",
         if total == 1 { "" } else { "s" },
