@@ -321,15 +321,15 @@ fn attention_row_line(
     let inner = usize::from(width);
     let role_suffix = entry.role.as_deref().map(|role| format!(" ({role})")).unwrap_or_default();
     let role_width = role_suffix.chars().count();
-    let (glyph, glyph_color) = match entry.kind {
-        AttentionKind::Failed { .. } => ("\u{2715}", theme::STATUS_ERROR),
-        AttentionKind::ReviewReplies { .. } => ("\u{1F4AC}", theme::REVIEW_ADDRESSED),
+    // `glyph_chrome` is the glyph plus its trailing space; `💬` is two
+    // cells wide where `△` / `✕` are one.
+    let (glyph, glyph_color, glyph_chrome) = match entry.kind {
+        AttentionKind::Failed { .. } => ("\u{2715}", theme::STATUS_ERROR, 2),
+        AttentionKind::ReviewReplies { .. } => ("\u{1F4AC}", theme::REVIEW_ADDRESSED, 3),
         AttentionKind::Permission { .. } | AttentionKind::Question => {
-            ("\u{25b3}", theme::STATUS_WARNING)
+            ("\u{25b3}", theme::STATUS_WARNING, 2)
         }
     };
-    // `💬` is two cells wide where `△` / `✕` are one.
-    let glyph_chrome = if glyph == "\u{1F4AC}" { 3 } else { 2 };
     // Cap the detail so a long MCP tool name can't leave the name with
     // zero room: reserve both gutters + glyph/space + role + 2 cols.
     let detail_cap =
@@ -338,7 +338,7 @@ fn attention_row_line(
     let detail_width = detail.chars().count();
 
     let name_chrome = usize::from(PANE_PAD)
-        + glyph_chrome // glyph + space
+        + glyph_chrome
         + role_width
         + 1 // min gap before the detail
         + detail_width
