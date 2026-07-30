@@ -1897,6 +1897,9 @@ fn hydrate_threads(app: &mut App) {
     });
     let had_in_scope = overlay.comments.iter().any(|c| c.commit == scope_commit);
     if mine.is_empty() && !had_in_scope {
+        // Nothing in scope to re-anchor, so `others` is already every
+        // thread on the branch at its final status.
+        park_replies_waiting(app, &branch, &others);
         return;
     }
 
@@ -1994,7 +1997,45 @@ fn hydrate_threads(app: &mut App) {
     if changed {
         workspace.save_review_threads(&project, &branch, &persist);
     }
+    // `persist` is every thread on the branch, post re-anchoring - the
+    // authoritative recompute that self-corrects a parked count drifted
+    // from the store.
+    park_replies_waiting(app, &branch, &persist);
     app.needs_redraw = true;
+}
+
+/// Park how many of `threads` still owe the reviewer a turn onto the
+/// active session bucket, so the GIT badge and the NEEDS ATTENTION band
+/// render from a field instead of querying the store per frame.
+fn park_replies_waiting(app: &mut App, branch: &str, threads: &[ReviewThread]) {
+    let count = threads.iter().filter(|t| t.awaits_reviewer()).count();
+    if let Some(session) = app.try_active_bucket_mut() {
+        session.review_replies_waiting = crate::app::ReviewRepliesWaiting::merge(
+            session.review_replies_waiting.as_ref(),
+            branch,
+            count,
+        );
+    }
+}
+
+/// Re-park the waiting count after the reviewer mutated a thread. Reads
+/// the store because the overlay only holds the current scope's threads;
+/// safe on a keypress (the mutation itself already wrote), never on the
+/// render path.
+fn refresh_replies_waiting(app: &mut App) {
+    let Some(branch) = app.diff_overlay.as_ref().and_then(|o| o.branch.clone()) else {
+        return;
+    };
+    let Some(project) = app.active_session().and_then(|s| s.project.clone()) else {
+        return;
+    };
+    let Some(workspace) = app.workspace.clone() else {
+        return;
+    };
+    let Ok(threads) = workspace.load_review_threads(&project, &branch) else {
+        return;
+    };
+    park_replies_waiting(app, &branch, &threads);
 }
 
 /// Handle a key while the diff overlay is active.
@@ -2325,10 +2366,11 @@ fn apply_thread_action(app: &mut App, key: LineKey, action: ThreadAction) {
             (ReviewStatus::Open, &[ReviewStatus::Addressed, ReviewStatus::Resolved])
         }
     };
-    if set_thread_status_by_key(app, key, next, allowed_from)
-        && matches!(action, ThreadAction::Reopen)
-    {
-        renudge_reopened(app, key);
+    if set_thread_status_by_key(app, key, next, allowed_from) {
+        if matches!(action, ThreadAction::Reopen) {
+            renudge_reopened(app, key);
+        }
+        refresh_replies_waiting(app);
     }
 }
 
@@ -2638,6 +2680,13 @@ fn cancel_active_input(app: &mut App) {
 ///   aimed at a non-editable turn: restore the prior untouched (no
 ///   delete, no new turn).
 fn save_active_input(app: &mut App) {
+    persist_active_input(app);
+    // A reviewer turn on an answered thread hands the ball back to the
+    // worker, and a cleared turn can hand it the other way.
+    refresh_replies_waiting(app);
+}
+
+fn persist_active_input(app: &mut App) {
     // Project name is read before the overlay borrow so the persist call
     // below can reach `app.workspace` without a borrow conflict.
     let project = app.active_session().and_then(|s| s.project.clone());
@@ -6918,6 +6967,112 @@ mod tests {
             }
             other => panic!("expected PromptWithImages, got {other:?}"),
         }
+    }
+
+    /// A thread the worker answered, anchored on `let y = 1;` at line 10
+    /// so it re-resolves cleanly through `hydrate_threads`.
+    fn answered_thread(id: &str) -> forge_primitives::ReviewThread {
+        let mut thread = user_thread("look here");
+        thread.id = id.to_owned();
+        thread.anchor.line = 10;
+        thread.anchor.content_hash = resolver::content_hash("let y = 1;");
+        thread.comments.push(ReviewComment {
+            author: ReviewAuthor::Agent { label: "impl".to_owned() },
+            text: "done".to_owned(),
+            at: String::new(),
+            review_id: None,
+        });
+        thread.status = ReviewStatus::Addressed;
+        thread
+    }
+
+    /// Overlay over a one-line file, on branch `feat`, ready to hydrate
+    /// `answered_thread`'s anchor.
+    fn overlay_for_answered_threads() -> DiffOverlayState {
+        let mut overlay = DiffOverlayState::new(
+            PathBuf::from("/tmp/repo"),
+            "main".to_owned(),
+            vec![single_hunk_file("src/x.rs", vec![added_line("let y = 1;", 10)])],
+        );
+        overlay.branch = Some("feat".to_owned());
+        overlay
+    }
+
+    fn waiting_count(app: &App) -> Option<usize> {
+        app.active_session().and_then(|s| s.review_replies_waiting.as_ref()).map(|w| w.count)
+    }
+
+    #[test]
+    fn hydrating_diff_recomputes_the_waiting_count_from_the_store() {
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads("forge", "feat", &[answered_thread("a")]);
+        app.diff_overlay = Some(overlay_for_answered_threads());
+
+        hydrate_threads(&mut app);
+
+        assert_eq!(waiting_count(&app), Some(1), "an answered thread awaits the reviewer");
+        assert_eq!(
+            app.active_session()
+                .and_then(|s| s.review_replies_waiting.as_ref())
+                .map(|w| w.branch.clone()),
+            Some("feat".to_owned()),
+        );
+    }
+
+    /// Only a reviewer turn retires an answer. Opening `/diff` on some
+    /// other branch must not take one branch's empty result as licence
+    /// to drop another branch's live count.
+    #[test]
+    fn hydrating_another_branch_leaves_a_live_count_alone() {
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads("forge", "feat", &[answered_thread("a")]);
+        app.diff_overlay = Some(overlay_for_answered_threads());
+        hydrate_threads(&mut app);
+        assert_eq!(waiting_count(&app), Some(1));
+
+        let mut elsewhere = overlay_for_answered_threads();
+        elsewhere.branch = Some("main".to_owned());
+        app.diff_overlay = Some(elsewhere);
+        hydrate_threads(&mut app);
+
+        assert_eq!(waiting_count(&app), Some(1), "feat's answers still await a look");
+    }
+
+    #[test]
+    fn replying_to_a_worker_answer_clears_the_waiting_signal() {
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads("forge", "feat", &[answered_thread("a")]);
+        app.diff_overlay = Some(overlay_for_answered_threads());
+        hydrate_threads(&mut app);
+        assert_eq!(waiting_count(&app), Some(1), "lit before the reviewer answers");
+
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let prior = app.diff_overlay.as_ref().expect("overlay").comments[0].clone();
+        let mut editor = InputState::new();
+        editor.insert_str("still not right");
+        app.diff_overlay.as_mut().expect("overlay").active_input =
+            Some(ActiveCommentInput { key, editor, prior_comment: Some(prior), edit_turn: None });
+        save_active_input(&mut app);
+
+        assert_eq!(waiting_count(&app), None, "the reviewer's own turn clears the signal");
+    }
+
+    #[test]
+    fn resolving_a_worker_answer_clears_the_waiting_signal() {
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads("forge", "feat", &[answered_thread("a"), answered_thread("b")]);
+        app.diff_overlay = Some(overlay_for_answered_threads());
+        hydrate_threads(&mut app);
+        assert_eq!(waiting_count(&app), Some(2), "both answers await a look");
+
+        let resolved_key = app.diff_overlay.as_ref().expect("overlay").comments[0].key;
+        apply_thread_action(&mut app, resolved_key, ThreadAction::Resolve);
+
+        assert_eq!(waiting_count(&app), Some(1), "resolve is how a read answer is dismissed");
     }
 
     #[test]

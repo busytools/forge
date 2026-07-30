@@ -208,7 +208,8 @@ impl ScheduleEntry {
 /// What a session needs attention for, in the Inspector NEEDS
 /// ATTENTION band. Prompt kinds derive from the front
 /// `PromptState.source`; `Failed` derives from
-/// [`crate::app::session::UiSession::failed_turn`].
+/// [`crate::app::session::UiSession::failed_turn`] and `ReviewReplies`
+/// from [`crate::app::session::UiSession::review_replies_waiting`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttentionKind {
     /// A `can_use_tool` permission request; `tool` is the raw tool
@@ -221,6 +222,47 @@ pub enum AttentionKind {
     /// retries. Renders red rather than yellow: nothing is being asked
     /// of the user, the turn is simply gone.
     Failed { error: forge_primitives::ApiRetryError, status: Option<u16> },
+    /// A worker answered review comments this session filed and nobody
+    /// has come back to them. Ranks below the other two - nothing is
+    /// blocked on it - and covers the sessions the GIT header badge
+    /// can't, since the band excludes the active one.
+    ReviewReplies { count: usize },
+}
+
+/// Worker answers on a session's review threads that are still owed a
+/// reviewer turn, parked on the session bucket so the Inspector GIT
+/// badge and the NEEDS ATTENTION band both read one field instead of
+/// querying the store per frame. Fed by
+/// [`forge_workspace::SessionUpdate::ReviewActivityNotice`] and
+/// recomputed authoritatively whenever `/diff` hydrates its threads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewRepliesWaiting {
+    /// The branch the count is about. The GIT badge suppresses itself
+    /// once the header describes a different branch, since `/diff`
+    /// would open on that one instead.
+    pub branch: String,
+    pub count: usize,
+    /// When the signal first appeared, so the band's wait-age is the
+    /// real one rather than the last recompute.
+    pub since: std::time::SystemTime,
+}
+
+impl ReviewRepliesWaiting {
+    /// Fold a fresh count for `branch` into the prior signal. Zero
+    /// clears it, but only a reviewer turn retires an answer - an empty
+    /// result for one branch says nothing about the branch a live count
+    /// belongs to, so that one survives. A still-live count on the same
+    /// branch keeps its original `since` so a recompute can't reset the
+    /// wait-age.
+    pub fn merge(prior: Option<&Self>, branch: &str, count: usize) -> Option<Self> {
+        if count == 0 {
+            return prior.filter(|p| p.branch != branch).cloned();
+        }
+        let since = prior
+            .filter(|p| p.branch == branch)
+            .map_or_else(std::time::SystemTime::now, |p| p.since);
+        Some(Self { branch: branch.to_owned(), count, since })
+    }
 }
 
 /// A turn that ended in error, retained on the session bucket so the

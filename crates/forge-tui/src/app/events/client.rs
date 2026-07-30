@@ -264,10 +264,19 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 session.peer_badges = stats;
             }
         }
-        SessionUpdate::ReviewActivityNotice { key, message } => {
+        SessionUpdate::ReviewActivityNotice { key, branch, waiting, message } => {
             // A worker's review turn ended; drop the batched tally into the
             // reviewer's (submit-origin) session chat. No-op if that session
             // isn't live here.
+            if let Some(session) = app.session_mut(&key) {
+                // The chat line scrolls away, so park the count too - that
+                // is what the GIT badge and the attention band render from.
+                session.review_replies_waiting = crate::app::ReviewRepliesWaiting::merge(
+                    session.review_replies_waiting.as_ref(),
+                    &branch,
+                    waiting,
+                );
+            }
             super::push_system_message_to_session(
                 app,
                 &key,
@@ -2509,5 +2518,70 @@ mod tests {
         let mut app = App::test_default();
         let real_key = SessionKey::from_session_id("real-uuid-2");
         assert!(!rekey_pending_bucket_to(&mut app, &real_key));
+    }
+
+    fn review_notice(key: &SessionKey, waiting: usize) -> SessionUpdate {
+        SessionUpdate::ReviewActivityNotice {
+            key: key.clone(),
+            branch: "feat".to_owned(),
+            waiting,
+            message: "worker addressed review #1".to_owned(),
+        }
+    }
+
+    /// The notice's tally scrolls away with the chat, so the count it
+    /// carries is parked on the target bucket where both the GIT badge
+    /// and the attention band can read it every frame.
+    #[test]
+    fn review_activity_notice_parks_the_waiting_count_on_the_target_bucket() {
+        let mut app = App::test_default();
+        let (_key_a, key_b) = seed_two_sessions(&mut app);
+
+        apply_session_update(&mut app, review_notice(&key_b, 2));
+
+        let waiting = app
+            .sessions
+            .get(&key_b)
+            .and_then(|s| s.review_replies_waiting.clone())
+            .expect("the notice parks a waiting signal");
+        assert_eq!(waiting.count, 2);
+        assert_eq!(waiting.branch, "feat", "scoped to the branch the review is on");
+    }
+
+    /// A later notice reporting nothing left to read (the reviewer
+    /// answered from the worker's side, or resolved elsewhere) clears
+    /// the signal rather than leaving a stale badge lit.
+    #[test]
+    fn review_activity_notice_with_nothing_waiting_clears_the_signal() {
+        let mut app = App::test_default();
+        let (_key_a, key_b) = seed_two_sessions(&mut app);
+
+        apply_session_update(&mut app, review_notice(&key_b, 2));
+
+        // Another branch reporting nothing waiting says nothing about
+        // `feat` - only a reviewer turn on `feat` retires those answers.
+        apply_session_update(
+            &mut app,
+            SessionUpdate::ReviewActivityNotice {
+                key: key_b.clone(),
+                branch: "other".to_owned(),
+                waiting: 0,
+                message: "worker addressed review #2".to_owned(),
+            },
+        );
+        assert_eq!(
+            app.sessions
+                .get(&key_b)
+                .and_then(|s| s.review_replies_waiting.clone())
+                .map(|w| w.count),
+            Some(2),
+            "a zero on another branch leaves the live count alone",
+        );
+
+        apply_session_update(&mut app, review_notice(&key_b, 0));
+        assert!(
+            app.sessions.get(&key_b).and_then(|s| s.review_replies_waiting.clone()).is_none(),
+            "a zero count clears the parked signal",
+        );
     }
 }

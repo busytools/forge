@@ -702,9 +702,13 @@ pub enum SessionUpdate {
     /// A worker's review turn addressed review comments; `key` is the
     /// session that authored the review (the submit origin). The TUI drops
     /// `message` as a system line into that session's chat so the reviewer
-    /// sees the batched tally.
+    /// sees the batched tally, and parks `waiting` - how many threads on
+    /// `branch` now await a reviewer turn - as the persistent signal both
+    /// the Inspector GIT badge and the NEEDS ATTENTION band read.
     ReviewActivityNotice {
         key: SessionKey,
+        branch: String,
+        waiting: usize,
         message: String,
     },
     FatalError(AppError),
@@ -893,9 +897,12 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("CronPromptAppended")
                 .field("session_id", session_id)
                 .finish_non_exhaustive(),
-            Self::ReviewActivityNotice { key, .. } => {
-                f.debug_struct("ReviewActivityNotice").field("key", key).finish_non_exhaustive()
-            }
+            Self::ReviewActivityNotice { key, branch, waiting, .. } => f
+                .debug_struct("ReviewActivityNotice")
+                .field("key", key)
+                .field("branch", branch)
+                .field("waiting", waiting)
+                .finish_non_exhaustive(),
             Self::FatalError(err) => f.debug_struct("FatalError").field("error", err).finish(),
         }
     }

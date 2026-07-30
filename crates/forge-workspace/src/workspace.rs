@@ -3809,13 +3809,16 @@ impl Workspace {
         // hold `review_origin` across a db-locking call - `submit_review`
         // locks db-then-origin, so the opposite order here would risk an
         // AB-BA deadlock.
-        let mut messages: Vec<((String, String), String)> = Vec::new();
+        let mut messages: Vec<((String, String), usize, String)> = Vec::new();
         for review_id in order {
             let Some((project, branch, replied, resolved)) = by_review.remove(&review_id) else {
                 continue;
             };
-            let rows = match self.review_list(&project, &branch) {
-                Ok(rows) => rows,
+            let loaded = self.load_reviews(&project, &branch).and_then(|reviews| {
+                self.load_review_threads(&project, &branch).map(|threads| (reviews, threads))
+            });
+            let (reviews, threads) = match loaded {
+                Ok(pair) => pair,
                 Err(error) => {
                     // Surface the decode / IO failure rather than swallowing
                     // it into a silently-skipped notice.
@@ -3829,12 +3832,16 @@ impl Workspace {
                     continue;
                 }
             };
+            let rows = crate::mcp::review::summarize(&reviews, &threads);
             let Some(summary) = rows.into_iter().find(|s| s.review_id == review_id) else {
                 continue;
             };
+            // Branch-wide, not per-review: the reviewer's badge counts every
+            // answer still owed a look on the branch they are on.
+            let waiting = threads.iter().filter(|t| t.awaits_reviewer()).count();
             let message =
                 crate::mcp::review::notice_message(summary.number, replied, resolved, summary.open);
-            messages.push(((project, branch), message));
+            messages.push(((project, branch), waiting, message));
         }
 
         // Map each review to its notice target under a short `review_origin`
@@ -3847,9 +3854,14 @@ impl Workspace {
         let origins = self.review_origin.lock();
         messages
             .into_iter()
-            .filter_map(|(scope, message)| {
+            .filter_map(|(scope, waiting, message)| {
                 if let Some(key) = origins.get(&scope) {
-                    Some(SessionUpdate::ReviewActivityNotice { key: key.clone(), message })
+                    Some(SessionUpdate::ReviewActivityNotice {
+                        key: key.clone(),
+                        branch: scope.1.clone(),
+                        waiting,
+                        message,
+                    })
                 } else {
                     tracing::debug!(
                         target: "forge_workspace::workspace",
@@ -6543,9 +6555,11 @@ mod tests {
         let notices = ws.drain_review_activity(&worker);
         assert_eq!(notices.len(), 1, "one batched notice for the single touched review");
         match &notices[0] {
-            SessionUpdate::ReviewActivityNotice { key, message } => {
+            SessionUpdate::ReviewActivityNotice { key, branch, waiting, message } => {
                 assert_eq!(key, &reviewer, "routed to the submit origin, not the worker");
+                assert_eq!(branch, "feat", "the notice names the branch it is about");
                 // a -> Addressed (1 replied), b -> Resolved (1 resolved), c untouched (1 open).
+                assert_eq!(*waiting, 1, "only the replied-to thread awaits the reviewer");
                 assert!(message.contains("1 replied"), "tally counts the reply: {message}");
                 assert!(message.contains("1 resolved"), "tally counts the resolve: {message}");
                 assert!(

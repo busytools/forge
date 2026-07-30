@@ -98,6 +98,15 @@ impl ReviewThread {
         self.comments.iter().rev().find_map(|c| c.review_id.as_deref())
     }
 
+    /// Whether a worker's answer on this thread is still waiting on the
+    /// reviewer. `Open` is excluded even when an agent turn is last: that
+    /// state is only reached by a reopen, which is the reviewer handing
+    /// the work back.
+    pub fn awaits_reviewer(&self) -> bool {
+        matches!(self.status, ReviewStatus::Addressed | ReviewStatus::Outdated)
+            && matches!(self.comments.last(), Some(c) if matches!(c.author, ReviewAuthor::Agent { .. }))
+    }
+
     /// Whether the user has written a turn no review has sealed yet. This
     /// is what makes a thread submittable, whether it is a fresh comment
     /// or a reply on a thread already filed into an earlier review.
@@ -289,6 +298,52 @@ mod tests {
         thread.comments[0].review_id = Some("review-1".to_owned());
         assert!(!thread.has_unfiled_user_turn());
         assert_eq!(thread.comments[1].review_id, None, "the agent turn stays unfiled");
+    }
+
+    #[test]
+    fn an_agent_reply_on_an_addressed_thread_awaits_the_reviewer() {
+        let mut thread = sample_thread();
+        thread.status = ReviewStatus::Addressed;
+        assert!(thread.awaits_reviewer(), "a worker answered and nobody has acted since");
+
+        // A drifted anchor doesn't make the answer read.
+        thread.status = ReviewStatus::Outdated;
+        assert!(thread.awaits_reviewer());
+    }
+
+    #[test]
+    fn a_reviewer_turn_stops_the_thread_awaiting() {
+        let mut thread = sample_thread();
+        thread.status = ReviewStatus::Addressed;
+        thread.comments.push(ReviewComment {
+            author: ReviewAuthor::User,
+            text: "not quite".to_owned(),
+            at: "2026-07-19T11:00:00Z".to_owned(),
+            review_id: None,
+        });
+        assert!(
+            !thread.awaits_reviewer(),
+            "the reviewer replied - the ball is back with the worker"
+        );
+    }
+
+    #[test]
+    fn resolving_or_reopening_stops_the_thread_awaiting() {
+        let mut thread = sample_thread();
+        thread.status = ReviewStatus::Resolved;
+        assert!(!thread.awaits_reviewer(), "resolve is how a read-and-accepted answer clears");
+
+        // Reopen leaves the agent turn last but hands the work back.
+        thread.status = ReviewStatus::Open;
+        assert!(!thread.awaits_reviewer(), "a reopened thread is the worker's again");
+    }
+
+    #[test]
+    fn a_thread_nobody_answered_does_not_await_the_reviewer() {
+        let mut thread = sample_thread();
+        thread.comments.truncate(1);
+        thread.status = ReviewStatus::Open;
+        assert!(!thread.awaits_reviewer(), "no agent turn, nothing to read");
     }
 
     #[test]
