@@ -23,7 +23,7 @@
 //! `mouse.row` → `BodyRowKey`. In unified a click anywhere on a row
 //! opens the comment; in split the handler picks the old/new side by
 //! the click column. Comment chips render after their anchor line; the
-//! active editor's TextArea expands inline below its anchor.
+//! active editor expands inline below its anchor.
 
 mod pairing;
 
@@ -1013,16 +1013,18 @@ fn rail_file_row(
     let (status_glyph, status_color) = status_glyph(status);
     let marker = if is_current { "▸" } else { " " };
     let marker_color = if is_current { theme::RUST_ORANGE } else { theme::DIM };
-    let prefix_chars = line_prefix.chars().count();
+    let prefix_cols = line_prefix.width();
     // Layout: "  " + tree_prefix + marker + " " + status + "  " + label + " " + chip
-    // The chip lands at the right edge if it fits.
+    // The chip lands at the right edge if it fits. `💬` is a two-column
+    // glyph, so the chip is measured by display width plus the one-space
+    // gap that precedes it.
     let chip_str = if comment_count > 0 { format!("💬 {comment_count}") } else { String::new() };
-    let chip_chars = if comment_count > 0 { chip_str.chars().count() + 2 } else { 0 };
-    let fixed_chars = 1 + 1 + 1 + 2; // marker + " " + status_glyph + "  "
+    let chip_cols = if comment_count > 0 { chip_str.width() + 1 } else { 0 };
+    let fixed_cols = 1 + 1 + 1 + 2; // marker + " " + status_glyph + "  "
     let label_budget = inner_width
-        .saturating_sub(prefix_chars)
-        .saturating_sub(fixed_chars)
-        .saturating_sub(chip_chars);
+        .saturating_sub(prefix_cols)
+        .saturating_sub(fixed_cols)
+        .saturating_sub(chip_cols);
     let fitted = truncate_path_front(label, label_budget.max(1));
     Line::from(vec![
         Span::raw("  "),
@@ -2222,8 +2224,8 @@ fn render_comment_chip(
 /// explicit newlines. A line longer than `max_chars` is chopped at
 /// the boundary (no word-aware soft-wrap in v1; the use case is
 /// short review notes where character-based wrap is fine).
-fn wrap_chip_body(text: &str, max_chars: usize) -> Vec<String> {
-    if max_chars == 0 {
+fn wrap_chip_body(text: &str, max_cols: usize) -> Vec<String> {
+    if max_cols == 0 {
         return vec![String::new()];
     }
     let mut out = Vec::new();
@@ -2232,9 +2234,13 @@ fn wrap_chip_body(text: &str, max_chars: usize) -> Vec<String> {
             out.push(String::new());
             continue;
         }
-        let chars: Vec<char> = source_line.chars().collect();
-        for chunk in chars.chunks(max_chars) {
-            out.push(chunk.iter().collect::<String>());
+        // Chop by display width so a body of emoji or CJK can't render
+        // twice as wide as the card it sits in.
+        let mut rest = source_line.to_owned();
+        while !rest.is_empty() {
+            let (chunk, tail) = crate::ui::wrap::take_prefix_by_width(&rest, max_cols);
+            out.push(chunk);
+            rest = tail;
         }
     }
     if out.is_empty() {
@@ -2301,8 +2307,7 @@ fn render_active_input(
     for body_row in &body_rows {
         let placeholder = body_rows.len() == 1 && body_row == "(type your comment)";
         let fitted = fit_box_content(body_row, inner_width.saturating_sub(2));
-        let fitted_chars = fitted.chars().count();
-        let pad = inner_width.saturating_sub(2).saturating_sub(fitted_chars);
+        let pad = inner_width.saturating_sub(2).saturating_sub(fitted.width());
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::raw(indent.clone()),
@@ -2317,8 +2322,7 @@ fn render_active_input(
     // In-box hint row (DIM).
     let hint = "Enter save · Esc cancel";
     let hint_fitted = fit_box_content(hint, inner_width.saturating_sub(2));
-    let hint_chars = hint_fitted.chars().count();
-    let hint_pad = inner_width.saturating_sub(2).saturating_sub(hint_chars);
+    let hint_pad = inner_width.saturating_sub(2).saturating_sub(hint_fitted.width());
     lines.push(Line::from(vec![
         Span::raw("  "),
         Span::raw(indent.clone()),
@@ -2335,23 +2339,24 @@ fn render_active_input(
     keys.push(BodyRowKey::InputRow(input.key));
 }
 
-/// Trim `text` to fit within `max_chars` columns. Used by the
+/// Trim `text` to fit within `max_cols` terminal columns. Used by the
 /// editor dialog body to keep rows from overflowing the box width.
 /// Falls back to `...`-suffix when truncation is needed.
-fn fit_box_content(text: &str, max_chars: usize) -> String {
-    let count = text.chars().count();
-    if count <= max_chars {
+///
+/// Budgets by display width, not character count - a comment carrying
+/// emoji or CJK is twice as wide as its `chars().count()` suggests, and
+/// measuring it by characters walks the box's right border off the box.
+fn fit_box_content(text: &str, max_cols: usize) -> String {
+    if crate::ui::wrap::display_width(text) <= max_cols {
         return text.to_owned();
     }
-    // When the budget is too small to fit the 3-char `...` marker,
-    // just take that many raw chars so the output still respects
-    // `max_chars`. Skipping the marker is the lesser harm versus
-    // overflowing the box width.
-    if max_chars < 3 {
-        return text.chars().take(max_chars).collect();
+    // When the budget is too small to fit the 3-column `...` marker,
+    // just take what fits so the output still respects `max_cols`.
+    // Skipping the marker is the lesser harm versus overflowing.
+    if max_cols < 3 {
+        return crate::ui::wrap::truncate_to_width(text, max_cols);
     }
-    let take = max_chars.saturating_sub(3);
-    let truncated: String = text.chars().take(take).collect();
+    let truncated = crate::ui::wrap::truncate_to_width(text, max_cols.saturating_sub(3));
     format!("{truncated}...")
 }
 
@@ -2644,6 +2649,58 @@ mod tests {
     fn wrap_chip_body_handles_empty_input() {
         let rows = wrap_chip_body("", 40);
         assert_eq!(rows, vec![String::new()]);
+    }
+
+    /// Emoji occupy two terminal columns. Wrapping a card body by
+    /// character count lets a row of them render twice as wide as the
+    /// card, spilling past its right border.
+    #[test]
+    fn wrap_chip_body_budgets_by_display_width_not_char_count() {
+        let rows = wrap_chip_body(&"\u{1F600}".repeat(20), 20);
+        for row in &rows {
+            assert!(
+                crate::ui::wrap::display_width(row) <= 20,
+                "row {row:?} is {} columns wide, budget was 20",
+                crate::ui::wrap::display_width(row)
+            );
+        }
+    }
+
+    #[test]
+    fn fit_box_content_budgets_by_display_width_not_char_count() {
+        let fitted = fit_box_content("\u{1F600}\u{1F600}\u{1F600}\u{1F600}\u{1F600}", 6);
+        assert!(
+            crate::ui::wrap::display_width(&fitted) <= 6,
+            "fitted {fitted:?} is {} columns wide, budget was 6",
+            crate::ui::wrap::display_width(&fitted)
+        );
+    }
+
+    /// Every row of the comment editor box - top border, body rows, hint,
+    /// bottom border - has to land on the same column count, or the right
+    /// border staircases away from the box as soon as a comment contains
+    /// an emoji.
+    #[test]
+    fn comment_editor_box_rows_align_with_an_emoji_in_the_body() {
+        let mut editor = crate::app::InputState::new();
+        editor.insert_str("ship it \u{1F680} nice");
+        let input = ActiveCommentInput {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            editor,
+            prior_comment: None,
+            edit_turn: None,
+        };
+        let mut lines = Vec::new();
+        let mut keys = Vec::new();
+
+        render_active_input(&input, 4, 371, 80, &mut lines, &mut keys);
+
+        let widths: Vec<usize> = lines.iter().map(crate::ui::wrap::line_display_width).collect();
+        assert!(widths.len() >= 4, "border, body, hint, border");
+        assert!(
+            widths.windows(2).all(|w| w[0] == w[1]),
+            "editor box rows must share one column count, got {widths:?}"
+        );
     }
 
     #[test]
