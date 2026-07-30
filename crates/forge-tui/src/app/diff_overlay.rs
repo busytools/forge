@@ -21,7 +21,7 @@
 use std::path::PathBuf;
 use std::sync::mpsc as std_mpsc;
 
-use super::input::InputState;
+use super::input::{InputState, TypedChar};
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use forge_primitives::git_diff::RepoGate;
 use forge_primitives::review::{
@@ -2018,6 +2018,18 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     if app.has_focused_text_input() && super::keys::should_ignore_key_during_paste(app, key) {
         return;
     }
+    // A picker left open by a mouse-driven editor close has nowhere to
+    // insert into.
+    if app.emoji.is_some() && !app.has_focused_text_input() {
+        super::emoji::deactivate(app);
+    }
+    // The emoji picker is the innermost surface: while it is open it owns
+    // Esc, Enter and the arrows. Without this, `:` then Esc would fall
+    // through to the overlay's Esc - which submits the review.
+    if app.emoji.is_some() && super::keys::handle_emoji_key(app, key) {
+        app.needs_redraw = true;
+        return;
+    }
     // Finish-review modal captures keys while open: type the overview,
     // Ctrl+Enter submits, Esc dismisses back to the diff.
     if app.diff_overlay.as_ref().is_some_and(|o| o.finish_review.is_some()) {
@@ -2102,12 +2114,17 @@ fn route_key_into_review_editor(app: &mut App, key: KeyEvent) {
         _ => None,
     };
     if let Some(c) = printable {
-        let _ = app.type_char(c, Instant::now());
+        // Only offer the picker for a character that actually landed - a
+        // `:` swallowed into a paste burst is payload, not a trigger.
+        if app.type_char(c, Instant::now()) == TypedChar::Inserted && c == ':' {
+            super::emoji::activate(app);
+        }
     } else {
         app.paste_burst.on_non_char_key(Instant::now());
         if let Some(input) = app.focused_input_mut() {
             let _ = input.handle_key(key);
         }
+        super::emoji::sync_with_cursor(app);
     }
     app.needs_redraw = true;
 }
@@ -4397,6 +4414,118 @@ mod tests {
             app.paste_burst.is_buffering(),
             "three characters at test speed must register as a burst, not three inserts"
         );
+    }
+
+    /// Type `token` one character at a time at human speed. Consecutive
+    /// test statements land microseconds apart, which the burst detector
+    /// correctly reads as a paste; clearing its timing reference between
+    /// keys is what "the user is typing" looks like to it.
+    fn type_text(app: &mut App, token: &str) {
+        for ch in token.chars() {
+            app.paste_burst.on_non_char_key(Instant::now());
+            handle_key(app, KeyEvent::from(KeyCode::Char(ch)));
+        }
+    }
+
+    #[test]
+    fn typing_a_shortcode_opens_the_picker_in_the_comment_editor() {
+        let mut app = app_with_comment_editor();
+
+        type_text(&mut app, ":roc");
+
+        let state = app.emoji.as_ref().expect("picker open");
+        assert_eq!(state.query, "roc");
+        assert!(state.candidates.iter().any(|e| e.name == "rocket"));
+    }
+
+    /// The bite: in the /diff overlay Esc already means "finish review".
+    /// With the picker open it must dismiss the PICKER and go no further,
+    /// or typing `:` then Esc submits a review.
+    #[test]
+    fn esc_with_the_picker_open_dismisses_only_the_picker() {
+        let mut app = app_with_comment_editor();
+        type_text(&mut app, ":roc");
+
+        handle_key(&mut app, KeyEvent::from(KeyCode::Esc));
+
+        assert!(app.emoji.is_none(), "Esc closes the picker");
+        let after = overlay(&app);
+        assert!(after.active_input.is_some(), "the comment editor stays open");
+        assert!(after.finish_review.is_none(), "Esc must not reach finish-review");
+        assert_eq!(app.active_view, ActiveView::Diff, "the overlay stays open");
+    }
+
+    /// A second Esc, with no picker in the way, resumes the normal
+    /// meaning - cancel the editor.
+    #[test]
+    fn esc_after_dismissing_the_picker_cancels_the_editor() {
+        let mut app = app_with_comment_editor();
+        type_text(&mut app, ":roc");
+        handle_key(&mut app, KeyEvent::from(KeyCode::Esc));
+
+        handle_key(&mut app, KeyEvent::from(KeyCode::Esc));
+
+        assert!(overlay(&app).active_input.is_none(), "the editor is cancelled");
+    }
+
+    /// Enter belongs to the picker while it is open, so it must not save
+    /// the comment out from under a half-typed shortcode.
+    #[test]
+    fn enter_with_the_picker_open_inserts_the_emoji_and_keeps_editing() {
+        let mut app = app_with_comment_editor();
+        type_text(&mut app, ":rocket");
+
+        handle_key(&mut app, KeyEvent::from(KeyCode::Enter));
+
+        assert!(app.emoji.is_none(), "the picker closes on confirm");
+        let after = overlay(&app);
+        assert!(after.active_input.is_some(), "the editor stays open so typing continues");
+        assert!(after.comments.is_empty(), "Enter on the picker is not a save");
+        let text = after.active_input.as_ref().expect("editor").editor.text();
+        assert_eq!(text, "\u{1F680}", "the whole :rocket token became the glyph");
+    }
+
+    #[test]
+    fn typing_the_closing_colon_lands_the_glyph() {
+        let mut app = app_with_comment_editor();
+
+        type_text(&mut app, ":tada:");
+
+        assert!(app.emoji.is_none());
+        let text = overlay(&app).active_input.as_ref().expect("editor").editor.text();
+        assert_eq!(text, "\u{1F389}");
+    }
+
+    /// A URL in a review comment must not pop a picker.
+    #[test]
+    fn a_url_does_not_open_the_picker() {
+        let mut app = app_with_comment_editor();
+
+        type_text(&mut app, "see http://x.dev");
+
+        assert!(app.emoji.is_none(), "`:` mid-word is not a trigger");
+        let text = overlay(&app).active_input.as_ref().expect("editor").editor.text();
+        assert_eq!(text, "see http://x.dev");
+    }
+
+    /// The picker has to work in the Finish-review overview too - that is
+    /// the whole point of hanging it off the shared substrate.
+    #[test]
+    fn the_picker_works_in_the_finish_review_overview() {
+        let mut app = app_with_comment_editor();
+        if let Some(o) = app.diff_overlay.as_mut() {
+            o.active_input = None;
+            o.finish_review = Some(FinishReviewState { editor: InputState::new() });
+        }
+
+        type_text(&mut app, ":rocket");
+        assert!(app.emoji.is_some(), "picker opens over the modal");
+        handle_key(&mut app, KeyEvent::from(KeyCode::Enter));
+
+        let after = overlay(&app);
+        assert!(after.finish_review.is_some(), "Enter on the picker does not submit the review");
+        let text = after.finish_review.as_ref().expect("modal").editor.text();
+        assert_eq!(text, "\u{1F680}");
     }
 
     #[test]

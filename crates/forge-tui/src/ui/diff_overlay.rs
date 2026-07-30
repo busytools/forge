@@ -44,6 +44,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::App;
 use crate::app::diff_overlay::DiffOverlayState;
+use crate::app::emoji;
+use crate::ui::autocomplete;
 use crate::ui::chat_tree;
 use crate::ui::highlight::LineHighlighter;
 use crate::ui::theme;
@@ -273,6 +275,74 @@ fn render_diff_body(frame: &mut Frame, area: Rect, app: &mut App) {
     if let Some(o) = app.diff_overlay.as_ref().filter(|o| o.reviews_open) {
         render_reviews_list(frame, area, o);
     }
+    // The emoji picker sits above everything - it is the innermost
+    // surface and its rows must not be painted over.
+    render_emoji_dropdown(frame, area, app);
+}
+
+/// Paint the `:shortcode:` picker over the diff, anchored under whatever
+/// editor it is filtering for: the Finish-review overview's submit row
+/// when that modal is open, otherwise the inline comment editor's last
+/// row (located via `body_keys`, the same parallel row index the click
+/// handler reads).
+fn render_emoji_dropdown(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(state) = app.emoji.as_ref().filter(|e| !e.candidates.is_empty()) else {
+        return;
+    };
+    let Some(overlay) = app.diff_overlay.as_ref() else {
+        return;
+    };
+
+    let anchor_y = if let Some((btn_row, _, _)) = overlay.finish_submit_span {
+        btn_row.saturating_add(1)
+    } else if let Some(row) = editor_last_screen_row(overlay) {
+        row.saturating_add(1)
+    } else {
+        return;
+    };
+
+    let rows = state.candidates.len().min(emoji::MAX_VISIBLE);
+    let desired = u16::try_from(rows).unwrap_or(u16::MAX).saturating_add(2);
+    // Prefer below the anchor; flip above when the bottom is too tight.
+    let below = area.bottom().saturating_sub(anchor_y);
+    let above = anchor_y.saturating_sub(area.y);
+    let (y, height) = if desired <= below {
+        (anchor_y, desired)
+    } else if desired <= above {
+        (anchor_y.saturating_sub(desired), desired)
+    } else if below >= above {
+        (anchor_y, below)
+    } else {
+        (area.y, above)
+    };
+    if height < 3 {
+        return;
+    }
+
+    let width = area.width.saturating_sub(4).clamp(20, 44);
+    let x = overlay.pane_origin_col.max(area.x).min(area.right().saturating_sub(width));
+    let rect = Rect { x, y, width, height };
+    let lines = autocomplete::emoji_dropdown_lines(state, usize::from(height.saturating_sub(2)));
+
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new(lines).block(autocomplete::emoji_dropdown_block()), rect);
+}
+
+/// Screen row of the comment editor's last rendered row, or `None` when
+/// the editor is off-screen. Mirrors the click handler's mapping:
+/// `body_keys` runs parallel to the built body lines, the first
+/// `body_head_rows` are pinned, and the remainder scrolls by
+/// `body_tail_scroll`.
+fn editor_last_screen_row(overlay: &DiffOverlayState) -> Option<u16> {
+    let idx = overlay.body_keys.iter().rposition(|key| matches!(key, BodyRowKey::InputRow(_)))?;
+    if idx < overlay.body_head_rows {
+        return Some(overlay.pane_origin_row);
+    }
+    let tail_idx = idx - overlay.body_head_rows;
+    let scrolled = tail_idx.checked_sub(overlay.body_tail_scroll)?;
+    let head = u16::try_from(overlay.body_head_rows).unwrap_or(0);
+    let offset = u16::try_from(scrolled).ok()?;
+    Some(overlay.pane_origin_row.saturating_add(head).saturating_add(offset))
 }
 
 /// The full-width notice shown when this branch's persisted review

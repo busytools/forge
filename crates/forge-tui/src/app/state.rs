@@ -73,6 +73,7 @@ pub enum AutocompleteKind {
     Mention,
     Slash,
     Subagent,
+    Emoji,
 }
 
 /// Which of forge's text editors is currently accepting input. Every
@@ -471,6 +472,9 @@ pub struct App {
     /// up, `None` otherwise. Dropped on overlay close so a stale
     /// snapshot can't leak into the next open.
     pub diff_overlay: Option<crate::app::DiffOverlayState>,
+    /// Open `:shortcode:` emoji picker. App-level rather than
+    /// per-session because it serves the /diff review editors too.
+    pub emoji: Option<super::emoji::EmojiState>,
     /// Usage overlay state - `Some` while [`ActiveView::Usage`] is up,
     /// `None` otherwise. Dropped on close so a stale report can't leak
     /// into the next open.
@@ -3253,6 +3257,7 @@ impl App {
             plugins: PluginsState::default(),
             launchpad: crate::app::LaunchpadState::default(),
             diff_overlay: None,
+            emoji: None,
             usage_overlay: None,
             cached_frame_area: ratatui::layout::Rect::default(),
             scrollbar_drag: None,
@@ -3479,7 +3484,9 @@ impl App {
     }
 
     pub fn active_autocomplete_kind(&self) -> Option<AutocompleteKind> {
-        if self.mention().is_some() {
+        if self.emoji.is_some() {
+            Some(AutocompleteKind::Emoji)
+        } else if self.mention().is_some() {
             Some(AutocompleteKind::Mention)
         } else if self.slash().is_some() {
             Some(AutocompleteKind::Slash)
@@ -3505,6 +3512,13 @@ impl App {
         self.mention().is_some_and(mention::MentionState::has_selectable_candidates)
             || self.slash().is_some()
             || self.subagent().is_some()
+    }
+
+    /// Whether the emoji picker has rows to navigate. Separate from
+    /// [`Self::autocomplete_focus_available`] because the picker is
+    /// app-level and lives in the /diff view too.
+    pub fn emoji_focus_available(&self) -> bool {
+        self.emoji.as_ref().is_some_and(super::emoji::EmojiState::has_selectable_candidates)
     }
 
     pub fn rebuild_chat_focus_from_state(&mut self) {
@@ -3552,6 +3566,9 @@ impl App {
         let mut ctx = FocusContext::empty();
         if self.autocomplete_focus_available() {
             ctx = ctx.with(FocusTarget::Mention);
+        }
+        if self.emoji_focus_available() {
+            ctx = ctx.with(FocusTarget::Emoji);
         }
         if self.is_help_active() {
             ctx = ctx.with(FocusTarget::Help);

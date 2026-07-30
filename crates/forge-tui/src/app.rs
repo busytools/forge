@@ -7,6 +7,7 @@ pub(crate) mod config;
 pub(crate) mod connect;
 mod dialog;
 pub(crate) mod diff_overlay;
+pub(crate) mod emoji;
 pub(crate) mod events;
 pub(crate) mod file_index;
 mod focus;
@@ -49,6 +50,7 @@ pub use cache_policy::{
 pub use config::ConfigState;
 pub use connect::{create_app, start_connection};
 pub use diff_overlay::DiffOverlayState;
+pub use emoji::{Emoji, EmojiState};
 pub use events::{apply_session_update, handle_terminal_event};
 pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::{InputState, TypedChar};

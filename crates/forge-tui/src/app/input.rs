@@ -534,7 +534,7 @@ impl InputState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypedChar {
     /// Absorbed into the burst buffer; nothing was inserted. The payload
-    /// surfaces later via [`super::paste_burst::PasteBurstDetector::tick`].
+    /// surfaces later via `PasteBurstDetector::tick`.
     Buffered,
     /// A confirmed burst retro-captured characters that had already been
     /// inserted, so they could be replayed as part of the paste payload.
@@ -544,7 +544,7 @@ pub enum TypedChar {
 }
 
 /// Apply a detector verdict to `input`. Split from
-/// [`super::paste_burst::PasteBurstDetector::on_char`] so callers can sequence the
+/// `PasteBurstDetector::on_char` so callers can sequence the
 /// detector borrow and the input borrow rather than holding both.
 pub fn apply_char_action(input: &mut InputState, action: CharAction, c: char) -> TypedChar {
     match action {
