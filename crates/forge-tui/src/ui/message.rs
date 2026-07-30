@@ -2974,7 +2974,8 @@ mod tests {
     }
 
     /// The assistant half of the run renders the bundle summary and
-    /// nothing else - the baseline the user turn has to match.
+    /// nothing else - the baseline the user turn has to match. Each
+    /// line counts its own segment, so this one holds one message.
     #[test]
     fn assistant_segment_of_messaging_group_renders_summary_line() {
         let mut messages = peer_run_across_user_and_assistant();
@@ -2982,8 +2983,44 @@ mod tests {
         let rendered = render_with_session_units(&mut messages, 1, &units);
 
         assert!(
-            rendered.iter().any(|l| l.contains("2 messages") && l.contains("outbound to steward")),
+            rendered.iter().any(|l| l.contains("1 message") && l.contains("outbound to steward")),
             "assistant segment renders the bundle summary; got {rendered:?}",
+        );
+    }
+
+    /// A run that lives entirely in one turn has a single segment
+    /// covering it, so its summary still counts the whole run. This is
+    /// the everyday shape - it must not move when cross-turn segments
+    /// switch to per-line counts.
+    #[test]
+    fn single_segment_messaging_group_summary_counts_the_whole_run() {
+        let outbound = |id: &str, target: &str| {
+            let mut tc = make_tool_call_info(
+                id,
+                "mcp__forge__peers__tell_agent",
+                crate::agent::model::ToolCallStatus::Completed,
+                "",
+            );
+            tc.raw_input = Some(serde_json::json!({ "target": target, "message": "body" }));
+            MessageBlock::ToolCall(Box::new(tc))
+        };
+        let mut messages = vec![ChatMessage::new(
+            MessageRole::Assistant,
+            vec![
+                outbound("toolu_a", "planner"),
+                outbound("toolu_b", "debugger"),
+                outbound("toolu_c", "planner"),
+            ],
+            None,
+        )];
+        let units = grouping::partition_session_into_render_units(&messages);
+        let rendered = render_with_session_units(&mut messages, 0, &units);
+
+        assert!(
+            rendered
+                .iter()
+                .any(|l| l.contains("3 messages") && l.contains("outbound to planner, debugger")),
+            "one segment covering the run still counts all 3; got {rendered:?}",
         );
     }
 
@@ -2999,7 +3036,7 @@ mod tests {
         let rendered = render_with_session_units(&mut messages, 0, &units);
 
         assert!(
-            rendered.iter().any(|l| l.contains("2 messages") && l.contains("inbound from steward")),
+            rendered.iter().any(|l| l.contains("1 message") && l.contains("inbound from steward")),
             "user-turn segment must render the bundle summary; got {rendered:?}",
         );
         assert!(

@@ -2194,6 +2194,41 @@ mod tests {
         }
     }
 
+    /// Both partitioners emit segments whose own count is at least 1
+    /// and never exceeds the group total. The summary line can read
+    /// either field without guarding against a zero or an unstamped
+    /// total.
+    #[test]
+    fn segment_counts_are_non_zero_and_bounded_by_the_group_total() {
+        let messages = vec![
+            assistant_message_with_blocks(vec![
+                outbound_peer_block("planner", "Tell"),
+                outbound_peer_block("debugger", "Ask"),
+            ]),
+            user_text_message("any update?"),
+            crate::app::ChatMessage::new(
+                crate::app::MessageRole::User,
+                vec![inbound_peer_block("tester", "Reply")],
+                None,
+            ),
+            assistant_message_with_blocks(vec![outbound_peer_block("tester", "Tell")]),
+        ];
+
+        let mut seen = 0_usize;
+        for unit in partition_session_into_render_units(&messages).iter().flatten() {
+            let RenderUnit::MessagingGroup { segments, .. } = unit else { continue };
+            for segment in segments {
+                assert!(segment.segment_count >= 1, "empty segment emitted: {segment:?}");
+                assert!(
+                    segment.group_total_count >= segment.segment_count,
+                    "group total below its own segment: {segment:?}",
+                );
+                seen += 1;
+            }
+        }
+        assert!(seen >= 2, "expected several segments to check; saw {seen}");
+    }
+
     /// Threshold-1: a single peer block folds into a messaging group.
     /// A lone outbound peer/worker block does NOT form an @ group;
     /// it renders as an `Individual` (plain peer block). The group
