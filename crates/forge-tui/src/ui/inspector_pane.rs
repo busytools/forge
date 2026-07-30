@@ -1572,12 +1572,11 @@ fn gotify_section_visible(app: &App) -> bool {
 }
 
 /// Render the Inspector GOTIFY section: an `◈ connected` status line
-/// then the active project's subscriptions grouped by owner. Owner is
-/// the subscription's `team_role`: `None` renders as the `lead` group
-/// (first), `Some(role)` as that worker role in first-seen order. Each
-/// owner is a DIM header with a blank line between groups. Only invoked
-/// when [`gotify_section_visible`] holds, so the stream is always
-/// connected and the subscription set is never empty.
+/// then the active session's own subscriptions. The snapshot is already
+/// scoped by owner in `App::refresh_gotify`, so every row here belongs
+/// to this session and none needs an owner label. Only invoked when
+/// [`gotify_section_visible`] holds, so the stream is always connected
+/// and the subscription set is never empty.
 fn append_gotify_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     lines.push(Line::from(Span::styled(
         " GOTIFY".to_owned(),
@@ -1595,34 +1594,9 @@ fn append_gotify_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) 
     ]));
 
     let inner_width = usize::from(width);
-
-    // Owners in stable order: lead (team_role None) first, then each
-    // worker role in first-seen order.
-    let mut owners: Vec<Option<&str>> = Vec::new();
-    if app.gotify_subs.iter().any(|s| s.team_role.is_none()) {
-        owners.push(None);
-    }
+    lines.push(Line::default());
     for sub in &app.gotify_subs {
-        if let Some(role) = sub.team_role.as_deref()
-            && !owners.contains(&Some(role))
-        {
-            owners.push(Some(role));
-        }
-    }
-
-    let owner_budget = row_text_budget(inner_width, usize::from(PANE_PAD) + 1);
-    for owner in owners {
-        lines.push(Line::default());
-        lines.push(Line::from(vec![
-            Span::raw(" ".repeat(usize::from(PANE_PAD))),
-            Span::styled(
-                truncate_or_pass(owner.unwrap_or("lead"), owner_budget),
-                Style::default().fg(theme::DIM),
-            ),
-        ]));
-        for sub in app.gotify_subs.iter().filter(|s| s.team_role.as_deref() == owner) {
-            append_gotify_subscription(lines, sub, inner_width);
-        }
+        append_gotify_subscription(lines, sub, inner_width);
     }
 }
 
@@ -2773,6 +2747,28 @@ mod tests {
             "durable crons render SCHEDULES even with no cloud wakeups: {text}"
         );
         assert!(text.contains("daily at 09:00"), "the cron row is present: {text}");
+    }
+
+    /// SCHEDULES renders two sources. Only the forge crons are scoped by
+    /// owner; the Claude-native wakeups live on the session's own bucket
+    /// and still render when the session owns no forge cron.
+    #[test]
+    fn schedules_section_renders_native_wakeups_with_no_owned_forge_crons() {
+        use std::time::{Duration, SystemTime};
+
+        let mut app = App::test_default();
+        app.upsert_wakeup_from_tool_input(
+            "tu1",
+            "watching CI",
+            SystemTime::now() + Duration::from_secs(600),
+        );
+        assert!(app.forge_schedule_rows.is_empty(), "precondition: no owned forge crons");
+
+        let mut lines = Vec::new();
+        append_body(&mut lines, &app, 60);
+        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("SCHEDULES"), "the native wakeup still draws SCHEDULES: {text}");
+        assert!(text.contains("watching CI"), "the wakeup reason renders: {text}");
     }
 
     #[test]
@@ -4063,15 +4059,16 @@ mod tests {
         }
     }
 
+    /// The snapshot is scoped to the session's own role before it
+    /// reaches the render, so there is only ever one owner on screen and
+    /// no owner header labels it.
     #[test]
-    fn gotify_section_groups_by_owner_lead_first_without_row_arrow() {
+    fn gotify_section_renders_own_subscriptions_without_an_owner_header() {
         let mut app = App::test_default();
         app.gotify_connected = true;
-        // Worker sub listed before the lead sub; the lead group still
-        // renders first.
         app.gotify_subs = vec![
             gotify_sub(1, Some("steward"), &["Entertainment"], None),
-            gotify_sub(2, None, &["Alerts"], Some(5)),
+            gotify_sub(2, Some("steward"), &["Alerts"], Some(5)),
         ];
 
         let mut lines = Vec::new();
@@ -4079,18 +4076,14 @@ mod tests {
         let texts = lines.iter().map(|l| line_text(l)).collect::<Vec<_>>();
         let joined = texts.join("\n");
 
-        let lead_at = texts.iter().position(|t| t.trim() == "lead");
-        let steward_at = texts.iter().position(|t| t.trim() == "steward");
-        assert!(lead_at.is_some(), "lead owner header present; got:\n{joined}");
-        assert!(steward_at.is_some(), "worker owner header present; got:\n{joined}");
         assert!(
-            lead_at < steward_at,
-            "the lead group renders before the worker group; got:\n{joined}",
+            !texts.iter().any(|t| matches!(t.trim(), "lead" | "steward")),
+            "no owner header renders; got:\n{joined}",
         );
-        assert!(
-            !joined.contains('\u{2192}'),
-            "the per-row role arrow is dropped (owner header replaces it); got:\n{joined}",
-        );
+        for name in ["Entertainment", "Alerts"] {
+            assert!(joined.contains(name), "every owned subscription renders; got:\n{joined}");
+        }
+        assert!(!joined.contains('\u{2192}'), "no per-row role arrow either; got:\n{joined}");
         assert!(!joined.contains("app:"), "the old app: caption is dropped; got:\n{joined}");
     }
 
@@ -4235,51 +4228,6 @@ mod tests {
                 line_text(line),
             );
         }
-    }
-
-    #[test]
-    fn gotify_worker_roles_render_in_first_seen_order() {
-        let mut app = App::test_default();
-        app.gotify_connected = true;
-        // steward precedes analyst in the vec; group order follows
-        // first-seen, not alphabetical (analyst would sort first).
-        app.gotify_subs = vec![
-            gotify_sub(1, Some("steward"), &["Alerts"], None),
-            gotify_sub(2, Some("analyst"), &["Deploys"], None),
-        ];
-
-        let mut lines = Vec::new();
-        append_gotify_section(&mut lines, &app, 60);
-        let texts = lines.iter().map(|l| line_text(l)).collect::<Vec<_>>();
-        let joined = texts.join("\n");
-
-        let steward_at = texts.iter().position(|t| t.trim() == "steward").expect("steward header");
-        let analyst_at = texts.iter().position(|t| t.trim() == "analyst").expect("analyst header");
-        assert!(
-            steward_at < analyst_at,
-            "worker roles render in first-seen (not alphabetical) order; got:\n{joined}",
-        );
-    }
-
-    #[test]
-    fn gotify_workers_only_opens_with_worker_group_and_no_lead_header() {
-        let mut app = App::test_default();
-        app.gotify_connected = true;
-        app.gotify_subs = vec![gotify_sub(1, Some("steward"), &["Alerts"], None)];
-
-        let mut lines = Vec::new();
-        append_gotify_section(&mut lines, &app, 60);
-        let texts = lines.iter().map(|l| line_text(l)).collect::<Vec<_>>();
-        let joined = texts.join("\n");
-
-        assert!(
-            texts.iter().any(|t| t.trim() == "steward"),
-            "the worker group header renders; got:\n{joined}",
-        );
-        assert!(
-            !texts.iter().any(|t| t.trim() == "lead"),
-            "no lead header when there is no lead subscription; got:\n{joined}",
-        );
     }
 
     #[test]

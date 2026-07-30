@@ -303,13 +303,14 @@ pub struct App {
     /// `None` only in the brief pre-Connect window where no session
     /// has landed in the map yet.
     pub active_session_key: Option<forge_workspace::SessionKey>,
-    /// Snapshot of the active project's durable forge crons
-    /// (`mcp__forge__cron`), refreshed on the ~1s ticker
+    /// Snapshot of the durable forge crons (`mcp__forge__cron`) the
+    /// active session itself created, refreshed on the ~1s ticker
     /// (`git_diff::apply_timer_tick`) from
-    /// `Workspace::crons_for_project`. The Inspector SCHEDULES section
-    /// reads this cache each render instead of hitting the workspace
-    /// per frame (mirrors the git-diff snapshot pattern). Empty when
-    /// there's no active project or it has no crons.
+    /// `Workspace::crons_for_project`, then narrowed to the session's
+    /// own `team_role`. The Inspector SCHEDULES section reads this cache
+    /// each render instead of hitting the workspace per frame (mirrors
+    /// the git-diff snapshot pattern). Empty when there's no active
+    /// project or the session created no cron.
     pub forge_crons: Vec<forge_primitives::CronEntry>,
     /// Presentation rows for the Inspector SCHEDULES section, humanized
     /// once per ~1s tick by [`App::refresh_forge_crons`] (parallel to the
@@ -317,11 +318,12 @@ pub struct App {
     /// the local timezone + humanizing per frame; the live countdown
     /// still recomputes from each row's `fire_at` at render time.
     pub forge_schedule_rows: Vec<crate::app::state::types::ScheduleEntry>,
-    /// Active project's Gotify subscriptions and stream connection
-    /// status. Refreshed on the ~1s tick by [`App::refresh_gotify`]; the
+    /// The Gotify subscriptions the active session itself created, plus
+    /// the stream connection status. Refreshed on the ~1s tick by
+    /// [`App::refresh_gotify`] and scoped by own `team_role`; the
     /// Inspector GOTIFY section reads these caches each render (mirrors
     /// `forge_crons`). The section renders only while connected with at
-    /// least one subscription (see `gotify_section_visible`).
+    /// least one owned subscription (see `gotify_section_visible`).
     pub gotify_subs: Vec<forge_primitives::GotifySubscription>,
     pub gotify_connected: bool,
     /// Active help overlay view when `?` help is open.
@@ -2145,21 +2147,26 @@ impl App {
         self.schedules_mut().retain(|e| !e.is_expired(now));
     }
 
-    /// Recompute the active project's durable forge-cron snapshot from
-    /// the workspace, sorted soonest-first. Called on the ~1s ticker so
+    /// Recompute the active session's own durable forge-cron snapshot
+    /// from the workspace, sorted soonest-first. Called on the ~1s ticker so
     /// the Inspector reads a cheap cached `Vec` instead of resolving the
     /// project + locking the workspace every render. Scopes by the active
     /// tab's stamped project NAME ([`Self::active_project_name`]): the
     /// bucket resolves its project once at Connect, so the per-tick read
     /// never re-derives it from a stale / synthetic / pre-Connect cwd.
-    /// Empty when the active bucket has no project yet or it has no crons.
-    /// Also humanizes the crons into `forge_schedule_rows` here (resolving
-    /// the local timezone once) so the render never pays that per frame.
+    /// Then narrows to the session's own `team_role`, so a lead and its
+    /// workers each see only what they can act on.
+    /// Empty when the active bucket has no project yet or the session
+    /// created no cron. Also humanizes the crons into `forge_schedule_rows`
+    /// here (resolving the local timezone once) so the render never pays
+    /// that per frame.
     pub fn refresh_forge_crons(&mut self) {
+        let own_role = self.active_session_team_role();
         let mut crons = match (self.active_project_name(), self.workspace.as_ref()) {
             (Some(name), Some(ws)) => ws.crons_for_project(&name),
             _ => Vec::new(),
         };
+        crons.retain(|c| c.team_role == own_role);
         crons.sort_by_key(|c| c.next_fire);
         // Resolve the local zone (an OS probe) only when there are crons
         // to humanize - most sessions have none.
@@ -2177,11 +2184,13 @@ impl App {
     }
 
     /// Refresh the Gotify snapshot the Inspector GOTIFY section reads:
-    /// the active project's subscriptions (scoped by the active tab's
-    /// stamped project NAME, like `refresh_forge_crons`) plus the stream
-    /// connection status. Called on the ~1s ticker so the render reads
-    /// cached fields instead of locking the workspace each frame.
+    /// the active session's own subscriptions (scoped by the active
+    /// tab's stamped project NAME then by own `team_role`, like
+    /// `refresh_forge_crons`) plus the stream connection status. Called
+    /// on the ~1s ticker so the render reads cached fields instead of
+    /// locking the workspace each frame.
     pub fn refresh_gotify(&mut self) {
+        let own_role = self.active_session_team_role();
         let project = self.active_project_name();
         let Some(ws) = self.workspace.as_ref() else {
             self.gotify_subs = Vec::new();
@@ -2191,6 +2200,21 @@ impl App {
         self.gotify_connected = ws.gotify_connected();
         self.gotify_subs =
             project.map(|name| ws.gotify_subscriptions_for_project(&name)).unwrap_or_default();
+        self.gotify_subs.retain(|s| s.team_role == own_role);
+    }
+
+    /// The team role that owns the active session: `None` for a project
+    /// lead, `Some(label)` for a worker. Scopes the SCHEDULES + GOTIFY
+    /// snapshots to what this session created, matching what
+    /// `cron__list` / `cron__delete` let it act on.
+    ///
+    /// Resolved from the live-worker registry, never the sessions
+    /// catalog - workers are deliberately absent from the catalog, so a
+    /// catalog read reports every worker as a lead.
+    fn active_session_team_role(&self) -> Option<String> {
+        let ws = self.workspace.as_ref()?;
+        let key = self.active_session_key.as_ref()?;
+        ws.worker_lookup_for_session(key).map(|(_, label, _)| label)
     }
 
     /// Insert / update a `MonitorEntry` based on a fresh
@@ -4845,6 +4869,175 @@ mod tests {
 
         app.refresh_gotify();
         assert_eq!(app.gotify_subs.len(), 1, "GOTIFY resolves subscriptions via the stamped name");
+    }
+
+    // ---------------------------------------------------------
+    // Own-scope: SCHEDULES + GOTIFY show only the active session's
+    // own items. A lead owns the `team_role: None` set, a worker its
+    // own label's; neither sees the other's.
+    // ---------------------------------------------------------
+
+    /// An App whose active tab is `session_id`, stamped with a freshly
+    /// seeded `project`. The session is a lead until
+    /// [`seed_live_worker`] registers it.
+    fn app_on_project(
+        project: &str,
+        session_id: &str,
+    ) -> (App, Arc<forge_workspace::Workspace>, forge_workspace::SessionKey) {
+        let mut app = App::test_default();
+        let ws = app.workspace.clone().expect("test workspace");
+        ws.seed_test_project_with_static_workers(project, &format!("/tmp/{project}"), &[]);
+        let key = forge_workspace::SessionKey::from_session_id(session_id);
+        let mut bucket = crate::app::session::UiSession::new(key.clone());
+        bucket.project = Some(project.to_owned());
+        app.sessions.insert(key.clone(), bucket);
+        app.active_session_key = Some(key.clone());
+        (app, ws, key)
+    }
+
+    /// Register `session` as the live worker `label` of `project`, the
+    /// state `worker_lookup_for_session` reads to resolve a session's
+    /// own role. Workers never reach the sessions catalog, so this
+    /// registry is the only source.
+    fn seed_live_worker(
+        ws: &forge_workspace::Workspace,
+        project: &str,
+        label: &str,
+        session: &forge_workspace::SessionKey,
+    ) {
+        let project_key =
+            ws.list_projects().into_iter().find(|p| p.name == project).expect("seeded project").key;
+        ws.insert_live_worker(
+            &project_key,
+            forge_workspace::WorkerEntry {
+                label: label.to_owned(),
+                charter: "charter".to_owned(),
+                session_key: session.clone(),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".to_owned(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+    }
+
+    fn cron_owned_by(
+        id: &str,
+        project: &str,
+        team_role: Option<&str>,
+    ) -> forge_primitives::CronEntry {
+        forge_primitives::CronEntry {
+            id: forge_primitives::cron::CronId::from(id),
+            project_name: project.to_owned(),
+            kind: forge_primitives::cron::CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: "stand-up".to_owned(),
+            description: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+            team_role: team_role.map(str::to_owned),
+        }
+    }
+
+    fn sub_owned_by(
+        id: u128,
+        project: &str,
+        team_role: Option<&str>,
+    ) -> forge_primitives::GotifySubscription {
+        forge_primitives::GotifySubscription {
+            id: uuid::Uuid::from_u128(id),
+            project: project.to_owned(),
+            team_role: team_role.map(str::to_owned),
+            applications: vec!["alerts".to_owned()],
+            min_priority: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    fn cron_ids(app: &App) -> Vec<&str> {
+        app.forge_crons.iter().map(|c| c.id.as_str()).collect()
+    }
+
+    fn sub_ids(app: &App) -> Vec<u128> {
+        app.gotify_subs.iter().map(|s| s.id.as_u128()).collect()
+    }
+
+    #[test]
+    fn refresh_forge_crons_shows_only_the_leads_own_crons() {
+        let (mut app, ws, _) = app_on_project("scoped", "lead-uuid");
+        ws.seed_test_cron(cron_owned_by("lead-c", "scoped", None));
+        ws.seed_test_cron(cron_owned_by("worker-c", "scoped", Some("steward")));
+
+        app.refresh_forge_crons();
+
+        assert_eq!(cron_ids(&app), vec!["lead-c"], "a lead sees only lead-created crons");
+        assert_eq!(app.forge_schedule_rows.len(), 1, "the humanized rows match the scoped set");
+    }
+
+    #[test]
+    fn refresh_forge_crons_shows_only_the_workers_own_crons() {
+        let (mut app, ws, key) = app_on_project("scoped", "steward-uuid");
+        seed_live_worker(&ws, "scoped", "steward", &key);
+        ws.seed_test_cron(cron_owned_by("lead-c", "scoped", None));
+        ws.seed_test_cron(cron_owned_by("steward-c", "scoped", Some("steward")));
+        ws.seed_test_cron(cron_owned_by("reviewer-c", "scoped", Some("reviewer")));
+
+        app.refresh_forge_crons();
+
+        assert_eq!(
+            cron_ids(&app),
+            vec!["steward-c"],
+            "a worker sees neither the lead's crons nor a sibling worker's",
+        );
+    }
+
+    #[test]
+    fn refresh_gotify_shows_only_the_leads_own_subscriptions() {
+        let (mut app, ws, _) = app_on_project("scoped", "lead-uuid");
+        ws.seed_test_gotify_subscription(sub_owned_by(1, "scoped", None));
+        ws.seed_test_gotify_subscription(sub_owned_by(2, "scoped", Some("steward")));
+
+        app.refresh_gotify();
+
+        assert_eq!(sub_ids(&app), vec![1], "a lead sees only lead-created subscriptions");
+    }
+
+    #[test]
+    fn refresh_gotify_shows_only_the_workers_own_subscriptions() {
+        let (mut app, ws, key) = app_on_project("scoped", "steward-uuid");
+        seed_live_worker(&ws, "scoped", "steward", &key);
+        ws.seed_test_gotify_subscription(sub_owned_by(1, "scoped", None));
+        ws.seed_test_gotify_subscription(sub_owned_by(2, "scoped", Some("steward")));
+        ws.seed_test_gotify_subscription(sub_owned_by(3, "scoped", Some("reviewer")));
+
+        app.refresh_gotify();
+
+        assert_eq!(
+            sub_ids(&app),
+            vec![2],
+            "a worker sees neither the lead's subscriptions nor a sibling worker's",
+        );
+    }
+
+    /// A session that created nothing leaves both caches empty, which is
+    /// what makes the Inspector omit both sections rather than draw a
+    /// bare header.
+    #[test]
+    fn refresh_leaves_both_caches_empty_for_a_session_owning_nothing() {
+        let (mut app, ws, key) = app_on_project("scoped", "steward-uuid");
+        seed_live_worker(&ws, "scoped", "steward", &key);
+        ws.seed_test_cron(cron_owned_by("lead-c", "scoped", None));
+        ws.seed_test_gotify_subscription(sub_owned_by(1, "scoped", None));
+
+        app.refresh_forge_crons();
+        app.refresh_gotify();
+
+        assert!(app.forge_crons.is_empty(), "no owned cron leaves the SCHEDULES cache empty");
+        assert!(app.forge_schedule_rows.is_empty(), "and no humanized rows to render");
+        assert!(app.gotify_subs.is_empty(), "no owned subscription leaves the GOTIFY cache empty");
     }
 
     #[test]
