@@ -1578,26 +1578,42 @@ fn gotify_section_visible(app: &App) -> bool {
 /// [`gotify_section_visible`] holds, so the stream is always connected
 /// and the subscription set is never empty.
 fn append_gotify_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
-    lines.push(Line::from(Span::styled(
-        " GOTIFY".to_owned(),
-        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
-    )));
+    lines.push(gotify_header_line(width));
     lines.push(Line::default());
-
-    // Filled-diamond glyph in RUST_ORANGE; the visibility gate guarantees
-    // the stream is connected.
-    lines.push(Line::from(vec![
-        Span::raw(" ".repeat(usize::from(PANE_PAD))),
-        Span::styled("\u{25c8}".to_owned(), Style::default().fg(theme::RUST_ORANGE)),
-        Span::raw(" ".to_owned()),
-        Span::styled("connected".to_owned(), Style::default().fg(theme::DIM)),
-    ]));
 
     let inner_width = usize::from(width);
-    lines.push(Line::default());
     for sub in &app.gotify_subs {
         append_gotify_subscription(lines, sub, inner_width);
     }
+}
+
+/// GOTIFY section header: DIM-bold ` GOTIFY` with the stream status
+/// right-justified beside it, the same header-adornment shape
+/// [`attention_header_line`] uses for its waiting count and the GIT
+/// header for its `🦉` / `💬`. The filled diamond is RUST_ORANGE; the
+/// visibility gate guarantees the stream is connected whenever this
+/// renders. Content stops [`PANE_PAD`] short of the pane edge so the
+/// status observes the same right gutter every other row does.
+fn gotify_header_line(width: u16) -> Line<'static> {
+    use unicode_width::UnicodeWidthStr;
+
+    const LABEL: &str = " GOTIFY";
+    const GLYPH: &str = "\u{25c8}";
+    const STATUS: &str = "connected";
+
+    let status_width = UnicodeWidthStr::width(GLYPH) + 1 + UnicodeWidthStr::width(STATUS);
+    let chrome = UnicodeWidthStr::width(LABEL) + status_width + usize::from(PANE_PAD);
+    let pad = usize::from(width).saturating_sub(chrome).max(1);
+    Line::from(vec![
+        Span::styled(
+            LABEL.to_owned(),
+            Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(GLYPH.to_owned(), Style::default().fg(theme::RUST_ORANGE)),
+        Span::raw(" ".to_owned()),
+        Span::styled(STATUS.to_owned(), Style::default().fg(theme::DIM)),
+    ])
 }
 
 /// Render one GOTIFY subscription entry under its owner header: the
@@ -4227,6 +4243,84 @@ mod tests {
                 "row consumed the right gutter ({w} >= {inner_width}): {}",
                 line_text(line),
             );
+        }
+    }
+
+    /// The status rides the header line rather than costing its own row
+    /// plus two blanks, and stays inside the pane's 1-col right gutter at
+    /// both the Wide (32) and Medium (24) inspector widths. Columns are
+    /// read from a rendered buffer, not a formatted string: a collected
+    /// row misreports position for any wide glyph, so a printed dump
+    /// cannot prove this fits.
+    #[test]
+    fn gotify_header_carries_status_and_fits_wide_and_medium() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        for width in [32u16, 24] {
+            let mut app = App::test_default();
+            app.gotify_connected = true;
+            app.gotify_subs = vec![gotify_sub(1, None, &["Alerts"], Some(5))];
+
+            let mut lines = Vec::new();
+            append_gotify_section(&mut lines, &app, width);
+
+            let height = 8u16;
+            let mut term = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+            term.draw(|f| {
+                f.render_widget(Paragraph::new(lines.clone()), Rect { x: 0, y: 0, width, height });
+            })
+            .expect("draw");
+
+            let buffer = term.backend().buffer().clone();
+            let w = usize::from(buffer.area.width);
+            let cell = |x: usize, y: usize| buffer.content[y * w + x].symbol().to_owned();
+            let row = |y: usize| (0..w).map(|x| cell(x, y)).collect::<String>();
+
+            let header = row(0);
+            assert!(header.contains("GOTIFY"), "w={width}: header names the section: {header:?}");
+            assert!(
+                header.contains("connected"),
+                "w={width}: the status sits on the header row, whole: {header:?}",
+            );
+            assert!(
+                header.contains('\u{25c8}'),
+                "w={width}: the status glyph sits on the header row: {header:?}",
+            );
+
+            // True column of the last painted cell - the right gutter must
+            // stay blank so nothing is clipped at the pane edge.
+            let last_col = (0..w)
+                .rposition(|x| !cell(x, 0).trim().is_empty())
+                .expect("header row paints something");
+            assert!(
+                last_col < w - usize::from(PANE_PAD),
+                "w={width}: status keeps the {PANE_PAD}-col right gutter (last painted col \
+                 {last_col} of {w}): {header:?}",
+            );
+
+            // Two rows bought back: no standalone status line survives
+            // anywhere below the header.
+            for y in 1..usize::from(height) {
+                assert!(
+                    !row(y).contains("connected"),
+                    "w={width}: the status renders once, on the header - found again at y={y}",
+                );
+            }
+            // Header, one blank, then the subscription's app list.
+            assert!(row(1).trim().is_empty(), "w={width}: one blank under the header");
+            assert!(row(2).contains("Alerts"), "w={width}: the first subscription follows it");
+
+            // Medium is the tightest pane the header has to survive, so
+            // pin its literal layout - this is also what the forge-map
+            // mockup reproduces.
+            if width == 24 {
+                assert_eq!(
+                    header.trim_end(),
+                    " GOTIFY     \u{25c8} connected",
+                    "Medium-tier header layout",
+                );
+            }
         }
     }
 
