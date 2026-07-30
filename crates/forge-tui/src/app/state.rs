@@ -25,8 +25,8 @@ pub use types::{
     AppStatus, AttentionEntry, AttentionKind, BackgroundTask, ExtraUsage, FailedTurn, HelpView,
     HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, MessageUsage, ModeInfo,
     ModeState, MonitorEntry, MonitorStatus, PasteSessionState, PendingCommandAck, PhaseEntry,
-    PhaseStatus, RecentSessionInfo, RenderCacheBudget, SUBAGENT_TAIL_CAP, ScheduleEntry,
-    ScheduleKind, ScrollbarDragState, SelectionKind, SelectionPoint, SelectionState,
+    PhaseStatus, RecentSessionInfo, RenderCacheBudget, ReviewRepliesWaiting, SUBAGENT_TAIL_CAP,
+    ScheduleEntry, ScheduleKind, ScrollbarDragState, SelectionKind, SelectionPoint, SelectionState,
     SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState, SubagentChildEntry,
     SubagentEntry, TodoItem, TodoStatus, ToolCallScope, UsageSnapshot, UsageSourceKind, UsageState,
     UsageWindow, WorkflowEntry, WorkflowStatus,
@@ -1712,25 +1712,23 @@ impl App {
     }
 
     /// Background sessions (everything but the active one) that need
-    /// the user: a prompt pending at the head of their queue, or a
-    /// turn that died. [`AttentionEntry`] rows sorted stalest-first
-    /// (oldest first, session id as the tiebreaker). Mirrors the
-    /// Projects-pane glyph predicates so the two surfaces never
-    /// disagree. Empty when nothing needs attention - the Inspector
-    /// NEEDS ATTENTION band hides on empty.
+    /// the user: a prompt pending at the head of their queue, a turn
+    /// that died, or unread worker answers on their review comments.
+    /// [`AttentionEntry`] rows sorted stalest-first (oldest first,
+    /// session id as the tiebreaker). The first two mirror the
+    /// Projects-pane glyph predicates so those surfaces never disagree.
+    /// Empty when nothing needs attention - the Inspector NEEDS
+    /// ATTENTION band hides on empty.
     pub fn needs_attention_sessions(&self) -> Vec<AttentionEntry> {
         let active = self.active_session_key.as_ref();
-        // Cheap first pass: which background sessions are waiting or
-        // failed? The common case (nothing waiting) returns here without
-        // touching the workspace - no `list_projects` clone, no live-
-        // workers lock - since this runs on every inspector render.
+        // Cheap first pass: which background sessions need the user? The
+        // common case (nothing waiting) returns here without touching the
+        // workspace - no `list_projects` clone, no live-workers lock -
+        // since this runs on every inspector render.
         let waiting: Vec<(&forge_workspace::SessionKey, &crate::app::session::UiSession)> = self
             .sessions
             .iter()
-            .filter(|(key, session)| {
-                active != Some(*key)
-                    && (!session.prompt_queue.is_empty() || session.failed_turn.is_some())
-            })
+            .filter(|(key, session)| active != Some(*key) && session_needs_attention(session))
             .collect();
         if waiting.is_empty() {
             return Vec::new();
@@ -1765,8 +1763,7 @@ impl App {
                     AttentionKind::Failed { error: failed.error, status: failed.status },
                     failed.failed_at,
                 )
-            } else {
-                let Some(prompt) = session.prompt_queue.front() else { continue };
+            } else if let Some(prompt) = session.prompt_queue.front() {
                 let kind = match &prompt.source {
                     crate::app::prompt::PromptSource::Permission { tool_name, .. } => {
                         AttentionKind::Permission { tool: tool_name.clone() }
@@ -1774,6 +1771,10 @@ impl App {
                     crate::app::prompt::PromptSource::Question { .. } => AttentionKind::Question,
                 };
                 (kind, prompt.enqueued_at)
+            } else if let Some(replies) = session.review_replies_waiting.as_ref() {
+                (AttentionKind::ReviewReplies { count: replies.count }, replies.since)
+            } else {
+                continue;
             };
             let (name, role) = if let Some((project_name, label)) = worker_index.get(key) {
                 (project_name.clone(), Some(label.clone()))
@@ -3608,6 +3609,17 @@ impl App {
     }
 }
 
+/// Whether a background session belongs in the NEEDS ATTENTION band.
+/// Three field reads and nothing else: this is
+/// [`App::needs_attention_sessions`]'s first pass, which runs on every
+/// inspector frame and must fall through without touching the
+/// workspace when nothing is waiting.
+fn session_needs_attention(session: &crate::app::session::UiSession) -> bool {
+    !session.prompt_queue.is_empty()
+        || session.failed_turn.is_some()
+        || session.review_replies_waiting.is_some()
+}
+
 /// Build the SUBAGENTS row's header label from a Task/Agent root
 /// tool call's `raw_input`. Combines `subagent_type` with the first
 /// non-empty line of `description` (or `prompt` as a sibling fallback)
@@ -4402,6 +4414,28 @@ mod tests {
         assert!(app.needs_attention_sessions().is_empty(), "no pending prompts -> no rows");
     }
 
+    /// The band's first pass runs on every inspector frame, so a settled
+    /// session must fall out of it on field reads alone - that is what
+    /// lets `needs_attention_sessions` return before it clones
+    /// `list_projects` or takes the live-workers lock.
+    #[test]
+    fn attention_first_pass_ignores_a_settled_session() {
+        let settled = crate::app::session::UiSession::new(
+            forge_workspace::SessionKey::from_session_id("quiet"),
+        );
+        assert!(!session_needs_attention(&settled), "nothing waiting -> not a band candidate");
+
+        let mut waiting = crate::app::session::UiSession::new(
+            forge_workspace::SessionKey::from_session_id("quiet"),
+        );
+        waiting.review_replies_waiting = Some(crate::app::ReviewRepliesWaiting {
+            branch: "feat".to_owned(),
+            count: 1,
+            since: std::time::SystemTime::UNIX_EPOCH,
+        });
+        assert!(session_needs_attention(&waiting), "unread worker answers are a candidate");
+    }
+
     #[test]
     fn needs_input_sessions_includes_background_and_excludes_active() {
         let mut app = App::test_default();
@@ -4569,6 +4603,76 @@ mod tests {
         assert!(
             app.needs_attention_sessions().is_empty(),
             "the session the user is looking at already shows its error in the chat",
+        );
+    }
+
+    /// Seed a background session holding `count` unread worker answers on
+    /// its review comments, waiting since `secs` after the epoch.
+    fn seed_review_replies_session(
+        app: &mut App,
+        id: &str,
+        secs: u64,
+        count: usize,
+    ) -> forge_workspace::SessionKey {
+        let key = forge_workspace::SessionKey::from_session_id(id);
+        let mut session = crate::app::session::UiSession::new(key.clone());
+        session.project = Some(format!("proj-{id}"));
+        session.review_replies_waiting = Some(crate::app::ReviewRepliesWaiting {
+            branch: "feat".to_owned(),
+            count,
+            since: std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs),
+        });
+        app.sessions.insert(key.clone(), session);
+        key
+    }
+
+    #[test]
+    fn needs_attention_sessions_includes_waiting_review_replies() {
+        let mut app = App::test_default();
+        let key = seed_review_replies_session(&mut app, "bg", 100, 2);
+
+        let entries = app.needs_attention_sessions();
+        let entry = entries.iter().find(|e| e.session_key == key).expect("review row present");
+        assert_eq!(entry.kind, crate::app::AttentionKind::ReviewReplies { count: 2 });
+        assert_eq!(
+            entry.enqueued_at,
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100),
+            "the row ages from when the replies landed",
+        );
+    }
+
+    /// The band is about work happening ELSEWHERE - the active session's
+    /// own waiting replies are the GIT header badge's job.
+    #[test]
+    fn needs_attention_sessions_excludes_active_sessions_review_replies() {
+        let mut app = App::test_default();
+        let active = seed_review_replies_session(&mut app, "active", 100, 3);
+        app.active_session_key = Some(active);
+        assert!(
+            app.needs_attention_sessions().is_empty(),
+            "the session the user is looking at gets the GIT badge instead",
+        );
+    }
+
+    /// Nothing is blocked on an unread reply, so a session that is also
+    /// waiting on the user shows that instead.
+    #[test]
+    fn needs_attention_sessions_prefers_a_pending_prompt_over_review_replies() {
+        let mut app = App::test_default();
+        let key = seed_attention_session(&mut app, "both", 100);
+        app.sessions.get_mut(&key).expect("seeded bucket").review_replies_waiting =
+            Some(crate::app::ReviewRepliesWaiting {
+                branch: "feat".to_owned(),
+                count: 4,
+                since: std::time::SystemTime::UNIX_EPOCH,
+            });
+
+        let entries = app.needs_attention_sessions();
+        assert_eq!(entries.len(), 1, "one row per session");
+        assert!(
+            matches!(entries[0].kind, crate::app::AttentionKind::Permission { .. }),
+            "the pending prompt outranks the unread replies: {:?}",
+            entries[0].kind,
         );
     }
 

@@ -1593,12 +1593,15 @@ mod tests {
 
         let mut notice = None;
         while let Ok(update) = update_rx.try_recv() {
-            if let SessionUpdate::ReviewActivityNotice { key, message } = update {
-                notice = Some((key, message));
+            if let SessionUpdate::ReviewActivityNotice { key, branch, waiting, message } = update {
+                notice = Some((key, branch, waiting, message));
             }
         }
-        let (key, message) = notice.expect("a ReviewActivityNotice emits on the turn's Result");
+        let (key, branch, waiting, message) =
+            notice.expect("a ReviewActivityNotice emits on the turn's Result");
         assert_eq!(key, reviewer, "the notice routes to the submit origin, not the worker");
+        assert_eq!(branch, "feat", "the notice names the branch it is about");
+        assert_eq!(waiting, 1, "the replied-to thread now awaits the reviewer");
         assert!(message.contains("review #1"), "the notice names the review: {message}");
         assert!(message.contains("1 replied"), "the tally counts the reply: {message}");
     }
