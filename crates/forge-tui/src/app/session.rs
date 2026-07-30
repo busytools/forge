@@ -450,6 +450,13 @@ pub struct UiSession {
     /// Inspector NEEDS ATTENTION row and the Projects-pane `✕`.
     pub failed_turn: Option<crate::app::FailedTurn>,
 
+    /// Worker answers on this session's reviews still owed a reviewer
+    /// turn. Drives the Inspector GIT header badge (active session) and
+    /// the NEEDS ATTENTION row (backgrounded). Persists until the
+    /// reviewer replies, resolves or reopens - not on merely opening
+    /// `/diff`.
+    pub review_replies_waiting: Option<crate::app::ReviewRepliesWaiting>,
+
     /// Classification of the most recent `api_retry` on the in-flight
     /// turn, so a turn error that follows exhausted retries can name
     /// what actually killed it. Cleared when a turn starts.
@@ -632,6 +639,7 @@ impl Default for UiSession {
             input: InputState::default(),
             prompt_queue: std::collections::VecDeque::new(),
             failed_turn: Option::default(),
+            review_replies_waiting: Option::default(),
             last_api_retry: Option::default(),
             auto_continue_due_at: Option::default(),
             auto_continue_attempts: 0,

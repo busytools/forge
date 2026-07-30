@@ -223,6 +223,39 @@ pub enum AttentionKind {
     Failed { error: forge_primitives::ApiRetryError, status: Option<u16> },
 }
 
+/// Worker answers on a session's review threads that are still owed a
+/// reviewer turn, parked on the session bucket so the Inspector GIT
+/// badge and the NEEDS ATTENTION band both read one field instead of
+/// querying the store per frame. Fed by
+/// [`forge_workspace::SessionUpdate::ReviewActivityNotice`] and
+/// recomputed authoritatively whenever `/diff` hydrates its threads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewRepliesWaiting {
+    /// The branch the count is about. The GIT badge suppresses itself
+    /// once the header describes a different branch, since `/diff`
+    /// would open on that one instead.
+    pub branch: String,
+    pub count: usize,
+    /// When the signal first appeared, so the band's wait-age is the
+    /// real one rather than the last recompute.
+    pub since: std::time::SystemTime,
+}
+
+impl ReviewRepliesWaiting {
+    /// Fold a fresh count for `branch` into the prior signal. Zero
+    /// clears it; a still-live count on the same branch keeps its
+    /// original `since` so a recompute can't reset the wait-age.
+    pub fn merge(prior: Option<&Self>, branch: &str, count: usize) -> Option<Self> {
+        if count == 0 {
+            return None;
+        }
+        let since = prior
+            .filter(|p| p.branch == branch)
+            .map_or_else(std::time::SystemTime::now, |p| p.since);
+        Some(Self { branch: branch.to_owned(), count, since })
+    }
+}
+
 /// A turn that ended in error, retained on the session bucket so the
 /// Inspector band and the Projects pane keep surfacing it until the
 /// user attends to the session or it runs another turn.
