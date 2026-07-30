@@ -507,21 +507,26 @@ pub fn group_leader_at(blocks: &[MessageBlock], block_idx: usize) -> Option<(Gro
 
 /// Sibling of [`group_leader_at`] for messaging groups. Returns the
 /// [`GroupId`] + segment-block-count when `block_idx` is the leading
-/// block of a `RenderUnit::MessagingGroup` segment in this message.
-/// `None` for non-leader blocks (so per-block click toggle wins).
+/// block of a `RenderUnit::MessagingGroup` segment in message
+/// `msg_idx`. `None` for non-leader blocks (so per-block click toggle
+/// wins).
+///
+/// Resolves against the session-walking partition - the same one the
+/// renderer dispatches over. The per-message partition applies the
+/// threshold of 2 within a single message, so a message holding one
+/// peer block of a longer cross-turn run yields no group there and the
+/// click finds nothing to cycle.
 pub fn messaging_group_leader_at(
-    blocks: &[MessageBlock],
+    messages: &[crate::app::ChatMessage],
+    msg_idx: usize,
     block_idx: usize,
 ) -> Option<(GroupId, usize)> {
-    let units = partition_blocks_into_render_units(blocks);
-    units.into_iter().find_map(|unit| match unit {
+    let units = partition_session_into_render_units(messages);
+    units.get(msg_idx)?.iter().find_map(|unit| match unit {
         RenderUnit::MessagingGroup { segments, group_leader_id } => {
             let segment = segments.first()?;
-            if segment.block_range.start == block_idx {
-                Some((group_leader_id, segment.block_range.len()))
-            } else {
-                None
-            }
+            (segment.block_range.start == block_idx)
+                .then(|| (group_leader_id.clone(), segment.block_range.len()))
         }
         _ => None,
     })

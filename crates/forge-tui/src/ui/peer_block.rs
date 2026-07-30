@@ -637,7 +637,7 @@ pub(crate) fn render_messaging_group_summary_line(
         ),
         Span::styled("@ ".to_owned(), Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD)),
         Span::styled(heading, Style::default().add_modifier(Modifier::BOLD)),
-        Span::styled("   ctrl+x to expand".to_owned(), dim),
+        Span::styled("   click or ctrl+x to expand".to_owned(), dim),
     ])]
 }
 
@@ -1171,5 +1171,31 @@ mod tests {
     fn detect_outbound_ignores_other_tools() {
         let tc = make_tc("Bash", serde_json::json!({ "command": "ls" }));
         assert!(detect_outbound(&tc).is_none());
+    }
+
+    /// The bundle summary cycles on click as well as ctrl+x, so it
+    /// advertises both - same affordance an individual peer card names.
+    #[test]
+    fn messaging_group_summary_advertises_click_and_ctrl_x() {
+        use crate::ui::message::grouping::{MessagingDirectionTargets, MessagingGroupSegment};
+
+        let segment = MessagingGroupSegment {
+            msg_idx: 0,
+            block_range: 0..1,
+            segment_count: 1,
+            segment_outbound_targets: MessagingDirectionTargets {
+                targets: vec!["steward".to_owned()],
+                overflow_n: 0,
+            },
+            segment_inbound_targets: MessagingDirectionTargets::default(),
+            segment_continues_above: true,
+            segment_continues_below: false,
+            aggregate_status: crate::agent::model::ToolCallStatus::Completed,
+            group_total_count: 2,
+        };
+        let rendered = render_lines_to_strings(&render_messaging_group_summary_line(&segment, '⠋'));
+        assert_eq!(rendered.len(), 1);
+        assert!(rendered[0].contains("2 messages · outbound to steward"), "got {rendered:?}");
+        assert!(rendered[0].ends_with("click or ctrl+x to expand"), "got {rendered:?}");
     }
 }

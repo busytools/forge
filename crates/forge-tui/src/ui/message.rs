@@ -3003,8 +3003,12 @@ mod tests {
             "user-turn segment must render the bundle summary; got {rendered:?}",
         );
         assert!(
-            !rendered.iter().any(|l| l.contains("click or ctrl+x to expand")),
+            !rendered.iter().any(|l| l.contains("Message steward")),
             "bundled inbound envelope must not also render its standalone peer card; got {rendered:?}",
+        );
+        assert!(
+            !rendered.iter().any(|l| l.contains("the window is lost")),
+            "the bundled envelope's body belongs behind the summary; got {rendered:?}",
         );
     }
 
