@@ -306,12 +306,13 @@ fn attention_header_line(width: u16, count: usize) -> Line<'static> {
     ])
 }
 
-/// One attention-band row: yellow `△` (pending prompt) or red `✕`
-/// (dead turn) + white-bold project name + DIM ` (role)` (workers
-/// only) + the DIM kind/tool/wait-age detail right-justified. The name
-/// truncates to fit; the detail is capped so a long tool name can't
-/// crowd the name out, and the row honours the 1-col right gutter every
-/// inspector section observes.
+/// One attention-band row: yellow `△` (pending prompt), red `✕` (dead
+/// turn) or `💬` in the addressed accent (unread worker answers) +
+/// white-bold project name + DIM ` (role)` (workers only) + the DIM
+/// kind/tool/wait-age detail right-justified. The name truncates to
+/// fit; the detail is capped so a long tool name can't crowd the name
+/// out, and the row honours the 1-col right gutter every inspector
+/// section observes.
 fn attention_row_line(
     width: u16,
     entry: &AttentionEntry,
@@ -320,14 +321,24 @@ fn attention_row_line(
     let inner = usize::from(width);
     let role_suffix = entry.role.as_deref().map(|role| format!(" ({role})")).unwrap_or_default();
     let role_width = role_suffix.chars().count();
+    let (glyph, glyph_color) = match entry.kind {
+        AttentionKind::Failed { .. } => ("\u{2715}", theme::STATUS_ERROR),
+        AttentionKind::ReviewReplies { .. } => ("\u{1F4AC}", theme::REVIEW_ADDRESSED),
+        AttentionKind::Permission { .. } | AttentionKind::Question => {
+            ("\u{25b3}", theme::STATUS_WARNING)
+        }
+    };
+    // `💬` is two cells wide where `△` / `✕` are one.
+    let glyph_chrome = if glyph == "\u{1F4AC}" { 3 } else { 2 };
     // Cap the detail so a long MCP tool name can't leave the name with
     // zero room: reserve both gutters + glyph/space + role + 2 cols.
-    let detail_cap = inner.saturating_sub(2 * usize::from(PANE_PAD) + 2 + role_width + 2).max(1);
+    let detail_cap =
+        inner.saturating_sub(2 * usize::from(PANE_PAD) + glyph_chrome + role_width + 2).max(1);
     let detail = truncate_or_pass(&attention_detail(entry, now), detail_cap);
     let detail_width = detail.chars().count();
 
     let name_chrome = usize::from(PANE_PAD)
-        + 2 // glyph + space
+        + glyph_chrome // glyph + space
         + role_width
         + 1 // min gap before the detail
         + detail_width
@@ -335,15 +346,12 @@ fn attention_row_line(
     let name_budget = row_text_budget(inner, name_chrome);
     let fitted_name = truncate_or_pass(&entry.name, name_budget);
 
-    let used =
-        2 * usize::from(PANE_PAD) + 2 + fitted_name.chars().count() + role_width + detail_width;
+    let used = 2 * usize::from(PANE_PAD)
+        + glyph_chrome
+        + fitted_name.chars().count()
+        + role_width
+        + detail_width;
     let pad = inner.saturating_sub(used).max(1);
-
-    let (glyph, glyph_color) = if matches!(entry.kind, AttentionKind::Failed { .. }) {
-        ("\u{2715}", theme::STATUS_ERROR)
-    } else {
-        ("\u{25b3}", theme::STATUS_WARNING)
-    };
     Line::from(vec![
         Span::raw(" ".repeat(usize::from(PANE_PAD))),
         Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
@@ -372,6 +380,9 @@ fn attention_detail(entry: &AttentionEntry, now: std::time::SystemTime) -> Strin
             let label = crate::app::events::api_retry::error_label(*error);
             let status = status.map_or_else(String::new, |code| format!(" HTTP {code}"));
             format!("failed \u{00B7} {label}{status} \u{00B7} {wait}")
+        }
+        AttentionKind::ReviewReplies { count } => {
+            format!("review replies \u{00B7} {count} \u{00B7} {wait}")
         }
     }
 }
@@ -4345,6 +4356,22 @@ mod tests {
     fn attention_band_absent_when_no_session_waits() {
         let app = App::test_default();
         assert!(build_attention_band(&app, 40).is_empty(), "no waiting session -> empty band");
+    }
+
+    #[test]
+    fn attention_band_renders_a_waiting_review_replies_row() {
+        let mut app = App::test_default();
+        let key = forge_workspace::SessionKey::from_session_id("reviewer");
+        let mut session = crate::app::session::UiSession::new(key.clone());
+        session.project = Some("forge".to_owned());
+        session.review_replies_waiting = crate::app::ReviewRepliesWaiting::merge(None, "feat", 2);
+        app.sessions.insert(key, session);
+
+        let text =
+            build_attention_band(&app, 60).iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains('\u{1F4AC}'), "the speech-balloon glyph marks the row: {text}");
+        assert!(text.contains("forge"), "project name in the row: {text}");
+        assert!(text.contains("review replies \u{00B7} 2"), "detail names the count: {text}");
     }
 
     #[test]

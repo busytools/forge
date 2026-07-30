@@ -208,7 +208,8 @@ impl ScheduleEntry {
 /// What a session needs attention for, in the Inspector NEEDS
 /// ATTENTION band. Prompt kinds derive from the front
 /// `PromptState.source`; `Failed` derives from
-/// [`crate::app::session::UiSession::failed_turn`].
+/// [`crate::app::session::UiSession::failed_turn`] and `ReviewReplies`
+/// from [`crate::app::session::UiSession::review_replies_waiting`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttentionKind {
     /// A `can_use_tool` permission request; `tool` is the raw tool
@@ -221,6 +222,11 @@ pub enum AttentionKind {
     /// retries. Renders red rather than yellow: nothing is being asked
     /// of the user, the turn is simply gone.
     Failed { error: forge_primitives::ApiRetryError, status: Option<u16> },
+    /// A worker answered review comments this session filed and nobody
+    /// has come back to them. Ranks below the other two - nothing is
+    /// blocked on it - and covers the sessions the GIT header badge
+    /// can't, since the band excludes the active one.
+    ReviewReplies { count: usize },
 }
 
 /// Worker answers on a session's review threads that are still owed a
