@@ -51,11 +51,13 @@ pub(crate) trait GotifyFacade: Send + Sync {
         min_priority: Option<u8>,
     ) -> Result<Uuid, GotifySubscribeError>;
 
-    /// The subscriptions registered for the caller's project.
+    /// The caller's own subscriptions in its project - a lead's, or one
+    /// worker's, never another owner's.
     fn list(&self, caller: &SessionKey) -> Vec<GotifySubscription>;
 
-    /// Remove a subscription by id within the caller's project. `true`
-    /// when an entry was removed.
+    /// Remove one of the caller's OWN subscriptions by id within its
+    /// project. `true` when an entry was removed; `false` both when no
+    /// such id exists and when it belongs to another owner.
     fn unsubscribe(&self, caller: &SessionKey, id: Uuid) -> bool;
 
     /// The application NAMEs on the configured server (`GET /application`)
@@ -125,13 +127,23 @@ impl GotifyFacade for ProdGotifyFacade {
     fn list(&self, caller: &SessionKey) -> Vec<GotifySubscription> {
         let Some(ws) = self.workspace.upgrade() else { return Vec::new() };
         let Some(cx) = caller_context(&ws, caller) else { return Vec::new() };
+        // Symmetric with `cron__list`: every caller sees only its own
+        // subscriptions - a lead (`worker_label == None`) the lead ones,
+        // a worker its own.
         ws.gotify_subscriptions_for_project(&cx.project_name)
+            .into_iter()
+            .filter(|s| s.team_role == cx.worker_label)
+            .collect()
     }
 
     fn unsubscribe(&self, caller: &SessionKey, id: Uuid) -> bool {
         let Some(ws) = self.workspace.upgrade() else { return false };
         let Some(cx) = caller_context(&ws, caller) else { return false };
-        let removed = ws.remove_gotify_subscription(&cx.project_name, id);
+        let removed = ws.remove_gotify_subscription_owned_by(
+            &cx.project_name,
+            id,
+            cx.worker_label.as_deref(),
+        );
         ws.stop_gotify_subsystem_if_idle();
         removed
     }
@@ -280,6 +292,124 @@ impl GotifyFacade for MockGotifyFacade {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::WorkerEntry;
+    use crate::target::ProjectKey;
+    use forge_primitives::WorkerLiveness;
+
+    fn worker_entry(label: &str, session_id: &str) -> WorkerEntry {
+        WorkerEntry {
+            label: label.to_owned(),
+            charter: "watch".to_owned(),
+            session_key: SessionKey::from_session_id(session_id),
+            status: WorkerLiveness::Running,
+            spawned_at: SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead-uuid".to_owned(),
+            needs_tag: false,
+            is_git_repo_at_spawn: false,
+            diagnostic: None,
+            kick: None,
+        }
+    }
+
+    /// A project with a live lead plus two live workers, mirroring the
+    /// cron facade's fixture so the two families are tested the same way.
+    fn fixture() -> (Arc<Workspace>, Arc<dyn GotifyFacade>, ProjectKey, SessionKey, SessionKey) {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project_with_static_workers("myproj", "/tmp/gotify-scope", &[]);
+        let key =
+            ws.list_projects().into_iter().find(|v| v.name == "myproj").expect("seeded view").key;
+        ws.record_connected_session("/tmp/gotify-scope", "lead-uuid", None);
+        ws.insert_live_worker(&key, worker_entry("reviewer", "worker-uuid"));
+        ws.insert_live_worker(&key, worker_entry("analyst", "sibling-uuid"));
+        let facade = ProdGotifyFacade::from_arc(&ws);
+        (
+            ws,
+            facade,
+            key,
+            SessionKey::from_session_id("lead-uuid"),
+            SessionKey::from_session_id("worker-uuid"),
+        )
+    }
+
+    fn seed_sub(ws: &Workspace, team_role: Option<&str>) -> Uuid {
+        let sub = GotifySubscription {
+            id: Uuid::new_v4(),
+            project: "myproj".to_owned(),
+            team_role: team_role.map(str::to_owned),
+            applications: vec!["alerts".to_owned()],
+            min_priority: None,
+            created_at: SystemTime::UNIX_EPOCH,
+        };
+        let id = sub.id;
+        ws.add_gotify_subscription(sub, true);
+        id
+    }
+
+    #[test]
+    fn list_is_scoped_to_the_callers_own_subscriptions() {
+        let (ws, facade, _key, lead, worker) = fixture();
+        let lead_id = seed_sub(&ws, None);
+        let worker_id = seed_sub(&ws, Some("reviewer"));
+        seed_sub(&ws, Some("analyst"));
+
+        let worker_list = facade.list(&worker);
+        assert_eq!(
+            worker_list.iter().map(|s| s.id).collect::<Vec<_>>(),
+            vec![worker_id],
+            "a worker sees neither the lead's subscription nor a sibling's",
+        );
+        let lead_list = facade.list(&lead);
+        assert_eq!(
+            lead_list.iter().map(|s| s.id).collect::<Vec<_>>(),
+            vec![lead_id],
+            "a lead sees only its own subscriptions",
+        );
+    }
+
+    #[test]
+    fn unsubscribe_only_removes_the_callers_own_subscription() {
+        let (ws, facade, _key, lead, worker) = fixture();
+        let lead_id = seed_sub(&ws, None);
+        let worker_id = seed_sub(&ws, Some("reviewer"));
+        let sibling_id = seed_sub(&ws, Some("analyst"));
+
+        assert!(!facade.unsubscribe(&worker, lead_id), "a worker cannot unsubscribe the lead's");
+        assert!(
+            !facade.unsubscribe(&worker, sibling_id),
+            "a worker cannot unsubscribe a sibling worker's",
+        );
+        assert!(!facade.unsubscribe(&lead, worker_id), "a lead cannot unsubscribe a worker's");
+        assert_eq!(
+            ws.gotify_subscriptions_for_project("myproj").len(),
+            3,
+            "a refused unsubscribe removes nothing",
+        );
+
+        assert!(facade.unsubscribe(&worker, worker_id), "a worker unsubscribes its own");
+        assert!(facade.unsubscribe(&lead, lead_id), "a lead unsubscribes its own");
+        assert_eq!(
+            ws.gotify_subscriptions_for_project("myproj").iter().map(|s| s.id).collect::<Vec<_>>(),
+            vec![sibling_id],
+            "only the untouched sibling subscription remains",
+        );
+    }
+
+    /// Ownership is enforced at the MCP facade, NOT in the workspace
+    /// teardown method, so a despawn still clears a departing worker's
+    /// subscriptions with no MCP caller involved.
+    #[test]
+    fn worker_teardown_clears_subscriptions_without_going_through_the_facade() {
+        let (ws, _facade, key, _lead, _worker) = fixture();
+        let lead_id = seed_sub(&ws, None);
+        let worker_id = seed_sub(&ws, Some("reviewer"));
+
+        ws.remove_gotify_subscriptions_for_worker(&key, "reviewer");
+
+        let remaining: Vec<Uuid> =
+            ws.gotify_subscriptions_for_project("myproj").iter().map(|s| s.id).collect();
+        assert!(!remaining.contains(&worker_id), "teardown removed the departing worker's");
+        assert!(remaining.contains(&lead_id), "the lead's subscription survives the despawn");
+    }
 
     #[test]
     fn dynamic_worker_is_durable_when_persisted() {

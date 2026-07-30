@@ -4,10 +4,11 @@
 //! A forge session subscribes the configured Gotify server; matching
 //! notifications deliver into the session as a user-turn, spawning it if
 //! asleep. `gotify__subscribe` / `gotify__list` / `gotify__unsubscribe`
-//! manage the caller's project subscriptions; `gotify__apps` /
-//! `gotify__recent` are read-only server queries (application names,
-//! recent-notification catch-up). All are ANY-CALLER - mirroring the cron
-//! family, not the lead-only peers tools.
+//! manage the caller's OWN subscriptions - a lead the lead's, a worker
+//! its own, neither the other's; `gotify__apps` / `gotify__recent` are
+//! read-only server queries (application names, recent-notification
+//! catch-up). All are ANY-CALLER - mirroring the cron family, not the
+//! lead-only peers tools, down to the owner scoping on list + remove.
 //!
 //! - [`facade`] - the `GotifyFacade` seam (prod over `Weak<Workspace>` +
 //!   a mock for tool tests).
@@ -48,11 +49,14 @@ fn tool_error(text: String) -> ToolOutput {
     ToolOutput { blocks: vec![ToolOutputBlock { text }], is_error: true }
 }
 
+/// Readable JSON for one subscription (the tool-output shape the LLM
+/// sees). No `team_role`: `gotify__list` only ever returns the caller's
+/// own, so the field could carry just one value, and `cron_to_json`
+/// omits it for the same reason.
 fn sub_to_json(sub: &GotifySubscription) -> serde_json::Value {
     serde_json::json!({
         "id": sub.id.to_string(),
         "project": sub.project,
-        "team_role": sub.team_role,
         "applications": sub.applications,
         "min_priority": sub.min_priority,
     })
@@ -179,10 +183,10 @@ impl Tool for List {
 
     #[allow(clippy::unnecessary_literal_bound)]
     fn description(&self) -> &str {
-        "List YOUR project's active Gotify subscriptions. Returns a JSON array of {id, project, \
-         team_role, applications, min_priority}. Use an id with gotify__unsubscribe. An empty \
-         array means no subscriptions. Takes no arguments. Any session in the project may call \
-         this."
+        "List YOUR OWN active Gotify subscriptions (a lead sees the lead's, a worker its own). \
+         Returns a JSON array of {id, project, applications, min_priority}. Use an id with \
+         gotify__unsubscribe. An empty array means no subscriptions. Takes no arguments. Any \
+         session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -226,8 +230,9 @@ impl Tool for Unsubscribe {
 
     #[allow(clippy::unnecessary_literal_bound)]
     fn description(&self) -> &str {
-        "Remove a Gotify subscription in YOUR project by id (from gotify__list / \
-         gotify__subscribe). Any session in the project may call this."
+        "Remove one of YOUR OWN Gotify subscriptions by id (from gotify__list / \
+         gotify__subscribe), scoped to what you subscribed - a caller manages only what it \
+         created. Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -441,7 +446,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_returns_project_subs() {
+    async fn list_returns_the_callers_own_subs() {
         let a = Uuid::from_u128(0xa);
         let b = Uuid::from_u128(0xb);
         let mock = Arc::new(MockGotifyFacade::new());
@@ -469,15 +474,19 @@ mod tests {
         assert_eq!(mock.unsubscribe_calls.lock()[0].1, id);
     }
 
+    /// The facade reports `false` both for an unknown id and for one
+    /// owned by another session, so reaching for someone else's
+    /// subscription gets exactly what a bad id gets - the same treatment
+    /// `cron__delete` gives.
     #[tokio::test]
-    async fn unsubscribe_missing_id_is_error() {
+    async fn unsubscribe_unowned_or_missing_id_is_error() {
         let mock = Arc::new(MockGotifyFacade::new());
         *mock.unsubscribe_result.lock() = Some(false);
         let tool = Unsubscribe { facade: mock.clone(), caller_key: resolver() };
 
         let out =
             tool.call(input(serde_json::json!({ "id": Uuid::from_u128(0x9).to_string() }))).await;
-        assert!(out.is_error, "removing an unknown id signals an error to the LLM");
+        assert!(out.is_error, "an unremovable id signals an error to the LLM");
     }
 
     #[tokio::test]
