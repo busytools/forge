@@ -63,7 +63,7 @@ const MIN_BURST_LEN: usize = 3;
 // ---------------------------------------------------------------------------
 
 /// Action the caller should take after feeding a character to the detector.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CharAction {
     /// Character was consumed into the burst buffer. Do not insert it.
     Consumed,

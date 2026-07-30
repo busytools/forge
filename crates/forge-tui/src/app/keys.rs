@@ -1,5 +1,5 @@
 use super::dialog::DialogState;
-use super::paste_burst::CharAction;
+use super::input::TypedChar;
 use super::{
     App, AppStatus, FocusOwner, FocusTarget, HelpView, InvalidationLevel, ModeInfo, ModeState,
 };
@@ -418,7 +418,11 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
     changed
 }
 
-fn should_ignore_key_during_paste(app: &mut App, key: KeyEvent) -> bool {
+/// Whether a key must be swallowed because a paste payload is still
+/// queued for this drain cycle. A chunked bracketed paste can be
+/// followed by a trailing newline, which would otherwise read as a
+/// submit (chat) or a comment save (/diff) instead of pasted text.
+pub(super) fn should_ignore_key_during_paste(app: &mut App, key: KeyEvent) -> bool {
     if app.pending_submit().is_some() && is_editing_like_key(key) {
         *app.pending_submit_mut() = None;
     }
@@ -824,37 +828,10 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
         return false;
     }
 
-    let now = Instant::now();
-    match app.paste_burst.on_char(c, now) {
-        CharAction::Consumed => {
-            // Character absorbed into burst buffer. Don't insert.
-            return false;
-        }
-        CharAction::RetroCapture(delete_count) => {
-            // Burst confirmation retro-captured already-inserted leading chars.
-            for _ in 0..delete_count {
-                let _ = app.input_mut().textarea_delete_char_before();
-            }
-            tracing::debug!(
-                target: crate::logging::targets::APP_PASTE,
-                event_name = "paste_retro_capture_applied",
-                message = "retro-captured leaked characters from a confirmed paste burst",
-                outcome = "success",
-                delete_count,
-            );
-            return true;
-        }
-        CharAction::Passthrough(ch) => {
-            // Normal typing or a previously-held char released.
-            // If `ch == c`, single normal insert. Otherwise the detector
-            // emitted a held char; insert it first, then the current char.
-            if ch == c {
-                let _ = app.input_mut().textarea_insert_char(c);
-            } else {
-                let _ = app.input_mut().textarea_insert_char(ch);
-                let _ = app.input_mut().textarea_insert_char(c);
-            }
-        }
+    match app.type_char(c, Instant::now()) {
+        TypedChar::Buffered => return false,
+        TypedChar::RetroCaptured => return true,
+        TypedChar::Inserted => {}
     }
 
     if c == '?' && app.input().text().trim() == "?" {
@@ -1174,6 +1151,7 @@ pub(super) fn toggle_inspector_pane(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::paste_burst::CharAction;
     use crate::app::{
         ChatMessage, MessageBlock, MessageRole, SelectionKind, SelectionPoint, SelectionState,
         TextBlock,

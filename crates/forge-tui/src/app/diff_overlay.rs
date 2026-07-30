@@ -21,6 +21,7 @@
 use std::path::PathBuf;
 use std::sync::mpsc as std_mpsc;
 
+use super::input::InputState;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use forge_primitives::git_diff::RepoGate;
 use forge_primitives::review::{
@@ -31,7 +32,7 @@ use forge_workspace::env::git_diff::hunks::{
     CommitMeta, DiffLine, DiffLineKind, FileHunks, FileStatus, Hunk,
 };
 use forge_workspace::env::git_diff::resolver::{self, AnchorResolution, CONTEXT_RADIUS};
-use tui_textarea::TextArea;
+use std::time::Instant;
 
 use super::App;
 use super::view::{ActiveView, set_active_view};
@@ -344,7 +345,7 @@ pub enum BodyRowKey {
     /// routes to whichever span it lands in, and a click on the padding or
     /// an inapplicable (dim) button no-ops.
     CommentButton { key: LineKey, resolve: Option<(u16, u16)>, reopen: Option<(u16, u16)> },
-    /// Inline TextArea row for the currently-open comment editor.
+    /// Inline editor row for the currently-open comment editor.
     /// Multiple consecutive rows when the comment spans more than
     /// one visual line.
     InputRow(LineKey),
@@ -402,8 +403,9 @@ pub struct HunkComment {
 }
 
 /// Currently-active comment input. Mounts inline below the clicked
-/// line. The editor is `tui_textarea::TextArea` so paste / cursor /
-/// multi-line work without re-implementing input plumbing.
+/// line. The editor is the same [`InputState`] the chat draft uses, so
+/// clipboard, bracketed paste, dictation-burst coalescing and paste
+/// blocks all behave identically here; only the submit key differs.
 ///
 /// `prior_comment` carries the saved comment when the editor was
 /// opened by re-clicking an existing 💬 chip. On Esc-cancel, the
@@ -419,7 +421,7 @@ pub struct HunkComment {
 #[derive(Debug, Clone)]
 pub struct ActiveCommentInput {
     pub key: LineKey,
-    pub editor: TextArea<'static>,
+    pub editor: InputState,
     pub prior_comment: Option<HunkComment>,
     pub edit_turn: Option<usize>,
 }
@@ -429,7 +431,7 @@ pub struct ActiveCommentInput {
 /// review on submit; `editor` holds the optional overview cover note.
 #[derive(Debug, Clone)]
 pub struct FinishReviewState {
-    pub editor: TextArea<'static>,
+    pub editor: InputState,
 }
 
 /// What a completed scan event carries beyond its files: either the
@@ -1004,7 +1006,7 @@ pub struct DiffOverlayState {
     /// separator from the body hit-test path.
     pub pane_origin_col: u16,
     /// Width of the right pane (in columns) at last render. Used by
-    /// the renderer to wrap the TextArea and by the click handler
+    /// the renderer to wrap the editor and by the click handler
     /// for column bound checks.
     pub pane_width: u16,
     /// Left screen column of the diff content (rail or body) inside the
@@ -2001,7 +2003,7 @@ fn hydrate_threads(app: &mut App) {
 /// - Editor open:
 ///   - `Esc` cancels the editor and returns focus to the diff.
 ///   - `Enter` (plain, no modifier) saves the edit.
-///   - All other keys flow into the TextArea (typing, cursor
+///   - All other keys flow into the editor (typing, cursor
 ///     movement, paste-via-bracket, undo/redo, etc.).
 /// - No editor open:
 ///   - `Esc` closes the overlay; a submit seals this session's authored
@@ -2010,6 +2012,12 @@ fn hydrate_threads(app: &mut App) {
 ///     through `input_submit::dispatch_review_nudge` so the user sees the
 ///     bubble appear immediately.
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
+    // A paste queued earlier in this drain cycle owns any editing-like
+    // key that follows it - without this a chunked paste's trailing
+    // newline saves the comment instead of landing in the text.
+    if app.has_focused_text_input() && super::keys::should_ignore_key_during_paste(app, key) {
+        return;
+    }
     // Finish-review modal captures keys while open: type the overview,
     // Ctrl+Enter submits, Esc dismisses back to the diff.
     if app.diff_overlay.as_ref().is_some_and(|o| o.finish_review.is_some()) {
@@ -2025,18 +2033,18 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     let has_input = app.diff_overlay.as_ref().is_some_and(|o| o.active_input.is_some());
     if has_input {
         match key.code {
-            KeyCode::Esc => cancel_active_input(app),
+            KeyCode::Esc => {
+                app.paste_burst.on_non_char_key(Instant::now());
+                cancel_active_input(app);
+            }
+            // Enter is only a save when it is really a keypress. Mid-burst
+            // - or in the window right after one - it belongs to the
+            // dictated / pasted payload, so it goes to the buffer instead.
+            KeyCode::Enter if app.paste_burst.on_enter(Instant::now()) => {}
             KeyCode::Enter if !key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) => {
                 save_active_input(app);
             }
-            _ => {
-                if let Some(overlay) = app.diff_overlay.as_mut()
-                    && let Some(input) = overlay.active_input.as_mut()
-                {
-                    input.editor.input(key);
-                    app.needs_redraw = true;
-                }
-            }
+            _ => route_key_into_review_editor(app, key),
         }
         return;
     }
@@ -2071,6 +2079,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
 fn handle_finish_review_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => {
+            app.paste_burst.on_non_char_key(Instant::now());
             if let Some(o) = app.diff_overlay.as_mut() {
                 o.finish_review = None;
                 app.needs_redraw = true;
@@ -2079,15 +2088,28 @@ fn handle_finish_review_key(app: &mut App, key: KeyEvent) {
         KeyCode::Enter if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
             submit_finish_review(app);
         }
-        _ => {
-            if let Some(o) = app.diff_overlay.as_mut()
-                && let Some(finish) = o.finish_review.as_mut()
-            {
-                finish.editor.input(key);
-                app.needs_redraw = true;
-            }
+        _ => route_key_into_review_editor(app, key),
+    }
+}
+
+/// Route a key the review editors don't claim for their own semantics
+/// into whichever editor has focus. Printable characters go through the
+/// shared paste-burst detector so a dictation run coalesces into one
+/// payload; everything else is ordinary `TextArea` editing.
+fn route_key_into_review_editor(app: &mut App, key: KeyEvent) {
+    let printable = match (key.code, key.modifiers) {
+        (KeyCode::Char(c), m) if super::keys::is_printable_text_modifiers(m) => Some(c),
+        _ => None,
+    };
+    if let Some(c) = printable {
+        let _ = app.type_char(c, Instant::now());
+    } else {
+        app.paste_burst.on_non_char_key(Instant::now());
+        if let Some(input) = app.focused_input_mut() {
+            let _ = input.handle_key(key);
         }
     }
+    app.needs_redraw = true;
 }
 
 /// Parse an rfc3339 timestamp into a `SystemTime`, or `None` when it is
@@ -2496,34 +2518,27 @@ fn scroll_doc_page(app: &mut App, down: bool) {
     }
 }
 
-/// Route bracketed paste into the active comment editor. Returns
-/// `true` when the paste was consumed (editor present), `false`
-/// otherwise so the caller can fall through. Plain pastes inside
-/// the diff overlay outside a comment editor are dropped - there's
-/// nothing for them to land on - but a DEBUG log fires so a user
+/// Queue bracketed paste for whichever review editor has focus - the
+/// inline comment editor or the Finish-review overview. Returns `true`
+/// when the paste was accepted. Pastes with no editor open are dropped -
+/// there's nothing for them to land on - but a DEBUG log fires so a user
 /// reporting "my paste disappeared" can be triaged from logs.
+///
+/// The payload goes through the same queue the chat draft uses, so a
+/// large paste collapses to a `[Pasted Text N]` block here too instead
+/// of unrolling hundreds of rows into the comment box.
 pub(crate) fn handle_paste(app: &mut App, text: &str) -> bool {
-    let Some(overlay) = app.diff_overlay.as_mut() else {
-        tracing::debug!(
-            target: crate::logging::targets::APP_SESSION,
-            event_name = "diff_overlay_paste_dropped_no_overlay",
-            message = "paste in Diff view without overlay state - dropped",
-            outcome = "dropped",
-            paste_chars = text.chars().count(),
-        );
-        return false;
-    };
-    let Some(input) = overlay.active_input.as_mut() else {
+    if !app.has_focused_text_input() {
         tracing::debug!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "diff_overlay_paste_dropped_no_editor",
-            message = "paste in Diff view without an open comment editor - dropped",
+            message = "paste in Diff view without an open review editor - dropped",
             outcome = "dropped",
             paste_chars = text.chars().count(),
         );
         return false;
-    };
-    input.editor.insert_str(text);
+    }
+    app.queue_paste_text(text);
     app.needs_redraw = true;
     true
 }
@@ -2545,7 +2560,7 @@ pub(crate) fn handle_paste(app: &mut App, text: &str) -> bool {
 /// regardless.
 fn close_active_input_preserving_prior(overlay: &mut DiffOverlayState) -> usize {
     let Some(input) = overlay.active_input.take() else { return 0 };
-    let current_text = input.editor.lines().join("\n");
+    let current_text = input.editor.text();
     // Two abandonment shapes:
     // - Fresh draft (`prior_comment = None`): every char is lost
     //   on dismissal.
@@ -2613,7 +2628,7 @@ fn save_active_input(app: &mut App) {
     let Some(overlay) = app.diff_overlay.as_mut() else { return };
     let branch = overlay.branch.clone();
     let Some(input) = overlay.active_input.take() else { return };
-    let text = input.editor.lines().join("\n");
+    let text = input.editor.text();
     if text.trim().is_empty() {
         let edit_turn = input.edit_turn;
         if let Some(mut prior) = input.prior_comment {
@@ -3219,7 +3234,7 @@ fn open_input_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffe
     // Close any existing editor (different line) before opening the
     // new one - preserves its prior_comment if it was a reopen.
     close_active_input_preserving_prior(overlay);
-    let editor = TextArea::default();
+    let editor = InputState::new();
     overlay.active_input =
         Some(ActiveCommentInput { key, editor, prior_comment: None, edit_turn: None });
     MouseEffect { redraw: true, thread_action: None }
@@ -3246,9 +3261,9 @@ fn reopen_comment_for_turn(
     // prior_comment survives (without this, A's prior would be
     // silently dropped when B's reopen runs).
     close_active_input_preserving_prior(overlay);
-    let mut editor = TextArea::default();
+    let mut editor = InputState::new();
     // Seed the editor with the targeted turn's text (rewrite); a reply
-    // starts empty. TextArea::insert_str respects newlines so a saved
+    // starts empty. `insert_str` respects newlines so a saved
     // turn's multi-line shape is preserved.
     if let Some(idx) = edit_turn
         && let Some(turn) = comment.thread.comments.get(idx)
@@ -3294,7 +3309,7 @@ pub(super) fn close_with_submit(app: &mut App) {
     });
     if would_file {
         if let Some(o) = app.diff_overlay.as_mut() {
-            o.finish_review = Some(FinishReviewState { editor: TextArea::default() });
+            o.finish_review = Some(FinishReviewState { editor: InputState::new() });
             app.needs_redraw = true;
         }
         return;
@@ -3306,11 +3321,8 @@ pub(super) fn close_with_submit(app: &mut App) {
 /// into a fresh numbered review (with the optional overview), then nudge
 /// the agent to address it via the review MCP and close.
 pub(super) fn submit_finish_review(app: &mut App) {
-    let overview = app
-        .diff_overlay
-        .as_ref()
-        .and_then(|o| o.finish_review.as_ref())
-        .map(|f| f.editor.lines().join("\n"));
+    let overview =
+        app.diff_overlay.as_ref().and_then(|o| o.finish_review.as_ref()).map(|f| f.editor.text());
     let overview = overview.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
     let seal_ids: Vec<String> = app.diff_overlay.as_ref().map_or_else(Vec::new, |o| {
         o.comments.iter().filter(|c| c.authored_this_session).map(|c| c.thread.id.clone()).collect()
@@ -3417,6 +3429,7 @@ fn finalize_review_close(app: &mut App, overview: Option<&str>, seal_ids: &[Stri
 mod tests {
     use super::*;
     use forge_workspace::env::git_diff::hunks::FileStatus;
+    use std::time::Duration;
 
     fn sample_state() -> DiffOverlayState {
         let mut state = DiffOverlayState::new(
@@ -4232,7 +4245,7 @@ mod tests {
             authored_this_session: true,
             persisted: false,
         };
-        let mut editor = TextArea::default();
+        let mut editor = InputState::new();
         editor.insert_str("original text with user-typed edits");
         state.active_input = Some(ActiveCommentInput {
             key,
@@ -4264,7 +4277,7 @@ mod tests {
             authored_this_session: true,
             persisted: false,
         };
-        let mut editor = TextArea::default();
+        let mut editor = InputState::new();
         editor.insert_str("exactly this");
         state.active_input = Some(ActiveCommentInput {
             key,
@@ -4283,7 +4296,7 @@ mod tests {
         // helper-using paths surfaces the abandoned count.
         let mut state = sample_state();
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
-        let mut editor = TextArea::default();
+        let mut editor = InputState::new();
         editor.insert_str("draft typed by user");
         state.active_input =
             Some(ActiveCommentInput { key, editor, prior_comment: None, edit_turn: None });
@@ -4301,7 +4314,7 @@ mod tests {
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
         state.active_input = Some(ActiveCommentInput {
             key,
-            editor: TextArea::default(),
+            editor: InputState::new(),
             prior_comment: None,
             edit_turn: None,
         });
@@ -4310,6 +4323,80 @@ mod tests {
         let after = app.diff_overlay.as_ref().expect("overlay still set");
         assert!(after.active_input.is_none(), "editor closed");
         assert!(after.comments.is_empty(), "no blank chip created");
+    }
+
+    /// Diff view with a comment editor opened the way a line click does,
+    /// anchored on a real diff line so a save can resolve its anchor.
+    fn app_with_comment_editor() -> App {
+        let mut app = App::test_default();
+        let mut state = DiffOverlayState::new(
+            PathBuf::from("/tmp/repo"),
+            "main".to_owned(),
+            vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])],
+        );
+        let _ = open_input_for_key(&mut state, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 });
+        app.diff_overlay = Some(state);
+        crate::app::view::set_active_view(&mut app, ActiveView::Diff);
+        app
+    }
+
+    /// Put the burst detector into the state mid-dictation produces:
+    /// three characters at machine speed.
+    fn start_dictation_burst(app: &mut App, base: std::time::Instant) {
+        for (offset, ch) in [(0_u64, 'f'), (2, 'i'), (4, 'x')] {
+            let _ = app.paste_burst.on_char(ch, base + Duration::from_millis(offset));
+        }
+        assert!(app.paste_burst.is_buffering(), "three machine-speed chars form a burst");
+    }
+
+    /// SuperWhisper dictation arrives as individual keystrokes including
+    /// Enter for sentence breaks. An Enter mid-burst used to hit
+    /// `save_active_input`, closing the editor so the REST of the dictated
+    /// sentence landed on the diff view's single-letter shortcuts - `t`
+    /// toggling the view mode, `j` opening the jump menu, and so on.
+    #[test]
+    fn enter_during_a_dictation_burst_does_not_save_the_comment() {
+        let mut app = app_with_comment_editor();
+        start_dictation_burst(&mut app, Instant::now());
+
+        handle_key(&mut app, KeyEvent::from(KeyCode::Enter));
+
+        let after = overlay(&app);
+        assert!(after.active_input.is_some(), "the editor must stay open mid-burst");
+        assert!(after.comments.is_empty(), "nothing is saved mid-burst");
+    }
+
+    /// The sister case: with no burst in flight, Enter still means save.
+    /// This is the per-site semantic that must NOT be shared away.
+    #[test]
+    fn plain_enter_still_saves_the_comment() {
+        let mut app = app_with_comment_editor();
+        if let Some(input) = app.diff_overlay.as_mut().and_then(|o| o.active_input.as_mut()) {
+            input.editor.insert_str("a real comment");
+        }
+
+        handle_key(&mut app, KeyEvent::from(KeyCode::Enter));
+
+        let after = overlay(&app);
+        assert!(after.active_input.is_none(), "plain Enter closes the editor");
+        assert_eq!(after.comments.len(), 1, "plain Enter saves the comment");
+    }
+
+    /// Typed characters have to reach the editor through the burst
+    /// detector, so a dictated run coalesces instead of arriving as
+    /// individual keystrokes.
+    #[test]
+    fn typed_characters_feed_the_burst_detector() {
+        let mut app = app_with_comment_editor();
+
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('a')));
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('b')));
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('c')));
+
+        assert!(
+            app.paste_burst.is_buffering(),
+            "three characters at test speed must register as a burst, not three inserts"
+        );
     }
 
     #[test]
@@ -4331,7 +4418,7 @@ mod tests {
         };
         state.active_input = Some(ActiveCommentInput {
             key,
-            editor: TextArea::default(), // empty editor
+            editor: InputState::new(), // empty editor
             prior_comment: Some(prior),
             edit_turn: Some(0),
         });
@@ -4368,7 +4455,7 @@ mod tests {
         let mut overlay =
             DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), Vec::new());
         overlay.branch = Some("feat".to_owned());
-        overlay.finish_review = Some(FinishReviewState { editor: TextArea::default() });
+        overlay.finish_review = Some(FinishReviewState { editor: InputState::new() });
         let mut thread = stock_thread();
         thread.id = "fresh".to_owned();
         overlay.comments.push(HunkComment {
@@ -4410,7 +4497,7 @@ mod tests {
         let mut overlay =
             DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), Vec::new());
         // No branch set -> detached HEAD.
-        overlay.finish_review = Some(FinishReviewState { editor: TextArea::default() });
+        overlay.finish_review = Some(FinishReviewState { editor: InputState::new() });
         let mut thread = stock_thread();
         thread.id = "fresh".to_owned();
         overlay.comments.push(HunkComment {
@@ -4458,7 +4545,7 @@ mod tests {
             authored_this_session: true,
             persisted: false,
         };
-        let mut editor = TextArea::default();
+        let mut editor = InputState::new();
         editor.insert_str("important review note");
         // Editor open as a chip reopen - prior_comment Some, no
         // unsubmitted comments in overlay.comments yet.
@@ -5193,7 +5280,7 @@ mod tests {
         state.scope = DiffScope::Commit(0);
         state.commit_cache = vec![Some(CachedScan { files: vec![file], scanner_ok: true })];
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
-        let mut editor = TextArea::default();
+        let mut editor = InputState::new();
         editor.insert_str("note");
         state.active_input =
             Some(ActiveCommentInput { key, editor, prior_comment: None, edit_turn: None });
@@ -5224,7 +5311,7 @@ mod tests {
         let mut state = DiffOverlayState::new(PathBuf::from("/tmp"), "HEAD".to_owned(), vec![file]);
         // Whole-diff-only mode: no commits, scope stays WholeDiff.
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
-        let mut editor = TextArea::default();
+        let mut editor = InputState::new();
         editor.insert_str("note");
         state.active_input =
             Some(ActiveCommentInput { key, editor, prior_comment: None, edit_turn: None });
@@ -5570,7 +5657,7 @@ mod tests {
     }
 
     fn with_editor(overlay: &mut DiffOverlayState, key: LineKey, text: &str) {
-        let mut editor = TextArea::default();
+        let mut editor = InputState::new();
         editor.insert_str(text);
         overlay.active_input =
             Some(ActiveCommentInput { key, editor, prior_comment: None, edit_turn: None });
@@ -5606,7 +5693,7 @@ mod tests {
     fn finish_review_esc_dismisses_back_to_diff() {
         let mut app = App::test_default();
         let mut state = sample_state();
-        state.finish_review = Some(FinishReviewState { editor: TextArea::default() });
+        state.finish_review = Some(FinishReviewState { editor: InputState::new() });
         app.diff_overlay = Some(state);
         set_active_view(&mut app, ActiveView::Diff);
         handle_key(&mut app, KeyEvent::from(KeyCode::Esc));
@@ -6024,7 +6111,7 @@ mod tests {
             authored_this_session: true,
             persisted: true,
         };
-        let mut editor = TextArea::default();
+        let mut editor = InputState::new();
         editor.insert_str("second note EDITED");
         overlay.active_input = Some(ActiveCommentInput {
             key,
@@ -6080,7 +6167,7 @@ mod tests {
             authored_this_session: true,
             persisted: true,
         };
-        let mut editor = TextArea::default();
+        let mut editor = InputState::new();
         editor.insert_str("third EDITED");
         overlay.active_input = Some(ActiveCommentInput {
             key,
@@ -6137,7 +6224,7 @@ mod tests {
         };
         overlay.active_input = Some(ActiveCommentInput {
             key,
-            editor: TextArea::default(),
+            editor: InputState::new(),
             prior_comment: Some(prior),
             edit_turn: Some(edit_turn),
         });
@@ -6227,7 +6314,7 @@ mod tests {
             authored_this_session: true,
             persisted: true,
         };
-        let mut editor = TextArea::default();
+        let mut editor = InputState::new();
         editor.insert_str("second thought");
         overlay.active_input =
             Some(ActiveCommentInput { key, editor, prior_comment: Some(prior), edit_turn: None });
@@ -6297,7 +6384,7 @@ mod tests {
         };
         state.active_input = Some(ActiveCommentInput {
             key,
-            editor: TextArea::default(),
+            editor: InputState::new(),
             prior_comment: Some(prior),
             edit_turn: None,
         });
@@ -6948,7 +7035,7 @@ mod tests {
         if let Some(o) = app.diff_overlay.as_mut() {
             reopen_comment_for_turn(o, key, Some(0));
             if let Some(input) = o.active_input.as_mut() {
-                input.editor = TextArea::default();
+                input.editor = InputState::new();
             }
         }
         save_active_input(&mut app);

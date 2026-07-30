@@ -1,3 +1,5 @@
+use super::paste_burst::CharAction;
+use crossterm::event::KeyEvent;
 use tui_textarea::{CursorMove, TextArea, WrapMode};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -8,7 +10,7 @@ pub struct InputSnapshot {
     pub paste_blocks: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct InputState {
     /// Monotonically increasing version counter. Bumped on every content or cursor change
     /// so that downstream caches (e.g. wrap result) can detect staleness cheaply.
@@ -193,6 +195,20 @@ impl InputState {
         self.editor.insert_char(c);
         self.bump_content_version();
         true
+    }
+
+    /// Hand a key straight to the underlying `TextArea` for its own
+    /// editing semantics (cursor movement, selection, delete, undo).
+    /// Callers that need forge's own handling - submit keys, paste-burst
+    /// coalescing, autocomplete triggers - must intercept before this.
+    pub fn handle_key(&mut self, key: KeyEvent) -> bool {
+        let changed = self.editor.input(key);
+        if changed {
+            self.bump_content_version();
+        } else {
+            self.bump_cursor_version();
+        }
+        changed
     }
 
     pub fn textarea_insert_newline(&mut self) -> bool {
@@ -510,6 +526,51 @@ impl InputState {
             }
         }
         self.replace_lines_and_cursor(lines, cursor_row, new_cursor_col);
+    }
+}
+
+/// Outcome of feeding one printable character to a text input through
+/// the paste-burst detector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypedChar {
+    /// Absorbed into the burst buffer; nothing was inserted. The payload
+    /// surfaces later via [`super::paste_burst::PasteBurstDetector::tick`].
+    Buffered,
+    /// A confirmed burst retro-captured characters that had already been
+    /// inserted, so they could be replayed as part of the paste payload.
+    RetroCaptured,
+    /// The character landed in the input.
+    Inserted,
+}
+
+/// Apply a detector verdict to `input`. Split from
+/// [`super::paste_burst::PasteBurstDetector::on_char`] so callers can sequence the
+/// detector borrow and the input borrow rather than holding both.
+pub fn apply_char_action(input: &mut InputState, action: CharAction, c: char) -> TypedChar {
+    match action {
+        CharAction::Consumed => TypedChar::Buffered,
+        CharAction::RetroCapture(delete_count) => {
+            for _ in 0..delete_count {
+                let _ = input.textarea_delete_char_before();
+            }
+            tracing::debug!(
+                target: crate::logging::targets::APP_PASTE,
+                event_name = "paste_retro_capture_applied",
+                message = "retro-captured leaked characters from a confirmed paste burst",
+                outcome = "success",
+                delete_count,
+            );
+            TypedChar::RetroCaptured
+        }
+        CharAction::Passthrough(ch) => {
+            // `ch != c` means the detector released a previously held
+            // char: insert it before the current one.
+            if ch != c {
+                let _ = input.textarea_insert_char(ch);
+            }
+            let _ = input.textarea_insert_char(c);
+            TypedChar::Inserted
+        }
     }
 }
 
