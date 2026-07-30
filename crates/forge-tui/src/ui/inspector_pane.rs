@@ -1564,11 +1564,14 @@ fn append_schedules_section(lines: &mut Vec<Line<'static>>, app: &App, width: u1
     }
 }
 
-/// The GOTIFY section shows only while the stream is connected AND the
-/// active project has at least one subscription; otherwise the whole
-/// section (header, status line, rows) is omitted.
+/// The GOTIFY section shows whenever the active session owns at least
+/// one subscription, connected or not - a dropped stream is exactly when
+/// the user needs to see that the alerts they asked for have stopped
+/// arriving, so hiding it there would be a silent failure. With no owned
+/// subscription the section is omitted without consulting the connection
+/// at all: there is nothing for this session to receive either way.
 fn gotify_section_visible(app: &App) -> bool {
-    app.gotify_connected && !app.gotify_subs.is_empty()
+    !app.gotify_subs.is_empty()
 }
 
 /// Render the Inspector GOTIFY section: an `◈ connected` status line
@@ -1578,7 +1581,7 @@ fn gotify_section_visible(app: &App) -> bool {
 /// [`gotify_section_visible`] holds, so the stream is always connected
 /// and the subscription set is never empty.
 fn append_gotify_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
-    lines.push(gotify_header_line(width));
+    lines.push(gotify_header_line(width, app.gotify_connected));
     lines.push(Line::default());
 
     let inner_width = usize::from(width);
@@ -1587,21 +1590,29 @@ fn append_gotify_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) 
     }
 }
 
-/// GOTIFY section header: DIM-bold ` GOTIFY` with the stream status
+/// GOTIFY section header: DIM-bold ` GOTIFY` with the live stream status
 /// right-justified beside it, the same header-adornment shape
 /// [`attention_header_line`] uses for its waiting count and the GIT
-/// header for its `🦉` / `💬`. The filled diamond is RUST_ORANGE; the
-/// visibility gate guarantees the stream is connected whenever this
-/// renders. Content stops [`PANE_PAD`] short of the pane edge so the
-/// status observes the same right gutter every other row does.
-fn gotify_header_line(width: u16) -> Line<'static> {
+/// header for its `🦉` / `💬`. Unlike the GIT header this emits no
+/// trailing pad span, because nothing here is a click target needing the
+/// line to be exactly `width` - content simply stops [`PANE_PAD`] short
+/// of the edge, observing the same right gutter every other row does.
+///
+/// Connected renders the Gotify `◈` in RUST_ORANGE; a dropped stream
+/// swaps in the `⚠` + STATUS_WARNING pairing `projects_pane`'s
+/// `glyph_for_lifecycle` already uses for `AuthRequired` - degraded and
+/// worth noticing, distinct from the red `✗` of something broken.
+fn gotify_header_line(width: u16, connected: bool) -> Line<'static> {
     use unicode_width::UnicodeWidthStr;
 
     const LABEL: &str = " GOTIFY";
-    const GLYPH: &str = "\u{25c8}";
-    const STATUS: &str = "connected";
 
-    let status_width = UnicodeWidthStr::width(GLYPH) + 1 + UnicodeWidthStr::width(STATUS);
+    let (glyph, glyph_color, status) = if connected {
+        ("\u{25c8}", theme::RUST_ORANGE, "connected")
+    } else {
+        ("\u{26a0}", theme::STATUS_WARNING, "disconnected")
+    };
+    let status_width = UnicodeWidthStr::width(glyph) + 1 + UnicodeWidthStr::width(status);
     let chrome = UnicodeWidthStr::width(LABEL) + status_width + usize::from(PANE_PAD);
     let pad = usize::from(width).saturating_sub(chrome).max(1);
     Line::from(vec![
@@ -1610,9 +1621,9 @@ fn gotify_header_line(width: u16) -> Line<'static> {
             Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
         ),
         Span::raw(" ".repeat(pad)),
-        Span::styled(GLYPH.to_owned(), Style::default().fg(theme::RUST_ORANGE)),
+        Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
         Span::raw(" ".to_owned()),
-        Span::styled(STATUS.to_owned(), Style::default().fg(theme::DIM)),
+        Span::styled(status.to_owned(), Style::default().fg(theme::DIM)),
     ])
 }
 
@@ -4257,9 +4268,16 @@ mod tests {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
-        for width in [32u16, 24] {
+        // The disconnected word is the longer of the two, so Medium with
+        // the stream down is the tightest case the header ever renders.
+        for (width, connected, glyph, word) in [
+            (32u16, true, '\u{25c8}', "connected"),
+            (32, false, '\u{26a0}', "disconnected"),
+            (24, true, '\u{25c8}', "connected"),
+            (24, false, '\u{26a0}', "disconnected"),
+        ] {
             let mut app = App::test_default();
-            app.gotify_connected = true;
+            app.gotify_connected = connected;
             app.gotify_subs = vec![gotify_sub(1, None, &["Alerts"], Some(5))];
 
             let mut lines = Vec::new();
@@ -4280,12 +4298,12 @@ mod tests {
             let header = row(0);
             assert!(header.contains("GOTIFY"), "w={width}: header names the section: {header:?}");
             assert!(
-                header.contains("connected"),
-                "w={width}: the status sits on the header row, whole: {header:?}",
+                header.contains(word),
+                "w={width} connected={connected}: the status word renders whole: {header:?}",
             );
             assert!(
-                header.contains('\u{25c8}'),
-                "w={width}: the status glyph sits on the header row: {header:?}",
+                header.contains(glyph),
+                "w={width} connected={connected}: the state glyph renders: {header:?}",
             );
 
             // True column of the last painted cell - the right gutter must
@@ -4303,7 +4321,7 @@ mod tests {
             // anywhere below the header.
             for y in 1..usize::from(height) {
                 assert!(
-                    !row(y).contains("connected"),
+                    !row(y).contains(word),
                     "w={width}: the status renders once, on the header - found again at y={y}",
                 );
             }
@@ -4312,20 +4330,33 @@ mod tests {
             assert!(row(2).contains("Alerts"), "w={width}: the first subscription follows it");
 
             // Medium is the tightest pane the header has to survive, so
-            // pin its literal layout - this is also what the forge-map
-            // mockup reproduces.
+            // pin both literal layouts - these are what the forge-map
+            // mockups reproduce. Spelt out rather than recomputed from the
+            // production formula, which would assert nothing.
             if width == 24 {
+                let expected = if connected {
+                    " GOTIFY     \u{25c8} connected"
+                } else {
+                    " GOTIFY  \u{26a0} disconnected"
+                };
                 assert_eq!(
                     header.trim_end(),
-                    " GOTIFY     \u{25c8} connected",
-                    "Medium-tier header layout",
+                    expected,
+                    "Medium-tier header layout (connected={connected})",
                 );
             }
         }
     }
 
+    /// Visibility keys on OWNED SUBSCRIPTIONS ALONE. A session that
+    /// subscribed to something keeps the section whether or not the
+    /// stream is up - hiding it exactly when the stream drops is the
+    /// silent-failure shape, since the alerts the user asked for have
+    /// stopped arriving and nothing on screen says so. A session that
+    /// subscribed to nothing hides it without consulting the connection
+    /// at all: there is nothing for it to receive either way.
     #[test]
-    fn gotify_section_visible_only_when_connected_with_subs() {
+    fn gotify_section_visibility_keys_on_owned_subscriptions_not_the_stream() {
         let sub = || forge_primitives::GotifySubscription {
             id: uuid::Uuid::from_u128(1),
             project: "p".to_owned(),
@@ -4336,21 +4367,21 @@ mod tests {
         };
         let mut app = App::test_default();
 
-        app.gotify_connected = false;
-        app.gotify_subs = vec![];
-        assert!(!gotify_section_visible(&app), "hidden when disconnected with no subscriptions");
+        for connected in [true, false] {
+            app.gotify_connected = connected;
 
-        app.gotify_connected = true;
-        app.gotify_subs = vec![];
-        assert!(!gotify_section_visible(&app), "hidden when connected but no subscriptions");
+            app.gotify_subs = vec![];
+            assert!(
+                !gotify_section_visible(&app),
+                "no owned subscription hides the section (connected={connected})",
+            );
 
-        app.gotify_connected = false;
-        app.gotify_subs = vec![sub()];
-        assert!(!gotify_section_visible(&app), "hidden when subscribed but disconnected");
-
-        app.gotify_connected = true;
-        app.gotify_subs = vec![sub()];
-        assert!(gotify_section_visible(&app), "shown only when connected with a subscription");
+            app.gotify_subs = vec![sub()];
+            assert!(
+                gotify_section_visible(&app),
+                "an owned subscription shows the section (connected={connected})",
+            );
+        }
     }
 
     // ---------------------------------------------------------
