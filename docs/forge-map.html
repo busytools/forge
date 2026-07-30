@@ -1782,10 +1782,10 @@ chat continues here...
 <div class="surface">
   <div class="surface-head">
     <h4>Autocomplete dropdown</h4>
-    <div class="when">visible: while user is typing one of three triggers - <code>/</code> (slash), <code>@</code> (file mention), <code>&amp;</code> (subagent)</div>
+    <div class="when">visible: while user is typing one of four triggers - <code>/</code> (slash), <code>@</code> (file mention), <code>&amp;</code> (subagent), <code>:</code> (emoji)</div>
   </div>
   <div class="surface-body">
-    <p>Rounded-border dropdown anchored to the input. Title format depends on context: <code> Commands (N) </code> for slash command names, <code> /&lt;cmd&gt; Args (N) </code> for slash-command arguments (e.g. <code> /model Args (3) </code>), <code> Files &amp; Folders </code> for <code>@</code>, <code> Subagents (N) </code> for <code>&amp;</code>. Title rendered in DIM. Border DIM. Max <code>MAX_VISIBLE = 8</code> rows visible; scrolls in place.</p>
+    <p>Rounded-border dropdown anchored to the input. Title format depends on context: <code> Commands (N) </code> for slash command names, <code> /&lt;cmd&gt; Args (N) </code> for slash-command arguments (e.g. <code> /model Args (3) </code>), <code> Files &amp; Folders </code> for <code>@</code>, <code> Subagents (N) </code> for <code>&amp;</code>, <code> Emoji </code> for <code>:</code>. Title rendered in DIM. Border DIM. The visible-row cap is per trigger - <code>slash::MAX_VISIBLE = 20</code>, <code>mention::MAX_VISIBLE = 32</code> (shared by <code>@</code>), <code>emoji::MAX_VISIBLE = 10</code>, <code>subagent::MAX_VISIBLE = 8</code> - and each is further clamped to the rows that actually fit above or below the input; scrolls in place.</p>
     <p>Each item: 3-char selection prefix (<code> ▸ </code> in RUST_ORANGE bold for selected, <code>   </code> for others) + primary text (default fg, with case-insensitive match-substring highlight when there's a query) + optional secondary description (DIM). Slash commands typed in the <em>input area</em> are colored <code>SLASH_COMMAND</code> (light magenta) by <code>input.rs</code> - but <strong>inside the dropdown</strong>, slash items use default fg, not magenta.</p>
     <div class="term">
       <pre class="indent">
@@ -1800,9 +1800,30 @@ chat continues here...
     <p class="hint">Underlines mark match-highlighted regions (rendered with a different style - fg colour or background, depending on the implementation; not strictly underlines in the running TUI).</p>
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/autocomplete.rs</code> · positioning via <code>choose_dropdown_x</code> / <code>choose_dropdown_y</code> (renders above OR below the input depending on space)</dd>
-      <dt>three triggers</dt><dd><code>/</code> = slash · <code>@</code> = file mention (paths from <code>FileIndex</code>) · <code>&amp;</code> = subagent invocation</dd>
+      <dt>four triggers</dt><dd><code>/</code> = slash · <code>@</code> = file mention (paths from <code>FileIndex</code>) · <code>&amp;</code> = subagent invocation · <code>:</code> = emoji shortcode</dd>
       <dt>command source</dt><dd>The slash list (also feeding <code>/help</code>) is seeded once at connect from <code>system/init</code> <code>slash_commands</code>, then <strong>live-refreshed</strong> on every <code>commands_changed</code> event (emitted after a plugin/command reload) - the fresh list replaces the seed wholesale, so a newly added command shows immediately without a restart. Both paths parse through <code>available_commands_from_json</code> into <code>UiSession.available_commands</code>.</dd>
       <dt>known issues</dt><dd><a href="https://github.com/busytools/forge/issues/46">#46</a> - pre-init gap (CLI emits init only post-first-turn; fallback list needed)  ·  <a href="https://github.com/busytools/forge/issues/47">#47</a> - slash commands render as full expanded prompt text on session resume</dd>
+    </dl>
+
+    <h5 style="margin-top: 18px;"><code>:shortcode:</code> emoji picker</h5>
+    <p>Slack-shaped: type <code>:</code> plus at least two characters and the picker opens; keep typing to filter, <kbd>Enter</kbd> or <kbd>Tab</kbd> replaces the whole token with the glyph and typing continues. Typing the closing <code>:</code> of an exact shortcode lands the glyph too, so <code>:tada:</code> straight through works. <kbd>Esc</kbd> dismisses the picker only, leaving the typed text alone. Rows are the glyph then its <code>:name:</code> with the query match highlighted, in the same rounded-border box as the other three triggers.</p>
+    <p>Unlike <code>/</code>, <code>@</code> and <code>&amp;</code>, this picker is <strong>not chat-only</strong>: it hangs off <code>App::focused_input</code>, so it serves the chat draft, the /diff inline comment editor and the Finish-review overview from one implementation. In the /diff overlay it is the innermost surface - while open it owns <kbd>Esc</kbd>, <kbd>Enter</kbd> and the arrows, so <code>:</code> then <kbd>Esc</kbd> cannot fall through to the overlay's "finish review".</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="dim">╭ </span><span class="dim">Emoji</span><span class="dim"> ───────────────────────────────────╮</span>
+  <span class="dim">│</span> <span class="accent bold">▸ </span>😄   :<span style="text-decoration: underline">sm</span>ile:                          <span class="dim">│</span>
+  <span class="dim">│</span>    😃   :<span style="text-decoration: underline">sm</span>iley:                         <span class="dim">│</span>
+  <span class="dim">│</span>    😏   :<span style="text-decoration: underline">sm</span>irk:                          <span class="dim">│</span>
+  <span class="dim">│</span>    🙂   :<span style="text-decoration: underline">s</span>lightly_s<span style="text-decoration: underline">m</span>iling_face:          <span class="dim">│</span>
+  <span class="dim">│</span>    😅   :sweat_<span style="text-decoration: underline">sm</span>ile:                    <span class="dim">│</span>
+  <span class="dim">╰──────────────────────────────────────────╯</span>
+  <span class="accent">❯</span> nice work :sm_</pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/app/emoji.rs</code> (table, trigger detection, ranking, token replacement) · rows shared by both surfaces via <code>ui/autocomplete.rs::emoji_dropdown_lines</code> · /diff popup placement in <code>ui/diff_overlay.rs::render_emoji_dropdown</code></dd>
+      <dt>trigger rule</dt><dd>The <code>:</code> counts only at the start of a line or directly after whitespace, and the query must be <code>[a-z0-9_+-]</code> - so <code>http://</code>, <code>10:30</code>, <code>note:todo</code> and <code>Foo::bar</code> never open a picker. Same rule <code>@</code> uses.</dd>
+      <dt>emoji data</dt><dd>A curated static table of ~200 GitHub / Slack shortcodes, sorted by name (a test enforces the ordering and rejects duplicates). Deliberately not the full Unicode set: the long tail is never scrolled to in a typeahead, and a crate carrying every sequence plus metadata is several hundred KB of generated tables for a cosmetic feature.</dd>
+      <dt>ranking</dt><dd>Exact match, then prefix matches, then substring matches; ties alphabetical.</dd>
     </dl>
   </div>
 </div>
@@ -2186,7 +2207,7 @@ chat continues here...
   <span class="dim">↑↓</span> <span class="accent">move</span>  <span class="dim">·</span>  <span class="dim">enter</span> <span class="accent">go to commit</span>  <span class="dim">·</span>  <span class="dim">Esc</span> <span class="accent">close menu</span></pre></div>
 
     <h5 style="margin-top: 18px;">Comment workflow</h5>
-    <p>Click on any diff line (added / removed / context - hunk headers are non-interactive) mounts a <code>tui_textarea::TextArea</code> inline below the clicked line. The editor renders with a <span class="accent">RUST_ORANGE</span> <code>│</code> left margin to visually anchor it to the diff; an empty editor shows a DIM "<code>(type your comment)</code>" placeholder so first-keystroke shape is obvious. Multi-line edits expand the editor inline; the document keeps scrolling around it via <code>doc_scroll</code>.</p>
+    <p>Click on any diff line (added / removed / context - hunk headers are non-interactive) mounts an editor inline below the clicked line. It is the same <code>InputState</code> substrate the chat draft uses, so clipboard, bracketed paste, dictation-burst coalescing and <code>[Pasted Text N]</code> blocks all behave identically in both places - only the submit key differs per site. The editor renders with a <span class="accent">RUST_ORANGE</span> <code>│</code> left margin to visually anchor it to the diff; an empty editor shows a DIM "<code>(type your comment)</code>" placeholder so first-keystroke shape is obvious. Multi-line edits expand the editor inline; the document keeps scrolling around it via <code>doc_scroll</code>.</p>
 
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
       <li><kbd>Enter</kbd> saves the comment, closes the editor, persists the thread to redb, and renders a conversation card in place (header <code>💬 line &lt;N&gt; · &lt;state&gt;</code>, an inner rail of turns, a <code>↳ reply</code> line, then <code>✓ Resolve</code> / <code>↺ Reopen</code>) - in every scope, commit or whole-diff. Empty saves on a fresh editor are treated as cancel (no card).</li>
@@ -2194,7 +2215,7 @@ chat continues here...
       <li>Each of <strong>your</strong> turns on a saved card is clickable (a dim <code>✎</code> marks it): the click reopens the editor seeded with just that turn's text, and the save rewrites <em>only</em> that turn - an earlier note and any worker replies survive. The agent's turns are read-only. Clearing a turn and saving removes just that turn (the surviving chain is re-saved); the whole card is deleted only when no comment of yours would remain (so an orphaned agent reply never lingers). Cancelling restores the card untouched.</li>
       <li>A <code>↳ reply</code> line at the bottom of the card opens an empty editor that <strong>appends</strong> a new user turn on save - you can add several. A reply never changes the thread's state or nudges the agent; <code>↺ Reopen</code> stays the explicit "look again".</li>
       <li>Jumping to another file via the FILES rail closes any open editor - it's anchored to a specific line, and orphaning it on a jump would confuse the geometry. Saved comments survive the jump; only the in-progress editor drops.</li>
-      <li>Bracketed paste while an editor is open routes to the TextArea so speech-to-text transcripts / clipboard / pasted code blocks all land as expected. Paste outside an open editor is a no-op (nothing for it to land on).</li>
+      <li>Clipboard paste and speech-to-text dictation both land in whichever review editor has focus - the inline comment editor or the Finish-review overview. Dictation arrives as individual keystrokes rather than a paste event, so it is coalesced by the same burst detector the chat input uses, and an <kbd>Enter</kbd> that belongs to the dictated payload is buffered as a newline instead of saving the comment. A paste over <code>1000</code> chars or <code>5</code> lines collapses to a <code>[Pasted Text N - M chars]</code> chip, expanded again on save. Paste with no editor open is a no-op (nothing for it to land on).</li>
     </ul>
 
     <h5 style="margin-top: 18px;">Branch-persistent review conversations</h5>

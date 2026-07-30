@@ -1,5 +1,5 @@
 use super::dialog::DialogState;
-use super::paste_burst::CharAction;
+use super::input::TypedChar;
 use super::{
     App, AppStatus, FocusOwner, FocusTarget, HelpView, InvalidationLevel, ModeInfo, ModeState,
 };
@@ -7,7 +7,7 @@ use super::{
 use crate::app::SystemSeverity;
 use crate::app::selection::{clear_selection, selection_text_from_rendered_lines};
 use crate::app::state::AutocompleteKind;
-use crate::app::{mention, slash, subagent};
+use crate::app::{InputState, emoji, mention, slash, subagent};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 #[cfg(test)]
 use std::cell::Cell;
@@ -273,7 +273,7 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
     }
 
     match app.focus_owner() {
-        FocusOwner::Mention => handle_autocomplete_key(app, key),
+        FocusOwner::Mention | FocusOwner::Emoji => handle_autocomplete_key(app, key),
         FocusOwner::Help => handle_help_key(app, key),
         FocusOwner::Input => handle_normal_key(app, key),
     }
@@ -412,13 +412,18 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
         mention::sync_with_cursor(app);
         slash::sync_with_cursor(app);
         subagent::sync_with_cursor(app);
+        emoji::sync_with_cursor(app);
     }
 
     sync_help_focus(app);
     changed
 }
 
-fn should_ignore_key_during_paste(app: &mut App, key: KeyEvent) -> bool {
+/// Whether a key must be swallowed because a paste payload is still
+/// queued for this drain cycle. A chunked bracketed paste can be
+/// followed by a trailing newline, which would otherwise read as a
+/// submit (chat) or a comment save (/diff) instead of pasted text.
+pub(super) fn should_ignore_key_during_paste(app: &mut App, key: KeyEvent) -> bool {
     if app.pending_submit().is_some() && is_editing_like_key(key) {
         *app.pending_submit_mut() = None;
     }
@@ -824,37 +829,10 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
         return false;
     }
 
-    let now = Instant::now();
-    match app.paste_burst.on_char(c, now) {
-        CharAction::Consumed => {
-            // Character absorbed into burst buffer. Don't insert.
-            return false;
-        }
-        CharAction::RetroCapture(delete_count) => {
-            // Burst confirmation retro-captured already-inserted leading chars.
-            for _ in 0..delete_count {
-                let _ = app.input_mut().textarea_delete_char_before();
-            }
-            tracing::debug!(
-                target: crate::logging::targets::APP_PASTE,
-                event_name = "paste_retro_capture_applied",
-                message = "retro-captured leaked characters from a confirmed paste burst",
-                outcome = "success",
-                delete_count,
-            );
-            return true;
-        }
-        CharAction::Passthrough(ch) => {
-            // Normal typing or a previously-held char released.
-            // If `ch == c`, single normal insert. Otherwise the detector
-            // emitted a held char; insert it first, then the current char.
-            if ch == c {
-                let _ = app.input_mut().textarea_insert_char(c);
-            } else {
-                let _ = app.input_mut().textarea_insert_char(ch);
-                let _ = app.input_mut().textarea_insert_char(c);
-            }
-        }
+    match app.type_char(c, Instant::now()) {
+        TypedChar::Buffered => return false,
+        TypedChar::RetroCaptured => return true,
+        TypedChar::Inserted => {}
     }
 
     if c == '?' && app.input().text().trim() == "?" {
@@ -867,6 +845,8 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
         slash::activate(app);
     } else if c == '&' {
         subagent::activate(app);
+    } else if c == ':' {
+        emoji::activate(app);
     }
     true
 }
@@ -917,6 +897,11 @@ fn should_sync_autocomplete_after_key(_app: &App, key: KeyEvent) -> bool {
 /// Handle keystrokes while mention/slash autocomplete dropdown is active.
 pub(super) fn handle_autocomplete_key(app: &mut App, key: KeyEvent) -> bool {
     match app.active_autocomplete_kind() {
+        Some(AutocompleteKind::Emoji) => {
+            if handle_emoji_key(app, key) {
+                return true;
+            }
+        }
         Some(AutocompleteKind::Mention) => return handle_mention_key(app, key),
         Some(AutocompleteKind::Slash) => return handle_slash_key(app, key),
         Some(AutocompleteKind::Subagent) => return handle_subagent_key(app, key),
@@ -981,6 +966,67 @@ fn sync_help_focus(app: &mut App) {
         app.claim_focus_target(FocusTarget::Help);
     } else {
         app.release_focus_target(FocusTarget::Help);
+    }
+}
+
+/// Handle keystrokes while the `:shortcode` emoji picker is open.
+/// Shaped like [`handle_mention_key`], but every edit targets the
+/// focused editor so the picker works in the /diff review boxes too.
+///
+/// Returns `false` for keys the picker does not claim, leaving the
+/// caller to apply its own routing - the chat dispatcher in Chat, the
+/// overlay's own in /diff. The picker must not fall through itself:
+/// doing so would run chat key handling inside the Diff view.
+pub(crate) fn handle_emoji_key(app: &mut App, key: KeyEvent) -> bool {
+    match (key.code, key.modifiers) {
+        (KeyCode::Up, _) => {
+            emoji::move_up(app);
+            true
+        }
+        (KeyCode::Down, _) => {
+            emoji::move_down(app);
+            true
+        }
+        (KeyCode::Enter | KeyCode::Tab, _) => {
+            emoji::confirm_selection(app);
+            true
+        }
+        (KeyCode::Esc, _) => {
+            emoji::deactivate(app);
+            true
+        }
+        (KeyCode::Backspace, _) => {
+            let changed =
+                app.focused_input_mut().is_some_and(InputState::textarea_delete_char_before);
+            emoji::update_query(app);
+            changed
+        }
+        // A typed closing `:` on an exact shortcode lands the glyph, so
+        // `:tada:` typed straight through works like it does in Slack.
+        (KeyCode::Char(':'), m) if is_printable_text_modifiers(m) => {
+            if emoji::try_close_shortcode(app) {
+                return true;
+            }
+            let changed =
+                app.focused_input_mut().is_some_and(|input| input.textarea_insert_char(':'));
+            emoji::update_query(app);
+            changed
+        }
+        (KeyCode::Char(c), m) if is_printable_text_modifiers(m) => {
+            let changed =
+                app.focused_input_mut().is_some_and(|input| input.textarea_insert_char(c));
+            if c.is_whitespace() {
+                emoji::deactivate(app);
+            } else {
+                emoji::update_query(app);
+            }
+            changed
+        }
+        // Anything else: close the picker and let the caller route it.
+        _ => {
+            emoji::deactivate(app);
+            false
+        }
     }
 }
 
@@ -1174,6 +1220,7 @@ pub(super) fn toggle_inspector_pane(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::paste_burst::CharAction;
     use crate::app::{
         ChatMessage, MessageBlock, MessageRole, SelectionKind, SelectionPoint, SelectionState,
         TextBlock,

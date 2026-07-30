@@ -2,6 +2,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FocusTarget {
     Mention,
+    Emoji,
     Help,
 }
 
@@ -9,7 +10,8 @@ impl FocusTarget {
     const fn bit(self) -> u8 {
         match self {
             Self::Mention => 1 << 0,
-            Self::Help => 1 << 1,
+            Self::Emoji => 1 << 1,
+            Self::Help => 1 << 2,
         }
     }
 }
@@ -19,6 +21,7 @@ impl FocusTarget {
 pub enum FocusOwner {
     Input,
     Mention,
+    Emoji,
     Help,
 }
 
@@ -49,6 +52,7 @@ impl From<FocusTarget> for FocusOwner {
     fn from(value: FocusTarget) -> Self {
         match value {
             FocusTarget::Mention => Self::Mention,
+            FocusTarget::Emoji => Self::Emoji,
             FocusTarget::Help => Self::Help,
         }
     }

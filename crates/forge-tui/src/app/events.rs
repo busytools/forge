@@ -137,6 +137,7 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
         }
         ActiveView::Launchpad => super::keys::dispatch_key_by_focus(app, key),
         ActiveView::Diff => {
+            *app.active_paste_session_mut() = None;
             super::diff_overlay::handle_key(app, key);
             true
         }
