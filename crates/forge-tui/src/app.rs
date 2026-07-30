@@ -7,6 +7,7 @@ pub(crate) mod config;
 pub(crate) mod connect;
 mod dialog;
 pub(crate) mod diff_overlay;
+pub(crate) mod emoji;
 pub(crate) mod events;
 pub(crate) mod file_index;
 mod focus;
@@ -49,9 +50,10 @@ pub use cache_policy::{
 pub use config::ConfigState;
 pub use connect::{create_app, start_connection};
 pub use diff_overlay::DiffOverlayState;
+pub use emoji::{Emoji, EmojiState};
 pub use events::{apply_session_update, handle_terminal_event};
 pub use focus::{FocusManager, FocusOwner, FocusTarget};
-pub use input::InputState;
+pub use input::{InputState, TypedChar};
 pub use launchpad::LaunchpadState;
 pub use prompt::{PromptMode, PromptSource, PromptState};
 pub(crate) use selection::normalize_selection;
@@ -62,18 +64,19 @@ pub(crate) use state::cache_metrics;
 pub use state::{
     AnsweredQuestion, App, AppStatus, AttentionEntry, AttentionKind, BackgroundTask, BlockCache,
     CacheMetrics, CachedMessageSegment, ChatMessage, ChatRenderTraceState, ChatViewport,
-    ExtraUsage, HelpView, IncrementalMarkdown, InvalidationLevel, LayoutInvalidation, LoginHint,
-    McpState, MessageBlock, MessageRenderCache, MessageRenderCacheKey, MessageRenderSignature,
-    MessageRole, MessageUsage, ModeInfo, ModeState, MonitorEntry, MonitorStatus, NoticeBlock,
-    NoticeDedupKey, NoticeStage, PaneHitTarget, PasteSessionState, PendingCommandAck, PhaseEntry,
-    PhaseStatus, RateLimitIncidentKey, RecentSessionInfo, SUBAGENT_TAIL_CAP, ScheduleEntry,
-    ScheduleKind, ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState,
-    SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState, SubagentChildEntry,
-    SubagentEntry, SystemSeverity, TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem,
-    TodoStatus, ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UsageSnapshot,
-    UsageSourceKind, UsageState, UsageWindow, WelcomeBlock, WorkflowEntry, WorkflowStatus,
-    compute_scrollbar_geometry, hash_text_block_content, hash_welcome_block_content,
-    is_execute_tool_name, is_monitor_tool_name,
+    ExtraUsage, HelpView, IncrementalMarkdown, InputFocus, InvalidationLevel, LayoutInvalidation,
+    LoginHint, McpState, MessageBlock, MessageRenderCache, MessageRenderCacheKey,
+    MessageRenderSignature, MessageRole, MessageUsage, ModeInfo, ModeState, MonitorEntry,
+    MonitorStatus, NoticeBlock, NoticeDedupKey, NoticeStage, PaneHitTarget, PasteSessionState,
+    PendingCommandAck, PhaseEntry, PhaseStatus, RateLimitIncidentKey, RecentSessionInfo,
+    SUBAGENT_TAIL_CAP, ScheduleEntry, ScheduleKind, ScrollbarGeometry, SelectionKind,
+    SelectionPoint, SelectionState, SessionTurnState, SessionUsageState, StopHookEntry,
+    StopHookSummaryState, SubagentChildEntry, SubagentEntry, SystemSeverity, TerminalSnapshotMode,
+    TextBlock, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope,
+    TurnNoticeLocation, TurnNoticeRef, UsageSnapshot, UsageSourceKind, UsageState, UsageWindow,
+    WelcomeBlock, WorkflowEntry, WorkflowStatus, compute_scrollbar_geometry,
+    hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
+    is_monitor_tool_name,
 };
 pub use usage_overlay::UsageOverlayState;
 pub use view::ActiveView;
@@ -266,24 +269,12 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         crate::app::usage::request_refresh_if_needed(app);
 
         // Tick the burst detector: flush any held/buffered content
-        // that has timed out. EmitChar re-inserts a single held
-        // character; EmitPaste feeds the accumulated burst into the
-        // paste queue.
-        if app.active_view == ActiveView::Chat
-            && let Some(action) = app.paste_burst.tick(Instant::now())
-        {
-            match action {
-                paste_burst::FlushAction::EmitChar(ch) => {
-                    let _ = app.input_mut().textarea_insert_char(ch);
-                }
-                paste_burst::FlushAction::EmitPaste(text) => {
-                    app.queue_paste_text(&text);
-                }
-            }
-        }
+        // that has timed out. Routed by which editor has focus, not by
+        // view - the /diff review editors take dictation too.
+        flush_paste_burst(app, Instant::now());
 
         // Merge and process `Event::Paste` chunks as one paste action.
-        if app.active_view == ActiveView::Chat && !app.pending_paste_text().is_empty() {
+        if app.has_focused_text_input() && !app.pending_paste_text().is_empty() {
             finalize_pending_paste_event(app);
         }
 
@@ -490,41 +481,57 @@ async fn wait_for_shutdown_signal() -> std::io::Result<()> {
     }
 }
 
+/// Flush a timed-out paste burst into the focused editor. `EmitChar`
+/// re-inserts a single held character; `EmitPaste` feeds the accumulated
+/// burst into the paste queue. A burst with no focused editor is dropped
+/// on the floor - there is nowhere for it to land.
+fn flush_paste_burst(app: &mut App, now: Instant) {
+    if !app.has_focused_text_input() {
+        return;
+    }
+    match app.paste_burst.tick(now) {
+        Some(paste_burst::FlushAction::EmitChar(ch)) => {
+            if let Some(input) = app.focused_input_mut() {
+                let _ = input.textarea_insert_char(ch);
+            }
+        }
+        Some(paste_burst::FlushAction::EmitPaste(text)) => app.queue_paste_text(&text),
+        None => {}
+    }
+}
+
 /// Finalize queued `Event::Paste` chunks for this drain cycle.
 fn finalize_pending_paste_event(app: &mut App) {
     let pasted = std::mem::take(app.pending_paste_text_mut());
     if pasted.is_empty() {
         return;
     }
+    let Some(cursor) = focused_cursor(app) else {
+        return;
+    };
     let pasted_chars = pasted.chars().count();
 
     let session = app.pending_paste_session_mut().take().unwrap_or_else(|| {
         let id = app.allocate_paste_session_id();
-        state::PasteSessionState {
-            id,
-            start: SelectionPoint { row: app.input().cursor_row(), col: app.input().cursor_col() },
-            placeholder_index: None,
-        }
+        state::PasteSessionState { id, start: cursor, placeholder_index: None }
     });
     let session_id = session.id;
 
     if session.placeholder_index.is_none() {
-        let end = SelectionPoint { row: app.input().cursor_row(), col: app.input().cursor_col() };
-        strip_input_range(app, session.start, end);
+        strip_input_range(app, session.start, cursor);
     }
 
     let appended = session
         .placeholder_index
         .and_then(|session_idx| {
-            let current_line = app.input().lines().get(app.input().cursor_row())?;
-            let current_idx = input::parse_paste_placeholder_before_cursor(
-                current_line,
-                app.input().cursor_col(),
-            )?;
+            let input = app.focused_input()?;
+            let current_line = input.lines().get(input.cursor_row())?;
+            let current_idx =
+                input::parse_paste_placeholder_before_cursor(current_line, input.cursor_col())?;
             (current_idx == session_idx).then_some(())
         })
         .is_some()
-        && app.input_mut().append_to_active_paste_block(&pasted);
+        && app.focused_input_mut().is_some_and(|input| input.append_to_active_paste_block(&pasted));
     if appended {
         *app.active_paste_session_mut() = Some(session);
         app.needs_redraw = true;
@@ -544,9 +551,12 @@ fn finalize_pending_paste_event(app: &mut App) {
     if char_count > input::PASTE_PLACEHOLDER_CHAR_THRESHOLD
         || line_count > input::PASTE_PLACEHOLDER_LINE_THRESHOLD
     {
-        app.input_mut().insert_paste_block(&pasted);
-        let idx = app.input().lines().get(app.input().cursor_row()).and_then(|line| {
-            input::parse_paste_placeholder_before_cursor(line, app.input().cursor_col())
+        if let Some(input) = app.focused_input_mut() {
+            input.insert_paste_block(&pasted);
+        }
+        let idx = app.focused_input().and_then(|input| {
+            let line = input.lines().get(input.cursor_row())?;
+            input::parse_paste_placeholder_before_cursor(line, input.cursor_col())
         });
         *app.active_paste_session_mut() =
             Some(state::PasteSessionState { placeholder_index: idx, ..session });
@@ -561,7 +571,9 @@ fn finalize_pending_paste_event(app: &mut App) {
             placeholder_index = ?idx,
         );
     } else {
-        app.input_mut().insert_str(&pasted);
+        if let Some(input) = app.focused_input_mut() {
+            input.insert_str(&pasted);
+        }
         *app.active_paste_session_mut() = None;
         tracing::debug!(
             target: crate::logging::targets::APP_PASTE,
@@ -571,10 +583,17 @@ fn finalize_pending_paste_event(app: &mut App) {
             session_id,
             pasted_chars,
             char_count,
-            lines = app.input().lines().len(),
+            lines = app.focused_input().map_or(0, |input| input.lines().len()),
         );
     }
     app.needs_redraw = true;
+}
+
+/// Cursor position in the focused editor, or `None` when no editor has
+/// focus.
+fn focused_cursor(app: &App) -> Option<SelectionPoint> {
+    app.focused_input()
+        .map(|input| SelectionPoint { row: input.cursor_row(), col: input.cursor_col() })
 }
 
 fn cursor_gt(a: SelectionPoint, b: SelectionPoint) -> bool {
@@ -627,23 +646,28 @@ fn apply_merged_input_snapshot(app: &mut App, merged: &str, cursor_offset: usize
         cursor.col = cursor.col.min(lines[cursor.row].chars().count());
     }
 
-    app.input_mut().replace_lines_and_cursor(lines, cursor.row, cursor.col);
+    if let Some(input) = app.focused_input_mut() {
+        input.replace_lines_and_cursor(lines, cursor.row, cursor.col);
+    }
 }
 
 fn strip_input_range(app: &mut App, start: SelectionPoint, end: SelectionPoint) {
     if cursor_gt(start, end) || start == end {
         return;
     }
-    let Some(start_offset) = cursor_to_byte_offset(app.input().lines(), start) else {
+    let Some(input) = app.focused_input() else {
         return;
     };
-    let Some(end_offset) = cursor_to_byte_offset(app.input().lines(), end) else {
+    let Some(start_offset) = cursor_to_byte_offset(input.lines(), start) else {
+        return;
+    };
+    let Some(end_offset) = cursor_to_byte_offset(input.lines(), end) else {
         return;
     };
     if start_offset >= end_offset {
         return;
     }
-    let raw = app.input().lines().join("\n");
+    let raw = input.lines().join("\n");
     if end_offset > raw.len() {
         return;
     }
@@ -759,6 +783,139 @@ mod tests {
 
         assert!(app.needs_redraw);
         assert_eq!(app.input().lines(), vec!["hello", "world"]);
+    }
+
+    /// Diff view with a comment editor open at line 0 of the first
+    /// file - the shape `open_input_for_key` builds on a line click.
+    fn app_with_open_comment_editor() -> App {
+        use crate::app::diff_overlay::{ActiveCommentInput, LineKey};
+        let mut app = App::test_default();
+        let mut overlay = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp/repo"),
+            "HEAD".to_owned(),
+            vec![forge_workspace::env::git_diff::hunks::FileHunks {
+                path: "a.rs".into(),
+                status: forge_workspace::env::git_diff::hunks::FileStatus::Modified,
+                hunks: vec![],
+                oversize: false,
+            }],
+        );
+        overlay.active_input = Some(ActiveCommentInput {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            editor: InputState::new(),
+            prior_comment: None,
+            edit_turn: None,
+        });
+        app.diff_overlay = Some(overlay);
+        view::set_active_view(&mut app, ActiveView::Diff);
+        app
+    }
+
+    fn comment_editor_text(app: &App) -> String {
+        app.diff_overlay
+            .as_ref()
+            .and_then(|o| o.active_input.as_ref())
+            .expect("comment editor open")
+            .editor
+            .lines()
+            .join("\n")
+    }
+
+    #[test]
+    fn bracketed_paste_reaches_the_open_comment_editor() {
+        let mut app = app_with_open_comment_editor();
+
+        events::handle_terminal_event(&mut app, Event::Paste("pasted note".to_owned()));
+        finalize_pending_paste_event(&mut app);
+
+        assert_eq!(comment_editor_text(&app), "pasted note");
+        assert!(app.input().is_empty(), "the chat draft must not absorb a review paste");
+    }
+
+    /// The review editors get the chat draft's paste-block treatment: a
+    /// big paste collapses to one placeholder row rather than unrolling
+    /// hundreds of lines into the comment box, and expands again on save.
+    #[test]
+    fn large_paste_collapses_to_a_block_in_the_comment_editor() {
+        let mut app = app_with_open_comment_editor();
+        let big = "x".repeat(1001);
+
+        events::handle_terminal_event(&mut app, Event::Paste(big.clone()));
+        finalize_pending_paste_event(&mut app);
+
+        let editor = app
+            .diff_overlay
+            .as_ref()
+            .and_then(|o| o.active_input.as_ref())
+            .expect("comment editor open");
+        assert_eq!(editor.editor.lines(), vec!["[Pasted Text 1 - 1001 chars]"]);
+        assert_eq!(editor.editor.text(), big, "the block expands back on read");
+    }
+
+    #[test]
+    fn bracketed_paste_reaches_the_finish_review_editor() {
+        use crate::app::diff_overlay::FinishReviewState;
+        let mut app = app_with_open_comment_editor();
+        if let Some(o) = app.diff_overlay.as_mut() {
+            o.active_input = None;
+            o.finish_review = Some(FinishReviewState { editor: InputState::new() });
+        }
+
+        events::handle_terminal_event(&mut app, Event::Paste("overview text".to_owned()));
+        finalize_pending_paste_event(&mut app);
+
+        let overview = app
+            .diff_overlay
+            .as_ref()
+            .and_then(|o| o.finish_review.as_ref())
+            .expect("finish-review modal open")
+            .editor
+            .lines()
+            .join("\n");
+        assert_eq!(overview, "overview text");
+        assert!(app.input().is_empty(), "the chat draft must not absorb a review paste");
+    }
+
+    /// A dictation burst (SuperWhisper delivers one keystroke per
+    /// character) has to coalesce into the review editor, not the chat
+    /// draft, and not get dropped.
+    #[test]
+    fn paste_burst_flush_reaches_the_open_comment_editor() {
+        let mut app = app_with_open_comment_editor();
+
+        // Machine-speed keystrokes, exactly how dictation arrives.
+        for ch in ['h', 'i', '!'] {
+            events::handle_terminal_event(
+                &mut app,
+                Event::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
+            );
+        }
+        assert!(app.paste_burst.is_buffering(), "the diff view must feed the burst detector");
+
+        flush_paste_burst(&mut app, Instant::now() + Duration::from_millis(200));
+        finalize_pending_paste_event(&mut app);
+
+        assert_eq!(comment_editor_text(&app), "hi!");
+        assert!(app.input().is_empty(), "the chat draft must not absorb dictated review text");
+    }
+
+    #[test]
+    fn deferred_submit_stays_chat_only() {
+        let mut app = app_with_open_comment_editor();
+
+        events::handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+        );
+        events::handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+
+        assert!(
+            app.pending_submit().is_none(),
+            "Enter in a review editor must never arm a chat prompt submit"
+        );
     }
 
     #[test]

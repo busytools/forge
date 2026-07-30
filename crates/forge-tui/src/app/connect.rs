@@ -181,6 +181,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     };
     let mut app = App {
         active_view,
+        emoji: None,
         config: ConfigState::default(),
         settings_home_override: None,
         status: AppStatus::Connecting,

@@ -73,6 +73,23 @@ pub enum AutocompleteKind {
     Mention,
     Slash,
     Subagent,
+    Emoji,
+}
+
+/// Which of forge's text editors is currently accepting input. Every
+/// editor is an [`super::input::InputState`], so paste, clipboard and
+/// dictation-burst handling is shared; only the submit semantics differ
+/// per site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputFocus {
+    /// The chat draft on the active session.
+    Chat,
+    /// The /diff inline comment editor.
+    DiffComment,
+    /// The /diff Finish-review overview editor.
+    DiffFinishReview,
+    /// No editor open - text has nowhere to land.
+    None,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -455,6 +472,9 @@ pub struct App {
     /// up, `None` otherwise. Dropped on overlay close so a stale
     /// snapshot can't leak into the next open.
     pub diff_overlay: Option<crate::app::DiffOverlayState>,
+    /// Open `:shortcode:` emoji picker. App-level rather than
+    /// per-session because it serves the /diff review editors too.
+    pub emoji: Option<super::emoji::EmojiState>,
     /// Usage overlay state - `Some` while [`ActiveView::Usage`] is up,
     /// `None` otherwise. Dropped on close so a stale report can't leak
     /// into the next open.
@@ -621,6 +641,78 @@ impl App {
     /// to [`Self::input`].
     pub fn input_mut(&mut self) -> &mut super::input::InputState {
         &mut self.active_bucket_mut().input
+    }
+
+    /// Which text editor currently receives typed characters, clipboard
+    /// payloads and dictation bursts. Paste routing keys on this rather
+    /// than on [`Self::active_view`] so the /diff review editors get the
+    /// same treatment as the chat draft.
+    pub fn input_focus(&self) -> InputFocus {
+        match self.active_view {
+            ActiveView::Chat => InputFocus::Chat,
+            // Ordering mirrors `diff_overlay::handle_key`: the
+            // Finish-review modal draws over the diff and captures keys
+            // ahead of any comment editor underneath it.
+            ActiveView::Diff => self.diff_overlay.as_ref().map_or(InputFocus::None, |overlay| {
+                if overlay.finish_review.is_some() {
+                    InputFocus::DiffFinishReview
+                } else if overlay.active_input.is_some() {
+                    InputFocus::DiffComment
+                } else {
+                    InputFocus::None
+                }
+            }),
+            ActiveView::Launchpad | ActiveView::Plugins | ActiveView::Mcp | ActiveView::Usage => {
+                InputFocus::None
+            }
+        }
+    }
+
+    /// Whether any text editor has focus. `false` means a paste or burst
+    /// flush has nowhere to land and must be dropped.
+    pub fn has_focused_text_input(&self) -> bool {
+        self.input_focus() != InputFocus::None
+    }
+
+    /// The focused editor, or `None` when the active view has no text
+    /// input open.
+    pub fn focused_input(&self) -> Option<&super::input::InputState> {
+        match self.input_focus() {
+            InputFocus::Chat => Some(self.input()),
+            InputFocus::DiffComment => {
+                self.diff_overlay.as_ref()?.active_input.as_ref().map(|i| &i.editor)
+            }
+            InputFocus::DiffFinishReview => {
+                self.diff_overlay.as_ref()?.finish_review.as_ref().map(|f| &f.editor)
+            }
+            InputFocus::None => None,
+        }
+    }
+
+    /// Mutable companion to [`Self::focused_input`].
+    pub fn focused_input_mut(&mut self) -> Option<&mut super::input::InputState> {
+        match self.input_focus() {
+            InputFocus::Chat => Some(self.input_mut()),
+            InputFocus::DiffComment => {
+                self.diff_overlay.as_mut()?.active_input.as_mut().map(|i| &mut i.editor)
+            }
+            InputFocus::DiffFinishReview => {
+                self.diff_overlay.as_mut()?.finish_review.as_mut().map(|f| &mut f.editor)
+            }
+            InputFocus::None => None,
+        }
+    }
+
+    /// Type one printable character into the focused editor, routing it
+    /// through the shared paste-burst detector so a dictation burst
+    /// coalesces into a single paste payload rather than a stream of
+    /// keystrokes.
+    pub fn type_char(&mut self, c: char, now: Instant) -> super::input::TypedChar {
+        let action = self.paste_burst.on_char(c, now);
+        match self.focused_input_mut() {
+            Some(input) => super::input::apply_char_action(input, action, c),
+            None => super::input::TypedChar::Buffered,
+        }
     }
 
     /// Switch which session the renderer reads from. State on both
@@ -2614,20 +2706,20 @@ impl App {
         let had_pending_submit = self.pending_submit().is_some();
         *self.pending_submit_mut() = None;
         if self.pending_paste_text().is_empty() {
+            let cursor = self
+                .focused_input()
+                .map(|input| SelectionPoint { row: input.cursor_row(), col: input.cursor_col() });
             let continued_session = self.active_paste_session().copied().and_then(|session| {
-                let current_line = self.input().lines().get(self.input().cursor_row())?;
-                let idx =
-                    parse_paste_placeholder_before_cursor(current_line, self.input().cursor_col())?;
+                let input = self.focused_input()?;
+                let current_line = input.lines().get(input.cursor_row())?;
+                let idx = parse_paste_placeholder_before_cursor(current_line, input.cursor_col())?;
                 (session.placeholder_index == Some(idx)).then_some(session)
             });
             let opened = continued_session.unwrap_or_else(|| {
                 let id = self.allocate_paste_session_id();
                 PasteSessionState {
                     id,
-                    start: SelectionPoint {
-                        row: self.input().cursor_row(),
-                        col: self.input().cursor_col(),
-                    },
+                    start: cursor.unwrap_or(SelectionPoint { row: 0, col: 0 }),
                     placeholder_index: None,
                 }
             });
@@ -3165,6 +3257,7 @@ impl App {
             plugins: PluginsState::default(),
             launchpad: crate::app::LaunchpadState::default(),
             diff_overlay: None,
+            emoji: None,
             usage_overlay: None,
             cached_frame_area: ratatui::layout::Rect::default(),
             scrollbar_drag: None,
@@ -3391,7 +3484,9 @@ impl App {
     }
 
     pub fn active_autocomplete_kind(&self) -> Option<AutocompleteKind> {
-        if self.mention().is_some() {
+        if self.emoji.is_some() {
+            Some(AutocompleteKind::Emoji)
+        } else if self.mention().is_some() {
             Some(AutocompleteKind::Mention)
         } else if self.slash().is_some() {
             Some(AutocompleteKind::Slash)
@@ -3417,6 +3512,13 @@ impl App {
         self.mention().is_some_and(mention::MentionState::has_selectable_candidates)
             || self.slash().is_some()
             || self.subagent().is_some()
+    }
+
+    /// Whether the emoji picker has rows to navigate. Separate from
+    /// [`Self::autocomplete_focus_available`] because the picker is
+    /// app-level and lives in the /diff view too.
+    pub fn emoji_focus_available(&self) -> bool {
+        self.emoji.as_ref().is_some_and(super::emoji::EmojiState::has_selectable_candidates)
     }
 
     pub fn rebuild_chat_focus_from_state(&mut self) {
@@ -3464,6 +3566,9 @@ impl App {
         let mut ctx = FocusContext::empty();
         if self.autocomplete_focus_available() {
             ctx = ctx.with(FocusTarget::Mention);
+        }
+        if self.emoji_focus_available() {
+            ctx = ctx.with(FocusTarget::Emoji);
         }
         if self.is_help_active() {
             ctx = ctx.with(FocusTarget::Help);

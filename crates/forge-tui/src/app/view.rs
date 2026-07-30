@@ -53,6 +53,7 @@ fn clear_transient_view_state(app: &mut App) {
     *app.mention_mut() = None;
     *app.slash_mut() = None;
     *app.subagent_mut() = None;
+    app.emoji = None;
     if matches!(app.active_view, ActiveView::Plugins | ActiveView::Mcp) {
         app.config.overlay = None;
     }

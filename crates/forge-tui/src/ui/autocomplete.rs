@@ -5,7 +5,7 @@
 
 use crate::app::App;
 use crate::app::mention::MAX_VISIBLE;
-use crate::app::{file_index, mention, slash, subagent};
+use crate::app::{emoji, file_index, mention, slash, subagent};
 use crate::ui::input;
 use crate::ui::theme;
 use ratatui::Frame;
@@ -26,6 +26,7 @@ enum Dropdown<'a> {
     Mention(&'a mention::MentionState),
     Slash(&'a slash::SlashState),
     Subagent(&'a subagent::SubagentState),
+    Emoji(&'a emoji::EmojiState),
 }
 
 struct DropdownMeta {
@@ -39,10 +40,13 @@ pub fn is_active(app: &App) -> bool {
     app.mention().is_some()
         || app.slash().is_some_and(|s| !s.candidates.is_empty())
         || app.subagent().is_some_and(|s| !s.candidates.is_empty())
+        || app.emoji.as_ref().is_some_and(|e| !e.candidates.is_empty())
 }
 
 pub fn compute_height(app: &App) -> u16 {
-    let (count, cap) = if let Some(m) = &app.mention() {
+    let (count, cap) = if let Some(e) = app.emoji.as_ref().filter(|e| !e.candidates.is_empty()) {
+        (e.candidates.len(), emoji::MAX_VISIBLE)
+    } else if let Some(m) = &app.mention() {
         (m.candidates.len().max(1), MAX_VISIBLE)
     } else if let Some(s) = &app.slash() {
         (s.candidates.len(), slash::MAX_VISIBLE)
@@ -121,6 +125,13 @@ pub fn render(frame: &mut Frame, input_area: Rect, app: &App) {
 }
 
 fn active_dropdown(app: &App) -> Option<Dropdown<'_>> {
+    // Emoji first: it is the innermost token the cursor can sit in, and
+    // it can co-exist with an open slash-command line.
+    if let Some(e) = app.emoji.as_ref()
+        && !e.candidates.is_empty()
+    {
+        return Some(Dropdown::Emoji(e));
+    }
     if let Some(m) = &app.mention() {
         return Some(Dropdown::Mention(m));
     }
@@ -142,6 +153,7 @@ fn dropdown_trigger(dropdown: &Dropdown<'_>) -> (usize, usize) {
         Dropdown::Mention(m) => (m.trigger_row, m.trigger_col),
         Dropdown::Slash(s) => (s.trigger_row, s.trigger_col),
         Dropdown::Subagent(s) => (s.trigger_row, s.trigger_col),
+        Dropdown::Emoji(e) => (e.trigger_row, e.trigger_col),
     }
 }
 
@@ -184,6 +196,12 @@ fn dropdown_meta(dropdown: &Dropdown<'_>, visible_interior: usize) -> DropdownMe
                 title: format!(" Subagents ({}) ", s.candidates.len()),
             }
         }
+        Dropdown::Emoji(e) => {
+            let cap = emoji::MAX_VISIBLE.min(visible_interior).max(1);
+            let visible_count = e.candidates.len().min(cap);
+            let (start, end) = e.dialog.visible_range(e.candidates.len(), cap);
+            DropdownMeta { visible_count, start, end, title: " Emoji ".to_owned() }
+        }
     }
 }
 
@@ -209,8 +227,59 @@ fn dropdown_lines(dropdown: &Dropdown<'_>, meta: &DropdownMeta) -> Vec<Line<'sta
                 lines.push(subagent_candidate_line(s, candidate, meta.start + i));
             }
         }
+        Dropdown::Emoji(e) => lines.extend(emoji_dropdown_lines(e, meta.visible_count)),
     }
     lines
+}
+
+/// The emoji picker's rows, capped to `visible_interior` content rows.
+/// Shared with the /diff overlay's own popup so both surfaces render the
+/// identical list rather than two lookalike implementations.
+pub(crate) fn emoji_dropdown_lines(
+    state: &emoji::EmojiState,
+    visible_interior: usize,
+) -> Vec<Line<'static>> {
+    let cap = emoji::MAX_VISIBLE.min(visible_interior).max(1);
+    let (start, end) = state.dialog.visible_range(state.candidates.len(), cap);
+    state.candidates[start..end]
+        .iter()
+        .enumerate()
+        .map(|(i, candidate)| emoji_candidate_line(state, candidate, start + i))
+        .collect()
+}
+
+/// Border + title chrome for the emoji picker, shared for the same
+/// reason as [`emoji_dropdown_lines`].
+pub(crate) fn emoji_dropdown_block() -> Block<'static> {
+    Block::default()
+        .title(Span::styled(" Emoji ", Style::default().fg(theme::DIM)))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::DIM))
+}
+
+/// One picker row: the glyph, then its `:shortcode:` with the typed
+/// query highlighted - same shape as the `@` and `/` rows.
+fn emoji_candidate_line(
+    state: &emoji::EmojiState,
+    candidate: &emoji::Emoji,
+    global_idx: usize,
+) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    push_selection_prefix(&mut spans, global_idx == state.dialog.selected);
+    spans.push(Span::raw(format!("{}  ", candidate.glyph)));
+
+    let label = format!(":{}:", candidate.name);
+    if let Some((match_start, match_end)) =
+        find_case_insensitive_range(candidate.name, &state.query)
+    {
+        // +1 shifts past the leading colon in `label`.
+        push_highlighted_text(&mut spans, &label, match_start + 1, match_end + 1);
+    } else {
+        spans.push(Span::raw(label));
+    }
+
+    Line::from(spans)
 }
 
 fn mention_placeholder_line(mention: &mention::MentionState) -> Line<'static> {
