@@ -471,6 +471,45 @@ fn wide_tier_background_session_with_pending_prompt_renders_yellow_glyph() {
     );
 }
 
+/// A background session whose turn died surfaces red `✕` on its row -
+/// a different glyph and colour from the yellow `△`, because an error
+/// is not a request for input.
+#[test]
+fn wide_tier_background_session_with_failed_turn_renders_red_cross() {
+    let mut app = App::test_default();
+
+    let projects = vec![
+        project_view("forge", vec![session_view("session-a", "lead-a")]),
+        project_view("subspace", vec![session_view("session-b", "lead-b")]),
+    ];
+
+    let key_a = SessionKey::from_str_for_test("session-a");
+    let key_b = SessionKey::from_str_for_test("session-b");
+    app.active_session_key = Some(key_a.clone());
+    register_lifecycle_for_test(&mut app, &key_a, SessionLifecycleState::Idle);
+    register_lifecycle_for_test(&mut app, &key_b, SessionLifecycleState::Idle);
+    app.sessions.get_mut(&key_b).expect("registered bucket").failed_turn =
+        Some(forge_tui::app::FailedTurn {
+            error: forge_primitives::ApiRetryError::ServerError,
+            status: Some(529),
+            failed_at: std::time::SystemTime::UNIX_EPOCH,
+        });
+
+    let backend = TestBackend::new(40, 14);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let area = Rect::new(0, 0, 40, 14);
+    terminal.draw(|frame| projects_pane::render(frame, area, &mut app, &projects)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+
+    let fg = find_glyph_fg(&buffer, '\u{2715}')
+        .expect("background session with a failed turn must surface ✕ on its row");
+    assert_eq!(
+        fg,
+        ratatui::style::Color::Red,
+        "background-row ✕ must use STATUS_ERROR (Red), got: {fg:?}"
+    );
+}
+
 #[test]
 fn wide_tier_focused_session_with_pending_prompt_keeps_normal_glyph() {
     let mut app = App::test_default();

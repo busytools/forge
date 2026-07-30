@@ -1,4 +1,4 @@
-mod api_retry;
+pub(crate) mod api_retry;
 mod client;
 pub(crate) mod mouse;
 mod notices;
@@ -42,6 +42,14 @@ pub(crate) fn set_bucket_lifecycle_state(
     if let Some(bucket) = app.sessions.get_mut(key) {
         let from = bucket.lifecycle_state;
         bucket.lifecycle_state = state;
+        // A session that starts another turn has moved on: drop the
+        // failed-turn attention entry and the per-turn retry
+        // classification. Only `Running` counts - the turn-error path
+        // itself parks the bucket at `Idle`.
+        if matches!(state, crate::app::session::SessionLifecycleState::Running) {
+            bucket.failed_turn = None;
+            bucket.last_api_retry = None;
+        }
         tracing::debug!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "session_lifecycle_transition",
@@ -4245,6 +4253,111 @@ mod tests {
         };
         assert_eq!(notice.severity, SystemSeverity::Warning);
         assert_eq!(notice.text.text, "API retry 2/4 after server_error HTTP 529, retrying in 1.5s",);
+    }
+
+    /// The wire only tells us WHY a turn died via the `api_retry`
+    /// messages that precede it, so the last classification of the turn
+    /// is what a following turn error is attributed to.
+    #[test]
+    fn api_retry_records_classification_for_a_following_turn_error() {
+        let mut app = make_test_app();
+        send_msg(
+            &mut app,
+            system_message(
+                "api_retry",
+                serde_json::json!({
+                    "attempt": 2,
+                    "max_retries": 4,
+                    "retry_delay_ms": 1500,
+                    "error_status": 529,
+                    "error": "server_error",
+                }),
+            ),
+        );
+        let key = app.active_session_key.clone().expect("active key");
+        assert_eq!(
+            app.sessions.get(&key).expect("bucket").last_api_retry,
+            Some((forge_primitives::ApiRetryError::ServerError, Some(529))),
+            "the retry classification is retained for the turn-error path",
+        );
+    }
+
+    /// A background turn error records a `failed_turn` carrying the
+    /// classification from the retries that preceded it - that entry is
+    /// what the Inspector band and the Projects pane render.
+    #[test]
+    fn background_turn_error_records_failed_turn_from_last_retry() {
+        let mut app = make_test_app();
+        let bg = forge_workspace::SessionKey::from_session_id("bg-session");
+        app.sessions.insert(bg.clone(), crate::app::session::UiSession::new(bg.clone()));
+        app.sessions.get_mut(&bg).expect("bucket").last_api_retry =
+            Some((forge_primitives::ApiRetryError::ServerError, Some(529)));
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::TurnError {
+                key: bg.clone(),
+                message: "overloaded_error".into(),
+                class: None,
+                terminal_reason: None,
+            },
+        );
+
+        let failed =
+            app.sessions.get(&bg).expect("bucket").failed_turn.clone().expect("failure recorded");
+        assert_eq!(failed.error, forge_primitives::ApiRetryError::ServerError);
+        assert_eq!(failed.status, Some(529));
+    }
+
+    /// A turn that dies without any `api_retry` (an internal SDK error,
+    /// a crashed subprocess) still needs a row - it classifies as
+    /// `Unknown` rather than being dropped.
+    #[test]
+    fn background_turn_error_without_retries_records_unknown_failure() {
+        let mut app = make_test_app();
+        let bg = forge_workspace::SessionKey::from_session_id("bg-session");
+        app.sessions.insert(bg.clone(), crate::app::session::UiSession::new(bg.clone()));
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::TurnError {
+                key: bg.clone(),
+                message: "adapter failed".into(),
+                class: None,
+                terminal_reason: None,
+            },
+        );
+
+        let failed =
+            app.sessions.get(&bg).expect("bucket").failed_turn.clone().expect("failure recorded");
+        assert_eq!(failed.error, forge_primitives::ApiRetryError::Unknown);
+        assert_eq!(failed.status, None);
+    }
+
+    /// A turn the user cancelled is not a failure - suppressing the
+    /// error block and then leaving a red row behind would be a lie.
+    #[test]
+    fn cancelled_background_turn_records_no_failure() {
+        let mut app = make_test_app();
+        let bg = forge_workspace::SessionKey::from_session_id("bg-session");
+        let mut bucket = crate::app::session::UiSession::new(bg.clone());
+        bucket.pending_cancel = true;
+        app.sessions.insert(bg.clone(), bucket);
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::TurnError {
+                key: bg.clone(),
+                message: "aborted".into(),
+                class: None,
+                terminal_reason: None,
+            },
+        );
+
+        assert!(
+            app.sessions.get(&bg).expect("bucket").failed_turn.is_none(),
+            "a cancelled turn leaves no attention row",
+        );
     }
 
     #[test]

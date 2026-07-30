@@ -444,6 +444,16 @@ pub struct UiSession {
     /// Per-session FIFO queue of pending prompts. The dock shows
     /// `prompt_queue.front()` when this session is active.
     pub prompt_queue: std::collections::VecDeque<crate::app::prompt::PromptState>,
+
+    /// Set when a turn on this session died, cleared when the user
+    /// switches to the session or it starts another turn. Drives the
+    /// Inspector NEEDS ATTENTION row and the Projects-pane `✕`.
+    pub failed_turn: Option<crate::app::FailedTurn>,
+
+    /// Classification of the most recent `api_retry` on the in-flight
+    /// turn, so a turn error that follows exhausted retries can name
+    /// what actually killed it. Cleared when a turn starts.
+    pub last_api_retry: Option<(forge_primitives::ApiRetryError, Option<u16>)>,
 }
 
 impl UiSession {
@@ -611,6 +621,8 @@ impl Default for UiSession {
             last_chat_render_trace_state: Option::default(),
             input: InputState::default(),
             prompt_queue: std::collections::VecDeque::new(),
+            failed_turn: Option::default(),
+            last_api_retry: Option::default(),
         }
     }
 }

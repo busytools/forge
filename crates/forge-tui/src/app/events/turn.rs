@@ -570,6 +570,9 @@ fn apply_turn_error_presentation(
         if let Some(bucket) = app.sessions.get_mut(session_key) {
             bucket.turn_state = forge_primitives::runtime::SessionTurnState::default();
         }
+        if !cancelled_requested {
+            record_failed_turn(app, session_key);
+        }
         super::set_bucket_lifecycle_state(
             app,
             session_key,
@@ -714,8 +717,26 @@ fn apply_turn_error_presentation(
             &key,
             crate::app::session::SessionLifecycleState::Idle,
         );
+        record_failed_turn(app, &key);
     }
     crate::app::session_runtime::request_context_usage_refresh(app);
+}
+
+/// Stamp the bucket's `failed_turn` from the classification the turn's
+/// `api_retry` messages left behind, defaulting to
+/// [`forge_primitives::ApiRetryError::Unknown`] for a turn that died
+/// without any. Drives the Inspector NEEDS ATTENTION row and the
+/// Projects-pane `✕` until the user attends to the session or it runs
+/// another turn.
+fn record_failed_turn(app: &mut App, key: &SessionKey) {
+    if let Some(bucket) = app.sessions.get_mut(key) {
+        let (error, status) = bucket
+            .last_api_retry
+            .take()
+            .unwrap_or((forge_primitives::ApiRetryError::Unknown, None));
+        bucket.failed_turn =
+            Some(crate::app::FailedTurn { error, status, failed_at: std::time::SystemTime::now() });
+    }
 }
 
 fn push_interrupted_hint(app: &mut App) {
