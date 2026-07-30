@@ -64,17 +64,17 @@ pub(crate) use state::cache_metrics;
 pub use state::{
     AnsweredQuestion, App, AppStatus, AttentionEntry, AttentionKind, BackgroundTask, BlockCache,
     CacheMetrics, CachedMessageSegment, ChatMessage, ChatRenderTraceState, ChatViewport,
-    ExtraUsage, HelpView, IncrementalMarkdown, InputFocus, InvalidationLevel, LayoutInvalidation,
-    LoginHint, McpState, MessageBlock, MessageRenderCache, MessageRenderCacheKey,
-    MessageRenderSignature, MessageRole, MessageUsage, ModeInfo, ModeState, MonitorEntry,
-    MonitorStatus, NoticeBlock, NoticeDedupKey, NoticeStage, PaneHitTarget, PasteSessionState,
-    PendingCommandAck, PhaseEntry, PhaseStatus, RateLimitIncidentKey, RecentSessionInfo,
-    SUBAGENT_TAIL_CAP, ScheduleEntry, ScheduleKind, ScrollbarGeometry, SelectionKind,
-    SelectionPoint, SelectionState, SessionTurnState, SessionUsageState, StopHookEntry,
-    StopHookSummaryState, SubagentChildEntry, SubagentEntry, SystemSeverity, TerminalSnapshotMode,
-    TextBlock, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope,
-    TurnNoticeLocation, TurnNoticeRef, UsageSnapshot, UsageSourceKind, UsageState, UsageWindow,
-    WelcomeBlock, WorkflowEntry, WorkflowStatus, compute_scrollbar_geometry,
+    ExtraUsage, FailedTurn, HelpView, IncrementalMarkdown, InputFocus, InvalidationLevel,
+    LayoutInvalidation, LoginHint, McpState, MessageBlock, MessageRenderCache,
+    MessageRenderCacheKey, MessageRenderSignature, MessageRole, MessageUsage, ModeInfo, ModeState,
+    MonitorEntry, MonitorStatus, NoticeBlock, NoticeDedupKey, NoticeStage, PaneHitTarget,
+    PasteSessionState, PendingCommandAck, PhaseEntry, PhaseStatus, RateLimitIncidentKey,
+    RecentSessionInfo, SUBAGENT_TAIL_CAP, ScheduleEntry, ScheduleKind, ScrollbarGeometry,
+    SelectionKind, SelectionPoint, SelectionState, SessionTurnState, SessionUsageState,
+    StopHookEntry, StopHookSummaryState, SubagentChildEntry, SubagentEntry, SystemSeverity,
+    TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo,
+    ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UsageSnapshot, UsageSourceKind, UsageState,
+    UsageWindow, WelcomeBlock, WorkflowEntry, WorkflowStatus, compute_scrollbar_geometry,
     hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
     is_monitor_tool_name,
 };
@@ -259,6 +259,12 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // updates without a fresh request, so we poll the wall clock
         // each tick instead of relying on the wire.
         events::rate_limit::maybe_recover_from_rate_limit_lock(app);
+
+        // Same shape one tier down: a turn killed by a transient server
+        // error gets a forge-sent continuation once its backoff elapses.
+        // Wall-clock polled per tick for the same reason - nothing
+        // arrives on the wire to tell us the delay is up.
+        events::auto_continue::maybe_fire(app);
 
         // The Projects pane's account/status panel renders 5h + 7d
         // usage bars on every frame. Keep the snapshot live by

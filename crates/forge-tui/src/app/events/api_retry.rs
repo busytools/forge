@@ -10,6 +10,10 @@ pub(crate) fn handle_api_retry_update(
     error_status: Option<u16>,
     error: ApiRetryError,
 ) {
+    // Retain the classification: if these retries run out, the turn
+    // error that follows carries no reason of its own, and this is the
+    // only place the wire says what went wrong.
+    app.set_last_api_retry(Some((error, error_status)));
     let message =
         format_api_retry_message(attempt, max_retries, retry_delay_ms, error_status, error);
     upsert_turn_notice(
@@ -28,13 +32,16 @@ fn format_api_retry_message(
     error_status: Option<u16>,
     error: ApiRetryError,
 ) -> String {
-    let error_label = api_retry_error_label(error);
+    let error_label = error_label(error);
     let status = error_status.map_or_else(String::new, |status| format!(" HTTP {status}"));
     let delay = format_retry_delay(retry_delay_ms);
     format!("API retry {attempt}/{max_retries} after {error_label}{status}, retrying in {delay}")
 }
 
-fn api_retry_error_label(error: ApiRetryError) -> &'static str {
+/// Human label for a wire retry classification, shared by the in-chat
+/// retry notice and the Inspector's failed-turn attention row so the
+/// two never name the same failure differently.
+pub(crate) fn error_label(error: ApiRetryError) -> &'static str {
     match error {
         ApiRetryError::AuthenticationFailed => "authentication_failed",
         ApiRetryError::BillingError => "billing_error",

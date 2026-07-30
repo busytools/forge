@@ -1,4 +1,5 @@
-mod api_retry;
+pub(crate) mod api_retry;
+pub(crate) mod auto_continue;
 mod client;
 pub(crate) mod mouse;
 mod notices;
@@ -42,6 +43,14 @@ pub(crate) fn set_bucket_lifecycle_state(
     if let Some(bucket) = app.sessions.get_mut(key) {
         let from = bucket.lifecycle_state;
         bucket.lifecycle_state = state;
+        // A session that starts another turn has moved on: drop the
+        // failed-turn attention entry and the per-turn retry
+        // classification. Only `Running` counts - the turn-error path
+        // itself parks the bucket at `Idle`.
+        if matches!(state, crate::app::session::SessionLifecycleState::Running) {
+            bucket.failed_turn = None;
+            bucket.last_api_retry = None;
+        }
         tracing::debug!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "session_lifecycle_transition",
@@ -4245,6 +4254,195 @@ mod tests {
         };
         assert_eq!(notice.severity, SystemSeverity::Warning);
         assert_eq!(notice.text.text, "API retry 2/4 after server_error HTTP 529, retrying in 1.5s",);
+    }
+
+    /// The wire only tells us WHY a turn died via the `api_retry`
+    /// messages that precede it, so the last classification of the turn
+    /// is what a following turn error is attributed to.
+    #[test]
+    fn api_retry_records_classification_for_a_following_turn_error() {
+        let mut app = make_test_app();
+        send_msg(
+            &mut app,
+            system_message(
+                "api_retry",
+                serde_json::json!({
+                    "attempt": 2,
+                    "max_retries": 4,
+                    "retry_delay_ms": 1500,
+                    "error_status": 529,
+                    "error": "server_error",
+                }),
+            ),
+        );
+        let key = app.active_session_key.clone().expect("active key");
+        assert_eq!(
+            app.sessions.get(&key).expect("bucket").last_api_retry,
+            Some((forge_primitives::ApiRetryError::ServerError, Some(529))),
+            "the retry classification is retained for the turn-error path",
+        );
+    }
+
+    /// A background turn error records a `failed_turn` carrying the
+    /// classification and status from the retries that preceded it -
+    /// that entry is what the Inspector band and the Projects pane
+    /// render. (`ServerError` takes the auto-continue path instead; see
+    /// `server_error_turn_error_arms_a_continuation_instead_of_an_attention_row`.)
+    #[test]
+    fn background_turn_error_records_failed_turn_from_last_retry() {
+        let mut app = make_test_app();
+        let bg = forge_workspace::SessionKey::from_session_id("bg-session");
+        app.sessions.insert(bg.clone(), crate::app::session::UiSession::new(bg.clone()));
+        app.sessions.get_mut(&bg).expect("bucket").last_api_retry =
+            Some((forge_primitives::ApiRetryError::BillingError, Some(402)));
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::TurnError {
+                key: bg.clone(),
+                message: "billing_error".into(),
+                class: None,
+                terminal_reason: None,
+            },
+        );
+
+        let failed =
+            app.sessions.get(&bg).expect("bucket").failed_turn.clone().expect("failure recorded");
+        assert_eq!(failed.error, forge_primitives::ApiRetryError::BillingError);
+        assert_eq!(failed.status, Some(402));
+    }
+
+    /// A turn that dies without any `api_retry` (an internal SDK error,
+    /// a crashed subprocess) still needs a row - it classifies as
+    /// `Unknown` rather than being dropped.
+    #[test]
+    fn background_turn_error_without_retries_records_unknown_failure() {
+        let mut app = make_test_app();
+        let bg = forge_workspace::SessionKey::from_session_id("bg-session");
+        app.sessions.insert(bg.clone(), crate::app::session::UiSession::new(bg.clone()));
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::TurnError {
+                key: bg.clone(),
+                message: "adapter failed".into(),
+                class: None,
+                terminal_reason: None,
+            },
+        );
+
+        let failed =
+            app.sessions.get(&bg).expect("bucket").failed_turn.clone().expect("failure recorded");
+        assert_eq!(failed.error, forge_primitives::ApiRetryError::Unknown);
+        assert_eq!(failed.status, None);
+    }
+
+    /// End-to-end: a 529 turn error arms a continuation rather than
+    /// parking the session in the attention band. The band row is the
+    /// fallthrough, so while forge is still retrying there must be none.
+    #[test]
+    fn server_error_turn_error_arms_a_continuation_instead_of_an_attention_row() {
+        let mut app = make_test_app();
+        let bg = forge_workspace::SessionKey::from_session_id("bg-session");
+        app.sessions.insert(bg.clone(), crate::app::session::UiSession::new(bg.clone()));
+        app.sessions.get_mut(&bg).expect("bucket").last_api_retry =
+            Some((forge_primitives::ApiRetryError::ServerError, Some(529)));
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::TurnError {
+                key: bg.clone(),
+                message: "overloaded_error".into(),
+                class: None,
+                terminal_reason: None,
+            },
+        );
+
+        let bucket = app.sessions.get(&bg).expect("bucket");
+        assert!(bucket.auto_continue_due_at.is_some(), "a 529 arms a continuation");
+        assert!(
+            bucket.failed_turn.is_none(),
+            "the session is recovering, so it must not sit in the attention band yet",
+        );
+    }
+
+    /// Once the budget is spent the same 529 falls through to the
+    /// attention band - the loop is bounded.
+    #[test]
+    fn server_error_turn_error_falls_through_to_attention_once_the_cap_is_spent() {
+        let mut app = make_test_app();
+        let bg = forge_workspace::SessionKey::from_session_id("bg-session");
+        app.sessions.insert(bg.clone(), crate::app::session::UiSession::new(bg.clone()));
+        let bucket = app.sessions.get_mut(&bg).expect("bucket");
+        bucket.last_api_retry = Some((forge_primitives::ApiRetryError::ServerError, Some(529)));
+        bucket.auto_continue_attempts = super::auto_continue::MAX_ATTEMPTS;
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::TurnError {
+                key: bg.clone(),
+                message: "overloaded_error".into(),
+                class: None,
+                terminal_reason: None,
+            },
+        );
+
+        let bucket = app.sessions.get(&bg).expect("bucket");
+        assert!(bucket.auto_continue_due_at.is_none(), "no further continuation is armed");
+        let failed = bucket.failed_turn.clone().expect("the failure reaches the user");
+        assert_eq!(failed.error, forge_primitives::ApiRetryError::ServerError);
+        assert_eq!(failed.status, Some(529));
+    }
+
+    /// A 429 must never auto-continue: it needs its window to reset,
+    /// which `rate_limit::maybe_recover_from_rate_limit_lock` owns.
+    #[test]
+    fn rate_limit_turn_error_goes_straight_to_the_attention_row() {
+        let mut app = make_test_app();
+        let bg = forge_workspace::SessionKey::from_session_id("bg-session");
+        app.sessions.insert(bg.clone(), crate::app::session::UiSession::new(bg.clone()));
+        app.sessions.get_mut(&bg).expect("bucket").last_api_retry =
+            Some((forge_primitives::ApiRetryError::RateLimit, Some(429)));
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::TurnError {
+                key: bg.clone(),
+                message: "rate_limit_error".into(),
+                class: None,
+                terminal_reason: None,
+            },
+        );
+
+        let bucket = app.sessions.get(&bg).expect("bucket");
+        assert!(bucket.auto_continue_due_at.is_none(), "a 429 is never auto-continued");
+        assert!(bucket.failed_turn.is_some(), "it parks in the attention band instead");
+    }
+
+    /// A turn the user cancelled is not a failure - suppressing the
+    /// error block and then leaving a red row behind would be a lie.
+    #[test]
+    fn cancelled_background_turn_records_no_failure() {
+        let mut app = make_test_app();
+        let bg = forge_workspace::SessionKey::from_session_id("bg-session");
+        let mut bucket = crate::app::session::UiSession::new(bg.clone());
+        bucket.pending_cancel = true;
+        app.sessions.insert(bg.clone(), bucket);
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::TurnError {
+                key: bg.clone(),
+                message: "aborted".into(),
+                class: None,
+                terminal_reason: None,
+            },
+        );
+
+        assert!(
+            app.sessions.get(&bg).expect("bucket").failed_turn.is_none(),
+            "a cancelled turn leaves no attention row",
+        );
     }
 
     #[test]

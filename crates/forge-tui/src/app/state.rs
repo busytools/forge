@@ -22,7 +22,7 @@ pub use tool_call_info::{
     is_monitor_tool_name,
 };
 pub use types::{
-    AppStatus, AttentionEntry, AttentionKind, BackgroundTask, ExtraUsage, HelpView,
+    AppStatus, AttentionEntry, AttentionKind, BackgroundTask, ExtraUsage, FailedTurn, HelpView,
     HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, MessageUsage, ModeInfo,
     ModeState, MonitorEntry, MonitorStatus, PasteSessionState, PendingCommandAck, PhaseEntry,
     PhaseStatus, RecentSessionInfo, RenderCacheBudget, SUBAGENT_TAIL_CAP, ScheduleEntry,
@@ -155,7 +155,7 @@ pub enum PaneHitTarget {
     /// AND the inspector scroll offset is 0 (otherwise the header
     /// is off-screen).
     InspectorGitOpenDiff { y: u16, height: u16, x_start: u16, x_end: u16 },
-    /// Click on a row in the Inspector's pinned NEEDS INPUT band ->
+    /// Click on a row in the Inspector's pinned NEEDS ATTENTION band ->
     /// switch the active session to `session_key` so its pending
     /// prompt lands in the chat. Stamped per row during render; the
     /// band is pinned so no scroll-offset gate is needed.
@@ -763,6 +763,12 @@ impl App {
             .sessions
             .get(&key)
             .map_or(crate::app::session::SessionLifecycleState::Idle, |s| s.lifecycle_state);
+        // Switching in IS attending: the incoming chat carries the error
+        // block, so drop the attention entry rather than let it reappear
+        // when the user switches away again.
+        if let Some(bucket) = self.sessions.get_mut(&key) {
+            bucket.failed_turn = None;
+        }
         self.active_session_key = Some(key);
         self.status = status_for_lifecycle(incoming_lifecycle);
         // Update terminal/tab title immediately on switch so the host
@@ -1705,23 +1711,26 @@ impl App {
         self.workspace.as_ref().and_then(|ws| ws.project_name_for_path(&cwd))
     }
 
-    /// Background sessions (everything but the active one) with a
-    /// prompt pending at the head of their queue, as [`AttentionEntry`]
-    /// rows sorted stalest-first (oldest enqueue on top, session id as
-    /// the tiebreaker). Mirrors the Projects-pane yellow-triangle
-    /// predicate (`!active && prompt_queue non-empty`) so the two
-    /// surfaces never disagree. Empty when nothing is waiting - the
-    /// Inspector NEEDS INPUT band hides on empty.
-    pub fn needs_input_sessions(&self) -> Vec<AttentionEntry> {
+    /// Background sessions (everything but the active one) that need
+    /// the user: a prompt pending at the head of their queue, or a
+    /// turn that died. [`AttentionEntry`] rows sorted stalest-first
+    /// (oldest first, session id as the tiebreaker). Mirrors the
+    /// Projects-pane glyph predicates so the two surfaces never
+    /// disagree. Empty when nothing needs attention - the Inspector
+    /// NEEDS ATTENTION band hides on empty.
+    pub fn needs_attention_sessions(&self) -> Vec<AttentionEntry> {
         let active = self.active_session_key.as_ref();
-        // Cheap first pass: which background sessions have a head-of-queue
-        // prompt? The common case (nothing waiting) returns here without
+        // Cheap first pass: which background sessions are waiting or
+        // failed? The common case (nothing waiting) returns here without
         // touching the workspace - no `list_projects` clone, no live-
         // workers lock - since this runs on every inspector render.
         let waiting: Vec<(&forge_workspace::SessionKey, &crate::app::session::UiSession)> = self
             .sessions
             .iter()
-            .filter(|(key, session)| active != Some(*key) && !session.prompt_queue.is_empty())
+            .filter(|(key, session)| {
+                active != Some(*key)
+                    && (!session.prompt_queue.is_empty() || session.failed_turn.is_some())
+            })
             .collect();
         if waiting.is_empty() {
             return Vec::new();
@@ -1747,12 +1756,24 @@ impl App {
 
         let mut entries: Vec<AttentionEntry> = Vec::with_capacity(waiting.len());
         for (key, session) in waiting {
-            let Some(prompt) = session.prompt_queue.front() else { continue };
-            let kind = match &prompt.source {
-                crate::app::prompt::PromptSource::Permission { tool_name, .. } => {
-                    AttentionKind::Permission { tool: tool_name.clone() }
-                }
-                crate::app::prompt::PromptSource::Question { .. } => AttentionKind::Question,
+            // One row per session. A dead turn outranks a pending prompt:
+            // the prompt can no longer be answered (its oneshot died with
+            // the turn), and the failure is the signal that must not be
+            // missed.
+            let (kind, since) = if let Some(failed) = session.failed_turn.as_ref() {
+                (
+                    AttentionKind::Failed { error: failed.error, status: failed.status },
+                    failed.failed_at,
+                )
+            } else {
+                let Some(prompt) = session.prompt_queue.front() else { continue };
+                let kind = match &prompt.source {
+                    crate::app::prompt::PromptSource::Permission { tool_name, .. } => {
+                        AttentionKind::Permission { tool: tool_name.clone() }
+                    }
+                    crate::app::prompt::PromptSource::Question { .. } => AttentionKind::Question,
+                };
+                (kind, prompt.enqueued_at)
             };
             let (name, role) = if let Some((project_name, label)) = worker_index.get(key) {
                 (project_name.clone(), Some(label.clone()))
@@ -1769,7 +1790,7 @@ impl App {
                 name,
                 role,
                 kind,
-                enqueued_at: prompt.enqueued_at,
+                enqueued_at: since,
             });
         }
         entries.sort_by(|a, b| {
@@ -1788,6 +1809,16 @@ impl App {
     /// Set the active session's files-accessed counter.
     pub fn set_files_accessed(&mut self, value: usize) {
         self.active_bucket_mut().files_accessed = value;
+    }
+
+    /// Retain the classification of the active session's latest
+    /// `api_retry`, so a turn error following exhausted retries can name
+    /// what killed it.
+    pub(crate) fn set_last_api_retry(
+        &mut self,
+        retry: Option<(forge_primitives::ApiRetryError, Option<u16>)>,
+    ) {
+        self.active_bucket_mut().last_api_retry = retry;
     }
 
     /// Increment the active session's files-accessed counter by one.
@@ -4345,12 +4376,12 @@ mod tests {
         }
     }
 
-    // ── needs_input_sessions (Inspector NEEDS INPUT band) ──────────
+    // ── needs_attention_sessions (Inspector NEEDS ATTENTION band) ──────────
 
     /// Seed a background session carrying one pending permission prompt
     /// enqueued `secs` after the UNIX epoch; stamps a project name so
     /// the row resolves without a workspace catalog. Returns its key.
-    fn seed_needs_input_session(app: &mut App, id: &str, secs: u64) -> forge_workspace::SessionKey {
+    fn seed_attention_session(app: &mut App, id: &str, secs: u64) -> forge_workspace::SessionKey {
         let key = forge_workspace::SessionKey::from_session_id(id);
         let mut session = crate::app::session::UiSession::new(key.clone());
         session.project = Some(format!("proj-{id}"));
@@ -4368,17 +4399,17 @@ mod tests {
     #[test]
     fn needs_input_sessions_empty_when_no_prompts() {
         let app = App::test_default();
-        assert!(app.needs_input_sessions().is_empty(), "no pending prompts -> no rows");
+        assert!(app.needs_attention_sessions().is_empty(), "no pending prompts -> no rows");
     }
 
     #[test]
     fn needs_input_sessions_includes_background_and_excludes_active() {
         let mut app = App::test_default();
-        seed_needs_input_session(&mut app, "bg", 100);
-        let active = seed_needs_input_session(&mut app, "active", 50);
+        seed_attention_session(&mut app, "bg", 100);
+        let active = seed_attention_session(&mut app, "active", 50);
         app.active_session_key = Some(active);
 
-        let entries = app.needs_input_sessions();
+        let entries = app.needs_attention_sessions();
         let keys: Vec<&str> = entries.iter().map(|e| e.session_key.as_str()).collect();
         assert_eq!(keys, vec!["bg"], "the active session is excluded even with a pending prompt");
         assert!(matches!(entries[0].kind, crate::app::AttentionKind::Permission { .. }));
@@ -4389,10 +4420,10 @@ mod tests {
         let mut app = App::test_default();
         // Insert newest-first to prove the sort reorders by enqueue age,
         // not by insertion order.
-        seed_needs_input_session(&mut app, "newest", 300);
-        seed_needs_input_session(&mut app, "oldest", 100);
-        seed_needs_input_session(&mut app, "middle", 200);
-        let entries = app.needs_input_sessions();
+        seed_attention_session(&mut app, "newest", 300);
+        seed_attention_session(&mut app, "oldest", 100);
+        seed_attention_session(&mut app, "middle", 200);
+        let entries = app.needs_attention_sessions();
         let order: Vec<&str> = entries.iter().map(|e| e.session_key.as_str()).collect();
         assert_eq!(order, vec!["oldest", "middle", "newest"], "stalest (oldest enqueue) on top");
     }
@@ -4409,7 +4440,7 @@ mod tests {
         prompt.enqueued_at = std::time::SystemTime::UNIX_EPOCH;
         session.prompt_queue.push_back(prompt);
         app.sessions.insert(key, session);
-        let entries = app.needs_input_sessions();
+        let entries = app.needs_attention_sessions();
         assert!(
             entries.iter().any(|e| matches!(e.kind, crate::app::AttentionKind::Question)),
             "a session with an AskUserQuestion prompt reports the Question kind",
@@ -4423,9 +4454,9 @@ mod tests {
         // tiebreak or the band would flicker order between frames. Seed
         // in reverse id order to prove the sort, not insertion order.
         let mut app = App::test_default();
-        seed_needs_input_session(&mut app, "zeta", 500);
-        seed_needs_input_session(&mut app, "alpha", 500);
-        let entries = app.needs_input_sessions();
+        seed_attention_session(&mut app, "zeta", 500);
+        seed_attention_session(&mut app, "alpha", 500);
+        let entries = app.needs_attention_sessions();
         let order: Vec<&str> = entries.iter().map(|e| e.session_key.as_str()).collect();
         assert_eq!(order, vec!["alpha", "zeta"], "equal enqueue -> deterministic id tiebreak");
     }
@@ -4472,10 +4503,174 @@ mod tests {
         session.prompt_queue.push_back(prompt);
         app.sessions.insert(worker_key.clone(), session);
 
-        let entries = app.needs_input_sessions();
+        let entries = app.needs_attention_sessions();
         let entry = entries.iter().find(|e| e.session_key == worker_key).expect("worker entry");
         assert_eq!(entry.name, "core-v1", "name resolves to the owning project");
         assert_eq!(entry.role.as_deref(), Some("steward"), "role resolves to the worker label");
+    }
+
+    // ── failed-turn attention rows ─────────────────────────────────
+
+    /// Seed a background session whose last turn failed `secs` after the
+    /// epoch with the given classification. Returns its key.
+    fn seed_failed_session(
+        app: &mut App,
+        id: &str,
+        secs: u64,
+        error: forge_primitives::ApiRetryError,
+        status: Option<u16>,
+    ) -> forge_workspace::SessionKey {
+        let key = forge_workspace::SessionKey::from_session_id(id);
+        let mut session = crate::app::session::UiSession::new(key.clone());
+        session.project = Some(format!("proj-{id}"));
+        session.failed_turn = Some(crate::app::FailedTurn {
+            error,
+            status,
+            failed_at: std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs),
+        });
+        app.sessions.insert(key.clone(), session);
+        key
+    }
+
+    #[test]
+    fn needs_attention_sessions_includes_failed_background_session() {
+        let mut app = App::test_default();
+        let key = seed_failed_session(
+            &mut app,
+            "bg",
+            100,
+            forge_primitives::ApiRetryError::ServerError,
+            Some(529),
+        );
+
+        let entries = app.needs_attention_sessions();
+        let entry = entries.iter().find(|e| e.session_key == key).expect("failed row present");
+        assert_eq!(
+            entry.kind,
+            crate::app::AttentionKind::Failed {
+                error: forge_primitives::ApiRetryError::ServerError,
+                status: Some(529),
+            },
+            "a failed background turn surfaces as a Failed attention row",
+        );
+    }
+
+    #[test]
+    fn needs_attention_sessions_excludes_failed_active_session() {
+        let mut app = App::test_default();
+        let active = seed_failed_session(
+            &mut app,
+            "active",
+            100,
+            forge_primitives::ApiRetryError::Unknown,
+            None,
+        );
+        app.active_session_key = Some(active);
+        assert!(
+            app.needs_attention_sessions().is_empty(),
+            "the session the user is looking at already shows its error in the chat",
+        );
+    }
+
+    /// A failed turn outranks a stale pending prompt on the same session:
+    /// the band emits one row per session and the error is the signal the
+    /// user must not miss.
+    #[test]
+    fn needs_attention_sessions_prefers_failure_over_pending_prompt() {
+        let mut app = App::test_default();
+        let key = seed_attention_session(&mut app, "both", 100);
+        app.sessions.get_mut(&key).expect("seeded bucket").failed_turn =
+            Some(crate::app::FailedTurn {
+                error: forge_primitives::ApiRetryError::BillingError,
+                status: Some(400),
+                failed_at: std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(200),
+            });
+
+        let entries = app.needs_attention_sessions();
+        assert_eq!(entries.len(), 1, "one row per session");
+        assert!(
+            matches!(entries[0].kind, crate::app::AttentionKind::Failed { .. }),
+            "the failure wins over the pending prompt: {:?}",
+            entries[0].kind,
+        );
+    }
+
+    /// Switching to a failed session IS attending to it - the chat shows
+    /// the error block, so the band entry must not survive to reappear
+    /// the next time the user switches away.
+    #[test]
+    fn failed_turn_clears_when_session_becomes_active() {
+        let mut app = App::test_default();
+        let key = seed_failed_session(
+            &mut app,
+            "bg",
+            100,
+            forge_primitives::ApiRetryError::ServerError,
+            Some(529),
+        );
+        // A second bucket so there is somewhere to switch away to.
+        seed_failed_session(&mut app, "other", 50, forge_primitives::ApiRetryError::Unknown, None);
+        app.active_session_key = Some(forge_workspace::SessionKey::from_session_id("other"));
+
+        app.switch_active_session(key.clone());
+        assert!(
+            app.sessions.get(&key).expect("bucket").failed_turn.is_none(),
+            "attending to the session clears its failure",
+        );
+
+        app.switch_active_session(forge_workspace::SessionKey::from_session_id("other"));
+        assert!(
+            !app.needs_attention_sessions().iter().any(|e| e.session_key == key),
+            "the attended failure does not come back on switch-away",
+        );
+    }
+
+    /// A session that starts another turn has recovered - the stale
+    /// failure row must go, whether the turn came from the user or from
+    /// forge's own auto-continue.
+    #[test]
+    fn failed_turn_clears_when_a_new_turn_starts() {
+        let mut app = App::test_default();
+        let key = seed_failed_session(
+            &mut app,
+            "bg",
+            100,
+            forge_primitives::ApiRetryError::ServerError,
+            Some(529),
+        );
+        crate::app::events::set_bucket_lifecycle_state(
+            &mut app,
+            &key,
+            crate::app::session::SessionLifecycleState::Running,
+        );
+        assert!(
+            app.sessions.get(&key).expect("bucket").failed_turn.is_none(),
+            "a new turn on the session clears the failure",
+        );
+    }
+
+    /// Going Idle is not recovery - the turn-error path itself parks the
+    /// bucket at Idle, so clearing there would erase the row the instant
+    /// it was set.
+    #[test]
+    fn failed_turn_survives_an_idle_transition() {
+        let mut app = App::test_default();
+        let key = seed_failed_session(
+            &mut app,
+            "bg",
+            100,
+            forge_primitives::ApiRetryError::ServerError,
+            Some(529),
+        );
+        crate::app::events::set_bucket_lifecycle_state(
+            &mut app,
+            &key,
+            crate::app::session::SessionLifecycleState::Idle,
+        );
+        assert!(
+            app.sessions.get(&key).expect("bucket").failed_turn.is_some(),
+            "Idle is where a failed turn parks; the row must outlive it",
+        );
     }
 
     /// A worker spawned into a git worktree carries the worktree path

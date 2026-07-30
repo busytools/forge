@@ -27,7 +27,7 @@ pub struct PromptState {
     /// the CLI on submit.
     pub edited_input: Option<Value>,
     /// When this prompt entered the queue; drives the Inspector
-    /// NEEDS INPUT band's wait-age. Stamped at construction, which
+    /// NEEDS ATTENTION band's wait-age. Stamped at construction, which
     /// in production is the same instant it is enqueued.
     pub enqueued_at: std::time::SystemTime,
 }
