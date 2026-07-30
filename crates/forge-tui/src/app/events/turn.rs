@@ -334,6 +334,8 @@ fn apply_turn_complete_presentation(
     session_key: &SessionKey,
     terminal_reason: Option<forge_primitives::TerminalReason>,
 ) {
+    // The outage passed: give a later unrelated one the full budget.
+    super::auto_continue::note_turn_completed(app, session_key);
     if app.active_session_key.as_ref() != Some(session_key) {
         let Some(session) = app.session_mut(session_key) else {
             // Promoted to `error` for triage visibility. When this
@@ -571,7 +573,7 @@ fn apply_turn_error_presentation(
             bucket.turn_state = forge_primitives::runtime::SessionTurnState::default();
         }
         if !cancelled_requested {
-            record_failed_turn(app, session_key);
+            handle_dead_turn(app, session_key);
         }
         super::set_bucket_lifecycle_state(
             app,
@@ -717,9 +719,25 @@ fn apply_turn_error_presentation(
             &key,
             crate::app::session::SessionLifecycleState::Idle,
         );
-        record_failed_turn(app, &key);
+        handle_dead_turn(app, &key);
     }
     crate::app::session_runtime::request_context_usage_refresh(app);
+}
+
+/// Decide what a dead turn on `key` means. A transient server error
+/// with budget left gets continued by forge itself (see
+/// [`super::auto_continue`]); everything else - and an exhausted budget
+/// - falls through to the attention band.
+fn handle_dead_turn(app: &mut App, key: &SessionKey) {
+    let error = app
+        .sessions
+        .get(key)
+        .and_then(|bucket| bucket.last_api_retry)
+        .map_or(forge_primitives::ApiRetryError::Unknown, |(error, _)| error);
+    if super::auto_continue::arm_if_transient(app, key, error, std::time::SystemTime::now()) {
+        return;
+    }
+    record_failed_turn(app, key);
 }
 
 /// Stamp the bucket's `failed_turn` from the classification the turn's
@@ -728,12 +746,10 @@ fn apply_turn_error_presentation(
 /// without any. Drives the Inspector NEEDS ATTENTION row and the
 /// Projects-pane `✕` until the user attends to the session or it runs
 /// another turn.
-fn record_failed_turn(app: &mut App, key: &SessionKey) {
+pub(crate) fn record_failed_turn(app: &mut App, key: &SessionKey) {
     if let Some(bucket) = app.sessions.get_mut(key) {
-        let (error, status) = bucket
-            .last_api_retry
-            .take()
-            .unwrap_or((forge_primitives::ApiRetryError::Unknown, None));
+        let (error, status) =
+            bucket.last_api_retry.unwrap_or((forge_primitives::ApiRetryError::Unknown, None));
         bucket.failed_turn =
             Some(crate::app::FailedTurn { error, status, failed_at: std::time::SystemTime::now() });
     }

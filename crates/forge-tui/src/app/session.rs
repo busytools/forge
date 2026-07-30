@@ -454,6 +454,16 @@ pub struct UiSession {
     /// turn, so a turn error that follows exhausted retries can name
     /// what actually killed it. Cleared when a turn starts.
     pub last_api_retry: Option<(forge_primitives::ApiRetryError, Option<u16>)>,
+
+    /// When forge's next continuation turn for this session is due,
+    /// after a transient server error killed the last one. See
+    /// `crate::app::events::auto_continue`.
+    pub auto_continue_due_at: Option<std::time::SystemTime>,
+
+    /// Continuations forge has already sent for the current failure
+    /// streak. Capped at `auto_continue::MAX_ATTEMPTS`; reset when a
+    /// turn completes.
+    pub auto_continue_attempts: u32,
 }
 
 impl UiSession {
@@ -623,6 +633,8 @@ impl Default for UiSession {
             prompt_queue: std::collections::VecDeque::new(),
             failed_turn: Option::default(),
             last_api_retry: Option::default(),
+            auto_continue_due_at: Option::default(),
+            auto_continue_attempts: 0,
         }
     }
 }

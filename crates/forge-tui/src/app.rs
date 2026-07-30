@@ -260,6 +260,12 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // each tick instead of relying on the wire.
         events::rate_limit::maybe_recover_from_rate_limit_lock(app);
 
+        // Same shape one tier down: a turn killed by a transient server
+        // error gets a forge-sent continuation once its backoff elapses.
+        // Wall-clock polled per tick for the same reason - nothing
+        // arrives on the wire to tell us the delay is up.
+        events::auto_continue::maybe_fire(app);
+
         // The Projects pane's account/status panel renders 5h + 7d
         // usage bars on every frame. Keep the snapshot live by
         // calling `request_refresh_if_needed` each tick - it's
