@@ -897,9 +897,12 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("CronPromptAppended")
                 .field("session_id", session_id)
                 .finish_non_exhaustive(),
-            Self::ReviewActivityNotice { key, .. } => {
-                f.debug_struct("ReviewActivityNotice").field("key", key).finish_non_exhaustive()
-            }
+            Self::ReviewActivityNotice { key, branch, waiting, .. } => f
+                .debug_struct("ReviewActivityNotice")
+                .field("key", key)
+                .field("branch", branch)
+                .field("waiting", waiting)
+                .finish_non_exhaustive(),
             Self::FatalError(err) => f.debug_struct("FatalError").field("error", err).finish(),
         }
     }
