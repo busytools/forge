@@ -3206,14 +3206,26 @@ impl Workspace {
         self.gotify_subs.lock().push(sub);
     }
 
-    /// Remove the subscription `id` if it belongs to `project`, from both
-    /// the active set and (when present) the redb store. Returns whether
-    /// an entry was removed. Backs `gotify__unsubscribe`.
-    pub(crate) fn remove_gotify_subscription(&self, project: &str, id: uuid::Uuid) -> bool {
+    /// Remove the subscription `id` in `project` only when its owner
+    /// matches `owner` (`None` = a lead subscription, `Some(label)` =
+    /// that worker's), from both the active set and (when present) the
+    /// redb store. Returns whether an entry was removed. Backs the
+    /// owner-scoped `gotify__unsubscribe` so a caller removes only what
+    /// it subscribed, mirroring [`Self::remove_cron_owned_by`]. Worker
+    /// teardown uses [`Self::remove_gotify_subscriptions_for_worker`]
+    /// instead and is deliberately not owner-gated.
+    pub(crate) fn remove_gotify_subscription_owned_by(
+        &self,
+        project: &str,
+        id: uuid::Uuid,
+        owner: Option<&str>,
+    ) -> bool {
         let removed = {
             let mut subs = self.gotify_subs.lock();
             let before = subs.len();
-            subs.retain(|s| !(s.id == id && s.project == project));
+            subs.retain(|s| {
+                !(s.id == id && s.project == project && s.team_role.as_deref() == owner)
+            });
             subs.len() != before
         };
         if removed
@@ -7092,7 +7104,10 @@ config_dir = "/tmp/wt-acct-cfg/stargate"
         assert_eq!(persisted().len(), 1, "only the durable subscription hit redb");
         assert_eq!(persisted()[0].id, durable.id);
 
-        assert!(ws.remove_gotify_subscription("p", durable.id), "durable id removes");
+        assert!(
+            ws.remove_gotify_subscription_owned_by("p", durable.id, None),
+            "the lead's own durable id removes",
+        );
         assert!(persisted().is_empty(), "removal cleared the persisted record");
     }
 
