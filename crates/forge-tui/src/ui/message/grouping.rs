@@ -2145,6 +2145,50 @@ mod tests {
         assert_eq!(segments[1].group_total_count, 5);
     }
 
+    /// The shape behind the duplicate-card report: one inbound
+    /// envelope in a user turn, then one outbound call in the next
+    /// assistant turn. Neither message reaches the threshold on its
+    /// own, so the run only exists at session level - both segments
+    /// carry `group_total_count` 2 and share a leader.
+    #[test]
+    fn messaging_group_spans_user_inbound_then_assistant_outbound() {
+        let messages = vec![
+            crate::app::ChatMessage::new(
+                crate::app::MessageRole::User,
+                vec![inbound_peer_block("steward", "Message")],
+                None,
+            ),
+            assistant_message_with_blocks(vec![outbound_peer_block("steward", "Tell")]),
+        ];
+
+        let per_message_units = partition_session_into_render_units(&messages);
+        let groups: Vec<&RenderUnit> = per_message_units
+            .iter()
+            .flatten()
+            .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
+            .collect();
+        assert_eq!(
+            groups.len(),
+            2,
+            "one inbound + one outbound across a turn boundary is a group of 2; got {per_message_units:?}",
+        );
+
+        let leaders: Vec<&GroupId> = groups
+            .iter()
+            .map(|u| match u {
+                RenderUnit::MessagingGroup { group_leader_id, .. } => group_leader_id,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(leaders[0], leaders[1], "both segments share one leader");
+
+        for unit in &groups {
+            let RenderUnit::MessagingGroup { segments, .. } = unit else { unreachable!() };
+            assert_eq!(segments[0].segment_count, 1);
+            assert_eq!(segments[0].group_total_count, 2);
+        }
+    }
+
     /// Threshold-1: a single peer block folds into a messaging group.
     /// A lone outbound peer/worker block does NOT form an @ group;
     /// it renders as an `Individual` (plain peer block). The group
