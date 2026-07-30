@@ -665,20 +665,32 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // Section header - DIM bold, flush against the rule above
     // (mirrors `TASKS`). When the snapshot has at least one layer
     // of diff to surface, append the `🦉` glyph at the right edge
-    // as the open-diff affordance.
+    // as the open-diff affordance, with any `💬 N` waiting-reply
+    // badge immediately left of it.
     let has_glyph = snapshot_has_diff(app);
+    let badge = review_replies_badge(app).map(|count| format!("\u{1F4AC} {count}"));
     let mut header_spans = vec![Span::styled(
         " GIT".to_owned(),
         Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
     )];
-    if has_glyph {
-        // " GIT" is 4 cells; the 🦉 owl is 2 cells wide; trailing
-        // pad is PANE_PAD (1 cell) so the owl's right edge aligns
-        // with the `-M` column on the diff-stats rows below.
+    if has_glyph || badge.is_some() {
+        // " GIT" is 4 cells; the 🦉 owl and the badge's 💬 are 2 cells
+        // each; trailing pad is PANE_PAD (1 cell) so the owl's right
+        // edge aligns with the `-M` column on the diff-stats rows below.
         let trailing_pad = usize::from(PANE_PAD);
-        let pad = usize::from(width).saturating_sub(4 + 2 + trailing_pad);
+        let badge_width = badge.as_ref().map_or(0, |text| text.chars().count() + 1);
+        let owl_width = if has_glyph { 2 } else { 0 };
+        let gap = usize::from(badge_width > 0 && owl_width > 0);
+        let pad =
+            usize::from(width).saturating_sub(4 + badge_width + gap + owl_width + trailing_pad);
         header_spans.push(Span::raw(" ".repeat(pad)));
-        header_spans.push(Span::styled("\u{1F989}".to_owned(), Style::default()));
+        if let Some(text) = badge {
+            header_spans.push(Span::styled(text, Style::default().fg(theme::REVIEW_ADDRESSED)));
+            header_spans.push(Span::raw(" ".repeat(gap)));
+        }
+        if has_glyph {
+            header_spans.push(Span::styled("\u{1F989}".to_owned(), Style::default()));
+        }
         header_spans.push(Span::raw(" ".repeat(trailing_pad)));
     }
     lines.push(Line::from(header_spans));
@@ -796,6 +808,20 @@ fn diff_layer_failed_line(width: u16, label: &str) -> Line<'static> {
         Span::styled(warn_text.to_owned(), Style::default().fg(theme::STATUS_WARNING)),
         Span::raw(" "),
     ])
+}
+
+/// Worker answers on the active session's reviews still owed a
+/// reviewer turn, for the `💬 N` header badge. Suppressed once the
+/// header describes a different branch than the count was recorded
+/// against - `/diff` would open on that one instead. Two bucket field
+/// reads, no store query: this runs every frame.
+fn review_replies_badge(app: &App) -> Option<usize> {
+    let session = app.active_session()?;
+    let waiting = session.review_replies_waiting.as_ref()?;
+    match &session.git_diff_snapshot.as_ref()?.branch {
+        GitBranch::Named(name) if *name == waiting.branch => Some(waiting.count),
+        _ => None,
+    }
 }
 
 /// Whether the active session's snapshot warrants the `🦉` open-diff
@@ -3938,6 +3964,76 @@ mod tests {
             joined.contains("git scanner unhealthy"),
             "ScannerFailed must surface the unhealthy banner; got:\n{joined}"
         );
+    }
+
+    /// Active session on branch `branch` with a clean tree (so the
+    /// `🦉` is absent and the badge is the only thing on the header),
+    /// carrying `count` waiting replies recorded against `waiting_on`.
+    fn app_with_waiting_replies(branch: &str, waiting_on: &str, count: usize) -> App {
+        let mut app = app_with_git_gate(RepoGate::InRepo);
+        let key = app.active_session_key.clone().expect("active key");
+        let session = app.sessions.get_mut(&key).expect("bucket");
+        if let Some(snapshot) = session.git_diff_snapshot.as_mut() {
+            snapshot.branch = forge_primitives::git::GitBranch::Named(branch.to_owned());
+        }
+        session.review_replies_waiting =
+            crate::app::ReviewRepliesWaiting::merge(None, waiting_on, count);
+        app
+    }
+
+    fn git_header_text(app: &App) -> String {
+        let mut lines = Vec::new();
+        append_git_section(&mut lines, app, 60);
+        lines.first().map(line_text).unwrap_or_default()
+    }
+
+    #[test]
+    fn git_header_badges_waiting_review_replies() {
+        let app = app_with_waiting_replies("feat", "feat", 2);
+        let header = git_header_text(&app);
+        assert!(header.contains("\u{1F4AC} 2"), "the badge names the count: {header}");
+    }
+
+    #[test]
+    fn git_header_badge_absent_without_waiting_replies() {
+        let app = app_with_git_gate(RepoGate::InRepo);
+        assert!(!git_header_text(&app).contains('\u{1F4AC}'), "no replies waiting, no badge");
+    }
+
+    /// The `🦉` click target is stamped at a fixed offset from the
+    /// right edge, so the badge must sit LEFT of the owl and leave the
+    /// header exactly `width` cells wide - otherwise the click lands
+    /// somewhere else.
+    #[test]
+    fn git_header_badge_leaves_the_owl_at_its_hit_tested_column() {
+        use unicode_width::UnicodeWidthStr;
+
+        let mut app = app_with_waiting_replies("feat", "feat", 2);
+        let key = app.active_session_key.clone().expect("active key");
+        if let Some(snapshot) =
+            app.sessions.get_mut(&key).and_then(|s| s.git_diff_snapshot.as_mut())
+        {
+            snapshot.worktree = LayerState::Populated(GitDiffStats {
+                files: vec![],
+                total_files: 1,
+                total_added: 1,
+                total_removed: 0,
+            });
+        }
+        let header = git_header_text(&app);
+        assert!(header.contains("\u{1F4AC} 2") && header.contains('\u{1F989}'), "both: {header}");
+        assert_eq!(header.width(), 60, "the header fills the pane exactly: {header}");
+        let owl_col = header.find('\u{1F989}').map(|byte| header[..byte].width()).expect("owl");
+        assert_eq!(owl_col, 60 - 3, "owl stays where the hit test stamps it");
+    }
+
+    #[test]
+    fn git_header_badge_hidden_once_the_header_describes_another_branch() {
+        // The badge points at `/diff`, which opens on the CURRENT branch -
+        // showing another branch's count there would be a lie.
+        let app = app_with_waiting_replies("main", "feat", 3);
+        let header = git_header_text(&app);
+        assert!(!header.contains('\u{1F4AC}'), "stale-branch badge suppressed: {header}");
     }
 
     fn gotify_sub(
