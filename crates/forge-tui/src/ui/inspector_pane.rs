@@ -1574,12 +1574,12 @@ fn gotify_section_visible(app: &App) -> bool {
     !app.gotify_subs.is_empty()
 }
 
-/// Render the Inspector GOTIFY section: an `◈ connected` status line
-/// then the active session's own subscriptions. The snapshot is already
+/// Render the Inspector GOTIFY section: a status-carrying header then
+/// the active session's own subscriptions. The snapshot is already
 /// scoped by owner in `App::refresh_gotify`, so every row here belongs
 /// to this session and none needs an owner label. Only invoked when
-/// [`gotify_section_visible`] holds, so the stream is always connected
-/// and the subscription set is never empty.
+/// [`gotify_section_visible`] holds, so the subscription set is never
+/// empty; the stream may be up or down.
 fn append_gotify_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     lines.push(gotify_header_line(width, app.gotify_connected));
     lines.push(Line::default());
