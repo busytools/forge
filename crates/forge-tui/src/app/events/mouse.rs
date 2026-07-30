@@ -528,8 +528,7 @@ fn messaging_group_leader_match(
     msg_idx: usize,
     block_idx: usize,
 ) -> Option<(crate::ui::message::grouping::GroupId, usize)> {
-    let msg = app.messages().get(msg_idx)?;
-    crate::ui::message::grouping::messaging_group_leader_at(&msg.blocks, block_idx)
+    crate::ui::message::grouping::messaging_group_leader_at(app.messages(), msg_idx, block_idx)
 }
 
 /// Map the chat-area click coordinate to a `(message_idx, block_idx)`
@@ -1398,6 +1397,207 @@ mod tests {
         assert_eq!(
             app.active_session_key, initial_active,
             "missing-bucket worker click must not change active session",
+        );
+    }
+
+    /// Seed the two-message peer run (inbound envelope in a user turn,
+    /// outbound call in the next assistant turn) with the hit-test
+    /// geometry the L2 summary render stamps, and return the messaging
+    /// group's leader id.
+    fn seed_cross_turn_peer_run(app: &mut App) -> crate::ui::message::grouping::GroupId {
+        use crate::agent::model;
+        use crate::app::{
+            BlockCache, ChatMessage, MessageRole, TerminalSnapshotMode, TextBlock, ToolCallInfo,
+        };
+        use crate::ui::message::grouping::{RenderUnit, partition_session_into_render_units};
+
+        let mut inbound = TextBlock::from_complete(
+            "[Message id=t-abc123 from agent 'steward' (org 'forge')]\n\nthe window is lost",
+        );
+        inbound.peer_last_measured_y_in_msg = 0;
+        inbound.peer_last_measured_height = 1;
+        inbound.peer_last_measured_width = 80;
+        app.push_message_tracked(ChatMessage::new_peer_envelope(
+            MessageRole::User,
+            vec![MessageBlock::Text(inbound)],
+            None,
+        ));
+
+        let outbound = ToolCallInfo {
+            id: "toolu_tell_steward".to_owned(),
+            title: "Tell steward".to_owned(),
+            sdk_tool_name: "mcp__forge__peers__tell_agent".to_owned(),
+            raw_input: Some(serde_json::json!({ "target": "steward", "message": "body" })),
+            raw_input_bytes: 0,
+            output_metadata: None,
+            task_metadata: None,
+            status: model::ToolCallStatus::Completed,
+            content: Vec::new(),
+            hidden: false,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+            monitor_output_tail: Vec::default(),
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
+            last_measured_height: 1,
+            last_measured_width: 80,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: BlockCache::default(),
+            collapsed_override: None,
+        };
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(outbound))],
+            None,
+        ));
+
+        let _ = app.active_viewport_mut().on_frame(80, 20);
+        app.active_viewport_mut().set_message_height(0, 1);
+        app.active_viewport_mut().set_message_height(1, 1);
+        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().rebuild_prefix_sums();
+        app.rendered_chat_area = Rect { x: 0, y: 0, width: 80, height: 20 };
+
+        partition_session_into_render_units(app.messages())
+            .iter()
+            .flatten()
+            .find_map(|unit| match unit {
+                RenderUnit::MessagingGroup { group_leader_id, .. } => Some(group_leader_id.clone()),
+                _ => None,
+            })
+            .expect("session partition produces a messaging group")
+    }
+
+    /// A click on the outbound half of a cross-turn bundle summary
+    /// cycles the group's collapse level, the same way a click on a
+    /// tool-call group summary does.
+    #[test]
+    fn click_on_messaging_group_summary_cycles_outbound_segment() {
+        use crate::ui::message::grouping::GroupCollapseLevel;
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+
+        let mut app = App::test_default();
+        let leader_id = seed_cross_turn_peer_run(&mut app);
+        assert_eq!(app.messaging_group_collapse_level(&leader_id), GroupCollapseLevel::L2Summary);
+
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 1,
+            modifiers: KeyModifiers::empty(),
+        };
+        assert!(try_toggle_tool_call_at_click(&mut app, mouse), "click must be consumed");
+        assert_eq!(
+            app.messaging_group_collapse_level(&leader_id),
+            GroupCollapseLevel::L1Titles,
+            "click on the bundle summary cycles L2 -> L1",
+        );
+    }
+
+    /// Same for the inbound half - the user-turn segment's summary is
+    /// the same bundle and cycles the same leader.
+    #[test]
+    fn click_on_messaging_group_summary_cycles_inbound_segment() {
+        use crate::ui::message::grouping::GroupCollapseLevel;
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+
+        let mut app = App::test_default();
+        let leader_id = seed_cross_turn_peer_run(&mut app);
+
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 0,
+            modifiers: KeyModifiers::empty(),
+        };
+        assert!(try_toggle_peer_user_block_at_click(&mut app, mouse), "click must be consumed");
+        assert_eq!(
+            app.messaging_group_collapse_level(&leader_id),
+            GroupCollapseLevel::L1Titles,
+            "click on the inbound segment's summary cycles the same group L2 -> L1",
+        );
+    }
+
+    /// The tool-group L2 summary carries a `ctrl+x to expand` hint, so
+    /// this pins down that a click on the summary row cycles the group
+    /// too - the multi-item case the hint actually sits on.
+    #[test]
+    fn click_on_multi_item_tool_group_summary_cycles_to_l1() {
+        use crate::agent::model;
+        use crate::app::{
+            BlockCache, ChatMessage, MessageRole, TerminalSnapshotMode, ToolCallInfo,
+        };
+        use crate::ui::message::grouping::{GroupCollapseLevel, GroupId};
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+
+        let read_tool = |id: &str, measured_height: usize| ToolCallInfo {
+            id: id.to_owned(),
+            title: format!("Read {id}.rs"),
+            sdk_tool_name: "Read".to_owned(),
+            raw_input: None,
+            raw_input_bytes: 0,
+            output_metadata: None,
+            task_metadata: None,
+            status: model::ToolCallStatus::Completed,
+            content: Vec::new(),
+            hidden: false,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+            monitor_output_tail: Vec::default(),
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
+            last_measured_height: measured_height,
+            last_measured_width: 80,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: BlockCache::default(),
+            collapsed_override: None,
+        };
+
+        let mut app = App::test_default();
+        // At L2 only the leader carries geometry - the summary row is
+        // the whole group's rendered extent.
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![
+                MessageBlock::ToolCall(Box::new(read_tool("tu-a", 1))),
+                MessageBlock::ToolCall(Box::new(read_tool("tu-b", 0))),
+            ],
+            None,
+        ));
+        let _ = app.active_viewport_mut().on_frame(80, 20);
+        app.active_viewport_mut().set_message_height(0, 1);
+        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().rebuild_prefix_sums();
+        app.rendered_chat_area = Rect { x: 0, y: 0, width: 80, height: 20 };
+
+        let leader_id = GroupId::from_leader_id("tu-a");
+        assert_eq!(app.group_collapse_level(&leader_id), GroupCollapseLevel::L2Summary);
+
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 0,
+            modifiers: KeyModifiers::empty(),
+        };
+        assert!(try_toggle_tool_call_at_click(&mut app, mouse), "click must be consumed");
+        assert_eq!(
+            app.group_collapse_level(&leader_id),
+            GroupCollapseLevel::L1Titles,
+            "click on a multi-item tool-group summary cycles L2 -> L1",
         );
     }
 

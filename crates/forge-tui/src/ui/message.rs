@@ -338,13 +338,7 @@ fn build_message_layout(
 
     match msg.role {
         MessageRole::Welcome => append_welcome_blocks(msg, render_context.width, &mut layout),
-        MessageRole::User => append_user_blocks(
-            msg,
-            render_context.width,
-            render_context.options.tools_collapsed,
-            render_context.options.envelope_streak_position,
-            &mut layout,
-        ),
+        MessageRole::User => append_user_blocks(msg, spinner, render_context, &mut layout),
         MessageRole::Assistant => {
             append_assistant_blocks(msg, spinner, render_context, &mut layout);
             // #273: stop_hook_summary chip sits between the
@@ -426,86 +420,157 @@ fn append_welcome_blocks(msg: &mut ChatMessage, width: u16, layout: &mut Message
     }
 }
 
+/// Inbound peer envelopes arrive as user turns, so a messaging group
+/// that spans a turn boundary has segments on both sides of it. This
+/// dispatches over the same render units the assistant path does, so a
+/// bundled envelope renders the group summary rather than its own
+/// standalone card.
 fn append_user_blocks(
     msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    render_context: MessageRenderContext<'_>,
+    layout: &mut MessageLayout,
+) {
+    let width = render_context.width;
+    let envelope_streak_position = render_context.options.envelope_streak_position;
+    let owned_units: Vec<grouping::RenderUnit> =
+        if let Some(slice) = render_context.session_message_units {
+            slice.to_vec()
+        } else {
+            grouping::partition_blocks_into_render_units(&msg.blocks)
+        };
+    for unit in owned_units {
+        match unit {
+            grouping::RenderUnit::MessagingGroup { segments, group_leader_id } => {
+                match render_context.messaging_group_level(&group_leader_id) {
+                    grouping::GroupCollapseLevel::L2Summary => {
+                        for segment in &segments {
+                            append_messaging_group_summary(
+                                &mut msg.blocks,
+                                segment,
+                                spinner,
+                                width,
+                                layout,
+                            );
+                        }
+                    }
+                    level @ (grouping::GroupCollapseLevel::L1Titles
+                    | grouping::GroupCollapseLevel::L0Bodies) => {
+                        let collapsed = matches!(level, grouping::GroupCollapseLevel::L1Titles);
+                        for segment in &segments {
+                            for idx in segment.block_range.clone() {
+                                append_user_block(
+                                    &mut msg.blocks[idx],
+                                    width,
+                                    collapsed,
+                                    envelope_streak_position,
+                                    layout,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            grouping::RenderUnit::Individual(idx) => append_user_block(
+                &mut msg.blocks[idx],
+                width,
+                render_context.options.tools_collapsed,
+                envelope_streak_position,
+                layout,
+            ),
+            grouping::RenderUnit::Group { range, .. } => {
+                for idx in range {
+                    append_user_block(
+                        &mut msg.blocks[idx],
+                        width,
+                        render_context.options.tools_collapsed,
+                        envelope_streak_position,
+                        layout,
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn append_user_block(
+    block: &mut MessageBlock,
     width: u16,
     tools_collapsed: bool,
     envelope_streak_position: Option<EnvelopeStreakPosition>,
     layout: &mut MessageLayout,
 ) {
-    for block in &mut msg.blocks {
-        match block {
-            MessageBlock::Text(block) => {
-                // Peer-coordination wrappers (#114) - when the
-                // workspace injects a `[Question id=...]` /
-                // `[Reply id=...]` / etc. user-turn, render a styled
-                // peer block instead of the default user bubble.
-                // Inbound peer blocks follow the global collapse
-                // directive via `resolve_collapsed_bool`. Per-block
-                // click override wins; absent falls through to
-                // `tools_collapsed`.
-                if let Some(kind) = peer_block::detect_inbound(&block.text) {
-                    let trailing_gap = block.trailing_blank_lines();
-                    let collapsed = crate::ui::collapse::resolve_collapsed_bool(
-                        block.peer_collapsed_override,
-                        tools_collapsed,
-                    );
-                    // #163 + #189: same-worker streak followers drop
-                    // the `▶ Verb name` header line and just stack body
-                    // lines under the previous envelope. Different-worker
-                    // followers and streak-starters get the full header
-                    // shape - one identity per row.
-                    let suppress_header = matches!(
-                        envelope_streak_position,
-                        Some(EnvelopeStreakPosition::FollowerSameWorker)
-                    );
-                    let suppress_trailing_gap = matches!(
-                        envelope_streak_position,
-                        Some(
-                            EnvelopeStreakPosition::FollowerNewWorker
-                                | EnvelopeStreakPosition::FollowerSameWorker
-                        )
-                    );
-                    let lines = peer_block::render_inbound(&kind, suppress_header, collapsed);
-                    let y_in_msg = layout.height;
-                    let height = rendered_lines_height(&lines, width);
-                    layout.push_wrapped_lines(lines, width);
-                    // Stamp hit-target fields so `mouse::locate_
-                    // peer_user_block_at_click` can route clicks on
-                    // this inbound peer row back to this TextBlock
-                    // and flip `peer_collapsed_override`.
-                    block.peer_last_measured_y_in_msg = y_in_msg;
-                    block.peer_last_measured_height = height;
-                    block.peer_last_measured_width = width;
-                    if !suppress_trailing_gap {
-                        for _ in 0..trailing_gap {
-                            layout.push_blank();
-                        }
-                    }
-                    continue;
-                }
+    match block {
+        MessageBlock::Text(block) => {
+            // Peer-coordination wrappers (#114) - when the
+            // workspace injects a `[Question id=...]` /
+            // `[Reply id=...]` / etc. user-turn, render a styled
+            // peer block instead of the default user bubble.
+            // Inbound peer blocks follow the global collapse
+            // directive via `resolve_collapsed_bool`. Per-block
+            // click override wins; absent falls through to
+            // `tools_collapsed`.
+            if let Some(kind) = peer_block::detect_inbound(&block.text) {
                 let trailing_gap = block.trailing_blank_lines();
-                let rendered = text_block_layout(block, width, Some(theme::USER_MSG_BG), true);
-                layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
-                for _ in 0..trailing_gap {
-                    layout.push_blank();
+                let collapsed = crate::ui::collapse::resolve_collapsed_bool(
+                    block.peer_collapsed_override,
+                    tools_collapsed,
+                );
+                // #163 + #189: same-worker streak followers drop
+                // the `▶ Verb name` header line and just stack body
+                // lines under the previous envelope. Different-worker
+                // followers and streak-starters get the full header
+                // shape - one identity per row.
+                let suppress_header = matches!(
+                    envelope_streak_position,
+                    Some(EnvelopeStreakPosition::FollowerSameWorker)
+                );
+                let suppress_trailing_gap = matches!(
+                    envelope_streak_position,
+                    Some(
+                        EnvelopeStreakPosition::FollowerNewWorker
+                            | EnvelopeStreakPosition::FollowerSameWorker
+                    )
+                );
+                let lines = peer_block::render_inbound(&kind, suppress_header, collapsed);
+                let y_in_msg = layout.height;
+                let height = rendered_lines_height(&lines, width);
+                layout.push_wrapped_lines(lines, width);
+                // Stamp hit-target fields so `mouse::locate_
+                // peer_user_block_at_click` can route clicks on
+                // this inbound peer row back to this TextBlock
+                // and flip `peer_collapsed_override`.
+                block.peer_last_measured_y_in_msg = y_in_msg;
+                block.peer_last_measured_height = height;
+                block.peer_last_measured_width = width;
+                if !suppress_trailing_gap {
+                    for _ in 0..trailing_gap {
+                        layout.push_blank();
+                    }
                 }
+                return;
             }
-            MessageBlock::ImageAttachment(img) => {
-                let count = img.count;
-                let label = if count == 1 {
-                    " [img] 1 image attached ".to_owned()
-                } else {
-                    format!(" [img] {count} images attached ")
-                };
-                let line = Line::from(Span::styled(
-                    label,
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
-                ));
-                layout.push_wrapped_line(line, width);
+            let trailing_gap = block.trailing_blank_lines();
+            let rendered = text_block_layout(block, width, Some(theme::USER_MSG_BG), true);
+            layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
+            for _ in 0..trailing_gap {
+                layout.push_blank();
             }
-            _ => {}
         }
+        MessageBlock::ImageAttachment(img) => {
+            let count = img.count;
+            let label = if count == 1 {
+                " [img] 1 image attached ".to_owned()
+            } else {
+                format!(" [img] {count} images attached ")
+            };
+            let line = Line::from(Span::styled(
+                label,
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
+            ));
+            layout.push_wrapped_line(line, width);
+        }
+        _ => {}
     }
 }
 
@@ -615,26 +680,13 @@ fn append_assistant_blocks(
                             layout.push_blank();
                         }
                         for segment in &segments {
-                            let summary_lines = peer_block::render_messaging_group_summary_line(
+                            append_messaging_group_summary(
+                                &mut msg.blocks,
                                 segment,
-                                spinner.glyph,
+                                spinner,
+                                render_context.width,
+                                layout,
                             );
-                            // Stamp the leading peer-class block's
-                            // hit-test fields so a click on the
-                            // summary line maps back to the segment's
-                            // first block via the existing
-                            // `locate_tool_call_block_at_click` walk.
-                            let y_in_msg = layout.height;
-                            let height =
-                                rendered_lines_height(&summary_lines, render_context.width);
-                            layout.push_wrapped_lines(summary_lines, render_context.width);
-                            if let Some(MessageBlock::ToolCall(tc)) =
-                                msg.blocks.get_mut(segment.block_range.start)
-                            {
-                                tc.last_measured_y_in_msg = y_in_msg;
-                                tc.last_measured_height = height;
-                                tc.last_measured_width = render_context.width;
-                            }
                             state.has_body_content = true;
                             state.has_visible_content = true;
                             state.prev_was_tool = true;
@@ -690,6 +742,37 @@ fn append_assistant_blocks(
             subagent_running_line(spinner.glyph, running.count, running.primary_label.as_deref()),
             render_context.width,
         );
+    }
+}
+
+/// Push one messaging-group segment's L2 summary line and stamp the
+/// leading block's hit-test fields, so a click on the summary routes
+/// back to the segment via the mouse handler's block walk. Outbound
+/// leaders are tool calls and inbound leaders are text blocks; the two
+/// carry that geometry on different fields.
+fn append_messaging_group_summary(
+    blocks: &mut [MessageBlock],
+    segment: &grouping::MessagingGroupSegment,
+    spinner: &SpinnerState,
+    width: u16,
+    layout: &mut MessageLayout,
+) {
+    let summary_lines = peer_block::render_messaging_group_summary_line(segment, spinner.glyph);
+    let y_in_msg = layout.height;
+    let height = rendered_lines_height(&summary_lines, width);
+    layout.push_wrapped_lines(summary_lines, width);
+    match blocks.get_mut(segment.block_range.start) {
+        Some(MessageBlock::ToolCall(tc)) => {
+            tc.last_measured_y_in_msg = y_in_msg;
+            tc.last_measured_height = height;
+            tc.last_measured_width = width;
+        }
+        Some(MessageBlock::Text(text)) => {
+            text.peer_last_measured_y_in_msg = y_in_msg;
+            text.peer_last_measured_height = height;
+            text.peer_last_measured_width = width;
+        }
+        _ => {}
     }
 }
 
@@ -2841,6 +2924,129 @@ mod tests {
             .iter()
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
             .collect()
+    }
+
+    /// One inbound envelope in a user turn followed by one outbound
+    /// call in the next assistant turn - the two-message peer run that
+    /// only forms a group at session level.
+    fn peer_run_across_user_and_assistant() -> Vec<ChatMessage> {
+        let mut outbound = make_tool_call_info(
+            "toolu_tell_steward",
+            "mcp__forge__peers__tell_agent",
+            crate::agent::model::ToolCallStatus::Completed,
+            "",
+        );
+        outbound.raw_input = Some(serde_json::json!({
+            "target": "steward",
+            "message": "IT IMPORTED. The window is lost.",
+        }));
+        vec![
+            ChatMessage::new_peer_envelope(
+                MessageRole::User,
+                vec![MessageBlock::Text(TextBlock::from_complete(
+                    "[Message id=t-abc123 from agent 'steward' (org 'forge')]\n\nthe window is lost",
+                ))],
+                None,
+            ),
+            ChatMessage::new(
+                MessageRole::Assistant,
+                vec![MessageBlock::ToolCall(Box::new(outbound))],
+                None,
+            ),
+        ]
+    }
+
+    fn render_with_session_units(
+        messages: &mut [ChatMessage],
+        idx: usize,
+        units: &[Vec<grouping::RenderUnit>],
+    ) -> Vec<String> {
+        let spinner = idle_spinner();
+        let mut lines = Vec::new();
+        render_message(
+            &mut messages[idx],
+            &spinner,
+            MessageRenderContext::new(None, 80, 0, default_options())
+                .with_session_message_units(&units[idx]),
+            &mut lines,
+        );
+        render_lines_to_strings(&lines)
+    }
+
+    /// The assistant half of the run renders the bundle summary and
+    /// nothing else - the baseline the user turn has to match. Each
+    /// line counts its own segment, so this one holds one message.
+    #[test]
+    fn assistant_segment_of_messaging_group_renders_summary_line() {
+        let mut messages = peer_run_across_user_and_assistant();
+        let units = grouping::partition_session_into_render_units(&messages);
+        let rendered = render_with_session_units(&mut messages, 1, &units);
+
+        assert!(
+            rendered.iter().any(|l| l.contains("1 message") && l.contains("outbound to steward")),
+            "assistant segment renders the bundle summary; got {rendered:?}",
+        );
+    }
+
+    /// A run that lives entirely in one turn has a single segment
+    /// covering it, so its summary still counts the whole run. This is
+    /// the everyday shape - it must not move when cross-turn segments
+    /// switch to per-line counts.
+    #[test]
+    fn single_segment_messaging_group_summary_counts_the_whole_run() {
+        let outbound = |id: &str, target: &str| {
+            let mut tc = make_tool_call_info(
+                id,
+                "mcp__forge__peers__tell_agent",
+                crate::agent::model::ToolCallStatus::Completed,
+                "",
+            );
+            tc.raw_input = Some(serde_json::json!({ "target": target, "message": "body" }));
+            MessageBlock::ToolCall(Box::new(tc))
+        };
+        let mut messages = vec![ChatMessage::new(
+            MessageRole::Assistant,
+            vec![
+                outbound("toolu_a", "planner"),
+                outbound("toolu_b", "debugger"),
+                outbound("toolu_c", "planner"),
+            ],
+            None,
+        )];
+        let units = grouping::partition_session_into_render_units(&messages);
+        let rendered = render_with_session_units(&mut messages, 0, &units);
+
+        assert!(
+            rendered
+                .iter()
+                .any(|l| l.contains("3 messages") && l.contains("outbound to planner, debugger")),
+            "one segment covering the run still counts all 3; got {rendered:?}",
+        );
+    }
+
+    /// A messaging group can span a user turn (inbound envelope) and
+    /// an assistant turn (outbound call). The user-turn segment must
+    /// render the bundle summary line too - rendering its standalone
+    /// peer card puts one member of the run on screen twice, once as
+    /// a card and once inside the bundle's count.
+    #[test]
+    fn user_segment_of_messaging_group_renders_summary_not_standalone_card() {
+        let mut messages = peer_run_across_user_and_assistant();
+        let units = grouping::partition_session_into_render_units(&messages);
+        let rendered = render_with_session_units(&mut messages, 0, &units);
+
+        assert!(
+            rendered.iter().any(|l| l.contains("1 message") && l.contains("inbound from steward")),
+            "user-turn segment must render the bundle summary; got {rendered:?}",
+        );
+        assert!(
+            !rendered.iter().any(|l| l.contains("Message steward")),
+            "bundled inbound envelope must not also render its standalone peer card; got {rendered:?}",
+        );
+        assert!(
+            !rendered.iter().any(|l| l.contains("the window is lost")),
+            "the bundled envelope's body belongs behind the summary; got {rendered:?}",
+        );
     }
 
     #[test]

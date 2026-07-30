@@ -617,7 +617,10 @@ pub(crate) fn render_messaging_group_summary_line(
         crate::ui::tool_call::status_icon(segment.aggregate_status, spinner_glyph);
     let dim = Style::default().fg(theme::DIM);
 
-    let count = segment.group_total_count.max(segment.segment_count);
+    // Per SEGMENT, not per group: a cross-turn run puts one summary
+    // line on screen per turn, and repeating the run total on each of
+    // them reads as a sum.
+    let count = segment.segment_count;
     let count_word = if count == 1 { "message" } else { "messages" };
     let mut heading = format!("{count} {count_word}");
     if !segment.segment_outbound_targets.is_empty() {
@@ -637,7 +640,7 @@ pub(crate) fn render_messaging_group_summary_line(
         ),
         Span::styled("@ ".to_owned(), Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD)),
         Span::styled(heading, Style::default().add_modifier(Modifier::BOLD)),
-        Span::styled("   ctrl+x to expand".to_owned(), dim),
+        Span::styled("   click or ctrl+x to expand".to_owned(), dim),
     ])]
 }
 
@@ -1171,5 +1174,82 @@ mod tests {
     fn detect_outbound_ignores_other_tools() {
         let tc = make_tc("Bash", serde_json::json!({ "command": "ls" }));
         assert!(detect_outbound(&tc).is_none());
+    }
+
+    /// The bundle summary cycles on click as well as ctrl+x, so it
+    /// advertises both - same affordance an individual peer card names.
+    #[test]
+    fn messaging_group_summary_advertises_click_and_ctrl_x() {
+        use crate::ui::message::grouping::{MessagingDirectionTargets, MessagingGroupSegment};
+
+        let segment = MessagingGroupSegment {
+            msg_idx: 0,
+            block_range: 0..1,
+            segment_count: 1,
+            segment_outbound_targets: MessagingDirectionTargets {
+                targets: vec!["steward".to_owned()],
+                overflow_n: 0,
+            },
+            segment_inbound_targets: MessagingDirectionTargets::default(),
+            segment_continues_above: true,
+            segment_continues_below: false,
+            aggregate_status: crate::agent::model::ToolCallStatus::Completed,
+            group_total_count: 2,
+        };
+        let rendered = render_lines_to_strings(&render_messaging_group_summary_line(&segment, '⠋'));
+        assert_eq!(rendered.len(), 1);
+        assert!(rendered[0].contains("1 message · outbound to steward"), "got {rendered:?}");
+        assert!(rendered[0].ends_with("click or ctrl+x to expand"), "got {rendered:?}");
+    }
+
+    /// Each summary line counts the messages in ITS OWN segment. A
+    /// cross-turn run puts one line per turn on screen, so repeating
+    /// the run total on each of them reads as a sum.
+    #[test]
+    fn messaging_group_summary_counts_only_its_own_segment() {
+        use crate::ui::message::grouping::{MessagingDirectionTargets, MessagingGroupSegment};
+
+        let segment = MessagingGroupSegment {
+            msg_idx: 1,
+            block_range: 0..1,
+            segment_count: 1,
+            segment_outbound_targets: MessagingDirectionTargets::default(),
+            segment_inbound_targets: MessagingDirectionTargets {
+                targets: vec!["steward".to_owned()],
+                overflow_n: 0,
+            },
+            segment_continues_above: false,
+            segment_continues_below: true,
+            aggregate_status: crate::agent::model::ToolCallStatus::Completed,
+            group_total_count: 7,
+        };
+        let rendered = render_lines_to_strings(&render_messaging_group_summary_line(&segment, '⠋'));
+        assert!(
+            rendered[0].contains("1 message · inbound from steward"),
+            "the segment holds one message, not the group's 7; got {rendered:?}",
+        );
+    }
+
+    /// Plural follows the segment's own count.
+    #[test]
+    fn messaging_group_summary_pluralizes_on_the_segment_count() {
+        use crate::ui::message::grouping::{MessagingDirectionTargets, MessagingGroupSegment};
+
+        let segment = MessagingGroupSegment {
+            msg_idx: 0,
+            block_range: 0..4,
+            segment_count: 4,
+            segment_outbound_targets: MessagingDirectionTargets {
+                targets: vec!["lead".to_owned()],
+                overflow_n: 0,
+            },
+            segment_inbound_targets: MessagingDirectionTargets::default(),
+            segment_continues_above: false,
+            segment_continues_below: false,
+            aggregate_status: crate::agent::model::ToolCallStatus::Completed,
+            group_total_count: 4,
+        };
+        let rendered = render_lines_to_strings(&render_messaging_group_summary_line(&segment, '⠋'));
+        assert!(rendered[0].contains("4 messages · outbound to lead"), "got {rendered:?}");
     }
 }
