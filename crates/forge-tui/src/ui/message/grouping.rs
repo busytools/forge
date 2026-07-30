@@ -507,21 +507,26 @@ pub fn group_leader_at(blocks: &[MessageBlock], block_idx: usize) -> Option<(Gro
 
 /// Sibling of [`group_leader_at`] for messaging groups. Returns the
 /// [`GroupId`] + segment-block-count when `block_idx` is the leading
-/// block of a `RenderUnit::MessagingGroup` segment in this message.
-/// `None` for non-leader blocks (so per-block click toggle wins).
+/// block of a `RenderUnit::MessagingGroup` segment in message
+/// `msg_idx`. `None` for non-leader blocks (so per-block click toggle
+/// wins).
+///
+/// Resolves against the session-walking partition - the same one the
+/// renderer dispatches over. The per-message partition applies the
+/// threshold of 2 within a single message, so a message holding one
+/// peer block of a longer cross-turn run yields no group there and the
+/// click finds nothing to cycle.
 pub fn messaging_group_leader_at(
-    blocks: &[MessageBlock],
+    messages: &[crate::app::ChatMessage],
+    msg_idx: usize,
     block_idx: usize,
 ) -> Option<(GroupId, usize)> {
-    let units = partition_blocks_into_render_units(blocks);
-    units.into_iter().find_map(|unit| match unit {
+    let units = partition_session_into_render_units(messages);
+    units.get(msg_idx)?.iter().find_map(|unit| match unit {
         RenderUnit::MessagingGroup { segments, group_leader_id } => {
             let segment = segments.first()?;
-            if segment.block_range.start == block_idx {
-                Some((group_leader_id, segment.block_range.len()))
-            } else {
-                None
-            }
+            (segment.block_range.start == block_idx)
+                .then(|| (group_leader_id.clone(), segment.block_range.len()))
         }
         _ => None,
     })
@@ -2143,6 +2148,85 @@ mod tests {
         assert!(!segments[1].segment_continues_below);
         assert!(segments[1].segment_continues_above);
         assert_eq!(segments[1].group_total_count, 5);
+    }
+
+    /// The shape behind the duplicate-card report: one inbound
+    /// envelope in a user turn, then one outbound call in the next
+    /// assistant turn. Neither message reaches the threshold on its
+    /// own, so the run only exists at session level - both segments
+    /// carry `group_total_count` 2 and share a leader.
+    #[test]
+    fn messaging_group_spans_user_inbound_then_assistant_outbound() {
+        let messages = vec![
+            crate::app::ChatMessage::new(
+                crate::app::MessageRole::User,
+                vec![inbound_peer_block("steward", "Message")],
+                None,
+            ),
+            assistant_message_with_blocks(vec![outbound_peer_block("steward", "Tell")]),
+        ];
+
+        let per_message_units = partition_session_into_render_units(&messages);
+        let groups: Vec<&RenderUnit> = per_message_units
+            .iter()
+            .flatten()
+            .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
+            .collect();
+        assert_eq!(
+            groups.len(),
+            2,
+            "one inbound + one outbound across a turn boundary is a group of 2; got {per_message_units:?}",
+        );
+
+        let leaders: Vec<&GroupId> = groups
+            .iter()
+            .map(|u| match u {
+                RenderUnit::MessagingGroup { group_leader_id, .. } => group_leader_id,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(leaders[0], leaders[1], "both segments share one leader");
+
+        for unit in &groups {
+            let RenderUnit::MessagingGroup { segments, .. } = unit else { unreachable!() };
+            assert_eq!(segments[0].segment_count, 1);
+            assert_eq!(segments[0].group_total_count, 2);
+        }
+    }
+
+    /// Both partitioners emit segments whose own count is at least 1
+    /// and never exceeds the group total. The summary line can read
+    /// either field without guarding against a zero or an unstamped
+    /// total.
+    #[test]
+    fn segment_counts_are_non_zero_and_bounded_by_the_group_total() {
+        let messages = vec![
+            assistant_message_with_blocks(vec![
+                outbound_peer_block("planner", "Tell"),
+                outbound_peer_block("debugger", "Ask"),
+            ]),
+            user_text_message("any update?"),
+            crate::app::ChatMessage::new(
+                crate::app::MessageRole::User,
+                vec![inbound_peer_block("tester", "Reply")],
+                None,
+            ),
+            assistant_message_with_blocks(vec![outbound_peer_block("tester", "Tell")]),
+        ];
+
+        let mut seen = 0_usize;
+        for unit in partition_session_into_render_units(&messages).iter().flatten() {
+            let RenderUnit::MessagingGroup { segments, .. } = unit else { continue };
+            for segment in segments {
+                assert!(segment.segment_count >= 1, "empty segment emitted: {segment:?}");
+                assert!(
+                    segment.group_total_count >= segment.segment_count,
+                    "group total below its own segment: {segment:?}",
+                );
+                seen += 1;
+            }
+        }
+        assert!(seen >= 2, "expected several segments to check; saw {seen}");
     }
 
     /// Threshold-1: a single peer block folds into a messaging group.
