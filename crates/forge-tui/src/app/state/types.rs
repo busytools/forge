@@ -249,11 +249,14 @@ pub struct ReviewRepliesWaiting {
 
 impl ReviewRepliesWaiting {
     /// Fold a fresh count for `branch` into the prior signal. Zero
-    /// clears it; a still-live count on the same branch keeps its
-    /// original `since` so a recompute can't reset the wait-age.
+    /// clears it, but only a reviewer turn retires an answer - an empty
+    /// result for one branch says nothing about the branch a live count
+    /// belongs to, so that one survives. A still-live count on the same
+    /// branch keeps its original `since` so a recompute can't reset the
+    /// wait-age.
     pub fn merge(prior: Option<&Self>, branch: &str, count: usize) -> Option<Self> {
         if count == 0 {
-            return None;
+            return prior.filter(|p| p.branch != branch).cloned();
         }
         let since = prior
             .filter(|p| p.branch == branch)

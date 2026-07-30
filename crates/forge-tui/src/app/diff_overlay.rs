@@ -7020,6 +7020,26 @@ mod tests {
         );
     }
 
+    /// Only a reviewer turn retires an answer. Opening `/diff` on some
+    /// other branch must not take one branch's empty result as licence
+    /// to drop another branch's live count.
+    #[test]
+    fn hydrating_another_branch_leaves_a_live_count_alone() {
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads("forge", "feat", &[answered_thread("a")]);
+        app.diff_overlay = Some(overlay_for_answered_threads());
+        hydrate_threads(&mut app);
+        assert_eq!(waiting_count(&app), Some(1));
+
+        let mut elsewhere = overlay_for_answered_threads();
+        elsewhere.branch = Some("main".to_owned());
+        app.diff_overlay = Some(elsewhere);
+        hydrate_threads(&mut app);
+
+        assert_eq!(waiting_count(&app), Some(1), "feat's answers still await a look");
+    }
+
     #[test]
     fn replying_to_a_worker_answer_clears_the_waiting_signal() {
         let (mut app, _dir) = review_app();

@@ -2557,8 +2557,28 @@ mod tests {
         let (_key_a, key_b) = seed_two_sessions(&mut app);
 
         apply_session_update(&mut app, review_notice(&key_b, 2));
-        apply_session_update(&mut app, review_notice(&key_b, 0));
 
+        // Another branch reporting nothing waiting says nothing about
+        // `feat` - only a reviewer turn on `feat` retires those answers.
+        apply_session_update(
+            &mut app,
+            SessionUpdate::ReviewActivityNotice {
+                key: key_b.clone(),
+                branch: "other".to_owned(),
+                waiting: 0,
+                message: "worker addressed review #2".to_owned(),
+            },
+        );
+        assert_eq!(
+            app.sessions
+                .get(&key_b)
+                .and_then(|s| s.review_replies_waiting.clone())
+                .map(|w| w.count),
+            Some(2),
+            "a zero on another branch leaves the live count alone",
+        );
+
+        apply_session_update(&mut app, review_notice(&key_b, 0));
         assert!(
             app.sessions.get(&key_b).and_then(|s| s.review_replies_waiting.clone()).is_none(),
             "a zero count clears the parked signal",
