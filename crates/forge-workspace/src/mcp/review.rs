@@ -303,31 +303,44 @@ impl Tool for ReviewList {
             Err(out) => return out,
         };
         match self.facade.list(&scope) {
-            Ok(rows) if rows.is_empty() => empty_list_output(&self.facade, &scope),
-            Ok(rows) => json_or_error(&rows),
+            Ok(rows) => list_output(&self.facade, &scope, &rows),
             Err(err) => tool_error(err),
         }
     }
 }
 
-/// Nothing on the caller's branch. Name the project's other
-/// review-bearing branches when there are any: an empty list is
-/// otherwise indistinguishable from a review filed against a branch the
-/// caller isn't on.
-fn empty_list_output(facade: &Arc<dyn ReviewFacade>, scope: &ReviewScope) -> ToolOutput {
+/// The caller's rows, plus the project's other review-bearing branches
+/// when there are any. A branch-scoped list is indistinguishable from the
+/// project's whole set, and a review on the caller's own branch is no
+/// reason to leave the one beside it unseen.
+fn list_output(
+    facade: &Arc<dyn ReviewFacade>,
+    scope: &ReviewScope,
+    rows: &[ReviewSummary],
+) -> ToolOutput {
     let others: Vec<String> = facade
         .branches_with_reviews(scope)
         .into_iter()
         .filter(|branch| *branch != scope.branch)
         .collect();
     if others.is_empty() {
-        return json_or_error(&Vec::<ReviewSummary>::new());
+        return json_or_error(&rows);
     }
-    tool_error(format!(
-        "no reviews on {}; this project has reviews on: {}.",
-        scope.branch,
-        others.join(", "),
-    ))
+    if rows.is_empty() {
+        return tool_error(format!(
+            "no reviews on {}; this project has reviews on: {}.",
+            scope.branch,
+            others.join(", "),
+        ));
+    }
+    let mut out = json_or_error(&rows);
+    if out.is_error {
+        return out;
+    }
+    out.blocks.push(ToolOutputBlock {
+        text: format!("this project also has reviews on: {}.", others.join(", ")),
+    });
+    out
 }
 
 /// `review__get` - the comments of one review, with anchored code.
@@ -724,6 +737,36 @@ mod tests {
         assert!(text.contains("no reviews on feat"), "{text}");
         assert!(text.contains("main") && text.contains("worktree-impl"), "{text}");
         assert!(!text.contains(": feat"), "the caller's own branch is not listed back: {text}");
+    }
+
+    #[tokio::test]
+    async fn review_list_names_other_branches_alongside_a_non_empty_list() {
+        // The cross-branch split this hint exists to catch is exactly
+        // the case where the caller's own branch has a review too - a
+        // lead reading its own review while the worker's sits beside it.
+        let mock = Arc::new(MockReviewFacade::new());
+        mock.summaries.lock().push(summary("r1", 1));
+        *mock.review_branches.lock() = vec!["feat".to_owned(), "worktree-impl".to_owned()];
+        let facade: Arc<dyn ReviewFacade> = mock;
+        let tool = ReviewList { facade, caller_key: resolver() };
+        let out = tool.call(ToolInput { value: serde_json::json!({}) }).await;
+        assert!(!out.is_error, "a populated list is not an error: {:?}", out.blocks);
+        let parsed: serde_json::Value = serde_json::from_str(&out.blocks[0].text).expect("json");
+        assert_eq!(parsed[0]["review_id"], "r1", "the rows stay the first block, still json");
+        let hint = out.blocks.get(1).map_or("", |b| b.text.as_str());
+        assert!(hint.contains("worktree-impl"), "{hint}");
+        assert!(!hint.contains("feat"), "the caller's own branch is not listed back: {hint}");
+    }
+
+    #[tokio::test]
+    async fn review_list_non_empty_says_nothing_when_no_other_branch_has_reviews() {
+        let mock = Arc::new(MockReviewFacade::new());
+        mock.summaries.lock().push(summary("r1", 1));
+        *mock.review_branches.lock() = vec!["feat".to_owned()];
+        let facade: Arc<dyn ReviewFacade> = mock;
+        let tool = ReviewList { facade, caller_key: resolver() };
+        let out = tool.call(ToolInput { value: serde_json::json!({}) }).await;
+        assert_eq!(out.blocks.len(), 1, "a normal list stays one json block: {:?}", out.blocks);
     }
 
     #[tokio::test]

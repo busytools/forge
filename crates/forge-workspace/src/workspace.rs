@@ -4394,54 +4394,73 @@ impl Workspace {
         None
     }
 
-    /// Resolve the cwd to pass to `claude --resume` for the session
-    /// at `session_key`. Three-step fallback:
-    /// 1. `session_cwd_for(key)` - the catalog scan returns the
-    ///    original cwd from the session's `system/init` row. Works
-    ///    for lead sessions; returns None for worker-tagged sessions
-    ///    (the catalog walk excludes them).
-    /// 2. Worker fallback (#245 Layer B): when the session is a live
-    ///    worker, compose the cwd via [`worker_tag_dir`] - the same
-    ///    helper that decided where claude wrote the JSONL at spawn
-    ///    time. For git-repo workers that's
-    ///    `<project_root>/.claude/worktrees/<label>`; for non-git
-    ///    workers it's `<project_root>` unmodified.
+    /// The working directory forge holds for `session_key`. Two
+    /// sources, in order:
+    /// 1. The sessions catalog ([`Self::session_cwd_for`]). Leads only:
+    ///    the boot scan hides worker-tagged sessions and the Connected
+    ///    handler skips the catalog mirror for workers, so a worker
+    ///    never has a row to read.
+    /// 2. The worker registry (`live_workers` via
+    ///    [`Self::worker_lookup_for_session`]), composed against the
+    ///    project's `forge.toml` path by [`worker_tag_dir`] - the
+    ///    worktree for a git worker, the project root otherwise. This
+    ///    is the authoritative source for every worker.
     ///
-    ///    Critically, `claude --resume` does NOT receive a
-    ///    `--worktree` flag (see `SessionLaunchSettings::extra_args`
-    ///    in `forge-agent/src/client.rs` - lead/resume paths leave
-    ///    extra_args empty), so the subprocess cwd is the ONLY signal
-    ///    claude uses to derive the JSONL location. Passing just the
-    ///    project root for a git worker makes claude look under the
-    ///    project's sanitised dir, miss the worker JSONL (which lives
-    ///    under the worktree's sanitised dir), and exit with "No
-    ///    conversation found with session ID:". Composing with
-    ///    `worker_tag_dir` gives claude the right anchor so it
-    ///    resolves the worker JSONL on the first try.
-    /// 3. Default to empty string. Pass through and let the bridge
-    ///    surface ConnectionFailed - the session can't be resumed
-    ///    cleanly anyway. Logs a warn so a regression is visible in
-    ///    the field instead of silently failing later.
+    /// `None` leaves the caller to decide what an unknown cwd means:
+    /// [`Self::resume_cwd_for_session`] hands claude an empty cwd,
+    /// while the review MCP reports `SessionCwdUnknown` to the caller.
     ///
     /// [`worker_tag_dir`]: crate::mcp::workers::types::worker_tag_dir
-    pub(crate) fn resume_cwd_for_session(&self, session_key: &SessionKey) -> String {
+    pub(crate) fn cwd_for_session(&self, session_key: &SessionKey) -> Option<String> {
         if let Some(cwd) = self.session_cwd_for(session_key) {
-            return cwd;
+            return Some(cwd);
         }
-        if let Some((project_key, label, is_git)) = self.worker_lookup_for_session(session_key)
-            && let Some(root) = self.project_root_for_key(&project_key)
-        {
-            return crate::mcp::workers::types::worker_tag_dir(&root, &label, is_git)
+        let (project_key, label, is_git) = self.worker_lookup_for_session(session_key)?;
+        let Some(root) = self.project_root_for_key(&project_key) else {
+            // Unreachable while `forge.toml` and `live_workers` agree,
+            // so treat a firing as drift rather than a normal miss.
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                event_name = "session_cwd_registry_contradiction",
+                session_key = %session_key.as_str(),
+                project_key = project_key.as_str(),
+                worker_label = %label,
+                "worker registry resolves this session but no loaded project matches its \
+                 project_key, so no cwd can be composed",
+            );
+            return None;
+        };
+        Some(
+            crate::mcp::workers::types::worker_tag_dir(&root, &label, is_git)
                 .to_string_lossy()
-                .into_owned();
-        }
-        tracing::warn!(
-            target: "forge_workspace::workspace",
-            session_key = %session_key.as_str(),
-            "resume_cwd_for_session: no catalog cwd and no live worker entry; \
-             passing empty cwd to claude (resume will fail with ConnectionFailed)",
-        );
-        String::new()
+                .into_owned(),
+        )
+    }
+
+    /// The cwd to pass `claude --resume` for the session at
+    /// `session_key`: [`Self::cwd_for_session`], or an empty string
+    /// when forge holds none (pass through and let the bridge surface
+    /// ConnectionFailed - the session can't be resumed cleanly anyway).
+    ///
+    /// `claude --resume` does NOT receive a `--worktree` flag (see
+    /// `SessionLaunchSettings::extra_args` in
+    /// `forge-agent/src/client.rs` - lead/resume paths leave
+    /// extra_args empty), so the subprocess cwd is the ONLY signal
+    /// claude uses to derive the JSONL location. Handing a git
+    /// worker just its project root makes claude look under the
+    /// project's sanitised dir, miss the worker JSONL (which lives
+    /// under the worktree's sanitised dir), and exit with "No
+    /// conversation found with session ID:" (#245 Layer B).
+    pub(crate) fn resume_cwd_for_session(&self, session_key: &SessionKey) -> String {
+        self.cwd_for_session(session_key).unwrap_or_else(|| {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                session_key = %session_key.as_str(),
+                "resume_cwd_for_session: no catalog cwd and no live worker entry; \
+                 passing empty cwd to claude (resume will fail with ConnectionFailed)",
+            );
+            String::new()
+        })
     }
 
     /// Look up a project root path by its `ProjectKey`. Searches
@@ -11925,6 +11944,42 @@ mod git_scan_cwd_tests {
         let (ws, _rx) = Workspace::testing_stub();
         let unknown = SessionKey::from_session_id("not-a-known-session");
         assert_eq!(ws.resume_cwd_for_session(&unknown), "");
+    }
+
+    #[test]
+    fn cwd_for_session_resolves_a_git_worker_with_no_catalog_row() {
+        // The catalog holds no worker rows at all (the boot scan hides
+        // worker-tagged sessions; the Connected handler skips the
+        // mirror for workers), so every worker resolves through the
+        // registry - not just a resume.
+        let (ws, _rx) = Workspace::testing_stub();
+        let (project_root, session_key) = seed_project_and_worker(
+            &ws,
+            "gateway-backend",
+            "/tmp/test-gateway-cwd",
+            "pyth-review-fixes",
+            "worker-uuid-cwd",
+            true,
+        );
+        assert_eq!(
+            ws.cwd_for_session(&session_key).as_deref(),
+            project_root.join(".claude/worktrees/pyth-review-fixes").to_str(),
+        );
+    }
+
+    #[test]
+    fn cwd_for_session_is_none_when_the_workers_project_is_not_loaded() {
+        // The contradiction the WARN names: the registry knows the
+        // worker's project_key and label, but no loaded project
+        // matches that key, so no path can be composed. Unreachable
+        // while forge.toml and `live_workers` agree.
+        let (ws, _rx) = Workspace::testing_stub();
+        let session_key = SessionKey::from_session_id("worker-uuid-orphan");
+        ws.insert_live_worker(
+            &ProjectKey::new("stale-key".to_owned()),
+            worker_entry("implementer", &session_key, true),
+        );
+        assert!(ws.cwd_for_session(&session_key).is_none());
     }
 
     #[test]

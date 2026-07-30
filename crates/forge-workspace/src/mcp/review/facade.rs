@@ -62,7 +62,9 @@ pub enum ScopeError {
 }
 
 impl ScopeError {
-    /// The failing step, as the grep handle for the WARN line.
+    /// The failing step. Filter the WARN by field, not by bare name -
+    /// `grep '"event_name":"review_scope_unresolved"'`; the plain name
+    /// also matches the log's record of the command that greps for it.
     fn step(&self) -> &'static str {
         match self {
             Self::WorkspaceGone => "workspace_upgrade",
@@ -137,9 +139,9 @@ pub trait ReviewFacade: Send + Sync {
     /// `review__list` rows for the scope's branch, newest review first.
     fn list(&self, scope: &ReviewScope) -> Result<Vec<ReviewSummary>, String>;
 
-    /// Branches in the scope's project that hold submitted reviews.
-    /// Consulted only when [`Self::list`] came back empty, to tell "no
-    /// reviews" apart from "the review is on another branch".
+    /// Branches in the scope's project that hold submitted reviews. Tells
+    /// [`Self::list`]'s branch-scoped answer apart from the project's
+    /// whole set, on an empty result and a populated one alike.
     fn branches_with_reviews(&self, scope: &ReviewScope) -> Vec<String>;
 
     /// `review__get` detail for one review, or `None` when it isn't on the
@@ -208,7 +210,7 @@ impl ReviewFacade for ProdReviewFacade {
         // git dir the same way the /diff overlay does. A worker's git dir
         // is its worktree, so route the raw cwd through the scan-dir
         // adjustment before querying.
-        let Some(cwd_raw) = ws.session_cwd_for(caller) else {
+        let Some(cwd_raw) = ws.cwd_for_session(caller) else {
             return Err(warn_unresolved(caller, Some(&cx), None, ScopeError::SessionCwdUnknown));
         };
         let scan_cwd = ws.git_scan_cwd_for_session(caller, Path::new(&cwd_raw));
@@ -374,7 +376,7 @@ mod resolve_scope_tests {
     use super::{ProdReviewFacade, ReviewFacade, ReviewScope, ScopeError};
     use crate::SessionKey;
     use crate::workspace::Workspace;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Weak};
 
     #[test]
@@ -429,6 +431,17 @@ mod resolve_scope_tests {
         git(dir, &["commit", "-q", "-m", "init"]);
     }
 
+    /// A worktree fork of the repo at `root`, at the path claude's
+    /// `--worktree <label>` puts it, on branch `worktree-<label>`.
+    fn add_worktree(root: &Path, label: &str) -> PathBuf {
+        let path = root.join(".claude/worktrees").join(label);
+        git(
+            root,
+            &["worktree", "add", "-q", "-b", &format!("worktree-{label}"), &path.to_string_lossy()],
+        );
+        path
+    }
+
     /// A workspace holding one project rooted at `cwd`, with the returned
     /// caller registered as a catalog session whose cwd is that root.
     fn ws_with_session_cwd(cwd: &str) -> (Arc<Workspace>, SessionKey) {
@@ -437,6 +450,43 @@ mod resolve_scope_tests {
         let caller = SessionKey::from_session_id("caller-uuid");
         ws.record_connected_session(cwd, caller.as_str(), None);
         (ws, caller)
+    }
+
+    /// Register `label` as a live worker of the project rooted at
+    /// `project_root`, with NO catalog row - the state every spawned
+    /// worker is in (the boot scan hides worker-tagged sessions and the
+    /// Connected handler skips the catalog mirror for workers), so the
+    /// worker registry is the only place its cwd can come from.
+    fn seed_worker(
+        ws: &Arc<Workspace>,
+        project_root: &str,
+        label: &str,
+        is_git_repo_at_spawn: bool,
+    ) -> SessionKey {
+        ws.seed_test_project_with_static_workers("myproj", project_root, &[]);
+        let key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "myproj")
+            .map(|v| v.key)
+            .expect("seeded project");
+        let caller = SessionKey::from_session_id("worker-uuid");
+        ws.insert_live_worker(
+            &key,
+            crate::WorkerEntry {
+                label: label.to_owned(),
+                charter: "build".to_owned(),
+                session_key: caller.clone(),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".to_owned(),
+                needs_tag: false,
+                is_git_repo_at_spawn,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        caller
     }
 
     async fn scope_err(ws: &Arc<Workspace>, caller: &SessionKey) -> ScopeError {
@@ -464,37 +514,56 @@ mod resolve_scope_tests {
         assert!(!err.message().contains("detached"), "{}", err.message());
     }
 
+    /// A worker's cwd comes from the worker registry, not the sessions
+    /// catalog - the catalog never holds a worker row. The review the
+    /// worker must read is the one keyed to its worktree's branch, not
+    /// the project's default branch.
     #[tokio::test]
-    async fn caller_without_a_recorded_cwd_is_its_own_reason() {
-        // A live worker resolves a project without ever landing a catalog
-        // row, so the workspace holds no cwd for it.
-        let (ws, _rx) = Workspace::testing_stub();
-        ws.seed_test_project_with_static_workers("myproj", "/tmp/myproj", &[]);
-        let key = ws
-            .list_projects()
-            .into_iter()
-            .find(|v| v.name == "myproj")
-            .map(|v| v.key)
-            .expect("seeded project");
-        let caller = SessionKey::from_session_id("worker-uuid");
-        ws.insert_live_worker(
-            &key,
-            crate::WorkerEntry {
-                label: "implementer".to_owned(),
-                charter: "build".to_owned(),
-                session_key: caller.clone(),
-                status: forge_primitives::WorkerLiveness::Running,
-                spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead".to_owned(),
-                needs_tag: false,
-                is_git_repo_at_spawn: false,
-                diagnostic: None,
-                kick: None,
-            },
+    async fn worker_without_a_catalog_row_reads_its_worktree_branch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("myproj");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        init_repo(&root, "main");
+        add_worktree(&root, "pyth-review-fixes");
+
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
+        let caller = seed_worker(&ws, &root.to_string_lossy(), "pyth-review-fixes", true);
+        ws.submit_review(
+            "myproj",
+            "worktree-pyth-review-fixes",
+            Some("round 1".to_owned()),
+            &[],
+            SessionKey::from_session_id("lead-uuid"),
+        )
+        .expect("submit review on the worker's branch");
+
+        let facade = ProdReviewFacade(Arc::downgrade(&ws));
+        let scope = facade.resolve_scope(&caller).await.expect("worker scope resolves");
+        assert_eq!(scope.branch, "worktree-pyth-review-fixes");
+        assert_eq!(scope.author_label, "pyth-review-fixes");
+        assert_eq!(
+            facade.list(&scope).expect("list").len(),
+            1,
+            "the worker reads the review filed on its worktree branch",
+        );
+    }
+
+    /// A non-git worker never forked into a worktree, so the registry
+    /// resolves it to the project root. The root here is not a repo, so
+    /// git is what fails - the cwd step no longer does.
+    #[tokio::test]
+    async fn non_git_worker_without_a_catalog_row_resolves_the_project_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub();
+        let caller = seed_worker(&ws, &dir.path().to_string_lossy(), "researcher", false);
         let err = scope_err(&ws, &caller).await;
-        assert_eq!(err, ScopeError::SessionCwdUnknown);
-        assert!(!err.message().contains("detached"), "{}", err.message());
+        assert!(
+            matches!(&err, ScopeError::NoBranchFromGit { scan_cwd, .. } if scan_cwd == dir.path()),
+            "the cwd step must resolve to the project root: {err:?}",
+        );
     }
 
     /// `git rev-parse` exits 128 outside a work tree, so this lands on
