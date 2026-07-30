@@ -90,7 +90,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let banner_lines = build_inline_banner(area.width);
     frame.render_widget(Paragraph::new(banner_lines), banner_area);
 
-    // Pinned NEEDS INPUT band (when any background session is waiting),
+    // Pinned NEEDS ATTENTION band (when any background session is waiting),
     // then the scrollable body in the space below it.
     let body_area = render_attention_band(frame, rest_area, app);
     render_scrollable_body(frame, body_area, app);
@@ -185,7 +185,7 @@ const ATTENTION_MAX_ROWS: usize = 5;
 /// are skipped when stamping) rather than hide the body entirely.
 const ATTENTION_MIN_BODY_ROWS: u16 = 3;
 
-/// Render the pinned NEEDS INPUT attention band into the top of
+/// Render the pinned NEEDS ATTENTION attention band into the top of
 /// `area` when any background session is waiting, returning the body
 /// rect below it (fed to the scrollable body). When nothing waits the
 /// band is absent and `area` is returned unchanged - GIT then sits
@@ -195,7 +195,7 @@ fn render_attention_band(frame: &mut Frame, area: Rect, app: &mut App) -> Rect {
     if area.height == 0 || area.width == 0 {
         return area;
     }
-    let entries = app.needs_input_sessions();
+    let entries = app.needs_attention_sessions();
     if entries.is_empty() {
         return area;
     }
@@ -246,7 +246,7 @@ fn render_attention_band(frame: &mut Frame, area: Rect, app: &mut App) -> Rect {
     }
 }
 
-/// Build the pinned NEEDS INPUT band's lines: the DIM-bold ` NEEDS INPUT`
+/// Build the pinned NEEDS ATTENTION band's lines: the DIM-bold ` NEEDS ATTENTION`
 /// header (with the full `total` waiter count), a blank spacer, one row
 /// per `shown` session (already sorted stalest-first), an optional dim
 /// `+N more` line when `overflow > 0`, then a blank + DIM `─` rule
@@ -287,12 +287,12 @@ fn attention_overflow_line(overflow: usize) -> Line<'static> {
     ])
 }
 
-/// Attention-band header: DIM-bold ` NEEDS INPUT` with a right-justified
-/// DIM count of waiting sessions - styled exactly like the other section
-/// headers (`GIT` / `TASKS` / `SUBAGENTS`). The per-session attention
-/// `△` lives on the rows, not the header.
+/// Attention-band header: DIM-bold ` NEEDS ATTENTION` with a
+/// right-justified DIM count of waiting sessions - styled exactly like
+/// the other section headers (`GIT` / `TASKS` / `SUBAGENTS`). The
+/// per-session `△` / `✕` lives on the rows, not the header.
 fn attention_header_line(width: u16, count: usize) -> Line<'static> {
-    const LABEL: &str = " NEEDS INPUT";
+    const LABEL: &str = " NEEDS ATTENTION";
     let count_str = count.to_string();
     let chrome = LABEL.chars().count() + count_str.chars().count() + usize::from(PANE_PAD); // right gutter
     let pad = usize::from(width).saturating_sub(chrome).max(1);
@@ -306,11 +306,12 @@ fn attention_header_line(width: u16, count: usize) -> Line<'static> {
     ])
 }
 
-/// One attention-band row: yellow `△` + white-bold project name +
-/// DIM ` (role)` (workers only) + the DIM kind/tool/wait-age detail
-/// right-justified. The name truncates to fit; the detail is capped so
-/// a long tool name can't crowd the name out, and the row honours the
-/// 1-col right gutter every inspector section observes.
+/// One attention-band row: yellow `△` (pending prompt) or red `✕`
+/// (dead turn) + white-bold project name + DIM ` (role)` (workers
+/// only) + the DIM kind/tool/wait-age detail right-justified. The name
+/// truncates to fit; the detail is capped so a long tool name can't
+/// crowd the name out, and the row honours the 1-col right gutter every
+/// inspector section observes.
 fn attention_row_line(
     width: u16,
     entry: &AttentionEntry,
@@ -338,9 +339,14 @@ fn attention_row_line(
         2 * usize::from(PANE_PAD) + 2 + fitted_name.chars().count() + role_width + detail_width;
     let pad = inner.saturating_sub(used).max(1);
 
+    let (glyph, glyph_color) = if matches!(entry.kind, AttentionKind::Failed { .. }) {
+        ("\u{2715}", theme::STATUS_ERROR)
+    } else {
+        ("\u{25b3}", theme::STATUS_WARNING)
+    };
     Line::from(vec![
         Span::raw(" ".repeat(usize::from(PANE_PAD))),
-        Span::styled("\u{25b3}".to_owned(), Style::default().fg(theme::STATUS_WARNING)),
+        Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
         Span::raw(" "),
         Span::styled(fitted_name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
         Span::styled(role_suffix, Style::default().fg(theme::DIM)),
@@ -350,9 +356,10 @@ fn attention_row_line(
 }
 
 /// The DIM detail cluster for an attention row: the kind, the tool
-/// name (permission prompts only), and the wait-age, joined by ` · `
-/// (the inspector's separator). E.g. `permission · Bash · 3m` or
-/// `question · 20s`.
+/// name (permission prompts only) or the failure classification, and
+/// the wait-age, joined by ` · ` (the inspector's separator). E.g.
+/// `permission · Bash · 3m`, `question · 20s`, or
+/// `failed · server_error HTTP 529 · 3m`.
 fn attention_detail(entry: &AttentionEntry, now: std::time::SystemTime) -> String {
     let wait = fmt_countdown(now.duration_since(entry.enqueued_at).unwrap_or_default());
     match &entry.kind {
@@ -361,6 +368,11 @@ fn attention_detail(entry: &AttentionEntry, now: std::time::SystemTime) -> Strin
         }
         AttentionKind::Permission { .. } => format!("permission \u{00B7} {wait}"),
         AttentionKind::Question => format!("question \u{00B7} {wait}"),
+        AttentionKind::Failed { error, status } => {
+            let label = crate::app::events::api_retry::error_label(*error);
+            let status = status.map_or_else(String::new, |code| format!(" HTTP {code}"));
+            format!("failed \u{00B7} {label}{status} \u{00B7} {wait}")
+        }
     }
 }
 
@@ -4193,7 +4205,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------
-    // NEEDS INPUT attention band (pinned above the scroll body).
+    // NEEDS ATTENTION attention band (pinned above the scroll body).
     // ---------------------------------------------------------
 
     /// Seed one BACKGROUND session (not the active bucket) carrying a
@@ -4226,7 +4238,7 @@ mod tests {
     /// The band's lines for the current app state (all entries shown,
     /// no overflow), or an empty `Vec` when nothing is waiting.
     fn build_attention_band(app: &App, width: u16) -> Vec<Line<'static>> {
-        let entries = app.needs_input_sessions();
+        let entries = app.needs_attention_sessions();
         if entries.is_empty() {
             return Vec::new();
         }
@@ -4248,7 +4260,7 @@ mod tests {
         let lines = build_attention_band(&app, 60);
         assert!(!lines.is_empty(), "a waiting session produces a band");
         let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
-        assert!(text.contains("NEEDS INPUT"), "header present: {text}");
+        assert!(text.contains("NEEDS ATTENTION"), "header present: {text}");
         assert!(text.contains("gateway-backend"), "session name in a row: {text}");
         assert!(text.contains("permission"), "permission kind rendered: {text}");
         assert!(text.contains("Bash"), "tool name for a permission prompt: {text}");
@@ -4285,6 +4297,78 @@ mod tests {
         );
     }
 
+    /// A failed row names the wire classification with the same labels
+    /// the in-chat `api_retry` notice uses, plus the raw status when the
+    /// CLI reported one.
+    #[test]
+    fn attention_detail_formats_failure_with_and_without_status() {
+        use std::time::{Duration, SystemTime};
+        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        let entry = AttentionEntry {
+            session_key: forge_workspace::SessionKey::from_session_id("f"),
+            name: "gateway-backend".to_owned(),
+            role: None,
+            kind: AttentionKind::Failed {
+                error: forge_primitives::ApiRetryError::ServerError,
+                status: Some(529),
+            },
+            enqueued_at: base,
+        };
+        assert_eq!(
+            attention_detail(&entry, base + Duration::from_secs(200)),
+            "failed \u{00B7} server_error HTTP 529 \u{00B7} 3m"
+        );
+
+        let no_status = AttentionEntry {
+            kind: AttentionKind::Failed {
+                error: forge_primitives::ApiRetryError::Unknown,
+                status: None,
+            },
+            ..entry
+        };
+        assert_eq!(
+            attention_detail(&no_status, base + Duration::from_secs(20)),
+            "failed \u{00B7} connection error \u{00B7} 20s"
+        );
+    }
+
+    /// The failure row must be visually distinct from the yellow
+    /// permission/question triangle: red `✕`, the same glyph the
+    /// Projects pane already uses for a dead worker.
+    #[test]
+    fn attention_row_renders_failure_in_red_cross() {
+        let entry = AttentionEntry {
+            session_key: forge_workspace::SessionKey::from_session_id("f"),
+            name: "gateway-backend".to_owned(),
+            role: None,
+            kind: AttentionKind::Failed {
+                error: forge_primitives::ApiRetryError::ServerError,
+                status: Some(529),
+            },
+            enqueued_at: std::time::SystemTime::UNIX_EPOCH,
+        };
+        let line = attention_row_line(60, &entry, std::time::SystemTime::UNIX_EPOCH);
+        let glyph = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains('\u{2715}'))
+            .expect("failure row carries the ✕ glyph");
+        assert_eq!(glyph.style.fg, Some(theme::STATUS_ERROR), "✕ renders in STATUS_ERROR red");
+        assert!(
+            !line.spans.iter().any(|s| s.content.contains('\u{25b3}')),
+            "a failure row must not also carry the yellow △",
+        );
+    }
+
+    /// Band header wording: the band covers failures as well as pending
+    /// prompts, so it reads NEEDS ATTENTION.
+    #[test]
+    fn attention_header_reads_needs_attention() {
+        let line = attention_header_line(40, 2);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("NEEDS ATTENTION"), "header names the band: {text}");
+    }
+
     #[test]
     fn attention_band_passes_through_empty_and_shrinks_body_when_present() {
         use ratatui::Terminal;
@@ -4311,7 +4395,7 @@ mod tests {
         assert_eq!(body.width, area.width, "body keeps the pane width");
         assert_eq!(body.y + body.height, area.y + area.height, "band + body tile the area");
         let text = buffer_text(term.backend().buffer());
-        assert!(text.contains("NEEDS INPUT"), "band header rendered into the buffer: {text}");
+        assert!(text.contains("NEEDS ATTENTION"), "band header rendered into the buffer: {text}");
     }
 
     #[test]
@@ -4407,7 +4491,7 @@ mod tests {
             session.prompt_queue.push_back(prompt);
             app.sessions.insert(key, session);
         }
-        assert_eq!(app.needs_input_sessions().len(), 2, "two background waiters");
+        assert_eq!(app.needs_attention_sessions().len(), 2, "two background waiters");
         let expected: std::collections::HashMap<forge_workspace::SessionKey, &str> =
             names.iter().map(|n| (forge_workspace::SessionKey::from_session_id(*n), *n)).collect();
 
@@ -4498,7 +4582,7 @@ mod tests {
             session.prompt_queue.push_back(prompt);
             app.sessions.insert(key, session);
         }
-        assert_eq!(app.needs_input_sessions().len(), 6, "six background waiters");
+        assert_eq!(app.needs_attention_sessions().len(), 6, "six background waiters");
 
         let count_rows = |app: &App| {
             app.pane_hit_targets

@@ -482,13 +482,20 @@ fn append_org_project_row(
         // "background session needs you", not "the one you're looking at".
         let needs_attention = !*is_focused
             && app.sessions.get(session_key).is_some_and(|b| !b.prompt_queue.is_empty());
+        // A background session whose turn died surfaces red `✕` - an
+        // error is not a request for input, so it gets its own glyph and
+        // outranks a prompt that can no longer be answered.
+        let failed_turn =
+            !*is_focused && app.sessions.get(session_key).is_some_and(|b| b.failed_turn.is_some());
         // A live backgrounded task keeps the row spinning even after its
         // turn settles to Idle - pending input still wins over both.
         let has_background_work = app
             .sessions
             .get(session_key)
             .is_some_and(crate::app::session::UiSession::has_live_background_work);
-        let (glyph, glyph_color) = if needs_attention {
+        let (glyph, glyph_color) = if failed_turn {
+            ("\u{2715}".to_owned(), theme::STATUS_ERROR)
+        } else if needs_attention {
             ("\u{25b3}".to_owned(), theme::STATUS_WARNING)
         } else {
             glyph_for_lifecycle(*lifecycle, *is_focused, has_background_work, spinner_glyph)
@@ -701,13 +708,20 @@ fn append_worker_tree_children(
             .map_or(SessionLifecycleState::Spawning, |s| s.lifecycle_state);
         let needs_attention = !is_focused
             && app.sessions.get(&worker.session_key).is_some_and(|b| !b.prompt_queue.is_empty());
+        // Same red `✕` the lead row uses for a dead turn - distinct from
+        // the yellow `△`, and ahead of it because a prompt whose turn
+        // died can no longer be answered.
+        let failed_turn = !is_focused
+            && app.sessions.get(&worker.session_key).is_some_and(|b| b.failed_turn.is_some());
         // A worker running its own backgrounded task (e.g. a `gh run watch`)
         // spins its row like a lead does - same Idle-only promotion.
         let has_background_work = app
             .sessions
             .get(&worker.session_key)
             .is_some_and(crate::app::session::UiSession::has_live_background_work);
-        let (glyph, glyph_color) = if needs_attention {
+        let (glyph, glyph_color) = if failed_turn {
+            ("\u{2715}".to_owned(), theme::STATUS_ERROR)
+        } else if needs_attention {
             ("\u{25b3}".to_owned(), theme::STATUS_WARNING)
         } else if matches!(worker.status, forge_primitives::WorkerLiveness::Failed) {
             // Failed worker (#245 Layer A): `✕` in STATUS_ERROR. The
@@ -2207,6 +2221,62 @@ mod tests {
             glyph_span.style.fg,
             Some(theme::STATUS_WARNING),
             "△ glyph must use STATUS_WARNING color",
+        );
+    }
+
+    /// A worker whose turn died carries red `✕` rather than the yellow
+    /// `△`: nothing is being asked of the user, the turn is gone. The
+    /// failure outranks a stale pending prompt on the same row.
+    #[test]
+    fn worker_row_with_failed_turn_renders_red_cross_over_triangle() {
+        use forge_workspace::{ProjectKey, SessionKey, WorkerEntry};
+        use std::time::SystemTime;
+
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("workspace stub");
+        let project_key = ProjectKey::new_for_test("forge");
+        let worker_key = SessionKey::from_session_id("worker-1");
+        workspace.insert_live_worker(
+            &project_key,
+            WorkerEntry {
+                label: "reviewer".into(),
+                charter: "be sharp".into(),
+                session_key: worker_key.clone(),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".into(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        app.active_session_key = Some(SessionKey::from_session_id("some-other-lead-session"));
+        // Both signals present: the failure must win.
+        seed_worker_prompt_queue(&mut app, &worker_key);
+        app.sessions.get_mut(&worker_key).expect("seeded bucket").failed_turn =
+            Some(crate::app::FailedTurn {
+                error: forge_primitives::ApiRetryError::ServerError,
+                status: Some(529),
+                failed_at: SystemTime::UNIX_EPOCH,
+            });
+
+        let project =
+            ProjectView::new_for_test(project_key, "forge", "~/Projects/forge", Vec::new());
+        let area = Rect { x: 0, y: 0, width: 32, height: 20 };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_worker_tree_children(&mut lines, area, &mut app, &project, false, '\u{280B}');
+
+        assert_eq!(lines.len(), 2, "leading spacer + one worker row");
+        let glyph_span = lines[1]
+            .spans
+            .iter()
+            .find(|s| s.content.contains('\u{2715}'))
+            .expect("failed worker row carries ✕");
+        assert_eq!(glyph_span.style.fg, Some(theme::STATUS_ERROR), "✕ must use STATUS_ERROR");
+        assert!(
+            !lines[1].spans.iter().any(|s| s.content.contains('\u{25b3}')),
+            "the failure replaces the yellow △ rather than sitting beside it",
         );
     }
 

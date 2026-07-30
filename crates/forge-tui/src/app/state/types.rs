@@ -205,8 +205,10 @@ impl ScheduleEntry {
     }
 }
 
-/// What a needs-input session is blocked on, for the Inspector
-/// NEEDS INPUT band. Derived from the front `PromptState.source`.
+/// What a session needs attention for, in the Inspector NEEDS
+/// ATTENTION band. Prompt kinds derive from the front
+/// `PromptState.source`; `Failed` derives from
+/// [`crate::app::session::UiSession::failed_turn`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttentionKind {
     /// A `can_use_tool` permission request; `tool` is the raw tool
@@ -215,11 +217,29 @@ pub enum AttentionKind {
     Permission { tool: String },
     /// An `AskUserQuestion` request.
     Question,
+    /// The session's last turn died after the CLI exhausted its own
+    /// retries. Renders red rather than yellow: nothing is being asked
+    /// of the user, the turn is simply gone.
+    Failed { error: forge_primitives::ApiRetryError, status: Option<u16> },
 }
 
-/// One background session waiting on the user, rendered as a row in
-/// the Inspector NEEDS INPUT band. Built by
-/// [`crate::app::App::needs_input_sessions`], sorted stalest-first.
+/// A turn that ended in error, retained on the session bucket so the
+/// Inspector band and the Projects pane keep surfacing it until the
+/// user attends to the session or it runs another turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailedTurn {
+    /// Wire classification, taken from the last `api_retry` seen
+    /// during the turn and [`forge_primitives::ApiRetryError::Unknown`]
+    /// when the turn died without one.
+    pub error: forge_primitives::ApiRetryError,
+    /// Raw HTTP status behind `error`, when the CLI reported one.
+    pub status: Option<u16>,
+    pub failed_at: std::time::SystemTime,
+}
+
+/// One background session needing the user, rendered as a row in
+/// the Inspector NEEDS ATTENTION band. Built by
+/// [`crate::app::App::needs_attention_sessions`], sorted stalest-first.
 #[derive(Debug, Clone)]
 pub struct AttentionEntry {
     /// Session to switch to when the row is clicked.
@@ -229,8 +249,9 @@ pub struct AttentionEntry {
     /// Worker role in parens (dim), when the session is a worker.
     pub role: Option<String>,
     pub kind: AttentionKind,
-    /// When the front prompt entered the queue; the row's wait-age is
-    /// `now - enqueued_at`, and the band sorts oldest-first.
+    /// When the prompt entered the queue, or when the turn failed; the
+    /// row's wait-age is `now - enqueued_at` and the band sorts
+    /// oldest-first.
     pub enqueued_at: std::time::SystemTime,
 }
 
