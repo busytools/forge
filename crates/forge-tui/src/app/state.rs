@@ -6041,6 +6041,108 @@ mod tests {
         assert_eq!(app.render_cache_tail_msg_idx(), tail);
     }
 
+    /// Seed messages carrying cached bytes, with accounting built.
+    fn app_with_cached_messages(count: usize) -> App {
+        let mut app = make_test_app();
+        for i in 0..count {
+            let mut msg = ChatMessage::new(
+                MessageRole::Assistant,
+                vec![assistant_text_block(&format!("row {i}"))],
+                None,
+            );
+            if let MessageBlock::Text(block) = &mut msg.blocks[0] {
+                block.cache.store(vec![Line::from("x".repeat(1024))]);
+            }
+            app.push_message_tracked(msg);
+        }
+        app.ensure_render_cache_accounting();
+        app
+    }
+
+    /// Append a cached block without going through
+    /// `sync_after_message_blocks_changed`, which is the notification
+    /// that would normally rebuild.
+    fn append_block_out_of_band(app: &mut App, msg_idx: usize) {
+        let mut extra = assistant_text_block("appended out of band");
+        if let MessageBlock::Text(block) = &mut extra {
+            block.cache.store(vec![Line::from("y".repeat(4096))]);
+        }
+        app.active_messages_mut()[msg_idx].blocks.push(extra);
+    }
+
+    /// The shared guard only compares list lengths, so the per-message
+    /// slot-count check has to live at each sync entry point.
+    /// `sync_render_cache_slot` is the one with external callers
+    /// (terminal, tool updates, tool calls, notices), and unlike
+    /// `sync_render_cache_message` it has no earlier short-circuit, so
+    /// it is the entry point that actually reaches the check.
+    #[test]
+    fn syncing_a_slot_repairs_accounting_after_an_unnotified_block_change() {
+        let mut app = app_with_cached_messages(4);
+        append_block_out_of_band(&mut app, 1);
+
+        app.sync_render_cache_slot(1, 0);
+
+        let after_sync = app.render_cache_total_bytes();
+        app.rebuild_render_cache_accounting();
+        assert_eq!(
+            after_sync,
+            app.render_cache_total_bytes(),
+            "syncing a slot in the changed message must leave the totals a rebuild produces",
+        );
+        assert_eq!(app.render_cache_slots()[1].len(), app.messages()[1].blocks.len() + 1);
+    }
+
+    /// What the narrowed guard gives up, pinned rather than left
+    /// unstated: syncing a DIFFERENT message does not notice message
+    /// 1's unannounced change, so the totals stay short until something
+    /// touches message 1. Budget enforcement closes this itself - see
+    /// the eviction test below.
+    #[test]
+    fn syncing_an_unrelated_slot_leaves_the_drift_in_place() {
+        let mut app = app_with_cached_messages(4);
+        append_block_out_of_band(&mut app, 1);
+
+        app.sync_render_cache_slot(3, 0);
+
+        let drifted = app.render_cache_total_bytes();
+        app.rebuild_render_cache_accounting();
+        assert!(
+            drifted < app.render_cache_total_bytes(),
+            "documents the narrowing: an unrelated sync leaves the new block uncounted",
+        );
+    }
+
+    /// The drift does not reach any budget decision, including the
+    /// decision NOT to evict. A short total makes the under-budget
+    /// branch fire when it should not, so the repair runs before the
+    /// totals are read rather than before eviction - deliberately the
+    /// cheaper-looking branch, because it is the uncovered one.
+    ///
+    /// No `max_bytes` tampering here: staying under budget is the case
+    /// that used to slip through.
+    #[test]
+    fn budget_enforcement_repairs_drift_before_reading_totals() {
+        let mut app = app_with_cached_messages(4);
+        append_block_out_of_band(&mut app, 1);
+        app.sync_render_cache_slot(3, 0);
+
+        let drifted = app.render_cache_total_bytes();
+        let stats = app.enforce_render_cache_budget();
+
+        assert!(
+            stats.total_before_bytes > drifted,
+            "the totals the budget compares against must be re-derived, not the drifted ones",
+        );
+        let after = app.render_cache_total_bytes();
+        app.rebuild_render_cache_accounting();
+        assert_eq!(
+            after,
+            app.render_cache_total_bytes(),
+            "the totals enforcement acted on match a full rebuild",
+        );
+    }
+
     #[test]
     fn enforce_history_retention_noop_under_budget() {
         let mut app = make_test_app();
