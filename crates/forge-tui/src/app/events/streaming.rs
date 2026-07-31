@@ -17,7 +17,7 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
         && let Some(owner) = app.active_messages_mut().get_mut(owner_idx)
     {
         append_agent_stream_text(&mut owner.blocks, &text.text);
-        app.sync_after_message_blocks_changed(owner_idx);
+        app.sync_after_message_tail_changed(owner_idx);
         return;
     }
 

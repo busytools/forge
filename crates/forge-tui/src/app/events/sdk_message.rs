@@ -436,7 +436,7 @@ fn append_or_push_envelope(app: &mut App, kind: EnvelopeKind, text: &str) {
         app.active_messages_mut()[tail].blocks.push(block);
         // Appending bypasses `push_message_tracked`, so the retained-byte
         // accounting and the layout invalidation have to be driven here.
-        app.sync_after_message_blocks_changed(tail);
+        app.sync_after_message_tail_changed(tail);
         return;
     }
     let blocks = vec![block];

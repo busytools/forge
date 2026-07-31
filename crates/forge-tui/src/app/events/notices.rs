@@ -91,7 +91,7 @@ fn insert_inline_notice(
     owner.blocks.push(MessageBlock::Notice(
         NoticeBlock::from_complete(severity, message).with_dedup_key(dedup_key.clone()),
     ));
-    app.sync_after_message_blocks_changed(owner_idx);
+    app.sync_after_message_tail_changed(owner_idx);
     app.invalidate_layout(InvalidationLevel::MessageChanged(owner_idx));
     app.turn_notice_refs_mut().push(TurnNoticeRef {
         dedup_key,

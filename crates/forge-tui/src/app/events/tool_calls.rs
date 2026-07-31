@@ -270,7 +270,7 @@ pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: 
         let tc_id = tool_info.id.clone();
         let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
         owner.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
-        app.sync_after_message_blocks_changed(msg_idx);
+        app.sync_after_message_tail_changed(msg_idx);
         app.index_tool_call(tc_id, msg_idx, block_idx);
         sync_tool_call_terminal_tracking(app, msg_idx, block_idx, terminal_id);
         return;
@@ -284,7 +284,7 @@ pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: 
             let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
             last.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
             app.bind_active_turn_assistant(msg_idx);
-            app.sync_after_message_blocks_changed(msg_idx);
+            app.sync_after_message_tail_changed(msg_idx);
             app.index_tool_call(tc_id, msg_idx, block_idx);
             sync_tool_call_terminal_tracking(app, msg_idx, block_idx, terminal_id);
         }
