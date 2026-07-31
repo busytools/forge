@@ -209,6 +209,7 @@ fn build_tool_info_from_tool_call(
             | "CronCreate"
             | "CronDelete",
     );
+    let monitor_status = app.monitor_status_for_tool_use(&tc.tool_call_id);
     let mut tool_info = ToolCallInfo {
         id: tc.tool_call_id,
         title: shorten_tool_title(&tc.title, &app.cwd_raw()),
@@ -233,6 +234,7 @@ fn build_tool_info_from_tool_call(
         terminal_bytes_seen: 0,
         terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
         monitor_output_tail: Vec::default(),
+        monitor_status,
         render_epoch: 0,
         layout_epoch: 0,
         last_measured_width: 0,
@@ -634,6 +636,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::new(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -782,8 +785,12 @@ mod tests {
         ] {
             let app = App::test_default();
             let tc = model::ToolCall::new("toolu_lifecycle", name).raw_input(raw_input);
-            let info =
-                build_tool_info_from_tool_call(&app, tc, name.to_owned(), &ToolCallScope::MainAgent);
+            let info = build_tool_info_from_tool_call(
+                &app,
+                tc,
+                name.to_owned(),
+                &ToolCallScope::MainAgent,
+            );
             assert!(!info.hidden, "{name} must not be chat-suppressed");
             let rendered = render_assistant_block(MessageBlock::ToolCall(Box::new(info)));
             assert!(

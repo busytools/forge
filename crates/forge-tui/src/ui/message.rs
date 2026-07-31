@@ -1009,10 +1009,14 @@ fn render_question_answered_card(tc: &crate::app::ToolCallInfo) -> Option<Vec<Li
 ///   `· timed out` when killed via timeout)
 /// - Workflow (running): `◆ Workflow started · <meta.name | "Workflow">`
 /// - Workflow (terminal): `◆ Workflow done · <meta.name | "Workflow">`
+/// Cells consumed by a Monitor child row's `   <connector> ` gutter.
+const MONITOR_GUTTER_CELLS: usize = 5;
+
 fn render_lifecycle_one_liner(
     tc: &crate::app::ToolCallInfo,
     width: u16,
 ) -> Option<Vec<Line<'static>>> {
+    use crate::app::MonitorStatus;
     use forge_primitives::ToolCallStatus;
     match tc.sdk_tool_name.as_str() {
         "Monitor" => {
@@ -1020,23 +1024,17 @@ fn render_lifecycle_one_liner(
                 .raw_input
                 .as_ref()
                 .and_then(forge_workspace::user_interaction::parse_monitor_input)?;
-            let is_terminal = matches!(
-                tc.status,
-                ToolCallStatus::Completed | ToolCallStatus::Failed | ToolCallStatus::Killed
-            );
-            if is_terminal {
+            // Liveness comes from the monitor, not from `tc.status`:
+            // the "Monitor started" ack lands seconds after arming and
+            // drives the TOOL CALL terminal while the monitor runs on.
+            let status_word = match tc.monitor_status {
+                None | Some(MonitorStatus::Running) => None,
+                Some(MonitorStatus::Stopped) => Some("stopped"),
+                Some(MonitorStatus::Completed) => Some("completed"),
+                Some(MonitorStatus::TimedOut) => Some("timed out"),
+            };
+            if let Some(status_word) = status_word {
                 // Collapsed one-liner: ✓ Monitor · <desc> · <status>
-                // Per #277's wire mapping (sdk_message::handle_task_updated):
-                // ToolCallStatus::Completed maps to MonitorStatus::Completed
-                // ("completed"); ToolCallStatus::Killed maps to
-                // MonitorStatus::Stopped ("stopped"). ToolCallStatus::Failed
-                // would map to "timed out" if/when the wire produces it
-                // (no current production path; kept for completeness).
-                let status_word = match tc.status {
-                    ToolCallStatus::Killed => "stopped",
-                    ToolCallStatus::Failed => "timed out",
-                    _ => "completed",
-                };
                 return Some(vec![Line::from(vec![
                     Span::styled(
                         format!("{} ", theme::ICON_COMPLETED),
@@ -1068,7 +1066,6 @@ fn render_lifecycle_one_liner(
             // char-wraps without the gutter, so an overflowing one
             // shears the tree. Budgets subtract the `   <conn> ` gutter
             // (5 cells) and, for the command row, its `$ ` marker.
-            const GUTTER_CELLS: usize = 5;
             let width = width as usize;
             // Command line: │ $ <command>  (└ if tail empty, │ if tail follows).
             let cmd_connector =
@@ -1078,7 +1075,7 @@ fn render_lifecycle_one_liner(
                     "   {cmd_connector}$ {}",
                     crate::ui::tool_call::clip_to_width(
                         &parsed.command,
-                        width.saturating_sub(GUTTER_CELLS + 2),
+                        width.saturating_sub(MONITOR_GUTTER_CELLS + 2),
                     ),
                 ),
                 Style::default().fg(theme::DIM),
@@ -1092,7 +1089,7 @@ fn render_lifecycle_one_liner(
                         "   {conn}{}",
                         crate::ui::tool_call::clip_to_width(
                             line,
-                            width.saturating_sub(GUTTER_CELLS),
+                            width.saturating_sub(MONITOR_GUTTER_CELLS),
                         ),
                     ),
                     Style::default().fg(theme::DIM),
@@ -2873,6 +2870,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -5136,9 +5134,8 @@ mod tests {
             "persistent": true,
             "timeout_ms": 0,
         }));
-        tc.monitor_output_tail = vec![
-            "build \u{b7} in_progress \u{b7} a trailing detail that overflows".to_owned(),
-        ];
+        tc.monitor_output_tail =
+            vec!["build \u{b7} in_progress \u{b7} a trailing detail that overflows".to_owned()];
         let rows = render_lines_to_strings(
             &render_lifecycle_one_liner(&tc, WIDTH).expect("Monitor produces lines"),
         );
@@ -5184,6 +5181,35 @@ mod tests {
         assert!(!joined.contains("\u{2502}"), "no │ connector when tail empty: {joined:?}");
     }
 
+    /// The regression this whole surface turns on: the "Monitor
+    /// started" ack drives `tc.status` terminal seconds after arming,
+    /// so a live monitor renders its tail only while the block reads
+    /// `monitor_status` instead.
+    #[test]
+    fn running_monitor_renders_live_despite_a_completed_tool_call() {
+        let mut tc = make_tool_call_info(
+            "toolu_mon",
+            "Monitor",
+            crate::agent::model::ToolCallStatus::Completed,
+            "",
+        );
+        tc.raw_input = Some(serde_json::json!({
+            "description": "ci-watch",
+            "command": "gh run watch 1",
+            "persistent": true,
+            "timeout_ms": 0,
+        }));
+        tc.monitor_status = Some(crate::app::MonitorStatus::Running);
+        tc.monitor_output_tail = vec!["build \u{b7} in_progress".to_owned()];
+        let rows = render_lines_to_strings(
+            &render_lifecycle_one_liner(&tc, 80).expect("Monitor produces lines"),
+        );
+        let joined = rows.join("\n");
+        assert!(joined.contains("$ gh run watch 1"), "live block shows the command: {joined:?}");
+        assert!(joined.contains("build"), "live block shows the tail: {joined:?}");
+        assert!(!joined.contains("completed"), "a running monitor never reads completed: {joined:?}");
+    }
+
     #[test]
     fn monitor_terminal_completed_renders_collapsed_one_liner() {
         let mut tc = make_tool_call_info(
@@ -5198,6 +5224,7 @@ mod tests {
             "persistent": false,
             "timeout_ms": 60000,
         }));
+        tc.monitor_status = Some(crate::app::MonitorStatus::Completed);
         let lines = render_lifecycle_one_liner(&tc, 80).expect("Monitor produces lines");
         assert_eq!(lines.len(), 1, "terminal collapses to one line");
         let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
@@ -5208,7 +5235,7 @@ mod tests {
     }
 
     #[test]
-    fn monitor_terminal_killed_renders_stopped() {
+    fn monitor_stopped_renders_stopped() {
         let mut tc = make_tool_call_info(
             "toolu_mon",
             "Monitor",
@@ -5221,13 +5248,14 @@ mod tests {
             "persistent": false,
             "timeout_ms": 0,
         }));
+        tc.monitor_status = Some(crate::app::MonitorStatus::Stopped);
         let lines = render_lifecycle_one_liner(&tc, 80).expect("Monitor produces lines");
         let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(rendered.contains("stopped"), "Killed -> stopped: {rendered:?}");
+        assert!(rendered.contains("stopped"), "a stopped monitor reads stopped: {rendered:?}");
     }
 
     #[test]
-    fn monitor_terminal_failed_renders_timed_out() {
+    fn monitor_timed_out_renders_timed_out() {
         let mut tc = make_tool_call_info(
             "toolu_mon",
             "Monitor",
@@ -5240,9 +5268,10 @@ mod tests {
             "persistent": false,
             "timeout_ms": 1000,
         }));
+        tc.monitor_status = Some(crate::app::MonitorStatus::TimedOut);
         let lines = render_lifecycle_one_liner(&tc, 80).expect("Monitor produces lines");
         let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(rendered.contains("timed out"), "Failed -> timed out: {rendered:?}");
+        assert!(rendered.contains("timed out"), "a timed-out monitor says so: {rendered:?}");
     }
 
     #[test]

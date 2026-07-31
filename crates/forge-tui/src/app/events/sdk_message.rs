@@ -3094,6 +3094,7 @@ mod subagent_sentinel_tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -3587,7 +3588,7 @@ mod monitor_chat_block_tests {
     /// still runs. It drives the tool call terminal, so the block
     /// renders its completed one-liner for the whole live window.
     #[test]
-    fn tool_result_ack_flips_the_block_terminal_while_the_monitor_runs() {
+    fn tool_result_ack_does_not_end_the_monitor_block() {
         let mut app = App::test_default();
         tool_calls::handle_tool_call(&mut app, monitor_tool_use());
         assert_eq!(
@@ -3614,6 +3615,26 @@ mod monitor_chat_block_tests {
             with_tool_call(&app, |tc| tc.status),
             model::ToolCallStatus::Completed,
             "the ack alone marks the tool call terminal",
+        );
+        assert_eq!(
+            with_tool_call(&app, |tc| tc.monitor_status),
+            Some(crate::app::MonitorStatus::Running),
+            "the monitor itself is still running, so the chat block stays live",
+        );
+    }
+
+    /// The wire's terminal `task_updated` is keyed by task_id and
+    /// arrives after the launching turn finalised, so it routes
+    /// straight to the entry - and has to reach the chat block too.
+    #[test]
+    fn terminal_task_updated_flips_the_chat_block_to_stopped() {
+        let mut app = App::test_default();
+        tool_calls::handle_tool_call(&mut app, monitor_tool_use());
+        handle_task_started(&mut app, task_started());
+        app.set_monitor_status_by_task_id(TASK_ID, crate::app::MonitorStatus::Stopped);
+        assert_eq!(
+            with_tool_call(&app, |tc| tc.monitor_status),
+            Some(crate::app::MonitorStatus::Stopped),
         );
     }
 }

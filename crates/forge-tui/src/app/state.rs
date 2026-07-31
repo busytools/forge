@@ -2305,11 +2305,46 @@ impl App {
         task_id: &str,
         status: crate::app::state::types::MonitorStatus,
     ) {
-        if let Some(entry) =
+        let Some(entry) =
             self.monitors_mut().iter_mut().find(|m| m.task_id.as_deref() == Some(task_id))
-        {
-            entry.status = status;
+        else {
+            return;
+        };
+        entry.status = status;
+        let tool_use_id = entry.tool_use_id.clone();
+        self.stamp_monitor_status_on_tool_call(&tool_use_id, status);
+    }
+
+    /// Mirror a monitor's liveness onto its chat block. The block reads
+    /// this rather than `ToolCallInfo::status`, which the "Monitor
+    /// started" ack drives terminal while the monitor is still alive.
+    fn stamp_monitor_status_on_tool_call(
+        &mut self,
+        tool_use_id: &str,
+        status: crate::app::state::types::MonitorStatus,
+    ) {
+        let Some((msg_idx, block_idx)) = self.lookup_tool_call(tool_use_id) else {
+            return;
+        };
+        let Some(MessageBlock::ToolCall(tc)) =
+            self.active_messages_mut().get_mut(msg_idx).and_then(|m| m.blocks.get_mut(block_idx))
+        else {
+            return;
+        };
+        if tc.monitor_status == Some(status) {
+            return;
         }
+        tc.monitor_status = Some(status);
+        tc.mark_tool_call_layout_dirty();
+    }
+
+    /// Liveness of the monitor owning `tool_use_id`, read at
+    /// `ToolCallInfo` construction. `None` when no entry matches.
+    pub fn monitor_status_for_tool_use(
+        &self,
+        tool_use_id: &str,
+    ) -> Option<crate::app::state::types::MonitorStatus> {
+        self.monitors().iter().find(|m| m.tool_use_id == tool_use_id).map(|m| m.status)
     }
 
     /// Stamp the `output_file` path on the matching
@@ -3737,6 +3772,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -3813,6 +3849,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -3890,6 +3927,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -3964,6 +4002,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -5618,6 +5657,7 @@ mod tests {
                 terminal_bytes_seen: 1024,
                 terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
                 monitor_output_tail: Vec::default(),
+                monitor_status: None,
                 render_epoch: 0,
                 layout_epoch: 0,
                 last_measured_width: 0,
@@ -5658,6 +5698,7 @@ mod tests {
                 terminal_bytes_seen: 1024,
                 terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
                 monitor_output_tail: Vec::default(),
+                monitor_status: None,
                 render_epoch: 0,
                 layout_epoch: 0,
                 last_measured_width: 0,
@@ -8458,6 +8499,7 @@ mod tests {
                     terminal_bytes_seen: 0,
                     terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
                     monitor_output_tail: Vec::default(),
+                    monitor_status: None,
                     render_epoch: 0,
                     layout_epoch: 0,
                     last_measured_y_in_msg: 0,
@@ -8635,6 +8677,7 @@ mod tests {
                 terminal_bytes_seen: 0,
                 terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
                 monitor_output_tail: Vec::default(),
+                monitor_status: None,
                 render_epoch: 0,
                 layout_epoch: 0,
                 last_measured_y_in_msg: 0,
@@ -8707,6 +8750,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -8739,6 +8783,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,

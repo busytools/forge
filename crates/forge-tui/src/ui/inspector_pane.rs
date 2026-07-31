@@ -1525,8 +1525,8 @@ const TASKS_MAX: usize = 5;
 /// `ScheduleWakeup` / `CronCreate` (chat-parsed cloud routines) AND per
 /// durable forge cron (`mcp__forge__cron`, from the cached
 /// `app.forge_crons` snapshot). The section hides entirely when no
-/// entries are present. Mirrors the MONITORS shape: header line, blank,
-/// per-entry rows with blank separators.
+/// entries are present. Header line, blank, per-entry rows with blank
+/// separators.
 fn append_schedules_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // Two sources share this section: the chat-parsed cloud routines
     // (`ScheduleWakeup` / `CronCreate`, per-session) and the durable
@@ -3754,6 +3754,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -3792,6 +3793,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,

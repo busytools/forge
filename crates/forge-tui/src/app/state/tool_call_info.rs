@@ -1,4 +1,5 @@
 use super::block_cache::BlockCache;
+use super::types::MonitorStatus;
 use crate::agent::model;
 
 pub struct ToolCallInfo {
@@ -29,6 +30,15 @@ pub struct ToolCallInfo {
     /// `layout_epoch` after writing this re-renders the cached chat
     /// block in place.
     pub monitor_output_tail: Vec<String>,
+    /// Liveness of the watched monitor, mirrored from
+    /// `MonitorEntry.status`. `None` for non-Monitor tool calls.
+    ///
+    /// Distinct from `status`, which tracks the TOOL CALL: a Monitor's
+    /// `tool_result` is only the "Monitor started" ack and lands
+    /// seconds after arming, so `status` is `Completed` for nearly the
+    /// whole time the monitor is alive. The chat block reads this
+    /// instead.
+    pub monitor_status: Option<MonitorStatus>,
     /// Length of terminal buffer at last snapshot - used to skip O(n) re-snapshots
     /// when the buffer hasn't grown.
     pub terminal_output_len: usize,
