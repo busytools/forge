@@ -997,8 +997,10 @@ fn render_question_answered_card(tc: &crate::app::ToolCallInfo) -> Option<Vec<Li
     Some(lines)
 }
 
-/// Cells consumed by the indent + connector gutter on a Monitor child row.
-const MONITOR_GUTTER_CELLS: usize = 5;
+/// Cells consumed by the indent + connector gutter on a Monitor child
+/// row: the block's 2-cell body indent, 3 more to sit under the header
+/// glyph, then the 2-cell connector.
+const MONITOR_GUTTER_CELLS: usize = 7;
 
 /// Render the chat lifecycle block for Monitor / Workflow. Returns
 /// `None` for any other tool, or when the input doesn't parse, so the
@@ -1036,7 +1038,7 @@ fn render_lifecycle_one_liner(
                 // Collapsed one-liner: ✓ Monitor · <desc> · <status>
                 return Some(vec![Line::from(vec![
                     Span::styled(
-                        format!("{} ", theme::ICON_COMPLETED),
+                        format!("  {} ", theme::ICON_COMPLETED),
                         Style::default().fg(Color::Green),
                     ),
                     Span::styled("Monitor".to_owned(), Style::default().fg(theme::DIM)),
@@ -1052,7 +1054,7 @@ fn render_lifecycle_one_liner(
             // Header: ◉ Monitor · <desc> [· persistent]
             lines.push(Line::from(vec![
                 Span::styled(
-                    "\u{25c9} ".to_owned(),
+                    "  \u{25c9} ".to_owned(),
                     Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled("Monitor".to_owned(), Style::default().add_modifier(Modifier::BOLD)),
@@ -1063,15 +1065,15 @@ fn render_lifecycle_one_liner(
             ]));
             // Child rows carry the connectors and the outer layout
             // char-wraps without the gutter, so an overflowing one
-            // shears the tree. Budgets subtract the `   <conn> ` gutter
-            // (5 cells) and, for the command row, its `$ ` marker.
+            // shears the tree. Budgets subtract that gutter and, for
+            // the command row, its `$ ` marker.
             let width = width as usize;
             // Command line: │ $ <command>  (└ if tail empty, │ if tail follows).
             let cmd_connector =
                 if tc.monitor_output_tail.is_empty() { "\u{2514} " } else { "\u{2502} " };
             lines.push(Line::from(Span::styled(
                 format!(
-                    "   {cmd_connector}$ {}",
+                    "     {cmd_connector}$ {}",
                     crate::ui::tool_call::clip_to_width(
                         &parsed.command,
                         width.saturating_sub(MONITOR_GUTTER_CELLS + 2),
@@ -1085,7 +1087,7 @@ fn render_lifecycle_one_liner(
                 let conn = if idx == last_idx { "\u{2514} " } else { "\u{2502} " };
                 lines.push(Line::from(Span::styled(
                     format!(
-                        "   {conn}{}",
+                        "     {conn}{}",
                         crate::ui::tool_call::clip_to_width(
                             line,
                             width.saturating_sub(MONITOR_GUTTER_CELLS),
@@ -1107,9 +1109,9 @@ fn render_lifecycle_one_liner(
                 ToolCallStatus::Completed | ToolCallStatus::Failed | ToolCallStatus::Killed
             );
             let text = if is_terminal {
-                format!("\u{25c6} Workflow done \u{b7} {meta_name}")
+                format!("  \u{25c6} Workflow done \u{b7} {meta_name}")
             } else {
-                format!("\u{25c6} Workflow started \u{b7} {meta_name}")
+                format!("  \u{25c6} Workflow started \u{b7} {meta_name}")
             };
             Some(vec![Line::from(Span::styled(text, Style::default().fg(theme::DIM)))])
         }
@@ -5112,6 +5114,47 @@ mod tests {
         assert!(joined.contains("$ gh run watch 18234567"), "command line: {joined:?}");
         assert!(joined.contains("\u{2502}"), "│ tree connector: {joined:?}");
         assert!(joined.contains("\u{2514}"), "└ tree connector for last row: {joined:?}");
+    }
+
+    /// The block sits at the same 2-cell body indent the tool-group
+    /// summary and peer block use, so a Monitor next to a group reads
+    /// as one family rather than breaking flush-left out of the column.
+    #[test]
+    fn monitor_block_sits_at_the_shared_body_indent() {
+        let mut tc = make_tool_call_info(
+            "toolu_mon",
+            "Monitor",
+            crate::agent::model::ToolCallStatus::Completed,
+            "",
+        );
+        tc.raw_input = Some(serde_json::json!({
+            "description": "ci-watch",
+            "command": "gh run watch 1",
+            "persistent": false,
+            "timeout_ms": 0,
+        }));
+        tc.monitor_status = Some(crate::app::MonitorStatus::Running);
+        tc.monitor_output_tail = vec!["build".to_owned()];
+        let rows = render_lines_to_strings(
+            &render_lifecycle_one_liner(&tc, 80).expect("Monitor produces lines"),
+        );
+        assert!(rows[0].starts_with("  \u{25c9}"), "header at the 2-cell indent: {:?}", rows[0]);
+        for row in rows.iter().skip(1) {
+            assert!(
+                row.starts_with("     \u{2502}") || row.starts_with("     \u{2514}"),
+                "child row hangs under the header glyph: {row:?}",
+            );
+        }
+
+        tc.monitor_status = Some(crate::app::MonitorStatus::Completed);
+        let terminal = render_lines_to_strings(
+            &render_lifecycle_one_liner(&tc, 80).expect("Monitor produces lines"),
+        );
+        assert!(
+            terminal[0].starts_with("  "),
+            "the collapsed summary keeps the indent: {:?}",
+            terminal[0],
+        );
     }
 
     /// Child rows carry the tree connectors, and the outer layout

@@ -3620,6 +3620,22 @@ mod monitor_chat_block_tests {
         );
     }
 
+    /// A resumed session must not restore a finished monitor as live.
+    /// Replay never re-drives the terminal `task_updated`, so liveness
+    /// here comes from `add_monitor` starting replayed entries
+    /// `Stopped` - the block reads that and collapses.
+    #[test]
+    fn a_replayed_monitor_is_restored_terminal_not_live() {
+        let mut app = App::test_default();
+        app.replay_in_progress = true;
+        tool_calls::handle_tool_call(&mut app, monitor_tool_use());
+        assert_eq!(
+            with_tool_call(&app, |tc| tc.monitor_status),
+            Some(crate::app::MonitorStatus::Stopped),
+            "a replayed monitor renders its collapsed summary, never a live block",
+        );
+    }
+
     /// The wire's terminal `task_updated` is keyed by task_id and
     /// arrives after the launching turn finalised, so it routes
     /// straight to the entry - and has to reach the chat block too.
