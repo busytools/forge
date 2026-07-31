@@ -169,12 +169,9 @@ pub(crate) struct MessageRenderContext<'a> {
     /// collapsed, L0 when expanded (via `resolve_group_level`).
     messaging_group_collapse_levels:
         Option<&'a std::collections::HashMap<grouping::GroupId, grouping::GroupCollapseLevel>>,
-    /// Pre-computed render-unit list for THIS message produced by
-    /// the session-walking partitioner. `Some` carries cross-message
-    /// peer/worker run state - segments may have continuation flags
-    /// and a shared `group_leader_id` with segments in sibling
-    /// messages. `None` falls back to the per-message partition,
-    /// which only sees within-message runs.
+    /// Pre-computed render-unit list for THIS message produced by the
+    /// session-walking partitioner, carrying the cross-message run
+    /// state a per-message partition can't see.
     session_message_units: Option<&'a [grouping::RenderUnit]>,
     /// Active session's raw cwd (project root), used to relativize the
     /// read-kind file paths in the chat tool-group L2 tree. `None`
@@ -213,10 +210,16 @@ impl<'a> MessageRenderContext<'a> {
     /// Attach a pre-computed render-unit list for THIS message
     /// (sliced out of `partition_session_into_render_units`'s output
     /// over the full session). Required for cross-message peer/worker
-    /// run merging to fire; absent falls back to the per-message
+    /// run merging to fire; `None` falls back to the per-message
     /// partition.
-    pub(crate) fn with_session_message_units(mut self, units: &'a [grouping::RenderUnit]) -> Self {
-        self.session_message_units = Some(units);
+    ///
+    /// `Option`, not a slice: an empty slice renders no blocks at all,
+    /// so a missed lookup must not be spelled as one.
+    pub(crate) fn with_session_message_units(
+        mut self,
+        units: Option<&'a [grouping::RenderUnit]>,
+    ) -> Self {
+        self.session_message_units = units;
         self
     }
 
@@ -421,10 +424,7 @@ fn append_welcome_blocks(msg: &mut ChatMessage, width: u16, layout: &mut Message
 }
 
 /// Inbound peer envelopes arrive as user turns, so a messaging group
-/// that spans a turn boundary has segments on both sides of it. This
-/// dispatches over the same render units the assistant path does, so a
-/// bundled envelope renders the group summary rather than its own
-/// standalone card.
+/// that spans a turn boundary has segments on both sides of it.
 fn append_user_blocks(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
@@ -601,11 +601,10 @@ fn append_assistant_blocks(
 
     let show_compacting = spinner.show_compacting;
     let mut state = AssistantLayoutState::default();
-    // Session-walking partition wins when attached: it carries
-    // cross-message peer/worker run state (shared group_leader_id,
-    // continuation flags, group_total_count). Absent (no
-    // `with_session_message_units` call) falls back to the
-    // per-message partition, which only sees within-message runs.
+    // Session-walking partition wins when attached: it carries the
+    // cross-message run state (shared `group_leader_id`,
+    // `group_total_count`) the per-message partition can't see. Absent
+    // or a missed lookup falls back to the per-message partition.
     let owned_units: Vec<grouping::RenderUnit> =
         if let Some(slice) = render_context.session_message_units {
             slice.to_vec()
@@ -633,7 +632,7 @@ fn append_assistant_blocks(
                         // on the summary line maps to `range.start` via
                         // the existing `locate_tool_call_block_at_click`
                         // walk. The mouse handler reclassifies via
-                        // `grouping::group_leader_at` + level check
+                        // `grouping::group_hit_at` + level check
                         // and dispatches as a group-summary click when
                         // the position matches a group at L2.
                         let summary_lines = tool_call::render_group_summary_line(
@@ -651,6 +650,7 @@ fn append_assistant_blocks(
                             tc.last_measured_height = height;
                             tc.last_measured_width = render_context.width;
                         }
+                        clear_hidden_block_geometry(&mut msg.blocks, range.start + 1..range.end);
                         state.has_body_content = true;
                         state.has_visible_content = true;
                         state.prev_was_tool = true;
@@ -747,9 +747,7 @@ fn append_assistant_blocks(
 
 /// Push one messaging-group segment's L2 summary line and stamp the
 /// leading block's hit-test fields, so a click on the summary routes
-/// back to the segment via the mouse handler's block walk. Outbound
-/// leaders are tool calls and inbound leaders are text blocks; the two
-/// carry that geometry on different fields.
+/// back to the segment.
 fn append_messaging_group_summary(
     blocks: &mut [MessageBlock],
     segment: &grouping::MessagingGroupSegment,
@@ -773,6 +771,20 @@ fn append_messaging_group_summary(
             text.peer_last_measured_width = width;
         }
         _ => {}
+    }
+    clear_hidden_block_geometry(blocks, segment.block_range.start + 1..segment.block_range.end);
+}
+
+/// Zero the hit-test rects of the blocks an L2 summary hides - the
+/// summary render never re-stamps them, so a stale rect keeps
+/// answering clicks at rows the summary now owns.
+fn clear_hidden_block_geometry(blocks: &mut [MessageBlock], range: std::ops::Range<usize>) {
+    for idx in range {
+        match blocks.get_mut(idx) {
+            Some(MessageBlock::ToolCall(tc)) => tc.clear_hit_test_rect(),
+            Some(MessageBlock::Text(text)) => text.clear_peer_hit_test_rect(),
+            _ => {}
+        }
     }
 }
 
@@ -1624,17 +1636,13 @@ fn build_message_render_signature(
         hook.command.hash(&mut hasher);
         hook.duration_ms.hash(&mut hasher);
     }
-    // Chat tool-call + messaging grouping: fold the level of each
-    // group present in this message so a `cycle_*_collapse_level`
-    // flip invalidates the cache. The session-walking partition
-    // attached to the context (when present) folds cross-message
-    // peer/worker continuation state too - segment counts, group
-    // totals, leader ids - so a downstream turn's extension of an
-    // in-flight messaging run invalidates this message's cache.
     // Read-kind paths render relative to the project root; fold it so a
     // cwd change (account switch / worktree) invalidates the cached
     // layout even when the blocks themselves are unchanged.
     render_context.project_root.hash(&mut hasher);
+    // Fold each group's level so a `cycle_*_collapse_level` flip
+    // invalidates the cache, and the session partition's cross-message
+    // state so a later turn extending a run invalidates this message.
     let owned_units: Vec<grouping::RenderUnit> =
         if let Some(slice) = render_context.session_message_units {
             slice.to_vec()
@@ -2926,9 +2934,8 @@ mod tests {
             .collect()
     }
 
-    /// One inbound envelope in a user turn followed by one outbound
-    /// call in the next assistant turn - the two-message peer run that
-    /// only forms a group at session level.
+    /// One inbound envelope in a user turn, then one outbound call in
+    /// the next assistant turn.
     fn peer_run_across_user_and_assistant() -> Vec<ChatMessage> {
         let mut outbound = make_tool_call_info(
             "toolu_tell_steward",
@@ -2967,15 +2974,14 @@ mod tests {
             &mut messages[idx],
             &spinner,
             MessageRenderContext::new(None, 80, 0, default_options())
-                .with_session_message_units(&units[idx]),
+                .with_session_message_units(units.get(idx).map(Vec::as_slice)),
             &mut lines,
         );
         render_lines_to_strings(&lines)
     }
 
     /// The assistant half of the run renders the bundle summary and
-    /// nothing else - the baseline the user turn has to match. Each
-    /// line counts its own segment, so this one holds one message.
+    /// nothing else - the baseline the user turn has to match.
     #[test]
     fn assistant_segment_of_messaging_group_renders_summary_line() {
         let mut messages = peer_run_across_user_and_assistant();
@@ -2986,6 +2992,111 @@ mod tests {
             rendered.iter().any(|l| l.contains("1 message") && l.contains("outbound to steward")),
             "assistant segment renders the bundle summary; got {rendered:?}",
         );
+        assert!(
+            !rendered.iter().any(|l| l.contains("Tell steward")),
+            "the bundled call must not also render its standalone peer card; got {rendered:?}",
+        );
+        assert!(
+            !rendered.iter().any(|l| l.contains("IT IMPORTED")),
+            "the bundled call's body belongs behind the summary; got {rendered:?}",
+        );
+    }
+
+    /// Only the leading block paints at L2, so the rest must not keep
+    /// a clickable rect.
+    #[test]
+    fn l2_summary_clears_hit_geometry_for_the_blocks_it_hides() {
+        let outbound = |id: &str, target: &str| {
+            let mut tc = make_tool_call_info(
+                id,
+                "mcp__forge__peers__tell_agent",
+                crate::agent::model::ToolCallStatus::Completed,
+                "",
+            );
+            tc.raw_input = Some(serde_json::json!({ "target": target, "message": "body" }));
+            // Geometry left over from an earlier expanded render.
+            tc.last_measured_y_in_msg = 4;
+            tc.last_measured_height = 3;
+            tc.last_measured_width = 80;
+            MessageBlock::ToolCall(Box::new(tc))
+        };
+        let mut messages = vec![ChatMessage::new(
+            MessageRole::Assistant,
+            vec![outbound("toolu_a", "planner"), outbound("toolu_b", "debugger")],
+            None,
+        )];
+        let units = grouping::partition_session_into_render_units(&messages);
+        let _ = render_with_session_units(&mut messages, 0, &units);
+
+        let MessageBlock::ToolCall(member) = &messages[0].blocks[1] else { unreachable!() };
+        assert_eq!(
+            member.last_measured_height, 0,
+            "a block hidden behind the summary must not keep a clickable rect",
+        );
+        let MessageBlock::ToolCall(leader) = &messages[0].blocks[0] else { unreachable!() };
+        assert!(leader.last_measured_height > 0, "the leader still owns the summary row");
+    }
+
+    /// The user-turn arm clears `peer_last_measured_*` on TextBlocks, a
+    /// different field set from the assistant arm's tool calls.
+    #[test]
+    fn user_turn_l2_summary_clears_hit_geometry_for_the_blocks_it_hides() {
+        let envelope = |from: &str| {
+            let mut block = TextBlock::from_complete(&format!(
+                "[Message id=t-{from} from agent '{from}' (org 'forge')]\n\nbody from {from}"
+            ));
+            // Geometry left over from an earlier expanded render.
+            block.peer_last_measured_y_in_msg = 4;
+            block.peer_last_measured_height = 3;
+            block.peer_last_measured_width = 80;
+            MessageBlock::Text(block)
+        };
+        let mut messages = vec![ChatMessage::new_peer_envelope(
+            MessageRole::User,
+            vec![envelope("steward"), envelope("planner")],
+            None,
+        )];
+        let units = grouping::partition_session_into_render_units(&messages);
+        let rendered = render_with_session_units(&mut messages, 0, &units);
+        assert!(
+            rendered.iter().any(|l| l.contains("2 messages")),
+            "the two envelopes fold into one summary; got {rendered:?}",
+        );
+
+        let MessageBlock::Text(member) = &messages[0].blocks[1] else { unreachable!() };
+        assert_eq!(
+            member.peer_last_measured_height, 0,
+            "an envelope hidden behind the summary must not keep a clickable rect",
+        );
+        let MessageBlock::Text(leader) = &messages[0].blocks[0] else { unreachable!() };
+        assert!(leader.peer_last_measured_height > 0, "the leader owns the summary row");
+    }
+
+    #[test]
+    fn tool_group_l2_summary_clears_hit_geometry_for_the_blocks_it_hides() {
+        let read = |id: &str| {
+            let mut tc =
+                make_tool_call_info(id, "Read", crate::agent::model::ToolCallStatus::Completed, "");
+            tc.last_measured_y_in_msg = 4;
+            tc.last_measured_height = 3;
+            tc.last_measured_width = 80;
+            MessageBlock::ToolCall(Box::new(tc))
+        };
+        let mut messages = vec![ChatMessage::new(
+            MessageRole::Assistant,
+            vec![read("toolu_a"), read("toolu_b"), read("toolu_c")],
+            None,
+        )];
+        let units = grouping::partition_session_into_render_units(&messages);
+        let _ = render_with_session_units(&mut messages, 0, &units);
+
+        for idx in [1_usize, 2] {
+            let MessageBlock::ToolCall(member) = &messages[0].blocks[idx] else { unreachable!() };
+            assert_eq!(
+                member.last_measured_height, 0,
+                "block {idx} is behind the summary and must not keep a clickable rect",
+            );
+        }
     }
 
     /// A run that lives entirely in one turn has a single segment
@@ -3025,10 +3136,8 @@ mod tests {
     }
 
     /// A messaging group can span a user turn (inbound envelope) and
-    /// an assistant turn (outbound call). The user-turn segment must
-    /// render the bundle summary line too - rendering its standalone
-    /// peer card puts one member of the run on screen twice, once as
-    /// a card and once inside the bundle's count.
+    /// an assistant turn (outbound call); the user-turn segment renders
+    /// the bundle summary too, not its own card.
     #[test]
     fn user_segment_of_messaging_group_renders_summary_not_standalone_card() {
         let mut messages = peer_run_across_user_and_assistant();

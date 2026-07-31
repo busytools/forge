@@ -3108,6 +3108,8 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// Out-of-range indices are dropped; passing one is a caller bug,
+    /// not a supported input.
     pub(crate) fn invalidate_message_set<I>(&mut self, indices: I)
     where
         I: IntoIterator<Item = usize>,
