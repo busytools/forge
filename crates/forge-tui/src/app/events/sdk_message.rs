@@ -3494,3 +3494,126 @@ mod finalize_open_tool_calls_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod monitor_chat_block_tests {
+    //! The chat lifecycle block over the wire sequence a real Monitor
+    //! produces: `tool_use` -> `tool_result` -> `task_started` ->
+    //! `task_notification` carrying `output_file` (CLI 2.1.220).
+    use super::super::{tool_calls, tool_updates};
+    use super::{handle_task_notification, handle_task_started};
+    use crate::agent::model;
+    use crate::app::{App, MessageBlock};
+    use forge_primitives::Message;
+    use forge_primitives::messages::TaskNotificationStatus;
+
+    const TOOL_USE_ID: &str = "toolu_monitor";
+    const TASK_ID: &str = "task_monitor";
+
+    /// `sdk_tool_name` is resolved from `meta.claudeCode.toolName`,
+    /// not from the title, so the envelope has to carry it or the
+    /// Monitor arms in `handle_tool_call` never fire.
+    fn monitor_tool_use() -> model::ToolCall {
+        model::ToolCall::new(TOOL_USE_ID, "Monitor")
+            .status(model::ToolCallStatus::InProgress)
+            .meta(serde_json::json!({"claudeCode": {"toolName": "Monitor"}}))
+            .raw_input(serde_json::json!({
+                "description": "tail-order probe",
+                "command": "for i in 1 2 3; do echo line-$i; done",
+                "persistent": false,
+                "timeout_ms": 60000,
+            }))
+    }
+
+    fn task_started() -> Message {
+        Message::TaskStarted {
+            task_id: TASK_ID.to_owned(),
+            description: "tail-order probe".to_owned(),
+            uuid: String::new(),
+            session_id: String::new(),
+            tool_use_id: Some(TOOL_USE_ID.to_owned()),
+            task_type: None,
+        }
+    }
+
+    fn task_notification(output_file: &std::path::Path) -> Message {
+        Message::TaskNotification {
+            task_id: TASK_ID.to_owned(),
+            status: TaskNotificationStatus::Completed,
+            output_file: output_file.to_string_lossy().into_owned(),
+            summary: "Monitor \"tail-order probe\" stream ended".to_owned(),
+            uuid: String::new(),
+            session_id: String::new(),
+            tool_use_id: Some(TOOL_USE_ID.to_owned()),
+            usage: None,
+        }
+    }
+
+    fn with_tool_call<T>(app: &App, f: impl FnOnce(&crate::app::ToolCallInfo) -> T) -> T {
+        let (mi, bi) = app.lookup_tool_call(TOOL_USE_ID).expect("Monitor stays indexed");
+        let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] else {
+            panic!("expected a ToolCall block");
+        };
+        f(tc)
+    }
+
+    /// `monitor_output_tail` feeds the live block's tree rows. Its only
+    /// reader was dead code until the chat block un-hid, so this pins
+    /// that the wire actually fills it - last five lines, oldest first.
+    #[test]
+    fn task_notification_fills_the_chat_tail_oldest_first() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let output_file = dir.path().join("monitor.output");
+        std::fs::write(
+            &output_file,
+            (1..=8).map(|i| format!("FORGEPROBE line-{i}\n")).collect::<String>(),
+        )
+        .expect("seed the output file");
+
+        let mut app = App::test_default();
+        tool_calls::handle_tool_call(&mut app, monitor_tool_use());
+        handle_task_started(&mut app, task_started());
+        handle_task_notification(&mut app, task_notification(&output_file));
+
+        assert_eq!(
+            with_tool_call(&app, |tc| tc.monitor_output_tail.clone()),
+            (4..=8).map(|i| format!("FORGEPROBE line-{i}")).collect::<Vec<_>>(),
+            "the chat tail carries the last five lines, oldest first",
+        );
+    }
+
+    /// The Monitor `tool_result` is the "Monitor started (task ...)"
+    /// ack and lands seconds after arming, while the watched command
+    /// still runs. It drives the tool call terminal, so the block
+    /// renders its completed one-liner for the whole live window.
+    #[test]
+    fn tool_result_ack_flips_the_block_terminal_while_the_monitor_runs() {
+        let mut app = App::test_default();
+        tool_calls::handle_tool_call(&mut app, monitor_tool_use());
+        assert_eq!(
+            with_tool_call(&app, |tc| tc.status),
+            model::ToolCallStatus::InProgress,
+            "the tool_use arrives in flight",
+        );
+
+        tool_updates::handle_tool_call_update_session(
+            &mut app,
+            &model::ToolCallUpdate::new(
+                TOOL_USE_ID,
+                model::ToolCallUpdateFields {
+                    status: Some(model::ToolCallStatus::Completed),
+                    raw_output: Some(serde_json::json!(
+                        "Monitor started (task task_monitor, timeout 60000ms)."
+                    )),
+                    ..Default::default()
+                },
+            ),
+        );
+
+        assert_eq!(
+            with_tool_call(&app, |tc| tc.status),
+            model::ToolCallStatus::Completed,
+            "the ack alone marks the tool call terminal",
+        );
+    }
+}
