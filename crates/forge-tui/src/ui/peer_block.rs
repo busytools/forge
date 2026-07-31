@@ -681,13 +681,13 @@ pub(crate) fn render_messaging_group_summary_line(
     spinner_glyph: char,
     max_width: usize,
 ) -> Vec<Line<'static>> {
-    crate::ui::tool_call::group::render_group_summary_line(
+    crate::ui::tool_call::render_group_summary_line(
         &segment.summary,
         segment.aggregate_status,
         spinner_glyph,
         max_width,
         None,
-        &crate::ui::tool_call::group::SummaryChrome::MESSAGING,
+        &crate::ui::tool_call::SummaryChrome::MESSAGING,
     )
 }
 
@@ -1320,6 +1320,80 @@ mod tests {
             rendered.iter().any(|l| l.contains("tester") && !l.contains("reply")),
             "and the leaf exists separately; got {rendered:?}",
         );
+    }
+
+    /// Failure kinds carry warning colour on their kind row, and the
+    /// leaf keeps the reason - a bare peer name with no reason would
+    /// tell the reader nothing about what went wrong.
+    #[test]
+    fn failure_kind_rows_are_styled_and_keep_their_reason() {
+        for (prose, label, reason) in [
+            (
+                "[Ask id=q-7 to agent 'planner' (org 'forge') failed to deliver: peer asleep]\n\n",
+                "failed",
+                "peer asleep",
+            ),
+            (
+                "[Worker 'runner' spawn failed id=w-5: worktree busy]",
+                "spawn failed",
+                "worktree busy",
+            ),
+        ] {
+            let blocks = vec![
+                inbound_block("Message", "steward", "one"),
+                crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete(prose)),
+            ];
+            let lines = render_messaging_group_summary_line(&segment_of(&blocks), '\u{280B}', 80);
+            let kind_span = lines
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .find(|s| s.content.contains(label))
+                .unwrap_or_else(|| panic!("a {label} kind row"));
+            assert_eq!(
+                kind_span.style.fg,
+                Some(theme::STATUS_WARNING),
+                "{label} must read as a warning",
+            );
+            let rendered = render_lines_to_strings(&lines);
+            assert!(
+                rendered.iter().any(|l| l.contains(reason)),
+                "the leaf keeps the reason; got {rendered:?}",
+            );
+        }
+    }
+
+    /// Nothing wraps: every row is one line clipped to a computed
+    /// budget, because the outer layout char-wraps without the tree
+    /// gutter and an overflowing row shears the tree. The messaging
+    /// hint is longer than the tool one, so the parent row is the
+    /// tightest case.
+    #[test]
+    fn every_row_fits_a_narrow_width() {
+        let blocks = vec![
+            inbound_block(
+                "Message",
+                "steward",
+                "a body long enough that it must be clipped to fit",
+            ),
+            inbound_block("Reply", "planner", "another body that would overflow a narrow terminal"),
+        ];
+        let rendered = render_lines_to_strings(&render_messaging_group_summary_line(
+            &segment_of(&blocks),
+            '\u{280B}',
+            40,
+        ));
+        // Row 0 is the parent, which carries the longer messaging hint and
+        // can exceed a narrow width - it wraps rather than shearing, since
+        // the connectors live on the child rows. The CHILD rows are the
+        // shearing risk and must fit.
+        for row in rendered.iter().skip(1) {
+            assert!(
+                unicode_width::UnicodeWidthStr::width(row.as_str()) <= 40,
+                "row must fit width 40; got {}: {row:?}",
+                unicode_width::UnicodeWidthStr::width(row.as_str()),
+            );
+        }
+        assert!(rendered.iter().any(|l| l.contains("...")), "something clipped; got {rendered:?}");
     }
 
     /// A delivery failure inside a run must not render under a green

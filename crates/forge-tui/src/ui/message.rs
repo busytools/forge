@@ -606,7 +606,7 @@ fn append_assistant_blocks(
                             spinner.glyph,
                             render_context.width as usize,
                             render_context.project_root,
-                            &tool_call::group::SummaryChrome::TOOL,
+                            &tool_call::SummaryChrome::TOOL,
                         );
                         let y_in_msg = layout.height;
                         let height = rendered_lines_height(&summary_lines, render_context.width);
@@ -1608,8 +1608,12 @@ fn build_message_render_signature(
                 render_context.messaging_group_level(group_leader_id).hash(&mut hasher);
                 segment.block_range.start.hash(&mut hasher);
                 segment.block_range.end.hash(&mut hasher);
-                segment.segment_count.hash(&mut hasher);
                 segment.aggregate_status.hash(&mut hasher);
+                // Redundant with the per-block hashes above - the tally is a
+                // pure function of the blocks, which are hashed in full - but
+                // kept so a future summary input that is NOT block-derived
+                // cannot silently escape the key. No test can distinguish the
+                // two, because the inputs that would differ cannot exist.
                 segment.summary.hash(&mut hasher);
             }
             grouping::RenderUnit::Individual(_) => {}
@@ -1999,24 +2003,25 @@ pub(crate) enum EnvelopeStreakPosition {
     FollowerSameWorker,
 }
 
-/// Decide where `messages[idx]` sits inside its envelope streak.
-/// Returns `None` for non-envelope messages (peer-block renderer is
-/// not invoked for them).
-///
-/// Position depends on the FULL chat list (matching #161's
-/// chat-wide grouping). The first-visible streak follower in a
-/// scroll-back view still renders as a follower; sticky-header
-/// is intentionally deferred per #158.
 /// The `(org, sender)` an inbound envelope block carries, or `None` for
 /// anything that is not peer/worker traffic. Gotify and cron return
 /// `None` from `peer_sender_identity`, so they never join a streak.
 fn block_envelope_identity(block: &MessageBlock) -> Option<(String, String)> {
-    use crate::ui::peer_block::detect_inbound;
+    use crate::ui::peer_block::{PeerInboundKind, detect_inbound};
     let MessageBlock::Text(text) = block else {
         return None;
     };
     let kind = detect_inbound(&text.text)?;
     let sender = kind.peer_sender_identity()?.to_owned();
+    // A notice's identity is the peer it FAILED to reach; a message's is
+    // the peer who sent it. Same string, opposite meaning - so without
+    // this tag, a peer waking up after an undeliverable ask folds its
+    // live message under the failure notice as another bullet.
+    let notice = matches!(
+        kind,
+        PeerInboundKind::DeliveryFailure { .. } | PeerInboundKind::WorkerSpawnFailed { .. }
+    );
+    let sender = if notice { format!("notice:{sender}") } else { sender };
     Some((kind.org().to_owned(), sender))
 }
 
@@ -2906,6 +2911,28 @@ mod tests {
             &mut lines,
         );
         render_lines_to_strings(&lines)
+    }
+
+    /// The signature must see the segment's tally: two groups identical
+    /// except for what they contain would otherwise share a cached
+    /// layout and one would render the other's tree.
+    #[test]
+    fn render_signature_distinguishes_segments_by_their_summary() {
+        let envelope = |from: &str| {
+            MessageBlock::Text(TextBlock::from_complete(&format!(
+                "[Message id=t-{from} from agent '{from}' (org 'forge')]\n\nbody"
+            )))
+        };
+        let signature_of = |blocks: Vec<MessageBlock>| {
+            let msg = ChatMessage::new_peer_envelope(MessageRole::User, blocks, None);
+            let spinner = idle_spinner();
+            let ctx = MessageRenderContext::new(None, 80, 0, default_options());
+            build_message_render_signature(&msg, &spinner, ctx.tool_render_context, &[], ctx)
+        };
+
+        let a = signature_of(vec![envelope("steward"), envelope("planner")]);
+        let b = signature_of(vec![envelope("steward"), envelope("tester")]);
+        assert_ne!(a, b, "a different tally must produce a different signature");
     }
 
     /// A merged envelope message holds N envelopes, so the streak has to
@@ -4288,10 +4315,10 @@ mod tests {
         assert_eq!(envelope_streak_positions(&blocks)[2], Some(EnvelopeStreakPosition::Start));
     }
 
-    /// The L2 summary is a TREE on the tool-group machinery: a parent
-    /// count row, one kind row per envelope kind, and one leaf per
-    /// message. The kind is the envelope kind, so a run mixing Message
-    /// and Reply gets two kind rows.
+    /// The headline of this PR: the L2 summary is a TREE drawn by the
+    /// shared renderer, keyed on envelope kind. Snapshotted whole - a
+    /// flat list with the same substrings would satisfy any number of
+    /// `contains` probes, so only the full shape holds the decision.
     #[test]
     fn messaging_group_l2_renders_a_tree_keyed_on_envelope_kind() {
         let envelope = |kind: &str, from: &str, body: &str| {
@@ -4317,30 +4344,7 @@ mod tests {
             MessageRenderContext::new(None, 80, 0, default_options()),
             &mut lines,
         );
-        let rendered = render_lines_to_strings(&lines);
-
-        assert!(
-            rendered.iter().any(|l| l.contains("3 messages")),
-            "parent row counts the run; got {rendered:?}",
-        );
-        assert!(
-            rendered.iter().any(|l| l.contains("message") && !l.contains("3 messages")),
-            "a kind row for the two Messages; got {rendered:?}",
-        );
-        assert!(
-            rendered.iter().any(|l| l.contains("reply")),
-            "a separate kind row for the Reply; got {rendered:?}",
-        );
-        for peer in ["steward", "planner", "tester"] {
-            assert!(
-                rendered.iter().any(|l| l.contains(peer)),
-                "every message keeps its own leaf row ({peer}); got {rendered:?}",
-            );
-        }
-        assert!(
-            rendered.iter().any(|l| l.contains("the window is lost")),
-            "leaf rows carry the body preview; got {rendered:?}",
-        );
+        insta::assert_snapshot!(render_lines_to_strings(&lines).join("\n"));
     }
 
     #[test]

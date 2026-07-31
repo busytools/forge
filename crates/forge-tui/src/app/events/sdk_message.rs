@@ -391,7 +391,13 @@ impl EnvelopeKind {
         match kind {
             crate::ui::peer_block::PeerInboundKind::Gotify { .. } => Self::Gotify,
             crate::ui::peer_block::PeerInboundKind::Cron { .. } => Self::Cron,
-            _ => Self::Peer,
+            // Spelled out, not `_`: a new inbound kind must not silently
+            // inherit the `Forge` label and merge into peer traffic.
+            crate::ui::peer_block::PeerInboundKind::Message { .. }
+            | crate::ui::peer_block::PeerInboundKind::Question { .. }
+            | crate::ui::peer_block::PeerInboundKind::Reply { .. }
+            | crate::ui::peer_block::PeerInboundKind::DeliveryFailure { .. }
+            | crate::ui::peer_block::PeerInboundKind::WorkerSpawnFailed { .. } => Self::Peer,
         }
     }
 
@@ -408,10 +414,9 @@ impl EnvelopeKind {
     }
 }
 
-/// Append this envelope to the message at the tail when that message is
-/// already an envelope of the same kind, so a run of incoming messages
-/// becomes ONE message with N blocks and can reach the group threshold.
-/// Otherwise start a new message.
+/// Append this envelope to the tail when that message is already an
+/// envelope of the same kind, so a run of incoming messages becomes ONE
+/// message with N blocks and can reach the group threshold.
 ///
 /// The merge window bounds itself: once the agent produces any output the
 /// tail is no longer an envelope message, so the next envelope starts
@@ -2481,6 +2486,129 @@ mod inbound_message_surfacing_tests {
     //!   Thinking and the bucket lifecycle to Running the moment it
     //!   lands, mirroring the local input-submit path, so the session
     //!   reads as active while the agent works rather than idle-then-burst.
+    use super::*;
+
+    fn envelope(text: &str) -> forge_primitives::ContentBlock {
+        forge_primitives::ContentBlock::Text { text: text.to_owned() }
+    }
+
+    const FIRST: &str = "[Message id=t-1 from agent 'steward' (org 'forge')]\n\nthe window is lost";
+    const SECOND: &str =
+        "[Message id=t-2 from agent 'planner' (org 'forge')]\n\npicking up the migration";
+    const GOTIFY: &str = "[Gotify - app 'ci', priority 5]\nbuild failed\nsee the log";
+
+    /// Consecutive envelopes arrive as separate updates, each forging its
+    /// own one-block message, so they must be merged here or a run of
+    /// incoming messages can never reach the group threshold.
+    #[test]
+    fn consecutive_inbound_envelopes_merge_into_one_message() {
+        let mut app = App::test_default();
+        push_peer_envelope_user_turn_if_present(&mut app, &[envelope(FIRST)]);
+        push_peer_envelope_user_turn_if_present(&mut app, &[envelope(SECOND)]);
+
+        let envelopes: Vec<&crate::app::ChatMessage> =
+            app.messages().iter().filter(|m| m.is_peer_envelope).collect();
+        assert_eq!(
+            envelopes.len(),
+            1,
+            "two envelopes must land in ONE message; got {} messages",
+            envelopes.len(),
+        );
+        assert_eq!(envelopes[0].blocks.len(), 2, "both envelopes are blocks of that message");
+    }
+
+    /// The whole point of merging on the replay path too: a resumed
+    /// session must render the same shape live rendered. Without it a
+    /// run comes back as N cards where live showed one bundle.
+    #[test]
+    fn replayed_envelopes_merge_the_same_way_live_ones_do() {
+        let mut app = App::test_default();
+        app.replay_in_progress = true;
+        push_peer_envelope_user_turn_if_present(&mut app, &[envelope(FIRST)]);
+        push_peer_envelope_user_turn_if_present(&mut app, &[envelope(SECOND)]);
+
+        let envelopes: Vec<&crate::app::ChatMessage> =
+            app.messages().iter().filter(|m| m.is_peer_envelope).collect();
+        assert_eq!(
+            envelopes.len(),
+            1,
+            "replay must merge exactly as live does or a resume diverges; got {}",
+            envelopes.len(),
+        );
+        assert_eq!(envelopes[0].blocks.len(), 2);
+    }
+
+    /// Appending bypasses `push_message_tracked`, so the block-count
+    /// mutation has to announce itself. Without it the layout keeps a
+    /// one-envelope height while two render - the desync class two
+    /// previous merges were spent on.
+    #[test]
+    fn appending_an_envelope_announces_the_block_change() {
+        let mut app = App::test_default();
+        push_peer_envelope_user_turn_if_present(&mut app, &[envelope(FIRST)]);
+        let tail = app.messages().len() - 1;
+        let envelope_idx =
+            app.messages().iter().position(|m| m.is_peer_envelope).expect("envelope");
+        let bytes_before = app.message_retained_bytes()[envelope_idx];
+        app.last_invalidation_level.set(None);
+
+        push_peer_envelope_user_turn_if_present(&mut app, &[envelope(SECOND)]);
+
+        assert_eq!(
+            app.last_invalidation_level.get(),
+            Some(crate::app::InvalidationLevel::MessageChanged(envelope_idx)),
+            "the appended-to message must be invalidated",
+        );
+        assert!(
+            app.message_retained_bytes()[envelope_idx] > bytes_before,
+            "retained bytes must grow with the appended block",
+        );
+        let _ = tail;
+    }
+
+    /// The kind gate: `role_label_line` picks Gotify / Cron / Forge from
+    /// per-MESSAGE flags, so a notification sharing a message with peer
+    /// traffic would render under the wrong source label.
+    #[test]
+    fn a_gotify_notification_never_merges_into_a_peer_envelope_message() {
+        let mut app = App::test_default();
+        push_peer_envelope_user_turn_if_present(&mut app, &[envelope(FIRST)]);
+        push_peer_envelope_user_turn_if_present(&mut app, &[envelope(GOTIFY)]);
+
+        let peer: Vec<&crate::app::ChatMessage> =
+            app.messages().iter().filter(|m| m.is_peer_envelope).collect();
+        let gotify: Vec<&crate::app::ChatMessage> =
+            app.messages().iter().filter(|m| m.is_gotify_envelope).collect();
+        assert_eq!(peer.len(), 1, "the peer envelope keeps its own message");
+        assert_eq!(peer[0].blocks.len(), 1, "the notification must NOT be appended to it");
+        assert_eq!(gotify.len(), 1, "the notification gets its own message");
+    }
+
+    /// Same-kind merging is not only a Peer property: a run of
+    /// notifications is one message too, and a run of crons likewise.
+    #[test]
+    fn gotify_merges_with_gotify_and_cron_with_cron() {
+        const GOTIFY_2: &str = "[Gotify - app 'ci', priority 5]\nsecond alert\nbody";
+        const CRON_1: &str = "[Cron]\n\nmorning summary";
+        const CRON_2: &str = "[Cron]\n\nevening summary";
+
+        let mut app = App::test_default();
+        push_peer_envelope_user_turn_if_present(&mut app, &[envelope(GOTIFY)]);
+        push_peer_envelope_user_turn_if_present(&mut app, &[envelope(GOTIFY_2)]);
+        let gotify: Vec<&crate::app::ChatMessage> =
+            app.messages().iter().filter(|m| m.is_gotify_envelope).collect();
+        assert_eq!(gotify.len(), 1, "two notifications are one message");
+        assert_eq!(gotify[0].blocks.len(), 2);
+
+        let mut app = App::test_default();
+        push_peer_envelope_user_turn_if_present(&mut app, &[envelope(CRON_1)]);
+        push_peer_envelope_user_turn_if_present(&mut app, &[envelope(CRON_2)]);
+        let cron: Vec<&crate::app::ChatMessage> =
+            app.messages().iter().filter(|m| m.is_cron_envelope).collect();
+        assert_eq!(cron.len(), 1, "two fired crons are one message");
+        assert_eq!(cron[0].blocks.len(), 2);
+    }
+
     use super::handle_user;
     use crate::app::session::SessionLifecycleState;
     use crate::app::{App, AppStatus, ChatMessage, MessageBlock, MessageRole, TextBlock};
@@ -3360,58 +3488,5 @@ mod finalize_open_tool_calls_tests {
             Some(ToolCallStatus::Completed),
             "an ordinary in-flight tool is still swept to terminal",
         );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::app::App;
-
-    fn envelope(text: &str) -> forge_primitives::ContentBlock {
-        forge_primitives::ContentBlock::Text { text: text.to_owned() }
-    }
-
-    const FIRST: &str = "[Message id=t-1 from agent 'steward' (org 'forge')]\n\nthe window is lost";
-    const SECOND: &str =
-        "[Message id=t-2 from agent 'planner' (org 'forge')]\n\npicking up the migration";
-    const GOTIFY: &str = "[Gotify - app 'ci', priority 5]\nbuild failed\nsee the log";
-
-    /// Consecutive envelopes arrive as separate updates, each forging its
-    /// own one-block message, so they must be merged here or a run of
-    /// incoming messages can never reach the group threshold.
-    #[test]
-    fn consecutive_inbound_envelopes_merge_into_one_message() {
-        let mut app = App::test_default();
-        push_peer_envelope_user_turn_if_present(&mut app, &[envelope(FIRST)]);
-        push_peer_envelope_user_turn_if_present(&mut app, &[envelope(SECOND)]);
-
-        let envelopes: Vec<&crate::app::ChatMessage> =
-            app.messages().iter().filter(|m| m.is_peer_envelope).collect();
-        assert_eq!(
-            envelopes.len(),
-            1,
-            "two envelopes must land in ONE message; got {} messages",
-            envelopes.len(),
-        );
-        assert_eq!(envelopes[0].blocks.len(), 2, "both envelopes are blocks of that message");
-    }
-
-    /// The kind gate: `role_label_line` picks Gotify / Cron / Forge from
-    /// per-MESSAGE flags, so a notification sharing a message with peer
-    /// traffic would render under the wrong source label.
-    #[test]
-    fn a_gotify_notification_never_merges_into_a_peer_envelope_message() {
-        let mut app = App::test_default();
-        push_peer_envelope_user_turn_if_present(&mut app, &[envelope(FIRST)]);
-        push_peer_envelope_user_turn_if_present(&mut app, &[envelope(GOTIFY)]);
-
-        let peer: Vec<&crate::app::ChatMessage> =
-            app.messages().iter().filter(|m| m.is_peer_envelope).collect();
-        let gotify: Vec<&crate::app::ChatMessage> =
-            app.messages().iter().filter(|m| m.is_gotify_envelope).collect();
-        assert_eq!(peer.len(), 1, "the peer envelope keeps its own message");
-        assert_eq!(peer[0].blocks.len(), 1, "the notification must NOT be appended to it");
-        assert_eq!(gotify.len(), 1, "the notification gets its own message");
     }
 }

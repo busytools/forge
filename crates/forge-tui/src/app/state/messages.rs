@@ -17,10 +17,12 @@ pub struct ChatMessage {
     /// #143 item 2: cached peer-envelope flag stamped once at push
     /// time (the `PeerEnvelopeAppended` reducer + similar entry
     /// points) so the chat renderer doesn't walk text blocks every
-    /// frame to recompute it. The flag is intrinsic to the message's
-    /// FIRST text block: a peer envelope arrives as a User-role
-    /// message whose first text block starts with a recognised
-    /// bracket prefix (`[Question id=...]` / `[Message id=...]` / etc.).
+    /// frame to recompute it. The flag is intrinsic to EVERY text block
+    /// in the message, not just the first: consecutive envelopes merge
+    /// into one message and the merge is gated on the constructor, so a
+    /// flagged message holds only envelopes of that one kind. Do NOT
+    /// read `blocks.first()` to answer "which envelope is this" - a
+    /// merged message holds N and you would silently drop N-1.
     pub is_peer_envelope: bool,
     /// Companion to [`Self::is_peer_envelope`] for the Gotify external-
     /// notification variant (`[Gotify - app '...']`). Stamped at push

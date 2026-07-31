@@ -39,9 +39,8 @@ const EXPAND_HINT: &str = "   ctrl+x to expand";
 pub struct SummaryChrome {
     /// Singular and plural nouns for the parent count row.
     pub noun: (&'static str, &'static str),
-    /// NOT a shared constant: the tool hint stays understated by
-    /// decision, and the longer messaging string overflows the narrow
-    /// tier. Sharing one would silently reverse that.
+    /// NOT a shared constant - the tool hint stays understated by
+    /// decision, so sharing one would silently reverse it.
     pub expand_hint: &'static str,
     /// Tool groups inline a kind holding one call with one target.
     /// Messaging always nests, so peer names share a column.
@@ -107,6 +106,7 @@ pub fn render_group_summary_line(
         // Read relativizes each path against the project root; every
         // other kind takes its target verbatim.
         let is_read = line.glyph == READ_GLYPH;
+        let kind_style = if line.warn { bold.fg(theme::STATUS_WARNING) } else { bold };
         let targets: Vec<String> = if is_read {
             line.targets.iter().map(|t| relativize(t, project_root)).collect()
         } else {
@@ -120,13 +120,13 @@ pub fn render_group_summary_line(
             let mut row = vec![
                 Span::raw("  ".to_owned()),
                 Span::styled(connector.to_owned(), mark),
-                Span::styled(format!("{} ", line.glyph), bold),
+                Span::styled(format!("{} ", line.glyph), kind_style),
             ];
             if mult.is_empty() {
                 // Bare label carries no trailing pad/space.
-                row.push(Span::styled(line.label.clone(), bold));
+                row.push(Span::styled(line.label.clone(), kind_style));
             } else {
-                row.push(Span::styled(format!("{} ", pad_right(&line.label, label_w)), bold));
+                row.push(Span::styled(format!("{} ", pad_right(&line.label, label_w)), kind_style));
                 row.push(Span::styled(mult, dim));
             }
             lines.push(Line::from(row));

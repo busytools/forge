@@ -438,8 +438,6 @@ pub fn aggregate_run_status(blocks: &[MessageBlock]) -> crate::agent::model::Too
 pub struct MessagingGroupSegment {
     /// Block range within the message (start..end exclusive).
     pub block_range: Range<usize>,
-    /// Count of peer/worker blocks in the segment.
-    pub segment_count: usize,
     /// Per-envelope-kind tally driving the L2 tree. The parent row is
     /// a bare count; every peer name appears as a leaf, so the heading
     /// carries no target list.
@@ -609,9 +607,8 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) ->
         let block_range = first_block_idx..(last_block_idx + 1);
 
         // Walk the block range and accumulate per-direction targets,
-        // segment_count, aggregate_status.
+        // the per-kind tally, aggregate_status.
         let mut summary = KindSummary::default();
-        let mut segment_count = 0_usize;
         let mut any_status: Option<crate::agent::model::ToolCallStatus> = None;
         let mut leader_id: Option<GroupId> = None;
         for block in &blocks[block_range.clone()] {
@@ -629,7 +626,6 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) ->
                             peer_block::kind_row_target(target, body),
                             false,
                         );
-                        segment_count += 1;
                         update_aggregate(&mut any_status, tc.status);
                         if leader_id.is_none() {
                             leader_id = Some(GroupId::from_leader_id(tc.id.clone()));
@@ -661,7 +657,6 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) ->
                                 );
                             }
                         }
-                        segment_count += 1;
                         // Key on the envelope's own id, not the block
                         // index: an index repeats in every message and
                         // would share one collapse level across them.
@@ -680,7 +675,7 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) ->
         // single block renders as the plain peer block via
         // `append_assistant_tool_block`'s peer-block arm. Hidden
         // pass-throughs in the run survive as Individuals too.
-        if segment_count < 2 {
+        if summary.total() < 2 {
             for unit in &tool_units[run_start_pos..run_end_pos] {
                 output.push(unit.clone());
             }
@@ -690,8 +685,7 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) ->
         let leader_id = leader_id
             .unwrap_or_else(|| GroupId::from_leader_id(format!("block-{first_block_idx}")));
         let aggregate_status = any_status.unwrap_or(crate::agent::model::ToolCallStatus::Completed);
-        let segment =
-            MessagingGroupSegment { block_range, segment_count, summary, aggregate_status };
+        let segment = MessagingGroupSegment { block_range, summary, aggregate_status };
         output.push(RenderUnit::MessagingGroup { segment, group_leader_id: leader_id });
         i = run_end_pos;
     }
@@ -1824,8 +1818,8 @@ mod tests {
             })
             .collect();
         assert_eq!(segments.len(), 2, "each group covers exactly its own message");
-        assert_eq!(segments[0].segment_count, 3);
-        assert_eq!(segments[1].segment_count, 2);
+        assert_eq!(segments[0].summary.total(), 3);
+        assert_eq!(segments[1].summary.total(), 2);
 
         assert!(
             units[1].iter().all(|u| matches!(u, RenderUnit::Individual(_))),
@@ -1878,7 +1872,7 @@ mod tests {
         let mut seen = 0_usize;
         for unit in per_message_units(&messages).iter().flatten() {
             let RenderUnit::MessagingGroup { segment, .. } = unit else { continue };
-            assert!(segment.segment_count >= 1, "empty segment emitted: {segment:?}");
+            assert!(segment.summary.total() >= 1, "empty segment emitted: {segment:?}");
             seen += 1;
         }
         assert_eq!(seen, 2, "expected one segment per grouped message; saw {seen}");
@@ -1941,7 +1935,7 @@ mod tests {
             .collect();
         assert_eq!(groups.len(), 1);
         let RenderUnit::MessagingGroup { segment, .. } = groups[0] else { unreachable!() };
-        assert_eq!(segment.segment_count, 3);
+        assert_eq!(segment.summary.total(), 3);
     }
 
     /// The kind is the ENVELOPE KIND, so a run mixing Tell, Ask, Reply
@@ -1992,6 +1986,27 @@ mod tests {
         assert_eq!(segment.summary.lines.len(), 1, "all five are the same kind");
         assert_eq!(segment.summary.lines[0].count, 5);
         assert_eq!(segment.summary.lines[0].targets.len(), 5, "uncapped, one per message");
+
+        // Distinct peers would survive a dedup, so they do not hold the
+        // no-dedup claim. Identical peer AND identical body is the case
+        // a `push_target` tidy-up would collapse.
+        let same = vec![assistant_message_with_blocks(vec![
+            outbound_peer_block("planner", "Tell"),
+            outbound_peer_block("planner", "Tell"),
+            outbound_peer_block("planner", "Tell"),
+        ])];
+        let units = per_message_units(&same);
+        let groups: Vec<&RenderUnit> = units
+            .iter()
+            .flatten()
+            .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
+            .collect();
+        let RenderUnit::MessagingGroup { segment, .. } = groups[0] else { unreachable!() };
+        assert_eq!(
+            segment.summary.lines[0].targets.len(),
+            3,
+            "three identical messages stay three rows - push_target must not dedup",
+        );
     }
 
     /// Adjacent peer/worker + tool-call runs partition into TWO render

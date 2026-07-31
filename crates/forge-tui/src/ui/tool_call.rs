@@ -6,9 +6,10 @@
 //! - [`errors`] -- error rendering and tool-use error extraction
 
 mod errors;
-pub(crate) mod group;
+mod group;
 mod standard;
 
+pub use group::SummaryChrome;
 pub use group::render_group_summary_line;
 
 use std::borrow::Cow;
