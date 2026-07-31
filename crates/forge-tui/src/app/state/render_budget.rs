@@ -89,16 +89,17 @@ impl super::App {
         })
     }
 
-    // Compares only lengths, so a deferred mutation is caught only when a
-    // message or block count changes; a same-count in-place byte change must
-    // go through sync_render_cache_slot, not defer to this guard.
+    // O(1) on purpose: this runs from every sync_render_cache_* call,
+    // so a walk over the message list here costs the whole session on
+    // every rendered message. Block-count changes arrive through
+    // `sync_after_message_blocks_changed`, and each sync entry point
+    // re-checks its own message's slot count on the way in, so the
+    // per-message shape does not need re-deriving here too.
+    //
+    // A same-count in-place byte change must go through
+    // sync_render_cache_slot; it is not caught by this guard.
     fn render_cache_slots_match_messages(&self) -> bool {
         self.render_cache_slots().len() == self.messages().len()
-            && self
-                .render_cache_slots()
-                .iter()
-                .zip(self.messages().iter())
-                .all(|(slots, msg)| slots.len() == Self::render_cache_slot_count_for_message(msg))
     }
 
     pub(crate) fn rebuild_render_cache_accounting(&mut self) {
@@ -180,6 +181,14 @@ impl super::App {
 
     pub(crate) fn sync_render_cache_slot(&mut self, msg_idx: usize, block_idx: usize) {
         self.ensure_render_cache_accounting();
+        // Catches a block-count change that never announced itself,
+        // including a shrink (where indexing the row would still
+        // succeed against a stale slot).
+        if self.render_cache_slots().get(msg_idx).map(Vec::len)
+            != self.messages().get(msg_idx).map(Self::render_cache_slot_count_for_message)
+        {
+            self.rebuild_render_cache_accounting();
+        }
         let Some(old_slot) =
             self.render_cache_slots().get(msg_idx).and_then(|slots| slots.get(block_idx)).copied()
         else {
@@ -290,6 +299,35 @@ impl super::App {
         self.rebuild_render_cache_accounting();
     }
 
+    /// Every message's slot row still matches its block count. The
+    /// shared guard only compares list lengths, so a block-count change
+    /// that never announced itself leaves one row stale.
+    fn render_cache_rows_match_messages(&self) -> bool {
+        self.render_cache_slots()
+            .iter()
+            .zip(self.messages().iter())
+            .all(|(slots, msg)| slots.len() == Self::render_cache_slot_count_for_message(msg))
+    }
+
+    /// Rebuild if any message's slot row disagrees with its block
+    /// count. The shared guard only compares list lengths, so a
+    /// block-count change that skipped
+    /// `sync_after_message_blocks_changed` leaves one row stale and the
+    /// byte totals short. Firing means such a change reached us.
+    fn repair_render_cache_accounting_drift(&mut self) {
+        self.ensure_render_cache_accounting();
+        if self.render_cache_rows_match_messages() {
+            return;
+        }
+        tracing::warn!(
+            target: crate::logging::targets::APP_RENDER,
+            event_name = "render_cache_accounting_drift",
+            message = "slot rows disagreed with block counts; rebuilding before reading totals",
+            outcome = "rebuilt",
+        );
+        self.rebuild_render_cache_accounting();
+    }
+
     fn refresh_render_cache_eviction_order(&mut self) {
         struct SlotUpdate {
             msg_idx: usize,
@@ -352,6 +390,12 @@ impl super::App {
     pub fn enforce_render_cache_budget(&mut self) -> CacheBudgetEnforceStats {
         let mut stats = CacheBudgetEnforceStats::default();
         self.refresh_tail_message_cache_protection();
+        // Before the totals are read, not before eviction: deciding NOT
+        // to evict is also a decision, and a drifted-short total is
+        // exactly what makes the under-budget branch below fire when it
+        // should not. Once per frame rather than once per rendered
+        // message.
+        self.repair_render_cache_accounting_drift();
         stats.total_before_bytes = self.render_cache_total_bytes();
         stats.protected_bytes = self.render_cache_protected_bytes();
 

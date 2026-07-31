@@ -158,6 +158,23 @@ impl NoticeModifier {
     }
 }
 
+/// The envelope's own correlation id out of a peer wrapper header
+/// (`[Message id=t-1a2b3c from agent ...]`). Unique per delivered
+/// envelope, so it keys an inbound-led messaging group independently
+/// of where the message sits in the session - unlike a positional key,
+/// it survives history pruning and index shifts.
+pub(crate) fn inbound_envelope_id(text: &str) -> Option<&str> {
+    // split_once, not split: an unterminated bracket has no header at
+    // all, and `detect_inbound` rejects it for the same reason.
+    let (header, _) = text.strip_prefix('[')?.split_once(']')?;
+    // Anchored on the leading space: the worker-spawn-failure header
+    // puts a caller-supplied label before the id, so a label containing
+    // `id=` would otherwise win the match.
+    let after = header.split_once(" id=")?.1;
+    let id = &after[..after.find([' ', ':']).unwrap_or(after.len())];
+    (!id.is_empty()).then_some(id)
+}
+
 /// Detect a peer wrapper at the start of a user-message text. Returns
 /// `None` for any text that isn't a bracket-prefixed peer wrapper
 /// (the chat renderer falls through to the default text rendering
@@ -618,9 +635,6 @@ pub(crate) fn render_messaging_group_summary_line(
         crate::ui::tool_call::status_icon(segment.aggregate_status, spinner_glyph);
     let dim = Style::default().fg(theme::DIM);
 
-    // Per SEGMENT, not per group: a cross-turn run puts one summary
-    // line on screen per turn, and repeating the run total on each of
-    // them reads as a sum.
     let count = segment.segment_count;
     let count_word = if count == 1 { "message" } else { "messages" };
     let mut heading = format!("{count} {count_word}");
@@ -729,6 +743,40 @@ mod tests {
                 assert!(reason.contains("git CLI not found"), "reason text: {reason}");
             }
             other => panic!("expected WorkerSpawnFailed, got {other:?}"),
+        }
+    }
+
+    /// Every real header shape, because the id keys the messaging
+    /// group's collapse level. `DeliveryFailure` and
+    /// `WorkerSpawnFailed` terminate the id with `:` rather than a
+    /// space, so both terminators have to be handled.
+    ///
+    /// The `None` rows matter as much: the caller falls back to a
+    /// positional key when this returns `None`, which is exactly the
+    /// collision the envelope id exists to avoid.
+    #[test]
+    fn inbound_envelope_id_covers_every_header_shape() {
+        let cases: &[(&str, Option<&str>)] = &[
+            ("[Question id=q-1a2b from agent 'lead' (org 'forge')]\n\nbody", Some("q-1a2b")),
+            ("[Message id=t-1a2b from agent 'lead' (org 'forge')]\n\nbody", Some("t-1a2b")),
+            ("[Reply id=t-9f8e from agent 'lead' (org 'forge')]\n\nbody", Some("t-9f8e")),
+            ("[Ask id=q-77 to agent 'x' (org 'forge') failed to deliver: gone]\n\n", Some("q-77")),
+            ("[Worker 'runner' spawn failed id=w-5: boom]", Some("w-5")),
+            // The label is caller-supplied and precedes the id, so the
+            // `id=` anchor has to be the space-prefixed one or a label
+            // containing `id=` wins the match.
+            ("[Worker 'grid=a' spawn failed id=w-5: boom]", Some("w-5")),
+            // No id in the header at all.
+            ("[Gotify - app 'ci', priority 5]\ntitle\nbody", None),
+            ("[Cron]\n\nprompt", None),
+            // Not an envelope.
+            ("plain user text", None),
+            ("[unterminated id=t-1", None),
+            // Present but empty - must not key a group on "".
+            ("[Message id= from agent 'lead' (org 'forge')]\n\nbody", None),
+        ];
+        for (text, want) in cases {
+            assert_eq!(inbound_envelope_id(text), *want, "for {text:?}");
         }
     }
 
@@ -1184,7 +1232,6 @@ mod tests {
         use crate::ui::message::grouping::{MessagingDirectionTargets, MessagingGroupSegment};
 
         let segment = MessagingGroupSegment {
-            msg_idx: 0,
             block_range: 0..1,
             segment_count: 1,
             segment_outbound_targets: MessagingDirectionTargets {
@@ -1192,10 +1239,7 @@ mod tests {
                 overflow_n: 0,
             },
             segment_inbound_targets: MessagingDirectionTargets::default(),
-            segment_continues_above: true,
-            segment_continues_below: false,
             aggregate_status: crate::agent::model::ToolCallStatus::Completed,
-            group_total_count: 2,
         };
         let rendered = render_lines_to_strings(&render_messaging_group_summary_line(&segment, '⠋'));
         assert_eq!(rendered.len(), 1);
@@ -1203,15 +1247,13 @@ mod tests {
         assert!(rendered[0].ends_with("click or ctrl+x to expand"), "got {rendered:?}");
     }
 
-    /// Each summary line counts the messages in ITS OWN segment. A
-    /// cross-turn run puts one line per turn on screen, so repeating
-    /// the run total on each of them reads as a sum.
+    /// The inbound direction reads "inbound from <name>", mirroring
+    /// the outbound wording.
     #[test]
-    fn messaging_group_summary_counts_only_its_own_segment() {
+    fn messaging_group_summary_names_the_inbound_direction() {
         use crate::ui::message::grouping::{MessagingDirectionTargets, MessagingGroupSegment};
 
         let segment = MessagingGroupSegment {
-            msg_idx: 1,
             block_range: 0..1,
             segment_count: 1,
             segment_outbound_targets: MessagingDirectionTargets::default(),
@@ -1219,16 +1261,10 @@ mod tests {
                 targets: vec!["steward".to_owned()],
                 overflow_n: 0,
             },
-            segment_continues_above: false,
-            segment_continues_below: true,
             aggregate_status: crate::agent::model::ToolCallStatus::Completed,
-            group_total_count: 7,
         };
         let rendered = render_lines_to_strings(&render_messaging_group_summary_line(&segment, '⠋'));
-        assert!(
-            rendered[0].contains("1 message · inbound from steward"),
-            "the segment holds one message, not the group's 7; got {rendered:?}",
-        );
+        assert!(rendered[0].contains("1 message · inbound from steward"), "got {rendered:?}");
     }
 
     #[test]
@@ -1236,7 +1272,6 @@ mod tests {
         use crate::ui::message::grouping::{MessagingDirectionTargets, MessagingGroupSegment};
 
         let segment = MessagingGroupSegment {
-            msg_idx: 0,
             block_range: 0..4,
             segment_count: 4,
             segment_outbound_targets: MessagingDirectionTargets {
@@ -1244,10 +1279,7 @@ mod tests {
                 overflow_n: 0,
             },
             segment_inbound_targets: MessagingDirectionTargets::default(),
-            segment_continues_above: false,
-            segment_continues_below: false,
             aggregate_status: crate::agent::model::ToolCallStatus::Completed,
-            group_total_count: 4,
         };
         let rendered = render_lines_to_strings(&render_messaging_group_summary_line(&segment, '⠋'));
         assert!(rendered[0].contains("4 messages · outbound to lead"), "got {rendered:?}");

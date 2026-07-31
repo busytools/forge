@@ -160,17 +160,8 @@ fn update_visual_heights(
     let project_root = (!cwd_raw_owned.is_empty()).then_some(cwd_raw_owned.as_str());
     let layout_generation = app.viewport().layout_generation;
     let tools_collapsed = app.tools_collapsed;
-    // Frame-stable session partition (peer/worker cross-turn grouping)
-    // computed once and threaded into each measure call, mirroring the
-    // render path so measure and render group identically.
-    let session_units = message::grouping::partition_session_into_render_units(app.messages());
-    let invariants = MeasureInvariants {
-        mode_id,
-        project_root,
-        layout_generation,
-        tools_collapsed,
-        session_units: &session_units,
-    };
+    let invariants =
+        MeasureInvariants { mode_id, project_root, layout_generation, tools_collapsed };
 
     // The visible window for the priority + visible loops follows
     // the CURRENT scroll position, not the frozen scroll_anchor on
@@ -372,7 +363,6 @@ struct MeasureInvariants<'a> {
     project_root: Option<&'a str>,
     layout_generation: u64,
     tools_collapsed: bool,
-    session_units: &'a [Vec<message::grouping::RenderUnit>],
 }
 
 fn measure_message_height_at(
@@ -399,7 +389,6 @@ fn measure_message_height_at(
         app.active_session().map(|s| s.group_collapse_levels.clone()).unwrap_or_default();
     let messaging_group_collapse_levels =
         app.active_session().map(|s| s.messaging_group_collapse_levels.clone()).unwrap_or_default();
-    let session_message_units = invariants.session_units.get(idx).map(Vec::as_slice);
     let options = message::MessageRenderOptions {
         tools_collapsed: invariants.tools_collapsed,
         include_trailing_separator: !is_last_message,
@@ -421,7 +410,6 @@ fn measure_message_height_at(
     .with_stop_hook_hooks(stop_hook_snapshot.hooks.as_slice())
     .with_group_collapse_levels(&group_collapse_levels)
     .with_messaging_group_collapse_levels(&messaging_group_collapse_levels)
-    .with_session_message_units(session_message_units)
     .with_project_root(invariants.project_root.unwrap_or(""));
     // Scope the perf span to the measure call only - the cache-sync +
     // viewport writes below are not part of the measure timing.
@@ -969,12 +957,6 @@ fn render_message_range(
     let messaging_group_collapse_levels =
         app.active_session().map(|s| s.messaging_group_collapse_levels.clone()).unwrap_or_default();
     let cwd_raw = app.cwd_raw();
-    // Cross-message peer/worker run state: compute the session-level
-    // partition once per render pass. Each per-message render call
-    // reads its own slice via the context's
-    // `with_session_message_units` builder so MessagingGroup segments
-    // know their cross-turn totals + shared leader id.
-    let session_units = message::grouping::partition_session_into_render_units(app.messages());
     for i in render_start..msg_count {
         let sp = msg_spinner(base, i, active_turn_assistant, &app.messages()[i]);
         let before = out.len();
@@ -990,12 +972,10 @@ fn render_message_range(
             stop_hook_summary_actions: stop_hook.actions,
             stop_hook_summary_expanded: stop_hook.expanded,
         };
-        let session_message_units = session_units.get(i).map(Vec::as_slice);
         let ctx = message::MessageRenderContext::new(mode_id, width, layout_generation, options)
             .with_stop_hook_hooks(stop_hook.hooks.as_slice())
             .with_group_collapse_levels(&group_collapse_levels)
             .with_messaging_group_collapse_levels(&messaging_group_collapse_levels)
-            .with_session_message_units(session_message_units)
             .with_project_root(&cwd_raw);
         if structural_skip > 0 {
             let remaining_skip = message::render_message_from_offset_internal_with_mode(
@@ -1374,6 +1354,130 @@ mod tests {
             })
             .expect("draw");
         super::refresh_selection_snapshot(app);
+    }
+
+    /// A peer-dense session: every other message carries a messaging
+    /// block, so a whole-session partition would scale with both
+    /// message count and segment count.
+    fn peer_dense_session(msg_count: usize) -> Vec<ChatMessage> {
+        let body = "x".repeat(1200);
+        // TWO envelopes per messaging message: one is below the
+        // threshold of 2 and forms no group at all, which would leave
+        // the segment-handling this fixture exists to exercise
+        // completely unrun.
+        let envelope = |i: usize, n: usize| {
+            MessageBlock::Text(TextBlock::from_complete(&format!(
+                "[Message id=t-{i}-{n} from agent 'agent-{}' (org 'forge')]\n\n{body}",
+                i % 7
+            )))
+        };
+        (0..msg_count)
+            .map(|i| match i % 4 {
+                0 | 2 => {
+                    ChatMessage::new(MessageRole::User, vec![envelope(i, 0), envelope(i, 1)], None)
+                }
+                1 => assistant_text_message("plain prose that breaks the run"),
+                _ => user_message("plain prose that breaks the run"),
+            })
+            .collect()
+    }
+
+    /// Guards the fixture above: if it stops forming groups, the
+    /// scaling test still passes while measuring nothing that matters.
+    #[test]
+    fn peer_dense_session_actually_forms_messaging_groups() {
+        let messages = peer_dense_session(40);
+        let groups = messages
+            .iter()
+            .flat_map(|m| message::grouping::partition_blocks_into_render_units(&m.blocks))
+            .filter(|u| matches!(u, message::grouping::RenderUnit::MessagingGroup { .. }))
+            .count();
+        assert_eq!(groups, 20, "half the messages carry a two-envelope run");
+    }
+
+    /// Best-of-`ROUNDS` cost of one steady-state frame - the 95% case
+    /// where no message needs re-measuring and the render is served
+    /// from cache. Minimum, not mean: interference only ever adds
+    /// time, so the floor is the stable statistic on a busy machine.
+    fn steady_state_frame_cost_ms(msg_count: usize) -> f64 {
+        const ROUNDS: usize = 7;
+        let (w, h) = (240u16, 65u16);
+        let mut app = App::test_default();
+        *app.active_messages_mut() = peer_dense_session(msg_count);
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let spinner = idle_spinner();
+        let content_area = chat_content_area(Rect::new(0, 0, w, h));
+        let (cw, ch) = (content_area.width, usize::from(content_area.height));
+
+        // Seed heights directly rather than driving the background
+        // re-measure loop to convergence: that would take one frame per
+        // viewport-worth of messages, which is most of a minute at the
+        // larger size and adds nothing the timed frames need.
+        let _ = app.active_viewport_mut().on_frame(cw, content_area.height);
+        for i in 0..msg_count {
+            app.active_viewport_mut().set_message_height(i, 4);
+        }
+        app.active_viewport_mut().mark_heights_valid();
+
+        let mut frame = |cost: Option<&mut f64>| {
+            terminal
+                .draw(|frame| {
+                    let _ = app.active_viewport_mut().on_frame(cw, content_area.height);
+                    // Prefix sums are rebuilt outside the timed span:
+                    // they are O(session) by construction and are not
+                    // rebuilt every frame in production.
+                    app.active_viewport_mut().rebuild_prefix_sums();
+                    let total_h = app.viewport().total_message_height();
+                    let start = std::time::Instant::now();
+                    update_visual_heights(&mut app, &spinner, cw, ch);
+                    render_scrolled(frame, content_area, &mut app, &spinner, cw, total_h, ch);
+                    if let Some(cost) = cost {
+                        *cost = cost.min(start.elapsed().as_secs_f64() * 1000.0);
+                    }
+                })
+                .expect("draw");
+        };
+        // Warm the render caches so the timed frames are steady-state
+        // rather than first-paint.
+        for _ in 0..5 {
+            frame(None);
+        }
+        let mut cost = f64::MAX;
+        for _ in 0..ROUNDS {
+            frame(Some(&mut cost));
+        }
+        cost
+    }
+
+    /// A frame's cost must not scale with how much the session is
+    /// carrying. Rendering touches a viewport-worth of messages, so a
+    /// 64x longer session must cost about the same per frame.
+    ///
+    /// This guards the regression that made a whole-session partition
+    /// run twice per frame: it was two thirds of live render time on a
+    /// 7572-message session, and it grew quadratically because the
+    /// assembly pass rescanned every segment per message.
+    ///
+    /// Asserts on the RATIO between two session sizes rather than a
+    /// wall-clock budget - both measurements slow together on a loaded
+    /// machine, so contention cannot flake it. Per-message work lands
+    /// near 1.0; the whole-session accounting scan removed alongside
+    /// this measured 3.63 here, and the session partition 69x.
+    #[test]
+    fn frame_cost_does_not_scale_with_session_size() {
+        const MAX_RATIO: f64 = 3.0;
+
+        let small = steady_state_frame_cost_ms(250);
+        let large = steady_state_frame_cost_ms(16_000);
+        let ratio = large / small;
+
+        assert!(
+            ratio < MAX_RATIO,
+            "a frame must cost about the same regardless of session length, got {ratio:.2}x \
+             for a 64x longer session (limit {MAX_RATIO}x); {small:.3}ms -> {large:.3}ms. \
+             Something on the render path is walking the whole session.",
+        );
     }
 
     #[test]

@@ -472,10 +472,6 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
     if let Some(hit) = messaging_group_hit_match(app, msg_idx, block_idx) {
         if hit.is_leader {
             let level = app.cycle_messaging_group_collapse_level(&hit.leader_id);
-            // invalidate_message_set doesn't set needs_redraw, so the
-            // invalidate_layout below still has to run.
-            let run_messages = hit.msg_indices.len();
-            app.invalidate_message_set(hit.msg_indices);
             app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(msg_idx));
             tracing::debug!(
                 target: crate::logging::targets::APP_INPUT,
@@ -483,7 +479,6 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
                 leader_id = hit.leader_id.as_str(),
                 msg_idx,
                 block_idx,
-                run_messages,
                 new_level = ?level,
                 "click on messaging-group summary cycled level",
             );
@@ -680,10 +675,6 @@ fn try_toggle_peer_user_block_at_click(app: &mut App, mouse: MouseEvent) -> bool
     if let Some(hit) = messaging_group_hit_match(app, msg_idx, block_idx) {
         if hit.is_leader {
             let level = app.cycle_messaging_group_collapse_level(&hit.leader_id);
-            // invalidate_message_set doesn't set needs_redraw, so the
-            // invalidate_layout below still has to run.
-            let run_messages = hit.msg_indices.len();
-            app.invalidate_message_set(hit.msg_indices);
             app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(msg_idx));
             tracing::debug!(
                 target: crate::logging::targets::APP_INPUT,
@@ -691,7 +682,6 @@ fn try_toggle_peer_user_block_at_click(app: &mut App, mouse: MouseEvent) -> bool
                 leader_id = hit.leader_id.as_str(),
                 msg_idx,
                 block_idx,
-                run_messages,
                 new_level = ?level,
                 "click on inbound peer block at messaging-group leader cycled level",
             );
@@ -1463,97 +1453,108 @@ mod tests {
         );
     }
 
-    /// Seed the two-message peer run (inbound envelope in a user turn,
-    /// outbound call in the next assistant turn) with the hit-test
-    /// geometry the L2 summary render stamps, and return the messaging
-    /// group's leader id.
-    fn seed_cross_turn_peer_run(app: &mut App) -> crate::ui::message::grouping::GroupId {
+    /// Seed one message holding a two-block peer run, plus the
+    /// hit-test geometry the L2 summary render stamps, and return the
+    /// messaging group's leader id. `inbound` picks which of the two
+    /// hit-test entry points the group leads with: inbound runs lead
+    /// with a `Text` block, outbound with a `ToolCall`.
+    fn seed_peer_run(app: &mut App, inbound: bool) -> crate::ui::message::grouping::GroupId {
         use crate::agent::model;
         use crate::app::{
             BlockCache, ChatMessage, MessageRole, TerminalSnapshotMode, TextBlock, ToolCallInfo,
         };
-        use crate::ui::message::grouping::{RenderUnit, partition_session_into_render_units};
+        use crate::ui::message::grouping::{RenderUnit, partition_blocks_into_render_units};
 
-        let mut inbound = TextBlock::from_complete(
-            "[Message id=t-abc123 from agent 'steward' (org 'forge')]\n\nthe window is lost",
-        );
-        inbound.peer_last_measured_y_in_msg = 0;
-        inbound.peer_last_measured_height = 1;
-        inbound.peer_last_measured_width = 80;
-        app.push_message_tracked(ChatMessage::new_peer_envelope(
-            MessageRole::User,
-            vec![MessageBlock::Text(inbound)],
-            None,
-        ));
-
-        let outbound = ToolCallInfo {
-            id: "toolu_tell_steward".to_owned(),
-            title: "Tell steward".to_owned(),
-            sdk_tool_name: "mcp__forge__peers__tell_agent".to_owned(),
-            raw_input: Some(serde_json::json!({ "target": "steward", "message": "body" })),
-            raw_input_bytes: 0,
-            output_metadata: None,
-            task_metadata: None,
-            status: model::ToolCallStatus::Completed,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
-            monitor_output_tail: Vec::default(),
-            render_epoch: 0,
-            layout_epoch: 0,
-            last_measured_y_in_msg: 0,
-            answered_questions: Vec::new(),
-            last_measured_height: 1,
-            last_measured_width: 80,
-            last_measured_layout_epoch: 0,
-            last_measured_layout_generation: 0,
-            cache: BlockCache::default(),
-            collapsed_override: None,
+        let envelope = |id: &str, y: usize| {
+            let mut block = TextBlock::from_complete(&format!(
+                "[Message id={id} from agent 'steward' (org 'forge')]\n\nthe window is lost"
+            ));
+            block.peer_last_measured_y_in_msg = y;
+            block.peer_last_measured_height = 1;
+            block.peer_last_measured_width = 80;
+            MessageBlock::Text(block)
         };
-        app.push_message_tracked(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(outbound))],
-            None,
-        ));
+        let tell = |id: &str, y: usize| {
+            MessageBlock::ToolCall(Box::new(ToolCallInfo {
+                id: id.to_owned(),
+                title: "Tell steward".to_owned(),
+                sdk_tool_name: "mcp__forge__peers__tell_agent".to_owned(),
+                raw_input: Some(serde_json::json!({ "target": "steward", "message": "body" })),
+                raw_input_bytes: 0,
+                output_metadata: None,
+                task_metadata: None,
+                status: model::ToolCallStatus::Completed,
+                content: Vec::new(),
+                hidden: false,
+                terminal_id: None,
+                terminal_command: None,
+                terminal_output: None,
+                terminal_output_len: 0,
+                terminal_bytes_seen: 0,
+                terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+                monitor_output_tail: Vec::default(),
+                render_epoch: 0,
+                layout_epoch: 0,
+                last_measured_y_in_msg: y,
+                answered_questions: Vec::new(),
+                last_measured_height: 1,
+                last_measured_width: 80,
+                last_measured_layout_epoch: 0,
+                last_measured_layout_generation: 0,
+                cache: BlockCache::default(),
+                collapsed_override: None,
+            }))
+        };
+
+        let message = if inbound {
+            ChatMessage::new_peer_envelope(
+                MessageRole::User,
+                vec![envelope("t-abc123", 0), envelope("t-def456", 1)],
+                None,
+            )
+        } else {
+            ChatMessage::new(
+                MessageRole::Assistant,
+                vec![tell("toolu_tell_a", 0), tell("toolu_tell_b", 1)],
+                None,
+            )
+        };
+        app.push_message_tracked(message);
 
         let _ = app.active_viewport_mut().on_frame(80, 20);
-        app.active_viewport_mut().set_message_height(0, 1);
-        app.active_viewport_mut().set_message_height(1, 1);
+        app.active_viewport_mut().set_message_height(0, 2);
         app.active_viewport_mut().mark_heights_valid();
         app.active_viewport_mut().rebuild_prefix_sums();
         app.rendered_chat_area = Rect { x: 0, y: 0, width: 80, height: 20 };
 
-        partition_session_into_render_units(app.messages())
+        partition_blocks_into_render_units(&app.messages()[0].blocks)
             .iter()
-            .flatten()
             .find_map(|unit| match unit {
                 RenderUnit::MessagingGroup { group_leader_id, .. } => Some(group_leader_id.clone()),
                 _ => None,
             })
-            .expect("session partition produces a messaging group")
+            .expect("a two-block peer run produces a messaging group")
     }
 
-    /// A click on the outbound half of a cross-turn bundle summary
-    /// cycles the group's collapse level, the same way a click on a
-    /// tool-call group summary does.
+    /// A click on an outbound bundle summary cycles the group's
+    /// collapse level, the same way a click on a tool-call group
+    /// summary does. Outbound runs lead with a `ToolCall` block, so
+    /// this covers the tool-call hit-test entry point.
     #[test]
-    fn click_on_messaging_group_summary_cycles_outbound_segment() {
+    fn click_on_messaging_group_summary_cycles_outbound_run() {
         use crate::ui::message::grouping::GroupCollapseLevel;
         use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 
         let mut app = App::test_default();
-        let leader_id = seed_cross_turn_peer_run(&mut app);
+        let leader_id = seed_peer_run(&mut app, false);
         assert_eq!(app.messaging_group_collapse_level(&leader_id), GroupCollapseLevel::L2Summary);
 
+        // Row 0 is the group's leading block, which is where the L2
+        // summary renders and stamps its hit-test rect.
         let mouse = MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 5,
-            row: 1,
+            row: 0,
             modifiers: KeyModifiers::empty(),
         };
         assert!(try_toggle_tool_call_at_click(&mut app, mouse), "click must be consumed");
@@ -1711,41 +1712,47 @@ mod tests {
         assert!(!consumed, "the click must not be consumed as a toggle that did nothing");
     }
 
-    /// Cycling keys on the whole run, so every message holding a
-    /// segment remeasures, not just the clicked one.
+    /// Cycling scopes invalidation to the group's OWN message. Before
+    /// grouping went per-message the level was keyed on a leader shared
+    /// across messages, so this had to invalidate a whole set; now
+    /// anything wider than `MessageChanged` would be over-invalidating
+    /// every frame a group is clicked.
+    ///
+    /// Asserts the recorded level, not just that the height went stale:
+    /// a stale height is what any invalidation produces, so it cannot
+    /// tell a correct scope from a widened one.
     #[test]
-    fn click_on_messaging_group_summary_invalidates_every_segments_message() {
+    fn click_on_messaging_group_summary_invalidates_only_its_message() {
         use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 
         let mut app = App::test_default();
-        let _leader_id = seed_cross_turn_peer_run(&mut app);
-        assert!(
-            app.viewport().message_height_is_current(0),
-            "fixture starts with both heights measured",
-        );
+        let _leader_id = seed_peer_run(&mut app, false);
+        app.last_invalidation_level.set(None);
 
-        // Click the outbound segment in msg1; msg0 holds the inbound one.
         let mouse = MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 5,
-            row: 1,
+            row: 0,
             modifiers: KeyModifiers::empty(),
         };
         assert!(try_toggle_tool_call_at_click(&mut app, mouse), "click must be consumed");
 
-        assert!(
-            !app.viewport().message_height_is_current(0),
-            "the sibling segment's message must remeasure - it renders at the new level too",
+        assert_eq!(
+            app.last_invalidation_level.get(),
+            Some(crate::app::InvalidationLevel::MessageChanged(0)),
+            "cycling must not invalidate wider than the group's own message",
         );
-        assert!(!app.viewport().message_height_is_current(1), "the clicked message remeasures");
     }
 
+    /// Same scope through the inbound entry point, which reaches it from
+    /// a `Text` leader rather than a `ToolCall`.
     #[test]
-    fn inbound_click_on_messaging_group_summary_invalidates_every_segments_message() {
+    fn inbound_click_on_messaging_group_summary_invalidates_only_its_message() {
         use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 
         let mut app = App::test_default();
-        let _leader_id = seed_cross_turn_peer_run(&mut app);
+        let _leader_id = seed_peer_run(&mut app, true);
+        app.last_invalidation_level.set(None);
 
         let mouse = MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -1755,19 +1762,22 @@ mod tests {
         };
         assert!(try_toggle_peer_user_block_at_click(&mut app, mouse), "click must be consumed");
 
-        assert!(
-            !app.viewport().message_height_is_current(1),
-            "the sibling segment's message must remeasure",
+        assert_eq!(
+            app.last_invalidation_level.get(),
+            Some(crate::app::InvalidationLevel::MessageChanged(0)),
+            "cycling must not invalidate wider than the group's own message",
         );
     }
 
+    /// Same for an inbound run, which leads with a `Text` block and so
+    /// goes through the other hit-test entry point.
     #[test]
-    fn click_on_messaging_group_summary_cycles_inbound_segment() {
+    fn click_on_messaging_group_summary_cycles_inbound_run() {
         use crate::ui::message::grouping::GroupCollapseLevel;
         use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 
         let mut app = App::test_default();
-        let leader_id = seed_cross_turn_peer_run(&mut app);
+        let leader_id = seed_peer_run(&mut app, true);
 
         let mouse = MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -1779,7 +1789,7 @@ mod tests {
         assert_eq!(
             app.messaging_group_collapse_level(&leader_id),
             GroupCollapseLevel::L1Titles,
-            "click on the inbound segment's summary cycles the same group L2 -> L1",
+            "click on the inbound run's summary cycles it L2 -> L1",
         );
     }
 
