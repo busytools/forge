@@ -9,7 +9,7 @@
 //! the directive.
 
 use crate::agent::model::ToolCallContent;
-use crate::app::{ToolCallInfo, is_monitor_tool_name};
+use crate::app::ToolCallInfo;
 use crate::ui::message::grouping::GroupCollapseLevel;
 
 /// Resolver for 2-state items (loose tool-calls, peer/MCP blocks
@@ -52,22 +52,10 @@ pub fn is_carved_out_from_global_directive(tc: &ToolCallInfo) -> bool {
     if tc.content.iter().any(|c| matches!(c, ToolCallContent::Diff(_))) {
         return true;
     }
-    if is_monitor_tool_name(&tc.sdk_tool_name) {
-        return true;
-    }
-    if is_workflow_tool_name(&tc.sdk_tool_name) {
+    if crate::ui::message::grouping::is_lifecycle_render_tool(&tc.sdk_tool_name) {
         return true;
     }
     false
-}
-
-/// Workflow lifecycle-tool predicate. Mirrors `is_monitor_tool_name`'s
-/// case-insensitive shape. Kept local because no upstream sibling
-/// exists today; if a future feature needs it elsewhere, lift to
-/// `crate::app::state::tool_call_info` alongside
-/// `is_monitor_tool_name`.
-fn is_workflow_tool_name(name: &str) -> bool {
-    name.eq_ignore_ascii_case("workflow")
 }
 
 #[cfg(test)]

@@ -83,7 +83,7 @@ fn is_edit_tool(sdk_tool_name: &str) -> bool {
 /// in `ui/message.rs::render_lifecycle_one_liner` (rather than the
 /// standard tool card). Name-based because the render fn matches by
 /// `sdk_tool_name` literal.
-fn is_lifecycle_render_tool(sdk_tool_name: &str) -> bool {
+pub(crate) fn is_lifecycle_render_tool(sdk_tool_name: &str) -> bool {
     matches!(sdk_tool_name, "Monitor" | "Workflow")
 }
 
