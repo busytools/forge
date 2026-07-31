@@ -522,14 +522,13 @@ pub struct TextBlock {
     /// when the user toggles an inbound peer row. Always `None` for
     /// non-peer text blocks.
     pub peer_collapsed_override: Option<bool>,
-    /// Row offset within the rendered message at which the peer
-    /// block starts (post-layout). Stamped each frame by the user-
-    /// block renderer when a peer envelope is detected. Used by
-    /// `mouse::locate_peer_user_block_at_click` to find the clicked
-    /// block. Zero for non-peer text blocks.
+    /// Row offset within the rendered message of this block's click
+    /// target - the peer card, or the bundle summary row when the block
+    /// leads an L2 messaging-group segment. Stamped by the user-block
+    /// renderer; zero for non-peer text blocks and for blocks an L2
+    /// summary hides.
     pub peer_last_measured_y_in_msg: usize,
-    /// Row count of the rendered peer block. Same provenance + use
-    /// as `peer_last_measured_y_in_msg`. Zero ⇒ no hit-test target.
+    /// Row count of that click target. Zero ⇒ no hit-test target.
     pub peer_last_measured_height: usize,
     /// Width the peer block was laid out at. Used to invalidate the
     /// hit-target when the chat area resizes (a stale rect from a
@@ -538,6 +537,15 @@ pub struct TextBlock {
 }
 
 impl TextBlock {
+    /// Drop the click target of an inbound peer envelope an L2 summary
+    /// has collapsed away, so a click on the summary's rows cannot
+    /// resolve to it. Twin of `ToolCallInfo::clear_hit_test_rect`.
+    pub fn clear_peer_hit_test_rect(&mut self) {
+        self.peer_last_measured_width = 0;
+        self.peer_last_measured_height = 0;
+        self.peer_last_measured_y_in_msg = 0;
+    }
+
     pub fn new(text: String) -> Self {
         Self {
             markdown: IncrementalMarkdown::from_complete(&text),

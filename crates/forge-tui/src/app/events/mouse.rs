@@ -435,47 +435,64 @@ fn mouse_point_to_selection(app: &App, mouse: MouseEvent) -> Option<MouseSelecti
 /// caller can skip starting a text selection).
 fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
     let Some((msg_idx, block_idx)) = locate_tool_call_block_at_click(app, mouse) else {
+        trace_hit_test_miss(app, mouse, "tool_call_hit_test");
         return false;
     };
-    // Chat tool-call grouping: when the clicked tool is the leader of
-    // a multi-item group AND that group is currently at L2, route to
-    // the group path (cycle to L1). The renderer stamped the leader's
-    // hit-test fields onto the summary line, so a click here landed
-    // there. Off the leader, on a single-item group (the title row IS
-    // the per-tool row; clicking should toggle the body), or when the
-    // group is at L1 / L0, fall through to the per-tool toggle below.
-    if let Some((leader_id, _run_len)) = group_leader_match(app, msg_idx, block_idx) {
-        let level = app.group_collapse_level(&leader_id);
+    // The renderer stamped the leader's hit-test fields onto the
+    // summary line, so a click there lands here. Off the leader at L2 the
+    // block is hidden and the click is refused; at L1 / L0 it falls
+    // through to the per-tool toggle below.
+    if let Some(hit) = group_hit_match(app, msg_idx, block_idx) {
+        let level = app.group_collapse_level(&hit.leader_id);
+        // Load-bearing, not cosmetic: cycling from L1 to L0 would return
+        // a height eight rows short of what paints, because the per-tool
+        // measure key omits `tools_collapsed` (issue #479).
         if matches!(level, crate::ui::message::grouping::GroupCollapseLevel::L2Summary) {
-            let _ = app.cycle_group_collapse_level(&leader_id);
+            if !hit.is_leader {
+                trace_click_on_hidden_block(msg_idx, block_idx, hit.leader_id.as_str());
+                return false;
+            }
+            let new_level = app.cycle_group_collapse_level(&hit.leader_id);
             app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(msg_idx));
             tracing::debug!(
                 target: crate::logging::targets::APP_INPUT,
                 event_name = "group_summary_click_expanded",
-                leader_id = leader_id.as_str(),
+                leader_id = hit.leader_id.as_str(),
                 msg_idx,
                 block_idx,
+                new_level = ?new_level,
                 "click on group L2 summary expanded to L1",
             );
             return true;
         }
     }
-    // Messaging-group click cycle: a click on the leading peer
-    // block of a messaging group at L2 cycles to L1 (titles only),
-    // then L1 to L0 (full bodies), then L0 back to L2. Mirrors the
-    // tool-call group cycle above.
-    if let Some((leader_id, _run_len)) = messaging_group_leader_match(app, msg_idx, block_idx) {
-        let _ = app.cycle_messaging_group_collapse_level(&leader_id);
-        app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(msg_idx));
-        tracing::debug!(
-            target: crate::logging::targets::APP_INPUT,
-            event_name = "messaging_group_summary_click_cycled",
-            leader_id = leader_id.as_str(),
-            msg_idx,
-            block_idx,
-            "click on messaging-group summary cycled level",
-        );
-        return true;
+    // Messaging-group click cycle: L2 to L1 to L0 and back. Unlike the
+    // tool-call cycle above, this one is NOT gated on L2 - a click on the
+    // leader cycles from whatever level it is at.
+    if let Some(hit) = messaging_group_hit_match(app, msg_idx, block_idx) {
+        if hit.is_leader {
+            let level = app.cycle_messaging_group_collapse_level(&hit.leader_id);
+            // invalidate_message_set doesn't set needs_redraw, so the
+            // invalidate_layout below still has to run.
+            let run_messages = hit.msg_indices.len();
+            app.invalidate_message_set(hit.msg_indices);
+            app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(msg_idx));
+            tracing::debug!(
+                target: crate::logging::targets::APP_INPUT,
+                event_name = "messaging_group_summary_click_cycled",
+                leader_id = hit.leader_id.as_str(),
+                msg_idx,
+                block_idx,
+                run_messages,
+                new_level = ?level,
+                "click on messaging-group summary cycled level",
+            );
+            return true;
+        }
+        if messaging_group_hides_member(app, &hit.leader_id) {
+            trace_click_on_hidden_block(msg_idx, block_idx, hit.leader_id.as_str());
+            return false;
+        }
     }
     let global_default = app.tools_collapsed;
     let Some(MessageBlock::ToolCall(tc)) =
@@ -505,30 +522,90 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
     true
 }
 
-/// When the clicked `(msg_idx, block_idx)` is the leading tool-call
-/// of a group at the current partition pass, return its [`GroupId`]
-/// plus the group's run length. Any group at L2 cycles on click (the
-/// caller no longer filters on run length; single-item groups cycle
-/// the same as multi-item ones). `None` for non-leader blocks.
-fn group_leader_match(
+/// Resolve a click on a tool row to the group containing it, if any.
+/// See [`crate::ui::message::grouping::group_hit_at`].
+fn group_hit_match(
     app: &App,
     msg_idx: usize,
     block_idx: usize,
-) -> Option<(crate::ui::message::grouping::GroupId, usize)> {
+) -> Option<crate::ui::message::grouping::GroupHit> {
     let msg = app.messages().get(msg_idx)?;
-    crate::ui::message::grouping::group_leader_at(&msg.blocks, block_idx)
+    crate::ui::message::grouping::group_hit_at(&msg.blocks, block_idx)
 }
 
-/// Sibling of [`group_leader_match`] for messaging groups. Resolves
-/// the click target back to a messaging-group's leader id + segment
-/// length when the clicked `(msg_idx, block_idx)` is the leading
-/// peer/worker block of a `MessagingGroup` segment.
-fn messaging_group_leader_match(
+/// Sibling of [`group_hit_match`] for messaging groups. `Some`
+/// whenever the clicked block sits inside a `MessagingGroup` segment;
+/// the hit's `is_leader` says whether it was the leading block.
+fn messaging_group_hit_match(
     app: &App,
     msg_idx: usize,
     block_idx: usize,
-) -> Option<(crate::ui::message::grouping::GroupId, usize)> {
-    crate::ui::message::grouping::messaging_group_leader_at(app.messages(), msg_idx, block_idx)
+) -> Option<crate::ui::message::grouping::MessagingGroupHit> {
+    crate::ui::message::grouping::messaging_group_hit_at(app.messages(), msg_idx, block_idx)
+}
+
+/// True when the group renders as a one-line summary, so every block
+/// but the leader is off screen.
+fn messaging_group_hides_member(
+    app: &App,
+    leader_id: &crate::ui::message::grouping::GroupId,
+) -> bool {
+    matches!(
+        app.messaging_group_collapse_level(leader_id),
+        crate::ui::message::grouping::GroupCollapseLevel::L2Summary
+    )
+}
+
+/// Record where an unconsumed click landed. Emitted only from the click
+/// handlers: the locators themselves run on every pointer move under
+/// any-motion tracking, so tracing from there writes a record per hover
+/// cell and drowns the log this diagnostic exists to serve.
+fn trace_hit_test_miss(app: &App, mouse: MouseEvent, event_name: &'static str) {
+    let chat_area = app.rendered_chat_area;
+    // Outside the chat rect there is no row to resolve, and the
+    // arithmetic below would invent a plausible-looking one - a log full
+    // of hits that never happened is worse than no log.
+    if mouse.column < chat_area.x
+        || mouse.column >= chat_area.right()
+        || mouse.row < chat_area.y
+        || mouse.row >= chat_area.bottom()
+    {
+        return;
+    }
+    let local_row = (mouse.row - chat_area.y) as usize;
+    let absolute_row = local_row.saturating_add(app.viewport().scroll_offset);
+    let msg_idx = app.viewport().find_first_visible(absolute_row);
+    let msg_start = app.viewport().cumulative_height_before(msg_idx);
+    tracing::debug!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name,
+        outcome = "no_hit",
+        mouse_row = mouse.row,
+        mouse_column = mouse.column,
+        scroll_offset = app.viewport().scroll_offset,
+        absolute_row,
+        msg_idx,
+        msg_count = app.messages().len(),
+        msg_start,
+        row_within_msg = absolute_row.saturating_sub(msg_start),
+        msg_height = app.viewport().message_height(msg_idx),
+        "click did not resolve to a block",
+    );
+}
+
+/// A click resolved to a block an L2 summary hides. Ordinary rather than
+/// corrupt: the event loop drains queued terminal events without
+/// rendering between them, so a collapse and a click already in the tty
+/// buffer arrive back to back, before the render has cleared the rect.
+fn trace_click_on_hidden_block(msg_idx: usize, block_idx: usize, leader_id: &str) {
+    tracing::debug!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "click_resolved_to_collapsed_block",
+        leader_id,
+        msg_idx,
+        block_idx,
+        "click refused: block is behind an L2 summary and not on screen",
+    );
 }
 
 /// Map the chat-area click coordinate to a `(message_idx, block_idx)`
@@ -578,36 +655,9 @@ fn locate_tool_call_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usiz
         let y_start = tc.last_measured_y_in_msg;
         let y_end = y_start.saturating_add(tc.last_measured_height);
         if row_within_msg >= y_start && row_within_msg < y_end {
-            tracing::debug!(
-                target: crate::logging::targets::APP_INPUT,
-                event_name = "tool_call_hit_test",
-                outcome = "hit",
-                msg_idx,
-                block_idx,
-                tool_id = %tc.id,
-                row_within_msg,
-                y_start,
-                y_end,
-                "click landed inside tool-call rendered range",
-            );
             return Some((msg_idx, block_idx));
         }
     }
-    tracing::debug!(
-        target: crate::logging::targets::APP_INPUT,
-        event_name = "tool_call_hit_test",
-        outcome = "no_hit",
-        mouse_row = mouse.row,
-        mouse_column = mouse.column,
-        scroll_offset = app.viewport().scroll_offset,
-        absolute_row,
-        msg_idx,
-        msg_count = app.messages().len(),
-        msg_start,
-        row_within_msg,
-        msg_height = app.viewport().message_height(msg_idx),
-        "click did not match any tool's recorded y-range",
-    );
     None
 }
 
@@ -620,24 +670,37 @@ fn locate_tool_call_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usiz
 /// same `peer_last_measured_y/height/width` triple a tool call gets.
 fn try_toggle_peer_user_block_at_click(app: &mut App, mouse: MouseEvent) -> bool {
     let Some((msg_idx, block_idx)) = locate_peer_user_block_at_click(app, mouse) else {
+        trace_hit_test_miss(app, mouse, "peer_user_block_hit_test");
         return false;
     };
     // Messaging-group click cycle: same shape as the tool-call group
     // path. When the clicked inbound peer text block is the leader
     // of a messaging-group segment, cycle the group's level instead
     // of toggling the per-block override.
-    if let Some((leader_id, _run_len)) = messaging_group_leader_match(app, msg_idx, block_idx) {
-        let _ = app.cycle_messaging_group_collapse_level(&leader_id);
-        app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(msg_idx));
-        tracing::debug!(
-            target: crate::logging::targets::APP_INPUT,
-            event_name = "messaging_group_summary_click_cycled_inbound",
-            leader_id = leader_id.as_str(),
-            msg_idx,
-            block_idx,
-            "click on inbound peer block at messaging-group leader cycled level",
-        );
-        return true;
+    if let Some(hit) = messaging_group_hit_match(app, msg_idx, block_idx) {
+        if hit.is_leader {
+            let level = app.cycle_messaging_group_collapse_level(&hit.leader_id);
+            // invalidate_message_set doesn't set needs_redraw, so the
+            // invalidate_layout below still has to run.
+            let run_messages = hit.msg_indices.len();
+            app.invalidate_message_set(hit.msg_indices);
+            app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(msg_idx));
+            tracing::debug!(
+                target: crate::logging::targets::APP_INPUT,
+                event_name = "messaging_group_summary_click_cycled_inbound",
+                leader_id = hit.leader_id.as_str(),
+                msg_idx,
+                block_idx,
+                run_messages,
+                new_level = ?level,
+                "click on inbound peer block at messaging-group leader cycled level",
+            );
+            return true;
+        }
+        if messaging_group_hides_member(app, &hit.leader_id) {
+            trace_click_on_hidden_block(msg_idx, block_idx, hit.leader_id.as_str());
+            return false;
+        }
     }
     let global_default = app.tools_collapsed;
     let Some(MessageBlock::Text(text_block)) =
@@ -1501,8 +1564,203 @@ mod tests {
         );
     }
 
-    /// Same for the inbound half - the user-turn segment's summary is
-    /// the same bundle and cycles the same leader.
+    /// Same guard on the tool-call path. The main loop drains queued
+    /// terminal events without rendering between them, so a ctrl+x that
+    /// collapses a group and a click already in the queue are handled
+    /// back to back - the click reads rects the collapse has not cleared
+    /// yet, because nothing has re-rendered.
+    #[test]
+    fn click_resolving_to_a_tool_block_hidden_by_an_l2_summary_does_not_toggle_it() {
+        use crate::agent::model;
+        use crate::app::{
+            BlockCache, ChatMessage, MessageRole, TerminalSnapshotMode, ToolCallInfo,
+        };
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+
+        let read_tool = |id: &str, y: usize| ToolCallInfo {
+            id: id.to_owned(),
+            title: format!("Read {id}.rs"),
+            sdk_tool_name: "Read".to_owned(),
+            raw_input: None,
+            raw_input_bytes: 0,
+            output_metadata: None,
+            task_metadata: None,
+            status: model::ToolCallStatus::Completed,
+            content: Vec::new(),
+            hidden: false,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+            monitor_output_tail: Vec::default(),
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_y_in_msg: y,
+            answered_questions: Vec::new(),
+            last_measured_height: 1,
+            last_measured_width: 80,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: BlockCache::default(),
+            collapsed_override: None,
+        };
+
+        let mut app = App::test_default();
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![
+                MessageBlock::ToolCall(Box::new(read_tool("tu-a", 0))),
+                MessageBlock::ToolCall(Box::new(read_tool("tu-b", 1))),
+            ],
+            None,
+        ));
+        let _ = app.active_viewport_mut().on_frame(80, 20);
+        app.active_viewport_mut().set_message_height(0, 2);
+        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().rebuild_prefix_sums();
+        app.rendered_chat_area = Rect { x: 0, y: 0, width: 80, height: 20 };
+
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 1,
+            modifiers: KeyModifiers::empty(),
+        };
+        let consumed = try_toggle_tool_call_at_click(&mut app, mouse);
+
+        let MessageBlock::ToolCall(hidden) = &app.messages()[0].blocks[1] else { unreachable!() };
+        assert_eq!(
+            hidden.collapsed_override, None,
+            "a tool behind the group summary must not have its body toggled",
+        );
+        assert!(!consumed, "the click must not be consumed as a toggle that did nothing");
+    }
+
+    /// A click that resolves to a block the summary hides must neither
+    /// toggle it nor consume the event.
+    #[test]
+    fn click_resolving_to_a_block_hidden_by_an_l2_summary_does_not_toggle_it() {
+        use crate::agent::model;
+        use crate::app::{
+            BlockCache, ChatMessage, MessageRole, TerminalSnapshotMode, ToolCallInfo,
+        };
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+
+        let peer_tool = |id: &str, target: &str, y: usize, h: usize| ToolCallInfo {
+            id: id.to_owned(),
+            title: format!("Tell {target}"),
+            sdk_tool_name: "mcp__forge__peers__tell_agent".to_owned(),
+            raw_input: Some(serde_json::json!({ "target": target, "message": "body" })),
+            raw_input_bytes: 0,
+            output_metadata: None,
+            task_metadata: None,
+            status: model::ToolCallStatus::Completed,
+            content: Vec::new(),
+            hidden: false,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+            monitor_output_tail: Vec::default(),
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_y_in_msg: y,
+            answered_questions: Vec::new(),
+            last_measured_height: h,
+            last_measured_width: 80,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: BlockCache::default(),
+            collapsed_override: None,
+        };
+
+        let mut app = App::test_default();
+        // Leader owns row 0 (the summary). Block 1 carries a rect left
+        // over from an earlier expanded render - the drift case.
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![
+                MessageBlock::ToolCall(Box::new(peer_tool("toolu_a", "planner", 0, 1))),
+                MessageBlock::ToolCall(Box::new(peer_tool("toolu_b", "debugger", 1, 1))),
+            ],
+            None,
+        ));
+        let _ = app.active_viewport_mut().on_frame(80, 20);
+        app.active_viewport_mut().set_message_height(0, 2);
+        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().rebuild_prefix_sums();
+        app.rendered_chat_area = Rect { x: 0, y: 0, width: 80, height: 20 };
+
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 1,
+            modifiers: KeyModifiers::empty(),
+        };
+        let consumed = try_toggle_tool_call_at_click(&mut app, mouse);
+
+        let MessageBlock::ToolCall(hidden) = &app.messages()[0].blocks[1] else { unreachable!() };
+        assert_eq!(
+            hidden.collapsed_override, None,
+            "a block behind the summary must not have its body toggled",
+        );
+        assert!(!consumed, "the click must not be consumed as a toggle that did nothing");
+    }
+
+    /// Cycling keys on the whole run, so every message holding a
+    /// segment remeasures, not just the clicked one.
+    #[test]
+    fn click_on_messaging_group_summary_invalidates_every_segments_message() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+
+        let mut app = App::test_default();
+        let _leader_id = seed_cross_turn_peer_run(&mut app);
+        assert!(
+            app.viewport().message_height_is_current(0),
+            "fixture starts with both heights measured",
+        );
+
+        // Click the outbound segment in msg1; msg0 holds the inbound one.
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 1,
+            modifiers: KeyModifiers::empty(),
+        };
+        assert!(try_toggle_tool_call_at_click(&mut app, mouse), "click must be consumed");
+
+        assert!(
+            !app.viewport().message_height_is_current(0),
+            "the sibling segment's message must remeasure - it renders at the new level too",
+        );
+        assert!(!app.viewport().message_height_is_current(1), "the clicked message remeasures");
+    }
+
+    #[test]
+    fn inbound_click_on_messaging_group_summary_invalidates_every_segments_message() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+
+        let mut app = App::test_default();
+        let _leader_id = seed_cross_turn_peer_run(&mut app);
+
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 0,
+            modifiers: KeyModifiers::empty(),
+        };
+        assert!(try_toggle_peer_user_block_at_click(&mut app, mouse), "click must be consumed");
+
+        assert!(
+            !app.viewport().message_height_is_current(1),
+            "the sibling segment's message must remeasure",
+        );
+    }
+
     #[test]
     fn click_on_messaging_group_summary_cycles_inbound_segment() {
         use crate::ui::message::grouping::GroupCollapseLevel;
@@ -1525,9 +1783,6 @@ mod tests {
         );
     }
 
-    /// The tool-group L2 summary carries a `ctrl+x to expand` hint, so
-    /// this pins down that a click on the summary row cycles the group
-    /// too - the multi-item case the hint actually sits on.
     #[test]
     fn click_on_multi_item_tool_group_summary_cycles_to_l1() {
         use crate::agent::model;

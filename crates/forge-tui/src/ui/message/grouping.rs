@@ -430,8 +430,7 @@ impl MessagingDirectionTargets {
 /// One per-message slice of a messaging group. A messaging group can
 /// span multiple messages (cross-turn merge) - each message's render
 /// reads the segment whose `msg_idx` matches, and the segment carries
-/// the per-message render data plus pointers to its position in the
-/// parent group (above/below continuation markers + total count).
+/// the per-message render data plus its position in the parent group.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MessagingGroupSegment {
     /// Index of the message this segment lives in.
@@ -475,61 +474,92 @@ pub enum RenderUnit {
     },
     /// A run of consecutive peer/worker MCP message blocks (outbound
     /// and inbound). Unlike `Group`, a messaging group can span
-    /// multiple messages; each segment carries its per-message slice
-    /// plus the `segment_continues_above/below` flags for the
-    /// continuation marker render. All segments share `group_leader_id`
-    /// so a click or cycle on any segment maps to the same collapse
-    /// level via the `messaging_group_collapse_levels` map on
-    /// `UiSession`.
+    /// multiple messages. All segments share `group_leader_id`, so a
+    /// click or cycle on any of them maps to the same collapse level
+    /// via `UiSession`'s `messaging_group_collapse_levels` map.
     MessagingGroup {
         segments: Vec<MessagingGroupSegment>,
         group_leader_id: GroupId,
     },
 }
 
-/// Walk `blocks` and return the [`GroupId`] plus the run length of
-/// the group whose run starts at `block_idx`, if any. Used by the
-/// mouse handler to classify a click on a tool-row position as
-/// either an in-group click (multi-item group at L2 sets focus and
-/// cycles to L1) or a normal per-tool click. Single-item groups
-/// (run length 1) fall through to per-tool toggle even at L2
-/// because the title row IS the click target the user is
-/// interacting with; the group cycle is still reachable via ctrl+x.
-pub fn group_leader_at(blocks: &[MessageBlock], block_idx: usize) -> Option<(GroupId, usize)> {
+/// A click that landed inside a group's block range, with `is_leader`
+/// marking the row an L2 summary paints over.
+#[derive(Debug)]
+pub struct GroupHit {
+    pub leader_id: GroupId,
+    pub is_leader: bool,
+}
+
+/// Classify a click on a tool-row position: `Some` when `block_idx`
+/// sits inside a `RenderUnit::Group`, with `is_leader` distinguishing
+/// the summary row from the members it hides. Single-item groups cycle
+/// on click exactly like multi-item ones; the caller does not filter on
+/// run length.
+pub fn group_hit_at(blocks: &[MessageBlock], block_idx: usize) -> Option<GroupHit> {
     let units = partition_blocks_into_render_units(blocks);
     units.into_iter().find_map(|unit| match unit {
-        RenderUnit::Group { range, leader_id, .. } if range.start == block_idx => {
-            Some((leader_id, range.len()))
+        RenderUnit::Group { range, leader_id, .. } if range.contains(&block_idx) => {
+            Some(GroupHit { is_leader: range.start == block_idx, leader_id })
         }
         _ => None,
     })
 }
 
-/// Sibling of [`group_leader_at`] for messaging groups. Returns the
-/// [`GroupId`] + segment-block-count when `block_idx` is the leading
-/// block of a `RenderUnit::MessagingGroup` segment in message
-/// `msg_idx`. `None` for non-leader blocks (so per-block click toggle
-/// wins).
+/// A click that landed inside a messaging-group segment, carrying every
+/// message the group occupies - the level is keyed on the whole run, so
+/// cycling it re-renders each segment and each needs remeasuring.
+#[derive(Debug)]
+pub struct MessagingGroupHit {
+    pub leader_id: GroupId,
+    pub msg_indices: Vec<usize>,
+    /// True when the click landed on the segment's leading block - the
+    /// only row an L2 summary paints. A member block at L2 is behind the
+    /// summary and is not a click target at all.
+    pub is_leader: bool,
+}
+
+/// Sibling of [`group_hit_at`] for messaging groups. `Some` when
+/// `block_idx` sits inside a `RenderUnit::MessagingGroup` segment in
+/// message `msg_idx`, with `is_leader` distinguishing the segment's
+/// leading block from its members.
 ///
 /// Resolves against the session-walking partition - the same one the
-/// renderer dispatches over. The per-message partition applies the
-/// threshold of 2 within a single message, so a message holding one
-/// peer block of a longer cross-turn run yields no group there and the
-/// click finds nothing to cycle.
-pub fn messaging_group_leader_at(
+/// renderer dispatches over, so a cross-turn segment below the
+/// per-message threshold still resolves.
+pub fn messaging_group_hit_at(
     messages: &[crate::app::ChatMessage],
     msg_idx: usize,
     block_idx: usize,
-) -> Option<(GroupId, usize)> {
+) -> Option<MessagingGroupHit> {
     let units = partition_session_into_render_units(messages);
-    units.get(msg_idx)?.iter().find_map(|unit| match unit {
+    let (leader_id, is_leader) = units.get(msg_idx)?.iter().find_map(|unit| match unit {
         RenderUnit::MessagingGroup { segments, group_leader_id } => {
             let segment = segments.first()?;
-            (segment.block_range.start == block_idx)
-                .then(|| (group_leader_id.clone(), segment.block_range.len()))
+            segment
+                .block_range
+                .contains(&block_idx)
+                .then(|| (group_leader_id.clone(), segment.block_range.start == block_idx))
         }
         _ => None,
-    })
+    })?;
+    let msg_indices = units
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, msg_units)| {
+            msg_units
+                .iter()
+                .any(|unit| {
+                    matches!(
+                        unit,
+                        RenderUnit::MessagingGroup { group_leader_id, .. }
+                            if *group_leader_id == leader_id
+                    )
+                })
+                .then_some(idx)
+        })
+        .collect();
+    Some(MessagingGroupHit { leader_id, msg_indices, is_leader })
 }
 
 /// True when `block` is a hidden / chat-suppressed tool call.
@@ -542,10 +572,14 @@ fn is_hidden_tool_call(block: &MessageBlock) -> bool {
     matches!(block, MessageBlock::ToolCall(tc) if tc.hidden)
 }
 
-/// Walk `blocks` identifying maximal runs of >= 2 consecutive groupable
-/// tool calls. Each qualifying run becomes a `RenderUnit::Group`; every
-/// other block (including lone groupable tools between breakers and
-/// any hidden tool call) becomes `RenderUnit::Individual`.
+/// Partition one message: maximal runs of consecutive groupable tool
+/// calls become a `RenderUnit::Group` (a run of one still groups), then
+/// runs of peer/worker blocks fold into a `RenderUnit::MessagingGroup`
+/// at a threshold of 2. Everything else, hidden tool calls included,
+/// becomes `RenderUnit::Individual`.
+///
+/// Per-message only. Messaging groups span turns, so callers resolving
+/// one need [`partition_session_into_render_units`] instead.
 pub fn partition_blocks_into_render_units(blocks: &[MessageBlock]) -> Vec<RenderUnit> {
     let tool_call_units = partition_tool_call_groups(blocks);
     merge_messaging_groups(blocks, &tool_call_units)
@@ -1091,7 +1125,27 @@ pub fn partition_session_into_render_units(
         }
         output.push(msg_units);
     }
+    debug_assert!(
+        output.iter().zip(messages).all(|(units, msg)| units_index_within(units, msg.blocks.len())),
+        "every emitted unit must index inside its own message - render paths index directly",
+    );
     output
+}
+
+/// Contract check for the `debug_assert!` above: no unit refers past
+/// `len`. Consumers index `msg.blocks` straight from these, so an
+/// out-of-range index here is a partitioner bug, not something a caller
+/// should guard. NOT `#[cfg(debug_assertions)]` - `debug_assert!`
+/// expands to `if cfg!(debug_assertions) { .. }`, so the call is still
+/// name-resolved in release and gating this out fails the build there.
+fn units_index_within(units: &[RenderUnit], len: usize) -> bool {
+    units.iter().all(|unit| match unit {
+        RenderUnit::Individual(idx) => *idx < len,
+        RenderUnit::Group { range, .. } => range.end <= len,
+        RenderUnit::MessagingGroup { segments, .. } => {
+            segments.iter().all(|s| s.block_range.end <= len)
+        }
+    })
 }
 
 /// Update an in-progress aggregate status with one tool-call's status.
@@ -2083,7 +2137,7 @@ mod tests {
     /// CRITICAL invariant: a peer/worker run extending from the end
     /// of message N into the start of message N+1 produces ONE
     /// MessagingGroup with two segments. `group_total_count` is the
-    /// sum of `segment_count`s; continuation markers stamped.
+    /// sum of `segment_count`s.
     #[test]
     fn messaging_group_merges_across_turn_boundary() {
         let messages = vec![
@@ -2150,11 +2204,8 @@ mod tests {
         assert_eq!(segments[1].group_total_count, 5);
     }
 
-    /// The shape behind the duplicate-card report: one inbound
-    /// envelope in a user turn, then one outbound call in the next
-    /// assistant turn. Neither message reaches the threshold on its
-    /// own, so the run only exists at session level - both segments
-    /// carry `group_total_count` 2 and share a leader.
+    /// One inbound envelope in a user turn, then one outbound call in
+    /// the next assistant turn.
     #[test]
     fn messaging_group_spans_user_inbound_then_assistant_outbound() {
         let messages = vec![
@@ -2195,11 +2246,26 @@ mod tests {
     }
 
     /// Both partitioners emit segments whose own count is at least 1
-    /// and never exceeds the group total. The summary line can read
-    /// either field without guarding against a zero or an unstamped
-    /// total.
+    /// and never exceeds the group total, so the summary line can read
+    /// either field without guarding.
     #[test]
     fn segment_counts_are_non_zero_and_bounded_by_the_group_total() {
+        fn check(units: impl Iterator<Item = RenderUnit>) -> usize {
+            let mut seen = 0_usize;
+            for unit in units {
+                let RenderUnit::MessagingGroup { segments, .. } = unit else { continue };
+                for segment in &segments {
+                    assert!(segment.segment_count >= 1, "empty segment emitted: {segment:?}");
+                    assert!(
+                        segment.group_total_count >= segment.segment_count,
+                        "group total below its own segment: {segment:?}",
+                    );
+                    seen += 1;
+                }
+            }
+            seen
+        }
+
         let messages = vec![
             assistant_message_with_blocks(vec![
                 outbound_peer_block("planner", "Tell"),
@@ -2213,26 +2279,25 @@ mod tests {
             ),
             assistant_message_with_blocks(vec![outbound_peer_block("tester", "Tell")]),
         ];
+        let session_seen =
+            check(partition_session_into_render_units(&messages).into_iter().flatten());
+        assert!(session_seen >= 2, "expected several session segments; saw {session_seen}");
 
-        let mut seen = 0_usize;
-        for unit in partition_session_into_render_units(&messages).iter().flatten() {
-            let RenderUnit::MessagingGroup { segments, .. } = unit else { continue };
-            for segment in segments {
-                assert!(segment.segment_count >= 1, "empty segment emitted: {segment:?}");
-                assert!(
-                    segment.group_total_count >= segment.segment_count,
-                    "group total below its own segment: {segment:?}",
-                );
-                seen += 1;
-            }
-        }
-        assert!(seen >= 2, "expected several segments to check; saw {seen}");
+        let within_message = vec![
+            outbound_peer_block("planner", "Tell"),
+            inbound_peer_block("tester", "Reply"),
+            outbound_peer_block("debugger", "Ask"),
+        ];
+        let per_message_seen =
+            check(partition_blocks_into_render_units(&within_message).into_iter());
+        assert_eq!(
+            per_message_seen, 1,
+            "expected the within-message segment; saw {per_message_seen}"
+        );
     }
 
-    /// Threshold-1: a single peer block folds into a messaging group.
-    /// A lone outbound peer/worker block does NOT form an @ group;
-    /// it renders as an `Individual` (plain peer block). The group
-    /// minimum is 2.
+    /// Threshold-2: a lone outbound peer/worker block does NOT form an
+    /// @ group; it renders as an `Individual` plain peer block.
     #[test]
     fn messaging_group_single_outbound_session_walk_renders_individual() {
         let messages =
