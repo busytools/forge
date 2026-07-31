@@ -28,14 +28,13 @@ impl super::App {
     }
 
     fn is_render_cache_message_protected(&self, msg_idx: usize) -> bool {
-        let tail_protected = self.protected_streaming_message_idx() == Some(msg_idx);
-        let tool_protected = self.messages().get(msg_idx).is_some_and(|msg| {
-            msg.blocks
-                .iter()
-                .enumerate()
-                .any(|(block_idx, _)| self.is_render_cache_block_protected(msg_idx, block_idx))
-        });
-        tail_protected || tool_protected
+        if self.protected_streaming_message_idx() == Some(msg_idx) {
+            return true;
+        }
+        self.messages().get(msg_idx).is_some_and(|msg| {
+            (0..msg.blocks.len())
+                .any(|block_idx| self.is_render_cache_block_protected(msg_idx, block_idx))
+        })
     }
 
     fn is_streaming_tail_protected(&self) -> bool {
@@ -173,6 +172,126 @@ impl super::App {
         self.set_render_cache_tail_msg_idx(protected_tail);
     }
 
+    /// Resize `msg_idx`'s slot row to match its block count, inserting
+    /// or removing slots at the END of the block range - immediately
+    /// before the message slot.
+    ///
+    /// Only the message slot changes index, so only its eviction key has
+    /// to move; every surviving block slot keeps the index its key was
+    /// built from. That is what makes this independent of how many
+    /// blocks the message already holds.
+    ///
+    /// Returns `false` when it fell back to a whole-session rebuild, in
+    /// which case the caller has nothing left to do.
+    fn resize_render_cache_row(&mut self, msg_idx: usize) -> bool {
+        let protected_tail = self.protected_streaming_message_idx();
+        if protected_tail != self.render_cache_tail_msg_idx() {
+            crate::perf::mark("rc::row_fallback_tail_moved");
+            self.rebuild_render_cache_accounting();
+            return false;
+        }
+        if !self.render_cache_slots_match_messages() {
+            crate::perf::mark("rc::row_fallback_row_count");
+            self.rebuild_render_cache_accounting();
+            return false;
+        }
+        if msg_idx >= self.messages().len() {
+            // A caller naming a message that does not exist.
+            tracing::warn!(
+                target: crate::logging::targets::APP_RENDER,
+                event_name = "render_cache_row_resize_bad_index",
+                msg_idx,
+                message_count = self.messages().len(),
+                outcome = "full_rebuild",
+            );
+            crate::perf::mark("rc::row_fallback_bad_index");
+            self.rebuild_render_cache_accounting();
+            return false;
+        }
+        let Some(want) =
+            self.messages().get(msg_idx).map(Self::render_cache_slot_count_for_message)
+        else {
+            self.rebuild_render_cache_accounting();
+            return false;
+        };
+        let have = self.render_cache_slots()[msg_idx].len();
+        if have == want {
+            return true;
+        }
+        // A row with no message slot never came from the builder.
+        let Some(old_msg_slot_idx) = have.checked_sub(1) else {
+            self.rebuild_render_cache_accounting();
+            return false;
+        };
+        let message_slot = self.render_cache_slots()[msg_idx][old_msg_slot_idx];
+        if let Some(key) = Self::render_cache_slot_key(msg_idx, old_msg_slot_idx, &message_slot) {
+            self.render_cache_evictable_mut().remove(&key);
+        }
+
+        if want > have {
+            // Fresh slots carry no bytes and no key; the per-slot sync
+            // below fills them from the blocks.
+            let row = &mut self.render_cache_slots_mut()[msg_idx];
+            row.pop();
+            row.resize(want - 1, RenderCacheSlotState::default());
+            row.push(message_slot);
+        } else {
+            let dropped: Vec<RenderCacheSlotState> =
+                self.render_cache_slots()[msg_idx][want - 1..old_msg_slot_idx].to_vec();
+            for (offset, slot) in dropped.iter().enumerate() {
+                let block_idx = want - 1 + offset;
+                if let Some(key) = Self::render_cache_slot_key(msg_idx, block_idx, slot) {
+                    self.render_cache_evictable_mut().remove(&key);
+                }
+                let total = self.render_cache_total_bytes().saturating_sub(slot.cached_bytes);
+                *self.render_cache_total_bytes_mut() = total;
+                if slot.protected {
+                    let p = self.render_cache_protected_bytes().saturating_sub(slot.cached_bytes);
+                    *self.render_cache_protected_bytes_mut() = p;
+                }
+            }
+            let row = &mut self.render_cache_slots_mut()[msg_idx];
+            row.truncate(want - 1);
+            row.push(message_slot);
+        }
+        // Belt and braces: today's only caller re-syncs this slot straight
+        // after, which would re-insert the key anyway. Leaving the row
+        // self-consistent here is the point - a function that needs its
+        // caller to finish the job is what turned a transient
+        // inconsistency into a permanent one when the caller changed.
+        if let Some(key) = Self::render_cache_slot_key(msg_idx, want - 1, &message_slot) {
+            self.render_cache_evictable_mut().insert(key);
+        }
+        true
+    }
+
+    /// Sync the accounting for a message whose TAIL changed: the last
+    /// block was extended, or blocks were appended or dropped at the
+    /// end. Earlier blocks are assumed untouched, which is what every
+    /// caller of [`Self::sync_after_message_blocks_changed`] does.
+    ///
+    /// Costs O(blocks added or dropped), not O(blocks in the message).
+    /// Syncing every slot instead made a run of N appends into one
+    /// message quadratic - 5.8ms of a 7.98ms 200-envelope run - because
+    /// appending the Nth block re-synced all N.
+    pub(crate) fn sync_render_cache_message_tail(&mut self, msg_idx: usize) {
+        let previous_blocks =
+            self.render_cache_slots().get(msg_idx).map(|row| row.len().saturating_sub(1));
+        if !self.resize_render_cache_row(msg_idx) {
+            return;
+        }
+        let Some(block_count) = self.messages().get(msg_idx).map(|msg| msg.blocks.len()) else {
+            return;
+        };
+        // Start at the previously-last block: an in-place extend leaves
+        // the count unchanged but changes that block's cached bytes.
+        let first_dirty = previous_blocks.unwrap_or(block_count).min(block_count).saturating_sub(1);
+        for block_idx in first_dirty..block_count {
+            self.sync_render_cache_slot(msg_idx, block_idx);
+        }
+        self.sync_render_cache_slot(msg_idx, block_count);
+    }
+
     pub(crate) fn ensure_render_cache_accounting(&mut self) {
         if !self.render_cache_slots_match_messages() {
             self.rebuild_render_cache_accounting();
@@ -255,6 +374,18 @@ impl super::App {
         } else if let Some(new_key) = Self::render_cache_slot_key(msg_idx, block_idx, &new_slot) {
             self.render_cache_evictable_mut().insert(new_key);
         }
+
+        // The message slot's `protected` is derived from its blocks, so
+        // a block whose protection flipped leaves it stale. Repairing it
+        // here rather than at each status writer means a new writer
+        // cannot get it wrong. Recursion stops at depth one: the message
+        // slot is not a block slot, so it takes the other arm.
+        if old_slot.protected != new_slot.protected
+            && !self.is_message_render_cache_slot(msg_idx, block_idx)
+            && let Some(message_slot_idx) = self.messages().get(msg_idx).map(|m| m.blocks.len())
+        {
+            self.sync_render_cache_slot(msg_idx, message_slot_idx);
+        }
     }
 
     pub(crate) fn sync_render_cache_message(&mut self, msg_idx: usize) {
@@ -275,7 +406,7 @@ impl super::App {
         self.sync_render_cache_slot(msg_idx, block_count);
     }
 
-    fn refresh_tail_message_cache_protection(&mut self) {
+    pub(crate) fn refresh_tail_message_cache_protection(&mut self) {
         self.ensure_render_cache_accounting();
         let next_tail = self.protected_streaming_message_idx();
         if self.render_cache_tail_msg_idx() == next_tail {
@@ -293,10 +424,6 @@ impl super::App {
         {
             self.sync_render_cache_message(msg_idx);
         }
-    }
-
-    pub(crate) fn note_render_cache_structure_changed(&mut self) {
-        self.rebuild_render_cache_accounting();
     }
 
     /// Every message's slot row still matches its block count. The
@@ -374,17 +501,30 @@ impl super::App {
             };
             updates.push(SlotUpdate { msg_idx, block_idx: message_slot_idx, slot });
         }
+        // Re-derive both totals from the values already being walked.
+        // Writing back only the flags left any accumulated drift in
+        // place, and the byte counts drive the budget comparison. This
+        // is the periodic re-derivation the append path used to get for
+        // free from a whole-session rebuild per chunk: it costs nothing
+        // extra here, and it heals the class rather than one instance.
+        let mut total_bytes: usize = 0;
+        let mut protected_bytes: usize = 0;
         for SlotUpdate { msg_idx, block_idx, slot } in updates {
             if let Some(slots) = self.render_cache_slots_mut().get_mut(msg_idx)
                 && let Some(existing) = slots.get_mut(block_idx)
             {
-                existing.last_access_tick = slot.last_access_tick;
-                existing.protected = slot.protected;
+                *existing = slot;
+            }
+            total_bytes = total_bytes.saturating_add(slot.cached_bytes);
+            if slot.protected {
+                protected_bytes = protected_bytes.saturating_add(slot.cached_bytes);
             }
             if let Some(key) = Self::render_cache_slot_key(msg_idx, block_idx, &slot) {
                 self.render_cache_evictable_mut().insert(key);
             }
         }
+        *self.render_cache_total_bytes_mut() = total_bytes;
+        *self.render_cache_protected_bytes_mut() = protected_bytes;
     }
 
     pub fn enforce_render_cache_budget(&mut self) -> CacheBudgetEnforceStats {

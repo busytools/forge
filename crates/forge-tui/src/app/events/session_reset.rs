@@ -142,7 +142,7 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
             }));
         }
         let last_idx = app.messages().len().saturating_sub(1);
-        app.sync_after_message_blocks_changed(last_idx);
+        app.sync_after_message_tail_changed(last_idx);
         return;
     }
 
