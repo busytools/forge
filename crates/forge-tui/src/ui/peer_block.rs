@@ -515,6 +515,55 @@ fn render_cron_prompt(prompt: &str, suppress_header: bool, collapsed: bool) -> V
     lines
 }
 
+/// Tree row data for one envelope: the direction glyph, the kind label,
+/// and whether the kind is a failure (styled as a warning).
+///
+/// The KIND is the envelope kind, not the direction - a per-message group
+/// is always single-direction, so direction would never discriminate.
+pub(crate) fn inbound_kind_row(
+    kind: &PeerInboundKind,
+) -> Option<(&'static str, &'static str, bool)> {
+    let row = match kind {
+        PeerInboundKind::Message { .. } => (INBOUND_GLYPH, "message", false),
+        PeerInboundKind::Question { .. } => (INBOUND_GLYPH, "question", false),
+        PeerInboundKind::Reply { .. } => (INBOUND_GLYPH, "reply", false),
+        PeerInboundKind::DeliveryFailure { .. } => (INBOUND_GLYPH, "failed", true),
+        PeerInboundKind::WorkerSpawnFailed { .. } => (INBOUND_GLYPH, "spawn failed", true),
+        // External events, never agent traffic - excluded from grouping.
+        PeerInboundKind::Gotify { .. } | PeerInboundKind::Cron { .. } => return None,
+    };
+    Some(row)
+}
+
+/// Sibling of [`inbound_kind_row`] for outbound calls.
+pub(crate) fn outbound_kind_row(kind: &PeerOutboundKind) -> (&'static str, &'static str) {
+    match kind {
+        PeerOutboundKind::Ask { .. } => (OUTBOUND_GLYPH, "ask"),
+        PeerOutboundKind::Tell { .. } => (OUTBOUND_GLYPH, "tell"),
+    }
+}
+
+/// The body text a leaf row previews, per envelope kind.
+pub(crate) fn inbound_body(kind: &PeerInboundKind) -> &str {
+    match kind {
+        PeerInboundKind::Message { body, .. }
+        | PeerInboundKind::Question { body, .. }
+        | PeerInboundKind::Reply { body, .. } => body,
+        PeerInboundKind::DeliveryFailure { reason, .. }
+        | PeerInboundKind::WorkerSpawnFailed { reason, .. } => reason,
+        PeerInboundKind::Gotify { message, .. } => message,
+        PeerInboundKind::Cron { prompt } => prompt,
+    }
+}
+
+/// A leaf row's content: `<peer> · <first non-blank body line>`. The
+/// renderer clips this to a computed budget, so no fixed length here -
+/// end-ellipsis keeps the peer name, which is at the head.
+pub(crate) fn kind_row_target(peer: &str, body: &str) -> String {
+    let head = body.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    if head.is_empty() { peer.to_owned() } else { format!("{peer} \u{b7} {head}") }
+}
+
 /// One-line collapsed summary shape: `  └─ <first line of body, truncated>  click or ctrl+x to expand`.
 /// Skips entirely when the body is empty so notice variants (which
 /// have no prose body) don't render an orphan `└─ click to expand`
@@ -630,47 +679,16 @@ fn extract_from_agent_after_with_trailer(rest: &str) -> Option<(String, String, 
 pub(crate) fn render_messaging_group_summary_line(
     segment: &crate::ui::message::grouping::MessagingGroupSegment,
     spinner_glyph: char,
+    max_width: usize,
 ) -> Vec<Line<'static>> {
-    let (icon_glyph, icon_color) =
-        crate::ui::tool_call::status_icon(segment.aggregate_status, spinner_glyph);
-    let dim = Style::default().fg(theme::DIM);
-
-    let count = segment.segment_count;
-    let count_word = if count == 1 { "message" } else { "messages" };
-    let mut heading = format!("{count} {count_word}");
-    if !segment.segment_outbound_targets.is_empty() {
-        heading.push_str(" \u{b7} outbound to ");
-        heading.push_str(&format_direction_targets(&segment.segment_outbound_targets));
-    }
-    if !segment.segment_inbound_targets.is_empty() {
-        heading.push_str(" \u{b7} inbound from ");
-        heading.push_str(&format_direction_targets(&segment.segment_inbound_targets));
-    }
-
-    vec![Line::from(vec![
-        Span::raw("  ".to_owned()),
-        Span::styled(
-            format!("{icon_glyph} "),
-            Style::default().fg(icon_color).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("@ ".to_owned(), Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD)),
-        Span::styled(heading, Style::default().add_modifier(Modifier::BOLD)),
-        Span::styled("   click or ctrl+x to expand".to_owned(), dim),
-    ])]
-}
-
-fn format_direction_targets(
-    targets: &crate::ui::message::grouping::MessagingDirectionTargets,
-) -> String {
-    let mut out = targets.targets.join(", ");
-    if targets.overflow_n > 0 {
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        out.push('+');
-        out.push_str(&targets.overflow_n.to_string());
-    }
-    out
+    crate::ui::tool_call::group::render_group_summary_line(
+        &segment.summary,
+        segment.aggregate_status,
+        spinner_glyph,
+        max_width,
+        None,
+        &crate::ui::tool_call::group::SummaryChrome::MESSAGING,
+    )
 }
 
 #[cfg(test)]
@@ -1225,63 +1243,99 @@ mod tests {
         assert!(detect_outbound(&tc).is_none());
     }
 
+    fn segment_of(
+        blocks: &[crate::app::MessageBlock],
+    ) -> crate::ui::message::grouping::MessagingGroupSegment {
+        crate::ui::message::grouping::partition_blocks_into_render_units(blocks)
+            .into_iter()
+            .find_map(|u| match u {
+                crate::ui::message::grouping::RenderUnit::MessagingGroup { segment, .. } => {
+                    Some(segment)
+                }
+                _ => None,
+            })
+            .expect("a messaging group")
+    }
+
+    fn inbound_block(kind: &str, from: &str, body: &str) -> crate::app::MessageBlock {
+        crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete(&format!(
+            "[{kind} id=t-{from} from agent '{from}' (org 'forge')]\n\n{body}"
+        )))
+    }
+
     /// The bundle summary cycles on click as well as ctrl+x, so it
     /// advertises both.
     #[test]
     fn messaging_group_summary_advertises_click_and_ctrl_x() {
-        use crate::ui::message::grouping::{MessagingDirectionTargets, MessagingGroupSegment};
-
-        let segment = MessagingGroupSegment {
-            block_range: 0..1,
-            segment_count: 1,
-            segment_outbound_targets: MessagingDirectionTargets {
-                targets: vec!["steward".to_owned()],
-                overflow_n: 0,
-            },
-            segment_inbound_targets: MessagingDirectionTargets::default(),
-            aggregate_status: crate::agent::model::ToolCallStatus::Completed,
-        };
-        let rendered = render_lines_to_strings(&render_messaging_group_summary_line(&segment, '⠋'));
-        assert_eq!(rendered.len(), 1);
-        assert!(rendered[0].contains("1 message · outbound to steward"), "got {rendered:?}");
+        let blocks = vec![
+            inbound_block("Message", "steward", "one"),
+            inbound_block("Message", "planner", "two"),
+        ];
+        let rendered = render_lines_to_strings(&render_messaging_group_summary_line(
+            &segment_of(&blocks),
+            '\u{280B}',
+            80,
+        ));
         assert!(rendered[0].ends_with("click or ctrl+x to expand"), "got {rendered:?}");
     }
 
-    /// The inbound direction reads "inbound from <name>", mirroring
-    /// the outbound wording.
+    /// The parent row is a bare count - every peer appears as a leaf, so
+    /// a target clause in the heading would name each one twice.
     #[test]
-    fn messaging_group_summary_names_the_inbound_direction() {
-        use crate::ui::message::grouping::{MessagingDirectionTargets, MessagingGroupSegment};
-
-        let segment = MessagingGroupSegment {
-            block_range: 0..1,
-            segment_count: 1,
-            segment_outbound_targets: MessagingDirectionTargets::default(),
-            segment_inbound_targets: MessagingDirectionTargets {
-                targets: vec!["steward".to_owned()],
-                overflow_n: 0,
-            },
-            aggregate_status: crate::agent::model::ToolCallStatus::Completed,
-        };
-        let rendered = render_lines_to_strings(&render_messaging_group_summary_line(&segment, '⠋'));
-        assert!(rendered[0].contains("1 message · inbound from steward"), "got {rendered:?}");
+    fn messaging_group_parent_row_carries_no_target_list() {
+        let blocks = vec![
+            inbound_block("Message", "steward", "one"),
+            inbound_block("Message", "planner", "two"),
+        ];
+        let rendered = render_lines_to_strings(&render_messaging_group_summary_line(
+            &segment_of(&blocks),
+            '\u{280B}',
+            80,
+        ));
+        assert!(rendered[0].contains("2 messages"), "got {rendered:?}");
+        assert!(!rendered[0].contains("steward"), "no target list on the parent; got {rendered:?}");
+        assert!(!rendered[0].contains("inbound from"), "got {rendered:?}");
     }
 
+    /// Always nest, never inline. The tool renderer rides a kind holding
+    /// one call with one target on the kind row itself; here that would
+    /// put peer names at ragged columns with nothing to run the eye down.
     #[test]
-    fn messaging_group_summary_pluralizes_on_the_segment_count() {
-        use crate::ui::message::grouping::{MessagingDirectionTargets, MessagingGroupSegment};
+    fn a_single_message_kind_still_nests_its_leaf() {
+        let blocks = vec![
+            inbound_block("Message", "steward", "one"),
+            inbound_block("Reply", "tester", "two"),
+        ];
+        let rendered = render_lines_to_strings(&render_messaging_group_summary_line(
+            &segment_of(&blocks),
+            '\u{280B}',
+            80,
+        ));
+        let reply_row = rendered.iter().find(|l| l.contains("reply")).expect("a reply kind row");
+        assert!(
+            !reply_row.contains("tester"),
+            "the peer belongs on its own leaf, not inline on the kind row; got {reply_row:?}",
+        );
+        assert!(
+            rendered.iter().any(|l| l.contains("tester") && !l.contains("reply")),
+            "and the leaf exists separately; got {rendered:?}",
+        );
+    }
 
-        let segment = MessagingGroupSegment {
-            block_range: 0..4,
-            segment_count: 4,
-            segment_outbound_targets: MessagingDirectionTargets {
-                targets: vec!["lead".to_owned()],
-                overflow_n: 0,
-            },
-            segment_inbound_targets: MessagingDirectionTargets::default(),
-            aggregate_status: crate::agent::model::ToolCallStatus::Completed,
-        };
-        let rendered = render_lines_to_strings(&render_messaging_group_summary_line(&segment, '⠋'));
-        assert!(rendered[0].contains("4 messages · outbound to lead"), "got {rendered:?}");
+    /// A delivery failure inside a run must not render under a green
+    /// check: the parent status has to learn about inbound failures.
+    #[test]
+    fn a_delivery_failure_drives_the_parent_status() {
+        let blocks = vec![
+            inbound_block("Message", "steward", "one"),
+            crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete(
+                "[Ask id=q-7 to agent 'planner' (org 'forge') failed to deliver: gone]\n\n",
+            )),
+        ];
+        assert_eq!(
+            segment_of(&blocks).aggregate_status,
+            crate::agent::model::ToolCallStatus::Failed,
+            "an undelivered message must not report success",
+        );
     }
 }

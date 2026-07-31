@@ -606,6 +606,7 @@ fn append_assistant_blocks(
                             spinner.glyph,
                             render_context.width as usize,
                             render_context.project_root,
+                            &tool_call::group::SummaryChrome::TOOL,
                         );
                         let y_in_msg = layout.height;
                         let height = rendered_lines_height(&summary_lines, render_context.width);
@@ -716,7 +717,8 @@ fn append_messaging_group_summary(
     width: u16,
     layout: &mut MessageLayout,
 ) {
-    let summary_lines = peer_block::render_messaging_group_summary_line(segment, spinner.glyph);
+    let summary_lines =
+        peer_block::render_messaging_group_summary_line(segment, spinner.glyph, width as usize);
     let y_in_msg = layout.height;
     let height = rendered_lines_height(&summary_lines, width);
     layout.push_wrapped_lines(summary_lines, width);
@@ -1608,10 +1610,7 @@ fn build_message_render_signature(
                 segment.block_range.end.hash(&mut hasher);
                 segment.segment_count.hash(&mut hasher);
                 segment.aggregate_status.hash(&mut hasher);
-                segment.segment_outbound_targets.targets.hash(&mut hasher);
-                segment.segment_outbound_targets.overflow_n.hash(&mut hasher);
-                segment.segment_inbound_targets.targets.hash(&mut hasher);
-                segment.segment_inbound_targets.overflow_n.hash(&mut hasher);
+                segment.summary.hash(&mut hasher);
             }
             grouping::RenderUnit::Individual(_) => {}
         }
@@ -3028,10 +3027,16 @@ mod tests {
         let rendered = render_one(&mut messages, 0);
 
         assert!(
-            rendered
-                .iter()
-                .any(|l| l.contains("3 messages") && l.contains("outbound to planner, debugger")),
-            "one message covering the run counts all 3; got {rendered:?}",
+            rendered.iter().any(|l| l.contains("3 messages")),
+            "the parent row counts all 3; got {rendered:?}",
+        );
+        assert!(
+            !rendered.iter().any(|l| l.contains("outbound to")),
+            "the parent row carries no target list - peers are leaves; got {rendered:?}",
+        );
+        assert!(
+            rendered.iter().filter(|l| l.contains(" \u{b7} ")).count() == 3,
+            "one leaf per message, each with its preview; got {rendered:?}",
         );
         // The reason the bundle exists: a bundled block must not ALSO
         // render its own card, which would put one member on screen
@@ -3039,10 +3044,6 @@ mod tests {
         assert!(
             !rendered.iter().any(|l| l.contains("Tell planner") || l.contains("Tell debugger")),
             "bundled calls must not also render their standalone peer cards; got {rendered:?}",
-        );
-        assert!(
-            !rendered.iter().any(|l| l.contains("body")),
-            "bundled bodies belong behind the summary; got {rendered:?}",
         );
     }
 
@@ -4285,6 +4286,61 @@ mod tests {
             envelope_block("planner", "worker in forge", "second"),
         ];
         assert_eq!(envelope_streak_positions(&blocks)[2], Some(EnvelopeStreakPosition::Start));
+    }
+
+    /// The L2 summary is a TREE on the tool-group machinery: a parent
+    /// count row, one kind row per envelope kind, and one leaf per
+    /// message. The kind is the envelope kind, so a run mixing Message
+    /// and Reply gets two kind rows.
+    #[test]
+    fn messaging_group_l2_renders_a_tree_keyed_on_envelope_kind() {
+        let envelope = |kind: &str, from: &str, body: &str| {
+            MessageBlock::Text(TextBlock::from_complete(&format!(
+                "[{kind} id=t-{from} from agent '{from}' (org 'forge')]\n\n{body}"
+            )))
+        };
+        let mut msg = ChatMessage::new_peer_envelope(
+            MessageRole::User,
+            vec![
+                envelope("Message", "steward", "the window is lost"),
+                envelope("Message", "planner", "picking up the migration"),
+                envelope("Reply", "tester", "take the render half"),
+            ],
+            None,
+        );
+
+        let spinner = idle_spinner();
+        let mut lines = Vec::new();
+        render_message(
+            &mut msg,
+            &spinner,
+            MessageRenderContext::new(None, 80, 0, default_options()),
+            &mut lines,
+        );
+        let rendered = render_lines_to_strings(&lines);
+
+        assert!(
+            rendered.iter().any(|l| l.contains("3 messages")),
+            "parent row counts the run; got {rendered:?}",
+        );
+        assert!(
+            rendered.iter().any(|l| l.contains("message") && !l.contains("3 messages")),
+            "a kind row for the two Messages; got {rendered:?}",
+        );
+        assert!(
+            rendered.iter().any(|l| l.contains("reply")),
+            "a separate kind row for the Reply; got {rendered:?}",
+        );
+        for peer in ["steward", "planner", "tester"] {
+            assert!(
+                rendered.iter().any(|l| l.contains(peer)),
+                "every message keeps its own leaf row ({peer}); got {rendered:?}",
+            );
+        }
+        assert!(
+            rendered.iter().any(|l| l.contains("the window is lost")),
+            "leaf rows carry the body preview; got {rendered:?}",
+        );
     }
 
     #[test]

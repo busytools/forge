@@ -6,7 +6,7 @@
 //! - [`errors`] -- error rendering and tool-use error extraction
 
 mod errors;
-mod group;
+pub(crate) mod group;
 mod standard;
 
 pub use group::render_group_summary_line;
