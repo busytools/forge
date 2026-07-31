@@ -3501,8 +3501,8 @@ mod monitor_chat_block_tests {
     //! The chat lifecycle block over the wire sequence a real Monitor
     //! produces: `tool_use` -> `tool_result` -> `task_started` ->
     //! `task_notification` carrying `output_file` (CLI 2.1.220).
-    use super::super::{tool_calls, tool_updates};
-    use super::{handle_task_notification, handle_task_started};
+    use super::super::tool_updates;
+    use super::{apply_tool_use_block, handle_task_notification, handle_task_started};
     use crate::agent::model;
     use crate::app::{App, MessageBlock};
     use forge_primitives::Message;
@@ -3511,19 +3511,23 @@ mod monitor_chat_block_tests {
     const TOOL_USE_ID: &str = "toolu_monitor";
     const TASK_ID: &str = "task_monitor";
 
-    /// `sdk_tool_name` is resolved from `meta.claudeCode.toolName`,
-    /// not from the title, so the envelope has to carry it or the
-    /// Monitor arms in `handle_tool_call` never fire.
-    fn monitor_tool_use() -> model::ToolCall {
-        model::ToolCall::new(TOOL_USE_ID, "Monitor")
-            .status(model::ToolCallStatus::InProgress)
-            .meta(serde_json::json!({"claudeCode": {"toolName": "Monitor"}}))
-            .raw_input(serde_json::json!({
-                "description": "tail-order probe",
-                "command": "for i in 1 2 3; do echo line-$i; done",
-                "persistent": false,
-                "timeout_ms": 60000,
-            }))
+    fn monitor_input() -> serde_json::Value {
+        serde_json::json!({
+            "description": "tail-order probe",
+            "command": "for i in 1 2 3; do echo line-$i; done",
+            "persistent": false,
+            "timeout_ms": 60000,
+        })
+    }
+
+    /// Arm the Monitor the way the wire does. `apply_tool_use_block`
+    /// populates `turn_state.tool_calls`; reaching for
+    /// `handle_tool_call` directly does not, and the very next
+    /// `task_started` then synthesizes a `"Task"` tool_use over the top
+    /// of the block - renaming it and hiding it - while every
+    /// tool_use_id-keyed assertion below stays green.
+    fn arm_monitor(app: &mut App) {
+        apply_tool_use_block(app, TOOL_USE_ID, "Monitor", &monitor_input(), None);
     }
 
     fn task_started() -> Message {
@@ -3558,6 +3562,18 @@ mod monitor_chat_block_tests {
         f(tc)
     }
 
+    /// Every assertion below is about what the chat block SHOWS, so it
+    /// is only meaningful while the block can still render. The
+    /// synthesis path in `apply_tool_progress_update` overwrites
+    /// `sdk_tool_name` and `hidden`, and the tail / liveness stamps key
+    /// on `tool_use_id` and read neither - so without this the tests
+    /// stay green against a block that has been renamed and hidden.
+    fn assert_block_still_renders(app: &App, when: &str) {
+        let (name, hidden) = with_tool_call(app, |tc| (tc.sdk_tool_name.clone(), tc.hidden));
+        assert_eq!(name, "Monitor", "{when}: the renderer matches on sdk_tool_name");
+        assert!(!hidden, "{when}: a hidden block returns before the renderer is reached");
+    }
+
     /// `monitor_output_tail` feeds the live block's tree rows. Its only
     /// reader was dead code until the chat block un-hid, so this pins
     /// that the wire actually fills it - last five lines, oldest first.
@@ -3569,10 +3585,11 @@ mod monitor_chat_block_tests {
         std::fs::write(&output_file, seeded.join("\n") + "\n").expect("seed the output file");
 
         let mut app = App::test_default();
-        tool_calls::handle_tool_call(&mut app, monitor_tool_use());
+        arm_monitor(&mut app);
         handle_task_started(&mut app, task_started());
         handle_task_notification(&mut app, task_notification(&output_file));
 
+        assert_block_still_renders(&app, "after task_notification");
         assert_eq!(
             with_tool_call(&app, |tc| tc.monitor_output_tail.clone()),
             (4..=8).map(|i| format!("FORGEPROBE line-{i}")).collect::<Vec<_>>(),
@@ -3587,7 +3604,7 @@ mod monitor_chat_block_tests {
     #[test]
     fn tool_result_ack_does_not_end_the_monitor_block() {
         let mut app = App::test_default();
-        tool_calls::handle_tool_call(&mut app, monitor_tool_use());
+        arm_monitor(&mut app);
         assert_eq!(
             with_tool_call(&app, |tc| tc.status),
             model::ToolCallStatus::InProgress,
@@ -3613,6 +3630,7 @@ mod monitor_chat_block_tests {
             model::ToolCallStatus::Completed,
             "the ack alone marks the tool call terminal",
         );
+        assert_block_still_renders(&app, "after the tool_result ack");
         assert_eq!(
             with_tool_call(&app, |tc| tc.monitor_status),
             Some(crate::app::MonitorStatus::Running),
@@ -3628,7 +3646,7 @@ mod monitor_chat_block_tests {
     fn a_replayed_monitor_is_restored_terminal_not_live() {
         let mut app = App::test_default();
         app.replay_in_progress = true;
-        tool_calls::handle_tool_call(&mut app, monitor_tool_use());
+        arm_monitor(&mut app);
         assert_eq!(
             with_tool_call(&app, |tc| tc.monitor_status),
             Some(crate::app::MonitorStatus::Stopped),
@@ -3642,9 +3660,10 @@ mod monitor_chat_block_tests {
     #[test]
     fn terminal_task_updated_flips_the_chat_block_to_stopped() {
         let mut app = App::test_default();
-        tool_calls::handle_tool_call(&mut app, monitor_tool_use());
+        arm_monitor(&mut app);
         handle_task_started(&mut app, task_started());
         app.set_monitor_status_by_task_id(TASK_ID, crate::app::MonitorStatus::Stopped);
+        assert_block_still_renders(&app, "after terminal task_updated");
         assert_eq!(
             with_tool_call(&app, |tc| tc.monitor_status),
             Some(crate::app::MonitorStatus::Stopped),
