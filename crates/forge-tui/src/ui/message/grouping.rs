@@ -111,6 +111,9 @@ pub struct KindLine {
     pub label: String,
     pub count: usize,
     pub targets: Vec<String>,
+    /// Styled as a warning. Set for the failure envelope kinds; always
+    /// false for tool calls, whose failures show on the parent icon.
+    pub warn: bool,
 }
 
 /// Per-group L2 summary: one [`KindLine`] per glyph-family / MCP
@@ -138,14 +141,37 @@ impl KindSummary {
     /// child row per instance.
     pub fn tally(&mut self, tc: &crate::app::ToolCallInfo) {
         let (glyph, label) = family_glyph_label(&tc.sdk_tool_name);
-        let target = family_target(tc);
+        self.tally_resolved(glyph, label, family_target(tc), false);
+    }
+
+    /// Fold one peer/worker message into its ENVELOPE-KIND line. The
+    /// kind is the envelope kind rather than the direction, because a
+    /// per-message group is always single-direction and direction would
+    /// never discriminate.
+    pub fn tally_peer(&mut self, glyph: &'static str, label: &str, target: String, warn: bool) {
+        self.tally_resolved(glyph, label.to_owned(), Some(target), warn);
+    }
+
+    /// The fold both entry points share: find the matching kind line or
+    /// start one, then append the target.
+    ///
+    /// `push_target` does NOT dedup, and that is load-bearing for
+    /// messaging - three messages from one peer must stay three rows.
+    /// Collapsing duplicates here silently breaks that render.
+    fn tally_resolved(
+        &mut self,
+        glyph: &'static str,
+        label: String,
+        target: Option<String>,
+        warn: bool,
+    ) {
         if let Some(line) = self.lines.iter_mut().find(|l| l.glyph == glyph && l.label == label) {
             line.count += 1;
             push_target(&mut line.targets, target);
         } else {
             let mut targets = Vec::new();
             push_target(&mut targets, target);
-            self.lines.push(KindLine { glyph, label, count: 1, targets });
+            self.lines.push(KindLine { glyph, label, count: 1, targets, warn });
         }
     }
 }
@@ -407,37 +433,15 @@ pub fn aggregate_run_status(blocks: &[MessageBlock]) -> crate::agent::model::Too
     }
 }
 
-/// First-N target names plus an `+N` overflow count for the remaining
-/// targets that don't render by name. Per the chat-messaging-grouping
-/// spec: render the first 2 targets by name; everything past that
-/// counts into `overflow_n` (rendered as `+N` after the named list).
-#[derive(Debug, Clone, Default)]
-pub struct MessagingDirectionTargets {
-    /// First-N target names in order of first appearance.
-    pub targets: Vec<String>,
-    /// Count of remaining targets beyond `targets`; renders as `+N`.
-    pub overflow_n: usize,
-}
-
-impl MessagingDirectionTargets {
-    /// `true` when no targets at all (rendered direction clause is
-    /// omitted entirely - no "0 inbound" filler).
-    pub fn is_empty(&self) -> bool {
-        self.targets.is_empty() && self.overflow_n == 0
-    }
-}
-
 /// One messaging group's slice of its message's blocks.
 #[derive(Debug, Clone)]
 pub struct MessagingGroupSegment {
     /// Block range within the message (start..end exclusive).
     pub block_range: Range<usize>,
-    /// Count of peer/worker blocks in the segment.
-    pub segment_count: usize,
-    /// Outbound targets seen in the segment.
-    pub segment_outbound_targets: MessagingDirectionTargets,
-    /// Inbound targets seen in the segment.
-    pub segment_inbound_targets: MessagingDirectionTargets,
+    /// Per-envelope-kind tally driving the L2 tree. The parent row is
+    /// a bare count; every peer name appears as a leaf, so the heading
+    /// carries no target list.
+    pub summary: KindSummary,
     /// Aggregate run-status across the segment.
     pub aggregate_status: crate::agent::model::ToolCallStatus,
 }
@@ -496,9 +500,9 @@ pub fn group_hit_at(blocks: &[MessageBlock], block_idx: usize) -> Option<GroupHi
 #[derive(Debug)]
 pub struct MessagingGroupHit {
     pub leader_id: GroupId,
-    /// True when the click landed on the segment's leading block - the
-    /// only row an L2 summary paints. A member block at L2 is behind the
-    /// summary and is not a click target at all.
+    /// True when the click landed on the segment's leading block, which
+    /// owns the whole rendered tree at L2. Member blocks have their rects
+    /// cleared and are not click targets.
     pub is_leader: bool,
 }
 
@@ -603,22 +607,25 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) ->
         let block_range = first_block_idx..(last_block_idx + 1);
 
         // Walk the block range and accumulate per-direction targets,
-        // segment_count, aggregate_status.
-        let mut segment_outbound_targets = MessagingDirectionTargets::default();
-        let mut segment_inbound_targets = MessagingDirectionTargets::default();
-        let mut segment_count = 0_usize;
+        // the per-kind tally, aggregate_status.
+        let mut summary = KindSummary::default();
         let mut any_status: Option<crate::agent::model::ToolCallStatus> = None;
         let mut leader_id: Option<GroupId> = None;
         for block in &blocks[block_range.clone()] {
             match block {
                 MessageBlock::ToolCall(tc) if !tc.hidden => {
                     if let Some(kind) = peer_block::detect_outbound(tc) {
-                        let target = match kind {
-                            PeerOutboundKind::Ask { target, .. }
-                            | PeerOutboundKind::Tell { target, .. } => target,
+                        let (glyph, label) = peer_block::outbound_kind_row(&kind);
+                        let (target, body) = match &kind {
+                            PeerOutboundKind::Ask { target, body }
+                            | PeerOutboundKind::Tell { target, body } => (target, body.as_str()),
                         };
-                        append_target(&mut segment_outbound_targets, &target);
-                        segment_count += 1;
+                        summary.tally_peer(
+                            glyph,
+                            label,
+                            peer_block::kind_row_target(target, body),
+                            false,
+                        );
                         update_aggregate(&mut any_status, tc.status);
                         if leader_id.is_none() {
                             leader_id = Some(GroupId::from_leader_id(tc.id.clone()));
@@ -630,8 +637,26 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) ->
                     if let Some(from) =
                         kind.as_ref().and_then(PeerInboundKind::peer_sender_identity)
                     {
-                        append_target(&mut segment_inbound_targets, from);
-                        segment_count += 1;
+                        if let Some(k) = kind.as_ref()
+                            && let Some((glyph, label, warn)) = peer_block::inbound_kind_row(k)
+                        {
+                            summary.tally_peer(
+                                glyph,
+                                label,
+                                peer_block::kind_row_target(from, peer_block::inbound_body(k)),
+                                warn,
+                            );
+                            // An inbound failure has no ToolCallStatus of
+                            // its own, so without this the parent row
+                            // shows a green check over a delivery that
+                            // did not arrive.
+                            if warn {
+                                update_aggregate(
+                                    &mut any_status,
+                                    crate::agent::model::ToolCallStatus::Failed,
+                                );
+                            }
+                        }
                         // Key on the envelope's own id, not the block
                         // index: an index repeats in every message and
                         // would share one collapse level across them.
@@ -650,7 +675,7 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) ->
         // single block renders as the plain peer block via
         // `append_assistant_tool_block`'s peer-block arm. Hidden
         // pass-throughs in the run survive as Individuals too.
-        if segment_count < 2 {
+        if summary.total() < 2 {
             for unit in &tool_units[run_start_pos..run_end_pos] {
                 output.push(unit.clone());
             }
@@ -660,13 +685,7 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) ->
         let leader_id = leader_id
             .unwrap_or_else(|| GroupId::from_leader_id(format!("block-{first_block_idx}")));
         let aggregate_status = any_status.unwrap_or(crate::agent::model::ToolCallStatus::Completed);
-        let segment = MessagingGroupSegment {
-            block_range,
-            segment_count,
-            segment_outbound_targets,
-            segment_inbound_targets,
-            aggregate_status,
-        };
+        let segment = MessagingGroupSegment { block_range, summary, aggregate_status };
         output.push(RenderUnit::MessagingGroup { segment, group_leader_id: leader_id });
         i = run_end_pos;
     }
@@ -738,22 +757,6 @@ fn partition_tool_call_groups(blocks: &[MessageBlock]) -> Vec<RenderUnit> {
         i = run_end_exclusive;
     }
     units
-}
-
-/// Append a target name to the rolling first-N + overflow tally. The
-/// first `TARGETS_NAMED_LIMIT` distinct targets render by name; every
-/// additional distinct target counts into `overflow_n`. Repeat hits
-/// of an already-named target are no-ops.
-fn append_target(targets: &mut MessagingDirectionTargets, name: &str) {
-    const TARGETS_NAMED_LIMIT: usize = 2;
-    if targets.targets.iter().any(|t| t == name) {
-        return;
-    }
-    if targets.targets.len() < TARGETS_NAMED_LIMIT {
-        targets.targets.push(name.to_owned());
-    } else {
-        targets.overflow_n += 1;
-    }
 }
 
 /// Update an in-progress aggregate status with one tool-call's status.
@@ -1815,8 +1818,8 @@ mod tests {
             })
             .collect();
         assert_eq!(segments.len(), 2, "each group covers exactly its own message");
-        assert_eq!(segments[0].segment_count, 3);
-        assert_eq!(segments[1].segment_count, 2);
+        assert_eq!(segments[0].summary.total(), 3);
+        assert_eq!(segments[1].summary.total(), 2);
 
         assert!(
             units[1].iter().all(|u| matches!(u, RenderUnit::Individual(_))),
@@ -1869,7 +1872,7 @@ mod tests {
         let mut seen = 0_usize;
         for unit in per_message_units(&messages).iter().flatten() {
             let RenderUnit::MessagingGroup { segment, .. } = unit else { continue };
-            assert!(segment.segment_count >= 1, "empty segment emitted: {segment:?}");
+            assert!(segment.summary.total() >= 1, "empty segment emitted: {segment:?}");
             seen += 1;
         }
         assert_eq!(seen, 2, "expected one segment per grouped message; saw {seen}");
@@ -1932,13 +1935,14 @@ mod tests {
             .collect();
         assert_eq!(groups.len(), 1);
         let RenderUnit::MessagingGroup { segment, .. } = groups[0] else { unreachable!() };
-        assert_eq!(segment.segment_count, 3);
+        assert_eq!(segment.summary.total(), 3);
     }
 
-    /// Mixed direction lives in the same group; targets render in
-    /// order of first appearance.
+    /// The kind is the ENVELOPE KIND, so a run mixing Tell, Ask, Reply
+    /// and Message produces four kind lines, each holding its own
+    /// messages in order.
     #[test]
-    fn messaging_group_mixed_direction_targets_ordered() {
+    fn messaging_group_tallies_one_kind_line_per_envelope_kind() {
         let messages = vec![assistant_message_with_blocks(vec![
             outbound_peer_block("planner", "Tell"),
             inbound_peer_block("tester", "Reply"),
@@ -1952,20 +1956,19 @@ mod tests {
             .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
             .collect();
         let RenderUnit::MessagingGroup { segment, .. } = groups[0] else { unreachable!() };
-        assert_eq!(
-            segment.segment_outbound_targets.targets,
-            vec!["planner".to_owned(), "debugger".to_owned()],
-        );
-        assert_eq!(
-            segment.segment_inbound_targets.targets,
-            vec!["tester".to_owned(), "reviewer".to_owned()],
-        );
+        let labels: Vec<&str> = segment.summary.lines.iter().map(|l| l.label.as_str()).collect();
+        assert_eq!(labels, vec!["tell", "reply", "ask", "message"], "one line per kind, in order");
+        for line in &segment.summary.lines {
+            assert_eq!(line.count, 1);
+            assert_eq!(line.targets.len(), 1, "every message keeps its own leaf row");
+        }
     }
 
-    /// `+N` overflow: first 2 targets render by name; the rest count
-    /// into `overflow_n`.
+    /// No `×N` collapsing and no `+N` overflow: five calls to the same
+    /// kind keep five leaf rows, because their bodies differ and
+    /// collapsing loses the preview that makes the row worth having.
     #[test]
-    fn messaging_group_overflow_n_at_more_than_two_targets() {
+    fn messaging_group_keeps_one_row_per_message_without_capping() {
         let messages = vec![assistant_message_with_blocks(vec![
             outbound_peer_block("a", "Tell"),
             outbound_peer_block("b", "Tell"),
@@ -1980,8 +1983,30 @@ mod tests {
             .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
             .collect();
         let RenderUnit::MessagingGroup { segment, .. } = groups[0] else { unreachable!() };
-        assert_eq!(segment.segment_outbound_targets.targets, vec!["a".to_owned(), "b".to_owned()],);
-        assert_eq!(segment.segment_outbound_targets.overflow_n, 3);
+        assert_eq!(segment.summary.lines.len(), 1, "all five are the same kind");
+        assert_eq!(segment.summary.lines[0].count, 5);
+        assert_eq!(segment.summary.lines[0].targets.len(), 5, "uncapped, one per message");
+
+        // Distinct peers would survive a dedup, so they do not hold the
+        // no-dedup claim. Identical peer AND identical body is the case
+        // a `push_target` tidy-up would collapse.
+        let same = vec![assistant_message_with_blocks(vec![
+            outbound_peer_block("planner", "Tell"),
+            outbound_peer_block("planner", "Tell"),
+            outbound_peer_block("planner", "Tell"),
+        ])];
+        let units = per_message_units(&same);
+        let groups: Vec<&RenderUnit> = units
+            .iter()
+            .flatten()
+            .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
+            .collect();
+        let RenderUnit::MessagingGroup { segment, .. } = groups[0] else { unreachable!() };
+        assert_eq!(
+            segment.summary.lines[0].targets.len(),
+            3,
+            "three identical messages stay three rows - push_target must not dedup",
+        );
     }
 
     /// Adjacent peer/worker + tool-call runs partition into TWO render

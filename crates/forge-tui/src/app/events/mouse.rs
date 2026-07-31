@@ -539,8 +539,8 @@ fn messaging_group_hit_match(
     crate::ui::message::grouping::messaging_group_hit_at(app.messages(), msg_idx, block_idx)
 }
 
-/// True when the group renders as a one-line summary, so every block
-/// but the leader is off screen.
+/// True when the group renders as its summary tree, so every block but
+/// the leader is off screen.
 fn messaging_group_hides_member(
     app: &App,
     leader_id: &crate::ui::message::grouping::GroupId,
@@ -1469,9 +1469,13 @@ mod tests {
             let mut block = TextBlock::from_complete(&format!(
                 "[Message id={id} from agent 'steward' (org 'forge')]\n\nthe window is lost"
             ));
-            block.peer_last_measured_y_in_msg = y;
-            block.peer_last_measured_height = 1;
-            block.peer_last_measured_width = 80;
+            // Production geometry: the leader owns the whole tree (parent
+            // row + kind row + two leaves) and `clear_hidden_block_geometry`
+            // zeroes the member's rect. A height of 1 on both would test a
+            // shape the renderer never produces.
+            block.peer_last_measured_y_in_msg = 0;
+            block.peer_last_measured_height = if y == 0 { 4 } else { 0 };
+            block.peer_last_measured_width = if y == 0 { 80 } else { 0 };
             MessageBlock::Text(block)
         };
         let tell = |id: &str, y: usize| {
@@ -1495,9 +1499,9 @@ mod tests {
                 monitor_output_tail: Vec::default(),
                 render_epoch: 0,
                 layout_epoch: 0,
-                last_measured_y_in_msg: y,
+                last_measured_y_in_msg: 0,
                 answered_questions: Vec::new(),
-                last_measured_height: 1,
+                last_measured_height: if y == 0 { 4 } else { 0 },
                 last_measured_width: 80,
                 last_measured_layout_epoch: 0,
                 last_measured_layout_generation: 0,
@@ -1522,7 +1526,7 @@ mod tests {
         app.push_message_tracked(message);
 
         let _ = app.active_viewport_mut().on_frame(80, 20);
-        app.active_viewport_mut().set_message_height(0, 2);
+        app.active_viewport_mut().set_message_height(0, 4);
         app.active_viewport_mut().mark_heights_valid();
         app.active_viewport_mut().rebuild_prefix_sums();
         app.rendered_chat_area = Rect { x: 0, y: 0, width: 80, height: 20 };
@@ -1771,6 +1775,36 @@ mod tests {
 
     /// Same for an inbound run, which leads with a `Text` block and so
     /// goes through the other hit-test entry point.
+    /// The leader now owns a FOUR-row tree, so the kind row and both
+    /// leaves are click targets too - three quarters of the area. Every
+    /// other messaging-click test clicks row 0 only.
+    #[test]
+    fn clicking_any_row_of_the_tree_cycles_the_group() {
+        use crate::ui::message::grouping::GroupCollapseLevel;
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+
+        for row in 0..4u16 {
+            let mut app = App::test_default();
+            let leader = seed_peer_run(&mut app, true);
+            assert_eq!(app.messaging_group_collapse_level(&leader), GroupCollapseLevel::L2Summary);
+            let mouse = MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 5,
+                row,
+                modifiers: KeyModifiers::empty(),
+            };
+            assert!(
+                try_toggle_peer_user_block_at_click(&mut app, mouse),
+                "row {row} of the tree must be clickable",
+            );
+            assert_eq!(
+                app.messaging_group_collapse_level(&leader),
+                GroupCollapseLevel::L1Titles,
+                "row {row} must cycle the group",
+            );
+        }
+    }
+
     #[test]
     fn click_on_messaging_group_summary_cycles_inbound_run() {
         use crate::ui::message::grouping::GroupCollapseLevel;
