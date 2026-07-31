@@ -2250,8 +2250,16 @@ impl App {
         // all-terminal-clear predicate; if a historical Monitor
         // genuinely WAS still running at replay time, the next
         // live event resolves it on its own terms.
+        // Replay seeds a TERMINAL status so the restored entry stops
+        // blocking `clear_monitors_if_all_terminal`. `Completed` rather
+        // than `Stopped`: the seed is a placeholder, not a wire signal,
+        // and the renderer now paints non-success terminals with a red
+        // failure glyph - so seeding `Stopped` would assert a failure we
+        // have no evidence for on every monitor in every resumed
+        // session. A terminal `task_updated` later in the same replay
+        // walk re-flips it to whatever actually happened.
         let initial_status = if self.replay_in_progress {
-            crate::app::state::types::MonitorStatus::Stopped
+            crate::app::state::types::MonitorStatus::Completed
         } else {
             crate::app::state::types::MonitorStatus::Running
         };
@@ -8256,7 +8264,7 @@ mod tests {
     // -----------------------------------------------------------
 
     #[test]
-    fn upsert_monitor_during_replay_starts_in_stopped_state() {
+    fn upsert_monitor_during_replay_starts_in_a_terminal_state() {
         // During `load_resume_history` (replay_in_progress = true)
         // the wire walker doesn't re-emit terminal `task_updated`
         // events into the status setter. A replayed Monitor that
@@ -8276,8 +8284,8 @@ mod tests {
         assert_eq!(monitors.len(), 1);
         assert_eq!(
             monitors[0].status,
-            crate::app::state::types::MonitorStatus::Stopped,
-            "replay-inserted monitor must default to Stopped, not Running",
+            crate::app::state::types::MonitorStatus::Completed,
+            "a replay-inserted monitor starts terminal so it stops blocking the              all-terminal clear - and Completed, because the seed is a placeholder              rather than evidence the watched command failed",
         );
     }
 

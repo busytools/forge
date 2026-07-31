@@ -1404,28 +1404,62 @@ fn handle_task_notification(app: &mut App, msg: Message) {
 /// Apply a `TaskProgress` notification to App state - bumps the
 /// `tool_use_id`'s status to `in_progress` if it isn't already in a
 /// terminal/active state.
+/// Rebuild a `turn_state.tool_calls` entry from the block already in
+/// the message list, preserving its real tool name so nothing
+/// downstream mistakes it for a `Task`.
+fn readopted_turn_state_entry(app: &App, tool_use_id: &str) -> Option<forge_primitives::ToolCall> {
+    let (msg_idx, block_idx) = app.lookup_tool_call(tool_use_id)?;
+    let crate::app::MessageBlock::ToolCall(tc) =
+        app.messages().get(msg_idx)?.blocks.get(block_idx)?
+    else {
+        return None;
+    };
+    let mut rebuilt = forge_workspace::tooling::create_tool_call(
+        tool_use_id,
+        &tc.sdk_tool_name,
+        tc.raw_input.as_ref().unwrap_or(&Value::Null),
+        None,
+    );
+    // Title + status only: `apply_tool_summary_update` overwrites
+    // content from the notification, and the block in the message list
+    // stays the source of truth for everything else.
+    tc.title.clone_into(&mut rebuilt.title);
+    rebuilt.status = tc.status;
+    Some(rebuilt)
+}
+
 fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
     use forge_primitives::{ToolCallStatus, ToolCallUpdateFields};
 
-    let existing = app.with_turn_state(|ts| ts.tool_calls.get(tool_use_id).cloned());
-    let Some(existing) = existing else {
-        // `turn_state` resets at every turn finalisation, so a frame
-        // arriving after its launching turn ended lands here. Only
-        // synthesize when no block exists: `apply_tool_use_block` would
-        // otherwise push a `"Task"` tool_use over a live block, renaming
-        // it and hiding it (the renderer matches `sdk_tool_name`, and a
-        // hidden block never reaches the renderer at all).
-        if app.lookup_tool_call(tool_use_id).is_none() {
-            apply_tool_use_block(
-                app,
-                tool_use_id,
-                name,
-                &Value::Object(serde_json::Map::new()),
-                None,
-            );
-        }
-        return;
-    };
+    // `turn_state` resets at every turn finalisation, so a frame
+    // arriving after its launching turn ended finds nothing here.
+    let existing =
+        if let Some(existing) = app.with_turn_state(|ts| ts.tool_calls.get(tool_use_id).cloned()) {
+            existing
+        } else {
+            // Re-adopt the block that already exists rather than
+            // synthesizing over it. Synthesizing pushes a `"Task"` tool_use
+            // on top, renaming it and hiding it; simply returning instead
+            // leaves `turn_state` empty, and `apply_tool_summary_update`
+            // early-returns without an entry, so the task_notification
+            // never lands and the card sticks on in_progress with no
+            // content.
+            let Some(readopted) = readopted_turn_state_entry(app, tool_use_id) else {
+                apply_tool_use_block(
+                    app,
+                    tool_use_id,
+                    name,
+                    &Value::Object(serde_json::Map::new()),
+                    None,
+                );
+                return;
+            };
+            let entry = readopted.clone();
+            let _: () = app.with_turn_state_mut(|ts| {
+                ts.tool_calls.insert(tool_use_id.to_owned(), entry);
+            });
+            readopted
+        };
     if matches!(
         existing.status,
         ToolCallStatus::InProgress
@@ -3559,6 +3593,23 @@ mod monitor_chat_block_tests {
         }
     }
 
+    fn task_progress() -> Message {
+        Message::TaskProgress {
+            task_id: TASK_ID.to_owned(),
+            uuid: String::new(),
+            session_id: String::new(),
+            tool_use_id: Some(TOOL_USE_ID.to_owned()),
+            last_tool_name: None,
+            description: String::new(),
+            usage: forge_primitives::messages::TaskUsage {
+                total_tokens: 0,
+                tool_uses: 0,
+                duration_ms: 0,
+            },
+            workflow_progress: Vec::new(),
+        }
+    }
+
     fn task_notification(output_file: &std::path::Path) -> Message {
         Message::TaskNotification {
             task_id: TASK_ID.to_owned(),
@@ -3800,23 +3851,7 @@ mod monitor_chat_block_tests {
         // gone, so the next frame for this id takes the synthesis branch.
         let _: () = app.with_turn_state_mut(|ts| ts.tool_calls.clear());
 
-        handle_task_progress(
-            &mut app,
-            Message::TaskProgress {
-                task_id: TASK_ID.to_owned(),
-                uuid: String::new(),
-                session_id: String::new(),
-                tool_use_id: Some(TOOL_USE_ID.to_owned()),
-                last_tool_name: None,
-                description: String::new(),
-                usage: forge_primitives::messages::TaskUsage {
-                    total_tokens: 0,
-                    tool_uses: 0,
-                    duration_ms: 0,
-                },
-                workflow_progress: Vec::new(),
-            },
-        );
+        handle_task_progress(&mut app, task_progress());
 
         assert_block_still_renders(&mut app, "after an out-of-turn task_progress");
     }
@@ -3880,6 +3915,29 @@ mod monitor_chat_block_tests {
         insta::assert_snapshot!(rendered_chat(&mut app).trim_end());
     }
 
+    /// Refusing to synthesize must not also drop the re-registration
+    /// the synthesis used to do. `apply_tool_summary_update`
+    /// early-returns without a `turn_state` entry, so a task whose
+    /// notification arrives after its turn ended would sit visible and
+    /// stuck on in_progress with no content.
+    #[test]
+    fn an_out_of_turn_progress_frame_re_registers_the_turn_state_entry() {
+        let mut app = App::test_default();
+        arm_monitor(&mut app);
+        handle_task_started(&mut app, task_started());
+        let _: () = app.with_turn_state_mut(|ts| ts.tool_calls.clear());
+
+        handle_task_progress(&mut app, task_progress());
+
+        let readopted = app.with_turn_state(|ts| ts.tool_calls.get(TOOL_USE_ID).cloned());
+        let readopted = readopted.expect("the progress frame re-registers the entry");
+        assert_eq!(
+            readopted.title, "Monitor",
+            "re-registered under its real name, never as a Task",
+        );
+        assert_block_still_renders(&mut app, "after re-registration");
+    }
+
     /// A resumed session must not restore a finished monitor as live.
     /// Replay never re-drives the terminal `task_updated`, so liveness
     /// here comes from `upsert_monitor_from_tool_input` starting replayed entries
@@ -3889,10 +3947,18 @@ mod monitor_chat_block_tests {
         let mut app = App::test_default();
         app.replay_in_progress = true;
         arm_monitor(&mut app);
-        assert_eq!(
-            with_tool_call(&app, |tc| tc.monitor_status),
-            Some(crate::app::MonitorStatus::Stopped),
-            "a replayed monitor renders its collapsed summary, never a live block",
+        let rendered = rendered_chat(&mut app);
+        assert!(
+            rendered.contains("completed"),
+            "a replayed monitor collapses, and the seed is not evidence of failure; got:\n{rendered}",
+        );
+        assert!(
+            !rendered.contains(crate::ui::theme::ICON_FAILED),
+            "the replay seed must not paint a failure glyph; got:\n{rendered}",
+        );
+        assert!(
+            !rendered.contains("$ for i in"),
+            "a replayed monitor never paints the live command row; got:\n{rendered}",
         );
     }
 

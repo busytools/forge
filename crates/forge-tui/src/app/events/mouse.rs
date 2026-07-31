@@ -431,10 +431,6 @@ fn mouse_point_to_selection(app: &App, mouse: MouseEvent) -> Option<MouseSelecti
     None
 }
 
-/// If the click landed on a tool-call's rendered area inside the chat
-/// pane, flip that tool call's per-tool collapse override and consume
-/// the event. Returns `true` when a tool call was toggled (so the
-/// caller can skip starting a text selection).
 /// True when the block at this slot actually RENDERS as a lifecycle
 /// block, whose render ignores every collapse input. Keyed on the
 /// render rather than the tool name: a `Monitor` / `Workflow` whose
@@ -449,9 +445,12 @@ fn lifecycle_block_at(app: &App, msg_idx: usize, block_idx: usize) -> bool {
     })
 }
 
-/// Resolve a click to a tool-call block and toggle its collapse state.
-/// Returns false when the click resolves to nothing, or to a block with
-/// no toggle, so the caller falls through to text selection.
+/// If the click landed on a tool-call's rendered area inside the chat
+/// pane, flip that tool call's per-tool collapse override and consume
+/// the event. Returns `true` when a tool call was toggled (so the
+/// caller can skip starting a text selection). A block with no toggle -
+/// a lifecycle block - returns `false` so the click falls through to
+/// text selection.
 fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
     let Some((msg_idx, block_idx)) = locate_tool_call_block_at_click(app, mouse) else {
         trace_hit_test_miss(app, mouse, "tool_call_hit_test");

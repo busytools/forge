@@ -1001,7 +1001,18 @@ fn render_question_answered_card(tc: &crate::app::ToolCallInfo) -> Option<Vec<Li
 /// falls through to the standard tool card and must behave like one -
 /// collapsible, clickable, carrying its own affordance.
 pub(crate) fn renders_as_lifecycle_block(tc: &crate::app::ToolCallInfo) -> bool {
-    render_lifecycle_one_liner(tc, 80).is_some()
+    // Name first, then the parse, and never build the lines: this runs
+    // from `pointer_shape_at` on every mouse-move and from the render
+    // and measure paths, and building the block would clone a
+    // Workflow's whole script to answer a yes/no.
+    let Some(input) = tc.raw_input.as_ref() else {
+        return false;
+    };
+    match tc.sdk_tool_name.as_str() {
+        "Monitor" => forge_workspace::user_interaction::parse_monitor_input(input).is_some(),
+        "Workflow" => forge_workspace::user_interaction::parse_workflow_input(input).is_some(),
+        _ => false,
+    }
 }
 
 /// Cells a Monitor child row spends before its text: 5 of indent, which
@@ -1009,14 +1020,12 @@ pub(crate) fn renders_as_lifecycle_block(tc: &crate::app::ToolCallInfo) -> bool 
 /// column 2, then the 2-cell connector itself.
 const MONITOR_GUTTER_CELLS: usize = 7;
 
-/// Cells the header spends before its description: `  ◉ ` plus the
-/// `Monitor` label plus the ` · ` separator.
-const MONITOR_HEADER_PREFIX_CELLS: usize = 14;
+/// Cells the header's glyph column spends: two of indent plus `◉ `.
+const MONITOR_HEADER_GLYPH_CELLS: usize = 4;
 
-/// Floor for a child row's text budget so an extremely narrow chat area
-/// still renders something rather than an empty row that overflows
-/// anyway. Mirrors `tool_call::group`'s `MIN_TARGET_BUDGET`.
-const MONITOR_MIN_TEXT_BUDGET: usize = 8;
+/// Cells the header spends before its description: the glyph column
+/// plus the `Monitor` label plus the ` · ` separator.
+const MONITOR_HEADER_PREFIX_CELLS: usize = MONITOR_HEADER_GLYPH_CELLS + 7 + 3;
 
 /// Render the chat lifecycle block for Monitor / Workflow. Returns
 /// `None` for any other tool, or when the input doesn't parse, so the
@@ -1093,21 +1102,27 @@ fn render_lifecycle_one_liner(
                 } else {
                     suffix
                 };
-            let header_prefix =
-                MONITOR_HEADER_PREFIX_CELLS + crate::ui::wrap::display_width(suffix);
+            // Cascade the budget: the glyph is fixed, then the label,
+            // then whatever is left for the description. Clipping only
+            // the description cannot fit a pane narrower than the fixed
+            // prefix, which is 14 cells before a single character of
+            // description.
+            let label = crate::ui::tool_call::clip_to_width(
+                "Monitor",
+                width.saturating_sub(MONITOR_HEADER_GLYPH_CELLS),
+            );
             lines.push(Line::from(vec![
                 Span::styled(
                     "  \u{25c9} ".to_owned(),
                     Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("Monitor".to_owned(), Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(label.clone(), Style::default().add_modifier(Modifier::BOLD)),
                 Span::styled(
-                    format!(
-                        " \u{b7} {}{suffix}",
-                        crate::ui::tool_call::clip_to_width(
-                            &parsed.description,
-                            width.saturating_sub(header_prefix),
-                        ),
+                    crate::ui::tool_call::clip_to_width(
+                        &format!(" \u{b7} {}{suffix}", parsed.description),
+                        width
+                            .saturating_sub(MONITOR_HEADER_GLYPH_CELLS)
+                            .saturating_sub(crate::ui::wrap::display_width(&label)),
                     ),
                     Style::default().fg(theme::DIM),
                 ),
@@ -1124,7 +1139,7 @@ fn render_lifecycle_one_liner(
                     "     {cmd_connector}$ {}",
                     crate::ui::tool_call::clip_to_width(
                         &parsed.command,
-                        width.saturating_sub(MONITOR_GUTTER_CELLS + 2).max(MONITOR_MIN_TEXT_BUDGET),
+                        width.saturating_sub(MONITOR_GUTTER_CELLS + 2),
                     ),
                 ),
                 Style::default().fg(theme::DIM),
@@ -1138,7 +1153,7 @@ fn render_lifecycle_one_liner(
                         "     {conn}{}",
                         crate::ui::tool_call::clip_to_width(
                             line,
-                            width.saturating_sub(MONITOR_GUTTER_CELLS).max(MONITOR_MIN_TEXT_BUDGET),
+                            width.saturating_sub(MONITOR_GUTTER_CELLS),
                         ),
                     ),
                     Style::default().fg(theme::DIM),
@@ -5266,13 +5281,47 @@ mod tests {
     /// char-wraps without the gutter, so an overflowing child shears
     /// the tree. Same contract the peer / tool group trees hold: the
     /// header may wrap, the connector rows must fit.
-    /// 48 sits above the width where the fixed header prefix starts
-    /// dominating, so it alone never exercises the narrow case. 30 is
-    /// below it and is where a minimum-budget floor would reintroduce
-    /// the flush-left fragment.
+    /// 48 sits above the width where the fixed prefixes start
+    /// dominating, so it alone never exercises the narrow case. The
+    /// overflow band is roughly 10..=16 - a minimum-budget floor on ANY
+    /// row reintroduces the flush-left fragment there, header and both
+    /// child rows alike.
+    /// `renders_as_lifecycle_block` re-implements the renderer's gate
+    /// cheaply instead of building the block, so the two must agree on
+    /// every shape or the click / collapse / grouping paths disagree
+    /// with what actually paints.
+    #[test]
+    fn the_cheap_lifecycle_predicate_agrees_with_the_renderer() {
+        let cases = [
+            ("Monitor", Some(serde_json::json!({"description": "d", "command": "c"}))),
+            ("Monitor", Some(serde_json::json!({"description": "d"}))),
+            ("Monitor", Some(serde_json::json!({"description": "", "command": "c"}))),
+            ("Monitor", None),
+            ("Workflow", Some(serde_json::json!({"script": "export const meta = {}"}))),
+            ("Workflow", Some(serde_json::json!({"scriptPath": "/tmp/x.js"}))),
+            ("Workflow", Some(serde_json::json!({"script": ""}))),
+            ("Workflow", None),
+            ("Read", Some(serde_json::json!({"file_path": "/tmp/x"}))),
+        ];
+        for (name, input) in cases {
+            let mut tc = make_tool_call_info(
+                "toolu_x",
+                name,
+                crate::agent::model::ToolCallStatus::Completed,
+                "",
+            );
+            tc.raw_input = input.clone();
+            assert_eq!(
+                renders_as_lifecycle_block(&tc),
+                render_lifecycle_one_liner(&tc, 80).is_some(),
+                "predicate and renderer disagree for {name} with {input:?}",
+            );
+        }
+    }
+
     #[test]
     fn monitor_block_rows_fit_a_very_narrow_width() {
-        for width in [20_u16, 30, 35] {
+        for width in 10_u16..=35 {
             let mut tc = make_tool_call_info(
                 "toolu_mon",
                 "Monitor",
