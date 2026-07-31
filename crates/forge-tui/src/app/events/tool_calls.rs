@@ -189,7 +189,7 @@ fn build_tool_info_from_tool_call(
     // - Task* family (TaskCreate / TaskUpdate / TaskList / TaskGet) -
     //   Inspector TASKS section is the authoritative surface.
     // - TaskOutput / TaskStop - paired with Monitor / Workflow; their
-    //   side-effects surface via the MONITORS / WORKFLOWS sections.
+    //   side-effects surface on those tools' own blocks.
     // - AskUserQuestion - dock-morph widget renders instead of a card.
     //
     // Monitor / Workflow are NOT here: their chat surface is the
