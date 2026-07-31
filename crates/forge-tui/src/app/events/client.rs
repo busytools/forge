@@ -342,7 +342,11 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 message: forge_primitives::UserEnvelope {
                     role: "user".to_owned(),
                     content: vec![forge_primitives::ContentBlock::Text {
-                        text: wrapped.to_prose(),
+                        text: {
+                            let prose = wrapped.to_prose();
+                            assert_envelope_parses(&prose, "peer_envelope");
+                            prose
+                        },
                     }],
                 },
                 session_id: session_id.clone(),
@@ -362,7 +366,11 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 message: forge_primitives::UserEnvelope {
                     role: "user".to_owned(),
                     content: vec![forge_primitives::ContentBlock::Text {
-                        text: notification.to_prose(),
+                        text: {
+                            let prose = notification.to_prose();
+                            assert_envelope_parses(&prose, "gotify_notification");
+                            prose
+                        },
                     }],
                 },
                 session_id: session_id.clone(),
@@ -383,7 +391,11 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 message: forge_primitives::UserEnvelope {
                     role: "user".to_owned(),
                     content: vec![forge_primitives::ContentBlock::Text {
-                        text: format!("[Cron]\n\n{text}"),
+                        text: {
+                            let prose = format!("[Cron]\n\n{text}");
+                            assert_envelope_parses(&prose, "cron_prompt");
+                            prose
+                        },
                     }],
                 },
                 session_id: session_id.clone(),
@@ -756,6 +768,28 @@ fn apply_mcp_snapshot_presentation(
 /// viewport); [`apply_sdk_message_presentation`] temp-swaps
 /// `active_session_key` to route background sessions through the
 /// same path.
+/// The three envelope reducers forge a synthetic `Message::User` whose
+/// only job is to be re-parsed by `detect_inbound`. If that parse fails
+/// the chat echo is dropped silently while the LLM still receives the
+/// prose via `Command::Prompt` - the agent works on a message the user
+/// never saw arrive. forge-workspace cannot depend on forge-tui, so no
+/// test spans the round trip; this is the assertion that catches a
+/// prose-format drift at runtime.
+fn assert_envelope_parses(prose: &str, source: &'static str) {
+    if crate::ui::peer_block::detect_inbound(prose).is_none() {
+        let head: String = prose.chars().take(120).collect();
+        tracing::error!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "envelope_prose_unrecognised",
+            source,
+            outcome = "chat_echo_dropped",
+            prose_head = %head,
+            "forged envelope prose did not match detect_inbound; the LLM still \
+             received it but the user will not see it",
+        );
+    }
+}
+
 pub(super) fn apply_session_update_chat_appended(
     app: &mut App,
     session_id: &str,

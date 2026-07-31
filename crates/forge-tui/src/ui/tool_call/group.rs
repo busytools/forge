@@ -33,6 +33,30 @@ use crate::ui::tool_call::status_icon;
 /// Trailing affordance on the parent count row.
 const EXPAND_HINT: &str = "   ctrl+x to expand";
 
+/// The only things that differ between a tool group's summary tree and a
+/// messaging group's. Everything structural - indent, connectors, spine,
+/// status icon, per-row budgeting and clipping - is shared.
+pub struct SummaryChrome {
+    /// Singular and plural nouns for the parent count row.
+    pub noun: (&'static str, &'static str),
+    /// NOT a shared constant - the tool hint stays understated by
+    /// decision, so sharing one would silently reverse it.
+    pub expand_hint: &'static str,
+    /// Tool groups inline a kind holding one call with one target.
+    /// Messaging always nests, so peer names share a column.
+    pub allow_inline: bool,
+}
+
+impl SummaryChrome {
+    pub const TOOL: Self =
+        Self { noun: ("tool call", "tool calls"), expand_hint: EXPAND_HINT, allow_inline: true };
+    pub const MESSAGING: Self = Self {
+        noun: ("message", "messages"),
+        expand_hint: "   click or ctrl+x to expand",
+        allow_inline: false,
+    };
+}
+
 /// Absolute floor for a target slot even on extremely narrow chat
 /// areas, so something useful always renders.
 const MIN_TARGET_BUDGET: usize = 8;
@@ -48,6 +72,7 @@ pub fn render_group_summary_line(
     spinner_glyph: char,
     max_width: usize,
     project_root: Option<&str>,
+    chrome: &SummaryChrome,
 ) -> Vec<Line<'static>> {
     let (icon_glyph, icon_color) = status_icon(aggregate_status, spinner_glyph);
     let icon_style = Style::default().fg(icon_color).add_modifier(Modifier::BOLD);
@@ -60,10 +85,10 @@ pub fn render_group_summary_line(
         Span::raw("  ".to_owned()),
         Span::styled(format!("{icon_glyph} "), icon_style),
         Span::styled(
-            format!("{total} {}", if total == 1 { "tool call" } else { "tool calls" }),
+            format!("{total} {}", if total == 1 { chrome.noun.0 } else { chrome.noun.1 }),
             bold,
         ),
-        Span::styled(EXPAND_HINT.to_owned(), dim),
+        Span::styled(chrome.expand_hint.to_owned(), dim),
     ])];
 
     let n = summary.lines.len();
@@ -81,6 +106,7 @@ pub fn render_group_summary_line(
         // Read relativizes each path against the project root; every
         // other kind takes its target verbatim.
         let is_read = line.glyph == READ_GLYPH;
+        let kind_style = if line.warn { bold.fg(theme::STATUS_WARNING) } else { bold };
         let targets: Vec<String> = if is_read {
             line.targets.iter().map(|t| relativize(t, project_root)).collect()
         } else {
@@ -94,13 +120,13 @@ pub fn render_group_summary_line(
             let mut row = vec![
                 Span::raw("  ".to_owned()),
                 Span::styled(connector.to_owned(), mark),
-                Span::styled(format!("{} ", line.glyph), bold),
+                Span::styled(format!("{} ", line.glyph), kind_style),
             ];
             if mult.is_empty() {
                 // Bare label carries no trailing pad/space.
-                row.push(Span::styled(line.label.clone(), bold));
+                row.push(Span::styled(line.label.clone(), kind_style));
             } else {
-                row.push(Span::styled(format!("{} ", pad_right(&line.label, label_w)), bold));
+                row.push(Span::styled(format!("{} ", pad_right(&line.label, label_w)), kind_style));
                 row.push(Span::styled(mult, dim));
             }
             lines.push(Line::from(row));
@@ -111,7 +137,7 @@ pub fn render_group_summary_line(
         // inline. Guard on BOTH count and target count: an N-call kind
         // that only resolved one target still nests, so the row never
         // implies "1 call".
-        if line.count == 1 && targets.len() == 1 {
+        if chrome.allow_inline && line.count == 1 && targets.len() == 1 {
             let prefix_cells = 2 + 3 + cells(line.glyph) + 1 + label_w + 1;
             let budget = max_width.saturating_sub(prefix_cells).max(MIN_TARGET_BUDGET);
             lines.push(Line::from(vec![
@@ -126,11 +152,12 @@ pub fn render_group_summary_line(
 
         // Otherwise nest: the bare kind row, then one clipped child row
         // per target (uncapped) one level deeper under the spine.
+        let kind_style = if line.warn { bold.fg(theme::STATUS_WARNING) } else { bold };
         lines.push(Line::from(vec![
             Span::raw("  ".to_owned()),
             Span::styled(connector.to_owned(), mark),
-            Span::styled(format!("{} ", line.glyph), bold),
-            Span::styled(line.label.clone(), bold),
+            Span::styled(format!("{} ", line.glyph), kind_style),
+            Span::styled(line.label.clone(), kind_style),
         ]));
         // Children nest one level deeper: base(2) + spine(1) + gap(2) +
         // child connector(3) = target column 8.
@@ -261,6 +288,7 @@ mod tests {
 
     fn kl(glyph: &'static str, label: &str, count: usize, targets: &[&str]) -> KindLine {
         KindLine {
+            warn: false,
             glyph,
             label: label.to_owned(),
             count,
@@ -277,7 +305,7 @@ mod tests {
     }
 
     fn render(s: &KindSummary, status: ToolCallStatus, width: usize) -> Vec<Line<'static>> {
-        render_group_summary_line(s, status, '\u{280B}', width, None)
+        render_group_summary_line(s, status, '\u{280B}', width, None, &SummaryChrome::TOOL)
     }
 
     fn render_rooted(
@@ -286,7 +314,7 @@ mod tests {
         width: usize,
         root: &str,
     ) -> Vec<Line<'static>> {
-        render_group_summary_line(s, status, '\u{280B}', width, Some(root))
+        render_group_summary_line(s, status, '\u{280B}', width, Some(root), &SummaryChrome::TOOL)
     }
 
     /// A single-kind run nests one child row per instance. A search with
