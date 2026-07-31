@@ -191,9 +191,11 @@ fn build_tool_info_from_tool_call(
     // - TaskOutput / TaskStop - paired with Monitor / Workflow; their
     //   side-effects surface via the MONITORS / WORKFLOWS sections.
     // - AskUserQuestion - dock-morph widget renders instead of a card.
-    // - Monitor / Workflow - minimal DIM start/stop notices come from
-    //   `ui::tool_call`'s task-render helpers; the standard tool-call
-    //   card is suppressed.
+    //
+    // Monitor / Workflow are NOT here: their chat surface is the
+    // lifecycle block in `ui::message::render_lifecycle_one_liner`,
+    // which `append_assistant_tool_block` reaches only for a visible
+    // tool call.
     let is_chat_suppressed = matches!(
         sdk_tool_name.as_str(),
         "TaskCreate"
@@ -203,8 +205,6 @@ fn build_tool_info_from_tool_call(
             | "TaskOutput"
             | "TaskStop"
             | "AskUserQuestion"
-            | "Monitor"
-            | "Workflow"
             | "ScheduleWakeup"
             | "CronCreate"
             | "CronDelete",
@@ -720,6 +720,77 @@ mod tests {
             "empty-object update preserves the dispatch raw_input",
         );
         assert_eq!(app.subagents_view()[0].label, "Explore · map hidden tool calls");
+    }
+
+    fn render_assistant_block(block: MessageBlock) -> String {
+        let mut msg = ChatMessage::new(MessageRole::Assistant, vec![block], None);
+        let spinner = crate::ui::message::SpinnerState {
+            glyph: '\u{280B}',
+            is_active_turn_assistant: false,
+            show_empty_thinking: false,
+            show_thinking: false,
+            show_compacting: false,
+            thinking_tokens: None,
+            running_subagents: None,
+        };
+        let mut lines = Vec::new();
+        crate::ui::message::render_message(
+            &mut msg,
+            &spinner,
+            crate::ui::message::MessageRenderContext::new(
+                None,
+                80,
+                0,
+                crate::ui::message::MessageRenderOptions {
+                    tools_collapsed: true,
+                    ..Default::default()
+                },
+            ),
+            &mut lines,
+        );
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Monitor / Workflow taken through the production build path must
+    /// reach the chat renderer. `render_lifecycle_one_liner` is their
+    /// only chat surface, so a `hidden` stamp erases them entirely -
+    /// `append_assistant_tool_block` returns before the render fires.
+    #[test]
+    fn monitor_and_workflow_reach_the_chat_renderer() {
+        for (name, raw_input, needle) in [
+            (
+                "Monitor",
+                serde_json::json!({
+                    "description": "ci-watch",
+                    "command": "gh run watch 1",
+                    "persistent": true,
+                    "timeout_ms": 0,
+                }),
+                "ci-watch",
+            ),
+            (
+                "Workflow",
+                serde_json::json!({
+                    "script": "export const meta = { name: 'find-flaky-tests' }\n",
+                }),
+                "find-flaky-tests",
+            ),
+        ] {
+            let app = App::test_default();
+            let tc = model::ToolCall::new("toolu_lifecycle", name).raw_input(raw_input);
+            let info =
+                build_tool_info_from_tool_call(&app, tc, name.to_owned(), &ToolCallScope::MainAgent);
+            assert!(!info.hidden, "{name} must not be chat-suppressed");
+            let rendered = render_assistant_block(MessageBlock::ToolCall(Box::new(info)));
+            assert!(
+                rendered.contains(needle),
+                "{name} lifecycle block missing from the chat render; got:\n{rendered}",
+            );
+        }
     }
 
     // The guard is UPDATE-only: a genuinely no-arg tool still captures
