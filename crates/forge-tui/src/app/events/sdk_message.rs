@@ -3565,11 +3565,8 @@ mod monitor_chat_block_tests {
     fn task_notification_fills_the_chat_tail_oldest_first() {
         let dir = tempfile::tempdir().expect("tempdir");
         let output_file = dir.path().join("monitor.output");
-        std::fs::write(
-            &output_file,
-            (1..=8).map(|i| format!("FORGEPROBE line-{i}\n")).collect::<String>(),
-        )
-        .expect("seed the output file");
+        let seeded: Vec<String> = (1..=8).map(|i| format!("FORGEPROBE line-{i}")).collect();
+        std::fs::write(&output_file, seeded.join("\n") + "\n").expect("seed the output file");
 
         let mut app = App::test_default();
         tool_calls::handle_tool_call(&mut app, monitor_tool_use());

@@ -997,21 +997,20 @@ fn render_question_answered_card(tc: &crate::app::ToolCallInfo) -> Option<Vec<Li
     Some(lines)
 }
 
-/// #273 Tasks 8 + 9: collapse Monitor / Workflow tool_use cards to a
-/// single DIM one-liner. Returns the rendered lines when the tool is
-/// Monitor or Workflow AND has a parseable input; otherwise `None`
-/// (caller falls through to the standard tool-card render).
-///
-/// Render shapes:
-/// - Monitor (running): `◉ Monitor started · <description> (persistent)`
-/// - Monitor (running, non-persistent): `◉ Monitor started · <description>`
-/// - Monitor (terminal): `◉ Monitor stopped · <description>` (or
-///   `· timed out` when killed via timeout)
-/// - Workflow (running): `◆ Workflow started · <meta.name | "Workflow">`
-/// - Workflow (terminal): `◆ Workflow done · <meta.name | "Workflow">`
-/// Cells consumed by a Monitor child row's `   <connector> ` gutter.
+/// Cells consumed by the indent + connector gutter on a Monitor child row.
 const MONITOR_GUTTER_CELLS: usize = 5;
 
+/// Render the chat lifecycle block for Monitor / Workflow. Returns
+/// `None` for any other tool, or when the input doesn't parse, so the
+/// caller falls through to the standard tool-card render.
+///
+/// Render shapes:
+/// - Monitor (running): `◉ Monitor · <description>[ · persistent]`,
+///   then `$ <command>` and up to five tail rows under tree connectors
+/// - Monitor (terminal): `✓ Monitor · <description> · <completed |
+///   stopped | timed out>`
+/// - Workflow (running): `◆ Workflow started · <meta.name | "Workflow">`
+/// - Workflow (terminal): `◆ Workflow done · <meta.name | "Workflow">`
 fn render_lifecycle_one_liner(
     tc: &crate::app::ToolCallInfo,
     width: u16,
@@ -5207,7 +5206,10 @@ mod tests {
         let joined = rows.join("\n");
         assert!(joined.contains("$ gh run watch 1"), "live block shows the command: {joined:?}");
         assert!(joined.contains("build"), "live block shows the tail: {joined:?}");
-        assert!(!joined.contains("completed"), "a running monitor never reads completed: {joined:?}");
+        assert!(
+            !joined.contains("completed"),
+            "a running monitor never reads completed: {joined:?}"
+        );
     }
 
     #[test]
