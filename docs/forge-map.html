@@ -1374,29 +1374,28 @@ chat continues here...
   </div>
   <div class="surface-body">
     <p><strong>Parallel to <a href="#chat-tool-grouping">chat-tool-grouping</a></strong>, grouped on the same scope: per message, with the message boundary a hard run-breaker (per #327). A run of peer/worker messages - outbound (<code>Tell</code>, <code>Ask</code>) and inbound (<code>Message</code>, <code>Question</code>, <code>Reply</code>) - folds into ONE messaging group; mixed direction lives in the same group (no split by direction). The partitioner is type-aware: peer/worker run produces a <strong>messaging group</strong>, tool-call run produces a <strong>tool group</strong>, adjacent and never merged - they sit side-by-side as separate render units.</p>
-    <p><strong>Inbound bundling is currently unreachable.</strong> A group needs 2+ messaging blocks in one message, and every incoming envelope still arrives as its own single-block user turn, so no inbound run reaches the threshold today. The mockups below that show <code>inbound from ...</code> describe shapes the code can produce but nothing currently feeds it; they become live when consecutive inbound envelopes are merged into one message. Outbound bundling works now - an assistant turn can hold several peer calls.</p>
-    <p><strong>L2 summary</strong> mirrors the tool-group line shape - 2-space LEFT indent, aggregated status_icon, BOLD heading, DIM <code>click or ctrl+x to expand</code> hint. The kind-icon slot carries the <strong><code>@</code></strong> glyph (width-1 ASCII; chat-UI mention semantic mirroring <code>@user</code> in Slack/Discord). The slot is exactly <code>@</code>(1) + space(1) = 2 cells matching standard chrome, deterministic across terminals regardless of EAW interpretation. The heading after the glyph is <code>N messages</code>, followed by direction-qualified target clauses (<code>· outbound to &lt;targets&gt;</code> and/or <code>· inbound from &lt;targets&gt;</code>). Targets render in order of first appearance. Direction clauses with no targets in that direction are omitted entirely (no <code>0 inbound</code> filler).</p>
-    <p>Completed (mixed direction):</p>
+    <p><strong>Consecutive incoming envelopes merge into ONE message at construction</strong> (<code>sdk_message.rs::push_peer_envelope_user_turn_if_present</code>), so a run of incoming messages is one message with N blocks and reaches the threshold. The merge appends to the tail when that message is already an envelope of the same kind - gated on the constructor, because the role label is picked from per-message flags and a Gotify notification sharing a message with peer traffic would render an external alert as agent traffic. The window bounds itself: once the agent produces output the tail is no longer an envelope message, so the next envelope starts fresh.</p>
+    <p><strong>L2 summary is a TREE</strong>, drawn by the same <code>render_group_summary_line</code> the tool groups use - a parent count row, one <code>├─</code>/<code>└─</code> child per kind, one leaf per message. It is not a new collapse level; it is what the summary line renders.</p>
+    <p><strong>The kind is the ENVELOPE KIND, not the direction.</strong> A per-message group is always single-direction - inbound envelopes only live in user turns, outbound calls only in assistant turns - so a direction level would never discriminate. Envelope kind does: one turn genuinely fires two Tells and an Ask, and a run of incoming messages genuinely mixes a Reply with a Message. Seven kinds: <code>tell</code> and <code>ask</code> outbound, <code>message</code> / <code>question</code> / <code>reply</code> / <code>failed</code> / <code>spawn failed</code> inbound. Direction survives as the per-row glyph (<code>⤴</code> / <code>⤵</code>).</p>
+    <p>The parent row is a BARE count - no target list, because every peer appears as a leaf and a heading clause would name each one twice. Leaf rows are <code>&lt;peer&gt; · &lt;first non-blank line of the body&gt;</code>, clipped end-first to a computed per-row budget so nothing wraps and shears the tree. Every message keeps its own leaf: no <code>×N</code>, no <code>+N</code> overflow, because their bodies differ and collapsing loses the preview that makes the row worth having.</p>
     <div class="term">
       <pre class="indent">
-  <span class="success">✓</span> <span class="dim bold">@ </span><span class="bold">5 messages · outbound to planner, debugger · inbound from tester</span>   <span class="dim">click or ctrl+x to expand</span></pre>
+  <span class="success">✓</span> <span class="bold">3 messages</span>   <span class="dim">click or ctrl+x to expand</span>
+  <span class="dim">├─</span> <span class="bold">⤵ message</span>
+  <span class="dim">│  ├─</span> <span class="dim">steward · IT IMPORTED. The window is lost…</span>
+  <span class="dim">│  └─</span> <span class="dim">planner · picking up the migration now…</span>
+  <span class="dim">└─</span> <span class="bold">⤵ reply</span>
+  <span class="dim">   └─</span> <span class="dim">tester · take the render half, I'll take the partition…</span></pre>
     </div>
-    <p>Mid-run (an outbound <code>Ask</code> still pending):</p>
+    <p><strong>Always nests, never inlines.</strong> The tool renderer rides a kind holding one call with one target on the kind row itself; here that would put peer names at ragged columns with nothing for the eye to run down. A kind with one message still gets its own leaf.</p>
+    <p><strong>Failures stay in the group and drive the parent status.</strong> <code>failed</code> and <code>spawn failed</code> are kind rows like any other, styled as a warning. Pulling them out would break the run from inside the merged message and un-bundle everything either side of it. An inbound failure carries no <code>ToolCallStatus</code> of its own, so <code>aggregate_status</code> learns about it explicitly - without that the parent row shows a green check over a delivery that never arrived.</p>
     <div class="term">
       <pre class="indent">
-  <span class="accent bold">⠋</span> <span class="dim bold">@ </span><span class="bold">3 messages · outbound to lead · inbound from reviewer</span>   <span class="dim">click or ctrl+x to expand</span></pre>
-    </div>
-    <p>Direction-only runs omit the absent clause cleanly:</p>
-    <div class="term">
-      <pre class="indent">
-  <span class="success">✓</span> <span class="dim bold">@ </span><span class="bold">2 messages · outbound to lead</span>   <span class="dim">click or ctrl+x to expand</span>
-  <span class="success">✓</span> <span class="dim bold">@ </span><span class="bold">1 message · inbound from reviewer</span>   <span class="dim">click or ctrl+x to expand</span></pre>
-    </div>
-    <p>Pluralization is per-count (<code>1 message</code> / <code>5 messages</code>); target list is comma-joined in order-of-first-appearance.</p>
-    <p><strong>Target-list overflow</strong> on narrow chat widths uses an ellipsis-plus-count suffix per direction. Convention: render the first 2 targets by name; if more, append <code>+N</code> for the remaining count:</p>
-    <div class="term">
-      <pre class="indent">
-  <span class="success">✓</span> <span class="dim bold">@ </span><span class="bold">12 messages · outbound to planner, debugger +2 · inbound from tester, reviewer +1</span>   <span class="dim">click or ctrl+x to expand</span></pre>
+  <span class="error">✗</span> <span class="bold">2 messages</span>   <span class="dim">click or ctrl+x to expand</span>
+  <span class="dim">├─</span> <span class="bold">⤵ message</span>
+  <span class="dim">│  └─</span> <span class="dim">steward · the window is lost</span>
+  <span class="dim">└─</span> <span class="warning bold">⤵ failed</span>
+  <span class="dim">   └─</span> <span class="dim">planner · gone</span></pre>
     </div>
     <p><strong>A run does not continue past its message.</strong> An incoming envelope arrives as its own user turn and the assistant's reply is the next turn, so the two are separate messages and render as two separate cards - which is the intent: a message and the response to it are distinct events, not one bundle. A plain user turn between two runs breaks them apart for the same reason. Each group therefore covers exactly one message, and <code>segment_count</code> drives both the summary count and its pluralization.</p>
     <div class="term">
