@@ -9,6 +9,7 @@ mod errors;
 mod group;
 mod standard;
 
+pub(crate) use group::clip_to_width;
 pub use group::SummaryChrome;
 pub use group::render_group_summary_line;
 

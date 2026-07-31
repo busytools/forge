@@ -1521,13 +1521,6 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
 /// per-parent cap so both surfaces feel consistent.
 const TASKS_MAX: usize = 5;
 
-/// Append the MONITORS Inspector section. Renders one
-/// row per Monitor entry with the description headline, status
-/// badge, and (when expanded OR currently-running) the tail of
-/// captured `task_notification.summary` lines. Section is hidden
-/// entirely when `UiSession.monitors` is empty (auto-clears once
-/// every entry terminates) so the Inspector doesn't carry a stale
-/// "MONITORS" header with no rows.
 /// Render the Inspector SCHEDULES section: header + one row per pending
 /// `ScheduleWakeup` / `CronCreate` (chat-parsed cloud routines) AND per
 /// durable forge cron (`mcp__forge__cron`, from the cached

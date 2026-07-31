@@ -866,7 +866,7 @@ fn append_assistant_tool_block(
     // the Inspector MONITORS / WORKFLOWS sections; the chat surface
     // only needs the start/stop signal. Falls through to the
     // standard tool card when the raw_input is missing or malformed.
-    if let Some(lines) = render_lifecycle_one_liner(tc) {
+    if let Some(lines) = render_lifecycle_one_liner(tc, render_context.width) {
         if !state.prev_was_tool && state.has_body_content {
             layout.push_blank();
         }
@@ -1009,7 +1009,10 @@ fn render_question_answered_card(tc: &crate::app::ToolCallInfo) -> Option<Vec<Li
 ///   `· timed out` when killed via timeout)
 /// - Workflow (running): `◆ Workflow started · <meta.name | "Workflow">`
 /// - Workflow (terminal): `◆ Workflow done · <meta.name | "Workflow">`
-fn render_lifecycle_one_liner(tc: &crate::app::ToolCallInfo) -> Option<Vec<Line<'static>>> {
+fn render_lifecycle_one_liner(
+    tc: &crate::app::ToolCallInfo,
+    width: u16,
+) -> Option<Vec<Line<'static>>> {
     use forge_primitives::ToolCallStatus;
     match tc.sdk_tool_name.as_str() {
         "Monitor" => {
@@ -1061,11 +1064,23 @@ fn render_lifecycle_one_liner(tc: &crate::app::ToolCallInfo) -> Option<Vec<Line<
                     Style::default().fg(theme::DIM),
                 ),
             ]));
+            // Child rows carry the connectors and the outer layout
+            // char-wraps without the gutter, so an overflowing one
+            // shears the tree. Budgets subtract the `   <conn> ` gutter
+            // (5 cells) and, for the command row, its `$ ` marker.
+            const GUTTER_CELLS: usize = 5;
+            let width = width as usize;
             // Command line: │ $ <command>  (└ if tail empty, │ if tail follows).
             let cmd_connector =
                 if tc.monitor_output_tail.is_empty() { "\u{2514} " } else { "\u{2502} " };
             lines.push(Line::from(Span::styled(
-                format!("   {cmd_connector}$ {}", parsed.command),
+                format!(
+                    "   {cmd_connector}$ {}",
+                    crate::ui::tool_call::clip_to_width(
+                        &parsed.command,
+                        width.saturating_sub(GUTTER_CELLS + 2),
+                    ),
+                ),
                 Style::default().fg(theme::DIM),
             )));
             // Tail lines: │ <line> ... └ <last line>
@@ -1073,7 +1088,13 @@ fn render_lifecycle_one_liner(tc: &crate::app::ToolCallInfo) -> Option<Vec<Line<
             for (idx, line) in tc.monitor_output_tail.iter().enumerate() {
                 let conn = if idx == last_idx { "\u{2514} " } else { "\u{2502} " };
                 lines.push(Line::from(Span::styled(
-                    format!("   {conn}{line}"),
+                    format!(
+                        "   {conn}{}",
+                        crate::ui::tool_call::clip_to_width(
+                            line,
+                            width.saturating_sub(GUTTER_CELLS),
+                        ),
+                    ),
                     Style::default().fg(theme::DIM),
                 )));
             }
@@ -5079,7 +5100,7 @@ mod tests {
             "* deploy \u{b7} queued".to_owned(),
             "* notify \u{b7} queued".to_owned(),
         ];
-        let lines = render_lifecycle_one_liner(&tc).expect("Monitor produces lines");
+        let lines = render_lifecycle_one_liner(&tc, 80).expect("Monitor produces lines");
         // 1 header + 1 command + 4 tail = 6 lines.
         assert_eq!(lines.len(), 6, "got {} lines", lines.len());
         let joined: String = lines
@@ -5094,6 +5115,41 @@ mod tests {
         assert!(joined.contains("$ gh run watch 18234567"), "command line: {joined:?}");
         assert!(joined.contains("\u{2502}"), "│ tree connector: {joined:?}");
         assert!(joined.contains("\u{2514}"), "└ tree connector for last row: {joined:?}");
+    }
+
+    /// Child rows carry the tree connectors, and the outer layout
+    /// char-wraps without the gutter, so an overflowing child shears
+    /// the tree. Same contract the peer / tool group trees hold: the
+    /// header may wrap, the connector rows must fit.
+    #[test]
+    fn monitor_block_child_rows_fit_a_narrow_width() {
+        const WIDTH: u16 = 48;
+        let mut tc = make_tool_call_info(
+            "toolu_mon",
+            "Monitor",
+            crate::agent::model::ToolCallStatus::InProgress,
+            "",
+        );
+        tc.raw_input = Some(serde_json::json!({
+            "description": "ci-watch",
+            "command": "gh run watch 18234567 --exit-status --repo busytools/forge",
+            "persistent": true,
+            "timeout_ms": 0,
+        }));
+        tc.monitor_output_tail = vec![
+            "build \u{b7} in_progress \u{b7} a trailing detail that overflows".to_owned(),
+        ];
+        let rows = render_lines_to_strings(
+            &render_lifecycle_one_liner(&tc, WIDTH).expect("Monitor produces lines"),
+        );
+        for row in rows.iter().skip(1) {
+            assert!(
+                unicode_width::UnicodeWidthStr::width(row.as_str()) <= WIDTH as usize,
+                "child row must fit width {WIDTH}; got {}: {row:?}",
+                unicode_width::UnicodeWidthStr::width(row.as_str()),
+            );
+        }
+        assert!(rows.iter().any(|r| r.contains("...")), "something clipped; got {rows:?}");
     }
 
     #[test]
@@ -5111,7 +5167,7 @@ mod tests {
             "timeout_ms": 0,
         }));
         // monitor_output_tail stays default-empty.
-        let lines = render_lifecycle_one_liner(&tc).expect("Monitor produces lines");
+        let lines = render_lifecycle_one_liner(&tc, 80).expect("Monitor produces lines");
         assert_eq!(lines.len(), 2, "header + command only: {} lines", lines.len());
         let joined: String = lines
             .iter()
@@ -5142,7 +5198,7 @@ mod tests {
             "persistent": false,
             "timeout_ms": 60000,
         }));
-        let lines = render_lifecycle_one_liner(&tc).expect("Monitor produces lines");
+        let lines = render_lifecycle_one_liner(&tc, 80).expect("Monitor produces lines");
         assert_eq!(lines.len(), 1, "terminal collapses to one line");
         let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(rendered.contains("\u{2713}"), "✓ glyph: {rendered:?}");
@@ -5165,7 +5221,7 @@ mod tests {
             "persistent": false,
             "timeout_ms": 0,
         }));
-        let lines = render_lifecycle_one_liner(&tc).expect("Monitor produces lines");
+        let lines = render_lifecycle_one_liner(&tc, 80).expect("Monitor produces lines");
         let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(rendered.contains("stopped"), "Killed -> stopped: {rendered:?}");
     }
@@ -5184,7 +5240,7 @@ mod tests {
             "persistent": false,
             "timeout_ms": 1000,
         }));
-        let lines = render_lifecycle_one_liner(&tc).expect("Monitor produces lines");
+        let lines = render_lifecycle_one_liner(&tc, 80).expect("Monitor produces lines");
         let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(rendered.contains("timed out"), "Failed -> timed out: {rendered:?}");
     }
@@ -5201,7 +5257,7 @@ mod tests {
             "",
         );
         tc.raw_input = Some(serde_json::json!({ "description": "x" }));
-        assert!(render_lifecycle_one_liner(&tc).is_none());
+        assert!(render_lifecycle_one_liner(&tc, 80).is_none());
     }
 
     #[test]
@@ -5246,6 +5302,6 @@ mod tests {
             crate::agent::model::ToolCallStatus::InProgress,
             "",
         );
-        assert!(render_lifecycle_one_liner(&tc).is_none());
+        assert!(render_lifecycle_one_liner(&tc, 80).is_none());
     }
 }
