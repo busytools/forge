@@ -1278,6 +1278,70 @@ mod tests {
         }
     }
 
+    /// A Monitor is only a run-breaker while it is VISIBLE, and it
+    /// became visible when the chat block un-hid. Pinning both shapes
+    /// it changes: a tool run splits around it, and a peer run no
+    /// longer reaches the 2-envelope threshold across it.
+    #[test]
+    fn a_visible_monitor_splits_the_runs_it_sits_in() {
+        let blocks = make(&[
+            ("tool", "Read"),
+            ("tool", "Read"),
+            ("tool", "Monitor"),
+            ("tool", "Read"),
+            ("tool", "Read"),
+        ]);
+        let units = partition_blocks_into_render_units(&blocks);
+        let ranges: Vec<_> = units
+            .iter()
+            .map(|u| match u {
+                RenderUnit::Group { range, .. } => format!("group {range:?}"),
+                RenderUnit::Individual(i) => format!("individual {i}"),
+                RenderUnit::MessagingGroup { .. } => "messaging".to_owned(),
+            })
+            .collect();
+        assert_eq!(
+            ranges,
+            vec!["group 0..2", "individual 2", "group 3..5"],
+            "the Monitor breaks one run of four into two runs of two",
+        );
+    }
+
+    /// A HIDDEN tool passes through a messaging run so the envelopes
+    /// either side still merge; a VISIBLE one splits it. Un-hiding the
+    /// Monitor block moved it from the first case to the second, so
+    /// both arms are asserted - the hidden arm is the control that
+    /// makes the visible arm mean something.
+    #[test]
+    fn un_hiding_a_monitor_splits_a_peer_run_that_used_to_merge() {
+        let messaging_groups = |blocks: &[MessageBlock]| {
+            partition_blocks_into_render_units(blocks)
+                .iter()
+                .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
+                .count()
+        };
+        let hidden = vec![
+            outbound_peer_block("planner", "Tell"),
+            hidden_tool_call_block("tu-mon", "Monitor"),
+            outbound_peer_block("steward", "Tell"),
+        ];
+        assert_eq!(
+            messaging_groups(&hidden),
+            1,
+            "control: a hidden tool passes through, so the two envelopes merge",
+        );
+        let visible = vec![
+            outbound_peer_block("planner", "Tell"),
+            tool_call_block("tu-mon", "Monitor"),
+            outbound_peer_block("steward", "Tell"),
+        ];
+        assert_eq!(
+            messaging_groups(&visible),
+            0,
+            "visible: the run splits and each envelope is alone against the threshold of 2",
+        );
+    }
+
     #[test]
     fn partition_lone_groupable_tool_forms_single_item_group() {
         let blocks = make(&[("tool", "Read")]);

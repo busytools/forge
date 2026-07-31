@@ -997,10 +997,19 @@ fn render_question_answered_card(tc: &crate::app::ToolCallInfo) -> Option<Vec<Li
     Some(lines)
 }
 
-/// Cells consumed by the indent + connector gutter on a Monitor child
-/// row: the block's 2-cell body indent, 3 more to sit under the header
-/// glyph, then the 2-cell connector.
+/// Cells a Monitor child row spends before its text: 5 of indent, which
+/// hangs the connector three columns right of the header glyph at
+/// column 2, then the 2-cell connector itself.
 const MONITOR_GUTTER_CELLS: usize = 7;
+
+/// Cells the header spends before its description: `  ◉ ` plus the
+/// `Monitor` label plus the ` · ` separator.
+const MONITOR_HEADER_PREFIX_CELLS: usize = 14;
+
+/// Floor for a child row's text budget so an extremely narrow chat area
+/// still renders something rather than an empty row that overflows
+/// anyway. Mirrors `tool_call::group`'s `MIN_TARGET_BUDGET`.
+const MONITOR_MIN_TEXT_BUDGET: usize = 8;
 
 /// Render the chat lifecycle block for Monitor / Workflow. Returns
 /// `None` for any other tool, or when the input doesn't parse, so the
@@ -1050,8 +1059,14 @@ fn render_lifecycle_one_liner(
             }
             // Alive: header + $ command + last-5 tail tree.
             let suffix = if parsed.persistent { " \u{b7} persistent" } else { "" };
+            let width = width as usize;
             let mut lines: Vec<Line<'static>> = Vec::new();
-            // Header: ◉ Monitor · <desc> [· persistent]
+            // Header: ◉ Monitor · <desc> [· persistent]. Clipped rather
+            // than left to wrap: a wrapped fragment lands flush-left
+            // BETWEEN the header and the connector rows, breaking the
+            // tree from above.
+            let header_prefix =
+                MONITOR_HEADER_PREFIX_CELLS + crate::ui::wrap::display_width(suffix);
             lines.push(Line::from(vec![
                 Span::styled(
                     "  \u{25c9} ".to_owned(),
@@ -1059,7 +1074,13 @@ fn render_lifecycle_one_liner(
                 ),
                 Span::styled("Monitor".to_owned(), Style::default().add_modifier(Modifier::BOLD)),
                 Span::styled(
-                    format!(" \u{b7} {}{suffix}", parsed.description),
+                    format!(
+                        " \u{b7} {}{suffix}",
+                        crate::ui::tool_call::clip_to_width(
+                            &parsed.description,
+                            width.saturating_sub(header_prefix).max(MONITOR_MIN_TEXT_BUDGET),
+                        ),
+                    ),
                     Style::default().fg(theme::DIM),
                 ),
             ]));
@@ -1067,7 +1088,6 @@ fn render_lifecycle_one_liner(
             // char-wraps without the gutter, so an overflowing one
             // shears the tree. Budgets subtract that gutter and, for
             // the command row, its `$ ` marker.
-            let width = width as usize;
             // Command line: │ $ <command>  (└ if tail empty, │ if tail follows).
             let cmd_connector =
                 if tc.monitor_output_tail.is_empty() { "\u{2514} " } else { "\u{2502} " };
@@ -1076,7 +1096,7 @@ fn render_lifecycle_one_liner(
                     "     {cmd_connector}$ {}",
                     crate::ui::tool_call::clip_to_width(
                         &parsed.command,
-                        width.saturating_sub(MONITOR_GUTTER_CELLS + 2),
+                        width.saturating_sub(MONITOR_GUTTER_CELLS + 2).max(MONITOR_MIN_TEXT_BUDGET),
                     ),
                 ),
                 Style::default().fg(theme::DIM),
@@ -1090,7 +1110,7 @@ fn render_lifecycle_one_liner(
                         "     {conn}{}",
                         crate::ui::tool_call::clip_to_width(
                             line,
-                            width.saturating_sub(MONITOR_GUTTER_CELLS),
+                            width.saturating_sub(MONITOR_GUTTER_CELLS).max(MONITOR_MIN_TEXT_BUDGET),
                         ),
                     ),
                     Style::default().fg(theme::DIM),
@@ -5171,7 +5191,7 @@ mod tests {
             "",
         );
         tc.raw_input = Some(serde_json::json!({
-            "description": "ci-watch",
+            "description": "ci-watch on the release branch after the tag lands",
             "command": "gh run watch 18234567 --exit-status --repo busytools/forge",
             "persistent": true,
             "timeout_ms": 0,
@@ -5181,7 +5201,9 @@ mod tests {
         let rows = render_lines_to_strings(
             &render_lifecycle_one_liner(&tc, WIDTH).expect("Monitor produces lines"),
         );
-        for row in rows.iter().skip(1) {
+        // EVERY row, header included: a wrapped header fragment lands
+        // flush-left between the header and the connectors.
+        for row in &rows {
             assert!(
                 unicode_width::UnicodeWidthStr::width(row.as_str()) <= WIDTH as usize,
                 "child row must fit width {WIDTH}; got {}: {row:?}",

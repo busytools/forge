@@ -38,6 +38,12 @@ pub struct ToolCallInfo {
     /// seconds after arming, so `status` is `Completed` for nearly the
     /// whole time the monitor is alive. The chat block reads this
     /// instead.
+    ///
+    /// Do NOT add this to `update_existing_tool_call`'s sync set. That
+    /// function rebuilds from a fresh `ToolCallInfo`, and once
+    /// `clear_monitors_if_all_terminal` has drained the entry the
+    /// rebuild resolves `None` - which renders as live. Syncing it
+    /// would silently reopen collapsed blocks.
     pub monitor_status: Option<MonitorStatus>,
     /// Length of terminal buffer at last snapshot - used to skip O(n) re-snapshots
     /// when the buffer hasn't grown.
