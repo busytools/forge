@@ -2336,6 +2336,18 @@ impl App {
         }
         tc.monitor_status = Some(status);
         tc.mark_tool_call_layout_dirty();
+        self.invalidate_monitor_block_height(msg_idx, block_idx);
+    }
+
+    /// Finish a monitor-block mutation the way the backgrounded-`Bash`
+    /// stream does (`app::terminal`): marking the tool dirty rebuilds
+    /// the render, but the viewport keeps its own prefix-sum of message
+    /// heights and this block's height swings as the tail fills and
+    /// again when it collapses.
+    fn invalidate_monitor_block_height(&mut self, msg_idx: usize, block_idx: usize) {
+        self.sync_render_cache_slot(msg_idx, block_idx);
+        self.recompute_message_retained_bytes(msg_idx);
+        self.invalidate_message_set(std::iter::once(msg_idx));
     }
 
     /// Liveness of the monitor owning `tool_use_id`, read at
@@ -2412,6 +2424,7 @@ impl App {
         }
         tc.monitor_output_tail = last_five;
         tc.mark_tool_call_layout_dirty();
+        self.invalidate_monitor_block_height(msg_idx, block_idx);
     }
 
     /// Read the matching Monitor's stored `output_file`

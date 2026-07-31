@@ -3638,6 +3638,47 @@ mod monitor_chat_block_tests {
         );
     }
 
+    /// The block's height swings as the tail fills and again when it
+    /// collapses, so a stamp has to invalidate the viewport's cached
+    /// prefix-sum too - marking the tool dirty only rebuilds the
+    /// render. Same contract the backgrounded-`Bash` stream holds.
+    #[test]
+    fn stamping_the_block_invalidates_the_cached_message_height() {
+        let mut app = App::test_default();
+        arm_monitor(&mut app);
+        handle_task_started(&mut app, task_started());
+        let (msg_idx, _) = app.lookup_tool_call(TOOL_USE_ID).expect("indexed");
+
+        // Settle THIS message's height so later staleness is ours.
+        // `set_message_height` sizes + stores but leaves the stale bit,
+        // so clear it explicitly to establish the precondition.
+        app.active_viewport_mut().set_message_height(msg_idx, 4);
+        app.active_viewport_mut().stale_message_heights[msg_idx] = false;
+        assert!(
+            !app.active_viewport_mut().stale_message_heights[msg_idx],
+            "precondition: this message is not awaiting remeasure",
+        );
+
+        // Drive the stamp DIRECTLY. Going through
+        // `handle_task_notification` also runs the summary update,
+        // which invalidates on its own - the assertion would then pass
+        // with this fix removed entirely.
+        app.replace_monitor_output_tail_by_task_id(TASK_ID, &["one".to_owned(), "two".to_owned()]);
+        assert!(
+            app.active_viewport_mut().stale_message_heights[msg_idx],
+            "the tail stamp changed the block's height and must schedule a remeasure",
+        );
+
+        // Same for the liveness stamp: the block collapses from the
+        // tail tree back to a single row.
+        app.active_viewport_mut().stale_message_heights[msg_idx] = false;
+        app.set_monitor_status_by_task_id(TASK_ID, crate::app::MonitorStatus::Stopped);
+        assert!(
+            app.active_viewport_mut().stale_message_heights[msg_idx],
+            "collapsing to the summary row changed the height and must schedule a remeasure",
+        );
+    }
+
     /// A resumed session must not restore a finished monitor as live.
     /// Replay never re-drives the terminal `task_updated`, so liveness
     /// here comes from `add_monitor` starting replayed entries
