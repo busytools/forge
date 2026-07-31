@@ -411,7 +411,7 @@ pub fn aggregate_run_status(blocks: &[MessageBlock]) -> crate::agent::model::Too
 /// targets that don't render by name. Per the chat-messaging-grouping
 /// spec: render the first 2 targets by name; everything past that
 /// counts into `overflow_n` (rendered as `+N` after the named list).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default)]
 pub struct MessagingDirectionTargets {
     /// First-N target names in order of first appearance.
     pub targets: Vec<String>,
@@ -427,39 +427,26 @@ impl MessagingDirectionTargets {
     }
 }
 
-/// One per-message slice of a messaging group. A messaging group can
-/// span multiple messages (cross-turn merge) - each message's render
-/// reads the segment whose `msg_idx` matches, and the segment carries
-/// the per-message render data plus its position in the parent group.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// One messaging group's slice of its message's blocks.
+#[derive(Debug, Clone)]
 pub struct MessagingGroupSegment {
-    /// Index of the message this segment lives in.
-    pub msg_idx: usize,
-    /// Block range within that message (start..end exclusive).
+    /// Block range within the message (start..end exclusive).
     pub block_range: Range<usize>,
-    /// Count of peer/worker blocks in THIS segment only.
+    /// Count of peer/worker blocks in the segment.
     pub segment_count: usize,
-    /// Outbound targets seen in THIS segment.
+    /// Outbound targets seen in the segment.
     pub segment_outbound_targets: MessagingDirectionTargets,
-    /// Inbound targets seen in THIS segment.
+    /// Inbound targets seen in the segment.
     pub segment_inbound_targets: MessagingDirectionTargets,
-    /// True if the parent group has segments in earlier messages.
-    pub segment_continues_above: bool,
-    /// True if the parent group has segments in later messages.
-    pub segment_continues_below: bool,
-    /// Aggregate run-status across THIS segment.
+    /// Aggregate run-status across the segment.
     pub aggregate_status: crate::agent::model::ToolCallStatus,
-    /// Total count across all segments in the parent group.
-    pub group_total_count: usize,
 }
 
 /// A render-time chunk: either an individual block (today's behaviour),
 /// a Group over a maximal run of groupable tool calls, or a
-/// MessagingGroup over a run of peer/worker messages (potentially
-/// spanning multiple messages via the session-walking partitioner).
-/// Indices into the underlying `Vec<MessageBlock>` keep the type
-/// non-borrowing so callers can still mutably index back into the
-/// message.
+/// MessagingGroup over a run of peer/worker messages. Indices into the
+/// underlying `Vec<MessageBlock>` keep the type non-borrowing so
+/// callers can still mutably index back into the message.
 #[derive(Debug, Clone)]
 pub enum RenderUnit {
     Individual(usize),
@@ -473,12 +460,11 @@ pub enum RenderUnit {
         aggregate_status: crate::agent::model::ToolCallStatus,
     },
     /// A run of consecutive peer/worker MCP message blocks (outbound
-    /// and inbound). Unlike `Group`, a messaging group can span
-    /// multiple messages. All segments share `group_leader_id`, so a
-    /// click or cycle on any of them maps to the same collapse level
-    /// via `UiSession`'s `messaging_group_collapse_levels` map.
+    /// and inbound) within one message. `group_leader_id` keys the
+    /// collapse level in the `messaging_group_collapse_levels` map on
+    /// `UiSession`.
     MessagingGroup {
-        segments: Vec<MessagingGroupSegment>,
+        segment: MessagingGroupSegment,
         group_leader_id: GroupId,
     },
 }
@@ -506,13 +492,10 @@ pub fn group_hit_at(blocks: &[MessageBlock], block_idx: usize) -> Option<GroupHi
     })
 }
 
-/// A click that landed inside a messaging-group segment, carrying every
-/// message the group occupies - the level is keyed on the whole run, so
-/// cycling it re-renders each segment and each needs remeasuring.
+/// A click that landed inside a messaging-group segment.
 #[derive(Debug)]
 pub struct MessagingGroupHit {
     pub leader_id: GroupId,
-    pub msg_indices: Vec<usize>,
     /// True when the click landed on the segment's leading block - the
     /// only row an L2 summary paints. A member block at L2 is behind the
     /// summary and is not a click target at all.
@@ -524,42 +507,23 @@ pub struct MessagingGroupHit {
 /// message `msg_idx`, with `is_leader` distinguishing the segment's
 /// leading block from its members.
 ///
-/// Resolves against the session-walking partition - the same one the
-/// renderer dispatches over, so a cross-turn segment below the
-/// per-message threshold still resolves.
+/// Resolves against the same per-message partition the renderer
+/// dispatches over, so a hit here and a group on screen cannot
+/// disagree about scope.
 pub fn messaging_group_hit_at(
     messages: &[crate::app::ChatMessage],
     msg_idx: usize,
     block_idx: usize,
 ) -> Option<MessagingGroupHit> {
-    let units = partition_session_into_render_units(messages);
-    let (leader_id, is_leader) = units.get(msg_idx)?.iter().find_map(|unit| match unit {
-        RenderUnit::MessagingGroup { segments, group_leader_id } => {
-            let segment = segments.first()?;
-            segment
-                .block_range
-                .contains(&block_idx)
-                .then(|| (group_leader_id.clone(), segment.block_range.start == block_idx))
-        }
+    let units = partition_blocks_into_render_units(&messages.get(msg_idx)?.blocks);
+    let (leader_id, is_leader) = units.iter().find_map(|unit| match unit {
+        RenderUnit::MessagingGroup { segment, group_leader_id } => segment
+            .block_range
+            .contains(&block_idx)
+            .then(|| (group_leader_id.clone(), segment.block_range.start == block_idx)),
         _ => None,
     })?;
-    let msg_indices = units
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, msg_units)| {
-            msg_units
-                .iter()
-                .any(|unit| {
-                    matches!(
-                        unit,
-                        RenderUnit::MessagingGroup { group_leader_id, .. }
-                            if *group_leader_id == leader_id
-                    )
-                })
-                .then_some(idx)
-        })
-        .collect();
-    Some(MessagingGroupHit { leader_id, msg_indices, is_leader })
+    Some(MessagingGroupHit { leader_id, is_leader })
 }
 
 /// True when `block` is a hidden / chat-suppressed tool call.
@@ -577,9 +541,6 @@ fn is_hidden_tool_call(block: &MessageBlock) -> bool {
 /// runs of peer/worker blocks fold into a `RenderUnit::MessagingGroup`
 /// at a threshold of 2. Everything else, hidden tool calls included,
 /// becomes `RenderUnit::Individual`.
-///
-/// Per-message only. Messaging groups span turns, so callers resolving
-/// one need [`partition_session_into_render_units`] instead.
 pub fn partition_blocks_into_render_units(blocks: &[MessageBlock]) -> Vec<RenderUnit> {
     let tool_call_units = partition_tool_call_groups(blocks);
     merge_messaging_groups(blocks, &tool_call_units)
@@ -611,41 +572,34 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) ->
     let mut i = 0;
     while i < tool_units.len() {
         // Only Individual units that index a messaging-class block
-        // start a run.
-        let is_messaging_start = matches!(
-            &tool_units[i],
-            RenderUnit::Individual(idx) if is_messaging_block(&blocks[*idx])
-        );
-        if !is_messaging_start {
-            output.push(tool_units[i].clone());
-            i += 1;
-            continue;
-        }
+        // start a run; anything else passes straight through. Binding
+        // the index here rather than re-matching later is what keeps
+        // the block range derivable without an unreachable arm.
+        let first_block_idx = match &tool_units[i] {
+            RenderUnit::Individual(idx) if is_messaging_block(&blocks[*idx]) => *idx,
+            other => {
+                output.push(other.clone());
+                i += 1;
+                continue;
+            }
+        };
         // Scan forward: collect a run of consecutive Individual units
         // that point to messaging blocks OR hidden tool calls (pass
         // through). Stop at the first unit that doesn't fit.
         let run_start_pos = i;
         let mut run_end_pos = i + 1;
+        let mut last_block_idx = first_block_idx;
         while run_end_pos < tool_units.len() {
             match &tool_units[run_end_pos] {
                 RenderUnit::Individual(idx)
                     if is_messaging_block(&blocks[*idx]) || is_hidden_tool_call(&blocks[*idx]) =>
                 {
+                    last_block_idx = *idx;
                     run_end_pos += 1;
                 }
                 _ => break,
             }
         }
-        // Compute block_range from the first and last block-indices in
-        // the run.
-        let first_block_idx = match &tool_units[run_start_pos] {
-            RenderUnit::Individual(idx) => *idx,
-            _ => unreachable!("run_start_pos must be Individual"),
-        };
-        let last_block_idx = match &tool_units[run_end_pos - 1] {
-            RenderUnit::Individual(idx) => *idx,
-            _ => unreachable!("run_end_pos - 1 must be Individual"),
-        };
         let block_range = first_block_idx..(last_block_idx + 1);
 
         // Walk the block range and accumulate per-direction targets,
@@ -655,8 +609,7 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) ->
         let mut segment_count = 0_usize;
         let mut any_status: Option<crate::agent::model::ToolCallStatus> = None;
         let mut leader_id: Option<GroupId> = None;
-        for (offset, block) in blocks[block_range.clone()].iter().enumerate() {
-            let block_idx = first_block_idx + offset;
+        for block in &blocks[block_range.clone()] {
             match block {
                 MessageBlock::ToolCall(tc) if !tc.hidden => {
                     if let Some(kind) = peer_block::detect_outbound(tc) {
@@ -679,10 +632,13 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) ->
                     {
                         append_target(&mut segment_inbound_targets, from);
                         segment_count += 1;
-                        if leader_id.is_none() {
-                            leader_id = Some(GroupId::from_leader_id(format!(
-                                "msg-block-{block_idx}-inbound"
-                            )));
+                        // Key on the envelope's own id, not the block
+                        // index: an index repeats in every message and
+                        // would share one collapse level across them.
+                        if leader_id.is_none()
+                            && let Some(id) = peer_block::inbound_envelope_id(&text.text)
+                        {
+                            leader_id = Some(GroupId::from_leader_id(format!("inbound-{id}")));
                         }
                     }
                 }
@@ -705,20 +661,13 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) ->
             .unwrap_or_else(|| GroupId::from_leader_id(format!("block-{first_block_idx}")));
         let aggregate_status = any_status.unwrap_or(crate::agent::model::ToolCallStatus::Completed);
         let segment = MessagingGroupSegment {
-            msg_idx: 0,
             block_range,
             segment_count,
             segment_outbound_targets,
             segment_inbound_targets,
-            segment_continues_above: false,
-            segment_continues_below: false,
             aggregate_status,
-            group_total_count: segment_count,
         };
-        output.push(RenderUnit::MessagingGroup {
-            segments: vec![segment],
-            group_leader_id: leader_id,
-        });
+        output.push(RenderUnit::MessagingGroup { segment, group_leader_id: leader_id });
         i = run_end_pos;
     }
     output
@@ -791,71 +740,6 @@ fn partition_tool_call_groups(blocks: &[MessageBlock]) -> Vec<RenderUnit> {
     units
 }
 
-/// Classification of a single block for session-walking partition.
-/// `Outbound` and `Inbound` extend a messaging run; the pass-through
-/// kinds extend a run without contributing to it; `Breaker` ends a
-/// run. See [`partition_session_into_render_units`].
-#[derive(Debug, Clone)]
-enum SessionBlockClass {
-    /// Peer/worker outbound tool call. Carries the target's display
-    /// name and the block's tool-use id.
-    Outbound { target: String, tool_use_id: String },
-    /// User-turn text that carries a peer envelope wrapper. Carries
-    /// the sender's display name.
-    Inbound { from: String },
-    /// Hidden tool call. Renders nothing visible; passes through
-    /// without contributing.
-    HiddenPassThrough,
-    /// Plain text inside a User-role message (without a peer envelope
-    /// wrapper). Treated as a turn-separator: passes through a
-    /// messaging run rather than breaking it.
-    UserTurnPassThrough,
-    /// Any other visible block. Ends an in-flight run.
-    Breaker,
-}
-
-/// Classify one block in the context of its enclosing message's role.
-fn classify_session_block(
-    role: &crate::app::MessageRole,
-    block: &MessageBlock,
-) -> SessionBlockClass {
-    use crate::app::MessageRole;
-    use crate::ui::peer_block::{self, PeerInboundKind, PeerOutboundKind};
-    match block {
-        MessageBlock::ToolCall(tc) => {
-            if tc.hidden {
-                return SessionBlockClass::HiddenPassThrough;
-            }
-            if let Some(kind) = peer_block::detect_outbound(tc) {
-                let target = match kind {
-                    PeerOutboundKind::Ask { target, .. }
-                    | PeerOutboundKind::Tell { target, .. } => target,
-                };
-                return SessionBlockClass::Outbound { target, tool_use_id: tc.id.clone() };
-            }
-            SessionBlockClass::Breaker
-        }
-        MessageBlock::Text(text) => {
-            // Gotify notifications parse as an inbound envelope but are
-            // external events, not agent traffic (`peer_sender_identity`
-            // returns None), so they fall through to the user-turn class
-            // and never merge into a peer group.
-            if let Some(from) = peer_block::detect_inbound(&text.text)
-                .as_ref()
-                .and_then(PeerInboundKind::peer_sender_identity)
-            {
-                return SessionBlockClass::Inbound { from: from.to_owned() };
-            }
-            if matches!(role, MessageRole::User) {
-                SessionBlockClass::UserTurnPassThrough
-            } else {
-                SessionBlockClass::Breaker
-            }
-        }
-        _ => SessionBlockClass::Breaker,
-    }
-}
-
 /// Append a target name to the rolling first-N + overflow tally. The
 /// first `TARGETS_NAMED_LIMIT` distinct targets render by name; every
 /// additional distinct target counts into `overflow_n`. Repeat hits
@@ -870,282 +754,6 @@ fn append_target(targets: &mut MessagingDirectionTargets, name: &str) {
     } else {
         targets.overflow_n += 1;
     }
-}
-
-/// Walks a complete session's messages and produces per-message
-/// render-unit lists, threading peer/worker run-state across message
-/// boundaries so a messaging-group can span multiple turns. Non-peer
-/// blocks are partitioned per-message via the existing
-/// [`partition_blocks_into_render_units`] logic for tool-call
-/// grouping.
-///
-/// Returns a `Vec<Vec<RenderUnit>>` parallel to `messages`: the inner
-/// vec is what the per-message renderer dispatches over.
-///
-/// Implementation: two-pass walk. Pass 1 (this function's first half)
-/// classifies every block, identifies maximal messaging runs across
-/// messages, and emits draft segments. Pass 2 (second half) stamps
-/// continuation flags and group_total_count onto each segment.
-/// Finally per-message render-unit lists are assembled by merging
-/// segment units back into the position the messaging blocks held in
-/// each message and partitioning the gaps via the per-message
-/// partitioner.
-/// Draft segment captured during the session walk's first pass. The
-/// second pass groups drafts by `leader_id` to stamp continuation
-/// flags + `group_total_count` onto the final
-/// [`MessagingGroupSegment`].
-struct SessionDraftSegment {
-    msg_idx: usize,
-    block_range: Range<usize>,
-    segment_count: usize,
-    segment_outbound_targets: MessagingDirectionTargets,
-    segment_inbound_targets: MessagingDirectionTargets,
-    aggregate_status: crate::agent::model::ToolCallStatus,
-    leader_id: GroupId,
-}
-
-pub fn partition_session_into_render_units(
-    messages: &[crate::app::ChatMessage],
-) -> Vec<Vec<RenderUnit>> {
-    let classifications: Vec<Vec<SessionBlockClass>> = messages
-        .iter()
-        .map(|msg| msg.blocks.iter().map(|b| classify_session_block(&msg.role, b)).collect())
-        .collect();
-
-    // Per-message: ranges of indices that belong to a messaging run,
-    // plus the run identifier each range belongs to. Same run id is
-    // shared across messages when the run spans turn boundaries.
-    let mut messaging_drafts: Vec<SessionDraftSegment> = Vec::new();
-
-    let mut active_run_leader: Option<GroupId> = None;
-
-    for (msg_idx, msg) in messages.iter().enumerate() {
-        let classes = &classifications[msg_idx];
-        let mut i = 0;
-        while i < classes.len() {
-            // Skip leading non-messaging breakers - they end the run.
-            match &classes[i] {
-                SessionBlockClass::Breaker => {
-                    active_run_leader = None;
-                    i += 1;
-                    continue;
-                }
-                SessionBlockClass::HiddenPassThrough | SessionBlockClass::UserTurnPassThrough => {
-                    // Pass-through without an active run: just skip.
-                    i += 1;
-                    continue;
-                }
-                _ => {}
-            }
-
-            // Found a messaging-class block. Open or extend a run.
-            let segment_start = i;
-            let mut segment_end = i;
-            let mut outbound_targets = MessagingDirectionTargets::default();
-            let mut inbound_targets = MessagingDirectionTargets::default();
-            let mut segment_count = 0_usize;
-            let mut segment_leader: Option<GroupId> = None;
-            let mut any_status: Option<crate::agent::model::ToolCallStatus> = None;
-
-            // Scan within this message until we hit a Breaker, ALWAYS
-            // extending across HiddenPassThrough + UserTurnPassThrough.
-            while segment_end < classes.len() {
-                match &classes[segment_end] {
-                    SessionBlockClass::Outbound { target, tool_use_id } => {
-                        if segment_leader.is_none() && active_run_leader.is_none() {
-                            segment_leader = Some(GroupId::from_leader_id(tool_use_id.clone()));
-                        }
-                        append_target(&mut outbound_targets, target);
-                        segment_count += 1;
-                        if let MessageBlock::ToolCall(tc) = &msg.blocks[segment_end] {
-                            update_aggregate(&mut any_status, tc.status);
-                        }
-                    }
-                    SessionBlockClass::Inbound { from } => {
-                        if segment_leader.is_none() && active_run_leader.is_none() {
-                            // Inbound blocks don't carry a tool-use id;
-                            // use a stable synthetic leader keyed on
-                            // (msg_idx, block_idx).
-                            segment_leader = Some(GroupId::from_leader_id(format!(
-                                "msg-{msg_idx}-block-{segment_end}-inbound"
-                            )));
-                        }
-                        append_target(&mut inbound_targets, from);
-                        segment_count += 1;
-                    }
-                    SessionBlockClass::HiddenPassThrough
-                    | SessionBlockClass::UserTurnPassThrough => {
-                        // Pass through without contributing.
-                    }
-                    SessionBlockClass::Breaker => break,
-                }
-                segment_end += 1;
-            }
-
-            if segment_count == 0 {
-                // The scan only saw pass-through blocks - no real
-                // messaging contribution. Treat as gap; advance.
-                i = segment_end.max(i + 1);
-                continue;
-            }
-
-            let leader_id = active_run_leader
-                .clone()
-                .or(segment_leader)
-                .unwrap_or_else(|| GroupId::from_leader_id(format!("msg-{msg_idx}-fallback")));
-
-            if active_run_leader.is_none() {
-                active_run_leader = Some(leader_id.clone());
-            }
-
-            messaging_drafts.push(SessionDraftSegment {
-                msg_idx,
-                block_range: segment_start..segment_end,
-                segment_count,
-                segment_outbound_targets: outbound_targets,
-                segment_inbound_targets: inbound_targets,
-                aggregate_status: any_status
-                    .unwrap_or(crate::agent::model::ToolCallStatus::Completed),
-                leader_id,
-            });
-
-            // If a Breaker terminated this segment, the run ends here.
-            if segment_end < classes.len()
-                && matches!(classes[segment_end], SessionBlockClass::Breaker)
-            {
-                active_run_leader = None;
-                i = segment_end + 1;
-                continue;
-            }
-            // Otherwise the segment ran out at end-of-message; the run
-            // stays open into the next message.
-            i = segment_end;
-        }
-    }
-
-    // Pass 2: group segments by leader_id, stamp continuation +
-    // totals.
-    let mut by_leader: std::collections::HashMap<String, Vec<usize>> =
-        std::collections::HashMap::new();
-    for (idx, draft) in messaging_drafts.iter().enumerate() {
-        by_leader.entry(draft.leader_id.as_str().to_owned()).or_default().push(idx);
-    }
-
-    let mut segment_by_draft_idx: Vec<MessagingGroupSegment> =
-        Vec::with_capacity(messaging_drafts.len());
-    for draft in &messaging_drafts {
-        // Placeholder; overwritten in the per-leader stamp loop below.
-        segment_by_draft_idx.push(MessagingGroupSegment {
-            msg_idx: draft.msg_idx,
-            block_range: draft.block_range.clone(),
-            segment_count: draft.segment_count,
-            segment_outbound_targets: draft.segment_outbound_targets.clone(),
-            segment_inbound_targets: draft.segment_inbound_targets.clone(),
-            segment_continues_above: false,
-            segment_continues_below: false,
-            aggregate_status: draft.aggregate_status,
-            group_total_count: draft.segment_count,
-        });
-    }
-    for indices in by_leader.values() {
-        let total: usize = indices.iter().map(|&i| messaging_drafts[i].segment_count).sum();
-        let last_pos = indices.len().saturating_sub(1);
-        for (pos, &idx) in indices.iter().enumerate() {
-            let segment = &mut segment_by_draft_idx[idx];
-            segment.segment_continues_above = pos > 0;
-            segment.segment_continues_below = pos < last_pos;
-            segment.group_total_count = total;
-        }
-    }
-
-    // Now assemble per-message render-unit lists. For each message:
-    // - Walk the message's classifications.
-    // - Wherever a messaging segment lives (per draft), emit a single
-    //   MessagingGroup unit covering the segment's block_range.
-    // - For runs of non-messaging blocks between/around segments,
-    //   defer to per-message tool-call partition via
-    //   `partition_blocks_into_render_units` restricted to the gap.
-    let mut output: Vec<Vec<RenderUnit>> = Vec::with_capacity(messages.len());
-    for (msg_idx, msg) in messages.iter().enumerate() {
-        let segments_in_msg: Vec<MessagingGroupSegment> = messaging_drafts
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, draft)| {
-                if draft.msg_idx == msg_idx {
-                    Some(segment_by_draft_idx[idx].clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        if segments_in_msg.is_empty() {
-            // No messaging activity in this message; reuse the
-            // existing per-message partitioner directly.
-            output.push(partition_blocks_into_render_units(&msg.blocks));
-            continue;
-        }
-
-        // Assemble interleaved units honouring original block order.
-        let mut msg_units: Vec<RenderUnit> = Vec::new();
-        let mut cursor = 0_usize;
-        for segment in segments_in_msg {
-            if segment.block_range.start > cursor {
-                // Gap before this segment - partition it via the
-                // per-message tool-call partitioner.
-                let gap = &msg.blocks[cursor..segment.block_range.start];
-                for unit in partition_blocks_into_render_units(gap) {
-                    msg_units.push(shift_unit(unit, cursor));
-                }
-            }
-            if segment.group_total_count < 2 {
-                // Threshold-2: a lone messaging block (the entire
-                // cross-turn run is size 1) renders as the plain
-                // peer block. Emit Individual per block index in the
-                // segment range; hidden pass-throughs in the span
-                // become their own Individuals too.
-                for idx in segment.block_range.clone() {
-                    msg_units.push(RenderUnit::Individual(idx));
-                }
-                cursor = segment.block_range.end;
-                continue;
-            }
-            let leader_id = find_segment_leader(&messaging_drafts, &segment);
-            msg_units.push(RenderUnit::MessagingGroup {
-                segments: vec![segment.clone()],
-                group_leader_id: leader_id,
-            });
-            cursor = segment.block_range.end;
-        }
-        if cursor < msg.blocks.len() {
-            let tail = &msg.blocks[cursor..];
-            for unit in partition_blocks_into_render_units(tail) {
-                msg_units.push(shift_unit(unit, cursor));
-            }
-        }
-        output.push(msg_units);
-    }
-    debug_assert!(
-        output.iter().zip(messages).all(|(units, msg)| units_index_within(units, msg.blocks.len())),
-        "every emitted unit must index inside its own message - render paths index directly",
-    );
-    output
-}
-
-/// Contract check for the `debug_assert!` above: no unit refers past
-/// `len`. Consumers index `msg.blocks` straight from these, so an
-/// out-of-range index here is a partitioner bug, not something a caller
-/// should guard. NOT `#[cfg(debug_assertions)]` - `debug_assert!`
-/// expands to `if cfg!(debug_assertions) { .. }`, so the call is still
-/// name-resolved in release and gating this out fails the build there.
-fn units_index_within(units: &[RenderUnit], len: usize) -> bool {
-    units.iter().all(|unit| match unit {
-        RenderUnit::Individual(idx) => *idx < len,
-        RenderUnit::Group { range, .. } => range.end <= len,
-        RenderUnit::MessagingGroup { segments, .. } => {
-            segments.iter().all(|s| s.block_range.end <= len)
-        }
-    })
 }
 
 /// Update an in-progress aggregate status with one tool-call's status.
@@ -1167,44 +775,6 @@ fn update_aggregate(
         (Some(ToolCallStatus::Pending), _) => {}
         (slot, ToolCallStatus::Pending) => *slot = Some(ToolCallStatus::Pending),
         _ => {}
-    }
-}
-
-/// Look up the leader id for a segment by scanning the draft list
-/// for the matching `(msg_idx, block_range.start)` pair. The leader
-/// is shared across cross-message segments of the same run.
-fn find_segment_leader(drafts: &[SessionDraftSegment], segment: &MessagingGroupSegment) -> GroupId {
-    for draft in drafts {
-        if draft.msg_idx == segment.msg_idx && draft.block_range.start == segment.block_range.start
-        {
-            return draft.leader_id.clone();
-        }
-    }
-    GroupId::from_leader_id(format!("msg-{}-fallback", segment.msg_idx))
-}
-
-/// Shift a [`RenderUnit`]'s block indices by `offset` so a partition
-/// computed on a slice can be re-anchored to its position in the
-/// full block list.
-fn shift_unit(unit: RenderUnit, offset: usize) -> RenderUnit {
-    match unit {
-        RenderUnit::Individual(i) => RenderUnit::Individual(i + offset),
-        RenderUnit::Group { range, leader_id, summary, aggregate_status } => RenderUnit::Group {
-            range: (range.start + offset)..(range.end + offset),
-            leader_id,
-            summary,
-            aggregate_status,
-        },
-        RenderUnit::MessagingGroup { segments, group_leader_id } => RenderUnit::MessagingGroup {
-            segments: segments
-                .into_iter()
-                .map(|s| MessagingGroupSegment {
-                    block_range: (s.block_range.start + offset)..(s.block_range.end + offset),
-                    ..s
-                })
-                .collect(),
-            group_leader_id,
-        },
     }
 }
 
@@ -2086,7 +1656,18 @@ mod tests {
         }
     }
 
-    // ─── partition_session_into_render_units (MG T2) ────────────
+    // ─── messaging groups ───────────────────────────────────────
+
+    /// A fresh id per call. Block ids key group leaders, so fixtures
+    /// that reuse one make unrelated runs resolve to the same group and
+    /// partition tests pass for the wrong reason. Deriving from the
+    /// arguments is not enough - two `("planner", "Tell")` blocks in
+    /// different messages would still collide.
+    fn next_fixture_id(prefix: &str) -> String {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        format!("{prefix}-{}", NEXT.fetch_add(1, Ordering::Relaxed))
+    }
 
     fn outbound_peer_block(target: &str, kind: &str) -> MessageBlock {
         // `kind` is "Tell" or "Ask"; map to the matching MCP tool name
@@ -2096,7 +1677,7 @@ mod tests {
             "Ask" => ("mcp__forge__peers__ask_agent", "prompt"),
             other => panic!("unknown outbound kind {other:?}; use Tell|Ask"),
         };
-        let mut block = tool_call_block("tu-out", sdk_tool_name);
+        let mut block = tool_call_block(&next_fixture_id("tu-out"), sdk_tool_name);
         if let MessageBlock::ToolCall(tc) = &mut block {
             tc.raw_input = Some(serde_json::json!({
                 "target": target,
@@ -2109,7 +1690,7 @@ mod tests {
     fn inbound_peer_block(from: &str, kind: &str) -> MessageBlock {
         // `kind` is "Question" | "Message" | "Reply". Use the
         // wrapper-prose shape `peer_block::detect_inbound` matches.
-        let id = "t-test1234";
+        let id = next_fixture_id("t");
         let header = match kind {
             "Question" => format!("[Question id={id} from agent '{from}' (org 'forge')]"),
             "Message" => format!("[Message id={id} from agent '{from}' (org 'forge')]"),
@@ -2134,12 +1715,65 @@ mod tests {
         )
     }
 
-    /// CRITICAL invariant: a peer/worker run extending from the end
-    /// of message N into the start of message N+1 produces ONE
-    /// MessagingGroup with two segments. `group_total_count` is the
-    /// sum of `segment_count`s.
+    /// Partition every message the way the render path does.
+    fn per_message_units(messages: &[crate::app::ChatMessage]) -> Vec<Vec<RenderUnit>> {
+        messages.iter().map(|m| partition_blocks_into_render_units(&m.blocks)).collect()
+    }
+
+    /// The leader id for an inbound-led run comes from the envelope,
+    /// not the block's position. Two messages can each hold a run led
+    /// at block index 0; a positional key gives both the same id, so
+    /// cycling one collapses the other.
+    ///
+    /// Guards the whole reason `inbound_envelope_id` exists - swapping
+    /// it back for a positional key must fail here.
     #[test]
-    fn messaging_group_merges_across_turn_boundary() {
+    fn inbound_led_runs_in_different_messages_get_distinct_leaders() {
+        let run = |a: &str, b: &str| {
+            crate::app::ChatMessage::new(
+                crate::app::MessageRole::User,
+                vec![inbound_peer_block(a, "Message"), inbound_peer_block(b, "Reply")],
+                None,
+            )
+        };
+        // Both runs lead at block index 0 of their own message.
+        let messages = [run("steward", "steward"), run("planner", "planner")];
+
+        let leaders: Vec<GroupId> = messages
+            .iter()
+            .map(|m| {
+                partition_blocks_into_render_units(&m.blocks)
+                    .into_iter()
+                    .find_map(|u| match u {
+                        RenderUnit::MessagingGroup { group_leader_id, .. } => Some(group_leader_id),
+                        _ => None,
+                    })
+                    .expect("a two-envelope run forms a group")
+            })
+            .collect();
+
+        assert_ne!(
+            leaders[0], leaders[1],
+            "same block index in different messages must not share a collapse key",
+        );
+        for leader in &leaders {
+            assert!(
+                leader.as_str().starts_with("inbound-t-"),
+                "leader must come from the envelope id, not the block index; got {leader:?}",
+            );
+        }
+    }
+
+    /// Grouping is per-message: a peer/worker run that reaches the end
+    /// of one message and continues in a later one produces a SEPARATE
+    /// group per message, each with its own leader.
+    ///
+    /// This used to merge into one cross-turn group. It no longer does,
+    /// by decision - an incoming message and the reply to it read as
+    /// two cards, and a plain user turn between them breaks the run
+    /// rather than being absorbed into it.
+    #[test]
+    fn peer_run_across_turns_groups_per_message() {
         let messages = vec![
             assistant_message_with_blocks(vec![
                 outbound_peer_block("planner", "Tell"),
@@ -2153,61 +1787,50 @@ mod tests {
             ]),
         ];
 
-        let per_message_units = partition_session_into_render_units(&messages);
-        let messaging_groups: Vec<&RenderUnit> = per_message_units
+        let units = per_message_units(&messages);
+        let groups: Vec<&RenderUnit> = units
             .iter()
             .flatten()
             .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
             .collect();
+        assert_eq!(groups.len(), 2, "one group per message that holds a run; got {units:?}");
 
-        assert_eq!(
-            messaging_groups.len(),
-            2,
-            "cross-message peer/worker run produces ONE logical group with TWO per-message render units (one per segment); got {}",
-            messaging_groups.len(),
-        );
-
-        // Both render units must share the same group_leader_id so a
-        // click on either resolves to the same collapse state.
-        let leaders: Vec<&GroupId> = messaging_groups
+        let leaders: Vec<&GroupId> = groups
             .iter()
             .map(|u| match u {
                 RenderUnit::MessagingGroup { group_leader_id, .. } => group_leader_id,
                 _ => unreachable!(),
             })
             .collect();
-        assert_eq!(
+        assert_ne!(
             leaders[0], leaders[1],
-            "segments share a single leader_id across the turn boundary"
+            "separate groups must not share a collapse key: cycling one would cycle the other",
         );
 
-        // Validate per-segment shapes.
-        let segments: Vec<&MessagingGroupSegment> = messaging_groups
+        let segments: Vec<&MessagingGroupSegment> = groups
             .iter()
             .flat_map(|u| match u {
-                RenderUnit::MessagingGroup { segments, .. } => segments.iter(),
+                RenderUnit::MessagingGroup { segment, .. } => std::iter::once(segment),
                 _ => unreachable!(),
             })
             .collect();
-        assert_eq!(segments.len(), 2);
-
-        assert_eq!(segments[0].msg_idx, 0);
+        assert_eq!(segments.len(), 2, "each group covers exactly its own message");
         assert_eq!(segments[0].segment_count, 3);
-        assert!(segments[0].segment_continues_below);
-        assert!(!segments[0].segment_continues_above);
-        assert_eq!(segments[0].group_total_count, 5);
-
-        assert_eq!(segments[1].msg_idx, 2);
         assert_eq!(segments[1].segment_count, 2);
-        assert!(!segments[1].segment_continues_below);
-        assert!(segments[1].segment_continues_above);
-        assert_eq!(segments[1].group_total_count, 5);
+
+        assert!(
+            units[1].iter().all(|u| matches!(u, RenderUnit::Individual(_))),
+            "the plain user turn between the runs stays ungrouped; got {:?}",
+            units[1],
+        );
     }
 
-    /// One inbound envelope in a user turn, then one outbound call in
-    /// the next assistant turn.
+    /// The duplicate-card shape: one inbound envelope in a user turn,
+    /// then one outbound call in the next assistant turn. Neither
+    /// message reaches the threshold of 2 on its own, so neither
+    /// groups - both render as their standalone peer cards.
     #[test]
-    fn messaging_group_spans_user_inbound_then_assistant_outbound() {
+    fn single_block_turns_do_not_group_across_the_boundary() {
         let messages = vec![
             crate::app::ChatMessage::new(
                 crate::app::MessageRole::User,
@@ -2217,55 +1840,17 @@ mod tests {
             assistant_message_with_blocks(vec![outbound_peer_block("steward", "Tell")]),
         ];
 
-        let per_message_units = partition_session_into_render_units(&messages);
-        let groups: Vec<&RenderUnit> = per_message_units
-            .iter()
-            .flatten()
-            .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
-            .collect();
-        assert_eq!(
-            groups.len(),
-            2,
-            "one inbound + one outbound across a turn boundary is a group of 2; got {per_message_units:?}",
+        let units = per_message_units(&messages);
+        assert!(
+            !units.iter().flatten().any(|u| matches!(u, RenderUnit::MessagingGroup { .. })),
+            "one block per turn is below the threshold either side; got {units:?}",
         );
-
-        let leaders: Vec<&GroupId> = groups
-            .iter()
-            .map(|u| match u {
-                RenderUnit::MessagingGroup { group_leader_id, .. } => group_leader_id,
-                _ => unreachable!(),
-            })
-            .collect();
-        assert_eq!(leaders[0], leaders[1], "both segments share one leader");
-
-        for unit in &groups {
-            let RenderUnit::MessagingGroup { segments, .. } = unit else { unreachable!() };
-            assert_eq!(segments[0].segment_count, 1);
-            assert_eq!(segments[0].group_total_count, 2);
-        }
     }
 
-    /// Both partitioners emit segments whose own count is at least 1
-    /// and never exceeds the group total, so the summary line can read
-    /// either field without guarding.
+    /// Every emitted segment counts at least one block, so the summary
+    /// line can read the count without guarding against zero.
     #[test]
-    fn segment_counts_are_non_zero_and_bounded_by_the_group_total() {
-        fn check(units: impl Iterator<Item = RenderUnit>) -> usize {
-            let mut seen = 0_usize;
-            for unit in units {
-                let RenderUnit::MessagingGroup { segments, .. } = unit else { continue };
-                for segment in &segments {
-                    assert!(segment.segment_count >= 1, "empty segment emitted: {segment:?}");
-                    assert!(
-                        segment.group_total_count >= segment.segment_count,
-                        "group total below its own segment: {segment:?}",
-                    );
-                    seen += 1;
-                }
-            }
-            seen
-        }
-
+    fn segment_counts_are_non_zero() {
         let messages = vec![
             assistant_message_with_blocks(vec![
                 outbound_peer_block("planner", "Tell"),
@@ -2274,69 +1859,35 @@ mod tests {
             user_text_message("any update?"),
             crate::app::ChatMessage::new(
                 crate::app::MessageRole::User,
-                vec![inbound_peer_block("tester", "Reply")],
+                vec![
+                    inbound_peer_block("tester", "Reply"),
+                    inbound_peer_block("tester", "Message"),
+                ],
                 None,
             ),
-            assistant_message_with_blocks(vec![outbound_peer_block("tester", "Tell")]),
         ];
-        let session_seen =
-            check(partition_session_into_render_units(&messages).into_iter().flatten());
-        assert!(session_seen >= 2, "expected several session segments; saw {session_seen}");
-
-        let within_message = vec![
-            outbound_peer_block("planner", "Tell"),
-            inbound_peer_block("tester", "Reply"),
-            outbound_peer_block("debugger", "Ask"),
-        ];
-        let per_message_seen =
-            check(partition_blocks_into_render_units(&within_message).into_iter());
-        assert_eq!(
-            per_message_seen, 1,
-            "expected the within-message segment; saw {per_message_seen}"
-        );
+        let mut seen = 0_usize;
+        for unit in per_message_units(&messages).iter().flatten() {
+            let RenderUnit::MessagingGroup { segment, .. } = unit else { continue };
+            assert!(segment.segment_count >= 1, "empty segment emitted: {segment:?}");
+            seen += 1;
+        }
+        assert_eq!(seen, 2, "expected one segment per grouped message; saw {seen}");
     }
 
-    /// Threshold-2: a lone outbound peer/worker block does NOT form an
-    /// @ group; it renders as an `Individual` plain peer block.
+    /// Threshold-2 for inbound: a lone inbound peer text block renders
+    /// as `Individual`, not a MessagingGroup.
     #[test]
-    fn messaging_group_single_outbound_session_walk_renders_individual() {
-        let messages =
-            vec![assistant_message_with_blocks(vec![outbound_peer_block("planner", "Tell")])];
-        let per_message_units = partition_session_into_render_units(&messages);
-        let groups: Vec<&RenderUnit> = per_message_units
-            .iter()
-            .flatten()
-            .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
-            .collect();
+    fn lone_inbound_peer_block_renders_individual() {
+        let blocks = vec![inbound_peer_block("tester", "Message")];
+        let units = partition_blocks_into_render_units(&blocks);
         assert!(
-            groups.is_empty(),
-            "threshold-2: a lone outbound peer block must not form an @ group",
+            !units.iter().any(|u| matches!(u, RenderUnit::MessagingGroup { .. })),
+            "threshold-2: a lone inbound peer block must not form an @ group; got {units:?}",
         );
         assert!(
-            per_message_units[0].iter().any(|u| matches!(u, RenderUnit::Individual(0))),
-            "lone outbound renders as Individual(0); got {:?}",
-            per_message_units[0],
-        );
-    }
-
-    /// Same threshold-2 invariant for inbound: a lone inbound peer
-    /// text block renders as `Individual`, not a MessagingGroup.
-    #[test]
-    fn messaging_group_single_inbound_session_walk_renders_individual() {
-        let messages = vec![crate::app::ChatMessage::new(
-            crate::app::MessageRole::User,
-            vec![inbound_peer_block("tester", "Message")],
-            None,
-        )];
-        let per_message_units = partition_session_into_render_units(&messages);
-        let groups: Vec<&RenderUnit> = per_message_units
-            .iter()
-            .flatten()
-            .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
-            .collect();
-        assert!(
-            groups.is_empty(),
-            "threshold-2: a lone inbound peer block must not form an @ group",
+            units.iter().any(|u| matches!(u, RenderUnit::Individual(0))),
+            "lone inbound renders as Individual(0); got {units:?}",
         );
     }
 
@@ -2373,17 +1924,15 @@ mod tests {
             outbound_peer_block("debugger", "Ask"),
             inbound_peer_block("tester", "Reply"),
         ])];
-        let per_message_units = partition_session_into_render_units(&messages);
-        let groups: Vec<&RenderUnit> = per_message_units
+        let units = per_message_units(&messages);
+        let groups: Vec<&RenderUnit> = units
             .iter()
             .flatten()
             .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
             .collect();
         assert_eq!(groups.len(), 1);
-        let RenderUnit::MessagingGroup { segments, .. } = groups[0] else { unreachable!() };
-        assert_eq!(segments.len(), 1);
-        assert_eq!(segments[0].segment_count, 3);
-        assert_eq!(segments[0].group_total_count, 3);
+        let RenderUnit::MessagingGroup { segment, .. } = groups[0] else { unreachable!() };
+        assert_eq!(segment.segment_count, 3);
     }
 
     /// Mixed direction lives in the same group; targets render in
@@ -2396,19 +1945,19 @@ mod tests {
             outbound_peer_block("debugger", "Ask"),
             inbound_peer_block("reviewer", "Message"),
         ])];
-        let per_message_units = partition_session_into_render_units(&messages);
-        let groups: Vec<&RenderUnit> = per_message_units
+        let units = per_message_units(&messages);
+        let groups: Vec<&RenderUnit> = units
             .iter()
             .flatten()
             .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
             .collect();
-        let RenderUnit::MessagingGroup { segments, .. } = groups[0] else { unreachable!() };
+        let RenderUnit::MessagingGroup { segment, .. } = groups[0] else { unreachable!() };
         assert_eq!(
-            segments[0].segment_outbound_targets.targets,
+            segment.segment_outbound_targets.targets,
             vec!["planner".to_owned(), "debugger".to_owned()],
         );
         assert_eq!(
-            segments[0].segment_inbound_targets.targets,
+            segment.segment_inbound_targets.targets,
             vec!["tester".to_owned(), "reviewer".to_owned()],
         );
     }
@@ -2424,18 +1973,15 @@ mod tests {
             outbound_peer_block("d", "Tell"),
             outbound_peer_block("e", "Tell"),
         ])];
-        let per_message_units = partition_session_into_render_units(&messages);
-        let groups: Vec<&RenderUnit> = per_message_units
+        let units = per_message_units(&messages);
+        let groups: Vec<&RenderUnit> = units
             .iter()
             .flatten()
             .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
             .collect();
-        let RenderUnit::MessagingGroup { segments, .. } = groups[0] else { unreachable!() };
-        assert_eq!(
-            segments[0].segment_outbound_targets.targets,
-            vec!["a".to_owned(), "b".to_owned()],
-        );
-        assert_eq!(segments[0].segment_outbound_targets.overflow_n, 3);
+        let RenderUnit::MessagingGroup { segment, .. } = groups[0] else { unreachable!() };
+        assert_eq!(segment.segment_outbound_targets.targets, vec!["a".to_owned(), "b".to_owned()],);
+        assert_eq!(segment.segment_outbound_targets.overflow_n, 3);
     }
 
     /// Adjacent peer/worker + tool-call runs partition into TWO render
@@ -2449,8 +1995,7 @@ mod tests {
             tool_call_block("r2", "Read"),
             tool_call_block("r3", "Read"),
         ])];
-        let per_message_units = partition_session_into_render_units(&messages);
-        let units = &per_message_units[0];
+        let units = &per_message_units(&messages)[0];
         let messaging_count =
             units.iter().filter(|u| matches!(u, RenderUnit::MessagingGroup { .. })).count();
         let tool_group_count =
@@ -2460,22 +2005,19 @@ mod tests {
     }
 
     /// A visible text block (assistant role, non-peer) BREAKS the run.
-    /// The two peer runs split into TWO messaging groups.
+    /// Two peer runs either side of one split into TWO messaging
+    /// groups within the same message.
     #[test]
     fn messaging_group_splits_across_visible_block() {
-        let messages = vec![
-            assistant_message_with_blocks(vec![
-                outbound_peer_block("planner", "Tell"),
-                outbound_peer_block("debugger", "Ask"),
-            ]),
-            user_text_message("any update?"),
-            assistant_message_with_blocks(vec![
-                text_block("here's an update"),
-                outbound_peer_block("reviewer", "Tell"),
-            ]),
-        ];
-        let per_message_units = partition_session_into_render_units(&messages);
-        let groups: Vec<&RenderUnit> = per_message_units
+        let messages = vec![assistant_message_with_blocks(vec![
+            outbound_peer_block("planner", "Tell"),
+            outbound_peer_block("debugger", "Ask"),
+            text_block("here's an update"),
+            outbound_peer_block("reviewer", "Tell"),
+            outbound_peer_block("tester", "Ask"),
+        ])];
+        let units = per_message_units(&messages);
+        let groups: Vec<&RenderUnit> = units
             .iter()
             .flatten()
             .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
@@ -2484,6 +2026,17 @@ mod tests {
             groups.len(),
             2,
             "an assistant-role text block between peer runs MUST split into two groups",
+        );
+        let leaders: Vec<&GroupId> = groups
+            .iter()
+            .map(|u| match u {
+                RenderUnit::MessagingGroup { group_leader_id, .. } => group_leader_id,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_ne!(
+            leaders[0], leaders[1],
+            "the two runs are independent groups and must not share a collapse key",
         );
     }
 }
