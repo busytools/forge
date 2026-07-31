@@ -425,7 +425,12 @@ fn append_or_push_envelope(app: &mut App, kind: EnvelopeKind, text: &str) {
     use crate::app::{ChatMessage, MessageBlock, MessageRole, TextBlock};
 
     let block = MessageBlock::Text(TextBlock::from_complete(text));
-    if let Some(tail) = app.messages().len().checked_sub(1)
+    // Peer only. Gotify and Cron can never reach the group threshold -
+    // `is_messaging_block` needs a `peer_sender_identity` and both return
+    // None - so merging buys them nothing, while costing them one role
+    // label for N alerts and one retention unit for N drops.
+    if kind == EnvelopeKind::Peer
+        && let Some(tail) = app.messages().len().checked_sub(1)
         && EnvelopeKind::of_message(&app.messages()[tail]) == Some(kind)
     {
         app.active_messages_mut()[tail].blocks.push(block);
@@ -2584,10 +2589,11 @@ mod inbound_message_surfacing_tests {
         assert_eq!(gotify.len(), 1, "the notification gets its own message");
     }
 
-    /// Same-kind merging is not only a Peer property: a run of
-    /// notifications is one message too, and a run of crons likewise.
+    /// Merging is Peer-only. Notifications and crons never reach the
+    /// group threshold, so merging would buy them nothing and would cost
+    /// them their separate role labels and separate retention units.
     #[test]
-    fn gotify_merges_with_gotify_and_cron_with_cron() {
+    fn gotify_and_cron_never_merge_even_with_their_own_kind() {
         const GOTIFY_2: &str = "[Gotify - app 'ci', priority 5]\nsecond alert\nbody";
         const CRON_1: &str = "[Cron]\n\nmorning summary";
         const CRON_2: &str = "[Cron]\n\nevening summary";
@@ -2597,16 +2603,14 @@ mod inbound_message_surfacing_tests {
         push_peer_envelope_user_turn_if_present(&mut app, &[envelope(GOTIFY_2)]);
         let gotify: Vec<&crate::app::ChatMessage> =
             app.messages().iter().filter(|m| m.is_gotify_envelope).collect();
-        assert_eq!(gotify.len(), 1, "two notifications are one message");
-        assert_eq!(gotify[0].blocks.len(), 2);
+        assert_eq!(gotify.len(), 2, "each notification keeps its own message");
 
         let mut app = App::test_default();
         push_peer_envelope_user_turn_if_present(&mut app, &[envelope(CRON_1)]);
         push_peer_envelope_user_turn_if_present(&mut app, &[envelope(CRON_2)]);
         let cron: Vec<&crate::app::ChatMessage> =
             app.messages().iter().filter(|m| m.is_cron_envelope).collect();
-        assert_eq!(cron.len(), 1, "two fired crons are one message");
-        assert_eq!(cron[0].blocks.len(), 2);
+        assert_eq!(cron.len(), 2, "each fired cron keeps its own message");
     }
 
     use super::handle_user;

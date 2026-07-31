@@ -662,20 +662,9 @@ fn extract_from_agent_after_with_trailer(rest: &str) -> Option<(String, String, 
     Some((name.to_owned(), org.to_owned(), trailing.to_owned()))
 }
 
-/// Render the L2 summary line for a messaging group: 2-space indent,
-/// status_icon, `@ ` (BOLD DIM), BOLD heading, then a DIM
-/// `click or ctrl+x to expand` hint.
-///
-/// Heading shape: `<n> message(s)` followed by direction-qualified
-/// target clauses (`· outbound to <targets>` and/or
-/// `· inbound from <targets>`). Targets render in order of first
-/// appearance; `+N` overflow appends after the named list. Direction
-/// clauses with no targets are omitted entirely (no "0 inbound"
-/// filler).
-///
-/// The aggregate status drives the leading icon via the same
-/// `tool_call::status_icon` helper the per-tool render uses; the
-/// active spinner glyph animates on `InProgress`.
+/// Render the L2 summary TREE for a messaging group: a parent count row
+/// plus one kind row per envelope kind and one leaf per message, drawn
+/// by the same renderer the tool groups use.
 pub(crate) fn render_messaging_group_summary_line(
     segment: &crate::ui::message::grouping::MessagingGroupSegment,
     spinner_glyph: char,

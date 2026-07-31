@@ -707,7 +707,7 @@ fn append_assistant_blocks(
     }
 }
 
-/// Push one messaging-group segment's L2 summary line and stamp the
+/// Push one messaging-group segment's L2 summary tree and stamp the
 /// leading block's hit-test fields, so a click on the summary routes
 /// back to the segment.
 fn append_messaging_group_summary(
@@ -3015,14 +3015,13 @@ mod tests {
             "assistant turn renders its standalone peer card; got {outbound:?}",
         );
 
-        // The bundle summary reads "N message(s) · <direction> <name>";
-        // a standalone card carries the same expand hint, so the count
-        // clause is what separates them.
+        // A bundle's parent row is a bare `N messages` count; a standalone
+        // card carries the kind label and body instead. The count row is
+        // what separates them, and it is the only string a bundle emits
+        // that a card never does.
         for rendered in [&inbound, &outbound] {
             assert!(
-                !rendered
-                    .iter()
-                    .any(|l| l.contains(" · inbound from") || l.contains(" · outbound to")),
+                !rendered.iter().any(|l| l.contains("messages") || l.contains("1 message")),
                 "neither turn bundles into a group summary; got {rendered:?}",
             );
         }

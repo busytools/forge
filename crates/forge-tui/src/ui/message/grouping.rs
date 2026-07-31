@@ -500,9 +500,9 @@ pub fn group_hit_at(blocks: &[MessageBlock], block_idx: usize) -> Option<GroupHi
 #[derive(Debug)]
 pub struct MessagingGroupHit {
     pub leader_id: GroupId,
-    /// True when the click landed on the segment's leading block - the
-    /// only row an L2 summary paints. A member block at L2 is behind the
-    /// summary and is not a click target at all.
+    /// True when the click landed on the segment's leading block, which
+    /// owns the whole rendered tree at L2. Member blocks have their rects
+    /// cleared and are not click targets.
     pub is_leader: bool,
 }
 
