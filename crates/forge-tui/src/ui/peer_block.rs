@@ -596,8 +596,9 @@ fn extract_from_agent_after_with_trailer(rest: &str) -> Option<(String, String, 
     Some((name.to_owned(), org.to_owned(), trailing.to_owned()))
 }
 
-/// Render the L2 summary line for a messaging group: 2-space indent
-/// + status_icon + `@ ` (BOLD DIM) + BOLD heading + DIM ctrl+x hint.
+/// Render the L2 summary line for a messaging group: 2-space indent,
+/// status_icon, `@ ` (BOLD DIM), BOLD heading, then a DIM
+/// `click or ctrl+x to expand` hint.
 ///
 /// Heading shape: `<n> message(s)` followed by direction-qualified
 /// target clauses (`· outbound to <targets>` and/or
@@ -1177,7 +1178,7 @@ mod tests {
     }
 
     /// The bundle summary cycles on click as well as ctrl+x, so it
-    /// advertises both - same affordance an individual peer card names.
+    /// advertises both.
     #[test]
     fn messaging_group_summary_advertises_click_and_ctrl_x() {
         use crate::ui::message::grouping::{MessagingDirectionTargets, MessagingGroupSegment};
@@ -1230,7 +1231,6 @@ mod tests {
         );
     }
 
-    /// Plural follows the segment's own count.
     #[test]
     fn messaging_group_summary_pluralizes_on_the_segment_count() {
         use crate::ui::message::grouping::{MessagingDirectionTargets, MessagingGroupSegment};

@@ -144,6 +144,16 @@ impl ToolCallInfo {
         self.mark_tool_call_render_dirty();
     }
 
+    /// Drop the click target of a tool an L2 summary has collapsed
+    /// away, so a click on the summary's rows cannot resolve to it.
+    /// Zeroing the width also drops this tool's `cache_measurement_key_matches`
+    /// entry, so it remeasures when it next renders.
+    pub fn clear_hit_test_rect(&mut self) {
+        self.last_measured_width = 0;
+        self.last_measured_height = 0;
+        self.last_measured_y_in_msg = 0;
+    }
+
     pub fn cache_measurement_key_matches(&self, width: u16, layout_generation: u64) -> bool {
         self.last_measured_width == width
             && self.last_measured_layout_epoch == self.layout_epoch
