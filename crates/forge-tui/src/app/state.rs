@@ -2336,18 +2336,51 @@ impl App {
         }
         tc.monitor_status = Some(status);
         tc.mark_tool_call_layout_dirty();
-        self.invalidate_monitor_block_height(msg_idx, block_idx);
+        self.invalidate_lifecycle_block_height(msg_idx, block_idx);
     }
 
-    /// Finish a monitor-block mutation the way the backgrounded-`Bash`
+    /// Finish a lifecycle-block mutation the way the backgrounded-`Bash`
     /// stream does (`app::terminal`): marking the tool dirty rebuilds
     /// the render, but the viewport keeps its own prefix-sum of message
     /// heights and this block's height swings as the tail fills and
     /// again when it collapses.
-    fn invalidate_monitor_block_height(&mut self, msg_idx: usize, block_idx: usize) {
+    fn invalidate_lifecycle_block_height(&mut self, msg_idx: usize, block_idx: usize) {
         self.sync_render_cache_slot(msg_idx, block_idx);
         self.recompute_message_retained_bytes(msg_idx);
         self.invalidate_message_set(std::iter::once(msg_idx));
+    }
+
+    /// Liveness of the workflow owning `tool_use_id`, read at
+    /// `ToolCallInfo` construction. `None` when no entry matches.
+    pub fn workflow_status_for_tool_use(
+        &self,
+        tool_use_id: &str,
+    ) -> Option<crate::app::state::types::WorkflowStatus> {
+        self.workflows().iter().find(|w| w.tool_use_id == tool_use_id).map(|w| w.status)
+    }
+
+    /// Mirror a workflow's liveness onto its chat block, for the same
+    /// reason `stamp_monitor_status_on_tool_call` exists: the launch
+    /// ack drives the TOOL CALL terminal while the workflow runs on.
+    fn stamp_workflow_status_on_tool_call(
+        &mut self,
+        tool_use_id: &str,
+        status: crate::app::state::types::WorkflowStatus,
+    ) {
+        let Some((msg_idx, block_idx)) = self.lookup_tool_call(tool_use_id) else {
+            return;
+        };
+        let Some(MessageBlock::ToolCall(tc)) =
+            self.active_messages_mut().get_mut(msg_idx).and_then(|m| m.blocks.get_mut(block_idx))
+        else {
+            return;
+        };
+        if tc.workflow_status == Some(status) {
+            return;
+        }
+        tc.workflow_status = Some(status);
+        tc.mark_tool_call_layout_dirty();
+        self.invalidate_lifecycle_block_height(msg_idx, block_idx);
     }
 
     /// Liveness of the monitor owning `tool_use_id`, read at
@@ -2424,7 +2457,7 @@ impl App {
         }
         tc.monitor_output_tail = last_five;
         tc.mark_tool_call_layout_dirty();
-        self.invalidate_monitor_block_height(msg_idx, block_idx);
+        self.invalidate_lifecycle_block_height(msg_idx, block_idx);
     }
 
     /// Read the matching Monitor's stored `output_file`
@@ -2665,11 +2698,21 @@ impl App {
     /// `Completed` status (called from `TaskUpdated` terminal
     /// patch). Triggers the all-completed clear.
     pub fn set_workflow_completed_by_task_id(&mut self, task_id: &str) {
-        if let Some(entry) =
-            self.workflows_mut().iter_mut().find(|w| w.task_id.as_deref() == Some(task_id))
-        {
+        let tool_use_id = {
+            let Some(entry) =
+                self.workflows_mut().iter_mut().find(|w| w.task_id.as_deref() == Some(task_id))
+            else {
+                return;
+            };
             entry.status = crate::app::state::types::WorkflowStatus::Completed;
-        }
+            entry.tool_use_id.clone()
+        };
+        // Stamp before the drain: `clear_workflows_if_all_terminal`
+        // removes the entry this would otherwise be read from.
+        self.stamp_workflow_status_on_tool_call(
+            &tool_use_id,
+            crate::app::state::types::WorkflowStatus::Completed,
+        );
         self.clear_workflows_if_all_terminal();
     }
 
@@ -3786,6 +3829,7 @@ mod tests {
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
+            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -3863,6 +3907,7 @@ mod tests {
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
+            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -3941,6 +3986,7 @@ mod tests {
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
+            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -4016,6 +4062,7 @@ mod tests {
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
+            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -5671,6 +5718,7 @@ mod tests {
                 terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
                 monitor_output_tail: Vec::default(),
                 monitor_status: None,
+                workflow_status: None,
                 render_epoch: 0,
                 layout_epoch: 0,
                 last_measured_width: 0,
@@ -5712,6 +5760,7 @@ mod tests {
                 terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
                 monitor_output_tail: Vec::default(),
                 monitor_status: None,
+                workflow_status: None,
                 render_epoch: 0,
                 layout_epoch: 0,
                 last_measured_width: 0,
@@ -8513,6 +8562,7 @@ mod tests {
                     terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
                     monitor_output_tail: Vec::default(),
                     monitor_status: None,
+                    workflow_status: None,
                     render_epoch: 0,
                     layout_epoch: 0,
                     last_measured_y_in_msg: 0,
@@ -8691,6 +8741,7 @@ mod tests {
                 terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
                 monitor_output_tail: Vec::default(),
                 monitor_status: None,
+                workflow_status: None,
                 render_epoch: 0,
                 layout_epoch: 0,
                 last_measured_y_in_msg: 0,
@@ -8764,6 +8815,7 @@ mod tests {
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
+            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -8797,6 +8849,7 @@ mod tests {
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
+            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,

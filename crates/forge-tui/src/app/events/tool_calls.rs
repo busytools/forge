@@ -210,6 +210,7 @@ fn build_tool_info_from_tool_call(
             | "CronDelete",
     );
     let monitor_status = app.monitor_status_for_tool_use(&tc.tool_call_id);
+    let workflow_status = app.workflow_status_for_tool_use(&tc.tool_call_id);
     let mut tool_info = ToolCallInfo {
         id: tc.tool_call_id,
         title: shorten_tool_title(&tc.title, &app.cwd_raw()),
@@ -235,6 +236,7 @@ fn build_tool_info_from_tool_call(
         terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
         monitor_output_tail: Vec::default(),
         monitor_status,
+        workflow_status,
         render_epoch: 0,
         layout_epoch: 0,
         last_measured_width: 0,
@@ -637,6 +639,7 @@ mod tests {
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::new(),
             monitor_status: None,
+            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,

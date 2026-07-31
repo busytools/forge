@@ -807,6 +807,7 @@ mod tests {
             terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
+            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -1313,7 +1314,7 @@ mod tests {
     /// both arms are asserted - the hidden arm is the control that
     /// makes the visible arm mean something.
     #[test]
-    fn un_hiding_a_monitor_splits_a_peer_run_that_used_to_merge() {
+    fn a_hidden_tool_passes_through_a_peer_run_but_a_visible_one_splits_it() {
         let messaging_groups = |blocks: &[MessageBlock]| {
             partition_blocks_into_render_units(blocks)
                 .iter()

@@ -435,19 +435,23 @@ fn mouse_point_to_selection(app: &App, mouse: MouseEvent) -> Option<MouseSelecti
 /// pane, flip that tool call's per-tool collapse override and consume
 /// the event. Returns `true` when a tool call was toggled (so the
 /// caller can skip starting a text selection).
-/// True when the block at this slot renders as a Monitor / Workflow
-/// lifecycle block, whose render ignores every collapse input.
+/// True when the block at this slot actually RENDERS as a lifecycle
+/// block, whose render ignores every collapse input. Keyed on the
+/// render rather than the tool name: a `Monitor` / `Workflow` whose
+/// input does not parse falls through to the standard tool card, and
+/// that card needs its normal click behaviour back.
 fn lifecycle_block_at(app: &App, msg_idx: usize, block_idx: usize) -> bool {
     app.messages().get(msg_idx).and_then(|m| m.blocks.get(block_idx)).is_some_and(|block| {
         match block {
-            MessageBlock::ToolCall(tc) => {
-                crate::ui::message::grouping::is_lifecycle_render_tool(&tc.sdk_tool_name)
-            }
+            MessageBlock::ToolCall(tc) => crate::ui::message::renders_as_lifecycle_block(tc),
             _ => false,
         }
     })
 }
 
+/// Resolve a click to a tool-call block and toggle its collapse state.
+/// Returns false when the click resolves to nothing, or to a block with
+/// no toggle, so the caller falls through to text selection.
 fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
     let Some((msg_idx, block_idx)) = locate_tool_call_block_at_click(app, mouse) else {
         trace_hit_test_miss(app, mouse, "tool_call_hit_test");
@@ -1253,6 +1257,14 @@ mod tests {
         app: &mut App,
         sdk_tool_name: &str,
     ) -> crate::ui::message::grouping::GroupId {
+        seed_single_tool_call_with_input(app, sdk_tool_name, None)
+    }
+
+    fn seed_single_tool_call_with_input(
+        app: &mut App,
+        sdk_tool_name: &str,
+        raw_input: Option<serde_json::Value>,
+    ) -> crate::ui::message::grouping::GroupId {
         use crate::agent::model;
         use crate::app::{
             BlockCache, ChatMessage, MessageRole, TerminalSnapshotMode, ToolCallInfo,
@@ -1263,7 +1275,7 @@ mod tests {
             id: tool_id.to_owned(),
             title: "Read /path/to/file.rs".to_owned(),
             sdk_tool_name: sdk_tool_name.to_owned(),
-            raw_input: None,
+            raw_input,
             raw_input_bytes: 0,
             output_metadata: None,
             task_metadata: None,
@@ -1278,6 +1290,7 @@ mod tests {
             terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
+            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_y_in_msg: 0,
@@ -1309,9 +1322,16 @@ mod tests {
     #[test]
     fn lifecycle_block_refuses_the_click_and_paints_no_hand() {
         use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
-        for name in ["Monitor", "Workflow"] {
+        let cases = [
+            (
+                "Monitor",
+                serde_json::json!({"description": "ci-watch", "command": "gh run watch 1"}),
+            ),
+            ("Workflow", serde_json::json!({"script": "export const meta = { name: 'x' }"})),
+        ];
+        for (name, input) in cases {
             let mut app = App::test_default();
-            seed_single_tool_call_named(&mut app, name);
+            seed_single_tool_call_with_input(&mut app, name, Some(input));
             let mouse = MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
                 column: 5,
@@ -1328,6 +1348,36 @@ mod tests {
                 "{name}: no clickable affordance over a block with no toggle",
             );
         }
+    }
+
+    /// The other half: a Monitor / Workflow whose input does not parse
+    /// paints a standard card, so it keeps the normal click + Hand. The
+    /// `Workflow({scriptPath})` shape hits this, and without it that
+    /// card would be permanently expanded with no affordance.
+    #[test]
+    fn a_lifecycle_tool_that_falls_through_keeps_normal_click_behaviour() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+        let mut app = App::test_default();
+        seed_single_tool_call_with_input(
+            &mut app,
+            "Workflow",
+            Some(serde_json::json!({"scriptPath": "/tmp/wf.js"})),
+        );
+        assert_eq!(
+            pointer_shape_at(&app, moved(5, 0)),
+            PointerShape::Hand,
+            "a standard card keeps its affordance",
+        );
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 0,
+            modifiers: KeyModifiers::empty(),
+        };
+        assert!(
+            try_toggle_tool_call_at_click(&mut app, mouse),
+            "a standard card still consumes its click",
+        );
     }
 
     #[test]
@@ -1557,6 +1607,7 @@ mod tests {
                 terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
                 monitor_output_tail: Vec::default(),
                 monitor_status: None,
+                workflow_status: None,
                 render_epoch: 0,
                 layout_epoch: 0,
                 last_measured_y_in_msg: 0,
@@ -1661,6 +1712,7 @@ mod tests {
             terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
+            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_y_in_msg: y,
@@ -1733,6 +1785,7 @@ mod tests {
             terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
+            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_y_in_msg: y,
@@ -1917,6 +1970,7 @@ mod tests {
             terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
+            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_y_in_msg: 0,
@@ -2045,6 +2099,7 @@ mod tests {
             terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
+            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_y_in_msg: 0,

@@ -52,7 +52,7 @@ pub fn is_carved_out_from_global_directive(tc: &ToolCallInfo) -> bool {
     if tc.content.iter().any(|c| matches!(c, ToolCallContent::Diff(_))) {
         return true;
     }
-    if crate::ui::message::grouping::is_lifecycle_render_tool(&tc.sdk_tool_name) {
+    if crate::ui::message::renders_as_lifecycle_block(tc) {
         return true;
     }
     false
@@ -84,6 +84,7 @@ mod tests {
             terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
+            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -156,16 +157,40 @@ mod tests {
         assert!(is_carved_out_from_global_directive(&tc));
     }
 
+    /// The carve-out follows the RENDER, not the tool name: only a
+    /// lifecycle block bypasses the global directive, because only it
+    /// ignores the collapse inputs. A Monitor whose input does not
+    /// parse renders as a standard card and must stay collapsible.
     #[test]
-    fn carve_out_true_for_monitor() {
-        let tc = make_tc("Monitor");
+    fn carve_out_true_for_monitor_that_renders_as_a_lifecycle_block() {
+        let mut tc = make_tc("Monitor");
+        tc.raw_input = Some(serde_json::json!({
+            "description": "ci-watch",
+            "command": "gh run watch 1",
+        }));
         assert!(is_carved_out_from_global_directive(&tc));
     }
 
     #[test]
-    fn carve_out_true_for_workflow() {
-        let tc = make_tc("Workflow");
+    fn carve_out_true_for_workflow_that_renders_as_a_lifecycle_block() {
+        let mut tc = make_tc("Workflow");
+        tc.raw_input = Some(serde_json::json!({"script": "export const meta = { name: 'x' }"}));
         assert!(is_carved_out_from_global_directive(&tc));
+    }
+
+    #[test]
+    fn carve_out_false_when_the_lifecycle_render_falls_through() {
+        // `Workflow({scriptPath})` is a documented invocation shape and
+        // carries no `script`, so it paints a standard card. Carving it
+        // out would leave that card permanently expanded with no way to
+        // collapse it.
+        let mut tc = make_tc("Workflow");
+        tc.raw_input = Some(serde_json::json!({"scriptPath": "/tmp/wf.js"}));
+        assert!(!is_carved_out_from_global_directive(&tc));
+
+        let mut tc = make_tc("Monitor");
+        tc.raw_input = Some(serde_json::json!({"description": "no command"}));
+        assert!(!is_carved_out_from_global_directive(&tc));
     }
 
     #[test]

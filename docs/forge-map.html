@@ -1450,11 +1450,12 @@ chat continues here...
       <pre class="indent">
   <span class="dim">◆ Workflow started · minimal-ping</span>
   ...
-  <span class="dim">◆ Workflow done · minimal-ping · ✓ result: {"answer": "pong", "confidence": 1}</span></pre>
+  <span class="dim">◆ Workflow done · minimal-ping</span></pre>
     </div>
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/message.rs::render_lifecycle_one_liner</code> renders the notice; <code>meta.name</code> is extracted from the script source. State accumulates on <code>UiSession.workflows</code> - see Inspector WORKFLOWS section</dd>
       <dt>script-only</dt><dd>the notice needs <code>tool_input.script</code>. A <code>Workflow({name})</code> or <code>Workflow({scriptPath})</code> launch carries no script, so <code>parse_workflow_input</code> returns <code>None</code> and the call falls through to the standard tool card (and gets no Inspector WORKFLOWS row either, since that entry is gated on the same parse).</dd>
+      <dt>liveness</dt><dd><code>started</code> vs <code>done</code> comes from <code>ToolCallInfo.workflow_status</code>, mirrored from <code>WorkflowEntry.status</code> - NOT from <code>ToolCallInfo.status</code>. The Workflow tool_result is the "Workflow launched in background" ack and lands while the phases are still running, so reading it would render <code>done</code> from the moment the workflow started.</dd>
       <dt>icon</dt><dd>kind icon <code>◆</code> (<code>U+25C6</code>, filled diamond) - distinct from Task/Agent <code>◇</code> (hollow diamond); same color palette. DIM in chat (minimal); RUST_ORANGE in the Inspector header</dd>
     </dl>
   </div>
@@ -1485,7 +1486,7 @@ chat continues here...
     <p><strong>Child rows clip to the render width.</strong> The <code>$ command</code> row and each tail row carry the tree connectors, and the outer layout char-wraps <em>without</em> the gutter, so an overflowing child row shears the tree. Both clip via the same helper the peer and tool-group trees use, and hold the same contract: the header row may wrap (its connectors live on the children), the connector rows must fit.</p>
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/message.rs::render_lifecycle_one_liner</code> renders the alive block (header + <code>$ command</code> + last-5 tail) and the collapsed summary; the tail is stamped onto <code>ToolCallInfo.monitor_output_tail</code> and the liveness onto <code>ToolCallInfo.monitor_status</code>, both from <code>app::state</code> keyed by the wire <code>task_id</code>. State still accumulates on <code>UiSession.monitors</code>. The Inspector MONITORS section is removed, so this block is Monitor's only surface anywhere in the TUI.</dd>
-      <dt>icon</dt><dd>Monitor running: <code>◉</code> (<code>U+25C9</code>, fisheye) <span class="accent">RUST_ORANGE</span> bold; completed: <code>✓</code> <span class="success">green</span>. TaskStop: <code>◍</code> (<code>U+25CD</code>, circle with vertical fill - terminate). Tail lines + connectors: <code>DIM</code>.</dd>
+      <dt>icon</dt><dd>Monitor running: <code>◉</code> (<code>U+25C9</code>, fisheye) <span class="accent">RUST_ORANGE</span> bold; completed: <code>✓</code> <span class="success">green</span>; stopped and timed out: <code>✗</code> <span class="error">red</span> - the wire folds failed / killed / stopped all into <code>Stopped</code>, so a watched command that failed arrives as <code>· stopped</code> and must not read as a success. TaskStop: <code>◍</code> (<code>U+25CD</code>, circle with vertical fill - terminate). Tail lines + connectors: <code>DIM</code>.</dd>
     </dl>
   </div>
 </div>

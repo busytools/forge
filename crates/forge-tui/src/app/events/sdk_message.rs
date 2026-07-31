@@ -1409,7 +1409,21 @@ fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
 
     let existing = app.with_turn_state(|ts| ts.tool_calls.get(tool_use_id).cloned());
     let Some(existing) = existing else {
-        apply_tool_use_block(app, tool_use_id, name, &Value::Object(serde_json::Map::new()), None);
+        // `turn_state` resets at every turn finalisation, so a frame
+        // arriving after its launching turn ended lands here. Only
+        // synthesize when no block exists: `apply_tool_use_block` would
+        // otherwise push a `"Task"` tool_use over a live block, renaming
+        // it and hiding it (the renderer matches `sdk_tool_name`, and a
+        // hidden block never reaches the renderer at all).
+        if app.lookup_tool_call(tool_use_id).is_none() {
+            apply_tool_use_block(
+                app,
+                tool_use_id,
+                name,
+                &Value::Object(serde_json::Map::new()),
+                None,
+            );
+        }
         return;
     };
     if matches!(
@@ -3095,6 +3109,7 @@ mod subagent_sentinel_tests {
             terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
+            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -3502,7 +3517,10 @@ mod monitor_chat_block_tests {
     //! produces: `tool_use` -> `tool_result` -> `task_started` ->
     //! `task_notification` carrying `output_file` (CLI 2.1.220).
     use super::super::tool_updates;
-    use super::{apply_tool_use_block, handle_task_notification, handle_task_started};
+    use super::{
+        apply_tool_use_block, handle_task_notification, handle_task_progress, handle_task_started,
+        handle_task_updated,
+    };
     use crate::agent::model;
     use crate::app::{App, MessageBlock};
     use forge_primitives::Message;
@@ -3562,16 +3580,55 @@ mod monitor_chat_block_tests {
         f(tc)
     }
 
-    /// Every assertion below is about what the chat block SHOWS, so it
-    /// is only meaningful while the block can still render. The
-    /// synthesis path in `apply_tool_progress_update` overwrites
-    /// `sdk_tool_name` and `hidden`, and the tail / liveness stamps key
-    /// on `tool_use_id` and read neither - so without this the tests
-    /// stay green against a block that has been renamed and hidden.
-    fn assert_block_still_renders(app: &App, when: &str) {
-        let (name, hidden) = with_tool_call(app, |tc| (tc.sdk_tool_name.clone(), tc.hidden));
-        assert_eq!(name, "Monitor", "{when}: the renderer matches on sdk_tool_name");
-        assert!(!hidden, "{when}: a hidden block returns before the renderer is reached");
+    /// Render the active session's chat exactly as the app does.
+    fn rendered_chat(app: &mut App) -> String {
+        let spinner = crate::ui::message::SpinnerState {
+            glyph: '\u{280B}',
+            is_active_turn_assistant: false,
+            show_empty_thinking: false,
+            show_thinking: false,
+            show_compacting: false,
+            thinking_tokens: None,
+            running_subagents: None,
+        };
+        let mut out = String::new();
+        for idx in 0..app.messages().len() {
+            let mut lines = Vec::new();
+            let Some(msg) = app.active_messages_mut().get_mut(idx) else { continue };
+            crate::ui::message::render_message(
+                msg,
+                &spinner,
+                crate::ui::message::MessageRenderContext::new(
+                    None,
+                    80,
+                    0,
+                    crate::ui::message::MessageRenderOptions {
+                        tools_collapsed: true,
+                        ..Default::default()
+                    },
+                ),
+                &mut lines,
+            );
+            for line in &lines {
+                out.push_str(&line.spans.iter().map(|s| s.content.as_ref()).collect::<String>());
+                out.push('\n');
+            }
+        }
+        out
+    }
+
+    /// Assert against what actually PAINTS, not against fields. Every
+    /// assertion in this module is about what the chat block shows, and
+    /// a block can stop being renderable while every tool_use_id-keyed
+    /// field on it stays correct - which is exactly how this module was
+    /// blind. A field check can be fooled by that; a render check
+    /// cannot, because a renamed or hidden block paints nothing.
+    fn assert_block_still_renders(app: &mut App, when: &str) {
+        let rendered = rendered_chat(app);
+        assert!(
+            rendered.contains("Monitor") && rendered.contains("tail-order probe"),
+            "{when}: the Monitor block must still paint; got:\n{rendered}",
+        );
     }
 
     /// `monitor_output_tail` feeds the live block's tree rows. Its only
@@ -3589,7 +3646,7 @@ mod monitor_chat_block_tests {
         handle_task_started(&mut app, task_started());
         handle_task_notification(&mut app, task_notification(&output_file));
 
-        assert_block_still_renders(&app, "after task_notification");
+        assert_block_still_renders(&mut app, "after task_notification");
         assert_eq!(
             with_tool_call(&app, |tc| tc.monitor_output_tail.clone()),
             (4..=8).map(|i| format!("FORGEPROBE line-{i}")).collect::<Vec<_>>(),
@@ -3630,7 +3687,7 @@ mod monitor_chat_block_tests {
             model::ToolCallStatus::Completed,
             "the ack alone marks the tool call terminal",
         );
-        assert_block_still_renders(&app, "after the tool_result ack");
+        assert_block_still_renders(&mut app, "after the tool_result ack");
         assert_eq!(
             with_tool_call(&app, |tc| tc.monitor_status),
             Some(crate::app::MonitorStatus::Running),
@@ -3679,9 +3736,153 @@ mod monitor_chat_block_tests {
         );
     }
 
+    /// The Workflow block rides the same split as the Monitor one:
+    /// the launch ack marks the tool call terminal, and only the
+    /// wire's terminal `task_updated` ends the workflow itself.
+    #[test]
+    fn workflow_block_liveness_follows_the_workflow_not_the_ack() {
+        const WF_TOOL_USE: &str = "toolu_workflow";
+        const WF_TASK: &str = "task_workflow";
+        let mut app = App::test_default();
+        apply_tool_use_block(
+            &mut app,
+            WF_TOOL_USE,
+            "Workflow",
+            &serde_json::json!({"script": "export const meta = { name: 'ping-pong' }\n"}),
+            None,
+        );
+        handle_task_started(
+            &mut app,
+            Message::TaskStarted {
+                task_id: WF_TASK.to_owned(),
+                description: "ping-pong".to_owned(),
+                uuid: String::new(),
+                session_id: String::new(),
+                tool_use_id: Some(WF_TOOL_USE.to_owned()),
+                task_type: None,
+            },
+        );
+        let workflow_state = |app: &App| {
+            let (mi, bi) = app.lookup_tool_call(WF_TOOL_USE).expect("Workflow stays indexed");
+            let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] else {
+                panic!("expected a ToolCall block");
+            };
+            assert_eq!(tc.sdk_tool_name, "Workflow", "the renderer matches on sdk_tool_name");
+            assert!(!tc.hidden, "a hidden block never reaches the renderer");
+            tc.workflow_status
+        };
+        assert_eq!(
+            workflow_state(&app),
+            Some(crate::app::WorkflowStatus::InProgress),
+            "still running while only the launch ack has landed",
+        );
+
+        app.set_workflow_completed_by_task_id(WF_TASK);
+        assert_eq!(
+            workflow_state(&app),
+            Some(crate::app::WorkflowStatus::Completed),
+            "the terminal task_updated reaches the chat block",
+        );
+    }
+
+    /// The synthesis path in `apply_tool_progress_update` fires when
+    /// `turn_state` has been reset, which any frame arriving after its
+    /// launching turn does. It must not push a `"Task"` tool_use over
+    /// a block that already exists - that renames it and hides it, and
+    /// every tool_use_id-keyed stamp keeps working regardless, so
+    /// nothing downstream notices.
+    #[test]
+    fn an_out_of_turn_progress_frame_cannot_rename_or_hide_the_block() {
+        let mut app = App::test_default();
+        arm_monitor(&mut app);
+        handle_task_started(&mut app, task_started());
+        // Turn finalisation: the mapping the progress path consults is
+        // gone, so the next frame for this id takes the synthesis branch.
+        let _: () = app.with_turn_state_mut(|ts| ts.tool_calls.clear());
+
+        handle_task_progress(
+            &mut app,
+            Message::TaskProgress {
+                task_id: TASK_ID.to_owned(),
+                uuid: String::new(),
+                session_id: String::new(),
+                tool_use_id: Some(TOOL_USE_ID.to_owned()),
+                last_tool_name: None,
+                description: String::new(),
+                usage: forge_primitives::messages::TaskUsage {
+                    total_tokens: 0,
+                    tool_uses: 0,
+                    duration_ms: 0,
+                },
+                workflow_progress: Vec::new(),
+            },
+        );
+
+        assert_block_still_renders(&mut app, "after an out-of-turn task_progress");
+    }
+
+    /// `monitor_status` is deliberately absent from
+    /// `update_existing_tool_call`'s sync set, and the field doc says
+    /// so - but a comment is not a guard. Adding it there rebuilds from
+    /// a fresh `ToolCallInfo`, and once `clear_monitors_if_all_terminal`
+    /// has drained the entry that rebuild resolves `None`, which renders
+    /// as still-running. This pins the outcome so the edit fails loudly.
+    #[test]
+    fn a_later_wire_update_cannot_reopen_a_collapsed_block() {
+        let mut app = App::test_default();
+        arm_monitor(&mut app);
+        handle_task_started(&mut app, task_started());
+        app.set_monitor_status_by_task_id(TASK_ID, crate::app::MonitorStatus::Completed);
+        app.clear_monitors_if_all_terminal();
+        assert!(app.monitors().is_empty(), "precondition: the entry has been drained");
+
+        // A re-delivered tool_use for the same id goes through
+        // `update_existing_tool_call`, which is where the forbidden
+        // sync would live. `handle_tool_call` directly is the only way
+        // to reach that path - `apply_tool_use_block` routes an
+        // already-known id to the field-patch path instead.
+        super::super::tool_calls::handle_tool_call(
+            &mut app,
+            model::ToolCall::new(TOOL_USE_ID, "Monitor")
+                .status(model::ToolCallStatus::Completed)
+                .meta(serde_json::json!({"claudeCode": {"toolName": "Monitor"}}))
+                .raw_input(monitor_input()),
+        );
+
+        let rendered = rendered_chat(&mut app);
+        assert!(
+            rendered.contains("completed"),
+            "the block stays collapsed after a later update; got:\n{rendered}",
+        );
+        assert!(
+            !rendered.contains("$ for i in"),
+            "a reopened block would paint the live command row; got:\n{rendered}",
+        );
+    }
+
+    /// The live multi-row shape - header, command, tail tree - has no
+    /// end-to-end coverage otherwise; the unit tests call the renderer
+    /// directly and the replay snapshot only ever caught the collapsed
+    /// one-liner.
+    #[test]
+    fn live_monitor_block_paints_its_tail_tree() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let output_file = dir.path().join("monitor.output");
+        let seeded: Vec<String> = (1..=3).map(|i| format!("build step {i}")).collect();
+        std::fs::write(&output_file, seeded.join("\n") + "\n").expect("seed the output file");
+
+        let mut app = App::test_default();
+        arm_monitor(&mut app);
+        handle_task_started(&mut app, task_started());
+        app.set_monitor_output_file_by_task_id(TASK_ID, output_file.clone());
+        app.refresh_monitor_output_tail_from_file(TASK_ID);
+
+        insta::assert_snapshot!(rendered_chat(&mut app).trim_end());
+    }
+
     /// A resumed session must not restore a finished monitor as live.
     /// Replay never re-drives the terminal `task_updated`, so liveness
-    /// here comes from `add_monitor` starting replayed entries
+    /// here comes from `upsert_monitor_from_tool_input` starting replayed entries
     /// `Stopped` - the block reads that and collapses.
     #[test]
     fn a_replayed_monitor_is_restored_terminal_not_live() {
@@ -3703,8 +3904,22 @@ mod monitor_chat_block_tests {
         let mut app = App::test_default();
         arm_monitor(&mut app);
         handle_task_started(&mut app, task_started());
-        app.set_monitor_status_by_task_id(TASK_ID, crate::app::MonitorStatus::Stopped);
-        assert_block_still_renders(&app, "after terminal task_updated");
+        // Drive the WIRE handler, not the setter: `handle_task_updated`
+        // is the only production path to a terminal monitor, and it is
+        // where the wire's failed / killed / stopped folding happens.
+        handle_task_updated(
+            &mut app,
+            Message::TaskUpdated {
+                task_id: TASK_ID.to_owned(),
+                patch: forge_primitives::messages::TaskUpdatePatch {
+                    status: Some("killed".to_owned()),
+                    end_time: None,
+                },
+                uuid: String::new(),
+                session_id: String::new(),
+            },
+        );
+        assert_block_still_renders(&mut app, "after terminal task_updated");
         assert_eq!(
             with_tool_call(&app, |tc| tc.monitor_status),
             Some(crate::app::MonitorStatus::Stopped),

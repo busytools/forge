@@ -1,5 +1,5 @@
 use super::block_cache::BlockCache;
-use super::types::MonitorStatus;
+use super::types::{MonitorStatus, WorkflowStatus};
 use crate::agent::model;
 
 pub struct ToolCallInfo {
@@ -45,6 +45,17 @@ pub struct ToolCallInfo {
     /// rebuild resolves `None` - which renders as live. Syncing it
     /// would silently reopen collapsed blocks.
     pub monitor_status: Option<MonitorStatus>,
+    /// Liveness of the workflow, mirrored from `WorkflowEntry.status`.
+    /// `None` for non-Workflow tool calls.
+    ///
+    /// Same split as `monitor_status`: a Workflow's `tool_result` is the
+    /// "Workflow launched in background" ack and lands while the
+    /// workflow is still running, so `status` says `Completed` almost
+    /// immediately. Carries the same caveat - do NOT add this to
+    /// `update_existing_tool_call`'s sync set, because
+    /// `clear_workflows_if_all_terminal` drains the entry and a rebuild
+    /// would resolve `None`, which renders as still-running.
+    pub workflow_status: Option<WorkflowStatus>,
     /// Length of terminal buffer at last snapshot - used to skip O(n) re-snapshots
     /// when the buffer hasn't grown.
     pub terminal_output_len: usize,
