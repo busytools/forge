@@ -173,6 +173,21 @@ async fn dispatch_notifications_return_none() {
     assert!(server.dispatch(&notif).await.is_none());
 }
 
+/// An id-bearing notification used to return `None`, which
+/// `control_dispatch` turns into an id-less `{"jsonrpc":"2.0","result":{}}` -
+/// a response the client cannot correlate to anything it sent.
+#[tokio::test]
+async fn id_bearing_notification_gets_a_correlatable_error() {
+    let server = McpServerBuilder::new("probe", "0.0.1").tool(EchoTool).build();
+    let resp = server
+        .dispatch(&req(7, "notifications/initialized", serde_json::Value::Null))
+        .await
+        .expect("an id-bearing request always gets a response");
+    let raw = serde_json::to_value(&resp).unwrap();
+    assert_eq!(raw["id"], 7, "the client's id must come back");
+    assert_eq!(raw["error"]["code"], -32600);
+}
+
 #[tokio::test]
 async fn dispatch_unknown_method_returns_error() {
     let server = McpServerBuilder::new("probe", "0.0.1").tool(EchoTool).build();
