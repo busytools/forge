@@ -41,7 +41,7 @@ use crate::SessionKey;
 /// Generated once at the sender's tool impl; threaded through the
 /// wrapper text the recipient sees, then echoed back via
 /// `in_reply_to` on the recipient's `tell_agent` reply.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CorrelationId(pub String);
 
 impl CorrelationId {
@@ -95,7 +95,7 @@ fn hex_8() -> String {
 
 /// Liveness of a peer agent (= project) from the perspective of any
 /// other agent calling `peers__list_agents`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PeerLiveness {
     /// Spawned and connected; ready to receive ask/tell immediately.
@@ -119,8 +119,7 @@ pub enum PeerFailureReason {
 /// Which MCP a cross-agent ask/message travelled over. Drives the
 /// reply-tool named in the Question envelope and the same-channel /
 /// wrong-channel reply-routing decision.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AskChannel {
     Peers,
     Workers,
@@ -137,8 +136,7 @@ impl AskChannel {
 }
 
 /// Wire kind of a peer message.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WrappedKind {
     /// `ask_agent` from sender. Recipient replies via the channel's
     /// tell-tool with `in_reply_to` set to this id.
@@ -249,7 +247,7 @@ impl WrappedPrompt {
 /// Live snapshot of a peer agent returned by `peers__list_agents` or
 /// `peers__whoami`. Built fresh on each tool call from forge.toml +
 /// workspace per-session state. Not persisted.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct PeerStatus {
     /// Project name as configured in forge.toml.
     pub name: String,
