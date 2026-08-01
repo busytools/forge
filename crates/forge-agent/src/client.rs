@@ -41,17 +41,6 @@ pub struct SessionLaunchSettings {
     pub force_new: bool,
 }
 
-impl SessionLaunchSettings {
-    pub fn is_empty(&self) -> bool {
-        self.language.is_none()
-            && self.settings.is_none()
-            && self.agent_progress_summaries.is_none()
-            && self.charter.is_none()
-            && self.delegation_catalog.is_none()
-            && self.extra_args.is_empty()
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum AgentEvent {
