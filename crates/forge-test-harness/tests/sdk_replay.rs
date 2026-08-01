@@ -62,10 +62,9 @@ async fn initialize_answers_the_requested_protocol_version() {
             if v["request"]["subtype"] != "mcp_message" || msg["method"] != "initialize" {
                 continue;
             }
-            let (Some(id), Ok(req)) = (
-                v["request_id"].as_str(),
-                serde_json::from_value::<JsonRpcRequest>(msg.clone()),
-            ) else {
+            let (Some(id), Ok(req)) =
+                (v["request_id"].as_str(), serde_json::from_value::<JsonRpcRequest>(msg.clone()))
+            else {
                 continue;
             };
             requests.insert(id.to_owned(), req);
