@@ -31,6 +31,24 @@ impl Tool for EchoTool {
     }
 }
 
+struct NamedTool(&'static str);
+
+#[async_trait]
+impl Tool for NamedTool {
+    fn name(&self) -> &str {
+        self.0
+    }
+    fn description(&self) -> &str {
+        "Named probe tool"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        json!({"type": "object", "properties": {}, "additionalProperties": false})
+    }
+    async fn call(&self, _input: ToolInput) -> ToolOutput {
+        ToolOutput::text("ok")
+    }
+}
+
 fn req(id: i64, method: &str, params: serde_json::Value) -> JsonRpcRequest {
     serde_json::from_value(json!({
         "jsonrpc": "2.0",
@@ -63,6 +81,27 @@ async fn dispatch_tools_list() {
     let raw = serde_json::to_value(&resp).unwrap();
     assert_eq!(raw["id"], 2);
     assert_eq!(raw["result"]["tools"][0]["name"], "echo");
+}
+
+#[tokio::test]
+async fn tools_list_order_is_deterministic() {
+    // Registration order is deliberately neither sorted nor reverse-sorted.
+    let mut b = McpServerBuilder::new("probe", "0.0.1");
+    for n in ["spawn", "list", "tell", "ask", "despawn", "create_role"] {
+        b = b.tool(NamedTool(n));
+    }
+    let resp =
+        b.build().dispatch(&req(2, "tools/list", serde_json::Value::Null)).await.expect("response");
+    let listed: Vec<String> = serde_json::to_value(&resp).unwrap()["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect();
+
+    let mut sorted = listed.clone();
+    sorted.sort();
+    assert_eq!(listed, sorted, "tools/list must emit a stable, sorted order");
 }
 
 #[tokio::test]

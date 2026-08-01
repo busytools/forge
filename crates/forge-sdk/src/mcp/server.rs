@@ -5,7 +5,7 @@
 //! request/response router. The `mcp::orchestration` module wires `dispatch`
 //! calls to the `mcp_message` control-request arm of `Client::handle_control`.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use tracing::debug;
@@ -20,7 +20,7 @@ use crate::mcp::tool::{Tool, ToolInput, ToolOutput};
 pub struct McpServer {
     name: String,
     version: String,
-    tools: HashMap<String, Arc<dyn Tool>>,
+    tools: BTreeMap<String, Arc<dyn Tool>>,
 }
 
 impl std::fmt::Debug for McpServer {
@@ -118,7 +118,7 @@ impl McpServer {
 pub struct McpServerBuilder {
     name: String,
     version: String,
-    tools: HashMap<String, Arc<dyn Tool>>,
+    tools: BTreeMap<String, Arc<dyn Tool>>,
 }
 
 impl std::fmt::Debug for McpServerBuilder {
@@ -134,7 +134,7 @@ impl std::fmt::Debug for McpServerBuilder {
 impl McpServerBuilder {
     /// Start a new builder.
     pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
-        Self { name: name.into(), version: version.into(), tools: HashMap::new() }
+        Self { name: name.into(), version: version.into(), tools: BTreeMap::new() }
     }
 
     /// Register a tool.
