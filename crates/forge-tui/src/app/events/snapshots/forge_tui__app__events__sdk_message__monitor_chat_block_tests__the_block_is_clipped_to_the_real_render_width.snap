@@ -1,0 +1,7 @@
+---
+source: crates/forge-tui/src/app/events/sdk_message.rs
+expression: rendered.trim_end()
+---
+Forge
+  ◉ Monitor · a description long enou...
+     └ $ gh run watch 18234567 --exit...

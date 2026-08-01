@@ -138,6 +138,13 @@ impl super::App {
             );
 
         total = total.saturating_add(tc.raw_input_bytes);
+        // The Monitor tail is the analogue of `terminal_output` above:
+        // owned strings that grow as the watched command emits.
+        total = total
+            .saturating_add(tc.monitor_output_tail.capacity().saturating_mul(size_of::<String>()));
+        for line in &tc.monitor_output_tail {
+            total = total.saturating_add(line.capacity());
+        }
         for content in &tc.content {
             total = total.saturating_add(Self::measure_tool_content_bytes(content));
         }

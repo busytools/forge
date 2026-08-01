@@ -26,8 +26,10 @@ use crate::app::MessageBlock;
 ///   in-flight window before the diff content arrives.
 /// - Any tool whose `content` carries a `ToolCallContent::Diff`
 ///   entry (Edit / Write / MultiEdit / NotebookEdit post-result).
-/// - Tools with a lifecycle-one-liner render path (Monitor / Workflow -
-///   `ui/message.rs::render_lifecycle_one_liner` arms).
+/// - Tools that actually RENDER as a lifecycle block
+///   (`ui/message.rs::renders_as_lifecycle_block`). Keyed on the render,
+///   not the name: a Monitor whose input does not parse paints an
+///   ordinary tool card and folds like one.
 /// - Tools rendered as a peer block
 ///   (`ui/peer_block.rs::detect_outbound` match set:
 ///   peers__ask_agent / peers__tell_agent / workers__ask /
@@ -63,7 +65,7 @@ pub fn is_run_breaker(block: &MessageBlock) -> bool {
     if has_diff {
         return true;
     }
-    if is_lifecycle_render_tool(&tc.sdk_tool_name) {
+    if crate::ui::message::renders_as_lifecycle_block(tc) {
         return true;
     }
     if is_peer_block_render_tool(&tc.sdk_tool_name) {
@@ -77,14 +79,6 @@ pub fn is_run_breaker(block: &MessageBlock) -> bool {
 /// hard requirement: mutations NEVER fold, NEVER collapse by default.
 fn is_edit_tool(sdk_tool_name: &str) -> bool {
     matches!(sdk_tool_name, "Edit" | "Write" | "MultiEdit" | "NotebookEdit")
-}
-
-/// Tools whose chat surface is the lifecycle one-liner / block render
-/// in `ui/message.rs::render_lifecycle_one_liner` (rather than the
-/// standard tool card). Name-based because the render fn matches by
-/// `sdk_tool_name` literal.
-fn is_lifecycle_render_tool(sdk_tool_name: &str) -> bool {
-    matches!(sdk_tool_name, "Monitor" | "Workflow")
 }
 
 /// Tools whose chat surface is the peer-block render in
@@ -806,6 +800,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -831,6 +826,17 @@ mod tests {
         let mut block = tool_call_block(id, sdk_tool_name);
         if let MessageBlock::ToolCall(tc) = &mut block {
             tc.content = vec![model::ToolCallContent::Diff(model::Diff::new("/tmp/dummy.rs", ""))];
+        }
+        block
+    }
+
+    /// A Monitor that genuinely renders as a lifecycle block. Run
+    /// breaking follows the RENDER, so a Monitor with no parseable
+    /// input is an ordinary card and folds like one.
+    fn lifecycle_tool_call_block(id: &str, sdk_tool_name: &str) -> MessageBlock {
+        let mut block = tool_call_block(id, sdk_tool_name);
+        if let MessageBlock::ToolCall(tc) = &mut block {
+            tc.raw_input = Some(serde_json::json!({"description": "d", "command": "c"}));
         }
         block
     }
@@ -870,8 +876,7 @@ mod tests {
     fn run_breaker_true_for_special_render_and_text_blocks() {
         assert!(is_run_breaker(&diff_tool_call_block("a", "Edit")));
         assert!(is_run_breaker(&diff_tool_call_block("b", "Write")));
-        assert!(is_run_breaker(&tool_call_block("c", "Monitor")));
-        assert!(is_run_breaker(&tool_call_block("d", "Workflow")));
+        assert!(is_run_breaker(&lifecycle_tool_call_block("c", "Monitor")));
         assert!(is_run_breaker(&text_block("hi")));
     }
 
@@ -947,12 +952,14 @@ mod tests {
                 "{name} without diff content (in-flight) MUST still break runs",
             );
         }
-        for name in ["Monitor", "Workflow"] {
-            assert!(
-                is_run_breaker(&tool_call_block("x", name)),
-                "{name} renders a lifecycle block and MUST break runs",
-            );
-        }
+        assert!(
+            is_run_breaker(&lifecycle_tool_call_block("x", "Monitor")),
+            "Monitor renders a lifecycle block and MUST break runs",
+        );
+        assert!(
+            !is_run_breaker(&tool_call_block("x", "Monitor")),
+            "a Monitor with no parseable input paints an ordinary card and folds",
+        );
         for name in [
             "mcp__forge__peers__ask_agent",
             "mcp__forge__peers__tell_agent",
@@ -1277,6 +1284,71 @@ mod tests {
         }
     }
 
+    /// A Monitor is only a run-breaker while it is VISIBLE, and it
+    /// became visible when the chat block un-hid. Pinning both shapes
+    /// it changes: a tool run splits around it, and a peer run no
+    /// longer reaches the 2-envelope threshold across it.
+    #[test]
+    fn a_visible_monitor_splits_the_runs_it_sits_in() {
+        let blocks = vec![
+            tool_call_block("tu-0", "Read"),
+            tool_call_block("tu-1", "Read"),
+            lifecycle_tool_call_block("tu-2", "Monitor"),
+            tool_call_block("tu-3", "Read"),
+            tool_call_block("tu-4", "Read"),
+        ];
+        let units = partition_blocks_into_render_units(&blocks);
+        let ranges: Vec<_> = units
+            .iter()
+            .map(|u| match u {
+                RenderUnit::Group { range, .. } => format!("group {range:?}"),
+                RenderUnit::Individual(i) => format!("individual {i}"),
+                RenderUnit::MessagingGroup { .. } => "messaging".to_owned(),
+            })
+            .collect();
+        assert_eq!(
+            ranges,
+            vec!["group 0..2", "individual 2", "group 3..5"],
+            "the Monitor breaks one run of four into two runs of two",
+        );
+    }
+
+    /// A HIDDEN tool passes through a messaging run so the envelopes
+    /// either side still merge; a VISIBLE one splits it. Both arms set
+    /// `hidden` by hand, so this pins the pass-through RULE rather than
+    /// any particular tool's suppression - it is the only repo-wide
+    /// guard for that path, and it would not notice a tool changing
+    /// sides.
+    #[test]
+    fn a_hidden_tool_passes_through_a_peer_run_but_a_visible_one_splits_it() {
+        let messaging_groups = |blocks: &[MessageBlock]| {
+            partition_blocks_into_render_units(blocks)
+                .iter()
+                .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
+                .count()
+        };
+        let hidden = vec![
+            outbound_peer_block("planner", "Tell"),
+            hidden_tool_call_block("tu-mon", "Monitor"),
+            outbound_peer_block("steward", "Tell"),
+        ];
+        assert_eq!(
+            messaging_groups(&hidden),
+            1,
+            "control: a hidden tool passes through, so the two envelopes merge",
+        );
+        let visible = vec![
+            outbound_peer_block("planner", "Tell"),
+            lifecycle_tool_call_block("tu-mon", "Monitor"),
+            outbound_peer_block("steward", "Tell"),
+        ];
+        assert_eq!(
+            messaging_groups(&visible),
+            0,
+            "visible: the run splits and each envelope is alone against the threshold of 2",
+        );
+    }
+
     #[test]
     fn partition_lone_groupable_tool_forms_single_item_group() {
         let blocks = make(&[("tool", "Read")]);
@@ -1426,7 +1498,7 @@ mod tests {
         // Mix of breaker shapes: Monitor (lifecycle), an Edit with a
         // Diff content (diff-class), and a plain text block.
         let blocks = vec![
-            tool_call_block("tu-0", "Monitor"),
+            lifecycle_tool_call_block("tu-0", "Monitor"),
             diff_tool_call_block("tu-1", "Edit"),
             text_block("hello"),
         ];

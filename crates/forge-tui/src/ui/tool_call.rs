@@ -10,6 +10,7 @@ mod group;
 mod standard;
 
 pub use group::SummaryChrome;
+pub(crate) use group::clip_to_width;
 pub use group::render_group_summary_line;
 
 use std::borrow::Cow;
@@ -295,6 +296,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -978,6 +980,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -1012,6 +1015,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -1048,6 +1052,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -1107,6 +1112,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
