@@ -63,14 +63,11 @@ pub use crate::mcp::macros::__private;
 pub use client::{Client, ClientEvents};
 pub use error::Error;
 pub use hooks::{
-    BaseHookInput, HookCallback, HookContext, HookDecision, HookKind, HookSpecificOutput, Hooks,
-    HooksBuilder, NotificationHookSpecificOutput, NotificationInput,
-    PermissionRequestHookSpecificOutput, PermissionRequestInput,
-    PostToolUseFailureHookSpecificOutput, PostToolUseFailureInput, PostToolUseHookSpecificOutput,
-    PostToolUseInput, PreCompactInput, PreToolUseHookSpecificOutput, PreToolUseInput,
-    PreToolUsePermissionDecision, SessionStartHookSpecificOutput, StopInput, SubagentContext,
-    SubagentStartHookSpecificOutput, SubagentStartInput, SubagentStopInput,
-    UserPromptSubmitHookSpecificOutput, UserPromptSubmitInput,
+    BaseHookInput, HookCallback, HookContext, HookDecision, HookKind, Hooks, HooksBuilder,
+    NotificationInput, PermissionRequestInput, PostToolUseFailureInput, PostToolUseInput,
+    PreCompactInput, PreToolUseHookSpecificOutput, PreToolUseInput, StopInput, SubagentContext,
+    SubagentStartInput, SubagentStopInput, UserPromptSubmitHookSpecificOutput,
+    UserPromptSubmitInput,
 };
 pub use options::{Options, OptionsBuilder, PermissionMode, SdkPluginConfig, SystemPromptKind};
 pub use paths::{app_support_dir, config_dir_hash, projects_dir_for};

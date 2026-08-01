@@ -20,7 +20,7 @@
 //!   `SDKSessionInfo`, `SessionMessage*`, `Sandbox*`,
 //!   `StreamEvent`.
 //! - [`hooks`] - hook event data (`HookKind`, `HookContext`, all 12
-//!   `*Input` structs, all 9 `*HookSpecificOutput` types).
+//!   `*Input` structs, the two `*HookSpecificOutput` wrappers).
 //! - [`permissions`] - permission decision data (`PermissionDecision`,
 //!   `ToolPermissionContext`, `PermissionUpdate*`, `Permission*`).
 //! - [`options`] - option-config enums shared between the SDK's
@@ -81,12 +81,9 @@ pub use cron::{CronEntry, CronId, CronKind};
 pub use error::AppError;
 pub use gotify::{GotifyConfig, GotifyMessage, GotifySubscription};
 pub use hooks::{
-    BaseHookInput, HookContext, HookKind, HookSpecificOutput, NotificationHookSpecificOutput,
-    NotificationInput, PermissionRequestHookSpecificOutput, PermissionRequestInput,
-    PostToolUseFailureHookSpecificOutput, PostToolUseFailureInput, PostToolUseHookSpecificOutput,
-    PostToolUseInput, PreCompactInput, PreToolUseHookSpecificOutput, PreToolUseInput,
-    PreToolUsePermissionDecision, SessionStartHookSpecificOutput, StopInput, SubagentContext,
-    SubagentStartHookSpecificOutput, SubagentStartInput, SubagentStopInput,
+    BaseHookInput, HookContext, HookKind, NotificationInput, PermissionRequestInput,
+    PostToolUseFailureInput, PostToolUseInput, PreCompactInput, PreToolUseHookSpecificOutput,
+    PreToolUseInput, StopInput, SubagentContext, SubagentStartInput, SubagentStopInput,
     UserPromptSubmitHookSpecificOutput, UserPromptSubmitInput,
 };
 pub use ids::{SessionId, ToolUseId};
