@@ -79,11 +79,11 @@ mod workspace;
 pub use account::{LoadingState, UsageFetchStatus};
 pub use domain_session::DomainSession;
 pub use error::WorkspaceError;
-pub use protocol::{Command, DispatchError, PendingInteractionSlot, SessionUpdate, TurnErrorClass};
+pub use protocol::{Command, DispatchError, SessionUpdate, TurnErrorClass};
 pub use target::{ProjectKey, SessionKey, SessionTarget};
-pub use ui::{SpinnerStyle, UiSettings};
+pub use ui::SpinnerStyle;
 pub use views::{AccountRow, ProjectView, SessionView};
-pub use workspace::{SessionChipInfo, SessionChipState, Workspace, resolve_lead_session};
+pub use workspace::{SessionChipInfo, SessionChipState, Workspace};
 
 // MCP (peers / workers) public surface. The `mcp` module itself is
 // crate-private now; these flat re-exports expose only the types
@@ -93,7 +93,7 @@ pub use workspace::{SessionChipInfo, SessionChipState, Workspace, resolve_lead_s
 // builders, mock facades, the caller-key resolver).
 pub use mcp::cron::schedule::next_fire_after;
 pub use mcp::gotify::types::GotifyNotification;
-pub use mcp::peers::types::{AskChannel, CorrelationId, WrappedKind, WrappedPrompt};
+pub use mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
 pub use mcp::workers::types::WorkerEntry;
 
 #[cfg(any(test, feature = "testing"))]
