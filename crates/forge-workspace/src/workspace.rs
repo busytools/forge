@@ -21,7 +21,7 @@ use crate::account::{self, AccountKey, AccountStateMap};
 use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
-use crate::protocol::{Command, DispatchError, PendingInteractionSlot, SessionUpdate};
+use crate::protocol::{Command, DispatchError, SessionUpdate};
 use crate::session_task::SessionTask;
 use crate::spawn;
 use crate::target::{ProjectKey, SessionKey, SessionTarget};
@@ -188,10 +188,8 @@ pub struct Workspace {
     /// `insert_live_worker` / `remove_latest_worker` / `drain_live_workers`.
     live_workers: Mutex<HashMap<ProjectKey, Vec<crate::mcp::workers::types::WorkerEntry>>>,
     /// Shared [`DomainSession`] handles, one per active `SessionTask`.
-    /// [`Self::store_pending_interaction`] writes under the same lock
-    /// the `SessionTask` actor uses to read+remove. `pub(crate)` so
-    /// crate-internal spawn and delivery paths can reach a session's
-    /// `DomainSession` directly.
+    /// `pub(crate)` so crate-internal spawn and delivery paths can
+    /// reach a session's `DomainSession` directly.
     pub(crate) domain_handles: Mutex<HashMap<SessionKey, Arc<Mutex<DomainSession>>>>,
     /// Wire-shape state for in-flight peer-coordination asks
     /// (`mcp__forge__peers__ask_agent`). One entry per outstanding ask
@@ -2851,35 +2849,6 @@ impl Workspace {
             .filter(|m| matches!(m.kind, forge_primitives::SessionMessageKind::User))
             .count();
         user_turn_count >= 2
-    }
-
-    /// Park an oneshot in
-    /// `DomainSession.pending_interactions[tool_id]`. Called from
-    /// `SessionTask::run` when an `AgentEvent::PermissionRequest` /
-    /// `QuestionRequest` arrives.
-    ///
-    /// No-op when no `SessionTask` is registered for `key` (e.g.,
-    /// the session was just closed) - the oneshot is dropped and the
-    /// caller's forwarder task observes a closed receiver, which
-    /// surfaces as an `oneshot::Recv` error in the existing
-    /// permission/question response forwarder paths.
-    pub fn store_pending_interaction(
-        &self,
-        key: &SessionKey,
-        tool_id: String,
-        slot: PendingInteractionSlot,
-    ) {
-        let Some(domain) = self.domain_handles.lock().get(key).cloned() else {
-            tracing::warn!(
-                target: "forge_workspace",
-                key = %key.as_str(),
-                tool_id = %tool_id,
-                "store_pending_interaction: no domain handle for key (session may be closed)",
-            );
-            return;
-        };
-        let mut guard = domain.lock();
-        guard.pending_interactions.insert(tool_id, slot);
     }
 
     /// Set the `session_id` field on the workspace's `DomainSession`
