@@ -1420,10 +1420,12 @@ fn readopted_turn_state_entry(app: &App, tool_use_id: &str) -> Option<forge_prim
         tc.raw_input.as_ref().unwrap_or(&Value::Null),
         None,
     );
-    // Title + status only: `apply_tool_summary_update` overwrites
-    // content from the notification, and the block in the message list
-    // stays the source of truth for everything else.
-    tc.title.clone_into(&mut rebuilt.title);
+    // Status only. It has to carry over or the terminal guard in
+    // `apply_tool_progress_update` misses and an already-finished tool
+    // call gets reopened. Nothing reads the entry's title, and
+    // `apply_tool_summary_update` takes content from the notification,
+    // so the block in the message list stays the source of truth for
+    // the rest.
     rebuilt.status = tc.status;
     Some(rebuilt)
 }
@@ -3777,10 +3779,19 @@ mod monitor_chat_block_tests {
         // `handle_task_notification` also runs the summary update,
         // which invalidates on its own - the assertion would then pass
         // with this fix removed entirely.
+        let bytes_before = app.message_retained_bytes().get(msg_idx).copied().unwrap_or(0);
         app.replace_monitor_output_tail_by_task_id(TASK_ID, &["one".to_owned(), "two".to_owned()]);
         assert!(
             app.active_viewport_mut().stale_message_heights[msg_idx],
             "the tail stamp changed the block's height and must schedule a remeasure",
+        );
+        // The retained-bytes cache feeds history trimming, so it has to
+        // track the tail growing and shrinking too - the same set
+        // `terminal.rs` does for a backgrounded Bash stream.
+        assert_ne!(
+            app.message_retained_bytes().get(msg_idx).copied().unwrap_or(0),
+            bytes_before,
+            "the tail stamp changed the message's retained size",
         );
 
         // Same for the liveness stamp: the block collapses from the
@@ -3900,8 +3911,18 @@ mod monitor_chat_block_tests {
 
         let readopted = app.with_turn_state(|ts| ts.tool_calls.get(TOOL_USE_ID).cloned());
         let readopted = readopted.expect("the progress frame re-registers the entry");
+        // The real-name property rides `meta.claudeCode.toolName`, which
+        // is what `resolve_sdk_tool_name` reads. Asserting on `title`
+        // would prove nothing: `tool_title` has no Monitor arm, so it
+        // returns the bare name whatever the entry was built from.
         assert_eq!(
-            readopted.title, "Monitor",
+            readopted
+                .meta
+                .as_ref()
+                .and_then(|m| m.get("claudeCode"))
+                .and_then(|c| c.get("toolName"))
+                .and_then(serde_json::Value::as_str),
+            Some("Monitor"),
             "re-registered under its real name, never as a Task",
         );
         assert_block_still_renders(&mut app, "after re-registration");
@@ -3940,6 +3961,42 @@ mod monitor_chat_block_tests {
         // catches overflow, and the layout constants can over-clip
         // without any row growing.
         insta::assert_snapshot!(rendered.trim_end());
+    }
+
+    /// The re-adopted entry must carry the block's CURRENT status. This
+    /// is the normal case, not an edge: the "Monitor started" ack drives
+    /// the tool call terminal seconds after arming, so by the time any
+    /// out-of-turn frame lands the call is already `Completed`. A
+    /// re-adopt that defaults to `Pending` walks straight past the
+    /// terminal guard and reopens a finished tool call.
+    #[test]
+    fn re_adopting_after_the_ack_does_not_reopen_a_terminal_tool_call() {
+        let mut app = App::test_default();
+        arm_monitor(&mut app);
+        handle_task_started(&mut app, task_started());
+
+        // The ack: the tool call goes terminal while the monitor runs on.
+        tool_updates::handle_tool_call_update_session(
+            &mut app,
+            &model::ToolCallUpdate::new(
+                TOOL_USE_ID,
+                model::ToolCallUpdateFields {
+                    status: Some(model::ToolCallStatus::Completed),
+                    ..Default::default()
+                },
+            ),
+        );
+        assert_eq!(with_tool_call(&app, |tc| tc.status), model::ToolCallStatus::Completed);
+
+        // Turn finalisation, then a frame that takes the re-adopt path.
+        let _: () = app.with_turn_state_mut(|ts| ts.tool_calls.clear());
+        handle_task_progress(&mut app, task_progress());
+
+        assert_eq!(
+            with_tool_call(&app, |tc| tc.status),
+            model::ToolCallStatus::Completed,
+            "a terminal tool call stays terminal across a re-adopt",
+        );
     }
 
     /// A resumed session must not restore a finished monitor as live.

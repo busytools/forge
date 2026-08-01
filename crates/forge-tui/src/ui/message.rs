@@ -1068,13 +1068,24 @@ fn render_lifecycle_one_liner(
                 } else {
                     (theme::ICON_FAILED, theme::STATUS_ERROR)
                 };
+                // Clips like every other row: it has no connectors to
+                // shear, but a wrapped continuation lands flush-left
+                // outside the block's 2-cell body indent.
+                let width = width as usize;
+                let label = crate::ui::tool_call::clip_to_width(
+                    "Monitor",
+                    width.saturating_sub(MONITOR_HEADER_GLYPH_CELLS),
+                );
+                let tail = crate::ui::tool_call::clip_to_width(
+                    &format!(" \u{b7} {} \u{b7} {status_word}", parsed.description),
+                    width
+                        .saturating_sub(MONITOR_HEADER_GLYPH_CELLS)
+                        .saturating_sub(crate::ui::wrap::display_width(&label)),
+                );
                 return Some(vec![Line::from(vec![
                     Span::styled(format!("  {glyph} "), Style::default().fg(colour)),
-                    Span::styled("Monitor".to_owned(), Style::default().fg(theme::DIM)),
-                    Span::styled(
-                        format!(" \u{b7} {} \u{b7} {status_word}", parsed.description),
-                        Style::default().fg(theme::DIM),
-                    ),
+                    Span::styled(label, Style::default().fg(theme::DIM)),
+                    Span::styled(tail, Style::default().fg(theme::DIM)),
                 ])]);
             }
             // Alive: header + $ command + last-5 tail tree.
@@ -5182,21 +5193,34 @@ mod tests {
                 "persistent": true,
                 "timeout_ms": 0,
             }));
-            tc.monitor_status = Some(crate::app::MonitorStatus::Running);
             tc.monitor_output_tail = vec![
                 "a tail line long enough to need clipping".to_owned(),
                 "a second tail line, so the spine connector renders too".to_owned(),
             ];
-            let rows = render_lines_to_strings(
-                &render_lifecycle_one_liner(&tc, width).expect("Monitor produces lines"),
-            );
-            assert!(rows.len() >= 4, "header + command + two tail rows at width {width}: {rows:?}");
-            for row in &rows {
-                assert!(
-                    unicode_width::UnicodeWidthStr::width(row.as_str()) <= width as usize,
-                    "row must fit width {width}; got {}: {row:?}",
-                    unicode_width::UnicodeWidthStr::width(row.as_str()),
+            // Both shapes: the live block AND the collapsed one-liner,
+            // which is the one shape nothing else renders below width 80.
+            for status in [
+                crate::app::MonitorStatus::Running,
+                crate::app::MonitorStatus::Completed,
+                crate::app::MonitorStatus::Stopped,
+            ] {
+                tc.monitor_status = Some(status);
+                let rows = render_lines_to_strings(
+                    &render_lifecycle_one_liner(&tc, width).expect("Monitor produces lines"),
                 );
+                if status == crate::app::MonitorStatus::Running {
+                    assert!(
+                        rows.len() >= 4,
+                        "header + command + two tail rows at width {width}: {rows:?}",
+                    );
+                }
+                for row in &rows {
+                    assert!(
+                        unicode_width::UnicodeWidthStr::width(row.as_str()) <= width as usize,
+                        "{status:?} row must fit width {width}; got {}: {row:?}",
+                        unicode_width::UnicodeWidthStr::width(row.as_str()),
+                    );
+                }
             }
         }
     }
