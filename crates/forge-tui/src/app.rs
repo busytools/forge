@@ -469,22 +469,14 @@ fn advance_spinner_frame(app: &mut App, now: Instant) {
 }
 
 async fn wait_for_shutdown_signal() -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        let mut sigterm =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-        tokio::select! {
-            sigint = tokio::signal::ctrl_c() => {
-                sigint?;
-            }
-            _ = sigterm.recv() => {}
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    tokio::select! {
+        sigint = tokio::signal::ctrl_c() => {
+            sigint?;
         }
-        Ok(())
+        _ = sigterm.recv() => {}
     }
-    #[cfg(not(unix))]
-    {
-        tokio::signal::ctrl_c().await
-    }
+    Ok(())
 }
 
 /// Flush a timed-out paste burst into the focused editor. `EmitChar`
