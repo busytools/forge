@@ -66,9 +66,10 @@ cargo nextest run -p forge-test-harness
 FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
   --no-capture --run-ignored all
 
-# Single live scenario:
+# Single live scenario (or `just conformance-capture-sdk <test>`).
+# --no-tests=fail so a typo in the name cannot look like a capture:
 FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
-  --no-capture --run-ignored only wire_capture_trivial_prompt
+  --no-capture --run-ignored only --no-tests=fail wire_capture_trivial_prompt
 ```
 
 ## Adding a new scenario
