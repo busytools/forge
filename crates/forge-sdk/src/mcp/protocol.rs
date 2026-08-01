@@ -28,7 +28,8 @@ pub struct JsonRpcRequest {
 }
 
 /// A JSON-RPC response from the MCP server back to the `claude` binary.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Outbound only - we construct these, never parse them.
+#[derive(Debug, Clone, Serialize)]
 pub struct JsonRpcResponse {
     /// Always `"2.0"`.
     pub jsonrpc: String,
@@ -54,8 +55,10 @@ impl JsonRpcResponse {
     }
 }
 
-/// Typed successful-response payload.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Typed successful-response payload. Outbound only, like its envelope: a
+/// `Deserialize` here would make the fieldless `Empty` match any object, so
+/// every unrecognised result would parse successfully rather than erroring.
+#[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum JsonRpcResult {
     /// Response to `initialize`.
@@ -82,9 +85,7 @@ pub enum JsonRpcResult {
         #[serde(default, rename = "isError", skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
     },
-    /// The spec's empty `{}` result, used by `ping`. Must stay last: untagged
-    /// deserialisation tries variants in order and a fieldless struct variant
-    /// matches any object.
+    /// The spec's empty `{}` result, used by `ping`.
     Empty {},
 }
 
@@ -176,16 +177,17 @@ mod tests_mcp_protocol {
         assert!(raw["result"].is_null());
     }
 
+    /// Untagged serialisation still has to put each variant on the wire
+    /// under its own shape, `Empty` included.
     #[test]
-    fn empty_variant_does_not_shadow_the_others() {
-        // `Empty {}` matches any object, so untagged deserialisation only stays
-        // correct while it is declared last.
-        let call = json!({"content": [{"type": "text", "text": "hi"}], "isError": true});
-        let parsed: JsonRpcResult = serde_json::from_value(call).expect("parse");
-        assert!(matches!(parsed, JsonRpcResult::ToolsCall { is_error: true, .. }));
-
-        let parsed: JsonRpcResult = serde_json::from_value(json!({})).expect("parse");
-        assert!(matches!(parsed, JsonRpcResult::Empty {}));
+    fn each_result_variant_serialises_to_its_own_shape() {
+        let call = JsonRpcResult::ToolsCall {
+            content: vec![json!({"type": "text", "text": "hi"})],
+            is_error: true,
+        };
+        let raw = serde_json::to_value(&call).expect("ser");
+        assert_eq!(raw["content"][0]["text"], "hi");
+        assert_eq!(raw["isError"], true);
     }
 
     #[test]
