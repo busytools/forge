@@ -104,7 +104,11 @@ async fn initialize_answers_latest_when_it_cannot_agree() {
         json!({"capabilities": {}}),
         serde_json::Value::Null,
     ] {
-        assert_eq!(negotiated(params.clone()).await, "2025-11-25", "params: {params}");
+        assert_eq!(
+            negotiated(params.clone()).await,
+            forge_sdk::mcp::protocol::LATEST_PROTOCOL_VERSION,
+            "params: {params}"
+        );
     }
 }
 

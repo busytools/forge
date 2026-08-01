@@ -38,10 +38,10 @@ pub struct JsonRpcResponse {
     /// Request id this response correlates to.
     pub id: Value,
     /// Success payload, mutually exclusive with `error`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<JsonRpcResult>,
     /// Error payload, mutually exclusive with `result`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<McpError>,
 }
 
@@ -84,7 +84,7 @@ pub enum JsonRpcResult {
         /// The content blocks the tool produced.
         content: Vec<Value>,
         /// Whether the call was an error.
-        #[serde(default, rename = "isError", skip_serializing_if = "std::ops::Not::not")]
+        #[serde(rename = "isError", skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
     },
     /// The spec's empty `{}` result, used by `ping`.
@@ -92,7 +92,7 @@ pub enum JsonRpcResult {
 }
 
 /// Server metadata in `initialize` response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ServerInfo {
     /// Human-readable server name (e.g. `"forge-sdk-in-process"`).
     pub name: String,
@@ -101,7 +101,7 @@ pub struct ServerInfo {
 }
 
 /// Standard MCP error body.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct McpError {
     /// JSON-RPC error code. Common values: -32700 parse, -32600 invalid request,
     /// -32601 method not found, -32602 invalid params, -32603 internal error.
@@ -109,12 +109,12 @@ pub struct McpError {
     /// Human-readable error message.
     pub message: String,
     /// Optional structured data.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
 }
 
 /// A tool as described in the `tools/list` response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ToolDescription {
     /// Tool name (e.g. `"greet"` - will be exposed to the model as
     /// `mcp__<server-name>__greet`).
