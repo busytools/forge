@@ -70,6 +70,53 @@ doc:
 # Full pre-commit / pre-PR verification loop.
 check: fmt-check unicode-punct-check clippy test-all doc
 
+# Deliberately not a bare `gh run watch`. Piping that masks its exit code
+# AND truncates its output, so one pipe loses both signals at once. Its
+# exit code is unreliable regardless - 0 on a concurrency-cancelled run,
+# and 0 with jobs still in flight after a transient 502 - so the verdict
+# is read back separately instead. headSha is compared against local HEAD
+# so a superseded earlier run cannot read as a pass for work it never
+# built.
+#
+# Watch CI to completion and report the real verdict; optional run id.
+ci-watch run_id="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    branch=$(git rev-parse --abbrev-ref HEAD)
+    want_sha=$(git rev-parse HEAD)
+
+    run_id="{{run_id}}"
+    if [ -z "$run_id" ]; then
+        run_id=$(gh run list --branch "$branch" --limit 1 \
+            --json databaseId --jq '.[0].databaseId // empty')
+    fi
+    if [ -z "$run_id" ]; then
+        echo "[ERROR] no CI run found for branch $branch" >&2
+        exit 1
+    fi
+
+    log=$(mktemp "${TMPDIR:-/tmp}/ci-watch.XXXXXX")
+    echo "[..] run $run_id on $branch, log: $log"
+    gh run watch "$run_id" --exit-status > "$log" 2>&1 || true
+
+    verdict=$(gh run view "$run_id" --json status,conclusion,headSha \
+        --jq '"\(.status) \(.conclusion // "none") \(.headSha)"')
+    read -r status conclusion head_sha <<< "$verdict"
+
+    if [ "$head_sha" != "$want_sha" ]; then
+        echo "[ERROR] run $run_id built $head_sha, not local HEAD $want_sha" >&2
+        exit 1
+    fi
+    if [ "$status" != "completed" ] || [ "$conclusion" != "success" ]; then
+        echo "[ERROR] run $run_id: status=$status conclusion=$conclusion" >&2
+        tail -30 "$log" >&2
+        exit 1
+    fi
+
+    rm -f "$log"
+    echo "[OK] run $run_id: success at $head_sha"
+
 # Build forge-tui from the current checkout and install the `forge`
 # binary into ~/.cargo/bin/forge. Defaults to release+perf. Wraps up
 # by refreshing the wire-rewriter CA in the System keychain (best-
