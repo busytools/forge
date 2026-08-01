@@ -74,6 +74,16 @@ conformance-capture-sdk test:
 doc:
     RUSTDOCFLAGS="-D warnings" RUSTFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 
+# Deliberately not part of `check`: the only errors it finds are ones
+# dev cannot see (`cfg(debug_assertions)`, and anything reachable only
+# through `debug_assert!`), and a second full compile is too slow for
+# the inner loop. `release` gates on it instead, which is where the
+# ordering actually bites.
+#
+# Compile the workspace in release. Mirrors CI's `cargo check --release`.
+check-release:
+    RUSTFLAGS="-D warnings" cargo check --release --workspace --all-targets
+
 # Full pre-commit / pre-PR verification loop.
 check: fmt-check unicode-punct-check clippy test-all doc
 
@@ -165,8 +175,11 @@ install-cert-uninstall:
 # Cut a release: bump the workspace version, commit, tag.
 # Does NOT push — that's gated per CLAUDE.md and stays explicit.
 # Requires cargo-edit (`cargo install cargo-edit`) for `cargo set-version`.
+# Gates on check-release because the ordering is what turns a caught
+# error into a public one: `cargo install` builds release, and it runs
+# after this recipe has already tagged.
 # Usage: `just release 0.17.0`
-release version:
+release version: check-release
     @if ! cargo set-version --help >/dev/null 2>&1; then \
         echo "[ERROR] cargo set-version not available — run: cargo install cargo-edit" >&2; \
         exit 1; \
