@@ -259,7 +259,7 @@ fn pad_right(s: &str, target_cells: usize) -> String {
 
 /// Clip `s` to `budget` display cells, appending `...` when over so the
 /// result still fits.
-fn clip_to_width(s: &str, budget: usize) -> String {
+pub(crate) fn clip_to_width(s: &str, budget: usize) -> String {
     if cells(s) <= budget {
         return s.to_owned();
     }

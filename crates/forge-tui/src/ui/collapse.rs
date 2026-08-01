@@ -5,11 +5,11 @@
 //! derivation rule. Per-item state wins when present; absent falls
 //! through to the global directive (`tools_collapsed`). The carve-out
 //! predicate names the kinds that bypass the directive entirely:
-//! Execute / Diff / Monitor / Workflow render expanded regardless of
-//! the directive.
+//! Execute / Diff / Monitor render expanded regardless of the
+//! directive.
 
 use crate::agent::model::ToolCallContent;
-use crate::app::{ToolCallInfo, is_monitor_tool_name};
+use crate::app::ToolCallInfo;
 use crate::ui::message::grouping::GroupCollapseLevel;
 
 /// Resolver for 2-state items (loose tool-calls, peer/MCP blocks
@@ -43,8 +43,8 @@ pub fn resolve_group_level(
 /// Kinds carved out from the global collapse directive. These render
 /// expanded regardless of `tools_collapsed`. Matches the existing
 /// pre-unify carve-out (Execute live-streaming + diff short-circuit)
-/// plus lifecycle blocks (Monitor + Workflow), whose render paths in
-/// `render_lifecycle_one_liner` bypass the directive by construction.
+/// plus the Monitor lifecycle block, whose render path in
+/// `render_lifecycle_one_liner` bypasses the directive by construction.
 pub fn is_carved_out_from_global_directive(tc: &ToolCallInfo) -> bool {
     if tc.is_execute_tool() {
         return true;
@@ -52,22 +52,10 @@ pub fn is_carved_out_from_global_directive(tc: &ToolCallInfo) -> bool {
     if tc.content.iter().any(|c| matches!(c, ToolCallContent::Diff(_))) {
         return true;
     }
-    if is_monitor_tool_name(&tc.sdk_tool_name) {
-        return true;
-    }
-    if is_workflow_tool_name(&tc.sdk_tool_name) {
+    if crate::ui::message::renders_as_lifecycle_block(tc) {
         return true;
     }
     false
-}
-
-/// Workflow lifecycle-tool predicate. Mirrors `is_monitor_tool_name`'s
-/// case-insensitive shape. Kept local because no upstream sibling
-/// exists today; if a future feature needs it elsewhere, lift to
-/// `crate::app::state::tool_call_info` alongside
-/// `is_monitor_tool_name`.
-fn is_workflow_tool_name(name: &str) -> bool {
-    name.eq_ignore_ascii_case("workflow")
 }
 
 #[cfg(test)]
@@ -95,6 +83,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -167,16 +156,28 @@ mod tests {
         assert!(is_carved_out_from_global_directive(&tc));
     }
 
+    /// The carve-out follows the RENDER, not the tool name: only a
+    /// lifecycle block bypasses the global directive, because only it
+    /// ignores the collapse inputs. A Monitor whose input does not
+    /// parse renders as a standard card and must stay collapsible.
     #[test]
-    fn carve_out_true_for_monitor() {
-        let tc = make_tc("Monitor");
+    fn carve_out_true_for_monitor_that_renders_as_a_lifecycle_block() {
+        let mut tc = make_tc("Monitor");
+        tc.raw_input = Some(serde_json::json!({
+            "description": "ci-watch",
+            "command": "gh run watch 1",
+        }));
         assert!(is_carved_out_from_global_directive(&tc));
     }
 
     #[test]
-    fn carve_out_true_for_workflow() {
-        let tc = make_tc("Workflow");
-        assert!(is_carved_out_from_global_directive(&tc));
+    fn carve_out_false_when_the_lifecycle_render_falls_through() {
+        // A Monitor missing its `command` paints a standard card.
+        // Carving it out would leave that card permanently expanded
+        // with no way to collapse it.
+        let mut tc = make_tc("Monitor");
+        tc.raw_input = Some(serde_json::json!({"description": "no command"}));
+        assert!(!is_carved_out_from_global_directive(&tc));
     }
 
     #[test]

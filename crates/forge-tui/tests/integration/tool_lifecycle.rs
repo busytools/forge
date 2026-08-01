@@ -937,6 +937,7 @@ fn backgrounded_bash_card(id: &str) -> ToolCallInfo {
         terminal_bytes_seen: 0,
         terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
         monitor_output_tail: Vec::default(),
+        monitor_status: None,
         render_epoch: 0,
         layout_epoch: 0,
         last_measured_width: 0,

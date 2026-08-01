@@ -2250,8 +2250,16 @@ impl App {
         // all-terminal-clear predicate; if a historical Monitor
         // genuinely WAS still running at replay time, the next
         // live event resolves it on its own terms.
+        // Replay seeds a TERMINAL status so the restored entry stops
+        // blocking `clear_monitors_if_all_terminal`. `Completed` rather
+        // than `Stopped`: the seed is a placeholder, not a wire signal,
+        // and the renderer now paints non-success terminals with a red
+        // failure glyph - so seeding `Stopped` would assert a failure we
+        // have no evidence for on every monitor in every resumed
+        // session. A terminal `task_updated` later in the same replay
+        // walk re-flips it to whatever actually happened.
         let initial_status = if self.replay_in_progress {
-            crate::app::state::types::MonitorStatus::Stopped
+            crate::app::state::types::MonitorStatus::Completed
         } else {
             crate::app::state::types::MonitorStatus::Running
         };
@@ -2305,11 +2313,58 @@ impl App {
         task_id: &str,
         status: crate::app::state::types::MonitorStatus,
     ) {
-        if let Some(entry) =
+        let Some(entry) =
             self.monitors_mut().iter_mut().find(|m| m.task_id.as_deref() == Some(task_id))
-        {
-            entry.status = status;
+        else {
+            return;
+        };
+        entry.status = status;
+        let tool_use_id = entry.tool_use_id.clone();
+        self.stamp_monitor_status_on_tool_call(&tool_use_id, status);
+    }
+
+    /// Mirror a monitor's liveness onto its chat block. The block reads
+    /// this rather than `ToolCallInfo::status`, which the "Monitor
+    /// started" ack drives terminal while the monitor is still alive.
+    fn stamp_monitor_status_on_tool_call(
+        &mut self,
+        tool_use_id: &str,
+        status: crate::app::state::types::MonitorStatus,
+    ) {
+        let Some((msg_idx, block_idx)) = self.lookup_tool_call(tool_use_id) else {
+            return;
+        };
+        let Some(MessageBlock::ToolCall(tc)) =
+            self.active_messages_mut().get_mut(msg_idx).and_then(|m| m.blocks.get_mut(block_idx))
+        else {
+            return;
+        };
+        if tc.monitor_status == Some(status) {
+            return;
         }
+        tc.monitor_status = Some(status);
+        tc.mark_tool_call_layout_dirty();
+        self.invalidate_lifecycle_block_height(msg_idx, block_idx);
+    }
+
+    /// Finish a lifecycle-block mutation the way the backgrounded-`Bash`
+    /// stream does (`app::terminal`): marking the tool dirty rebuilds
+    /// the render, but the viewport keeps its own prefix-sum of message
+    /// heights and this block's height swings as the tail fills and
+    /// again when it collapses.
+    fn invalidate_lifecycle_block_height(&mut self, msg_idx: usize, block_idx: usize) {
+        self.sync_render_cache_slot(msg_idx, block_idx);
+        self.recompute_message_retained_bytes(msg_idx);
+        self.invalidate_message_set(std::iter::once(msg_idx));
+    }
+
+    /// Liveness of the monitor owning `tool_use_id`, read at
+    /// `ToolCallInfo` construction. `None` when no entry matches.
+    pub fn monitor_status_for_tool_use(
+        &self,
+        tool_use_id: &str,
+    ) -> Option<crate::app::state::types::MonitorStatus> {
+        self.monitors().iter().find(|m| m.tool_use_id == tool_use_id).map(|m| m.status)
     }
 
     /// Stamp the `output_file` path on the matching
@@ -2377,6 +2432,7 @@ impl App {
         }
         tc.monitor_output_tail = last_five;
         tc.mark_tool_call_layout_dirty();
+        self.invalidate_lifecycle_block_height(msg_idx, block_idx);
     }
 
     /// Read the matching Monitor's stored `output_file`
@@ -3737,6 +3793,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -3813,6 +3870,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -3890,6 +3948,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -3964,6 +4023,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -5618,6 +5678,7 @@ mod tests {
                 terminal_bytes_seen: 1024,
                 terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
                 monitor_output_tail: Vec::default(),
+                monitor_status: None,
                 render_epoch: 0,
                 layout_epoch: 0,
                 last_measured_width: 0,
@@ -5658,6 +5719,7 @@ mod tests {
                 terminal_bytes_seen: 1024,
                 terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
                 monitor_output_tail: Vec::default(),
+                monitor_status: None,
                 render_epoch: 0,
                 layout_epoch: 0,
                 last_measured_width: 0,
@@ -8153,7 +8215,7 @@ mod tests {
     // -----------------------------------------------------------
 
     #[test]
-    fn upsert_monitor_during_replay_starts_in_stopped_state() {
+    fn upsert_monitor_during_replay_starts_in_a_terminal_state() {
         // During `load_resume_history` (replay_in_progress = true)
         // the wire walker doesn't re-emit terminal `task_updated`
         // events into the status setter. A replayed Monitor that
@@ -8173,8 +8235,10 @@ mod tests {
         assert_eq!(monitors.len(), 1);
         assert_eq!(
             monitors[0].status,
-            crate::app::state::types::MonitorStatus::Stopped,
-            "replay-inserted monitor must default to Stopped, not Running",
+            crate::app::state::types::MonitorStatus::Completed,
+            "a replay-inserted monitor starts terminal so it stops blocking the \
+             all-terminal clear, and Completed because the seed is a placeholder \
+             rather than evidence the watched command failed",
         );
     }
 
@@ -8458,6 +8522,7 @@ mod tests {
                     terminal_bytes_seen: 0,
                     terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
                     monitor_output_tail: Vec::default(),
+                    monitor_status: None,
                     render_epoch: 0,
                     layout_epoch: 0,
                     last_measured_y_in_msg: 0,
@@ -8635,6 +8700,7 @@ mod tests {
                 terminal_bytes_seen: 0,
                 terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
                 monitor_output_tail: Vec::default(),
+                monitor_status: None,
                 render_epoch: 0,
                 layout_epoch: 0,
                 last_measured_y_in_msg: 0,
@@ -8707,6 +8773,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -8739,6 +8806,7 @@ mod tests {
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
+            monitor_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
