@@ -11,9 +11,20 @@ use std::sync::Arc;
 use tracing::debug;
 
 use crate::mcp::protocol::{
-    JsonRpcRequest, JsonRpcResponse, JsonRpcResult, McpError, ServerInfo, ToolDescription,
+    JsonRpcRequest, JsonRpcResponse, JsonRpcResult, LATEST_PROTOCOL_VERSION, McpError, ServerInfo,
+    SUPPORTED_PROTOCOL_VERSIONS, ToolDescription,
 };
 use crate::mcp::tool::{Tool, ToolInput, ToolOutput};
+
+/// Echo the client's requested protocol version when we speak it, else answer
+/// with our latest - the spec's SHOULD for an unsupported request.
+fn negotiate_protocol_version(params: Option<&serde_json::Value>) -> &'static str {
+    params
+        .and_then(|p| p.get("protocolVersion"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|want| SUPPORTED_PROTOCOL_VERSIONS.into_iter().find(|v| *v == want))
+        .unwrap_or(LATEST_PROTOCOL_VERSION)
+}
 
 /// A fully-constructed MCP server. Clone is cheap (just bumps Arcs).
 #[derive(Clone)]
@@ -50,7 +61,7 @@ impl McpServer {
         };
         let result: Result<JsonRpcResult, McpError> = match req.method.as_str() {
             "initialize" => Ok(JsonRpcResult::Initialize {
-                protocol_version: "2024-11-05".into(),
+                protocol_version: negotiate_protocol_version(req.params.as_ref()).into(),
                 capabilities: serde_json::json!({"tools": {"listChanged": false}}),
                 server_info: ServerInfo { name: self.name.clone(), version: self.version.clone() },
             }),

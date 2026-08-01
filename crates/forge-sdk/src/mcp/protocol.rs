@@ -3,6 +3,15 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// MCP protocol revisions this server speaks, newest first. Nothing here is
+/// version-specific beyond text content blocks and `isError`, both unchanged
+/// across the range.
+pub const SUPPORTED_PROTOCOL_VERSIONS: [&str; 4] =
+    ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+
+/// Answered when the client asks for a revision we do not speak.
+pub const LATEST_PROTOCOL_VERSION: &str = SUPPORTED_PROTOCOL_VERSIONS[0];
+
 /// A JSON-RPC request from the `claude` binary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest {

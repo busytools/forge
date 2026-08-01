@@ -71,6 +71,39 @@ async fn dispatch_initialize() {
     assert_eq!(raw["result"]["serverInfo"]["name"], "probe");
 }
 
+async fn negotiated(requested: serde_json::Value) -> String {
+    let server = McpServerBuilder::new("probe", "0.0.1").tool(EchoTool).build();
+    let resp = server
+        .dispatch(&req(1, "initialize", requested))
+        .await
+        .expect("initialize produces a response");
+    serde_json::to_value(&resp).unwrap()["result"]["protocolVersion"]
+        .as_str()
+        .expect("protocolVersion is a string")
+        .to_string()
+}
+
+#[tokio::test]
+async fn initialize_echoes_every_supported_version() {
+    for v in ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"] {
+        assert_eq!(negotiated(json!({"protocolVersion": v})).await, v, "should echo {v}");
+    }
+}
+
+#[tokio::test]
+async fn initialize_falls_back_to_latest_when_unsupported_or_absent() {
+    // Unsupported, absent, and malformed all answer with our latest rather
+    // than erroring - the client decides whether it can live with that.
+    for params in [
+        json!({"protocolVersion": "1999-01-01"}),
+        json!({"protocolVersion": 5}),
+        json!({"capabilities": {}}),
+        serde_json::Value::Null,
+    ] {
+        assert_eq!(negotiated(params.clone()).await, "2025-11-25", "params: {params}");
+    }
+}
+
 #[tokio::test]
 async fn dispatch_tools_list() {
     let server = McpServerBuilder::new("probe", "0.0.1").tool(EchoTool).build();
