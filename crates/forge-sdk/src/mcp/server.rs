@@ -66,13 +66,6 @@ impl McpServer {
                 server_info: ServerInfo { name: self.name.clone(), version: self.version.clone() },
             }),
             "ping" => Ok(JsonRpcResult::Empty {}),
-            // Reached only when a notification-only method arrives carrying an
-            // id; the guard above already returned for the id-less form.
-            m if m.starts_with("notifications/") => Err(McpError {
-                code: -32600,
-                message: format!("{m} is a notification and must not carry an id"),
-                data: None,
-            }),
             "tools/list" => {
                 let tools: Vec<ToolDescription> = self
                     .tools
