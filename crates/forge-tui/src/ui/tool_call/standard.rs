@@ -29,7 +29,6 @@ pub(super) const TERMINAL_MAX_LINES: usize = 12;
 pub(super) const WRITE_DIFF_MAX_LINES: usize = 50;
 pub(super) const WRITE_DIFF_HEAD_LINES: usize = 10;
 const DEFAULT_COLLAPSED_TEXT_SUMMARY_LIMIT: usize = 60;
-const IN_PROGRESS_SUBAGENT_COLLAPSED_TEXT_SUMMARY_LIMIT: usize = 180;
 const DIFF_BODY_INDENT: &str = "  ";
 const DIFF_BODY_INDENT_WIDTH: u16 = 2;
 
@@ -213,23 +212,13 @@ pub(super) fn content_summary(tc: &ToolCallInfo) -> String {
                         return msg;
                     }
                     let first = stripped.lines().next().unwrap_or("");
-                    return truncate_summary_line(first, collapsed_text_summary_limit(tc));
+                    return truncate_summary_line(first, DEFAULT_COLLAPSED_TEXT_SUMMARY_LIMIT);
                 }
             }
             model::ToolCallContent::Terminal(_) => {}
         }
     }
     String::new()
-}
-
-fn collapsed_text_summary_limit(tc: &ToolCallInfo) -> usize {
-    if matches!(tc.status, model::ToolCallStatus::InProgress)
-        && matches!(tc.sdk_tool_name.as_str(), "Agent" | "Task")
-    {
-        IN_PROGRESS_SUBAGENT_COLLAPSED_TEXT_SUMMARY_LIMIT
-    } else {
-        DEFAULT_COLLAPSED_TEXT_SUMMARY_LIMIT
-    }
 }
 
 fn truncate_summary_line(line: &str, max_chars: usize) -> String {
