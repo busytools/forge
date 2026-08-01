@@ -114,7 +114,6 @@ fn insert_standalone_notice(
         vec![MessageBlock::Notice(
             NoticeBlock::from_complete(severity, message).with_dedup_key(dedup_key.clone()),
         )],
-        None,
     ));
     app.enforce_history_retention_tracked();
     app.turn_notice_refs_mut().push(TurnNoticeRef {

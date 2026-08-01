@@ -1,6 +1,5 @@
 use super::block_cache::BlockCache;
 use super::tool_call_info::ToolCallInfo;
-use super::types::MessageUsage;
 use ratatui::style::Color;
 use ratatui::text::Line;
 use std::cell::Cell;
@@ -12,7 +11,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct ChatMessage {
     pub role: MessageRole,
     pub blocks: Vec<MessageBlock>,
-    pub usage: Option<MessageUsage>,
     pub render_cache: MessageRenderCache,
     /// #143 item 2: cached peer-envelope flag stamped once at push
     /// time (the `PeerEnvelopeAppended` reducer + similar entry
@@ -50,11 +48,10 @@ pub struct ChatMessage {
 }
 
 impl ChatMessage {
-    pub fn new(role: MessageRole, blocks: Vec<MessageBlock>, usage: Option<MessageUsage>) -> Self {
+    pub fn new(role: MessageRole, blocks: Vec<MessageBlock>) -> Self {
         Self {
             role,
             blocks,
-            usage,
             render_cache: MessageRenderCache::default(),
             is_peer_envelope: false,
             is_gotify_envelope: false,
@@ -70,15 +67,10 @@ impl ChatMessage {
     /// reducer + any other site that constructs a known-envelope
     /// `ChatMessage`. Avoids the render-time `detect_inbound` walk
     /// over the text blocks.
-    pub fn new_peer_envelope(
-        role: MessageRole,
-        blocks: Vec<MessageBlock>,
-        usage: Option<MessageUsage>,
-    ) -> Self {
+    pub fn new_peer_envelope(role: MessageRole, blocks: Vec<MessageBlock>) -> Self {
         Self {
             role,
             blocks,
-            usage,
             render_cache: MessageRenderCache::default(),
             is_peer_envelope: true,
             is_gotify_envelope: false,
@@ -92,15 +84,10 @@ impl ChatMessage {
     /// Variant of `new` for a Gotify external notification, pre-stamping
     /// [`Self::is_gotify_envelope`]. Used by the `GotifyNotificationAppended`
     /// path so the role label renders the distinct `Gotify` source.
-    pub fn new_gotify_envelope(
-        role: MessageRole,
-        blocks: Vec<MessageBlock>,
-        usage: Option<MessageUsage>,
-    ) -> Self {
+    pub fn new_gotify_envelope(role: MessageRole, blocks: Vec<MessageBlock>) -> Self {
         Self {
             role,
             blocks,
-            usage,
             render_cache: MessageRenderCache::default(),
             is_peer_envelope: false,
             is_gotify_envelope: true,
@@ -114,15 +101,10 @@ impl ChatMessage {
     /// Variant of `new` for a fired-cron turn, pre-stamping
     /// [`Self::is_cron_envelope`]. Used by the `CronPromptAppended` path
     /// so the role label renders the distinct `Cron` source.
-    pub fn new_cron_envelope(
-        role: MessageRole,
-        blocks: Vec<MessageBlock>,
-        usage: Option<MessageUsage>,
-    ) -> Self {
+    pub fn new_cron_envelope(role: MessageRole, blocks: Vec<MessageBlock>) -> Self {
         Self {
             role,
             blocks,
-            usage,
             render_cache: MessageRenderCache::default(),
             is_peer_envelope: false,
             is_gotify_envelope: false,
@@ -145,7 +127,6 @@ impl ChatMessage {
                 tip_seed: random_welcome_tip_seed(),
                 cache: BlockCache::default(),
             })],
-            None,
         )
     }
 

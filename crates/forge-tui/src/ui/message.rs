@@ -2862,7 +2862,7 @@ mod tests {
     }
 
     fn make_text_message(role: MessageRole, text: &str) -> ChatMessage {
-        ChatMessage::new(role, vec![MessageBlock::Text(TextBlock::from_complete(text))], None)
+        ChatMessage::new(role, vec![MessageBlock::Text(TextBlock::from_complete(text))])
     }
 
     fn make_assistant_split_message(first: &str, second: &str) -> ChatMessage {
@@ -2875,7 +2875,6 @@ mod tests {
                 ),
                 MessageBlock::Text(TextBlock::from_complete(second)),
             ],
-            None,
         )
     }
 
@@ -2890,7 +2889,6 @@ mod tests {
                 )),
                 MessageBlock::Text(TextBlock::from_complete("After notice")),
             ],
-            None,
         )
     }
 
@@ -2962,12 +2960,10 @@ mod tests {
                 vec![MessageBlock::Text(TextBlock::from_complete(
                     "[Message id=t-abc123 from agent 'steward' (org 'forge')]\n\nthe window is lost",
                 ))],
-                None,
             ),
             ChatMessage::new(
                 MessageRole::Assistant,
                 vec![MessageBlock::ToolCall(Box::new(outbound))],
-                None,
             ),
         ]
     }
@@ -2995,7 +2991,7 @@ mod tests {
             )))
         };
         let signature_of = |blocks: Vec<MessageBlock>| {
-            let msg = ChatMessage::new_peer_envelope(MessageRole::User, blocks, None);
+            let msg = ChatMessage::new_peer_envelope(MessageRole::User, blocks);
             let spinner = idle_spinner();
             let ctx = MessageRenderContext::new(None, 80, 0, default_options());
             build_message_render_signature(&msg, &spinner, ctx.tool_render_context, &[], ctx)
@@ -3023,7 +3019,6 @@ mod tests {
                 envelope("steward", "two"),
                 envelope("planner", "three"),
             ],
-            None,
         );
 
         let spinner = idle_spinner();
@@ -3119,7 +3114,6 @@ mod tests {
                 outbound("toolu_b", "debugger"),
                 outbound("toolu_c", "planner"),
             ],
-            None,
         )];
         let rendered = render_one(&mut messages, 0);
 
@@ -3165,7 +3159,6 @@ mod tests {
         let mut messages = vec![ChatMessage::new(
             MessageRole::Assistant,
             vec![outbound("toolu_a", "planner"), outbound("toolu_b", "debugger")],
-            None,
         )];
         let _ = render_one(&mut messages, 0);
 
@@ -3194,7 +3187,6 @@ mod tests {
         let mut messages = vec![ChatMessage::new_peer_envelope(
             MessageRole::User,
             vec![envelope("steward"), envelope("planner")],
-            None,
         )];
         let rendered = render_one(&mut messages, 0);
         assert!(
@@ -3224,7 +3216,6 @@ mod tests {
         let mut messages = vec![ChatMessage::new(
             MessageRole::Assistant,
             vec![read("toolu_a"), read("toolu_b"), read("toolu_c")],
-            None,
         )];
         let _ = render_one(&mut messages, 0);
 
@@ -3633,7 +3624,7 @@ mod tests {
             show_empty_thinking: true,
             ..idle_spinner()
         };
-        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
+        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new());
         let mut lines = Vec::new();
 
         render_message(
@@ -3661,8 +3652,8 @@ mod tests {
             show_empty_thinking: true,
             ..idle_spinner()
         };
-        let mut measured_msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
-        let mut truth_msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
+        let mut measured_msg = ChatMessage::new(MessageRole::Assistant, Vec::new());
+        let mut truth_msg = ChatMessage::new(MessageRole::Assistant, Vec::new());
 
         let (h, _) = measure_message_height_cached_with_tools_collapsed_and_separator(
             &mut measured_msg,
@@ -3693,7 +3684,7 @@ mod tests {
             show_compacting: true,
             ..idle_spinner()
         };
-        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
+        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new());
         let mut lines = Vec::new();
 
         render_message(
@@ -3721,7 +3712,7 @@ mod tests {
             show_empty_thinking: true,
             ..idle_spinner()
         };
-        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
+        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new());
         let mut out = Vec::new();
 
         let remaining = render_message_from_offset_internal(
@@ -3754,7 +3745,7 @@ mod tests {
             show_compacting: true,
             ..idle_spinner()
         };
-        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
+        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new());
         let mut out = Vec::new();
 
         let remaining = render_message_from_offset_internal(
@@ -3952,7 +3943,6 @@ mod tests {
             let mut msg = ChatMessage::new(
                 MessageRole::Assistant,
                 vec![MessageBlock::ToolCall(Box::new(hidden_tool))],
-                None,
             );
 
             let mut lines = Vec::new();
@@ -4183,11 +4173,8 @@ mod tests {
             crate::agent::model::ToolCallStatus::Completed,
             "created plan",
         );
-        let mut msg = ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(tool))],
-            None,
-        );
+        let mut msg =
+            ChatMessage::new(MessageRole::Assistant, vec![MessageBlock::ToolCall(Box::new(tool))]);
         let options = default_options();
 
         let code_cache = get_or_build_message_render_cache(
@@ -4252,7 +4239,6 @@ mod tests {
         ChatMessage::new_peer_envelope(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete(&text))],
-            None,
         )
     }
 
@@ -4403,7 +4389,6 @@ mod tests {
                 envelope("Message", "planner", "picking up the migration"),
                 envelope("Reply", "tester", "take the render half"),
             ],
-            None,
         );
 
         let spinner = idle_spinner();
@@ -4487,7 +4472,7 @@ mod tests {
             "",
         );
         tc.raw_input = Some(serde_json::json!({ "label": target, "message": body }));
-        ChatMessage::new(MessageRole::Assistant, vec![MessageBlock::ToolCall(Box::new(tc))], None)
+        ChatMessage::new(MessageRole::Assistant, vec![MessageBlock::ToolCall(Box::new(tc))])
     }
 
     #[test]
@@ -4608,7 +4593,7 @@ mod tests {
             }),
             ..idle_spinner()
         };
-        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
+        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new());
         let mut lines = Vec::new();
 
         render_message(
@@ -4767,7 +4752,7 @@ mod tests {
 
     #[test]
     fn gotify_envelope_role_label_renders_distinct_gotify_source() {
-        let msg = ChatMessage::new_gotify_envelope(MessageRole::User, vec![], None);
+        let msg = ChatMessage::new_gotify_envelope(MessageRole::User, vec![]);
         let rendered: String =
             role_label_line(&msg).spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(rendered, "Gotify", "an external notification is never labeled Forge");
@@ -4775,7 +4760,7 @@ mod tests {
 
     #[test]
     fn peer_envelope_role_label_still_renders_forge() {
-        let msg = ChatMessage::new_peer_envelope(MessageRole::User, vec![], None);
+        let msg = ChatMessage::new_peer_envelope(MessageRole::User, vec![]);
         let rendered: String =
             role_label_line(&msg).spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(rendered, "Forge");
@@ -4786,7 +4771,7 @@ mod tests {
     /// no body. Suppress it - an idle empty placeholder renders nothing.
     #[test]
     fn empty_idle_assistant_placeholder_renders_nothing() {
-        let mut msg = ChatMessage::new(MessageRole::Assistant, vec![], None);
+        let mut msg = ChatMessage::new(MessageRole::Assistant, vec![]);
         let mut lines = Vec::new();
         render_message(
             &mut msg,
@@ -4805,8 +4790,7 @@ mod tests {
     /// render a bare "Info" label either.
     #[test]
     fn empty_idle_system_placeholder_renders_nothing() {
-        let mut msg =
-            ChatMessage::new(MessageRole::System(Some(SystemSeverity::Info)), vec![], None);
+        let mut msg = ChatMessage::new(MessageRole::System(Some(SystemSeverity::Info)), vec![]);
         let mut lines = Vec::new();
         render_message(
             &mut msg,
@@ -4830,7 +4814,7 @@ mod tests {
             is_active_turn_assistant: true,
             ..idle_spinner()
         };
-        let mut msg = ChatMessage::new(MessageRole::Assistant, vec![], None);
+        let mut msg = ChatMessage::new(MessageRole::Assistant, vec![]);
         let mut lines = Vec::new();
         render_message(
             &mut msg,
@@ -4850,7 +4834,7 @@ mod tests {
     /// an active turn with a running subagent.
     #[test]
     fn subagent_flip_invalidates_empty_assistant_render_cache() {
-        let mut msg = ChatMessage::new(MessageRole::Assistant, vec![], None);
+        let mut msg = ChatMessage::new(MessageRole::Assistant, vec![]);
 
         let mut lines_a = Vec::new();
         render_message(
@@ -4887,7 +4871,7 @@ mod tests {
     /// on an empty active assistant must rebuild, not serve the stale line.
     #[test]
     fn subagent_count_change_invalidates_empty_assistant_render_cache() {
-        let mut msg = ChatMessage::new(MessageRole::Assistant, vec![], None);
+        let mut msg = ChatMessage::new(MessageRole::Assistant, vec![]);
 
         let one = SpinnerState {
             is_active_turn_assistant: true,
@@ -5106,7 +5090,6 @@ mod tests {
                 read_block("r0", "/repo/crates/forge-tui/src/0.rs"),
                 read_block("r1", "/repo/crates/forge-tui/src/1.rs"),
             ],
-            None,
         );
         // An unrelated root leaves the paths absolute (nothing to strip).
         let under_other = render_under_root(&mut msg, &spinner, "/elsewhere");

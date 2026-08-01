@@ -546,13 +546,6 @@ pub struct RecentSessionInfo {
     pub first_prompt: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct MessageUsage {
-    pub input_tokens: Option<u64>,
-    pub cache_read_tokens: Option<u64>,
-    pub cache_write_tokens: Option<u64>,
-}
-
 // Wire-shape usage types live in forge-primitives::usage; re-exported
 // here so existing import paths (`crate::app::UsageSnapshot`, etc.)
 // keep resolving.

@@ -303,7 +303,6 @@ pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: 
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(tool_info))],
-            None,
         ));
         app.bind_active_turn_assistant(new_idx);
         app.index_tool_call(tc_id, new_idx, 0);
@@ -732,7 +731,7 @@ mod tests {
     }
 
     fn render_assistant_block(block: MessageBlock) -> String {
-        let mut msg = ChatMessage::new(MessageRole::Assistant, vec![block], None);
+        let mut msg = ChatMessage::new(MessageRole::Assistant, vec![block]);
         let spinner = crate::ui::message::SpinnerState {
             glyph: '\u{280B}',
             is_active_turn_assistant: false,

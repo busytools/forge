@@ -23,10 +23,10 @@ pub use tool_call_info::{
 };
 pub use types::{
     AppStatus, AttentionEntry, AttentionKind, BackgroundTask, ExtraUsage, FailedTurn, HelpView,
-    HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, MessageUsage, ModeInfo,
-    ModeState, MonitorEntry, MonitorStatus, PasteSessionState, PendingCommandAck, PhaseEntry,
-    PhaseStatus, RecentSessionInfo, RenderCacheBudget, ReviewRepliesWaiting, SUBAGENT_TAIL_CAP,
-    ScheduleEntry, ScheduleKind, ScrollbarDragState, SelectionKind, SelectionPoint, SelectionState,
+    HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeInfo, ModeState,
+    MonitorEntry, MonitorStatus, PasteSessionState, PendingCommandAck, PhaseEntry, PhaseStatus,
+    RecentSessionInfo, RenderCacheBudget, ReviewRepliesWaiting, SUBAGENT_TAIL_CAP, ScheduleEntry,
+    ScheduleKind, ScrollbarDragState, SelectionKind, SelectionPoint, SelectionState,
     SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState, SubagentChildEntry,
     SubagentEntry, TodoItem, TodoStatus, ToolCallScope, UsageSnapshot, UsageSourceKind, UsageState,
     UsageWindow, WorkflowEntry, WorkflowStatus,
@@ -3432,7 +3432,7 @@ impl App {
     /// placeholder in both - the pointer is what `chat::msg_spinner`
     /// reads to decide which message wears the spinner.
     pub(crate) fn push_active_turn_assistant_placeholder(&mut self) {
-        self.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+        self.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new()));
         self.bind_active_turn_assistant_to_tail();
     }
 
@@ -3808,7 +3808,6 @@ mod tests {
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(tc_info))],
-            None,
         ));
         let msg_idx = app.messages().len() - 1;
         app.index_tool_call(tool_use_id.to_owned(), msg_idx, 0);
@@ -3885,7 +3884,6 @@ mod tests {
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(tc_info))],
-            None,
         ));
         let msg_idx = app.messages().len() - 1;
         app.index_tool_call(tool_use_id.to_owned(), msg_idx, 0);
@@ -3963,7 +3961,6 @@ mod tests {
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(tc_info))],
-            None,
         ));
         let msg_idx = app.messages().len() - 1;
         app.index_tool_call(tool_use_id.to_owned(), msg_idx, 0);
@@ -4038,7 +4035,6 @@ mod tests {
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(tc_info))],
-            None,
         ));
         let msg_idx = app.messages().len() - 1;
         app.index_tool_call(tool_use_id.to_owned(), msg_idx, 0);
@@ -5139,7 +5135,6 @@ mod tests {
             ChatMessage::new(
                 MessageRole::User,
                 vec![MessageBlock::Text(TextBlock::from_complete(t))],
-                None,
             )
         };
         let bound_idx = app.messages().len();
@@ -5164,7 +5159,6 @@ mod tests {
             ChatMessage::new(
                 MessageRole::User,
                 vec![MessageBlock::Text(TextBlock::from_complete(t))],
-                None,
             )
         };
         let base = app.messages().len();
@@ -5654,7 +5648,7 @@ mod tests {
     }
 
     fn user_text_message(text: &str) -> ChatMessage {
-        ChatMessage::new(MessageRole::User, vec![assistant_text_block(text)], None)
+        ChatMessage::new(MessageRole::User, vec![assistant_text_block(text)])
     }
 
     fn assistant_tool_message(id: &str, status: model::ToolCallStatus) -> ChatMessage {
@@ -5690,7 +5684,6 @@ mod tests {
                 last_measured_y_in_msg: 0,
                 answered_questions: Vec::new(),
             }))],
-            None,
         )
     }
 
@@ -5731,7 +5724,6 @@ mod tests {
                 last_measured_y_in_msg: 0,
                 answered_questions: Vec::new(),
             }))],
-            None,
         )
     }
 
@@ -5739,8 +5731,8 @@ mod tests {
     fn enforce_render_cache_budget_evicts_lru_block() {
         let mut app = make_test_app();
         *app.active_messages_mut() = vec![
-            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("a")], None),
-            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("b")], None),
+            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("a")]),
+            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("b")]),
         ];
 
         let bytes_a = if let MessageBlock::Text(block) = &mut app.active_messages_mut()[0].blocks[0]
@@ -5785,7 +5777,6 @@ mod tests {
         *app.active_messages_mut() = vec![ChatMessage::new(
             MessageRole::Assistant,
             vec![assistant_text_block("streaming tail")],
-            None,
         )];
 
         let before = if let MessageBlock::Text(block) = &mut app.active_messages_mut()[0].blocks[0]
@@ -5813,16 +5804,8 @@ mod tests {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
         *app.active_messages_mut() = vec![
-            ChatMessage::new(
-                MessageRole::Assistant,
-                vec![assistant_text_block("old message")],
-                None,
-            ),
-            ChatMessage::new(
-                MessageRole::Assistant,
-                vec![assistant_text_block("streaming tail")],
-                None,
-            ),
+            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old message")]),
+            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("streaming tail")]),
         ];
 
         let bytes_a = if let MessageBlock::Text(block) = &mut app.active_messages_mut()[0].blocks[0]
@@ -5864,20 +5847,14 @@ mod tests {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
         *app.active_messages_mut() = vec![
-            ChatMessage::new(
-                MessageRole::Assistant,
-                vec![assistant_text_block("old message")],
-                None,
-            ),
+            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old message")]),
             ChatMessage::new(
                 MessageRole::Assistant,
                 vec![assistant_text_block("active streaming owner")],
-                None,
             ),
             ChatMessage::new(
                 MessageRole::System(Some(SystemSeverity::Info)),
                 vec![assistant_text_block("late trailing system row")],
-                None,
             ),
         ];
         app.bind_active_turn_assistant(1);
@@ -5907,9 +5884,9 @@ mod tests {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
         *app.active_messages_mut() = vec![
-            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old-a")], None),
-            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old-b")], None),
-            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("streaming")], None),
+            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old-a")]),
+            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old-b")]),
+            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("streaming")]),
         ];
 
         // Populate caches: messages 0 and 1 evictable, message 2 protected.
@@ -5951,11 +5928,8 @@ mod tests {
     fn enforce_render_cache_budget_protected_bytes_zero_when_not_streaming() {
         let mut app = make_test_app();
         app.status = AppStatus::Ready;
-        *app.active_messages_mut() = vec![ChatMessage::new(
-            MessageRole::Assistant,
-            vec![assistant_text_block("done")],
-            None,
-        )];
+        *app.active_messages_mut() =
+            vec![ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("done")])];
 
         if let MessageBlock::Text(block) = &mut app.active_messages_mut()[0].blocks[0] {
             block.cache.store(vec![Line::from("x".repeat(2000))]);
@@ -5970,16 +5944,8 @@ mod tests {
     fn enforce_render_cache_budget_accounts_for_message_render_cache() {
         let mut app = make_test_app();
         *app.active_messages_mut() = vec![
-            ChatMessage::new(
-                MessageRole::Assistant,
-                vec![assistant_text_block(&"a".repeat(4000))],
-                None,
-            ),
-            ChatMessage::new(
-                MessageRole::Assistant,
-                vec![assistant_text_block(&"b".repeat(4000))],
-                None,
-            ),
+            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block(&"a".repeat(4000))]),
+            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block(&"b".repeat(4000))]),
         ];
 
         let spinner = crate::ui::SpinnerState {
@@ -6056,7 +6022,6 @@ mod tests {
             let mut text = ChatMessage::new(
                 MessageRole::Assistant,
                 vec![assistant_text_block(&format!("row {i}"))],
-                None,
             );
             if let MessageBlock::Text(block) = &mut text.blocks[0] {
                 block.cache.store(vec![Line::from("t".repeat(1500 + i * 200))]);
@@ -6110,7 +6075,6 @@ mod tests {
             let mut msg = ChatMessage::new(
                 MessageRole::Assistant,
                 vec![assistant_text_block(&"x".repeat(400))],
-                None,
             );
             if let MessageBlock::Text(block) = &mut msg.blocks[0] {
                 block.cache.store(vec![Line::from("y".repeat(256))]);
@@ -6174,8 +6138,7 @@ mod tests {
         // itself push the budget comparison under the limit. A drift big
         // enough to do that skips eviction entirely, which is the leak's
         // user impact rather than this function's contract.
-        let mut bulk =
-            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("bulk")], None);
+        let mut bulk = ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("bulk")]);
         if let MessageBlock::Text(block) = &mut bulk.blocks[0] {
             block.cache.store(vec![Line::from("b".repeat(60_000))]);
         }
@@ -6247,7 +6210,6 @@ mod tests {
                 assistant_text_block("second"),
                 assistant_text_block("third"),
             ],
-            None,
         );
         for block in &mut owner.blocks {
             if let MessageBlock::Text(b) = block {
@@ -6419,7 +6381,6 @@ mod tests {
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![assistant_text_block("later message")],
-            None,
         ));
         app.ensure_render_cache_accounting();
         assert!(app.render_cache_protected_bytes() > 0, "the in-flight call protects the message");
@@ -6618,7 +6579,6 @@ mod tests {
             let mut msg = ChatMessage::new(
                 MessageRole::Assistant,
                 vec![assistant_text_block(&format!("row {i}"))],
-                None,
             );
             if let MessageBlock::Text(block) = &mut msg.blocks[0] {
                 block.cache.store(vec![Line::from("x".repeat(1024))]);
@@ -6817,7 +6777,7 @@ mod tests {
         *app.active_messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("drop this"),
-            ChatMessage::new(MessageRole::Assistant, Vec::new(), None),
+            ChatMessage::new(MessageRole::Assistant, Vec::new()),
         ];
         app.bind_active_turn_assistant(2);
         app.history_retention_mut().max_bytes = 1;
@@ -6835,11 +6795,7 @@ mod tests {
         app.status = AppStatus::Thinking;
         *app.active_messages_mut() = vec![
             user_text_message("drop this"),
-            ChatMessage::new(
-                MessageRole::Assistant,
-                vec![assistant_text_block("streaming reply")],
-                None,
-            ),
+            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("streaming reply")]),
         ];
         app.bind_active_turn_assistant(1);
         app.history_retention_mut().max_bytes = App::measure_message_bytes(&app.messages()[1]);
@@ -8534,7 +8490,6 @@ mod tests {
                     cache: BlockCache::default(),
                     collapsed_override: Some(override_val),
                 }))],
-                None,
             ));
         };
         push_tool(&mut app, "tu-a", true);
@@ -8585,7 +8540,6 @@ mod tests {
             app.active_messages_mut().push(ChatMessage::new_peer_envelope(
                 MessageRole::User,
                 vec![MessageBlock::Text(block)],
-                None,
             ));
         };
         push_peer(&mut app, "peer-a", true);
@@ -8712,7 +8666,6 @@ mod tests {
                 cache: BlockCache::default(),
                 collapsed_override: Some(true),
             }))],
-            None,
         ));
 
         super::super::keys::toggle_all_tool_calls(&mut app);
@@ -8836,7 +8789,7 @@ mod tests {
             );
             blocks.push(MessageBlock::ToolCall(Box::new(child)));
         }
-        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, blocks, None));
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, blocks));
         root_id
     }
 

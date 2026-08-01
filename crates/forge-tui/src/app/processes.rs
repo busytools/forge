@@ -1434,7 +1434,6 @@ mod tests {
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(bash)), MessageBlock::ToolCall(Box::new(agent))],
-            None,
         ));
         app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
         app.insert_session_task_mapping("task-agent".to_owned(), "tu-agent".to_owned());
@@ -1562,7 +1561,6 @@ mod tests {
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(bash))],
-            None,
         ));
 
         // Session-scoped signals the real producer writes mid-turn: the
@@ -1634,7 +1632,6 @@ mod tests {
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(bash))],
-            None,
         ));
 
         // Session map still carries the mapping (survives turn reset), but the
@@ -1699,7 +1696,6 @@ mod tests {
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(bash))],
-            None,
         ));
 
         app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
@@ -1760,7 +1756,6 @@ mod tests {
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(bash))],
-            None,
         ));
         app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
         *app.background_tasks_mut() = vec![BackgroundTask {
@@ -1818,7 +1813,6 @@ mod tests {
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(bash))],
-            None,
         ));
         app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
         *app.background_tasks_mut() = vec![BackgroundTask {

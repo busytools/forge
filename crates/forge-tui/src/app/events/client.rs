@@ -459,7 +459,6 @@ fn apply_session_update_spawning(
         vec![crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete(&format!(
             "Waking {display_name}…"
         )))],
-        None,
     ));
     bucket.message_retained_bytes.push(0);
     app.sessions.insert(key.clone(), bucket);
@@ -1916,7 +1915,6 @@ mod tests {
                 vec![crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete(
                     "intermediate state",
                 ))],
-                None,
             ));
             b.message_retained_bytes.push(0);
         }
@@ -1963,7 +1961,6 @@ mod tests {
             vec![crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete(
                 "Waking proj…",
             ))],
-            None,
         ));
         app.sessions.insert(from.clone(), bucket);
         app.active_session_key = Some(from.clone());

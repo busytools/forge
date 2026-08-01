@@ -1276,7 +1276,6 @@ mod tests {
         ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::Text(TextBlock::from_complete(text))],
-            None,
         )
     }
 
@@ -1284,7 +1283,6 @@ mod tests {
         ChatMessage::new(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete(text))],
-            None,
         )
     }
 
@@ -1292,21 +1290,19 @@ mod tests {
         ChatMessage::new(
             MessageRole::System(Some(SystemSeverity::Info)),
             vec![MessageBlock::Text(TextBlock::from_complete(text))],
-            None,
         )
     }
 
     /// An empty non-active assistant placeholder. With no blocks, no spinner,
     /// and no stop-hook chip it is chat-hidden and measures to a genuine 0 rows.
     fn empty_placeholder_message() -> ChatMessage {
-        ChatMessage::new(MessageRole::Assistant, Vec::new(), None)
+        ChatMessage::new(MessageRole::Assistant, Vec::new())
     }
 
     fn multi_block_assistant_message(texts: &[&str]) -> ChatMessage {
         ChatMessage::new(
             MessageRole::Assistant,
             texts.iter().map(|t| MessageBlock::Text(TextBlock::from_complete(t))).collect(),
-            None,
         )
     }
 
@@ -1369,9 +1365,7 @@ mod tests {
         };
         (0..msg_count)
             .map(|i| match i % 4 {
-                0 | 2 => {
-                    ChatMessage::new(MessageRole::User, vec![envelope(i, 0), envelope(i, 1)], None)
-                }
+                0 | 2 => ChatMessage::new(MessageRole::User, vec![envelope(i, 0), envelope(i, 1)]),
                 1 => assistant_text_message("plain prose that breaks the run"),
                 _ => user_message("plain prose that breaks the run"),
             })
@@ -2341,7 +2335,7 @@ mod tests {
         *app.active_messages_mut() = vec![
             assistant_text_message("older reply"),
             user_message("next prompt"),
-            ChatMessage::new(MessageRole::Assistant, Vec::new(), None),
+            ChatMessage::new(MessageRole::Assistant, Vec::new()),
             system_message("rate limit warning"),
         ];
         app.bind_active_turn_assistant(2);
@@ -2367,7 +2361,7 @@ mod tests {
         app.status = AppStatus::Thinking;
         *app.active_messages_mut() = vec![
             assistant_text_message("older reply"),
-            ChatMessage::new(MessageRole::Assistant, Vec::new(), None),
+            ChatMessage::new(MessageRole::Assistant, Vec::new()),
             system_message("status"),
         ];
         app.bind_active_turn_assistant(1);

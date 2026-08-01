@@ -160,7 +160,6 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
             peer_last_measured_height: 0,
             peer_last_measured_width: 0,
         })],
-        None,
     ));
 }
 
@@ -200,7 +199,7 @@ fn push_queued_group(app: &mut App, prompts: &[String]) {
         let body = format!("▸ {prompt}");
         blocks.push(MessageBlock::Text(TextBlock::from_complete(&body)));
     }
-    app.push_message_tracked(ChatMessage::new(MessageRole::User, blocks, None));
+    app.push_message_tracked(ChatMessage::new(MessageRole::User, blocks));
     app.enforce_history_retention_tracked();
     tracing::debug!(
         target: crate::logging::targets::APP_INPUT,
