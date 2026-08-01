@@ -198,10 +198,16 @@ impl DecodeReport {
 ///
 /// The decoder answers "is this modelled?" on its own - a typed subtype
 /// never reaches `Message::System` - so this list holds only the
-/// exceptions rather than mirroring every modelled subtype. That is what
-/// makes it safe to leave alone: a new CLI subtype is absent from the
-/// list and goes red, while a subtype that later grows a typed variant
-/// stops arriving here and leaves at worst a stale entry.
+/// exceptions rather than mirroring every modelled subtype. A new CLI
+/// subtype is absent from the list and goes red.
+///
+/// An entry is only harmless while that subtype has no typed variant.
+/// `SystemRepr` is untagged, so a subtype that IS modelled degrades into
+/// the generic bucket when its payload shape drifts, and today that is
+/// caught only because the subtype is missing from this list. Give `init`
+/// or `status` a typed variant and its entry here turns load-bearing: it
+/// starts suppressing payload drift on a shape the decoder claims to
+/// model. Remove the entry in the same change that adds the variant.
 pub const EXPECTED_GENERIC_SYSTEM_SUBTYPES: &[&str] = &["init", "status"];
 
 /// Serialised forms of the catch-all variants that stand in for a wire
@@ -647,6 +653,24 @@ mod tests {
                 "num_turns":1,"duration_ms":10,"duration_api_ms":9,"total_cost_usd":0}"#,
         );
         assert!(integral_cost.is_clean(), "{integral_cost:#?}");
+    }
+
+    /// `SystemRepr` is untagged, so a modelled subtype whose payload
+    /// drifts falls through to the generic bucket rather than erroring.
+    /// This is what makes an allowlist entry stop being harmless once
+    /// its subtype grows a typed variant, and the reason
+    /// `EXPECTED_GENERIC_SYSTEM_SUBTYPES` says to drop the entry in the
+    /// same change.
+    #[test]
+    fn modelled_subtype_with_a_drifted_payload_is_reported() {
+        // thinking_tokens without its required estimated_tokens field.
+        let report = report_for(
+            r#"{"type":"system","subtype":"thinking_tokens",
+                "estimated_tokens_delta":50,"uuid":"u1","session_id":"s1"}"#,
+        );
+        assert_eq!(report.unmodelled_system_subtypes, ["thinking_tokens"]);
+        assert_only(&report, "system");
+        assert!(!report.is_clean());
     }
 
     /// Guards the shape the whole thing exists for: the frame that now
