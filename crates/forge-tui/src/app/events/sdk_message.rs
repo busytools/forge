@@ -3791,6 +3791,18 @@ mod monitor_chat_block_tests {
             app.active_viewport_mut().stale_message_heights[msg_idx],
             "collapsing to the summary row changed the height and must schedule a remeasure",
         );
+
+        // Re-stamping the SAME status must not invalidate again. A
+        // timer-polled monitor re-runs this path on every tick, and an
+        // unconditional invalidate would remeasure the message forever
+        // for a block whose shape never changed. The tail stamp already
+        // guards this; the liveness stamp has to as well.
+        app.active_viewport_mut().stale_message_heights[msg_idx] = false;
+        app.set_monitor_status_by_task_id(TASK_ID, crate::app::MonitorStatus::Stopped);
+        assert!(
+            !app.active_viewport_mut().stale_message_heights[msg_idx],
+            "an unchanged status is a no-op, not a remeasure",
+        );
     }
 
     /// The synthesis path in `apply_tool_progress_update` fires when

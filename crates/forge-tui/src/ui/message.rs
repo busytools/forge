@@ -5156,6 +5156,111 @@ mod tests {
         assert!(joined.contains("\u{2514}"), "└ tree connector for last row: {joined:?}");
     }
 
+    /// EVERY row must fit the render width, header included: the outer
+    /// layout char-wraps without the gutter, so an overflowing row
+    /// shears the tree - a child row from below, and the header from
+    /// above by dropping a fragment flush-left between the header and
+    /// the connectors. Unlike the peer / tool-group trees, this block's
+    /// header therefore clips rather than wrapping.
+    ///
+    /// The sweep runs narrow AND with a populated tail, because the
+    /// tail-row clip and the header label clip only do anything in that
+    /// combination - a narrow block with an empty tail never enters the
+    /// tail loop, and a populated tail at width 80 never clips.
+    #[test]
+    fn monitor_block_rows_fit_a_very_narrow_width() {
+        for width in 10_u16..=34 {
+            let mut tc = make_tool_call_info(
+                "toolu_mon",
+                "Monitor",
+                crate::agent::model::ToolCallStatus::Completed,
+                "",
+            );
+            tc.raw_input = Some(serde_json::json!({
+                "description": "ci-watch on the release branch after the tag lands",
+                "command": "gh run watch 18234567 --exit-status --repo busytools/forge",
+                "persistent": true,
+                "timeout_ms": 0,
+            }));
+            tc.monitor_status = Some(crate::app::MonitorStatus::Running);
+            tc.monitor_output_tail = vec![
+                "a tail line long enough to need clipping".to_owned(),
+                "a second tail line, so the spine connector renders too".to_owned(),
+            ];
+            let rows = render_lines_to_strings(
+                &render_lifecycle_one_liner(&tc, width).expect("Monitor produces lines"),
+            );
+            assert!(rows.len() >= 4, "header + command + two tail rows at width {width}: {rows:?}");
+            for row in &rows {
+                assert!(
+                    unicode_width::UnicodeWidthStr::width(row.as_str()) <= width as usize,
+                    "row must fit width {width}; got {}: {row:?}",
+                    unicode_width::UnicodeWidthStr::width(row.as_str()),
+                );
+            }
+        }
+    }
+
+    /// The suffix is dropped BEFORE the description is clipped, so a
+    /// narrow header spends its budget on what identifies the monitor
+    /// rather than on ` · persistent`. Fit assertions cannot see this -
+    /// the cascade clip makes every row fit either way - so without
+    /// this the constant governing the drop has no coverage at all.
+    #[test]
+    fn a_narrow_header_keeps_the_description_and_drops_the_suffix() {
+        let mut tc = make_tool_call_info(
+            "toolu_mon",
+            "Monitor",
+            crate::agent::model::ToolCallStatus::Completed,
+            "",
+        );
+        tc.raw_input = Some(serde_json::json!({
+            "description": "ci",
+            "command": "gh run watch 1",
+            "persistent": true,
+        }));
+        tc.monitor_status = Some(crate::app::MonitorStatus::Running);
+        let header = render_lines_to_strings(
+            &render_lifecycle_one_liner(&tc, 16).expect("Monitor produces lines"),
+        )[0]
+        .clone();
+        assert!(header.contains("\u{b7} ci"), "the description survives: {header:?}");
+        assert!(!header.contains("persist"), "the suffix is what gets sacrificed: {header:?}");
+    }
+
+    /// `renders_as_lifecycle_block` re-implements the renderer's gate
+    /// cheaply instead of building the block, so the two must agree on
+    /// every shape. Three production paths read the predicate - click
+    /// refusal, the collapse carve-out and run-breaking - so a
+    /// disagreement makes all three treat a card as something it is not.
+    #[test]
+    fn the_cheap_lifecycle_predicate_agrees_with_the_renderer() {
+        let cases = [
+            ("Monitor", Some(serde_json::json!({"description": "d", "command": "c"}))),
+            ("Monitor", Some(serde_json::json!({"description": "d"}))),
+            ("Monitor", Some(serde_json::json!({"description": "", "command": "c"}))),
+            ("Monitor", None),
+            ("Workflow", Some(serde_json::json!({"script": "export const meta = {}"}))),
+            ("Workflow", Some(serde_json::json!({"scriptPath": "/tmp/x.js"}))),
+            ("Workflow", None),
+            ("Read", Some(serde_json::json!({"file_path": "/tmp/x"}))),
+        ];
+        for (name, input) in cases {
+            let mut tc = make_tool_call_info(
+                "toolu_x",
+                name,
+                crate::agent::model::ToolCallStatus::Completed,
+                "",
+            );
+            tc.raw_input = input.clone();
+            assert_eq!(
+                renders_as_lifecycle_block(&tc),
+                render_lifecycle_one_liner(&tc, 80).is_some(),
+                "predicate and renderer disagree for {name} with {input:?}",
+            );
+        }
+    }
+
     /// The block sits at the same 2-cell body indent the tool-group
     /// summary and peer block use, so a Monitor next to a group reads
     /// as one family rather than breaking flush-left out of the column.
