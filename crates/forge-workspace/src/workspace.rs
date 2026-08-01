@@ -5089,24 +5089,6 @@ impl Workspace {
         Some(handle.settings_documents(cwd))
     }
 
-    /// Persist a settings document via the bridge for `key`.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` with a human-readable message when no agent is
-    /// registered for `key` or when the bridge's I/O fails.
-    pub fn write_settings_document(
-        &self,
-        key: &SessionKey,
-        target: &forge_agent::userdata::settings::SettingsTarget,
-        document: &serde_json::Value,
-    ) -> Result<(), String> {
-        let handle = self
-            .agent_handle_for(key)
-            .ok_or_else(|| "no agent registered for session".to_owned())?;
-        handle.write_settings_document(target, document).map_err(|err| err.to_string())
-    }
-
     /// Resolve the agent's configured config_dir for `key`. Returns
     /// `None` when no agent is registered for `key`.
     pub fn config_dir_for(&self, key: &SessionKey) -> Option<PathBuf> {

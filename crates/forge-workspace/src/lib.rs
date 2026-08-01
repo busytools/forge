@@ -27,7 +27,7 @@
 //! `Workspace::dispatch(Command)`; query-style refreshes
 //! (`refresh_status_snapshot`, `refresh_oauth_credentials_snapshot`,
 //! `refresh_context_usage`, `reload_plugins`, `refresh_mcp_snapshot`)
-//! and direct accessors (`settings_documents`, `write_settings_document`,
+//! and direct accessors (`settings_documents`,
 //! `project_memory_path`, `config_dir_for`, `oauth_usage`) live as
 //! inherent methods on [`Workspace`]. The handle stays on the
 //! workspace's [`DomainSession`].
