@@ -12,8 +12,6 @@
 //! so the spawned task wraps the call in `tokio::task::spawn_blocking`
 //! to keep the runtime responsive between polls.
 
-#![allow(clippy::module_name_repetitions)]
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;

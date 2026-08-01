@@ -873,7 +873,6 @@ pub(super) fn apply_session_update_fatal_error(app: &mut App, error: AppError) {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod stamp_project_tests {
     use super::stamp_bucket_project_from_cwd;
     use crate::app::App;
@@ -943,7 +942,6 @@ mod stamp_project_tests {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod teardown_clears_background_registry_tests {
     use super::handle_auth_required_event;
     use super::handle_connection_failed_event;

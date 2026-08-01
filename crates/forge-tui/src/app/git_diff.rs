@@ -10,8 +10,6 @@
 //! workspace mediates, agent does the actual work) - see the
 //! "Crate placement guide" in `CLAUDE.md`.
 
-#![allow(clippy::module_name_repetitions)]
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;

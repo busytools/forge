@@ -79,7 +79,6 @@ fn msg_variant_name(msg: &forge_primitives::Message) -> &'static str {
 /// active session - background-session events update their bucket
 /// silently. App-global events (no `session_key`) flip the redraw
 /// flag unconditionally because they affect the rendered view.
-#[allow(clippy::if_not_else)]
 pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
     // INVARIANT: `is_active_or_global` is captured BEFORE the match
     // so reducers that themselves mutate `active_session_key` (e.g.

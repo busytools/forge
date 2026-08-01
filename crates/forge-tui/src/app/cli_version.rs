@@ -9,8 +9,6 @@
 //!
 //! Mirrors the `file_index` / `git_diff` channel pattern.
 
-#![allow(clippy::module_name_repetitions)]
-
 use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
 
