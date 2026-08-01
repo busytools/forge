@@ -202,7 +202,7 @@ done
 
 For each scenario with deltas:
 
-- **Added type/subtype** - new wire shape the decoder needs to handle. If the replay test passes against the new baseline (Phase 5 below), the decoder already handles it as a side-effect of the generic stream-json parser. If it fails, extend the decoder.
+- **Added type/subtype** - new wire shape the decoder needs to handle. Replay (Phase 5 below) reports it either way: a subtype that only parses because it fell through to a generic bucket is listed as unmodelled rather than counted as a plain message. Extend the decoder, or add it to `EXPECTED_GENERIC_SYSTEM_SUBTYPES` if staying generic is the deliberate choice.
 - **Removed type/subtype** - Anthropic dropped a shape. Check forge for code paths that depend on it; mark dead.
 - **Same types but different counts** - usually a per-session-volume difference, not a wire change. Spot-check.
 
@@ -215,6 +215,12 @@ cargo nextest run -p forge-test-harness --test sdk_replay 2>&1 | tail -30
 ```
 
 If any scenario FAILs: the new baseline contains a stream-json shape the decoder doesn't handle. Extend `crates/forge-sdk/src/transport/codec.rs` to handle it, then re-run. Iterate until clean.
+
+A CLI bump is the likeliest way to hit the three fallback categories, which report the shape the decoder quietly absorbed rather than a parse failure:
+
+- `unmodelled_system_subtypes` - a `system` subtype landing in the generic bucket. Model it in `TypedSystemRepr`, or add it to `EXPECTED_GENERIC_SYSTEM_SUBTYPES` if generic is right.
+- `unmodelled_content_block_types` - a content block decoding to `ContentBlock::Unknown`. Model it in `ContentBlock`.
+- `absorbed_by_catch_all` - a wire value a `#[serde(other)]` variant swallowed, printed as `path: wire -> "unknown"`. Add the variant to that enum.
 
 If all scenarios pass: the decoder is up to date with the new CLI's wire surface. Proceed.
 
@@ -290,12 +296,18 @@ If installed > pinned: run the workflow above. If equal: nothing to do.
 Replay mode runs on every `cargo nextest run`: offline, no API cost. The
 harness lives in `crates/forge-test-harness/`.
 
-Live-capture a single scenario:
+Live-capture a single scenario (or just `just conformance-capture-sdk
+<test>`):
 
 ```bash
 FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
-    --no-capture --run-ignored only sdk_<test>
+    --no-capture --run-ignored only --no-tests=fail <test>
 ```
+
+`<test>` is the test name (`wire_capture_trivial_prompt`), not the
+binary id. nextest matches the test name alone, so an `sdk_`-prefixed
+filter selects nothing at all. Keep `--no-tests=fail` so a typo cannot
+report a clean capture.
 
 Adding a scenario (Hard Rule #9 requires one for any new wire surface):
 write `tests/sdk_scenarios_<name>.rs`, run it with the env var above,

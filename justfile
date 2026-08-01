@@ -54,9 +54,25 @@ conformance:
 # Burns API tokens. Baseline goes to target/wire-traces/; promote with
 # `cp target/wire-traces/capture-<scenario>-<ts>.jsonl \
 #    crates/forge-test-harness/baselines/sdk/<VERSION>/<scenario>.jsonl`.
+#
+# The argument is a nextest test name, which is matched WITHOUT the
+# `sdk_` binary-id prefix - nextest filters on the test name alone, so
+# any prefixed filter selects nothing. `--no-tests=fail` is explicit
+# rather than left to nextest's `auto` default: a typo in the argument
+# must not report a clean run, and that default is version-dependent
+# and overridable via NEXTEST_NO_TESTS.
+#
+# An empty argument is rejected rather than passed through: with no
+# filter left, the command selects every live-capture scenario and runs
+# all of them against the real API.
 conformance-capture-sdk test:
+    @if [ -z "{{test}}" ]; then \
+        echo "[ERROR] test name required, e.g. wire_capture_trivial_prompt" >&2; \
+        echo "        an empty name captures every scenario for real money" >&2; \
+        exit 1; \
+    fi
     FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
-        --no-capture --run-ignored only sdk_{{test}}
+        --no-capture --run-ignored only --no-tests=fail {{test}}
 
 # Build docs with warnings as errors. Mirrors CI's
 # `cargo doc --workspace --no-deps --all-features`.
@@ -66,6 +82,22 @@ conformance-capture-sdk test:
 # drives is also strict (#257).
 doc:
     RUSTDOCFLAGS="-D warnings" RUSTFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+
+# Deliberately not part of `check`: the only errors it finds are ones
+# dev cannot see (`cfg(debug_assertions)`, and anything reachable only
+# through `debug_assert!`), and a second full compile is too slow for
+# the inner loop. `release` gates on it instead, which is where the
+# ordering actually bites.
+#
+# `--all-features` is what makes this cover the shipped binary rather
+# than a configuration nobody installs: install.sh builds with `perf`
+# on, and the 18 feature gates behind it are release-compiled nowhere
+# else. Without the flag this check passes on a perf-gated release
+# break, measured.
+#
+# Compile the workspace in release. Mirrors CI's `cargo check --release`.
+check-release:
+    RUSTFLAGS="-D warnings" cargo check --release --workspace --all-targets --all-features
 
 # Full pre-commit / pre-PR verification loop.
 check: fmt-check unicode-punct-check clippy test-all doc
@@ -158,8 +190,11 @@ install-cert-uninstall:
 # Cut a release: bump the workspace version, commit, tag.
 # Does NOT push — that's gated per CLAUDE.md and stays explicit.
 # Requires cargo-edit (`cargo install cargo-edit`) for `cargo set-version`.
+# Gates on check-release because the ordering is what turns a caught
+# error into a public one: `cargo install` builds release, and it runs
+# after this recipe has already tagged.
 # Usage: `just release 0.17.0`
-release version:
+release version: check-release
     @if ! cargo set-version --help >/dev/null 2>&1; then \
         echo "[ERROR] cargo set-version not available — run: cargo install cargo-edit" >&2; \
         exit 1; \
