@@ -7,10 +7,8 @@ contract with the CLI is the only hard external invariant; API shape
 is whatever serves [`forge-agent`](../forge-agent) (and through it,
 [`forge-tui`](../forge-tui)) best.
 
-Not a Python-parity port. See [`PARITY.md`](../../PARITY.md) for the
-history of the parity-tracking era and the
-[`CLAUDE.md`](../../CLAUDE.md) workspace guide for the current
-direction.
+Not a Python-parity port. See the [`CLAUDE.md`](../../CLAUDE.md)
+workspace guide for the current direction.
 
 - Release history: [`../../docs/CHANGELOG.md`](../../docs/CHANGELOG.md).
 

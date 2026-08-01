@@ -4,8 +4,6 @@
 //! to perform. Direct-return accessors (config_dir, settings_documents,
 //! etc.) live on a separate sync surface, not in `Command`.
 
-use serde::{Deserialize, Serialize};
-
 use crate::ids::{SessionId, ToolUseId};
 use crate::image::ImageAttachment;
 use crate::{PermissionMode, PermissionOutcome, QuestionOutcome};
@@ -17,7 +15,7 @@ use crate::{PermissionMode, PermissionOutcome, QuestionOutcome};
 /// envelopes are deliberately different shapes with overlapping
 /// names, and disambiguating the agent-side enum makes which one
 /// is meant obvious at every call site.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AgentCommand {
     // --- Session lifecycle ---
     NewSession {

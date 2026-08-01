@@ -364,9 +364,9 @@ pub enum ThreadAction {
     Reopen,
 }
 
-/// A saved per-line comment. `path` / `line` / `hunk_context` are
-/// snapshotted at save time so the captured context stays stable even
-/// if the user scrolls or switches files before pressing Esc.
+/// A saved per-line comment. `path` / `line` are snapshotted at save
+/// time so the anchor stays stable even if the user scrolls or switches
+/// files before pressing Esc.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HunkComment {
     pub key: LineKey,
@@ -374,9 +374,6 @@ pub struct HunkComment {
     /// Line number from the relevant side of the diff (new-file
     /// line for context / added, old-file line for removed).
     pub line: u32,
-    /// Full hunk the comment is anchored on - the captured context the
-    /// agent reads back via `review__get` to locate the code.
-    pub hunk_context: Vec<DiffLine>,
     pub comment_text: String,
     /// Commit the comment was made against (the sha), or `None` in
     /// whole-diff scope. Together with `key`/`path`/`line` this scopes
@@ -1729,11 +1726,11 @@ fn outdated_placement(
     side: ReviewSide,
     line: u32,
     occupied: &std::collections::HashSet<LineKey>,
-) -> Option<(LineKey, Vec<DiffLine>)> {
+) -> Option<LineKey> {
     if let Some(file_idx) = files.iter().position(|f| f.path == path) {
         // Same-side candidates, nearest first (stable, so equal distances
         // keep document order).
-        let mut candidates: Vec<(u32, LineKey, DiffLine)> = Vec::new();
+        let mut candidates: Vec<(u32, LineKey)> = Vec::new();
         for (hunk_idx, hunk) in files[file_idx].hunks.iter().enumerate() {
             for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
                 let number = match side {
@@ -1741,31 +1738,26 @@ fn outdated_placement(
                     ReviewSide::New => diff_line.new_line,
                 };
                 if let Some(number) = number {
-                    candidates.push((
-                        number.abs_diff(line),
-                        LineKey { file_idx, hunk_idx, line_idx },
-                        diff_line.clone(),
-                    ));
+                    candidates
+                        .push((number.abs_diff(line), LineKey { file_idx, hunk_idx, line_idx }));
                 }
             }
         }
-        candidates.sort_by_key(|(dist, _, _)| *dist);
-        if let Some((_, key, diff_line)) =
-            candidates.iter().find(|(_, key, _)| !occupied.contains(key))
-        {
-            return Some((*key, vec![diff_line.clone()]));
+        candidates.sort_by_key(|(dist, _)| *dist);
+        if let Some((_, key)) = candidates.iter().find(|(_, key)| !occupied.contains(key)) {
+            return Some(*key);
         }
         // Same-side lines all taken: a free line anywhere in the file.
         if let Some(key) = first_free_line_in_file(&files[file_idx], file_idx, occupied) {
-            return Some((key, Vec::new()));
+            return Some(key);
         }
         // Genuinely no free line in the file: stack on the nearest.
-        if let Some((_, key, diff_line)) = candidates.first() {
-            return Some((*key, vec![diff_line.clone()]));
+        if let Some((_, key)) = candidates.first() {
+            return Some(*key);
         }
     }
     // File absent: the document's first free line, else stack on its first.
-    first_free_line(files, occupied).or_else(|| first_line_key(files)).map(|key| (key, Vec::new()))
+    first_free_line(files, occupied).or_else(|| first_line_key(files))
 }
 
 /// The first line's key in `file` not already in `occupied` (skipping
@@ -1942,7 +1934,6 @@ fn hydrate_threads(app: &mut App) {
                     key,
                     path: thread.anchor.path.clone(),
                     line,
-                    hunk_context: resolved.map(|dl| vec![dl.clone()]).unwrap_or_default(),
                     comment_text: thread_text(&thread),
                     commit: scope_commit.clone(),
                     thread: thread.clone(),
@@ -1964,7 +1955,7 @@ fn hydrate_threads(app: &mut App) {
     // render (yellow, against their captured context) without clobbering
     // a co-located live thread.
     for thread in deferred_outdated {
-        let Some((key, hunk_context)) = outdated_placement(
+        let Some(key) = outdated_placement(
             &overlay.files,
             &thread.anchor.path,
             thread.anchor.side,
@@ -1981,7 +1972,6 @@ fn hydrate_threads(app: &mut App) {
             key,
             path: thread.anchor.path.clone(),
             line: thread.anchor.line,
-            hunk_context,
             comment_text: thread_text(&thread),
             commit: scope_commit.clone(),
             thread: thread.clone(),
@@ -2818,7 +2808,6 @@ fn persist_active_input(app: &mut App) {
     // `overlay.files` borrows drop before the comment is pushed.
     let target = overlay.target.clone();
     let path = file.path.clone();
-    let hunk_context = vec![diff_line.clone()];
     let side = anchor_side(diff_line.kind);
     let content_hash = resolver::content_hash(&diff_line.text);
     let context = resolver::capture_context(hunk, key.line_idx, CONTEXT_RADIUS);
@@ -2866,7 +2855,6 @@ fn persist_active_input(app: &mut App) {
         key,
         path,
         line: line_no,
-        hunk_context,
         comment_text,
         commit,
         thread,
@@ -3817,7 +3805,6 @@ mod tests {
             key,
             path: "a.rs".into(),
             line: 7,
-            hunk_context: vec![],
             comment_text: "needs unwrap fix".into(),
             commit: None,
             thread: user_thread("needs unwrap fix"),
@@ -3849,7 +3836,6 @@ mod tests {
             key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
             path: "a.rs".into(),
             line: 1,
-            hunk_context: vec![],
             comment_text: "x".into(),
             commit: None,
             thread: stock_thread(),
@@ -3860,7 +3846,6 @@ mod tests {
             key: LineKey { file_idx: 0, hunk_idx: 1, line_idx: 0 },
             path: "a.rs".into(),
             line: 2,
-            hunk_context: vec![],
             comment_text: "y".into(),
             commit: None,
             thread: stock_thread(),
@@ -3871,7 +3856,6 @@ mod tests {
             key: LineKey { file_idx: 1, hunk_idx: 0, line_idx: 0 },
             path: "b.rs".into(),
             line: 1,
-            hunk_context: vec![],
             comment_text: "z".into(),
             commit: None,
             thread: stock_thread(),
@@ -3910,7 +3894,6 @@ mod tests {
             key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
             path: "a.rs".into(),
             line: 1,
-            hunk_context: vec![],
             comment_text: "needs unwrap fix".into(),
             commit: None,
             thread: stock_thread(),
@@ -3936,7 +3919,6 @@ mod tests {
             key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
             path: "a.rs".into(),
             line: 1,
-            hunk_context: vec![],
             comment_text: "hydrated from a prior review".into(),
             commit: None,
             thread: stock_thread(),
@@ -3967,7 +3949,6 @@ mod tests {
             key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
             path: "src/x.rs".into(),
             line: 1,
-            hunk_context: vec![],
             comment_text: "tweaked note".into(),
             commit: None,
             thread,
@@ -4027,7 +4008,6 @@ mod tests {
             key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
             path: "src/x.rs".into(),
             line: 1,
-            hunk_context: vec![],
             comment_text: "does this handle the empty case?".into(),
             commit: None,
             thread: replied,
@@ -4089,7 +4069,6 @@ mod tests {
             key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
             path: "src/x.rs".into(),
             line: 1,
-            hunk_context: vec![],
             comment_text: "resolved before close".into(),
             commit: None,
             thread: seeded,
@@ -4137,7 +4116,6 @@ mod tests {
             key,
             path: "a.rs".into(),
             line: 1,
-            hunk_context: vec![],
             comment_text: "I want to keep this".into(),
             commit: None,
             thread: user_thread("I want to keep this"),
@@ -4184,7 +4162,6 @@ mod tests {
             key: key_a,
             path: "a.rs".into(),
             line: 1,
-            hunk_context: vec![],
             comment_text: "saved".into(),
             commit: None,
             thread: user_thread("saved"),
@@ -4224,7 +4201,6 @@ mod tests {
             key: key_a,
             path: "a.rs".into(),
             line: 1,
-            hunk_context: vec![],
             comment_text: "A".into(),
             commit: None,
             thread: user_thread("A"),
@@ -4235,7 +4211,6 @@ mod tests {
             key: key_b,
             path: "a.rs".into(),
             line: 5,
-            hunk_context: vec![],
             comment_text: "B".into(),
             commit: None,
             thread: user_thread("B"),
@@ -4267,7 +4242,6 @@ mod tests {
             key: key_a,
             path: "a.rs".into(),
             line: 1,
-            hunk_context: vec![],
             comment_text: "A".into(),
             commit: None,
             thread: user_thread("A"),
@@ -4304,7 +4278,6 @@ mod tests {
             key,
             path: "a.rs".into(),
             line: 1,
-            hunk_context: vec![],
             comment_text: "original text".into(),
             commit: None,
             thread: stock_thread(),
@@ -4336,7 +4309,6 @@ mod tests {
             key,
             path: "a.rs".into(),
             line: 1,
-            hunk_context: vec![],
             comment_text: "exactly this".into(),
             commit: None,
             thread: stock_thread(),
@@ -4587,7 +4559,6 @@ mod tests {
             key,
             path: "a.rs".into(),
             line: 1,
-            hunk_context: vec![],
             comment_text: "soon-to-be-deleted".into(),
             commit: None,
             thread: user_thread("soon-to-be-deleted"),
@@ -4640,7 +4611,6 @@ mod tests {
             key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
             path: "src/x.rs".into(),
             line: 1,
-            hunk_context: vec![],
             comment_text: "note".into(),
             commit: None,
             thread,
@@ -4682,7 +4652,6 @@ mod tests {
             key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
             path: "src/x.rs".into(),
             line: 1,
-            hunk_context: vec![],
             comment_text: "note".into(),
             commit: None,
             thread,
@@ -4716,7 +4685,6 @@ mod tests {
             key,
             path: "a.rs".into(),
             line: 1,
-            hunk_context: vec![],
             comment_text: "important review note".into(),
             commit: None,
             thread: stock_thread(),
@@ -4770,7 +4738,6 @@ mod tests {
             key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
             path: "a.rs".into(),
             line: 1,
-            hunk_context: vec![],
             comment_text: "to be preserved".into(),
             commit: None,
             thread: stock_thread(),
@@ -5153,7 +5120,6 @@ mod tests {
             key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
             path: "a.rs".into(),
             line: 1,
-            hunk_context: vec![],
             comment_text: "on first".into(),
             commit: Some("aaa".into()),
             thread: stock_thread(),
@@ -5177,7 +5143,6 @@ mod tests {
             key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
             path: "a.rs".into(),
             line: 1,
-            hunk_context: vec![],
             comment_text: "a".into(),
             commit: Some("aaa".into()),
             thread: stock_thread(),
@@ -5188,7 +5153,6 @@ mod tests {
             key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
             path: "b.rs".into(),
             line: 1,
-            hunk_context: vec![],
             comment_text: "b".into(),
             commit: Some("bbb".into()),
             thread: stock_thread(),
@@ -5372,7 +5336,6 @@ mod tests {
             key,
             path: "a.rs".to_owned(),
             line: 5,
-            hunk_context: vec![diff_line(DiffLineKind::Added, None, Some(5))],
             comment_text: "note".to_owned(),
             commit: None,
             thread: stock_thread(),
@@ -5964,7 +5927,6 @@ mod tests {
             key: LineKey { file_idx: 0, hunk_idx: 0, line_idx },
             path: "src/x.rs".into(),
             line: 10,
-            hunk_context: vec![],
             comment_text: "note".into(),
             commit: None,
             thread: seed(id),
@@ -6282,7 +6244,6 @@ mod tests {
             key,
             path: "src/x.rs".into(),
             line: 10,
-            hunk_context: vec![],
             comment_text: "first note".into(),
             commit: None,
             thread: prior_thread,
@@ -6338,7 +6299,6 @@ mod tests {
             key,
             path: "src/x.rs".into(),
             line: 10,
-            hunk_context: vec![],
             comment_text: "first".into(),
             commit: None,
             thread,
@@ -6393,7 +6353,6 @@ mod tests {
             key,
             path: "src/x.rs".into(),
             line: 10,
-            hunk_context: vec![],
             comment_text: thread.comments.first().map(|c| c.text.clone()).unwrap_or_default(),
             commit: None,
             thread,
@@ -6485,7 +6444,6 @@ mod tests {
             key,
             path: "src/x.rs".into(),
             line: 10,
-            hunk_context: vec![],
             comment_text: "first note".into(),
             commit: None,
             thread: user_thread("first note"),
@@ -6520,7 +6478,6 @@ mod tests {
             key,
             path: "src/x.rs".into(),
             line: 10,
-            hunk_context: vec![],
             comment_text: "note".into(),
             commit: None,
             thread: user_thread("note"),
@@ -6553,7 +6510,6 @@ mod tests {
             key,
             path: "a.rs".into(),
             line: 1,
-            hunk_context: vec![],
             comment_text: "keep me".into(),
             commit: None,
             thread: user_thread("keep me"),
@@ -6585,7 +6541,6 @@ mod tests {
             key,
             path: "a.rs".into(),
             line: 7,
-            hunk_context: vec![],
             comment_text: "note".into(),
             commit: None,
             thread: user_thread("note"),
@@ -6942,7 +6897,6 @@ mod tests {
             key,
             path: "src/x.rs".into(),
             line: 10,
-            hunk_context: vec![],
             comment_text: "look here".into(),
             commit: None,
             thread,
@@ -7198,7 +7152,6 @@ mod tests {
             key,
             path: "src/x.rs".to_owned(),
             line: 10,
-            hunk_context: Vec::new(),
             comment_text: "commit note".to_owned(),
             commit: Some("aaa".to_owned()),
             thread: forge_primitives::ReviewThread {
@@ -7230,7 +7183,6 @@ mod tests {
             key,
             path: "src/x.rs".to_owned(),
             line: 10,
-            hunk_context: Vec::new(),
             comment_text: "durable".to_owned(),
             commit: None,
             thread: forge_primitives::ReviewThread {
@@ -7376,7 +7328,6 @@ mod tests {
                 key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
                 path: "a.rs".to_owned(),
                 line: 1,
-                hunk_context: Vec::new(),
                 comment_text: "c".to_owned(),
                 commit: None,
                 thread,
@@ -7920,7 +7871,6 @@ mod tests {
             key,
             path: "src/x.rs".to_owned(),
             line: 9,
-            hunk_context: Vec::new(),
             comment_text: "on sha1".to_owned(),
             commit: Some("sha1".to_owned()),
             thread: stock_thread(),
@@ -7931,7 +7881,6 @@ mod tests {
             key,
             path: "src/x.rs".to_owned(),
             line: 5,
-            hunk_context: Vec::new(),
             comment_text: "stale whole-diff".to_owned(),
             commit: None,
             thread: stock_thread(),

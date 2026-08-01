@@ -79,9 +79,6 @@ pub struct Options {
     /// and checks the reported major version is at least the first
     /// component.
     pub minimum_cli_version: Option<String>,
-    /// Override the directory used to resolve project keys. When
-    /// `None`, forge-sdk defaults to `<config_dir>/projects`.
-    pub projects_dir: Option<PathBuf>,
     /// Subagent definitions forwarded via the `initialize`
     /// `control_request`'s `agents` field. Key is the subagent name
     /// the model picks; value is the [`SubagentDefinition`]. Empty by
@@ -169,7 +166,6 @@ impl Default for Options {
             setting_sources: None,
             permission_prompt_tool_name: None,
             minimum_cli_version: Some("2.0.0".into()),
-            projects_dir: None,
             subagents: HashMap::new(),
             system_prompt: None,
             max_turns: None,
@@ -299,7 +295,6 @@ impl std::fmt::Debug for Options {
             .field("setting_sources", &self.setting_sources)
             .field("permission_prompt_tool_name", &self.permission_prompt_tool_name)
             .field("minimum_cli_version", &self.minimum_cli_version)
-            .field("projects_dir", &self.projects_dir)
             .field("subagents", &format!("<{} subagents>", self.subagents.len()))
             .field("system_prompt", &self.system_prompt)
             .field("max_turns", &self.max_turns)

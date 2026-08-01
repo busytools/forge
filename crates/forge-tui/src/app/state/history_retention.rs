@@ -10,7 +10,7 @@ use super::messages::{
     WelcomeBlock,
 };
 use super::tool_call_info::ToolCallInfo;
-use super::types::{HistoryRetentionStats, MessageUsage};
+use super::types::HistoryRetentionStats;
 
 const HISTORY_HIDDEN_MARKER_PREFIX: &str = "Older messages hidden to keep memory bounded";
 
@@ -159,10 +159,6 @@ impl super::App {
     pub fn measure_message_bytes(msg: &ChatMessage) -> usize {
         let mut total = size_of::<ChatMessage>()
             .saturating_add(msg.blocks.capacity().saturating_mul(size_of::<MessageBlock>()));
-        if msg.usage.is_some() {
-            total = total.saturating_add(size_of::<MessageUsage>());
-        }
-
         for block in &msg.blocks {
             match block {
                 MessageBlock::Text(block) => {
@@ -463,7 +459,6 @@ impl super::App {
             ChatMessage::new(
                 MessageRole::System(None),
                 vec![MessageBlock::Text(TextBlock::from_complete(&marker_text))],
-                None,
             ),
         );
         Self::remap_anchor_for_insert(preserved_anchor, insert_idx)

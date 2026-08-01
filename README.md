@@ -6,9 +6,7 @@ to that binary - it shares the stream-json wire contract with the CLI,
 but otherwise gets to be its own thing (idiomatic Rust, channels-based
 concurrency, no Python-parity contract).
 
-See [`PARITY.md`](PARITY.md) for the history of the parity-tracking era
-(2026-04-21 → 2026-04-27) and [`CLAUDE.md`](CLAUDE.md) for the current
-project guide.
+See [`CLAUDE.md`](CLAUDE.md) for the current project guide.
 
 ## Crates
 

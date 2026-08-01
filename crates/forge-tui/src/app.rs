@@ -66,17 +66,17 @@ pub use state::{
     CacheMetrics, CachedMessageSegment, ChatMessage, ChatRenderTraceState, ChatViewport,
     ExtraUsage, FailedTurn, HelpView, IncrementalMarkdown, InputFocus, InvalidationLevel,
     LayoutInvalidation, LoginHint, McpState, MessageBlock, MessageRenderCache,
-    MessageRenderCacheKey, MessageRenderSignature, MessageRole, MessageUsage, ModeInfo, ModeState,
-    MonitorEntry, MonitorStatus, NoticeBlock, NoticeDedupKey, NoticeStage, PaneHitTarget,
-    PasteSessionState, PendingCommandAck, PhaseEntry, PhaseStatus, RateLimitIncidentKey,
-    RecentSessionInfo, ReviewRepliesWaiting, SUBAGENT_TAIL_CAP, ScheduleEntry, ScheduleKind,
-    ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState, SessionTurnState,
-    SessionUsageState, StopHookEntry, StopHookSummaryState, SubagentChildEntry, SubagentEntry,
-    SystemSeverity, TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem, TodoStatus,
-    ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UsageSnapshot, UsageSourceKind,
-    UsageState, UsageWindow, WelcomeBlock, WorkflowEntry, WorkflowStatus,
-    compute_scrollbar_geometry, hash_text_block_content, hash_welcome_block_content,
-    is_execute_tool_name, is_monitor_tool_name,
+    MessageRenderCacheKey, MessageRenderSignature, MessageRole, ModeInfo, ModeState, MonitorEntry,
+    MonitorStatus, NoticeBlock, NoticeDedupKey, NoticeStage, PaneHitTarget, PasteSessionState,
+    PendingCommandAck, PhaseEntry, PhaseStatus, RateLimitIncidentKey, RecentSessionInfo,
+    ReviewRepliesWaiting, SUBAGENT_TAIL_CAP, ScheduleEntry, ScheduleKind, ScrollbarGeometry,
+    SelectionKind, SelectionPoint, SelectionState, SessionTurnState, SessionUsageState,
+    StopHookEntry, StopHookSummaryState, SubagentChildEntry, SubagentEntry, SystemSeverity,
+    TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo,
+    ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UsageSnapshot, UsageSourceKind, UsageState,
+    UsageWindow, WelcomeBlock, WorkflowEntry, WorkflowStatus, compute_scrollbar_geometry,
+    hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
+    is_monitor_tool_name,
 };
 pub use usage_overlay::UsageOverlayState;
 pub use view::ActiveView;
@@ -469,22 +469,14 @@ fn advance_spinner_frame(app: &mut App, now: Instant) {
 }
 
 async fn wait_for_shutdown_signal() -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        let mut sigterm =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-        tokio::select! {
-            sigint = tokio::signal::ctrl_c() => {
-                sigint?;
-            }
-            _ = sigterm.recv() => {}
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    tokio::select! {
+        sigint = tokio::signal::ctrl_c() => {
+            sigint?;
         }
-        Ok(())
+        _ = sigterm.recv() => {}
     }
-    #[cfg(not(unix))]
-    {
-        tokio::signal::ctrl_c().await
-    }
+    Ok(())
 }
 
 /// Flush a timed-out paste burst into the focused editor. `EmitChar`

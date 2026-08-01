@@ -1779,14 +1779,13 @@ mod tests {
     }
 
     fn assistant_message_with_blocks(blocks: Vec<MessageBlock>) -> crate::app::ChatMessage {
-        crate::app::ChatMessage::new(crate::app::MessageRole::Assistant, blocks, None)
+        crate::app::ChatMessage::new(crate::app::MessageRole::Assistant, blocks)
     }
 
     fn user_text_message(text: &str) -> crate::app::ChatMessage {
         crate::app::ChatMessage::new(
             crate::app::MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete(text))],
-            None,
         )
     }
 
@@ -1808,7 +1807,6 @@ mod tests {
             crate::app::ChatMessage::new(
                 crate::app::MessageRole::User,
                 vec![inbound_peer_block(a, "Message"), inbound_peer_block(b, "Reply")],
-                None,
             )
         };
         // Both runs lead at block index 0 of their own message.
@@ -1910,7 +1908,6 @@ mod tests {
             crate::app::ChatMessage::new(
                 crate::app::MessageRole::User,
                 vec![inbound_peer_block("steward", "Message")],
-                None,
             ),
             assistant_message_with_blocks(vec![outbound_peer_block("steward", "Tell")]),
         ];
@@ -1938,7 +1935,6 @@ mod tests {
                     inbound_peer_block("tester", "Reply"),
                     inbound_peer_block("tester", "Message"),
                 ],
-                None,
             ),
         ];
         let mut seen = 0_usize;

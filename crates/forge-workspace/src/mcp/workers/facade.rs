@@ -27,7 +27,7 @@ pub enum WorkerTargetStatus {
 /// Synchronous error from `deliver_worker_prompt`. Async delivery
 /// failures (worker crashes mid-flight) flow through the same
 /// `Workspace::expire_*_inflight` machinery as peer-MCP.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum WorkerDeliverError {
     /// No live worker in `project_key` matches `label`.
     UnknownLabel { project_key: String, label: String },
@@ -36,7 +36,7 @@ pub enum WorkerDeliverError {
 /// Synchronous error from `deliver_prompt_to_lead`. The caller wants
 /// to send a prompt back to its lead via the reserved `"lead"`
 /// addressing keyword.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum WorkerLeadDeliverError {
     /// Caller resolves to no known session (defensive - should not
     /// happen with a valid CallerKeyResolver).
@@ -54,7 +54,7 @@ pub enum WorkerLeadDeliverError {
 /// lead via `workers__tell` / `workers__ask`. Workers may target the
 /// lead with `label="lead"`; `workers__spawn` rejects the label so
 /// no live worker can shadow the keyword.
-pub const LEAD_LABEL: &str = "lead";
+pub use crate::team::LEAD_LABEL;
 
 /// Org string stamped into a lead caller's wire envelope (and the
 /// matching synthetic org for Assistant peer-outbound tool_use rows
@@ -115,7 +115,7 @@ pub enum DespawnOutcome {
 /// Synchronous error from `despawn_worker`. Gating (lead-only,
 /// non-empty label) happens before dispatch; `UnknownLabel` is
 /// surfaced from the handler's `NotFound`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum WorkerDespawnError {
     /// Caller is a worker, not a project lead. Despawn is lead-only.
     NotLeadCaller,
@@ -198,7 +198,7 @@ pub struct CallerProject {
 /// and stamped into `WrappedPrompt::sender_name` / `sender_org` so the
 /// recipient's chat renders `from agent '<name>' (org '<org>')` with a
 /// human-readable label rather than the raw session UUID.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct WorkerIdentity {
     pub name: String,
     pub org: String,

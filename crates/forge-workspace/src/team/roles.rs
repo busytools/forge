@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 /// Loaded role data: label + charter prose + initial-kick prose.
 /// Constructed via [`Role::load`] (production) or by hand in tests.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Role {
     pub label: String,
     pub charter: String,

@@ -324,7 +324,6 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
             session.messages.push(ChatMessage::new(
                 MessageRole::System(Some(SystemSeverity::Warning)),
                 vec![MessageBlock::Text(TextBlock::from_complete(RATE_LIMIT_FALLBACK_MESSAGE))],
-                None,
             ));
             session.message_retained_bytes.push(0);
         }
@@ -455,7 +454,6 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, session_key: &Sess
         session.messages.push(ChatMessage::new(
             MessageRole::System(None),
             vec![MessageBlock::Text(TextBlock::from_complete(msg))],
-            None,
         ));
         // Append a 0 to the parallel retained-bytes vec so the
         // history-retention bookkeeping stays consistent next time
@@ -474,7 +472,6 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, session_key: &Sess
     app.push_message_tracked(ChatMessage::new(
         MessageRole::System(None),
         vec![MessageBlock::Text(TextBlock::from_complete(msg))],
-        None,
     ));
     app.enforce_history_retention_tracked();
     app.active_viewport_mut().engage_auto_scroll();
@@ -876,7 +873,6 @@ pub(super) fn apply_session_update_fatal_error(app: &mut App, error: AppError) {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod stamp_project_tests {
     use super::stamp_bucket_project_from_cwd;
     use crate::app::App;
@@ -946,7 +942,6 @@ mod stamp_project_tests {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod teardown_clears_background_registry_tests {
     use super::handle_auth_required_event;
     use super::handle_connection_failed_event;

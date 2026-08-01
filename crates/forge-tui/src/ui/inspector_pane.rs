@@ -2823,7 +2823,6 @@ mod tests {
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(bash))],
-            None,
         ));
         // Session-scoped mapping (from task_started) - turn_state is left
         // empty to simulate a finalised turn.
@@ -2885,7 +2884,6 @@ mod tests {
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(bash))],
-            None,
         ));
         app.insert_session_task_mapping("b1".to_owned(), "tu-bash".to_owned());
         *app.background_tasks_mut() = vec![BackgroundTask {
@@ -3721,7 +3719,7 @@ mod tests {
                 &format!("file-{i}.rs"),
             ))));
         }
-        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, blocks, None));
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, blocks));
         app
     }
 

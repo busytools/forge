@@ -200,7 +200,6 @@ mod tests {
                 last_measured_y_in_msg: 0,
                 answered_questions: Vec::new(),
             }))],
-            None,
         )
     }
 
@@ -208,7 +207,6 @@ mod tests {
         ChatMessage::new(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete(text))],
-            None,
         )
     }
 

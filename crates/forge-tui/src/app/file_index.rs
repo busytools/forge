@@ -31,7 +31,6 @@ pub struct FileIndexState {
     pub generation: u64,
     pub entries: BTreeMap<String, FileCandidate>,
     pub scan_finished: bool,
-    pub rebuild_pending: bool,
     scan_overrides: ScanOverrides,
     pub scan: Option<env::CancelToken>,
     pub watch: Option<env::CancelToken>,
@@ -74,7 +73,6 @@ pub fn reset(app: &mut App) {
     app.file_index_mut().respect_gitignore = app.config.respect_gitignore_effective();
     app.file_index_mut().entries.clear();
     app.file_index_mut().scan_finished = false;
-    app.file_index_mut().rebuild_pending = false;
     app.file_index_mut().scan_overrides = ScanOverrides::default();
     app.file_index_mut().scan = None;
     app.file_index_mut().watch = None;
@@ -91,7 +89,6 @@ pub fn restart(app: &mut App) {
     app.file_index_mut().root = Some(root.clone());
     app.file_index_mut().respect_gitignore = respect_gitignore;
     app.file_index_mut().scan_finished = false;
-    app.file_index_mut().rebuild_pending = false;
     app.file_index_mut().scan_overrides = ScanOverrides::default();
     app.file_index_mut().scan = Some(spawn_scan(
         key.clone(),
@@ -361,7 +358,7 @@ impl ScanOverrides {
 mod tests {
     use super::*;
     use crate::app::{App, mention};
-    use std::time::{Duration, Instant, SystemTime};
+    use std::time::{Duration, Instant};
 
     fn app_with_temp_files(files: &[&str]) -> (App, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -397,8 +394,6 @@ mod tests {
             rel_path_lower: rel_path.to_lowercase(),
             basename_lower: env::candidate_basename(rel_path).to_lowercase(),
             depth: rel_path.matches('/').count(),
-            modified: SystemTime::UNIX_EPOCH,
-            is_dir: rel_path.ends_with('/'),
         }
     }
 

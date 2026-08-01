@@ -584,14 +584,14 @@ fn log_tool_call_update_applied(
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum ToolUpdateLogLevel {
     Info,
     Warn,
     Debug,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ToolUpdateLogSpec {
     level: ToolUpdateLogLevel,
     event_name: &'static str,
@@ -883,7 +883,6 @@ mod tests {
         app.active_messages_mut().push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(root))],
-            None,
         ));
         app.index_tool_call(root_id.to_owned(), 0, 0);
         app.register_tool_call_scope(root_id.to_owned(), ToolCallScope::SubagentRoot);
@@ -914,7 +913,6 @@ mod tests {
                 model::ToolCallStatus::InProgress,
                 Some("term-1"),
             )))],
-            None,
         ));
         app.index_tool_call(tool_id.to_owned(), 0, 0);
         app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
@@ -949,7 +947,6 @@ mod tests {
                 model::ToolCallStatus::InProgress,
                 None,
             )))],
-            None,
         ));
         app.index_tool_call(tool_id.to_owned(), 0, 0);
 
@@ -977,7 +974,6 @@ mod tests {
                 model::ToolCallStatus::InProgress,
                 Some("term-1"),
             )))],
-            None,
         ));
         app.index_tool_call(tool_id.to_owned(), 0, 0);
         app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
@@ -1035,7 +1031,6 @@ mod tests {
                 tool_id,
                 model::ToolCallStatus::InProgress,
             )))],
-            None,
         ));
         app.index_tool_call(tool_id.to_owned(), 0, 0);
 
@@ -1073,7 +1068,6 @@ mod tests {
                 tool_id,
                 model::ToolCallStatus::InProgress,
             )))],
-            None,
         ));
         app.index_tool_call(tool_id.to_owned(), 0, 0);
 
@@ -1120,7 +1114,6 @@ mod tests {
                 tool_id,
                 model::ToolCallStatus::InProgress,
             )))],
-            None,
         ));
         app.index_tool_call(tool_id.to_owned(), 0, 0);
         app.register_tool_call_scope(tool_id.to_owned(), ToolCallScope::SubagentRoot);

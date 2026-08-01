@@ -1,5 +1,5 @@
 /// Logical focus target that can claim directional key navigation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusTarget {
     Mention,
     Emoji,
@@ -28,7 +28,7 @@ pub enum FocusOwner {
 /// Set of currently available focus targets, packed into a u8
 /// bitset. Copy + Default; tests construct via `.with(target)`
 /// chain or `FocusContext::default()`.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct FocusContext {
     available: u8,
 }

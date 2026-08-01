@@ -544,7 +544,6 @@ impl super::App {
 
         if budgeted_bytes <= self.render_cache_budget.max_bytes {
             self.render_cache_budget.last_total_bytes = budgeted_bytes;
-            self.render_cache_budget.last_evicted_bytes = 0;
             stats.total_after_bytes = stats.total_before_bytes;
             return stats;
         }
@@ -569,7 +568,6 @@ impl super::App {
         }
 
         self.render_cache_budget.last_total_bytes = current_budgeted;
-        self.render_cache_budget.last_evicted_bytes = stats.evicted_bytes;
         self.render_cache_budget.total_evictions =
             self.render_cache_budget.total_evictions.saturating_add(stats.evicted_blocks);
 

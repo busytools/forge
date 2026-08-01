@@ -812,14 +812,6 @@ impl ForgeSdkBridge {
     ) -> crate::userdata::settings::SettingsDocuments {
         crate::userdata::settings::settings_documents(&self.inner.config_dir, cwd)
     }
-
-    pub(crate) fn write_settings_document(
-        &self,
-        target: &crate::userdata::settings::SettingsTarget,
-        document: &Value,
-    ) -> Result<(), forge_sdk::Error> {
-        crate::userdata::settings::write_settings_document(&self.inner.config_dir, target, document)
-    }
 }
 
 #[cfg(test)]

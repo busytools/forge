@@ -79,7 +79,6 @@ fn msg_variant_name(msg: &forge_primitives::Message) -> &'static str {
 /// active session - background-session events update their bucket
 /// silently. App-global events (no `session_key`) flip the redraw
 /// flag unconditionally because they affect the rendered view.
-#[allow(clippy::if_not_else)]
 pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
     // INVARIANT: `is_active_or_global` is captured BEFORE the match
     // so reducers that themselves mutate `active_session_key` (e.g.
@@ -91,13 +90,6 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         Some(key) => app.active_session_key.as_ref() == Some(key),
         None => true,
     };
-    // Stamp `last_activity_at` for the session this event targets so
-    // the Projects pane's relative-time column has a ground truth.
-    if let Some(key) = target_key.as_ref()
-        && let Some(session) = app.session_mut(key)
-    {
-        session.last_activity_at = std::time::Instant::now();
-    }
     match update {
         SessionUpdate::Spawning { key, project_name, cwd, display_name } => {
             apply_session_update_spawning(app, key, &project_name, &cwd, &display_name);
@@ -459,7 +451,6 @@ fn apply_session_update_spawning(
         vec![crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete(&format!(
             "Waking {display_name}…"
         )))],
-        None,
     ));
     bucket.message_retained_bytes.push(0);
     app.sessions.insert(key.clone(), bucket);
@@ -1916,7 +1907,6 @@ mod tests {
                 vec![crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete(
                     "intermediate state",
                 ))],
-                None,
             ));
             b.message_retained_bytes.push(0);
         }
@@ -1963,7 +1953,6 @@ mod tests {
             vec![crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete(
                 "Waking proj…",
             ))],
-            None,
         ));
         app.sessions.insert(from.clone(), bucket);
         app.active_session_key = Some(from.clone());
@@ -2058,8 +2047,6 @@ mod tests {
                 rel_path_lower: "stale.rs".to_owned(),
                 basename_lower: "stale.rs".to_owned(),
                 depth: 0,
-                modified: std::time::SystemTime::UNIX_EPOCH,
-                is_dir: false,
             },
         );
         app.file_index_mut().scan_finished = true;
@@ -2113,8 +2100,6 @@ mod tests {
                 rel_path_lower: "before.rs".to_owned(),
                 basename_lower: "before.rs".to_owned(),
                 depth: 0,
-                modified: std::time::SystemTime::UNIX_EPOCH,
-                is_dir: false,
             },
         );
         app.file_index_mut().scan_finished = true;

@@ -372,7 +372,6 @@ fn line_utf8_bytes(line: &ratatui::text::Line<'static>) -> usize {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use ratatui::text::Line;

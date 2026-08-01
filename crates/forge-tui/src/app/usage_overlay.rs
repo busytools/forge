@@ -63,7 +63,7 @@ pub enum UsageOverlayEvent {
 /// Overlay presentation state. `report` is `None` until the first scan
 /// lands (the overlay shows a scanning notice meanwhile); `scan_failed`
 /// flips the notice to a retry hint when a scan died before any report.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct UsageOverlayState {
     pub report: Option<UsageReport>,
     pub group: Grouping,
