@@ -96,8 +96,8 @@ crates/forge-test-harness/
 │                                       # decode_all_inbound, baseline loader,
 │                                       # PINNED_CLI_VERSION
 ├── baselines/
-│   └── 2.1.117/                        # pinned CLI version at capture time
-│       └── <scenario>.jsonl × 23       # one baseline per scenario (see table below)
+│   └── 2.1.220/                        # pinned CLI version at capture time
+│       └── <scenario>.jsonl × 45       # one baseline per scenario (see table below)
 └── tests/
     ├── replay.rs                       # always-on decode test across every baseline
     ├── wire_conformance.rs             # trivial smoke
@@ -147,10 +147,10 @@ session:
 ```bash
 cargo run -p forge-test-harness --example redact_session -- \
   $HOME/.claude-subspace/projects/<slug>/<session>.jsonl \
-  crates/forge-test-harness/baselines/sdk/2.1.117/real_session_<name>.jsonl
+  crates/forge-test-harness/baselines/sdk/2.1.220/real_session_<name>.jsonl
 ```
 
-One sample lives at `baselines/2.1.117/real_session_sample.jsonl`
+One sample lives at `baselines/2.1.220/real_session_sample.jsonl`
  -  352 messages covering real multi-turn tool-use flows, all
 redaction-scrubbed.
 

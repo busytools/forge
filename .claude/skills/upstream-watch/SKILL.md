@@ -35,9 +35,8 @@ port-everything ritual.
 
 There is no contract mapping every public Python type to a Rust one, and
 no test-mirroring requirement. The old `PARITY.md` lineage is archived.
-Drop `crates/forge-sdk/tests/python_parity/` 1:1 mappings whenever they
-get in the way of a cleaner Rust API; keep only tests that cover
-behaviour we actually care about.
+Drop 1:1 mappings whenever they get in the way of a cleaner Rust API;
+keep only tests that cover behaviour we actually care about.
 
 ## Related
 

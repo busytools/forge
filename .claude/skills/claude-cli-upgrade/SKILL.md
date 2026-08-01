@@ -6,7 +6,7 @@ This skill verifies forge stays compatible with the `claude` CLI after an upstre
 2. **Rewriter drift** - the new CLI's wire classification (headers, body keys, telemetry shape) shifted, so the existing forge-side rewriter no longer produces native-equivalent traffic. Hard Rule #16 violated.
 3. **Tool surface drift** - the new CLI adds or removes tool primitives (e.g. `TodoWrite` → `TaskCreate/Update/List/Get` in 2.1.156) that forge-tui's inspector / chat renderers special-case. User-visible features silently regress.
 
-The goal state: harness's `PINNED_CLI_VERSION` bumped to the new version, all 22 sdk replay scenarios pass against fresh baselines, wire-equivalence-check still PASSes, and any drift is either decoded/rewritten or explicitly accepted with rationale.
+The goal state: harness's `PINNED_CLI_VERSION` bumped to the new version, all sdk replay scenarios pass against fresh baselines, wire-equivalence-check still PASSes, and any drift is either decoded/rewritten or explicitly accepted with rationale.
 
 ## When to invoke
 
@@ -158,7 +158,7 @@ Re-capture every scenario against the new CLI binary. With PINNED now pointing a
 FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
   --no-capture --run-ignored only 2>&1 | tee /tmp/forge-cli-upgrade-check/capture.log
 
-# Confirm the new dir exists with all 22 scenarios.
+# Confirm the new dir exists with a baseline per scenario.
 NEW_VERSION=$(grep -oP 'PINNED_CLI_VERSION: &str = "\K[^"]+' crates/forge-test-harness/src/sdk_wire.rs)
 ls "crates/forge-test-harness/baselines/sdk/${NEW_VERSION}/" 2>&1 | wc -l
 ```
@@ -214,7 +214,7 @@ Now that fresh baselines exist under the bumped `PINNED_CLI_VERSION`, run the re
 cargo nextest run -p forge-test-harness --test sdk_replay 2>&1 | tail -30
 ```
 
-If any scenario FAILs: the new baseline contains a stream-json shape the decoder doesn't handle. Extend `crates/forge-sdk/src/codec/` to handle it, then re-run. Iterate until clean.
+If any scenario FAILs: the new baseline contains a stream-json shape the decoder doesn't handle. Extend `crates/forge-sdk/src/transport/codec.rs` to handle it, then re-run. Iterate until clean.
 
 If all scenarios pass: the decoder is up to date with the new CLI's wire surface. Proceed.
 
@@ -280,7 +280,7 @@ If installed > pinned: run the workflow above. If equal: nothing to do.
 - Replay test: `crates/forge-test-harness/tests/sdk_replay.rs`.
 - Capture scenarios: `crates/forge-test-harness/tests/sdk_scenarios_*.rs`.
 - Tool-name gate (forge-tui): `crates/forge-tui/src/app/events/tool_calls.rs` (search for the string-match against tool names).
-- Decoder: `crates/forge-sdk/src/codec/`.
+- Decoder: `crates/forge-sdk/src/transport/codec.rs`.
 - Rewriter: `crates/forge-sdk/src/transport/proxy.rs`.
 - Hard Rule #16 (wire classification must match native CLI): top-level `CLAUDE.md`.
 - Paired skill: `.claude/skills/wire-equivalence-check/SKILL.md`.
