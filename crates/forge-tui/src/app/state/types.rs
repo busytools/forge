@@ -21,7 +21,6 @@ pub struct LoginHint {
 pub enum PendingCommandAck {
     CurrentMode,
     CurrentModel,
-    ConfigOption { option_id: String },
 }
 
 /// Snapshot of a `Message::StopHookSummary` event bound to an
