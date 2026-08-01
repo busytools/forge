@@ -1289,7 +1289,6 @@ mod tests {
             terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
-            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_y_in_msg: 0,
@@ -1321,13 +1320,10 @@ mod tests {
     #[test]
     fn lifecycle_block_refuses_the_click_and_paints_no_hand() {
         use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
-        let cases = [
-            (
-                "Monitor",
-                serde_json::json!({"description": "ci-watch", "command": "gh run watch 1"}),
-            ),
-            ("Workflow", serde_json::json!({"script": "export const meta = { name: 'x' }"})),
-        ];
+        let cases = [(
+            "Monitor",
+            serde_json::json!({"description": "ci-watch", "command": "gh run watch 1"}),
+        )];
         for (name, input) in cases {
             let mut app = App::test_default();
             seed_single_tool_call_with_input(&mut app, name, Some(input));
@@ -1349,18 +1345,17 @@ mod tests {
         }
     }
 
-    /// The other half: a Monitor / Workflow whose input does not parse
-    /// paints a standard card, so it keeps the normal click + Hand. The
-    /// `Workflow({scriptPath})` shape hits this, and without it that
-    /// card would be permanently expanded with no affordance.
+    /// The other half: a Monitor whose input does not parse paints a
+    /// standard card, so it keeps the normal click + Hand. Without this
+    /// that card would be permanently expanded with no affordance.
     #[test]
     fn a_lifecycle_tool_that_falls_through_keeps_normal_click_behaviour() {
         use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
         let mut app = App::test_default();
         seed_single_tool_call_with_input(
             &mut app,
-            "Workflow",
-            Some(serde_json::json!({"scriptPath": "/tmp/wf.js"})),
+            "Monitor",
+            Some(serde_json::json!({"description": "no command here"})),
         );
         assert_eq!(
             pointer_shape_at(&app, moved(5, 0)),
@@ -1606,7 +1601,6 @@ mod tests {
                 terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
                 monitor_output_tail: Vec::default(),
                 monitor_status: None,
-                workflow_status: None,
                 render_epoch: 0,
                 layout_epoch: 0,
                 last_measured_y_in_msg: 0,
@@ -1711,7 +1705,6 @@ mod tests {
             terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
-            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_y_in_msg: y,
@@ -1784,7 +1777,6 @@ mod tests {
             terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
-            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_y_in_msg: y,
@@ -1969,7 +1961,6 @@ mod tests {
             terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
-            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_y_in_msg: 0,
@@ -2098,7 +2089,6 @@ mod tests {
             terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
-            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_y_in_msg: 0,

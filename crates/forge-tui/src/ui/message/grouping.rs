@@ -801,7 +801,6 @@ mod tests {
             terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
-            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -837,10 +836,8 @@ mod tests {
     fn lifecycle_tool_call_block(id: &str, sdk_tool_name: &str) -> MessageBlock {
         let mut block = tool_call_block(id, sdk_tool_name);
         if let MessageBlock::ToolCall(tc) = &mut block {
-            tc.raw_input = Some(match sdk_tool_name {
-                "Workflow" => serde_json::json!({"script": "export const meta = { name: 'x' }"}),
-                _ => serde_json::json!({"description": "d", "command": "c"}),
-            });
+            let _ = sdk_tool_name;
+            tc.raw_input = Some(serde_json::json!({"description": "d", "command": "c"}));
         }
         block
     }
@@ -881,7 +878,6 @@ mod tests {
         assert!(is_run_breaker(&diff_tool_call_block("a", "Edit")));
         assert!(is_run_breaker(&diff_tool_call_block("b", "Write")));
         assert!(is_run_breaker(&lifecycle_tool_call_block("c", "Monitor")));
-        assert!(is_run_breaker(&lifecycle_tool_call_block("d", "Workflow")));
         assert!(is_run_breaker(&text_block("hi")));
     }
 
@@ -957,16 +953,14 @@ mod tests {
                 "{name} without diff content (in-flight) MUST still break runs",
             );
         }
-        for name in ["Monitor", "Workflow"] {
-            assert!(
-                is_run_breaker(&lifecycle_tool_call_block("x", name)),
-                "{name} renders a lifecycle block and MUST break runs",
-            );
-            assert!(
-                !is_run_breaker(&tool_call_block("x", name)),
-                "{name} with no parseable input paints an ordinary card and folds",
-            );
-        }
+        assert!(
+            is_run_breaker(&lifecycle_tool_call_block("x", "Monitor")),
+            "Monitor renders a lifecycle block and MUST break runs",
+        );
+        assert!(
+            !is_run_breaker(&tool_call_block("x", "Monitor")),
+            "a Monitor with no parseable input paints an ordinary card and folds",
+        );
         for name in [
             "mcp__forge__peers__ask_agent",
             "mcp__forge__peers__tell_agent",
@@ -1321,10 +1315,11 @@ mod tests {
     }
 
     /// A HIDDEN tool passes through a messaging run so the envelopes
-    /// either side still merge; a VISIBLE one splits it. Un-hiding the
-    /// Monitor block moved it from the first case to the second, so
-    /// both arms are asserted - the hidden arm is the control that
-    /// makes the visible arm mean something.
+    /// either side still merge; a VISIBLE one splits it. Both arms set
+    /// `hidden` by hand, so this pins the pass-through RULE rather than
+    /// any particular tool's suppression - it is the only repo-wide
+    /// guard for that path, and it would not notice a tool changing
+    /// sides.
     #[test]
     fn a_hidden_tool_passes_through_a_peer_run_but_a_visible_one_splits_it() {
         let messaging_groups = |blocks: &[MessageBlock]| {

@@ -3143,7 +3143,6 @@ mod subagent_sentinel_tests {
             terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
-            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -3561,6 +3560,9 @@ mod monitor_chat_block_tests {
     use forge_primitives::messages::TaskNotificationStatus;
 
     const TOOL_USE_ID: &str = "toolu_monitor";
+    /// Narrow enough that the block must clip through the real render
+    /// path, wide enough to still paint every row.
+    const NARROW_RENDER_WIDTH: u16 = 40;
     const TASK_ID: &str = "task_monitor";
 
     fn monitor_input() -> serde_json::Value {
@@ -3633,6 +3635,10 @@ mod monitor_chat_block_tests {
 
     /// Render the active session's chat exactly as the app does.
     fn rendered_chat(app: &mut App) -> String {
+        rendered_chat_at(app, 80)
+    }
+
+    fn rendered_chat_at(app: &mut App, width: u16) -> String {
         let spinner = crate::ui::message::SpinnerState {
             glyph: '\u{280B}',
             is_active_turn_assistant: false,
@@ -3651,7 +3657,7 @@ mod monitor_chat_block_tests {
                 &spinner,
                 crate::ui::message::MessageRenderContext::new(
                     None,
-                    80,
+                    width,
                     0,
                     crate::ui::message::MessageRenderOptions {
                         tools_collapsed: true,
@@ -3787,55 +3793,6 @@ mod monitor_chat_block_tests {
         );
     }
 
-    /// The Workflow block rides the same split as the Monitor one:
-    /// the launch ack marks the tool call terminal, and only the
-    /// wire's terminal `task_updated` ends the workflow itself.
-    #[test]
-    fn workflow_block_liveness_follows_the_workflow_not_the_ack() {
-        const WF_TOOL_USE: &str = "toolu_workflow";
-        const WF_TASK: &str = "task_workflow";
-        let mut app = App::test_default();
-        apply_tool_use_block(
-            &mut app,
-            WF_TOOL_USE,
-            "Workflow",
-            &serde_json::json!({"script": "export const meta = { name: 'ping-pong' }\n"}),
-            None,
-        );
-        handle_task_started(
-            &mut app,
-            Message::TaskStarted {
-                task_id: WF_TASK.to_owned(),
-                description: "ping-pong".to_owned(),
-                uuid: String::new(),
-                session_id: String::new(),
-                tool_use_id: Some(WF_TOOL_USE.to_owned()),
-                task_type: None,
-            },
-        );
-        let workflow_state = |app: &App| {
-            let (mi, bi) = app.lookup_tool_call(WF_TOOL_USE).expect("Workflow stays indexed");
-            let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] else {
-                panic!("expected a ToolCall block");
-            };
-            assert_eq!(tc.sdk_tool_name, "Workflow", "the renderer matches on sdk_tool_name");
-            assert!(!tc.hidden, "a hidden block never reaches the renderer");
-            tc.workflow_status
-        };
-        assert_eq!(
-            workflow_state(&app),
-            Some(crate::app::WorkflowStatus::InProgress),
-            "still running while only the launch ack has landed",
-        );
-
-        app.set_workflow_completed_by_task_id(WF_TASK);
-        assert_eq!(
-            workflow_state(&app),
-            Some(crate::app::WorkflowStatus::Completed),
-            "the terminal task_updated reaches the chat block",
-        );
-    }
-
     /// The synthesis path in `apply_tool_progress_update` fires when
     /// `turn_state` has been reset, which any frame arriving after its
     /// launching turn does. It must not push a `"Task"` tool_use over
@@ -3936,6 +3893,41 @@ mod monitor_chat_block_tests {
             "re-registered under its real name, never as a Task",
         );
         assert_block_still_renders(&mut app, "after re-registration");
+    }
+
+    /// The width tests all call `render_lifecycle_one_liner` directly,
+    /// so none of them notices if the production call site stops
+    /// passing the real width. Drive one narrow case through
+    /// `render_message` so the wiring itself is covered.
+    #[test]
+    fn the_block_is_clipped_to_the_real_render_width() {
+        let mut app = App::test_default();
+        apply_tool_use_block(
+            &mut app,
+            TOOL_USE_ID,
+            "Monitor",
+            &serde_json::json!({
+                "description": "a description long enough that it cannot fit a narrow pane",
+                "command": "gh run watch 18234567 --exit-status --repo busytools/forge",
+                "persistent": true,
+                "timeout_ms": 0,
+            }),
+            None,
+        );
+        handle_task_started(&mut app, task_started());
+
+        let rendered = rendered_chat_at(&mut app, NARROW_RENDER_WIDTH);
+        for row in rendered.lines() {
+            assert!(
+                unicode_width::UnicodeWidthStr::width(row) <= NARROW_RENDER_WIDTH as usize,
+                "every painted row fits the render width {NARROW_RENDER_WIDTH}; got {}: {row:?}",
+                unicode_width::UnicodeWidthStr::width(row),
+            );
+        }
+        // Snapshot the exact shape as well: the per-row width check only
+        // catches overflow, and the layout constants can over-clip
+        // without any row growing.
+        insta::assert_snapshot!(rendered.trim_end());
     }
 
     /// A resumed session must not restore a finished monitor as live.

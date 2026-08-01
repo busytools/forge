@@ -1008,11 +1008,8 @@ pub(crate) fn renders_as_lifecycle_block(tc: &crate::app::ToolCallInfo) -> bool 
     let Some(input) = tc.raw_input.as_ref() else {
         return false;
     };
-    match tc.sdk_tool_name.as_str() {
-        "Monitor" => forge_workspace::user_interaction::parse_monitor_input(input).is_some(),
-        "Workflow" => forge_workspace::user_interaction::parse_workflow_input(input).is_some(),
-        _ => false,
-    }
+    tc.sdk_tool_name == "Monitor"
+        && forge_workspace::user_interaction::parse_monitor_input(input).is_some()
 }
 
 /// Cells a Monitor child row spends before its text: 5 of indent, which
@@ -1027,26 +1024,24 @@ const MONITOR_HEADER_GLYPH_CELLS: usize = 4;
 /// plus the `Monitor` label plus the ` · ` separator.
 const MONITOR_HEADER_PREFIX_CELLS: usize = MONITOR_HEADER_GLYPH_CELLS + 7 + 3;
 
-/// Render the chat lifecycle block for Monitor / Workflow. Returns
-/// `None` for any other tool, or when the input doesn't parse, so the
-/// caller falls through to the standard tool-card render.
+/// Render the chat lifecycle block for Monitor. Returns `None` for any
+/// other tool, or when the input doesn't parse, so the caller falls
+/// through to the standard tool-card render.
 ///
 /// Render shapes:
 /// - Monitor (running): `◉ Monitor · <description>[ · persistent]`,
 ///   then `$ <command>` and up to five tail rows under tree connectors
 /// - Monitor (terminal): `✓ Monitor · <description> · <completed |
 ///   stopped | timed out>`
-/// - Workflow (running): `◆ Workflow started · <meta.name | "Workflow">`
-/// - Workflow (terminal): `◆ Workflow done · <meta.name | "Workflow">`
 ///
-/// Both lifecycle arms take terminal-ness from the tool's OWN liveness
-/// (`monitor_status` / `workflow_status`), never from `tc.status` - the
-/// launch ack drives the tool call terminal while the work runs on.
+/// Terminal-ness comes from the monitor's OWN liveness
+/// (`monitor_status`), never from `tc.status` - the launch ack drives
+/// the tool call terminal while the monitor runs on.
 fn render_lifecycle_one_liner(
     tc: &crate::app::ToolCallInfo,
     width: u16,
 ) -> Option<Vec<Line<'static>>> {
-    use crate::app::{MonitorStatus, WorkflowStatus};
+    use crate::app::MonitorStatus;
     match tc.sdk_tool_name.as_str() {
         "Monitor" => {
             let parsed = tc
@@ -1160,23 +1155,6 @@ fn render_lifecycle_one_liner(
                 )));
             }
             Some(lines)
-        }
-        "Workflow" => {
-            let parsed = tc
-                .raw_input
-                .as_ref()
-                .and_then(forge_workspace::user_interaction::parse_workflow_input)?;
-            let meta_name = workflow_meta_name(&parsed.script);
-            // Liveness comes from the workflow, not from `tc.status`:
-            // the "Workflow launched in background" ack lands while the
-            // workflow is still running its phases.
-            let is_terminal = matches!(tc.workflow_status, Some(WorkflowStatus::Completed));
-            let text = if is_terminal {
-                format!("  \u{25c6} Workflow done \u{b7} {meta_name}")
-            } else {
-                format!("  \u{25c6} Workflow started \u{b7} {meta_name}")
-            };
-            Some(vec![Line::from(Span::styled(text, Style::default().fg(theme::DIM)))])
         }
         _ => None,
     }
@@ -2935,7 +2913,6 @@ mod tests {
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
-            workflow_status: None,
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
@@ -5143,62 +5120,6 @@ mod tests {
     // Monitor + Workflow lifecycle one-liner render.
     // ----------------------------------------------------------------
 
-    fn workflow_tool_call(status: Option<crate::app::WorkflowStatus>) -> crate::app::ToolCallInfo {
-        let mut tc = make_tool_call_info(
-            "toolu_wf",
-            "Workflow",
-            // The launch ack marks the TOOL CALL terminal almost
-            // immediately; the block must not read this.
-            crate::agent::model::ToolCallStatus::Completed,
-            "",
-        );
-        tc.raw_input = Some(serde_json::json!({
-            "script": "export const meta = { name: 'ping-pong' }\n",
-        }));
-        tc.workflow_status = status;
-        tc
-    }
-
-    fn workflow_line(tc: &crate::app::ToolCallInfo) -> String {
-        render_lines_to_strings(
-            &render_lifecycle_one_liner(tc, 80).expect("Workflow produces a line"),
-        )
-        .join("\n")
-    }
-
-    #[test]
-    fn running_workflow_renders_started_despite_a_completed_tool_call() {
-        let line = workflow_line(&workflow_tool_call(Some(crate::app::WorkflowStatus::InProgress)));
-        assert!(line.contains("Workflow started"), "a running workflow reads started: {line:?}");
-        assert!(line.contains("ping-pong"), "meta name: {line:?}");
-        assert!(!line.contains("done"), "a running workflow never reads done: {line:?}");
-    }
-
-    /// The Workflow line shares the block family's 2-cell body indent.
-    #[test]
-    fn workflow_line_sits_at_the_shared_body_indent() {
-        for status in
-            [crate::app::WorkflowStatus::InProgress, crate::app::WorkflowStatus::Completed]
-        {
-            let line = workflow_line(&workflow_tool_call(Some(status)));
-            assert!(line.starts_with("  \u{25c6} "), "{status:?} keeps the indent: {line:?}");
-        }
-    }
-
-    #[test]
-    fn completed_workflow_renders_done() {
-        let line = workflow_line(&workflow_tool_call(Some(crate::app::WorkflowStatus::Completed)));
-        assert!(line.contains("Workflow done"), "a finished workflow reads done: {line:?}");
-    }
-
-    /// An unknown liveness renders as still-running, matching Monitor:
-    /// the launch is the only thing we know happened.
-    #[test]
-    fn workflow_with_unknown_liveness_renders_started() {
-        let line = workflow_line(&workflow_tool_call(None));
-        assert!(line.contains("Workflow started"), "unknown reads as running: {line:?}");
-    }
-
     #[test]
     fn monitor_alive_renders_block_with_header_command_and_tail() {
         let mut tc = make_tool_call_info(
@@ -5275,110 +5196,6 @@ mod tests {
             "the collapsed summary keeps the indent: {:?}",
             terminal[0],
         );
-    }
-
-    /// Child rows carry the tree connectors, and the outer layout
-    /// char-wraps without the gutter, so an overflowing child shears
-    /// the tree. Same contract the peer / tool group trees hold: the
-    /// header may wrap, the connector rows must fit.
-    /// 48 sits above the width where the fixed prefixes start
-    /// dominating, so it alone never exercises the narrow case. The
-    /// overflow band is roughly 10..=16 - a minimum-budget floor on ANY
-    /// row reintroduces the flush-left fragment there, header and both
-    /// child rows alike.
-    /// `renders_as_lifecycle_block` re-implements the renderer's gate
-    /// cheaply instead of building the block, so the two must agree on
-    /// every shape or the click / collapse / grouping paths disagree
-    /// with what actually paints.
-    #[test]
-    fn the_cheap_lifecycle_predicate_agrees_with_the_renderer() {
-        let cases = [
-            ("Monitor", Some(serde_json::json!({"description": "d", "command": "c"}))),
-            ("Monitor", Some(serde_json::json!({"description": "d"}))),
-            ("Monitor", Some(serde_json::json!({"description": "", "command": "c"}))),
-            ("Monitor", None),
-            ("Workflow", Some(serde_json::json!({"script": "export const meta = {}"}))),
-            ("Workflow", Some(serde_json::json!({"scriptPath": "/tmp/x.js"}))),
-            ("Workflow", Some(serde_json::json!({"script": ""}))),
-            ("Workflow", None),
-            ("Read", Some(serde_json::json!({"file_path": "/tmp/x"}))),
-        ];
-        for (name, input) in cases {
-            let mut tc = make_tool_call_info(
-                "toolu_x",
-                name,
-                crate::agent::model::ToolCallStatus::Completed,
-                "",
-            );
-            tc.raw_input = input.clone();
-            assert_eq!(
-                renders_as_lifecycle_block(&tc),
-                render_lifecycle_one_liner(&tc, 80).is_some(),
-                "predicate and renderer disagree for {name} with {input:?}",
-            );
-        }
-    }
-
-    #[test]
-    fn monitor_block_rows_fit_a_very_narrow_width() {
-        for width in 10_u16..=35 {
-            let mut tc = make_tool_call_info(
-                "toolu_mon",
-                "Monitor",
-                crate::agent::model::ToolCallStatus::Completed,
-                "",
-            );
-            tc.raw_input = Some(serde_json::json!({
-                "description": "ci-watch on the release branch after the tag lands",
-                "command": "gh run watch 18234567 --exit-status --repo busytools/forge",
-                "persistent": true,
-                "timeout_ms": 0,
-            }));
-            tc.monitor_status = Some(crate::app::MonitorStatus::Running);
-            tc.monitor_output_tail = vec!["a tail line long enough to need clipping".to_owned()];
-            let rows = render_lines_to_strings(
-                &render_lifecycle_one_liner(&tc, width).expect("Monitor produces lines"),
-            );
-            for row in &rows {
-                assert!(
-                    unicode_width::UnicodeWidthStr::width(row.as_str()) <= width as usize,
-                    "row must fit width {width}; got {}: {row:?}",
-                    unicode_width::UnicodeWidthStr::width(row.as_str()),
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn monitor_block_child_rows_fit_a_narrow_width() {
-        const WIDTH: u16 = 48;
-        let mut tc = make_tool_call_info(
-            "toolu_mon",
-            "Monitor",
-            crate::agent::model::ToolCallStatus::InProgress,
-            "",
-        );
-        tc.raw_input = Some(serde_json::json!({
-            "description": "ci-watch on the release branch after the tag lands",
-            "command": "gh run watch 18234567 --exit-status --repo busytools/forge",
-            "persistent": true,
-            "timeout_ms": 0,
-        }));
-        tc.monitor_output_tail =
-            vec!["build \u{b7} in_progress \u{b7} a trailing detail that overflows".to_owned()];
-        let rows = render_lines_to_strings(
-            &render_lifecycle_one_liner(&tc, WIDTH).expect("Monitor produces lines"),
-        );
-        // EVERY row, header included: a wrapped header fragment lands
-        // flush-left between the header and the connectors.
-        for row in &rows {
-            assert!(
-                unicode_width::UnicodeWidthStr::width(row.as_str()) <= WIDTH as usize,
-                "child row must fit width {WIDTH}; got {}: {row:?}",
-                unicode_width::UnicodeWidthStr::width(row.as_str()),
-            );
-        }
-        assert!(rows.iter().any(|r| r.contains("...")), "something clipped; got {rows:?}");
     }
 
     #[test]
@@ -5471,13 +5288,32 @@ mod tests {
 
     /// `handle_task_updated` folds the wire's failed / killed / stopped
     /// into `Stopped`, so a monitor whose watched command FAILED lands
-    /// here. It must not paint a green success tick.
+    /// here. Colour is half the signal, so this asserts the styled
+    /// span and not just the glyph - flattening to text cannot tell a
+    /// green cross from a red one.
     #[test]
-    fn a_non_success_terminal_monitor_does_not_paint_a_green_tick() {
-        for (status, word) in [
-            (crate::app::MonitorStatus::Stopped, "stopped"),
-            (crate::app::MonitorStatus::TimedOut, "timed out"),
-        ] {
+    fn terminal_monitor_glyph_and_colour_match_the_outcome() {
+        let cases = [
+            (
+                crate::app::MonitorStatus::Completed,
+                "completed",
+                theme::ICON_COMPLETED,
+                Color::Green,
+            ),
+            (
+                crate::app::MonitorStatus::Stopped,
+                "stopped",
+                theme::ICON_FAILED,
+                theme::STATUS_ERROR,
+            ),
+            (
+                crate::app::MonitorStatus::TimedOut,
+                "timed out",
+                theme::ICON_FAILED,
+                theme::STATUS_ERROR,
+            ),
+        ];
+        for (status, word, glyph, colour) in cases {
             let mut tc = make_tool_call_info(
                 "toolu_mon",
                 "Monitor",
@@ -5490,57 +5326,19 @@ mod tests {
             }));
             tc.monitor_status = Some(status);
             let lines = render_lifecycle_one_liner(&tc, 80).expect("Monitor produces lines");
+            let glyph_span = lines[0]
+                .spans
+                .iter()
+                .find(|span| span.content.contains(glyph))
+                .unwrap_or_else(|| panic!("{status:?} carries {glyph}: {:?}", lines[0]));
+            assert_eq!(
+                glyph_span.style.fg,
+                Some(colour),
+                "{status:?} paints {glyph} in the outcome's colour",
+            );
             let rendered = render_lines_to_strings(&lines).join("");
             assert!(rendered.contains(word), "{status:?} reads {word:?}: {rendered:?}");
-            assert!(
-                rendered.contains(theme::ICON_FAILED),
-                "{status:?} carries the failure glyph: {rendered:?}",
-            );
-            assert!(
-                !rendered.contains(theme::ICON_COMPLETED),
-                "{status:?} must not carry the success tick: {rendered:?}",
-            );
         }
-    }
-
-    #[test]
-    fn monitor_stopped_renders_stopped() {
-        let mut tc = make_tool_call_info(
-            "toolu_mon",
-            "Monitor",
-            crate::agent::model::ToolCallStatus::Completed,
-            "",
-        );
-        tc.raw_input = Some(serde_json::json!({
-            "description": "ci-watch",
-            "command": "gh run watch 1",
-            "persistent": false,
-            "timeout_ms": 0,
-        }));
-        tc.monitor_status = Some(crate::app::MonitorStatus::Stopped);
-        let lines = render_lifecycle_one_liner(&tc, 80).expect("Monitor produces lines");
-        let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(rendered.contains("stopped"), "a stopped monitor reads stopped: {rendered:?}");
-    }
-
-    #[test]
-    fn monitor_timed_out_renders_timed_out() {
-        let mut tc = make_tool_call_info(
-            "toolu_mon",
-            "Monitor",
-            crate::agent::model::ToolCallStatus::Completed,
-            "",
-        );
-        tc.raw_input = Some(serde_json::json!({
-            "description": "ci-watch",
-            "command": "gh run watch 1",
-            "persistent": false,
-            "timeout_ms": 1000,
-        }));
-        tc.monitor_status = Some(crate::app::MonitorStatus::TimedOut);
-        let lines = render_lifecycle_one_liner(&tc, 80).expect("Monitor produces lines");
-        let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(rendered.contains("timed out"), "a timed-out monitor says so: {rendered:?}");
     }
 
     #[test]
