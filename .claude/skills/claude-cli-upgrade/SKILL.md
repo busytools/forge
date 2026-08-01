@@ -290,12 +290,18 @@ If installed > pinned: run the workflow above. If equal: nothing to do.
 Replay mode runs on every `cargo nextest run`: offline, no API cost. The
 harness lives in `crates/forge-test-harness/`.
 
-Live-capture a single scenario:
+Live-capture a single scenario (or just `just conformance-capture-sdk
+<test>`):
 
 ```bash
 FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
-    --no-capture --run-ignored only sdk_<test>
+    --no-capture --run-ignored only --no-tests=fail <test>
 ```
+
+`<test>` is the test name (`wire_capture_trivial_prompt`), not the
+binary id. nextest matches the test name alone, so an `sdk_`-prefixed
+filter selects nothing at all. Keep `--no-tests=fail` so a typo cannot
+report a clean capture.
 
 Adding a scenario (Hard Rule #9 requires one for any new wire surface):
 write `tests/sdk_scenarios_<name>.rs`, run it with the env var above,

@@ -54,9 +54,16 @@ conformance:
 # Burns API tokens. Baseline goes to target/wire-traces/; promote with
 # `cp target/wire-traces/capture-<scenario>-<ts>.jsonl \
 #    crates/forge-test-harness/baselines/sdk/<VERSION>/<scenario>.jsonl`.
+#
+# The argument is a nextest test name, which is matched WITHOUT the
+# `sdk_` binary-id prefix - nextest filters on the test name alone, so
+# any prefixed filter selects nothing. `--no-tests=fail` is explicit
+# rather than left to nextest's `auto` default: a typo in the argument
+# must not report a clean run, and that default is version-dependent
+# and overridable via NEXTEST_NO_TESTS.
 conformance-capture-sdk test:
     FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
-        --no-capture --run-ignored only sdk_{{test}}
+        --no-capture --run-ignored only --no-tests=fail {{test}}
 
 # Build docs with warnings as errors. Mirrors CI's
 # `cargo doc --workspace --no-deps --all-features`.
