@@ -70,13 +70,19 @@ doc:
 # Full pre-commit / pre-PR verification loop.
 check: fmt-check unicode-punct-check clippy test-all doc
 
-# Deliberately not a bare `gh run watch`. Piping that masks its exit code
-# AND truncates its output, so one pipe loses both signals at once. Its
-# exit code is unreliable regardless - 0 on a concurrency-cancelled run,
-# and 0 with jobs still in flight after a transient 502 - so the verdict
-# is read back separately instead. headSha is compared against local HEAD
-# so a superseded earlier run cannot read as a pass for work it never
-# built.
+# Deliberately not a bare `gh run watch`. Piping it masks the exit code
+# AND truncates the log, losing both signals to one pipe - the failure
+# this exists to prevent, which has bitten twice.
+#
+# The verdict comes from `gh run view`, not from the watch's exit code.
+# That code is not known to be wrong: measured against a finished run it
+# is 1 for cancelled and 0 for success. Reading the run's own status is
+# simply authoritative whatever the watch does, including exiting early
+# without a verdict, which is why this stays correct even if the above
+# turns out not to hold everywhere.
+#
+# headSha is checked before watching, so a superseded run fails in under
+# a second instead of after a full test suite.
 #
 # Watch CI to completion and report the real verdict; optional run id.
 ci-watch run_id="":
