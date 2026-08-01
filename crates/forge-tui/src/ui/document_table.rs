@@ -21,21 +21,21 @@ enum TableLayoutMode {
     Stacked,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Copy, Clone, Debug)]
 struct TableRenderPolicy {
     preferred_spacing: usize,
     min_spacing: usize,
     min_column_width: usize,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 struct ResolvedTableLayout {
     mode: TableLayoutMode,
     column_widths: Vec<usize>,
     spacing: usize,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ColumnMetrics {
     preferred: usize,
     soft_min: usize,
@@ -54,7 +54,7 @@ struct TableCellAst {
     soft_min_width: usize,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug)]
 struct DocumentTable {
     header: TableRowAst,
     rows: Vec<TableRowAst>,

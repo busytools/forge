@@ -45,7 +45,7 @@ fn reason_priority(reason: LayoutRemeasureReason) -> u8 {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameGeometryChange {
     pub width_changed: bool,
     pub height_changed: bool,

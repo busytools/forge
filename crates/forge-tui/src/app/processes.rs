@@ -43,7 +43,7 @@ use crate::app::state::types::BackgroundTask;
 const PROCESSES_MAX: usize = 50;
 
 /// One row in the PROCESSES section.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ProcessRow {
     /// Which long-running kind produced this row. Drives the
     /// section's glyph + colour at render time.
@@ -93,7 +93,7 @@ pub struct ProcessRow {
 }
 
 /// Kind discriminator for a [`ProcessRow`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessKind {
     /// OS process matched against a wire-tracked backgrounded `Bash`.
     BashBackgrounded,
@@ -119,7 +119,7 @@ pub enum ProcessKind {
 /// sorting + the [`PROCESSES_MAX`] sanity cap. The pane scrolls
 /// when the section overflows the visible area, so no overflow
 /// footer is rendered.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ProcessCollection {
     pub rows: Vec<ProcessRow>,
 }

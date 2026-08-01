@@ -168,7 +168,7 @@ pub struct MessageRenderCacheKey {
 /// `DefaultHasher`); a collision would manifest as a stale render
 /// surviving past an input change. Acceptable for a render cache -
 /// the next genuine state change invalidates everything anyway.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessageRenderSignature(pub u64);
 
 #[derive(Default)]
@@ -304,7 +304,6 @@ pub(crate) struct MarkdownRenderKey {
     pub preserve_newlines: bool,
 }
 
-#[derive(Default)]
 struct MarkdownChunk {
     range: Range<usize>,
     rendered: Option<Vec<Line<'static>>>,
@@ -551,13 +550,13 @@ impl TextBlock {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RateLimitIncidentKey {
     pub rate_limit_type: Option<String>,
     pub resets_at_bucket: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NoticeDedupKey {
     RateLimit(RateLimitIncidentKey),
     ApiRetry,

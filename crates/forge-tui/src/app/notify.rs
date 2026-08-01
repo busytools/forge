@@ -43,7 +43,7 @@ struct NotificationPlan {
     osc9_text: Option<&'static str>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TerminalCapabilities {
     osc9_notifications: bool,
 }

@@ -59,7 +59,7 @@ const LOGIN_HINT_LINES: u16 = 2;
 const CANCEL_HINT_LINES: u16 = 1;
 const PROMPT_SUGGESTION_HINT_LINES: u16 = 1;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct InputRenderGeometry {
     pub hint_pad: Option<Rect>,
     pub box_area: Rect,

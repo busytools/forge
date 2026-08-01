@@ -9,7 +9,6 @@ pub(crate) struct StyledChunk {
     pub style: Style,
 }
 
-#[derive(Clone)]
 struct StyledToken {
     text: String,
     style: Style,

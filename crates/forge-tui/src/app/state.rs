@@ -92,7 +92,7 @@ pub enum InputFocus {
     None,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
 pub enum NoticeStage {
     Warning,
     Rejected,

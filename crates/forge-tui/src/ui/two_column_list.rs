@@ -4,7 +4,7 @@ use super::wrap::{
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct TwoColumnItem {
     pub left: String,
     pub right: String,

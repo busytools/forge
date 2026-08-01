@@ -584,14 +584,14 @@ fn log_tool_call_update_applied(
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum ToolUpdateLogLevel {
     Info,
     Warn,
     Debug,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ToolUpdateLogSpec {
     level: ToolUpdateLogLevel,
     event_name: &'static str,
