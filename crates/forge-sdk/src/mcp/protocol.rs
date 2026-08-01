@@ -9,8 +9,7 @@ use serde_json::Value;
 /// `control_dispatch` cannot parse, and 2025-06-18 removed the requirement
 /// again. Advertising a revision whose MUST we do not implement is the same
 /// untruth as the version this list replaced.
-pub const SUPPORTED_PROTOCOL_VERSIONS: [&str; 3] =
-    ["2025-11-25", "2025-06-18", "2024-11-05"];
+pub const SUPPORTED_PROTOCOL_VERSIONS: [&str; 3] = ["2025-11-25", "2025-06-18", "2024-11-05"];
 
 /// Answered when the client asks for a revision we do not speak.
 pub const LATEST_PROTOCOL_VERSION: &str = SUPPORTED_PROTOCOL_VERSIONS[0];
