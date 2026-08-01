@@ -68,7 +68,7 @@ jobs:
         with:
           shared-key: cargo-${{ runner.os }}
           key: release
-      - run: cargo check --release --workspace --all-targets
+      - run: cargo check --release --workspace --all-targets --all-features
 
   docs:
     name: cargo doc

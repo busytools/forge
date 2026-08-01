@@ -80,9 +80,15 @@ doc:
 # the inner loop. `release` gates on it instead, which is where the
 # ordering actually bites.
 #
+# `--all-features` is what makes this cover the shipped binary rather
+# than a configuration nobody installs: install.sh builds with `perf`
+# on, and the 18 feature gates behind it are release-compiled nowhere
+# else. Without the flag this check passes on a perf-gated release
+# break, measured.
+#
 # Compile the workspace in release. Mirrors CI's `cargo check --release`.
 check-release:
-    RUSTFLAGS="-D warnings" cargo check --release --workspace --all-targets
+    RUSTFLAGS="-D warnings" cargo check --release --workspace --all-targets --all-features
 
 # Full pre-commit / pre-PR verification loop.
 check: fmt-check unicode-punct-check clippy test-all doc
