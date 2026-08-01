@@ -138,6 +138,19 @@ async fn tools_list_order_is_deterministic() {
 }
 
 #[tokio::test]
+async fn dispatch_ping_returns_empty_result() {
+    let server = McpServerBuilder::new("probe", "0.0.1").tool(EchoTool).build();
+    let resp = server
+        .dispatch(&req(9, "ping", serde_json::Value::Null))
+        .await
+        .expect("ping produces a response");
+    let raw = serde_json::to_value(&resp).unwrap();
+    assert_eq!(raw["id"], 9);
+    assert_eq!(raw["result"], json!({}), "spec requires an empty result object");
+    assert!(raw["error"].is_null());
+}
+
+#[tokio::test]
 async fn dispatch_tools_call() {
     let server = McpServerBuilder::new("probe", "0.0.1").tool(EchoTool).build();
     let resp = server

@@ -82,6 +82,10 @@ pub enum JsonRpcResult {
         #[serde(default, rename = "isError", skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
     },
+    /// The spec's empty `{}` result, used by `ping`. Must stay last: untagged
+    /// deserialisation tries variants in order and a fieldless struct variant
+    /// matches any object.
+    Empty {},
 }
 
 /// Server metadata in `initialize` response.
@@ -170,6 +174,25 @@ mod tests_mcp_protocol {
         assert_eq!(raw["error"]["code"], -32601);
         assert_eq!(raw["error"]["message"], "Method not found");
         assert!(raw["result"].is_null());
+    }
+
+    #[test]
+    fn empty_variant_does_not_shadow_the_others() {
+        // `Empty {}` matches any object, so untagged deserialisation only stays
+        // correct while it is declared last.
+        let call = json!({"content": [{"type": "text", "text": "hi"}], "isError": true});
+        let parsed: JsonRpcResult = serde_json::from_value(call).expect("parse");
+        assert!(matches!(parsed, JsonRpcResult::ToolsCall { is_error: true, .. }));
+
+        let parsed: JsonRpcResult = serde_json::from_value(json!({})).expect("parse");
+        assert!(matches!(parsed, JsonRpcResult::Empty {}));
+    }
+
+    #[test]
+    fn ping_result_serialises_to_an_empty_object() {
+        let resp = JsonRpcResponse::success(json!(9), JsonRpcResult::Empty {});
+        let raw = serde_json::to_value(&resp).expect("ser");
+        assert_eq!(raw["result"], json!({}));
     }
 
     #[test]

@@ -65,6 +65,7 @@ impl McpServer {
                 capabilities: serde_json::json!({"tools": {"listChanged": false}}),
                 server_info: ServerInfo { name: self.name.clone(), version: self.version.clone() },
             }),
+            "ping" => Ok(JsonRpcResult::Empty {}),
             "notifications/initialized" => {
                 return None;
             }
