@@ -19,9 +19,8 @@ jobs:
     runs-on: self-hosted-linux
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
+      - uses: ./.github/actions/rust
         with:
-          toolchain: nightly-2026-04-15
           components: rustfmt
       - run: cargo fmt --check
 
@@ -37,9 +36,8 @@ jobs:
     runs-on: self-hosted-linux
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
+      - uses: ./.github/actions/rust
         with:
-          toolchain: nightly-2026-04-15
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
@@ -52,15 +50,25 @@ jobs:
     runs-on: self-hosted-linux
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2026-04-15
+      - uses: ./.github/actions/rust
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: cargo-${{ runner.os }}
           key: test
       - uses: taiki-e/install-action@nextest
       - run: cargo nextest run --workspace --all-features
+
+  release:
+    name: cargo check --release
+    runs-on: self-hosted-linux
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-${{ runner.os }}
+          key: release
+      - run: cargo check --release --workspace --all-targets --all-features
 
   docs:
     name: cargo doc
@@ -69,9 +77,7 @@ jobs:
       RUSTDOCFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2026-04-15
+      - uses: ./.github/actions/rust
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: cargo-${{ runner.os }}

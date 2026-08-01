@@ -166,6 +166,16 @@ pub struct DecodeReport {
     pub unknown_types: Vec<String>,
     /// Unrecognised `control_request.subtype` values seen.
     pub unknown_control_subtypes: Vec<String>,
+    /// `system` subtypes that fell through to the generic
+    /// `Message::System` bucket and are not in
+    /// [`EXPECTED_GENERIC_SYSTEM_SUBTYPES`].
+    pub unmodelled_system_subtypes: Vec<String>,
+    /// Content-block `type` values that decoded to
+    /// `ContentBlock::Unknown`.
+    pub unmodelled_content_block_types: Vec<String>,
+    /// Wire values a `#[serde(other)]` catch-all absorbed. Each entry is
+    /// `<json pointer>: <wire value> -> <fallback>`.
+    pub absorbed_by_catch_all: Vec<String>,
     /// Hard decode errors - line was recognised but inner shape was
     /// invalid, or JSON malformed.
     pub decode_errors: Vec<(usize, String)>,
@@ -176,9 +186,39 @@ impl DecodeReport {
     pub fn is_clean(&self) -> bool {
         self.unknown_types.is_empty()
             && self.unknown_control_subtypes.is_empty()
+            && self.unmodelled_system_subtypes.is_empty()
+            && self.unmodelled_content_block_types.is_empty()
+            && self.absorbed_by_catch_all.is_empty()
             && self.decode_errors.is_empty()
     }
 }
+
+/// `system` subtypes the decoder deliberately leaves generic. Everything
+/// else reaching `Message::System` is a subtype nobody has modelled yet.
+///
+/// The decoder answers "is this modelled?" on its own - a typed subtype
+/// never reaches `Message::System` - so this list holds only the
+/// exceptions rather than mirroring every modelled subtype. A new CLI
+/// subtype is absent from the list and goes red.
+///
+/// An entry is only harmless while that subtype has no typed variant.
+/// `SystemRepr` is untagged, so a subtype that IS modelled degrades into
+/// the generic bucket when its payload shape drifts, and today that is
+/// caught only because the subtype is missing from this list. Give `init`
+/// or `status` a typed variant and its entry here turns load-bearing: it
+/// starts suppressing payload drift on a shape the decoder claims to
+/// model. Remove the entry in the same change that adds the variant.
+pub const EXPECTED_GENERIC_SYSTEM_SUBTYPES: &[&str] = &["init", "status"];
+
+/// Serialised forms of the catch-all variants that stand in for a wire
+/// value the decoder does not model (`#[serde(other)]`).
+///
+/// `"other"` is not defensive padding. Seven of the eight reachable
+/// catch-alls are unit variants that serialise to a bare `"unknown"`;
+/// `WorkflowProgressEvent::Other` is internally tagged and serialises to
+/// `{"type":"other"}`, so what changes is the nested `type` key, which
+/// exists on both sides and is reached through the object walk.
+const CATCH_ALL_MARKERS: &[&str] = &["unknown", "other"];
 
 /// Run a live-capture scenario end-to-end: build options, spawn a recorded
 /// `claude`, drive the scenario to a `Result` frame, dump the trace to
@@ -409,6 +449,86 @@ where
     Ok(Some(()))
 }
 
+/// Record every fallback the decoder took on `msg`, which decoded from
+/// `line`.
+///
+/// `decode_dispatch` only reports a fallback for the top-level `type` and
+/// for `control_request.subtype`. Every other discriminator the decoder
+/// does not model is absorbed silently, in one of two ways that need
+/// different detection:
+///
+/// - **Preserved.** `Message::System` and `ContentBlock::Unknown` keep
+///   the payload verbatim, so the decoded value is indistinguishable from
+///   a modelled one. Detected by asking which bucket it landed in.
+/// - **Replaced.** A `#[serde(other)]` variant discards the wire value,
+///   so re-encoding emits the marker instead. Detected by re-encoding and
+///   comparing, which the preserved kind is invisible to because it
+///   round-trips exactly.
+fn record_fallbacks(msg: &forge_primitives::Message, line: &str, report: &mut DecodeReport) {
+    use forge_primitives::{ContentBlock, Message};
+
+    if let Message::System { subtype, .. } = msg
+        && !EXPECTED_GENERIC_SYSTEM_SUBTYPES.contains(&subtype.as_str())
+    {
+        report.unmodelled_system_subtypes.push(subtype.clone());
+    }
+
+    let blocks = match msg {
+        Message::Assistant { message, .. } => Some(&message.content),
+        Message::User { message, .. } => Some(&message.content),
+        _ => None,
+    };
+    for block in blocks.into_iter().flatten() {
+        if let ContentBlock::Unknown { type_str, .. } = block {
+            report.unmodelled_content_block_types.push(type_str.clone());
+        }
+    }
+
+    let (Ok(raw), Ok(reencoded)) =
+        (serde_json::from_str::<serde_json::Value>(line), serde_json::to_value(msg))
+    else {
+        return;
+    };
+    collect_catch_all_drift(&raw, &reencoded, "", &mut report.absorbed_by_catch_all);
+}
+
+/// Walk `raw` and `reencoded` together, recording every shared key whose
+/// value the decoder replaced with a catch-all marker.
+///
+/// Only keys present on both sides are compared, so a field the decoder
+/// drops is not mistaken for one it corrupted, and only a change *into* a
+/// marker counts - which is why the two benign round-trip differences in
+/// the committed baselines (user `content` normalising a bare string into
+/// a block list, and `0` formatting as `0.0`) need no exception here.
+fn collect_catch_all_drift(
+    raw: &serde_json::Value,
+    reencoded: &serde_json::Value,
+    path: &str,
+    out: &mut Vec<String>,
+) {
+    use serde_json::Value;
+    match (raw, reencoded) {
+        (Value::Object(a), Value::Object(b)) => {
+            for (key, av) in a {
+                if let Some(bv) = b.get(key) {
+                    collect_catch_all_drift(av, bv, &format!("{path}/{key}"), out);
+                }
+            }
+        }
+        (Value::Array(a), Value::Array(b)) if a.len() == b.len() => {
+            for (i, (av, bv)) in a.iter().zip(b).enumerate() {
+                collect_catch_all_drift(av, bv, &format!("{path}/{i}"), out);
+            }
+        }
+        (_, Value::String(marker))
+            if CATCH_ALL_MARKERS.contains(&marker.as_str()) && raw != reencoded =>
+        {
+            out.push(format!("{path}: {raw} -> \"{marker}\""));
+        }
+        _ => {}
+    }
+}
+
 /// Run every inbound line from `log` through `decode_dispatch`, returning
 /// a categorised report.
 pub fn decode_all_inbound(log: &TraceLog) -> DecodeReport {
@@ -419,7 +539,10 @@ pub fn decode_all_inbound(log: &TraceLog) -> DecodeReport {
             continue;
         }
         match decode_dispatch(line, (idx + 1) as u64) {
-            Ok(DecodedLine::Message(_)) => report.messages += 1,
+            Ok(DecodedLine::Message(msg)) => {
+                report.messages += 1;
+                record_fallbacks(&msg, line, &mut report);
+            }
             Ok(DecodedLine::Control(req)) => {
                 report.controls += 1;
                 if let ControlRequestKind::Unknown { subtype, .. } = &req.request {
@@ -435,4 +558,152 @@ pub fn decode_all_inbound(log: &TraceLog) -> DecodeReport {
         }
     }
     report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn report_for(line: &str) -> DecodeReport {
+        let mut log = TraceLog::default();
+        log.entries.push(("in", line.to_string()));
+        decode_all_inbound(&log)
+    }
+
+    /// Nothing else may fire, or the assertion above it proves nothing:
+    /// a report can go dirty for a reason that has no bearing on the
+    /// discriminator under test.
+    fn assert_only(report: &DecodeReport, field: &str) {
+        let mut others: Vec<&str> = Vec::new();
+        if field != "system" && !report.unmodelled_system_subtypes.is_empty() {
+            others.push("system");
+        }
+        if field != "block" && !report.unmodelled_content_block_types.is_empty() {
+            others.push("block");
+        }
+        if field != "catch_all" && !report.absorbed_by_catch_all.is_empty() {
+            others.push("catch_all");
+        }
+        assert!(report.unknown_types.is_empty(), "unknown_types fired: {report:#?}");
+        assert!(report.decode_errors.is_empty(), "decode_errors fired: {report:#?}");
+        assert!(others.is_empty(), "expected only {field}, also got {others:?}: {report:#?}");
+    }
+
+    const NEW_SUBTYPE: &str = r#"{"type":"system","subtype":"context_compaction_started",
+        "session_id":"s1","uuid":"u1","reason":"auto"}"#;
+
+    #[test]
+    fn unmodelled_system_subtype_is_reported() {
+        let report = report_for(NEW_SUBTYPE);
+        assert_eq!(report.unmodelled_system_subtypes, ["context_compaction_started"]);
+        assert_only(&report, "system");
+        assert!(!report.is_clean());
+    }
+
+    #[test]
+    fn intentionally_generic_system_subtype_stays_clean() {
+        let report = report_for(r#"{"type":"system","subtype":"init","session_id":"s1"}"#);
+        assert!(report.is_clean(), "{report:#?}");
+        assert_eq!(report.messages, 1);
+    }
+
+    #[test]
+    fn modelled_system_subtype_stays_clean() {
+        let report = report_for(
+            r#"{"type":"system","subtype":"thinking_tokens","estimated_tokens":50,
+                "estimated_tokens_delta":50,"uuid":"u1","session_id":"s1"}"#,
+        );
+        assert!(report.is_clean(), "{report:#?}");
+        assert!(report.unmodelled_system_subtypes.is_empty());
+    }
+
+    #[test]
+    fn unmodelled_content_block_type_is_reported() {
+        let report = report_for(
+            r#"{"type":"assistant","session_id":"s1","parent_tool_use_id":null,
+                "message":{"id":"m1","role":"assistant","model":"claude-opus-5",
+                "content":[{"type":"redacted_thinking","data":"abc"}]}}"#,
+        );
+        assert_eq!(report.unmodelled_content_block_types, ["redacted_thinking"]);
+        assert_only(&report, "block");
+        assert!(!report.is_clean());
+    }
+
+    #[test]
+    fn catch_all_absorbing_a_wire_value_is_reported() {
+        let report = report_for(
+            r#"{"type":"assistant","session_id":"s1","parent_tool_use_id":null,
+                "message":{"id":"m1","role":"assistant","model":"claude-opus-5",
+                "stop_reason":"refusal","content":[{"type":"text","text":"hi"}]}}"#,
+        );
+        assert_eq!(
+            report.absorbed_by_catch_all,
+            [r#"/message/stop_reason: "refusal" -> "unknown""#]
+        );
+        assert_only(&report, "catch_all");
+        assert!(!report.is_clean());
+    }
+
+    /// The two round-trip differences the committed baselines actually
+    /// contain. Neither is a catch-all, and the check must say so.
+    #[test]
+    fn benign_round_trip_differences_stay_clean() {
+        let bare_string_content = report_for(
+            r#"{"type":"user","session_id":"s1","parent_tool_use_id":null,
+                "message":{"role":"user","content":"<local-command-stdout>ok</local-command-stdout>"}}"#,
+        );
+        assert!(bare_string_content.is_clean(), "{bare_string_content:#?}");
+
+        let integral_cost = report_for(
+            r#"{"type":"result","subtype":"success","session_id":"s1","is_error":false,
+                "num_turns":1,"duration_ms":10,"duration_api_ms":9,"total_cost_usd":0}"#,
+        );
+        assert!(integral_cost.is_clean(), "{integral_cost:#?}");
+    }
+
+    /// The `"other"` half of [`CATCH_ALL_MARKERS`]: this one changes a
+    /// nested `type` key rather than a leaf value, so it is only found
+    /// because the walk descends into arrays and objects.
+    #[test]
+    fn nested_other_marker_is_reported() {
+        let report = report_for(
+            r#"{"type":"system","subtype":"task_progress","task_id":"t1",
+                "description":"d","uuid":"u1","session_id":"s1",
+                "usage":{"total_tokens":1,"tool_uses":2,"duration_ms":3},
+                "workflow_progress":[{"type":"workflowRetry","index":0}]}"#,
+        );
+        assert_eq!(
+            report.absorbed_by_catch_all,
+            [r#"/workflow_progress/0/type: "workflowRetry" -> "other""#]
+        );
+        assert_only(&report, "catch_all");
+        assert!(!report.is_clean());
+    }
+
+    /// `SystemRepr` is untagged, so a modelled subtype whose payload
+    /// drifts falls through to the generic bucket rather than erroring.
+    /// This is what makes an allowlist entry stop being harmless once
+    /// its subtype grows a typed variant, and the reason
+    /// `EXPECTED_GENERIC_SYSTEM_SUBTYPES` says to drop the entry in the
+    /// same change.
+    #[test]
+    fn modelled_subtype_with_a_drifted_payload_is_reported() {
+        // thinking_tokens without its required estimated_tokens field.
+        let report = report_for(
+            r#"{"type":"system","subtype":"thinking_tokens",
+                "estimated_tokens_delta":50,"uuid":"u1","session_id":"s1"}"#,
+        );
+        assert_eq!(report.unmodelled_system_subtypes, ["thinking_tokens"]);
+        assert_only(&report, "system");
+        assert!(!report.is_clean());
+    }
+
+    /// Guards the shape the whole thing exists for: the frame that now
+    /// goes red used to be counted as an ordinary message.
+    #[test]
+    fn an_unmodelled_subtype_still_decodes_as_a_plain_message() {
+        let report = report_for(NEW_SUBTYPE);
+        assert_eq!(report.messages, 1);
+        assert!(report.unknown_types.is_empty());
+    }
 }

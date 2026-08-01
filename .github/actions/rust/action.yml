@@ -1,0 +1,47 @@
+name: rust toolchain
+description: Install the toolchain rust-toolchain.toml pins, and verify that is the one cargo will actually use.
+
+inputs:
+  components:
+    description: Comma-separated rustup components to install alongside the toolchain.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - id: pin
+      shell: bash
+      run: |
+        channel=$(sed -ne 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+        if [ -z "$channel" ]; then
+          echo "::error::no channel found in rust-toolchain.toml"
+          exit 1
+        fi
+        echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+    # The runner has no rustup, cargo or rustc of its own, so this step
+    # is the bootstrap and cannot simply be dropped in favour of the
+    # toolchain file.
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ steps.pin.outputs.channel }}
+        components: ${{ inputs.components }}
+
+    # The action applies its channel with `rustup default`, the weakest
+    # override there is, so rust-toolchain.toml wins over whatever it was
+    # handed. That makes the two agreeing a coincidence rather than a
+    # guarantee: RUSTUP_TOOLCHAIN, a rustup override on the runner, or the
+    # action changing how it applies the channel would each silently move
+    # CI onto a different compiler while the pin still read as
+    # authoritative.
+    - shell: bash
+      env:
+        WANT: ${{ steps.pin.outputs.channel }}
+      run: |
+        active=$(rustup show active-toolchain | cut -d' ' -f1)
+        if [ "${active#"$WANT"-}" = "$active" ]; then
+          echo "::error::rust-toolchain.toml pins $WANT but cargo will use $active"
+          exit 1
+        fi
+        echo "active toolchain $active matches the pin $WANT"
