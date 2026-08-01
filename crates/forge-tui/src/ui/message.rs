@@ -1273,40 +1273,28 @@ fn system_severity_from_role(role: &MessageRole) -> SystemSeverity {
 /// Measure message height from block caches + width-aware wrapped heights.
 /// Returns `(visual_height_rows, lines_wrapped_for_height_updates)`.
 ///
-/// Accuracy is preserved because each block height is computed with
-/// `Paragraph::line_count(width)` on the exact rendered `Vec<Line>`.
+/// Test-only entry point. Production measures through
+/// `measure_message_height_cached_with_context`; this pair exists so
+/// unit tests and this crate's `tests/` integration target can measure
+/// without building a `MessageRenderContext` by hand.
+#[cfg(any(test, feature = "testing"))]
 pub fn measure_message_height_cached(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     width: u16,
     layout_generation: u64,
 ) -> (usize, usize) {
-    measure_message_height_cached_with_tools_collapsed(
-        msg,
-        spinner,
-        width,
-        layout_generation,
-        false,
-    )
-}
-
-pub fn measure_message_height_cached_with_tools_collapsed(
-    msg: &mut ChatMessage,
-    spinner: &SpinnerState,
-    width: u16,
-    layout_generation: u64,
-    tools_collapsed: bool,
-) -> (usize, usize) {
     measure_message_height_cached_with_tools_collapsed_and_separator(
         msg,
         spinner,
         width,
         layout_generation,
-        tools_collapsed,
+        false,
         true,
     )
 }
 
+#[cfg(any(test, feature = "testing"))]
 pub fn measure_message_height_cached_with_tools_collapsed_and_separator(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
@@ -1315,65 +1303,19 @@ pub fn measure_message_height_cached_with_tools_collapsed_and_separator(
     tools_collapsed: bool,
     include_trailing_separator: bool,
 ) -> (usize, usize) {
-    measure_message_height_cached_with_tools_collapsed_and_separator_and_mode(
-        msg,
-        spinner,
-        None,
-        width,
-        layout_generation,
+    let options = MessageRenderOptions {
         tools_collapsed,
         include_trailing_separator,
-    )
-}
-
-pub fn measure_message_height_cached_with_tools_collapsed_and_separator_and_mode(
-    msg: &mut ChatMessage,
-    spinner: &SpinnerState,
-    current_mode_id: Option<&str>,
-    width: u16,
-    layout_generation: u64,
-    tools_collapsed: bool,
-    include_trailing_separator: bool,
-) -> (usize, usize) {
-    measure_message_height_cached_with_options(
-        msg,
-        spinner,
-        current_mode_id,
-        width,
-        layout_generation,
-        MessageRenderOptions {
-            tools_collapsed,
-            include_trailing_separator,
-            suppress_group_header: false,
-            stop_hook_summary_actions: 0,
-            stop_hook_summary_expanded: false,
-        },
-    )
-}
-
-/// Lowest-level measurement helper - accepts the full
-/// `MessageRenderOptions` so callers that compute
-/// `suppress_group_header` (chat.rs's measure + render passes for
-/// same-project envelope grouping) can thread it through without
-/// growing the granular helper's parameter list further.
-pub fn measure_message_height_cached_with_options(
-    msg: &mut ChatMessage,
-    spinner: &SpinnerState,
-    current_mode_id: Option<&str>,
-    width: u16,
-    layout_generation: u64,
-    options: MessageRenderOptions,
-) -> (usize, usize) {
-    let render_context =
-        MessageRenderContext::new(current_mode_id, width, layout_generation, options);
+        ..MessageRenderOptions::default()
+    };
+    let render_context = MessageRenderContext::new(None, width, layout_generation, options);
     measure_message_height_cached_with_context(msg, spinner, render_context)
 }
 
 /// #273: Context-taking measurement helper. Callers that need to
 /// thread state beyond `MessageRenderOptions` (today: the
 /// stop_hook_summary hooks slice) build a `MessageRenderContext`
-/// themselves and pass it in. Other callers use the simpler
-/// `_with_options` variant which forwards an empty stop-hook slice.
+/// themselves and pass it in.
 pub(crate) fn measure_message_height_cached_with_context(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
