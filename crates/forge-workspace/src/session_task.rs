@@ -463,10 +463,6 @@ impl SessionTask {
                 let session_key = SessionKey::from_session_id(session_id);
                 self.emit(SessionUpdate::McpOperationError { key: session_key, error });
             }
-            AgentEvent::SlashError { session_id, message } => {
-                let session_key = SessionKey::from_session_id(session_id);
-                self.emit(SessionUpdate::SlashCommandError { key: session_key, message });
-            }
             AgentEvent::RuntimeReloadCompleted { session_id } => {
                 self.emit(SessionUpdate::RuntimeReloadCompleted { session_id });
             }

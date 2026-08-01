@@ -83,10 +83,6 @@ pub enum AgentEvent {
         session_id: String,
         error: types::McpOperationError,
     },
-    SlashError {
-        session_id: String,
-        message: String,
-    },
     RuntimeReloadCompleted {
         session_id: String,
     },
