@@ -12,12 +12,10 @@ pub(crate) fn request_refresh_if_needed(app: &mut App) {
     let Some(name) = app.active_account_display_name() else { return };
     let snapshot = workspace.usage_for(&name);
     let slot = app.usage_mut();
-    let new_source = snapshot.as_ref().map(|s| s.source);
     let changed = !same_snapshot(slot.snapshot.as_ref(), snapshot.as_ref());
     slot.snapshot = snapshot;
     slot.in_flight = false;
     slot.last_error = None;
-    slot.last_attempted_source = new_source;
     if changed {
         app.needs_redraw = true;
     }
@@ -58,7 +56,6 @@ pub(crate) fn reset_for_session_change(app: &mut App) {
     slot.snapshot = None;
     slot.in_flight = false;
     slot.last_error = None;
-    slot.last_attempted_source = None;
 }
 
 pub(crate) fn format_window_reset(window: &UsageWindow) -> Option<String> {

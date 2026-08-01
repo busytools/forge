@@ -91,13 +91,6 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         Some(key) => app.active_session_key.as_ref() == Some(key),
         None => true,
     };
-    // Stamp `last_activity_at` for the session this event targets so
-    // the Projects pane's relative-time column has a ground truth.
-    if let Some(key) = target_key.as_ref()
-        && let Some(session) = app.session_mut(key)
-    {
-        session.last_activity_at = std::time::Instant::now();
-    }
     match update {
         SessionUpdate::Spawning { key, project_name, cwd, display_name } => {
             apply_session_update_spawning(app, key, &project_name, &cwd, &display_name);

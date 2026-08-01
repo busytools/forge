@@ -556,7 +556,6 @@ pub struct UsageState {
     pub snapshot: Option<UsageSnapshot>,
     pub in_flight: bool,
     pub last_error: Option<String>,
-    pub last_attempted_source: Option<UsageSourceKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -593,7 +592,6 @@ pub const DEFAULT_HISTORY_RETENTION_MAX_BYTES: usize = 64 * 1024 * 1024;
 pub struct RenderCacheBudget {
     pub max_bytes: usize,
     pub last_total_bytes: usize,
-    pub last_evicted_bytes: usize,
     pub total_evictions: usize,
 }
 
@@ -602,7 +600,6 @@ impl Default for RenderCacheBudget {
         Self {
             max_bytes: DEFAULT_RENDER_CACHE_BUDGET_BYTES,
             last_total_bytes: 0,
-            last_evicted_bytes: 0,
             total_evictions: 0,
         }
     }

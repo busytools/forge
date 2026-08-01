@@ -31,7 +31,6 @@ pub struct FileIndexState {
     pub generation: u64,
     pub entries: BTreeMap<String, FileCandidate>,
     pub scan_finished: bool,
-    pub rebuild_pending: bool,
     scan_overrides: ScanOverrides,
     pub scan: Option<env::CancelToken>,
     pub watch: Option<env::CancelToken>,
@@ -74,7 +73,6 @@ pub fn reset(app: &mut App) {
     app.file_index_mut().respect_gitignore = app.config.respect_gitignore_effective();
     app.file_index_mut().entries.clear();
     app.file_index_mut().scan_finished = false;
-    app.file_index_mut().rebuild_pending = false;
     app.file_index_mut().scan_overrides = ScanOverrides::default();
     app.file_index_mut().scan = None;
     app.file_index_mut().watch = None;
@@ -91,7 +89,6 @@ pub fn restart(app: &mut App) {
     app.file_index_mut().root = Some(root.clone());
     app.file_index_mut().respect_gitignore = respect_gitignore;
     app.file_index_mut().scan_finished = false;
-    app.file_index_mut().rebuild_pending = false;
     app.file_index_mut().scan_overrides = ScanOverrides::default();
     app.file_index_mut().scan = Some(spawn_scan(
         key.clone(),

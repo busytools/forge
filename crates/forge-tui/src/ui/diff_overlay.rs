@@ -3728,7 +3728,6 @@ mod tests {
             key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
             path: "a.rs".to_owned(),
             line,
-            hunk_context: Vec::new(),
             comment_text: text.to_owned(),
             commit: None,
             thread,

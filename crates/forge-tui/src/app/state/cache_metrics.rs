@@ -498,12 +498,8 @@ mod tests {
 
     #[test]
     fn snapshot_utilization_computed_correctly() {
-        let budget = RenderCacheBudget {
-            max_bytes: 1000,
-            last_total_bytes: 500,
-            last_evicted_bytes: 0,
-            total_evictions: 0,
-        };
+        let budget =
+            RenderCacheBudget { max_bytes: 1000, last_total_bytes: 500, total_evictions: 0 };
         let retention_stats =
             HistoryRetentionStats { total_after_bytes: 750, ..Default::default() };
         let policy = HistoryRetentionPolicy { max_bytes: 1000 };
@@ -523,12 +519,7 @@ mod tests {
 
     #[test]
     fn snapshot_zero_budget_no_panic() {
-        let budget = RenderCacheBudget {
-            max_bytes: 0,
-            last_total_bytes: 0,
-            last_evicted_bytes: 0,
-            total_evictions: 0,
-        };
+        let budget = RenderCacheBudget { max_bytes: 0, last_total_bytes: 0, total_evictions: 0 };
         let policy = HistoryRetentionPolicy { max_bytes: 0 };
         let metrics = CacheMetrics::default();
         let viewport = ChatViewport::new();
