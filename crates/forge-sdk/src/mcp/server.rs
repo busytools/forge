@@ -11,8 +11,8 @@ use std::sync::Arc;
 use tracing::debug;
 
 use crate::mcp::protocol::{
-    JsonRpcRequest, JsonRpcResponse, JsonRpcResult, LATEST_PROTOCOL_VERSION, McpError, ServerInfo,
-    SUPPORTED_PROTOCOL_VERSIONS, ToolDescription,
+    JsonRpcRequest, JsonRpcResponse, JsonRpcResult, LATEST_PROTOCOL_VERSION, McpError,
+    SUPPORTED_PROTOCOL_VERSIONS, ServerInfo, ToolDescription,
 };
 use crate::mcp::tool::{Tool, ToolInput, ToolOutput};
 
