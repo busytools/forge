@@ -16,9 +16,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 
-/// Minimum number of messages to render above/below the visible range as a margin.
-/// Heights are now exact (block-level wrapped heights), so no safety margin is needed.
-const CULLING_MARGIN: usize = 0;
+/// Rows rendered past the bottom of the viewport so a small scroll has
+/// content already laid out.
 const CULLING_OVERSCAN_ROWS: usize = 100;
 const SCROLLBAR_MIN_THUMB_HEIGHT: usize = 1;
 /// Visual cap for the chat scrollbar thumb so a short scrollback
@@ -737,7 +736,6 @@ fn cap_scrollbar_target(
     let thumb_size = raw.thumb_size.clamp(SCROLLBAR_MIN_THUMB_HEIGHT, SCROLLBAR_MAX_THUMB_HEIGHT);
     let track_space = viewport_height.saturating_sub(thumb_size);
     let max_scroll = raw.max_scroll;
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let thumb_top = if max_scroll == 0 || track_space == 0 {
         0
     } else {
@@ -834,7 +832,7 @@ fn render_culled_messages(
 ) -> CulledRenderStats {
     // O(log n) binary search via prefix sums to find first visible message.
     let first_visible = app.active_viewport_mut().find_first_visible(scroll);
-    let render_start = first_visible.saturating_sub(CULLING_MARGIN);
+    let render_start = first_visible;
     let height_before_start = app.active_viewport_mut().cumulative_height_before(render_start);
     let structural_skip = scroll.saturating_sub(height_before_start);
     render_message_range(
