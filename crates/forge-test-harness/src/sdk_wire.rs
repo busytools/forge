@@ -212,6 +212,12 @@ pub const EXPECTED_GENERIC_SYSTEM_SUBTYPES: &[&str] = &["init", "status"];
 
 /// Serialised forms of the catch-all variants that stand in for a wire
 /// value the decoder does not model (`#[serde(other)]`).
+///
+/// `"other"` is not defensive padding. Seven of the eight reachable
+/// catch-alls are unit variants that serialise to a bare `"unknown"`;
+/// `WorkflowProgressEvent::Other` is internally tagged and serialises to
+/// `{"type":"other"}`, so what changes is the nested `type` key, which
+/// exists on both sides and is reached through the object walk.
 const CATCH_ALL_MARKERS: &[&str] = &["unknown", "other"];
 
 /// Run a live-capture scenario end-to-end: build options, spawn a recorded
@@ -653,6 +659,25 @@ mod tests {
                 "num_turns":1,"duration_ms":10,"duration_api_ms":9,"total_cost_usd":0}"#,
         );
         assert!(integral_cost.is_clean(), "{integral_cost:#?}");
+    }
+
+    /// The `"other"` half of [`CATCH_ALL_MARKERS`]: this one changes a
+    /// nested `type` key rather than a leaf value, so it is only found
+    /// because the walk descends into arrays and objects.
+    #[test]
+    fn nested_other_marker_is_reported() {
+        let report = report_for(
+            r#"{"type":"system","subtype":"task_progress","task_id":"t1",
+                "description":"d","uuid":"u1","session_id":"s1",
+                "usage":{"total_tokens":1,"tool_uses":2,"duration_ms":3},
+                "workflow_progress":[{"type":"workflowRetry","index":0}]}"#,
+        );
+        assert_eq!(
+            report.absorbed_by_catch_all,
+            [r#"/workflow_progress/0/type: "workflowRetry" -> "other""#]
+        );
+        assert_only(&report, "catch_all");
+        assert!(!report.is_clean());
     }
 
     /// `SystemRepr` is untagged, so a modelled subtype whose payload
