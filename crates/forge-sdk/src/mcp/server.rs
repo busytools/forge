@@ -178,10 +178,14 @@ impl McpServerBuilder {
         Self { name: name.into(), version: version.into(), tools: BTreeMap::new() }
     }
 
-    /// Register a tool.
+    /// Register a tool. A duplicate name replaces the earlier registration -
+    /// five modules chain onto one builder, so a collision would otherwise
+    /// drop a tool with nothing to show for it.
     pub fn tool<T: Tool + 'static>(mut self, tool: T) -> Self {
         let name = tool.name().to_string();
-        self.tools.insert(name, Arc::new(tool));
+        if self.tools.insert(name.clone(), Arc::new(tool)).is_some() {
+            warn!(%name, server = %self.name, "mcp tool registered twice; keeping the later one");
+        }
         self
     }
 
