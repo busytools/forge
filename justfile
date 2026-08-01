@@ -96,18 +96,24 @@ ci-watch run_id="":
         exit 1
     fi
 
-    log=$(mktemp "${TMPDIR:-/tmp}/ci-watch.XXXXXX")
-    echo "[..] run $run_id on $branch, log: $log"
-    gh run watch "$run_id" --exit-status > "$log" 2>&1 || true
-
-    verdict=$(gh run view "$run_id" --json status,conclusion,headSha \
-        --jq '"\(.status) \(.conclusion // "none") \(.headSha)"')
-    read -r status conclusion head_sha <<< "$verdict"
-
+    # Before watching, not after: waiting out six minutes of nextest to be
+    # told the run was never yours is the one case where waiting is
+    # guaranteed pointless. Push, watch, push again and the id resolved
+    # above is already the superseded one.
+    head_sha=$(gh run view "$run_id" --json headSha --jq '.headSha')
     if [ "$head_sha" != "$want_sha" ]; then
         echo "[ERROR] run $run_id built $head_sha, not local HEAD $want_sha" >&2
         exit 1
     fi
+
+    log=$(mktemp "${TMPDIR:-/tmp}/ci-watch.XXXXXX")
+    echo "[..] run $run_id on $branch, log: $log"
+    gh run watch "$run_id" --exit-status > "$log" 2>&1 || true
+
+    verdict=$(gh run view "$run_id" --json status,conclusion \
+        --jq '"\(.status) \(.conclusion // "none")"')
+    read -r status conclusion <<< "$verdict"
+
     if [ "$status" != "completed" ] || [ "$conclusion" != "success" ]; then
         echo "[ERROR] run $run_id: status=$status conclusion=$conclusion" >&2
         tail -30 "$log" >&2
