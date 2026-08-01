@@ -28,8 +28,8 @@ use crate::app::MessageBlock;
 ///   entry (Edit / Write / MultiEdit / NotebookEdit post-result).
 /// - Tools that actually RENDER as a lifecycle block
 ///   (`ui/message.rs::renders_as_lifecycle_block`). Keyed on the render,
-///   not the name: a Monitor / Workflow whose input does not parse
-///   paints an ordinary tool card and folds like one.
+///   not the name: a Monitor whose input does not parse paints an
+///   ordinary tool card and folds like one.
 /// - Tools rendered as a peer block
 ///   (`ui/peer_block.rs::detect_outbound` match set:
 ///   peers__ask_agent / peers__tell_agent / workers__ask /
@@ -836,7 +836,6 @@ mod tests {
     fn lifecycle_tool_call_block(id: &str, sdk_tool_name: &str) -> MessageBlock {
         let mut block = tool_call_block(id, sdk_tool_name);
         if let MessageBlock::ToolCall(tc) = &mut block {
-            let _ = sdk_tool_name;
             tc.raw_input = Some(serde_json::json!({"description": "d", "command": "c"}));
         }
         block

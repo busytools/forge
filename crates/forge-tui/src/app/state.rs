@@ -8236,7 +8236,9 @@ mod tests {
         assert_eq!(
             monitors[0].status,
             crate::app::state::types::MonitorStatus::Completed,
-            "a replay-inserted monitor starts terminal so it stops blocking the              all-terminal clear - and Completed, because the seed is a placeholder              rather than evidence the watched command failed",
+            "a replay-inserted monitor starts terminal so it stops blocking the \
+             all-terminal clear, and Completed because the seed is a placeholder \
+             rather than evidence the watched command failed",
         );
     }
 

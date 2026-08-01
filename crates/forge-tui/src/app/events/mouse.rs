@@ -433,9 +433,9 @@ fn mouse_point_to_selection(app: &App, mouse: MouseEvent) -> Option<MouseSelecti
 
 /// True when the block at this slot actually RENDERS as a lifecycle
 /// block, whose render ignores every collapse input. Keyed on the
-/// render rather than the tool name: a `Monitor` / `Workflow` whose
-/// input does not parse falls through to the standard tool card, and
-/// that card needs its normal click behaviour back.
+/// render rather than the tool name: a `Monitor` whose input does not
+/// parse falls through to the standard tool card, and that card needs
+/// its normal click behaviour back.
 fn lifecycle_block_at(app: &App, msg_idx: usize, block_idx: usize) -> bool {
     app.messages().get(msg_idx).and_then(|m| m.blocks.get(block_idx)).is_some_and(|block| {
         match block {
@@ -507,8 +507,8 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
             return false;
         }
     }
-    // Lifecycle blocks (Monitor / Workflow) read neither
-    // `tools_collapsed` nor `collapsed_override`, so toggling one
+    // A lifecycle block reads neither `tools_collapsed` nor
+    // `collapsed_override`, so toggling one
     // rebuilds a byte-identical block. Refusing the click here keeps
     // text selection working across the block and stops a full
     // re-layout that can never change what paints.
@@ -1320,29 +1320,27 @@ mod tests {
     #[test]
     fn lifecycle_block_refuses_the_click_and_paints_no_hand() {
         use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
-        let cases = [(
+        let mut app = App::test_default();
+        seed_single_tool_call_with_input(
+            &mut app,
             "Monitor",
-            serde_json::json!({"description": "ci-watch", "command": "gh run watch 1"}),
-        )];
-        for (name, input) in cases {
-            let mut app = App::test_default();
-            seed_single_tool_call_with_input(&mut app, name, Some(input));
-            let mouse = MouseEvent {
-                kind: MouseEventKind::Down(MouseButton::Left),
-                column: 5,
-                row: 0,
-                modifiers: KeyModifiers::empty(),
-            };
-            assert!(
-                !try_toggle_tool_call_at_click(&mut app, mouse),
-                "{name}: the click must fall through, not be consumed",
-            );
-            assert_ne!(
-                pointer_shape_at(&app, moved(5, 0)),
-                PointerShape::Hand,
-                "{name}: no clickable affordance over a block with no toggle",
-            );
-        }
+            Some(serde_json::json!({"description": "ci-watch", "command": "gh run watch 1"})),
+        );
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 0,
+            modifiers: KeyModifiers::empty(),
+        };
+        assert!(
+            !try_toggle_tool_call_at_click(&mut app, mouse),
+            "the click must fall through, not be consumed",
+        );
+        assert_ne!(
+            pointer_shape_at(&app, moved(5, 0)),
+            PointerShape::Hand,
+            "no clickable affordance over a block with no toggle",
+        );
     }
 
     /// The other half: a Monitor whose input does not parse paints a

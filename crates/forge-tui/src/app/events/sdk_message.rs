@@ -3932,8 +3932,11 @@ mod monitor_chat_block_tests {
 
     /// A resumed session must not restore a finished monitor as live.
     /// Replay never re-drives the terminal `task_updated`, so liveness
-    /// here comes from `upsert_monitor_from_tool_input` starting replayed entries
-    /// `Stopped` - the block reads that and collapses.
+    /// here comes from `upsert_monitor_from_tool_input` seeding replayed
+    /// entries `Completed` - terminal, so the block collapses, and the
+    /// success variant because the seed is a placeholder rather than
+    /// evidence the watched command failed. The `ICON_FAILED` assertion
+    /// below is what holds that second half.
     #[test]
     fn a_replayed_monitor_is_restored_terminal_not_live() {
         let mut app = App::test_default();

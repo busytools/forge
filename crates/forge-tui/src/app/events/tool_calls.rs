@@ -197,10 +197,10 @@ fn build_tool_info_from_tool_call(
     //   completion routes and one of them drains the entry the block
     //   reads from (#496).
     //
-    // Monitor is NOT here: its chat surface is the lifecycle block in
-    // `ui::message::render_lifecycle_one_liner`, which
-    // `append_assistant_tool_block` reaches only for a visible tool
-    // call, and the Inspector MONITORS section no longer exists.
+    // Monitor is NOT here: the lifecycle block in
+    // `ui::message::render_lifecycle_one_liner` is its only surface,
+    // and `append_assistant_tool_block` reaches that render only for a
+    // visible tool call.
     let is_chat_suppressed = matches!(
         sdk_tool_name.as_str(),
         "TaskCreate"
@@ -793,7 +793,7 @@ mod tests {
     }
 
     /// Workflow is chat-suppressed: the Inspector WORKFLOWS section is
-    /// its surface. A chat block was tried and reverted (#496).
+    /// its surface.
     #[test]
     fn workflow_stays_chat_suppressed() {
         let app = App::test_default();

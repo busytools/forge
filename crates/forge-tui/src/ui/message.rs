@@ -861,9 +861,9 @@ fn append_assistant_tool_block(
     // `collapsed_override` wins, otherwise the global default.
     // Click-to-toggle on peer rows currently piggybacks on the
     // existing tool-call row hit-test in mouse.rs.
-    // Monitor + Workflow render as lifecycle blocks rather than tool
-    // cards. Falls through to the standard card when the raw_input is
-    // missing or malformed.
+    // Monitor renders as a lifecycle block rather than a tool card.
+    // Falls through to the standard card when the raw_input is missing
+    // or malformed.
     if let Some(lines) = render_lifecycle_one_liner(tc, render_context.width) {
         if !state.prev_was_tool && state.has_body_content {
             layout.push_blank();
@@ -997,14 +997,13 @@ fn render_question_answered_card(tc: &crate::app::ToolCallInfo) -> Option<Vec<Li
 
 /// True when [`render_lifecycle_one_liner`] would produce a block for
 /// this tool. Keyed on the same parse the renderer gates on, NOT on the
-/// tool name alone: a `Monitor` or `Workflow` whose input does not parse
-/// falls through to the standard tool card and must behave like one -
+/// tool name alone: a `Monitor` whose input does not parse falls
+/// through to the standard tool card and must behave like one -
 /// collapsible, clickable, carrying its own affordance.
 pub(crate) fn renders_as_lifecycle_block(tc: &crate::app::ToolCallInfo) -> bool {
     // Name first, then the parse, and never build the lines: this runs
     // from `pointer_shape_at` on every mouse-move and from the render
-    // and measure paths, and building the block would clone a
-    // Workflow's whole script to answer a yes/no.
+    // and measure paths, so it must not allocate to answer a yes/no.
     let Some(input) = tc.raw_input.as_ref() else {
         return false;
     };
@@ -5117,7 +5116,7 @@ mod tests {
     }
 
     // ----------------------------------------------------------------
-    // Monitor + Workflow lifecycle one-liner render.
+    // Monitor lifecycle block render.
     // ----------------------------------------------------------------
 
     #[test]

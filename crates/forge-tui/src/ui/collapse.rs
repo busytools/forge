@@ -5,8 +5,8 @@
 //! derivation rule. Per-item state wins when present; absent falls
 //! through to the global directive (`tools_collapsed`). The carve-out
 //! predicate names the kinds that bypass the directive entirely:
-//! Execute / Diff / Monitor / Workflow render expanded regardless of
-//! the directive.
+//! Execute / Diff / Monitor render expanded regardless of the
+//! directive.
 
 use crate::agent::model::ToolCallContent;
 use crate::app::ToolCallInfo;
@@ -43,8 +43,8 @@ pub fn resolve_group_level(
 /// Kinds carved out from the global collapse directive. These render
 /// expanded regardless of `tools_collapsed`. Matches the existing
 /// pre-unify carve-out (Execute live-streaming + diff short-circuit)
-/// plus lifecycle blocks (Monitor + Workflow), whose render paths in
-/// `render_lifecycle_one_liner` bypass the directive by construction.
+/// plus the Monitor lifecycle block, whose render path in
+/// `render_lifecycle_one_liner` bypasses the directive by construction.
 pub fn is_carved_out_from_global_directive(tc: &ToolCallInfo) -> bool {
     if tc.is_execute_tool() {
         return true;
@@ -172,10 +172,9 @@ mod tests {
 
     #[test]
     fn carve_out_false_when_the_lifecycle_render_falls_through() {
-        // `Workflow({scriptPath})` is a documented invocation shape and
-        // carries no `script`, so it paints a standard card. Carving it
-        // out would leave that card permanently expanded with no way to
-        // collapse it.
+        // A Monitor missing its `command` paints a standard card.
+        // Carving it out would leave that card permanently expanded
+        // with no way to collapse it.
         let mut tc = make_tc("Monitor");
         tc.raw_input = Some(serde_json::json!({"description": "no command"}));
         assert!(!is_carved_out_from_global_directive(&tc));
