@@ -25,7 +25,7 @@ use crate::control::{
 };
 use crate::hooks::callback::ErasedHookCallback;
 use crate::hooks::{HookContext, HookDecision, HookKind};
-use crate::mcp::orchestration::McpHosts;
+use crate::mcp::orchestration::{Dispatched, McpHosts};
 use crate::mcp::protocol::JsonRpcRequest;
 use crate::permissions::CanUseToolCallback;
 use crate::transport::process::SharedWriter;
@@ -281,27 +281,26 @@ impl ControlDispatchHandle {
         server_name: &str,
         message: &serde_json::Value,
     ) -> Result<(), Error> {
-        if !self.mcp_hosts.has(server_name) {
-            let resp = ControlResponse {
-                ty: ControlResponseType::ControlResponse,
-                response: ControlResponseKind::Error {
-                    request_id: req.request_id.clone(),
-                    error: format!("unknown MCP server: {server_name}"),
-                },
-            };
-            let mut line = serde_json::to_string(&resp)
-                .map_err(|e| Error::message_parse(format!("error response serialise: {e}")))?;
-            line.push('\n');
-            return self.writer.write_line(&line).await;
-        }
-
         let jsonrpc: JsonRpcRequest = serde_json::from_value(message.clone())
             .map_err(|e| Error::message_parse(format!("bad JSON-RPC envelope: {e}")))?;
 
         let jsonrpc_response = match self.mcp_hosts.dispatch(server_name, &jsonrpc).await {
-            Some(r) => serde_json::to_value(&r)
+            Dispatched::Response(r) => serde_json::to_value(&r)
                 .map_err(|e| Error::message_parse(format!("mcp response serialise: {e}")))?,
-            None => serde_json::json!({"jsonrpc": "2.0", "result": {}}),
+            Dispatched::Notification => serde_json::json!({"jsonrpc": "2.0", "result": {}}),
+            Dispatched::UnknownServer => {
+                let resp = ControlResponse {
+                    ty: ControlResponseType::ControlResponse,
+                    response: ControlResponseKind::Error {
+                        request_id: req.request_id.clone(),
+                        error: format!("unknown MCP server: {server_name}"),
+                    },
+                };
+                let mut line = serde_json::to_string(&resp)
+                    .map_err(|e| Error::message_parse(format!("error response serialise: {e}")))?;
+                line.push('\n');
+                return self.writer.write_line(&line).await;
+            }
         };
 
         let wrapper = serde_json::json!({"mcp_response": jsonrpc_response});
@@ -455,5 +454,37 @@ mod tests {
         assert_eq!(v["type"], "control_response");
         assert_eq!(v["response"]["subtype"], "error");
         assert_eq!(v["response"]["request_id"], "req-err-1");
+    }
+
+    /// An unroutable message must not take the notification path, which
+    /// answers an id-less empty result - that would report success for a
+    /// request no server ever saw.
+    #[tokio::test]
+    async fn unknown_server_answers_error_not_empty_success() {
+        let (writer, mut lines) = SharedWriter::test_stub();
+        let handle = ControlDispatchHandle::new(
+            Arc::new(writer),
+            None,
+            None,
+            McpHosts::new(Vec::new(), HashMap::new()),
+            HashMap::new(),
+            Arc::new(parking_lot::RwLock::new(String::new())),
+        );
+
+        let req = ControlRequest {
+            ty: ControlRequestType::ControlRequest,
+            request_id: "req-unknown-1".to_owned(),
+            request: ControlRequestKind::McpMessage {
+                server_name: "nope".to_owned(),
+                message: serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+            },
+        };
+        handle.dispatch(req).await.expect("unknown server is answered, not an Err");
+
+        let line = lines.recv().await.expect("a control_response was written");
+        let v: serde_json::Value = serde_json::from_str(&line).expect("valid json line");
+        assert_eq!(v["response"]["subtype"], "error");
+        assert_eq!(v["response"]["request_id"], "req-unknown-1");
+        assert!(v["response"]["response"]["mcp_response"].is_null(), "must not be a success body");
     }
 }
