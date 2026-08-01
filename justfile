@@ -70,6 +70,65 @@ doc:
 # Full pre-commit / pre-PR verification loop.
 check: fmt-check unicode-punct-check clippy test-all doc
 
+# Deliberately not a bare `gh run watch`. Piping it masks the exit code
+# AND truncates the log, losing both signals to one pipe - the failure
+# this exists to prevent, which has bitten twice.
+#
+# The verdict comes from `gh run view`, not from the watch's exit code.
+# That code is not known to be wrong: measured against a finished run it
+# is 1 for cancelled and 0 for success. Reading the run's own status is
+# simply authoritative whatever the watch does, including exiting early
+# without a verdict, which is why this stays correct even if the above
+# turns out not to hold everywhere.
+#
+# headSha is checked before watching, so a superseded run fails in under
+# a second instead of after a full test suite.
+#
+# Watch CI to completion and report the real verdict; optional run id.
+ci-watch run_id="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    branch=$(git rev-parse --abbrev-ref HEAD)
+    want_sha=$(git rev-parse HEAD)
+
+    run_id="{{run_id}}"
+    if [ -z "$run_id" ]; then
+        run_id=$(gh run list --branch "$branch" --limit 1 \
+            --json databaseId --jq '.[0].databaseId // empty')
+    fi
+    if [ -z "$run_id" ]; then
+        echo "[ERROR] no CI run found for branch $branch" >&2
+        exit 1
+    fi
+
+    # Before watching, not after: waiting out six minutes of nextest to be
+    # told the run was never yours is the one case where waiting is
+    # guaranteed pointless. Push, watch, push again and the id resolved
+    # above is already the superseded one.
+    head_sha=$(gh run view "$run_id" --json headSha --jq '.headSha')
+    if [ "$head_sha" != "$want_sha" ]; then
+        echo "[ERROR] run $run_id built $head_sha, not local HEAD $want_sha" >&2
+        exit 1
+    fi
+
+    log=$(mktemp "${TMPDIR:-/tmp}/ci-watch.XXXXXX")
+    echo "[..] run $run_id on $branch, log: $log"
+    gh run watch "$run_id" --exit-status > "$log" 2>&1 || true
+
+    verdict=$(gh run view "$run_id" --json status,conclusion \
+        --jq '"\(.status) \(.conclusion // "none")"')
+    read -r status conclusion <<< "$verdict"
+
+    if [ "$status" != "completed" ] || [ "$conclusion" != "success" ]; then
+        echo "[ERROR] run $run_id: status=$status conclusion=$conclusion" >&2
+        tail -30 "$log" >&2
+        exit 1
+    fi
+
+    rm -f "$log"
+    echo "[OK] run $run_id: success at $head_sha"
+
 # Build forge-tui from the current checkout and install the `forge`
 # binary into ~/.cargo/bin/forge. Defaults to release+perf. Wraps up
 # by refreshing the wire-rewriter CA in the System keychain (best-
