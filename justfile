@@ -61,7 +61,16 @@ conformance:
 # rather than left to nextest's `auto` default: a typo in the argument
 # must not report a clean run, and that default is version-dependent
 # and overridable via NEXTEST_NO_TESTS.
+#
+# An empty argument is rejected rather than passed through: with no
+# filter left, the command selects every live-capture scenario and runs
+# all of them against the real API.
 conformance-capture-sdk test:
+    @if [ -z "{{test}}" ]; then \
+        echo "[ERROR] test name required, e.g. wire_capture_trivial_prompt" >&2; \
+        echo "        an empty name captures every scenario for real money" >&2; \
+        exit 1; \
+    fi
     FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
         --no-capture --run-ignored only --no-tests=fail {{test}}
 
