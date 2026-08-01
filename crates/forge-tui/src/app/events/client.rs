@@ -2058,8 +2058,6 @@ mod tests {
                 rel_path_lower: "stale.rs".to_owned(),
                 basename_lower: "stale.rs".to_owned(),
                 depth: 0,
-                modified: std::time::SystemTime::UNIX_EPOCH,
-                is_dir: false,
             },
         );
         app.file_index_mut().scan_finished = true;
@@ -2113,8 +2111,6 @@ mod tests {
                 rel_path_lower: "before.rs".to_owned(),
                 basename_lower: "before.rs".to_owned(),
                 depth: 0,
-                modified: std::time::SystemTime::UNIX_EPOCH,
-                is_dir: false,
             },
         );
         app.file_index_mut().scan_finished = true;

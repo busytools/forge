@@ -361,7 +361,7 @@ impl ScanOverrides {
 mod tests {
     use super::*;
     use crate::app::{App, mention};
-    use std::time::{Duration, Instant, SystemTime};
+    use std::time::{Duration, Instant};
 
     fn app_with_temp_files(files: &[&str]) -> (App, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -397,8 +397,6 @@ mod tests {
             rel_path_lower: rel_path.to_lowercase(),
             basename_lower: env::candidate_basename(rel_path).to_lowercase(),
             depth: rel_path.matches('/').count(),
-            modified: SystemTime::UNIX_EPOCH,
-            is_dir: rel_path.ends_with('/'),
         }
     }
 
