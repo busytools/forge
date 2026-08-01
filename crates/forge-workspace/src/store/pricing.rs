@@ -18,7 +18,7 @@ const PRICING_CACHE: TableDefinition<&str, &[u8]> = TableDefinition::new("pricin
 const KEY: &str = "litellm";
 
 /// A fetched LiteLLM pricing file plus the instant it landed.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct CachedPricing {
     pub fetched_at: SystemTime,
     pub json: String,

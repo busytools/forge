@@ -43,7 +43,7 @@ const CRON_TICK_INTERVAL: Duration = Duration::from_secs(60);
 
 /// A cron prompt buffered for an asleep owner: the raw prompt plus whether
 /// this fire is overdue (delivered with a missed marker on drain).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct PendingCron {
     pub text: String,
     pub missed: bool,
@@ -95,7 +95,7 @@ const DYNAMIC_WORKER_RESTART_NOTE: &str = "This session was restarted by forge. 
 /// existing `Command::Prompt` carries (no attachments are ever
 /// part of a kick prompt - kicks are pure text from
 /// `<label>/kick.md` or `<label>/resume-kick.md`).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct KickRequest {
     pub session_key: SessionKey,
     pub prompt_body: String,
@@ -327,7 +327,6 @@ pub struct Workspace {
 /// Pool entry wrapping the live `Arc<AgentHandle>`. Tests assert
 /// which account each spawn was bound to; that binding lives behind
 /// `cfg(test)` so production carries no dead field.
-#[derive(Clone)]
 pub(crate) struct PooledAgent {
     pub handle: Arc<AgentHandle>,
     #[cfg(test)]

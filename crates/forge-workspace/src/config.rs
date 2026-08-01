@@ -112,7 +112,7 @@ fn default_account_proxy() -> bool {
     true
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct LoadedAccount {
     pub display_name: String,
     pub config_dir: PathBuf,
@@ -128,7 +128,7 @@ pub(crate) struct LoadedAccount {
     pub experimental: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct LoadedConfig {
     pub projects: Vec<LoadedProject>,
     /// Index into `projects` for the default startup target -
