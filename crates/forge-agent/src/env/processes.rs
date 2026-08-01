@@ -50,12 +50,6 @@ pub struct ProcessSnapshot {
     pub scanned_at: SystemTime,
 }
 
-impl Default for ProcessSnapshot {
-    fn default() -> Self {
-        Self { processes: Vec::new(), scanned_at: SystemTime::now() }
-    }
-}
-
 /// One descendant process the scanner found alive. Field shape is
 /// driven by what the Inspector's `collect_active_processes` row
 /// builder needs (PID + cmdline + memory for the metadata line) +

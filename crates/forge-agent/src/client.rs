@@ -41,14 +41,12 @@ pub struct SessionLaunchSettings {
     pub force_new: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "event", rename_all = "snake_case")]
+#[derive(Debug, Clone)]
 pub enum AgentEvent {
     Connected {
         session_id: String,
         cwd: String,
         current_model: types::CurrentModel,
-        #[serde(default)]
         available_models: Vec<types::AvailableModel>,
         mode: Option<types::ModeState>,
         history_updates: Option<Vec<types::Message>>,
@@ -98,12 +96,10 @@ pub enum AgentEvent {
         /// Sonnet's default cap, 1_000_000 for the 1M-context variant).
         /// `None` when the upstream probe hasn't reported it yet.
         /// Sourced from `ContextUsageResponse.raw_max_tokens`.
-        #[serde(default)]
         max_tokens: Option<u64>,
     },
     McpSnapshot {
         session_id: String,
-        #[serde(default)]
         servers: Vec<forge_primitives::McpServerStatus>,
         error: Option<String>,
     },

@@ -15,8 +15,6 @@
 
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
-
 /// Per-probe timeout (each of the two probes runs in parallel via
 /// `tokio::join!` inside [`crate::env::cli_version::fetch_info`]).
 /// 5 s is generous for a local `--version` invocation and still
@@ -33,7 +31,7 @@ const NPM_LATEST_URL: &str = "https://registry.npmjs.org/@anthropic-ai/claude-co
 /// Snapshot of the installed-vs-latest claude CLI versions. Either
 /// side can be `None` independently; the renderer falls back to a
 /// dim ` - ` placeholder for the missing side.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliVersionInfo {
     /// Version reported by `claude --version` on the local machine,
     /// normalised to `MAJOR.MINOR.PATCH`. `None` when the binary

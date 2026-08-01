@@ -32,7 +32,7 @@ enum ModelFamily {
     Unknown,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct NormalizedModelKey {
     original: String,
     family: ModelFamily,

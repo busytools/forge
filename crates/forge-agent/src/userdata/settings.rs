@@ -24,7 +24,7 @@ use serde_json::Value;
 /// file is absent or unreadable. Malformed JSON also yields `None` -
 /// consumers that care about distinguishing missing vs. corrupt
 /// should re-read directly.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct SettingsDocuments {
     /// `<config_dir>/settings.json` - user-scope settings.
     pub user: Option<Value>,
