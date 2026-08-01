@@ -15,6 +15,72 @@ use forge_test_harness::sdk_wire::{
     PINNED_CLI_VERSION, baseline_dir, decode_all_inbound, load_baseline,
 };
 
+fn committed_scenarios() -> Vec<String> {
+    let dir = baseline_dir();
+    if !dir.exists() {
+        return Vec::new();
+    }
+    let mut scenarios: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read baseline_dir")
+        .filter_map(std::result::Result::ok)
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            name.strip_suffix(".jsonl").map(str::to_string)
+        })
+        .collect();
+    scenarios.sort();
+    scenarios
+}
+
+/// Replay otherwise reads inbound lines only, so nothing offline asserts a
+/// byte forge puts on the wire. Correlates each captured `initialize`
+/// response back to its request by `request_id` and checks the version we
+/// answered is the one that was asked for.
+#[test]
+fn initialize_answers_the_requested_protocol_version() {
+    let mut checked = 0usize;
+
+    for scenario in committed_scenarios() {
+        let log = load_baseline(&scenario);
+
+        let mut requested: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for line in log.inbound() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+            let msg = &v["request"]["message"];
+            if v["request"]["subtype"] != "mcp_message" || msg["method"] != "initialize" {
+                continue;
+            }
+            let (Some(id), Some(want)) =
+                (v["request_id"].as_str(), msg["params"]["protocolVersion"].as_str())
+            else {
+                continue;
+            };
+            requested.insert(id.to_owned(), want.to_owned());
+        }
+
+        for line in log.outbound() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+            let resp = &v["response"];
+            let Some(answered) =
+                resp["response"]["mcp_response"]["result"]["protocolVersion"].as_str()
+            else {
+                continue;
+            };
+            let id = resp["request_id"].as_str().unwrap_or_default();
+            let want = requested.get(id).unwrap_or_else(|| {
+                panic!("{scenario}: initialize response {id} has no matching request")
+            });
+            assert_eq!(answered, want, "{scenario}: answered {answered}, CLI asked for {want}");
+            checked += 1;
+        }
+    }
+
+    // Without this the test passes vacuously the moment the correlation stops
+    // matching - the exact failure shape it exists to catch.
+    assert!(checked > 0, "no initialize handshake found in any committed baseline");
+}
+
 #[test]
 fn all_baselines_decode_cleanly() {
     let dir = baseline_dir();
@@ -26,15 +92,7 @@ fn all_baselines_decode_cleanly() {
         return;
     }
 
-    let mut scenarios: Vec<String> = std::fs::read_dir(&dir)
-        .expect("read baseline_dir")
-        .filter_map(std::result::Result::ok)
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().to_string();
-            name.strip_suffix(".jsonl").map(str::to_string)
-        })
-        .collect();
-    scenarios.sort();
+    let scenarios = committed_scenarios();
 
     if scenarios.is_empty() {
         eprintln!(
