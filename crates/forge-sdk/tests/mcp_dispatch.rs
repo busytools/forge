@@ -90,10 +90,12 @@ async fn initialize_echoes_every_supported_version() {
     }
 }
 
+/// The wire answer is our latest whenever we cannot agree, rather than an
+/// error - the client decides whether it can live with that. The unsupported
+/// and malformed cases are told apart by the classifier, not here; see
+/// `tests_negotiation` in `mcp/server.rs`.
 #[tokio::test]
-async fn initialize_falls_back_to_latest_when_unsupported_or_absent() {
-    // Unsupported, absent, and malformed all answer with our latest rather
-    // than erroring - the client decides whether it can live with that.
+async fn initialize_answers_latest_when_it_cannot_agree() {
     for params in [
         json!({"protocolVersion": "1999-01-01"}),
         json!({"protocolVersion": 5}),
