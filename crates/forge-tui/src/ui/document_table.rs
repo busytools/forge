@@ -17,7 +17,6 @@ enum ColumnAlignment {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TableLayoutMode {
     Grid,
-    DenseGrid,
     Stacked,
 }
 
@@ -81,9 +80,7 @@ impl DocumentTable {
             TableRenderPolicy { preferred_spacing: 3, min_spacing: 1, min_column_width: 4 };
         let layout = resolve_layout(self, usize::from(width), policy);
         match layout.mode {
-            TableLayoutMode::Grid | TableLayoutMode::DenseGrid => {
-                render_grid_lines(self, &layout, bg)
-            }
+            TableLayoutMode::Grid => render_grid_lines(self, &layout, bg),
             TableLayoutMode::Stacked => render_stacked_lines(self, usize::from(width), bg),
         }
     }
@@ -364,7 +361,7 @@ fn resolve_layout(
         &metrics,
         total_width,
         policy.min_spacing,
-        TableLayoutMode::DenseGrid,
+        TableLayoutMode::Grid,
         policy.min_column_width,
     ) {
         return layout;
