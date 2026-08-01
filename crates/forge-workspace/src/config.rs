@@ -112,7 +112,7 @@ fn default_account_proxy() -> bool {
     true
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct LoadedAccount {
     pub display_name: String,
     pub config_dir: PathBuf,
@@ -128,7 +128,7 @@ pub(crate) struct LoadedAccount {
     pub experimental: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct LoadedConfig {
     pub projects: Vec<LoadedProject>,
     /// Index into `projects` for the default startup target -
@@ -216,39 +216,16 @@ pub(crate) fn ensure_forge_data_dir(config_dir: &Path) -> std::io::Result<PathBu
     Ok(dir)
 }
 
-/// Read forge.toml, preferring `forge/forge.toml` and falling back to
-/// the legacy top-level `forge.toml` (with a warn). forge never writes
-/// forge.toml, so the fallback lets a Syncthing-synced config dir stay
-/// readable until every machine is on this build and the file is moved
-/// under `forge/`. Returns the path read plus its raw contents.
+/// Read `forge/forge.toml`. Returns the path read plus its raw
+/// contents.
 fn read_config(config_dir: &Path) -> Result<(PathBuf, String), WorkspaceError> {
-    let preferred = forge_data_dir(config_dir).join("forge.toml");
-    match fs::read_to_string(&preferred) {
-        Ok(raw) => Ok((preferred, raw)),
+    let path = forge_data_dir(config_dir).join("forge.toml");
+    match fs::read_to_string(&path) {
+        Ok(raw) => Ok((path, raw)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let legacy = config_dir.join("forge.toml");
-            match fs::read_to_string(&legacy) {
-                Ok(raw) => {
-                    tracing::warn!(
-                        target: "forge_workspace::config",
-                        legacy = %legacy.display(),
-                        "forge.toml read from the legacy top-level path; move it under forge/ (the top-level fallback is a rollout aid)",
-                    );
-                    Ok((legacy, raw))
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    Err(WorkspaceError::ConfigMissing { path: preferred })
-                }
-                Err(e) => Err(WorkspaceError::ConfigInvalid {
-                    path: legacy,
-                    message: format!("io error: {e}"),
-                }),
-            }
+            Err(WorkspaceError::ConfigMissing { path })
         }
-        Err(e) => Err(WorkspaceError::ConfigInvalid {
-            path: preferred,
-            message: format!("io error: {e}"),
-        }),
+        Err(e) => Err(WorkspaceError::ConfigInvalid { path, message: format!("io error: {e}") }),
     }
 }
 
@@ -405,11 +382,6 @@ mod tests {
     fn write_config(dir: &std::path::Path, contents: &str) {
         let forge = ensure_forge_data_dir(dir).expect("forge/ dir");
         fs::write(forge.join("forge.toml"), contents).expect("write forge/forge.toml");
-    }
-
-    /// Write the legacy top-level `forge.toml` (fallback-path tests).
-    fn write_legacy_config(dir: &std::path::Path, contents: &str) {
-        fs::write(dir.join("forge.toml"), contents).expect("write forge.toml");
     }
 
     fn minimal_config() -> &'static str {
@@ -679,38 +651,6 @@ config_dir = "~/.claude"
         write_config(dir.path(), minimal_config());
         let config = load_from_dir(dir.path()).expect("loads from forge/");
         assert_eq!(config.default_project().name, "forge");
-    }
-
-    #[test]
-    fn falls_back_to_legacy_top_level_forge_toml() {
-        let dir = tempdir().expect("tempdir");
-        // Only the legacy top-level file exists (no forge/forge.toml).
-        write_legacy_config(dir.path(), minimal_config());
-        let config = load_from_dir(dir.path()).expect("loads via legacy fallback");
-        assert_eq!(config.default_project().name, "forge");
-    }
-
-    #[test]
-    fn prefers_forge_subfolder_over_legacy_when_both_present() {
-        let dir = tempdir().expect("tempdir");
-        // Legacy top-level names project "legacy"; forge/ names "forge".
-        write_legacy_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Stargate"]
-[[orgs.projects]]
-name = "legacy"
-path = "~/Projects/legacy"
-[[accounts]]
-display_name = "Stargate"
-config_dir = "~/.claude-stargate"
-"#,
-        );
-        write_config(dir.path(), minimal_config());
-        let config = load_from_dir(dir.path()).expect("loads");
-        assert_eq!(config.default_project().name, "forge", "forge/ wins over the legacy top-level");
     }
 
     #[test]

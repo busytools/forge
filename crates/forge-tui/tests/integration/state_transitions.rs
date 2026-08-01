@@ -424,11 +424,8 @@ async fn sdk_message_with_empty_app_session_id_adopts_wire_id() {
     app.status = AppStatus::Thinking;
     // Empty assistant message slot, mimicking what `submit_input`
     // creates right before the first chunk arrives.
-    app.active_messages_mut().push(forge_tui::app::ChatMessage::new(
-        MessageRole::Assistant,
-        Vec::new(),
-        None,
-    ));
+    app.active_messages_mut()
+        .push(forge_tui::app::ChatMessage::new(MessageRole::Assistant, Vec::new()));
     app.bind_active_turn_assistant_to_tail();
 
     let wire_msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({

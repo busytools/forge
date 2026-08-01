@@ -21,7 +21,7 @@ const DYNAMIC_WORKERS: TableDefinition<(&str, &str), &[u8]> =
 /// role-file-loaded), so re-spawn is self-contained. The spawning lead's
 /// session_id is deliberately absent: a re-spawn re-parents to whatever
 /// lead is current on reconnect, so the original is never read back.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DynamicWorker {
     pub project_key: String,
     pub label: String,

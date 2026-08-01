@@ -2,7 +2,7 @@ use super::paste_burst::CharAction;
 use crossterm::event::KeyEvent;
 use tui_textarea::{CursorMove, TextArea, WrapMode};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct InputSnapshot {
     pub lines: Vec<String>,
     pub cursor_row: usize,

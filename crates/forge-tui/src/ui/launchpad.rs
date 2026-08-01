@@ -62,7 +62,7 @@ const PICKER_BOX_MARGIN: u16 = 4;
 /// What pressing Enter on this row does. Drives the click handlers
 /// and the footer hint, so the user always sees the next action that
 /// matches the row's current state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ClickIntent {
     /// Row is ready to receive input - switch the chat view to it.
     EnterChat,
@@ -123,7 +123,7 @@ fn effective_click_intent(
 /// One selectable row in the picker - the data the renderer needs
 /// to draw the row plus the metadata the keyboard handler needs to
 /// resolve a pick into a project + lifecycle.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct PickerRow {
     project_name: String,
     org: String,

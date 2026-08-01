@@ -45,11 +45,7 @@ fn complete_turn(app: &mut App) {
 
 /// Build a `ChatMessage` with a single text block for direct insertion.
 fn user_text_message(text: &str) -> ChatMessage {
-    ChatMessage::new(
-        MessageRole::User,
-        vec![MessageBlock::Text(TextBlock::from_complete(text))],
-        None,
-    )
+    ChatMessage::new(MessageRole::User, vec![MessageBlock::Text(TextBlock::from_complete(text))])
 }
 
 /// Build an assistant message with a text block and pre-stored cache lines.
@@ -71,7 +67,6 @@ fn assistant_message_with_cache(text: &str) -> ChatMessage {
             peer_last_measured_height: 0,
             peer_last_measured_width: 0,
         })],
-        None,
     )
 }
 

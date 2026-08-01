@@ -10,8 +10,8 @@
 //! Submodule split:
 //! - [`inputs`] - `BaseHookInput`, `SubagentContext`, the ten `*Input`
 //!   payload structs.
-//! - [`outputs`] - per-event `*HookSpecificOutput` wrappers, the
-//!   `hookEventName` tag ZSTs, and the [`HookSpecificOutput`] union.
+//! - [`outputs`] - the `PreToolUse` / `UserPromptSubmit`
+//!   `hookSpecificOutput` wrappers and their `hookEventName` tag ZSTs.
 
 pub mod inputs;
 pub mod outputs;
@@ -21,12 +21,7 @@ pub use inputs::{
     PostToolUseInput, PreCompactInput, PreToolUseInput, StopInput, SubagentContext,
     SubagentStartInput, SubagentStopInput, UserPromptSubmitInput,
 };
-pub use outputs::{
-    HookSpecificOutput, NotificationHookSpecificOutput, PermissionRequestHookSpecificOutput,
-    PostToolUseFailureHookSpecificOutput, PostToolUseHookSpecificOutput,
-    PreToolUseHookSpecificOutput, PreToolUsePermissionDecision, SessionStartHookSpecificOutput,
-    SubagentStartHookSpecificOutput, UserPromptSubmitHookSpecificOutput,
-};
+pub use outputs::{PreToolUseHookSpecificOutput, UserPromptSubmitHookSpecificOutput};
 
 /// Identifies which hook point a callback is registered for. Sixteen event
 /// kinds mirrored from the CLI v0.1.64, plus

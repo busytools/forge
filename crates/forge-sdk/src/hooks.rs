@@ -15,12 +15,9 @@ pub mod registry;
 
 pub use callback::{ErasedHookCallback, HookCallback, HookDecision};
 pub use forge_primitives::hooks::{
-    BaseHookInput, HookContext, HookKind, HookSpecificOutput, NotificationHookSpecificOutput,
-    NotificationInput, PermissionRequestHookSpecificOutput, PermissionRequestInput,
-    PostToolUseFailureHookSpecificOutput, PostToolUseFailureInput, PostToolUseHookSpecificOutput,
-    PostToolUseInput, PreCompactInput, PreToolUseHookSpecificOutput, PreToolUseInput,
-    PreToolUsePermissionDecision, SessionStartHookSpecificOutput, StopInput, SubagentContext,
-    SubagentStartHookSpecificOutput, SubagentStartInput, SubagentStopInput,
+    BaseHookInput, HookContext, HookKind, NotificationInput, PermissionRequestInput,
+    PostToolUseFailureInput, PostToolUseInput, PreCompactInput, PreToolUseHookSpecificOutput,
+    PreToolUseInput, StopInput, SubagentContext, SubagentStartInput, SubagentStopInput,
     UserPromptSubmitHookSpecificOutput, UserPromptSubmitInput,
 };
 pub use registry::{Hooks, HooksBuilder};

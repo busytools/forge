@@ -22,13 +22,13 @@ use serde::{Deserialize, Serialize};
 
 /// Per-account cache entry. The value type of the redb `account_usage`
 /// table; reachable only in-crate since `account_cache` is a private mod.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CachedAccountUsage {
     pub snapshot: UsageSnapshot,
 }
 
 /// In-memory forge state read from the redb store.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct ForgeState {
     /// Runtime spinner-style override set via `/spinner`. `None` means no
     /// override - the active style falls back to forge.toml's `[ui]

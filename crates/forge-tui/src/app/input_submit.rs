@@ -172,7 +172,7 @@ fn dispatch_prompt(app: &mut App, text: String) {
     }
 
     let user_blocks = vec![MessageBlock::Text(TextBlock::from_complete(&text))];
-    app.push_message_tracked(ChatMessage::new(MessageRole::User, user_blocks, None));
+    app.push_message_tracked(ChatMessage::new(MessageRole::User, user_blocks));
 
     // Always push an empty assistant placeholder + reparent the
     // active turn assistant onto it. Mid-turn submits get this
@@ -357,12 +357,10 @@ mod tests {
         app.active_messages_mut().push(ChatMessage::new(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete("earlier"))],
-            None,
         ));
         app.active_messages_mut().push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::Text(TextBlock::from_complete("partial..."))],
-            None,
         ));
         app.bind_active_turn_assistant_to_tail();
         app.input_mut().set_text("follow-up");

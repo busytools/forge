@@ -64,9 +64,7 @@ pub struct AppLayout {
     /// Chat body. When either pane is allocated this rect lives
     /// inside the chat column, between the side-pane separators.
     pub body: Rect,
-    pub input_sep: Rect,
     pub input: Rect,
-    pub input_bottom_sep: Rect,
     pub help: Rect,
 }
 
@@ -98,9 +96,6 @@ pub fn compute(
 
     // No dedicated separator rows above/below the input: the
     // bordered input box's own top/bottom edges serve as dividers.
-    // The zero-height `input_sep` / `input_bottom_sep` fields stay
-    // around so consumers can still address them, but they no longer
-    // consume any vertical space.
     let mut layout = if chat_area.height < 8 {
         let [body, input, help] = Layout::vertical([
             Constraint::Min(1),
@@ -115,9 +110,7 @@ pub fn compute(
             pane_right: pane_right_rect,
             pane_right_separator: pane_right_separator_rect,
             body,
-            input_sep: Rect::new(chat_area.x, input.y, chat_area.width, 0),
             input,
-            input_bottom_sep: Rect::new(chat_area.x, input.y + input.height, chat_area.width, 0),
             help,
         }
     } else {
@@ -134,9 +127,7 @@ pub fn compute(
             pane_right: pane_right_rect,
             pane_right_separator: pane_right_separator_rect,
             body,
-            input_sep: Rect::new(chat_area.x, input.y, chat_area.width, 0),
             input,
-            input_bottom_sep: Rect::new(chat_area.x, input.y + input.height, chat_area.width, 0),
             help,
         }
     };
@@ -160,7 +151,6 @@ pub fn compute(
 /// left separator, optional right pane, optional right separator,
 /// chat column). At Narrow tier or when both panes are hidden, the
 /// chat column takes the full area.
-#[allow(clippy::type_complexity)]
 /// Chat column width given the frame area and pane visibility. Used
 /// pre-layout so callers (e.g. visual_line_count) can size content
 /// using the actual width the chat column will end up with, not the
@@ -240,9 +230,7 @@ mod tests {
     fn total_height(layout: &AppLayout) -> u16 {
         layout.top_bar.map_or(0, |t| t.height)
             + layout.body.height
-            + layout.input_sep.height
             + layout.input.height
-            + layout.input_bottom_sep.height
             + layout.help.height
     }
 
@@ -252,13 +240,7 @@ mod tests {
         if let Some(t) = layout.top_bar {
             areas.push(t);
         }
-        areas.extend([
-            layout.body,
-            layout.input_sep,
-            layout.input,
-            layout.input_bottom_sep,
-            layout.help,
-        ]);
+        areas.extend([layout.body, layout.input, layout.help]);
         areas.into_iter().filter(|r| r.height > 0).collect()
     }
 
@@ -279,12 +261,7 @@ mod tests {
     fn normal_layout_respects_requested_sections() {
         let layout = compute(area(80, 24), 5, 2, false, false);
 
-        // input_sep / input_bottom_sep are zero-height anchors now;
-        // the bordered input box's own borders divide it from the
-        // chat body and help row.
-        assert_eq!(layout.input_sep.height, 0);
         assert_eq!(layout.input.height, 5);
-        assert_eq!(layout.input_bottom_sep.height, 0);
         assert_eq!(layout.help.height, 2);
         assert!(layout.body.height >= 3);
         assert_eq!(total_height(&layout), 24);
@@ -297,8 +274,6 @@ mod tests {
     fn compact_layout_allocates_remaining_space_to_input_and_help() {
         let layout = compute(area(80, 6), 3, 2, false, false);
 
-        assert_eq!(layout.input_sep.height, 0);
-        assert_eq!(layout.input_bottom_sep.height, 0);
         assert_eq!(layout.help.height, 2);
         assert!(layout.input.height >= 1);
         assert_eq!(total_height(&layout), 6);

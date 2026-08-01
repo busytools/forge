@@ -476,7 +476,6 @@ fn anticipate_buffered_next_turn(app: &mut App, tail_assistant_idx_before: Optio
     app.push_message_tracked(crate::app::ChatMessage::new(
         crate::app::MessageRole::Assistant,
         Vec::new(),
-        None,
     ));
     app.bind_active_turn_assistant_to_tail();
     app.enforce_history_retention_tracked();
@@ -759,7 +758,6 @@ fn push_interrupted_hint(app: &mut App) {
     app.push_message_tracked(ChatMessage::new(
         MessageRole::System(Some(SystemSeverity::Info)),
         vec![MessageBlock::Text(TextBlock::from_complete(CONVERSATION_INTERRUPTED_HINT))],
-        None,
     ));
     app.enforce_history_retention_tracked();
     app.active_viewport_mut().engage_auto_scroll();
@@ -854,14 +852,13 @@ mod tests {
     use crate::app::App;
 
     fn empty_assistant_message() -> ChatMessage {
-        ChatMessage::new(MessageRole::Assistant, Vec::new(), None)
+        ChatMessage::new(MessageRole::Assistant, Vec::new())
     }
 
     fn user_message(text: &str) -> ChatMessage {
         ChatMessage::new(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete(text))],
-            None,
         )
     }
 
@@ -1018,7 +1015,6 @@ mod tests {
                 last_measured_y_in_msg: 0,
                 answered_questions: Vec::new(),
             }))],
-            None,
         )
     }
 

@@ -357,7 +357,6 @@ fn insert_active_system_message(app: &mut App, severity: Option<SystemSeverity>,
     let msg = ChatMessage::new(
         MessageRole::System(severity),
         vec![MessageBlock::Text(TextBlock::from_complete(message))],
-        None,
     );
     let anchor = if matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
         app.active_turn_assistant_idx()
@@ -403,7 +402,6 @@ pub(crate) fn push_system_message_to_session(
         session.messages.push(ChatMessage::new(
             MessageRole::System(severity),
             vec![MessageBlock::Text(TextBlock::from_complete(message))],
-            None,
         ));
         session.message_retained_bytes.push(0);
         app.needs_redraw = true;
@@ -522,7 +520,7 @@ mod tests {
     }
 
     fn assistant_msg(blocks: Vec<MessageBlock>) -> ChatMessage {
-        ChatMessage::new(MessageRole::Assistant, blocks, None)
+        ChatMessage::new(MessageRole::Assistant, blocks)
     }
 
     fn append_tool_call_block(app: &mut App, tool_id: &str) -> (usize, usize) {
@@ -538,7 +536,6 @@ mod tests {
         ChatMessage::new(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete(text))],
-            None,
         )
     }
 

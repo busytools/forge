@@ -28,13 +28,12 @@ pub mod ca;
 pub mod rewrite;
 pub mod scan;
 
-pub use ca::{ca_paths, ensure_ca, load_authority};
+pub use ca::{ensure_ca, load_authority};
 pub use rewrite::{
-    normalize_classification_fields, rewrite_anthropic_beta, rewrite_anthropic_unknown,
-    rewrite_bootstrap_query, rewrite_datadog_logs, rewrite_event_logging, rewrite_messages_body,
-    rewrite_statsig_features, rewrite_user_agent, strip_sdk_datadog_entries, strip_sdk_events,
+    rewrite_anthropic_beta, rewrite_bootstrap_query, rewrite_datadog_logs, rewrite_event_logging,
+    rewrite_messages_body, rewrite_statsig_features, rewrite_user_agent,
 };
-pub use scan::{Finding, FindingKind, scan, scan_and_warn};
+pub use scan::scan_and_warn;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

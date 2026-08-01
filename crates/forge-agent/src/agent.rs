@@ -66,14 +66,6 @@ impl AgentHandle {
         self.bridge.settings_documents(cwd)
     }
 
-    pub fn write_settings_document(
-        &self,
-        target: &crate::userdata::settings::SettingsTarget,
-        document: &serde_json::Value,
-    ) -> Result<(), forge_sdk::Error> {
-        self.bridge.write_settings_document(target, document)
-    }
-
     /// Returns a clone of the bridge's bound forge-account
     /// `display_name` (when forge-workspace picked one). Used by
     /// the connect-flow to emit a `ForgeAccountIdentityReady`

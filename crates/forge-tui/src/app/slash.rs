@@ -91,7 +91,6 @@ pub(super) fn push_system_message(app: &mut App, text: impl Into<String>) {
     app.push_message_tracked(ChatMessage::new(
         MessageRole::System(None),
         vec![MessageBlock::Text(TextBlock::from_complete(&text))],
-        None,
     ));
     app.enforce_history_retention_tracked();
     app.active_viewport_mut().engage_auto_scroll();
@@ -107,7 +106,6 @@ pub(super) fn push_system_info(app: &mut App, text: impl Into<String>) {
     app.push_message_tracked(ChatMessage::new(
         MessageRole::System(Some(super::SystemSeverity::Info)),
         vec![MessageBlock::Text(TextBlock::from_complete(&text))],
-        None,
     ));
     app.enforce_history_retention_tracked();
     app.active_viewport_mut().engage_auto_scroll();
@@ -118,7 +116,6 @@ fn push_user_message(app: &mut App, text: impl Into<String>) {
     app.push_message_tracked(ChatMessage::new(
         MessageRole::User,
         vec![MessageBlock::Text(TextBlock::from_complete(&text))],
-        None,
     ));
     app.enforce_history_retention_tracked();
     app.active_viewport_mut().engage_auto_scroll();
@@ -727,7 +724,6 @@ mod tests {
         app.active_messages_mut().push(ChatMessage::new(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete("keep"))],
-            None,
         ));
 
         let consumed = try_handle_submit(&mut app, "/compact now");

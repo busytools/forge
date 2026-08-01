@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 const SCAN_BATCH_SIZE: usize = 256;
 const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -25,8 +25,6 @@ pub struct FileCandidate {
     pub rel_path_lower: String,
     pub basename_lower: String,
     pub depth: usize,
-    pub modified: SystemTime,
-    pub is_dir: bool,
 }
 
 pub enum FileIndexChange {
@@ -210,14 +208,9 @@ fn candidate_from_entry(root: &Path, entry: &ignore::DirEntry) -> Option<FileCan
     }
     let depth = rel_str.matches('/').count();
     let rel_path = if is_dir { format!("{rel_str}/") } else { rel_str };
-    let modified = entry
-        .metadata()
-        .ok()
-        .and_then(|metadata| metadata.modified().ok())
-        .unwrap_or(SystemTime::UNIX_EPOCH);
     let rel_path_lower = rel_path.to_lowercase();
     let basename_lower = candidate_basename(&rel_path).to_lowercase();
-    Some(FileCandidate { rel_path, rel_path_lower, basename_lower, depth, modified, is_dir })
+    Some(FileCandidate { rel_path, rel_path_lower, basename_lower, depth })
 }
 
 pub fn candidate_basename(rel_path: &str) -> &str {

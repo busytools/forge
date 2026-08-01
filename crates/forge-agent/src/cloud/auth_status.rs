@@ -36,8 +36,6 @@ struct ClaudeAuthStatus {
     /// e.g. `"firstParty"`, `"bedrock"`, `"vertex"`, …
     api_provider: Option<String>,
     email: Option<String>,
-    #[serde(rename = "orgId")]
-    _org_id: Option<String>,
     org_name: Option<String>,
     subscription_type: Option<String>,
 }

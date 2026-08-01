@@ -31,7 +31,7 @@ fn strip_recommended_suffix(label: &str) -> (String, bool) {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct AskUserQuestionOption {
     pub label: String,
     pub description: String,
@@ -44,7 +44,7 @@ pub struct AskUserQuestionOption {
     pub recommended: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct AskUserQuestionPrompt {
     pub question: String,
     pub header: String,
@@ -227,7 +227,7 @@ pub fn build_updated_input(
 /// header; `command` is informational; `persistent` toggles the
 /// "(persistent)" suffix on the chat notice; `timeout_ms` is
 /// honoured by the CLI's task-lifecycle handler.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct MonitorInput {
     pub description: String,
     pub command: String,
@@ -257,7 +257,7 @@ pub fn parse_monitor_input(input: &Value) -> Option<MonitorInput> {
 /// executes the JS source itself; forge preserves the script
 /// verbatim for the WORKFLOWS-section header (`meta` block is
 /// extracted via substring at render time in Task 9).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct WorkflowInput {
     pub script: String,
 }

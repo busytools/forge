@@ -40,7 +40,7 @@ use ratatui::text::{Line, Span};
 /// redesigned chat block hides those by default - the parser still
 /// skips past them in the prefix, but the type only retains what the
 /// renderer or chat-streak grouping reads.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub(crate) enum PeerInboundKind {
     Question {
         from: String,
@@ -136,7 +136,7 @@ impl PeerInboundKind {
 /// or `mcp__forge__workers__ask|tell` tool_use card. The redesigned
 /// chrome drops the family / correlation_id chrome - both peer and
 /// worker calls render with the same `▶ Verb name` shape.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub(crate) enum PeerOutboundKind {
     Ask { target: String, body: String },
     Tell { target: String, body: String },
@@ -145,7 +145,7 @@ pub(crate) enum PeerOutboundKind {
 /// Modifier suffix surfaced inline after the `Verb name` header when
 /// the envelope is a notice variant. Renders as ` - ⚠ <label>` in
 /// `STATUS_WARNING`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum NoticeModifier {
     Undeliverable,
 }

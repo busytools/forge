@@ -17,7 +17,7 @@ use crate::views::{ProjectView, SessionView};
 use crate::workspace::Workspace;
 
 /// Resolved context for an incoming MCP caller.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct CallerContext {
     /// The project the caller belongs to.
     pub project_key: ProjectKey,

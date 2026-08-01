@@ -67,7 +67,7 @@ pub struct AssignmentPlan {
 /// `forge_workspace::config::LoadedProject` (the boot-time config
 /// load result) without dragging the full struct into the plan
 /// module's surface area.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ProjectInput {
     pub key: ProjectKey,
     /// Allow-listed account names from `[[orgs]].accounts` (inherited).

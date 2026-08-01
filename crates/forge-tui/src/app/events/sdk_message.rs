@@ -443,9 +443,9 @@ fn append_or_push_envelope(app: &mut App, kind: EnvelopeKind, text: &str) {
     // #143 item 2: cache the envelope flag at push time so the chat
     // renderer doesn't walk text blocks every frame.
     let msg = match kind {
-        EnvelopeKind::Gotify => ChatMessage::new_gotify_envelope(MessageRole::User, blocks, None),
-        EnvelopeKind::Cron => ChatMessage::new_cron_envelope(MessageRole::User, blocks, None),
-        EnvelopeKind::Peer => ChatMessage::new_peer_envelope(MessageRole::User, blocks, None),
+        EnvelopeKind::Gotify => ChatMessage::new_gotify_envelope(MessageRole::User, blocks),
+        EnvelopeKind::Cron => ChatMessage::new_cron_envelope(MessageRole::User, blocks),
+        EnvelopeKind::Peer => ChatMessage::new_peer_envelope(MessageRole::User, blocks),
     };
     app.push_message_tracked(msg);
 }
@@ -626,7 +626,7 @@ pub(super) fn handle_queued_command_echo(app: &mut App, prompt_text: &str) {
         return;
     }
     let blocks = vec![MessageBlock::Text(TextBlock::from_complete(prompt_text))];
-    app.push_message_tracked(ChatMessage::new(MessageRole::User, blocks, None));
+    app.push_message_tracked(ChatMessage::new(MessageRole::User, blocks));
     app.enforce_history_retention_tracked();
     tracing::debug!(
         target: crate::logging::targets::APP_INPUT,
@@ -1910,7 +1910,7 @@ mod stamp_turn_duration_tests {
     #[test]
     fn stamps_duration_on_latest_assistant_message() {
         let mut app = App::test_default();
-        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new()));
 
         stamp_turn_duration_on_latest_assistant(&mut app, 12_768);
 
@@ -1936,10 +1936,10 @@ mod stamp_turn_duration_tests {
     #[test]
     fn stamps_latest_assistant_skipping_intervening_user() {
         let mut app = App::test_default();
-        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
-        app.push_message_tracked(ChatMessage::new(MessageRole::User, Vec::new(), None));
-        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
-        app.push_message_tracked(ChatMessage::new(MessageRole::User, Vec::new(), None));
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new()));
+        app.push_message_tracked(ChatMessage::new(MessageRole::User, Vec::new()));
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new()));
+        app.push_message_tracked(ChatMessage::new(MessageRole::User, Vec::new()));
 
         stamp_turn_duration_on_latest_assistant(&mut app, 5_000);
 
@@ -2718,13 +2718,11 @@ mod inbound_message_surfacing_tests {
         app.active_messages_mut().push(ChatMessage::new(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete("orchestrate the workers"))],
-            None,
         ));
         // The assistant turn holding the outbound ask is still active.
         app.active_messages_mut().push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::Text(TextBlock::from_complete("asking planner..."))],
-            None,
         ));
         app.set_active_turn_assistant_message_idx(Some(1));
 
@@ -2761,7 +2759,6 @@ mod inbound_message_surfacing_tests {
         app.active_messages_mut().push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::Text(TextBlock::from_complete("mid response..."))],
-            None,
         ));
         app.set_active_turn_assistant_message_idx(Some(0));
 
@@ -2858,12 +2855,10 @@ mod inbound_message_surfacing_tests {
         app.active_messages_mut().push(ChatMessage::new(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete("prior prompt"))],
-            None,
         ));
         app.active_messages_mut().push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::Text(TextBlock::from_complete("prior reply"))],
-            None,
         ));
         // TurnComplete clears the pointer (turn.rs); model that idle state.
         app.clear_active_turn_assistant();
@@ -2915,7 +2910,6 @@ mod inbound_message_surfacing_tests {
         app.active_messages_mut().push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::Text(TextBlock::from_complete("asking planner..."))],
-            None,
         ));
         app.set_active_turn_assistant_message_idx(Some(0));
 
@@ -3191,7 +3185,6 @@ mod subagent_sentinel_tests {
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(root)), MessageBlock::ToolCall(Box::new(child))],
-            None,
         ));
         app.insert_session_task_mapping(task_id.to_owned(), root_id.to_owned());
     }
@@ -3432,9 +3425,8 @@ mod error_message_tests {
         app.active_messages_mut().push(ChatMessage::new(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete("hi"))],
-            None,
         ));
-        app.active_messages_mut().push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+        app.active_messages_mut().push(ChatMessage::new(MessageRole::Assistant, Vec::new()));
 
         handle_sdk_message(&mut app, Message::Error { error: "read loop died".to_owned() });
 

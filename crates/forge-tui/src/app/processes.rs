@@ -43,7 +43,7 @@ use crate::app::state::types::BackgroundTask;
 const PROCESSES_MAX: usize = 50;
 
 /// One row in the PROCESSES section.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ProcessRow {
     /// Which long-running kind produced this row. Drives the
     /// section's glyph + colour at render time.
@@ -93,7 +93,7 @@ pub struct ProcessRow {
 }
 
 /// Kind discriminator for a [`ProcessRow`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessKind {
     /// OS process matched against a wire-tracked backgrounded `Bash`.
     BashBackgrounded,
@@ -119,7 +119,7 @@ pub enum ProcessKind {
 /// sorting + the [`PROCESSES_MAX`] sanity cap. The pane scrolls
 /// when the section overflows the visible area, so no overflow
 /// footer is rendered.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ProcessCollection {
     pub rows: Vec<ProcessRow>,
 }
@@ -1434,7 +1434,6 @@ mod tests {
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(bash)), MessageBlock::ToolCall(Box::new(agent))],
-            None,
         ));
         app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
         app.insert_session_task_mapping("task-agent".to_owned(), "tu-agent".to_owned());
@@ -1562,7 +1561,6 @@ mod tests {
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(bash))],
-            None,
         ));
 
         // Session-scoped signals the real producer writes mid-turn: the
@@ -1634,7 +1632,6 @@ mod tests {
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(bash))],
-            None,
         ));
 
         // Session map still carries the mapping (survives turn reset), but the
@@ -1699,7 +1696,6 @@ mod tests {
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(bash))],
-            None,
         ));
 
         app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
@@ -1760,7 +1756,6 @@ mod tests {
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(bash))],
-            None,
         ));
         app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
         *app.background_tasks_mut() = vec![BackgroundTask {
@@ -1818,7 +1813,6 @@ mod tests {
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(bash))],
-            None,
         ));
         app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
         *app.background_tasks_mut() = vec![BackgroundTask {

@@ -84,7 +84,7 @@ pub struct ReviewTurnView {
 
 /// One worker review action recorded during a turn, accumulated per
 /// caller and drained at the turn's end into a single notice per review.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ReviewActivity {
     pub project: String,
     pub branch: String,

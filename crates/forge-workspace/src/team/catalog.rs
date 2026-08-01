@@ -11,7 +11,7 @@ use std::path::Path;
 use crate::team::roles::{LEAD_LABEL, forge_team_root};
 
 /// One spawnable role and its one-line catalog description.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct RoleSummary {
     pub label: String,
     pub description: String,

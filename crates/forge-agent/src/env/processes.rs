@@ -50,12 +50,6 @@ pub struct ProcessSnapshot {
     pub scanned_at: SystemTime,
 }
 
-impl Default for ProcessSnapshot {
-    fn default() -> Self {
-        Self { processes: Vec::new(), scanned_at: SystemTime::now() }
-    }
-}
-
 /// One descendant process the scanner found alive. Field shape is
 /// driven by what the Inspector's `collect_active_processes` row
 /// builder needs (PID + cmdline + memory for the metadata line) +
@@ -282,19 +276,10 @@ pub fn process_cmdline_matches_tool_input(process_cmd: &str, tool_command: &str)
     normalize_ws(&haystack).contains(&normalize_ws(needle))
 }
 
-/// What flavour of known infra a process is. MCP servers are the only
-/// recognized kind today; the enum keeps a typed slot so a future
-/// recognizer doesn't have to widen the call sites.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InfraKind {
-    McpServer,
-}
-
 /// Friendly display name + kind for a recognized known-infra process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InfraLabel {
     pub name: String,
-    pub kind: InfraKind,
 }
 
 /// Friendly name for a known-infra process (MCP servers today), derived
@@ -307,7 +292,7 @@ pub struct InfraLabel {
 /// the `@modelcontextprotocol/server-<base>` convention → `<base>`.
 pub fn classify_known_infra(cmdline: &str) -> Option<InfraLabel> {
     let name = mcp_name_from_npm(cmdline).or_else(|| mcp_name_from_node(cmdline))?;
-    Some(InfraLabel { name, kind: InfraKind::McpServer })
+    Some(InfraLabel { name })
 }
 
 /// Parse an npm package spec into `(scope, name)` with the `@version`
@@ -421,10 +406,7 @@ pub fn resolve_infra_label(
     let matched: Vec<&ConfiguredMcpServer> =
         configured.iter().filter(|server| configured_server_matches(&haystack, server)).collect();
     match matched.as_slice() {
-        [only] => Some(InfraLabel {
-            name: strip_plugin_namespace(&only.name).to_owned(),
-            kind: InfraKind::McpServer,
-        }),
+        [only] => Some(InfraLabel { name: strip_plugin_namespace(&only.name).to_owned() }),
         [] => Some(package),
         many => {
             tracing::debug!(
@@ -691,11 +673,9 @@ mod tests {
         // Real shapes captured via ps -axww.
         let c = classify_known_infra("npm exec @upstash/context7-mcp").expect("context7");
         assert_eq!(c.name, "context7");
-        assert_eq!(c.kind, InfraKind::McpServer);
 
         let n = classify_known_infra("npm exec @notionhq/notion-mcp-server").expect("notion");
         assert_eq!(n.name, "notion");
-        assert_eq!(n.kind, InfraKind::McpServer);
 
         // Non-MCP npm exec + unrelated processes don't classify.
         assert!(classify_known_infra("npm exec @scope/some-tool").is_none());
@@ -707,7 +687,6 @@ mod tests {
     fn classify_known_infra_recognizes_node_launched_mcp() {
         let l = classify_known_infra("node /opt/foo-mcp-server.js").expect("foo");
         assert_eq!(l.name, "foo");
-        assert_eq!(l.kind, InfraKind::McpServer);
     }
 
     #[test]
@@ -866,7 +845,6 @@ mod tests {
         let ctx = resolve_infra_label("npm exec @upstash/context7-mcp", &playwright_pair())
             .expect("context7");
         assert_eq!(ctx.name, "context7");
-        assert_eq!(ctx.kind, InfraKind::McpServer);
     }
 
     #[test]

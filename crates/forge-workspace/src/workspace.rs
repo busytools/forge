@@ -21,7 +21,7 @@ use crate::account::{self, AccountKey, AccountStateMap};
 use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
-use crate::protocol::{Command, DispatchError, PendingInteractionSlot, SessionUpdate};
+use crate::protocol::{Command, DispatchError, SessionUpdate};
 use crate::session_task::SessionTask;
 use crate::spawn;
 use crate::target::{ProjectKey, SessionKey, SessionTarget};
@@ -43,7 +43,7 @@ const CRON_TICK_INTERVAL: Duration = Duration::from_secs(60);
 
 /// A cron prompt buffered for an asleep owner: the raw prompt plus whether
 /// this fire is overdue (delivered with a missed marker on drain).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct PendingCron {
     pub text: String,
     pub missed: bool,
@@ -95,7 +95,7 @@ const DYNAMIC_WORKER_RESTART_NOTE: &str = "This session was restarted by forge. 
 /// existing `Command::Prompt` carries (no attachments are ever
 /// part of a kick prompt - kicks are pure text from
 /// `<label>/kick.md` or `<label>/resume-kick.md`).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct KickRequest {
     pub session_key: SessionKey,
     pub prompt_body: String,
@@ -188,10 +188,8 @@ pub struct Workspace {
     /// `insert_live_worker` / `remove_latest_worker` / `drain_live_workers`.
     live_workers: Mutex<HashMap<ProjectKey, Vec<crate::mcp::workers::types::WorkerEntry>>>,
     /// Shared [`DomainSession`] handles, one per active `SessionTask`.
-    /// [`Self::store_pending_interaction`] writes under the same lock
-    /// the `SessionTask` actor uses to read+remove. `pub(crate)` so
-    /// crate-internal spawn and delivery paths can reach a session's
-    /// `DomainSession` directly.
+    /// `pub(crate)` so crate-internal spawn and delivery paths can
+    /// reach a session's `DomainSession` directly.
     pub(crate) domain_handles: Mutex<HashMap<SessionKey, Arc<Mutex<DomainSession>>>>,
     /// Wire-shape state for in-flight peer-coordination asks
     /// (`mcp__forge__peers__ask_agent`). One entry per outstanding ask
@@ -329,7 +327,6 @@ pub struct Workspace {
 /// Pool entry wrapping the live `Arc<AgentHandle>`. Tests assert
 /// which account each spawn was bound to; that binding lives behind
 /// `cfg(test)` so production carries no dead field.
-#[derive(Clone)]
 pub(crate) struct PooledAgent {
     pub handle: Arc<AgentHandle>,
     #[cfg(test)]
@@ -2853,35 +2850,6 @@ impl Workspace {
         user_turn_count >= 2
     }
 
-    /// Park an oneshot in
-    /// `DomainSession.pending_interactions[tool_id]`. Called from
-    /// `SessionTask::run` when an `AgentEvent::PermissionRequest` /
-    /// `QuestionRequest` arrives.
-    ///
-    /// No-op when no `SessionTask` is registered for `key` (e.g.,
-    /// the session was just closed) - the oneshot is dropped and the
-    /// caller's forwarder task observes a closed receiver, which
-    /// surfaces as an `oneshot::Recv` error in the existing
-    /// permission/question response forwarder paths.
-    pub fn store_pending_interaction(
-        &self,
-        key: &SessionKey,
-        tool_id: String,
-        slot: PendingInteractionSlot,
-    ) {
-        let Some(domain) = self.domain_handles.lock().get(key).cloned() else {
-            tracing::warn!(
-                target: "forge_workspace",
-                key = %key.as_str(),
-                tool_id = %tool_id,
-                "store_pending_interaction: no domain handle for key (session may be closed)",
-            );
-            return;
-        };
-        let mut guard = domain.lock();
-        guard.pending_interactions.insert(tool_id, slot);
-    }
-
     /// Set the `session_id` field on the workspace's `DomainSession`
     /// for `key`. No-op when no domain handle is registered for
     /// `key`. Used by `App::set_session_id` to stamp the
@@ -5087,24 +5055,6 @@ impl Workspace {
     ) -> Option<forge_agent::userdata::settings::SettingsDocuments> {
         let handle = self.agent_handle_for(key)?;
         Some(handle.settings_documents(cwd))
-    }
-
-    /// Persist a settings document via the bridge for `key`.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` with a human-readable message when no agent is
-    /// registered for `key` or when the bridge's I/O fails.
-    pub fn write_settings_document(
-        &self,
-        key: &SessionKey,
-        target: &forge_agent::userdata::settings::SettingsTarget,
-        document: &serde_json::Value,
-    ) -> Result<(), String> {
-        let handle = self
-            .agent_handle_for(key)
-            .ok_or_else(|| "no agent registered for session".to_owned())?;
-        handle.write_settings_document(target, document).map_err(|err| err.to_string())
     }
 
     /// Resolve the agent's configured config_dir for `key`. Returns

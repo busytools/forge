@@ -31,29 +31,16 @@ use std::time::{Duration, Instant};
 /// Maximum gap between consecutive characters to be considered part of the
 /// same paste burst. Characters arriving faster than this are machine-speed
 /// (paste), not human typing (~100-200ms per keystroke).
-#[cfg(not(windows))]
 const CHAR_INTERVAL: Duration = Duration::from_millis(8);
 
-#[cfg(windows)]
-const CHAR_INTERVAL: Duration = Duration::from_millis(30);
-
 /// How long to wait after the last buffered character before flushing the
-/// burst as a completed paste. Slightly longer on Windows where terminal
-/// I/O adds latency between pasted characters.
-#[cfg(not(windows))]
+/// burst as a completed paste.
 const IDLE_TIMEOUT: Duration = Duration::from_millis(8);
-
-#[cfg(windows)]
-const IDLE_TIMEOUT: Duration = Duration::from_millis(50);
 
 /// After a burst is flushed, suppress Enter-as-submit for this duration.
 /// Handles terminals that insert a small gap between the last pasted
 /// character and a trailing newline.
-#[cfg(not(windows))]
 const ENTER_SUPPRESS_WINDOW: Duration = Duration::from_millis(100);
-
-#[cfg(windows)]
-const ENTER_SUPPRESS_WINDOW: Duration = Duration::from_millis(250);
 
 /// Minimum characters in a burst to classify it as paste (not fast typing).
 const MIN_BURST_LEN: usize = 3;
@@ -596,60 +583,5 @@ mod tests {
 
         let t3 = after_idle(t2);
         assert_eq!(d.tick(t3), Some(FlushAction::EmitPaste("abc".to_owned())));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_slower_burst_still_detected() {
-        let mut d = PasteBurstDetector::new();
-        let t0 = Instant::now();
-
-        assert_eq!(d.on_char('a', t0), CharAction::Passthrough('a'));
-        let t1 = fast(t0, 20);
-        assert_eq!(d.on_char('b', t1), CharAction::Consumed);
-        let t2 = fast(t1, 20);
-        assert_eq!(d.on_char('c', t2), CharAction::RetroCapture(1));
-        let t3 = fast(t2, 25);
-        assert_eq!(d.on_char('d', t3), CharAction::Consumed);
-
-        let t4 = fast(t3, 80);
-        assert_eq!(d.tick(t4), Some(FlushAction::EmitPaste("abcd".to_owned())));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_buffering_gap_does_not_drop_text() {
-        let mut d = PasteBurstDetector::new();
-        let t0 = Instant::now();
-
-        assert_eq!(d.on_char('a', t0), CharAction::Passthrough('a'));
-        let t1 = fast(t0, 20);
-        assert_eq!(d.on_char('b', t1), CharAction::Consumed);
-        let t2 = fast(t1, 20);
-        assert_eq!(d.on_char('c', t2), CharAction::RetroCapture(1));
-
-        // Gap above CHAR_INTERVAL but below IDLE_TIMEOUT should stay in burst.
-        let t3 = fast(t2, 40);
-        assert_eq!(d.on_char('d', t3), CharAction::Consumed);
-
-        let t4 = fast(t3, 80);
-        assert_eq!(d.tick(t4), Some(FlushAction::EmitPaste("abcd".to_owned())));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_pending_confirmation_tolerates_jitter_within_idle_timeout() {
-        let mut d = PasteBurstDetector::new();
-        let t0 = Instant::now();
-
-        assert_eq!(d.on_char('a', t0), CharAction::Passthrough('a'));
-        let t1 = fast(t0, 20);
-        assert_eq!(d.on_char('b', t1), CharAction::Consumed);
-
-        let jitter_ms =
-            u64::try_from((CHAR_INTERVAL + Duration::from_millis(5)).as_millis()).unwrap();
-        let t2 = fast(t1, jitter_ms);
-        assert_eq!(d.on_char('c', t2), CharAction::RetroCapture(1));
-        assert!(d.is_buffering());
     }
 }

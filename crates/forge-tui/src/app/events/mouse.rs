@@ -1303,7 +1303,6 @@ mod tests {
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(tc))],
-            None,
         ));
         let _ = app.active_viewport_mut().on_frame(80, 20);
         app.active_viewport_mut().set_message_height(0, 1);
@@ -1616,13 +1615,11 @@ mod tests {
             ChatMessage::new_peer_envelope(
                 MessageRole::User,
                 vec![envelope("t-abc123", 0), envelope("t-def456", 1)],
-                None,
             )
         } else {
             ChatMessage::new(
                 MessageRole::Assistant,
                 vec![tell("toolu_tell_a", 0), tell("toolu_tell_b", 1)],
-                None,
             )
         };
         app.push_message_tracked(message);
@@ -1722,7 +1719,6 @@ mod tests {
                 MessageBlock::ToolCall(Box::new(read_tool("tu-a", 0))),
                 MessageBlock::ToolCall(Box::new(read_tool("tu-b", 1))),
             ],
-            None,
         ));
         let _ = app.active_viewport_mut().on_frame(80, 20);
         app.active_viewport_mut().set_message_height(0, 2);
@@ -1796,7 +1792,6 @@ mod tests {
                 MessageBlock::ToolCall(Box::new(peer_tool("toolu_a", "planner", 0, 1))),
                 MessageBlock::ToolCall(Box::new(peer_tool("toolu_b", "debugger", 1, 1))),
             ],
-            None,
         ));
         let _ = app.active_viewport_mut().on_frame(80, 20);
         app.active_viewport_mut().set_message_height(0, 2);
@@ -1980,7 +1975,6 @@ mod tests {
                 MessageBlock::ToolCall(Box::new(read_tool("tu-a", 1))),
                 MessageBlock::ToolCall(Box::new(read_tool("tu-b", 0))),
             ],
-            None,
         ));
         let _ = app.active_viewport_mut().on_frame(80, 20);
         app.active_viewport_mut().set_message_height(0, 1);
@@ -2101,7 +2095,6 @@ mod tests {
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(tc))],
-            None,
         ));
         let _ = app.active_viewport_mut().on_frame(80, 20);
         app.active_viewport_mut().set_message_height(0, 1);

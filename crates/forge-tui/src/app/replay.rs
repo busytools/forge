@@ -649,7 +649,7 @@ mod tests {
                 }))
             })
             .collect();
-        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, blocks, None));
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, blocks));
         app
     }
 

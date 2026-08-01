@@ -997,7 +997,6 @@ fn bg_bucket_with_backgrounded_bash(key: &SessionKey) -> UiSession {
     session.messages.push(ChatMessage::new(
         MessageRole::Assistant,
         vec![MessageBlock::ToolCall(Box::new(backgrounded_bash_card("toolu_bash")))],
-        None,
     ));
     session.session_task_tool_use_ids.insert("task-bash".to_owned(), "toolu_bash".to_owned());
     session.background_tasks.push(BackgroundTask {

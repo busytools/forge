@@ -151,10 +151,6 @@ struct_excessive_bools = "allow"    # Many UI state structs are flag bags by nat
 print_stdout = "allow"
 print_stderr = "allow"
 
-[profile.dev]
-opt-level = 0
-debug = true
-
 [profile.release]
 opt-level = 3
 lto = "thin"

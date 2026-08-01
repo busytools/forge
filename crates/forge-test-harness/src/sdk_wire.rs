@@ -213,7 +213,7 @@ pub async fn run_live_scenario<F, Fut>(
     scenario: &str,
     options: forge_sdk::Options,
     drive: F,
-) -> Result<Option<ScenarioCapture>, Error>
+) -> Result<Option<()>, Error>
 where
     F: FnOnce(forge_sdk::Client, forge_sdk::ClientEvents) -> Fut,
     Fut: std::future::Future<Output = Result<(forge_sdk::Client, forge_sdk::ClientEvents), Error>>,
@@ -296,7 +296,6 @@ where
     // 2. Close stdin so the CLI exits cleanly.
     // 3. Drain any trailing frames to EOF.
     let read_timeout = std::time::Duration::from_secs(30);
-    let mut saw_result = false;
     let mut summary: Option<(u64, Option<f64>, u64)> = None;
     loop {
         match tokio::time::timeout(read_timeout, events.recv()).await {
@@ -308,7 +307,6 @@ where
                     ..
                 } = &msg
                 {
-                    saw_result = true;
                     summary = Some((*num_turns, *total_cost_usd, *duration_ms));
                     break;
                 }
@@ -408,31 +406,7 @@ where
         ),
     }
 
-    Ok(Some(ScenarioCapture {
-        trace_path,
-        inbound: log.inbound().len(),
-        outbound: log.outbound().len(),
-        saw_result,
-        summary,
-    }))
-}
-
-/// Outcome of a successful live-capture scenario run. Returned by
-/// [`run_live_scenario`] when the scenario produced a trace (regardless of
-/// whether a `Result` frame was seen before EOF).
-#[derive(Debug)]
-pub struct ScenarioCapture {
-    /// Absolute path of the `target/wire-traces/` dump for this run.
-    pub trace_path: std::path::PathBuf,
-    /// Number of inbound lines (CLI → SDK) the transport recorded.
-    pub inbound: usize,
-    /// Number of outbound lines (SDK → CLI) the transport recorded.
-    pub outbound: usize,
-    /// Whether a `Result` frame was observed before the loop ended.
-    pub saw_result: bool,
-    /// `(num_turns, total_cost_usd, duration_ms)` from the final `Result`
-    /// frame - `None` when the scenario ended without one.
-    pub summary: Option<(u64, Option<f64>, u64)>,
+    Ok(Some(()))
 }
 
 /// Run every inbound line from `log` through `decode_dispatch`, returning

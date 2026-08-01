@@ -436,15 +436,8 @@ pub struct SessionTurnState {
     /// subsequent re-fires within the same turn are no-ops.
     pub agents_emitted_this_turn: bool,
 
-    /// True once an `AuthRequired` event has been emitted for this
-    /// session; suppresses re-emits on subsequent stream events.
-    pub auth_hint_sent: bool,
-
     /// Last assistant error subtype seen on the wire - survives
     /// across messages so a subsequent `Result` can classify the
     /// turn correctly.
     pub last_assistant_error: Option<String>,
-
-    /// Per-server cooldown timestamps for MCP status revalidation.
-    pub mcp_status_revalidated_at: std::collections::HashMap<String, std::time::Instant>,
 }

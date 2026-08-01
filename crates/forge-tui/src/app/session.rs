@@ -29,11 +29,10 @@ use forge_primitives::{AccountInfo, PeerInflightStats, SessionId};
 /// dropped when the session is closed or forge-tui exits.
 ///
 /// `Default` is hand-rolled (rather than derived) because
-/// [`Self::last_activity_at`] is an [`Instant`] which has no
-/// `Default` impl. Every other field falls through to its type's
-/// `Default::default()`; if a field needs a non-default
-/// initializer, factor it through [`UiSession::new`] rather than
-/// expanding the manual impl.
+/// `next_paste_session_id` seeds to 1, not 0. Every other field falls
+/// through to its type's `Default::default()`; if a field needs a
+/// non-default initializer, factor it through [`UiSession::new`]
+/// rather than expanding the manual impl.
 ///
 /// Owns the operational state TUI renders. Workspace is a thin
 /// proxy that holds routing metadata (AgentHandle pool, command
@@ -79,11 +78,6 @@ pub struct UiSession {
     /// Latest SDK runtime liveness state (`Idle` / `Running` /
     /// `RequiresAction`).
     pub runtime_session_state: Option<RuntimeSessionState>,
-    /// Wall-clock instant of the last wire event applied to this
-    /// session. Seeded at bucket creation so the Projects pane's
-    /// "2m" / "1h" / "5d" rendering has a stable baseline before
-    /// the first event arrives.
-    pub last_activity_at: Instant,
     /// Peer-coordination in-flight counters (#114). Mirrors
     /// `Workspace.peer_stats[key]`; updated by the reducer arm for
     /// `SessionUpdate::PeerInflightStatsChanged`. Drives the
@@ -475,7 +469,7 @@ pub struct UiSession {
 
 impl UiSession {
     pub fn new(key: SessionKey) -> Self {
-        Self { key: Some(key), last_activity_at: Instant::now(), ..Self::default() }
+        Self { key: Some(key), ..Self::default() }
     }
 
     /// True while the session has a live backgrounded task (bash / agent /
@@ -533,13 +527,9 @@ pub fn session_shows_spinner(lifecycle: SessionLifecycleState, has_background_wo
 
 impl Default for UiSession {
     fn default() -> Self {
-        // `Instant` has no `Default` impl, so the derive is replaced
-        // with a hand-rolled version that seeds `last_activity_at`
-        // to "now" and falls through to `Default::default()` for
-        // every other field via destructuring of an internal
-        // synthesizer. The shape stays maintainable: any field added
-        // to `UiSession` whose type does have `Default` lands here
-        // for free without code change.
+        // Hand-rolled because `next_paste_session_id` seeds to 1;
+        // every other field takes its type default, so a new field
+        // lands here without further thought.
         Self {
             key: Option::default(),
             session_id: Option::default(),
@@ -551,7 +541,6 @@ impl Default for UiSession {
             account_info: Option::default(),
             active_account_display_name: Option::default(),
             runtime_session_state: Option::default(),
-            last_activity_at: Instant::now(),
             peer_badges: PeerInflightStats::default(),
             peer_badges_last_failure_at: Option::default(),
             messages: Vec::default(),
@@ -649,7 +638,6 @@ impl Default for UiSession {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used)]
 
     use crate::app::App;
 

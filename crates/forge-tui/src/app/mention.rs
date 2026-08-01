@@ -335,7 +335,7 @@ pub fn find_mention_spans(text: &str) -> Vec<(usize, usize, String)> {
 mod tests {
     use super::*;
     use crate::app::App;
-    use std::time::{Duration, SystemTime};
+    use std::time::Duration;
 
     fn app_with_temp_files(files: &[&str]) -> (App, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -566,16 +566,12 @@ mod tests {
                 rel_path_lower: "docs/guide-rs.txt".to_owned(),
                 basename_lower: "guide-rs.txt".to_owned(),
                 depth: 1,
-                modified: SystemTime::UNIX_EPOCH,
-                is_dir: false,
             },
             file_index::FileCandidate {
                 rel_path: "src/rs-helper.rs".to_owned(),
                 rel_path_lower: "src/rs-helper.rs".to_owned(),
                 basename_lower: "rs-helper.rs".to_owned(),
                 depth: 1,
-                modified: SystemTime::UNIX_EPOCH,
-                is_dir: false,
             },
         ];
 

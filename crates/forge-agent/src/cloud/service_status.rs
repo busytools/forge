@@ -14,25 +14,25 @@ const STATUSPAGE_SUMMARY_URL: &str = "https://status.claude.com/api/v2/summary.j
 /// component; "Claude API" is included because Claude Code depends on it.
 const RELEVANT_COMPONENTS: &[&str] = &["Claude Code", "Claude API (api.anthropic.com)"];
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct SummaryResponse {
     components: Vec<Component>,
     incidents: Vec<Incident>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct Component {
     name: String,
     status: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct Incident {
     name: String,
     components: Vec<IncidentComponent>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct IncidentComponent {
     name: String,
 }
