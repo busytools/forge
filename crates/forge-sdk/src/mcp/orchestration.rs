@@ -14,6 +14,19 @@ use crate::mcp::McpServer;
 use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use forge_primitives::McpServerConfig;
 
+/// Outcome of routing an `mcp_message`. Kept three-way so an unroutable
+/// message cannot share a representation with a notification: the caller
+/// answers a notification with an id-less empty result, which for an unknown
+/// server would report success for something that never ran.
+pub(crate) enum Dispatched {
+    /// The server produced a response to send back.
+    Response(Box<JsonRpcResponse>),
+    /// A JSON-RPC notification - no response is owed.
+    Notification,
+    /// No server is registered under that name.
+    UnknownServer,
+}
+
 /// Registry of MCP servers (both in-process SDK and external stdio /
 /// SSE / HTTP). Keyed by the name under which the caller registered
 /// them via `OptionsBuilder::mcp_server` / `external_mcp_server`.
@@ -69,19 +82,14 @@ impl McpHosts {
         serde_json::json!({"mcpServers": servers}).to_string()
     }
 
-    /// Dispatch an incoming `mcp_message` to the right server. Returns
-    /// `None` for JSON-RPC notifications (no id) or for unknown server
-    /// names (error response built by caller).
-    pub(crate) async fn dispatch(
-        &self,
-        server_name: &str,
-        req: &JsonRpcRequest,
-    ) -> Option<JsonRpcResponse> {
-        self.servers.get(server_name)?.dispatch(req).await
-    }
-
-    /// True if a server with this name is registered.
-    pub(crate) fn has(&self, server_name: &str) -> bool {
-        self.servers.contains_key(server_name)
+    /// Route an incoming `mcp_message` to the named server.
+    pub(crate) async fn dispatch(&self, server_name: &str, req: &JsonRpcRequest) -> Dispatched {
+        let Some(server) = self.servers.get(server_name) else {
+            return Dispatched::UnknownServer;
+        };
+        match server.dispatch(req).await {
+            Some(r) => Dispatched::Response(Box::new(r)),
+            None => Dispatched::Notification,
+        }
     }
 }
