@@ -85,7 +85,7 @@ async fn negotiated(requested: serde_json::Value) -> String {
 
 #[tokio::test]
 async fn initialize_echoes_every_supported_version() {
-    for v in ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"] {
+    for v in forge_sdk::mcp::protocol::SUPPORTED_PROTOCOL_VERSIONS {
         assert_eq!(negotiated(json!({"protocolVersion": v})).await, v, "should echo {v}");
     }
 }
@@ -98,6 +98,8 @@ async fn initialize_echoes_every_supported_version() {
 async fn initialize_answers_latest_when_it_cannot_agree() {
     for params in [
         json!({"protocolVersion": "1999-01-01"}),
+        // Batching revision we deliberately do not advertise.
+        json!({"protocolVersion": "2025-03-26"}),
         json!({"protocolVersion": 5}),
         json!({"capabilities": {}}),
         serde_json::Value::Null,

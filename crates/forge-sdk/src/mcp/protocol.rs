@@ -3,11 +3,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// MCP protocol revisions this server speaks, newest first. Nothing here is
-/// version-specific beyond text content blocks and `isError`, both unchanged
-/// across the range.
-pub const SUPPORTED_PROTOCOL_VERSIONS: [&str; 4] =
-    ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+/// MCP protocol revisions this server speaks, newest first.
+///
+/// 2025-03-26 is deliberately absent: it mandates JSON-RPC batching, which
+/// `control_dispatch` cannot parse, and 2025-06-18 removed the requirement
+/// again. Advertising a revision whose MUST we do not implement is the same
+/// untruth as the version this list replaced.
+pub const SUPPORTED_PROTOCOL_VERSIONS: [&str; 3] =
+    ["2025-11-25", "2025-06-18", "2024-11-05"];
 
 /// Answered when the client asks for a revision we do not speak.
 pub const LATEST_PROTOCOL_VERSION: &str = SUPPORTED_PROTOCOL_VERSIONS[0];
