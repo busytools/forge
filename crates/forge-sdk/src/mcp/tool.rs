@@ -5,7 +5,7 @@ use serde_json::Value;
 /// Structured input handed to a tool's `call`.
 #[derive(Debug, Clone)]
 pub struct ToolInput {
-    /// The arguments object (already validated against the tool's schema).
+    /// The arguments object, exactly as the client sent it.
     pub value: Value,
 }
 
