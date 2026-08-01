@@ -160,7 +160,6 @@ pub fn compute(
 /// left separator, optional right pane, optional right separator,
 /// chat column). At Narrow tier or when both panes are hidden, the
 /// chat column takes the full area.
-#[allow(clippy::type_complexity)]
 /// Chat column width given the frame area and pane visibility. Used
 /// pre-layout so callers (e.g. visual_line_count) can size content
 /// using the actual width the chat column will end up with, not the
