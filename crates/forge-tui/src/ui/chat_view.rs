@@ -49,6 +49,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Projects pane before consulting `pane_hit_targets`.
     app.layout = areas.clone();
 
+    // One build per frame, shared by the chat spinner and the Inspector
+    // section. Gated because `subagents_view` indexes the whole session
+    // before it discovers there is nothing live to show.
+    let subagents = {
+        let _t = app.perf.as_ref().map(|p| p.start("ui::subagents_view"));
+        if app.has_active_subagent_root() { app.subagents_view() } else { Vec::new() }
+    };
+
     // Narrow tier with either overlay open replaces the chat body
     // with the overlay's full-screen content. Wide / Medium tiers
     // and Narrow-with-no-overlay render the chat normally.
@@ -57,7 +65,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     if !projects_overlay && !inspector_overlay {
         let _t = app.perf.as_ref().map(|p| p.start("ui::chat"));
-        chat::render(frame, areas.body, app);
+        chat::render(frame, areas.body, app, &subagents);
     }
 
     if projects_overlay {
@@ -66,7 +74,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         projects_pane::render_overlay(frame, areas.body, app, &projects);
     } else if inspector_overlay {
         let _t = app.perf.as_ref().map(|p| p.start("ui::inspector_overlay"));
-        inspector_pane::render_overlay(frame, areas.body, app);
+        inspector_pane::render_overlay(frame, areas.body, app, &subagents);
     } else {
         // No overlay this frame. Render any visible inline side panes.
         // Each pane renderer manages its own hit-target stamping.
@@ -85,7 +93,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         }
         if let Some(pane_right_area) = areas.pane_right {
             let _t = app.perf.as_ref().map(|p| p.start("ui::inspector_pane"));
-            inspector_pane::render(frame, pane_right_area, app);
+            inspector_pane::render(frame, pane_right_area, app, &subagents);
             if let Some(sep_area) = areas.pane_right_separator {
                 render_pane_separator(frame, sep_area);
             }

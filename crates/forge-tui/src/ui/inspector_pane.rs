@@ -83,7 +83,12 @@ const PATH_STATS_GAP: usize = 2;
 /// below scrolls based on the active session's `inspector_scroll_offset`.
 /// A vertical scrollbar renders on the right edge when the body
 /// overflows the visible area.
-pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    subagents: &[crate::app::SubagentEntry],
+) {
     let (banner_area, rest_area) = split_banner_body(area);
 
     // Pinned banner: `INSPECTOR` in RUST_ORANGE bold + dim rule.
@@ -93,7 +98,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // Pinned NEEDS ATTENTION band (when any background session is waiting),
     // then the scrollable body in the space below it.
     let body_area = render_attention_band(frame, rest_area, app);
-    render_scrollable_body(frame, body_area, app);
+    render_scrollable_body(frame, body_area, app, subagents);
 }
 
 /// Render the Narrow-tier full-screen Inspector overlay into `area`.
@@ -102,7 +107,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 /// and a `✕` glyph on the right (stamped as
 /// [`PaneHitTarget::OverlayClose`] for the click handler). The
 /// banner + rule stay pinned; the body scrolls underneath them.
-pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
+pub fn render_overlay(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    subagents: &[crate::app::SubagentEntry],
+) {
     app.pane_hit_targets.clear();
 
     let (banner_area, body_area) = split_banner_body(area);
@@ -139,7 +149,7 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
     });
 
     let body_area = render_attention_band(frame, body_area, app);
-    render_scrollable_body(frame, body_area, app);
+    render_scrollable_body(frame, body_area, app, subagents);
 }
 
 /// Split the inspector area into the pinned banner (top 2 lines:
@@ -394,7 +404,12 @@ fn attention_detail(entry: &AttentionEntry, now: std::time::SystemTime) -> Strin
 /// shrinks), stamps `body_area` onto `App.rendered_inspector_body_area`
 /// for the mouse-wheel hit test, and overlays a vertical scrollbar
 /// on the right edge whenever the body overflows.
-fn render_scrollable_body(frame: &mut Frame, body_area: Rect, app: &mut App) {
+fn render_scrollable_body(
+    frame: &mut Frame,
+    body_area: Rect,
+    app: &mut App,
+    subagents: &[crate::app::SubagentEntry],
+) {
     app.rendered_inspector_body_area = body_area;
     if body_area.height == 0 || body_area.width == 0 {
         return;
@@ -403,7 +418,7 @@ fn render_scrollable_body(frame: &mut Frame, body_area: Rect, app: &mut App) {
     let mut body_lines: Vec<Line<'static>> = Vec::new();
     {
         let _t = crate::perf::start("ui::inspector_pane::append_body");
-        append_body(&mut body_lines, app, body_area.width);
+        append_body(&mut body_lines, app, body_area.width, subagents);
     }
     let has_open_diff_glyph = snapshot_has_diff(app);
     let total = body_lines.len();
@@ -561,7 +576,12 @@ const INSPECTOR_THUMB_MAX_CELLS: usize = 1;
 /// `─` rule mirroring the projects pane's project-list /
 /// account-panel boundary, so the two surfaces read as visually
 /// distinct rather than two `DIM bold` headers next to each other.
-fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
+fn append_body(
+    lines: &mut Vec<Line<'static>>,
+    app: &App,
+    width: u16,
+    subagents: &[crate::app::SubagentEntry],
+) {
     {
         let _t = crate::perf::start("ui::inspector_pane::git_section");
         append_git_section(lines, app, width);
@@ -590,15 +610,14 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     }
 
     // SUBAGENTS sits between WORKFLOWS and SCHEDULES. Mirrors the
-    // WORKFLOWS all-terminal-drain trigger: `App::subagents_view`
-    // returns an empty Vec once every visible Task/Agent root in the
-    // session has reached a terminal status, so the entire section
-    // disappears.
-    if !app.subagents_view().is_empty() {
+    // WORKFLOWS all-terminal-drain trigger: the slice empties once every
+    // visible Task/Agent root in the session has reached a terminal
+    // status, so the entire section disappears.
+    if !subagents.is_empty() {
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
-        append_subagents_section(lines, app, width);
+        append_subagents_section(lines, app, width, subagents);
     }
 
     // SCHEDULES sits between SUBAGENTS and PROCESSES. Pending
@@ -1867,12 +1886,16 @@ fn fmt_countdown(d: std::time::Duration) -> String {
 /// a live tail of the last `SUBAGENT_TAIL_CAP` otherwise-hidden child
 /// tool calls under that root. Terminal entries collapse their tail
 /// to a `· N tools` summary on the header line. The whole section
-/// disappears when every visible root reaches a terminal status -
-/// `App::subagents_view` returns an empty Vec in that case (mirroring
+/// disappears when every visible root reaches a terminal status - the
+/// slice is empty in that case (mirroring
 /// `clear_workflows_if_all_terminal`).
-fn append_subagents_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
-    let entries = app.subagents_view();
-    if entries.is_empty() {
+fn append_subagents_section(
+    lines: &mut Vec<Line<'static>>,
+    app: &App,
+    width: u16,
+    subagents: &[crate::app::SubagentEntry],
+) {
+    if subagents.is_empty() {
         return;
     }
 
@@ -1883,8 +1906,8 @@ fn append_subagents_section(lines: &mut Vec<Line<'static>>, app: &App, width: u1
     lines.push(Line::default());
 
     let inner_width = usize::from(width);
-    let last_idx = entries.len().saturating_sub(1);
-    for (idx, entry) in entries.iter().enumerate() {
+    let last_idx = subagents.len().saturating_sub(1);
+    for (idx, entry) in subagents.iter().enumerate() {
         append_subagent_row(lines, entry, inner_width, app.active_spinner_glyph());
         if idx < last_idx {
             lines.push(Line::default());
@@ -2760,7 +2783,7 @@ mod tests {
         assert!(app.schedules().is_empty(), "precondition: no cloud wakeups");
 
         let mut lines = Vec::new();
-        append_body(&mut lines, &app, 60);
+        append_body(&mut lines, &app, 60, &app.subagents_view());
         let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(
             text.contains("SCHEDULES"),
@@ -2785,7 +2808,7 @@ mod tests {
         assert!(app.forge_schedule_rows.is_empty(), "precondition: no owned forge crons");
 
         let mut lines = Vec::new();
-        append_body(&mut lines, &app, 60);
+        append_body(&mut lines, &app, 60, &app.subagents_view());
         let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(text.contains("SCHEDULES"), "the native wakeup still draws SCHEDULES: {text}");
         assert!(text.contains("watching CI"), "the wakeup reason renders: {text}");
@@ -2803,7 +2826,7 @@ mod tests {
             description: "Run the integration suite".to_owned(),
         }];
         let mut lines = Vec::new();
-        append_body(&mut lines, &app, 60);
+        append_body(&mut lines, &app, 60, &app.subagents_view());
         let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(!text.contains("BACKGROUND"), "BACKGROUND section removed: {text}");
     }
@@ -2833,7 +2856,7 @@ mod tests {
             description: "Run the integration suite".to_owned(),
         }];
         let mut lines = Vec::new();
-        append_body(&mut lines, &app, 60);
+        append_body(&mut lines, &app, 60, &app.subagents_view());
         let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(text.contains("PROCESSES"), "PROCESSES section renders: {text}");
         assert!(
@@ -2856,7 +2879,7 @@ mod tests {
             description: "Review conv-row animation".to_owned(),
         }];
         let mut lines = Vec::new();
-        append_body(&mut lines, &app, 60);
+        append_body(&mut lines, &app, 60, &app.subagents_view());
         let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(!text.contains("BACKGROUND"), "no BACKGROUND section: {text}");
         assert!(
@@ -2920,7 +2943,7 @@ mod tests {
             description: "nightly-audit run".to_owned(),
         }];
         let mut lines = Vec::new();
-        append_body(&mut lines, &app, 60);
+        append_body(&mut lines, &app, 60, &app.subagents_view());
         let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(text.contains("WORKFLOWS"), "workflow renders in WORKFLOWS: {text}");
         assert!(text.contains("nightly-audit"), "workflow name shows in WORKFLOWS: {text}");
@@ -3809,7 +3832,7 @@ mod tests {
     fn subagents_section_renders_header_running_tail_and_done_summary() {
         let app = subagents_test_app();
         let mut lines = Vec::new();
-        append_subagents_section(&mut lines, &app, 60);
+        append_subagents_section(&mut lines, &app, 60, &app.subagents_view());
 
         let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(joined.contains(" SUBAGENTS"), "section header must be present; got:\n{joined}");
@@ -3908,7 +3931,7 @@ mod tests {
     fn subagents_section_hidden_when_view_is_empty() {
         let app = App::test_default();
         let mut lines = Vec::new();
-        append_subagents_section(&mut lines, &app, 60);
+        append_subagents_section(&mut lines, &app, 60, &app.subagents_view());
         assert!(lines.is_empty(), "empty view -> section emits zero lines; got {lines:?}");
     }
 
@@ -4735,7 +4758,8 @@ mod tests {
             }
             app.pane_hit_targets.clear();
             let mut term = Terminal::new(TestBackend::new(40, 24)).expect("terminal");
-            term.draw(|f| render(f, area, app)).expect("draw");
+            let subagents = app.subagents_view();
+            term.draw(|f| render(f, area, app, &subagents)).expect("draw");
             app.pane_hit_targets
                 .iter()
                 .find_map(|t| match t {
