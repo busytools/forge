@@ -2482,6 +2482,54 @@ impl App {
         self.active_session().map_or(&[], |s| s.workflows.as_slice())
     }
 
+    /// Whether `subagents_view` would return anything, without building it.
+    /// Short-circuits on the first live root instead of indexing every tool
+    /// call in the session.
+    pub fn has_active_subagent_root(&self) -> bool {
+        let Some(session) = self.active_session() else {
+            return false;
+        };
+        // No root registered means no entries, so skip the message walk
+        // entirely - the common case for a session that never dispatched one.
+        if !session
+            .tool_call_scopes
+            .values()
+            .any(|scope| matches!(scope, crate::app::state::types::ToolCallScope::SubagentRoot))
+        {
+            return false;
+        }
+        let backgrounded_alive = session.backgrounded_alive_tool_use_ids();
+        // First occurrence of an id wins, mirroring the `by_id` index the
+        // view builds, so a duplicate cannot revive a drained root.
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for msg in &session.messages {
+            for block in &msg.blocks {
+                let crate::app::MessageBlock::ToolCall(tc) = block else {
+                    continue;
+                };
+                if !seen.insert(tc.id.as_str()) {
+                    continue;
+                }
+                if !matches!(
+                    session.tool_call_scopes.get(tc.id.as_str()),
+                    Some(crate::app::state::types::ToolCallScope::SubagentRoot)
+                ) {
+                    continue;
+                }
+                if backgrounded_alive.contains(tc.id.as_str())
+                    || matches!(
+                        tc.status,
+                        crate::agent::model::ToolCallStatus::InProgress
+                            | crate::agent::model::ToolCallStatus::Pending
+                    )
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Active-session SUBAGENTS Inspector view. Derives one entry
     /// per `Task` / `Agent` dispatch (a visible root) plus a tail of
     /// the last `SUBAGENT_TAIL_CAP` `SubagentChild` tool calls under
@@ -8931,6 +8979,92 @@ mod tests {
             "every-terminal session must auto-clear the view; got {:?}",
             app.subagents_view(),
         );
+    }
+
+    /// The Inspector's section gate only needs a bool, so it uses
+    /// `has_active_subagent_root` rather than building the view and
+    /// throwing it away. The two must agree on every state that flips
+    /// the gate, or the section appears and disappears wrongly.
+    #[test]
+    fn has_active_subagent_root_matches_subagents_view_emptiness() {
+        fn check(label: &str, app: &App) {
+            assert_eq!(
+                app.has_active_subagent_root(),
+                !app.subagents_view().is_empty(),
+                "{label}: predicate disagreed with the view it stands in for",
+            );
+        }
+
+        check("no dispatch", &App::test_default());
+
+        let mut all_terminal = App::test_default();
+        push_subagent_session(
+            &mut all_terminal,
+            make_subagent_root_tc("tu-a", "Explore", "done", model::ToolCallStatus::Completed),
+            vec![make_subagent_child_tc("tu-a-c", "Read", "foo.rs")],
+        );
+        push_subagent_session(
+            &mut all_terminal,
+            make_subagent_root_tc("tu-b", "code-reviewer", "gone", model::ToolCallStatus::Failed),
+            Vec::new(),
+        );
+        check("every root terminal", &all_terminal);
+
+        let mut mixed = App::test_default();
+        push_subagent_session(
+            &mut mixed,
+            make_subagent_root_tc(
+                "tu-done",
+                "code-reviewer",
+                "done",
+                model::ToolCallStatus::Completed,
+            ),
+            Vec::new(),
+        );
+        push_subagent_session(
+            &mut mixed,
+            make_subagent_root_tc(
+                "tu-run",
+                "Explore",
+                "running",
+                model::ToolCallStatus::InProgress,
+            ),
+            Vec::new(),
+        );
+        check("one root still running", &mixed);
+
+        let mut pending = App::test_default();
+        push_subagent_session(
+            &mut pending,
+            make_subagent_root_tc("tu-pend", "Explore", "queued", model::ToolCallStatus::Pending),
+            Vec::new(),
+        );
+        check("pending root", &pending);
+
+        let mut backgrounded = App::test_default();
+        push_subagent_session(
+            &mut backgrounded,
+            make_subagent_root_tc("tu-bg", "Explore", "bg scan", model::ToolCallStatus::Completed),
+            Vec::new(),
+        );
+        backgrounded.insert_session_task_mapping("task-bg".to_owned(), "tu-bg".to_owned());
+        *backgrounded.background_tasks_mut() = vec![crate::app::state::types::BackgroundTask {
+            task_id: "task-bg".to_owned(),
+            task_type: "local_agent".to_owned(),
+            description: "bg scan".to_owned(),
+        }];
+        check("terminal root still alive in the session roster", &backgrounded);
+
+        let mut orphan_child = App::test_default();
+        orphan_child.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(make_subagent_child_tc(
+                "tu-orphan",
+                "Read",
+                "x.rs",
+            )))],
+        ));
+        check("tool call carrying no registered scope", &orphan_child);
     }
 
     /// Mixed terminal + in-progress roots: ANY in-progress keeps the

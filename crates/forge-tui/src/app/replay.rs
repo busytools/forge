@@ -121,15 +121,16 @@ impl ReplayHarness {
         &mut self,
         width: u16,
         height: u16,
-        render: fn(&mut Frame, Rect, &mut App),
+        render: fn(&mut Frame, Rect, &mut App, &[crate::app::SubagentEntry]),
     ) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal =
             ratatui::Terminal::new(backend).expect("TestBackend::new always succeeds");
+        let subagents = self.app.subagents_view();
         terminal
             .draw(|frame| {
                 let area = Rect::new(0, 0, width, height);
-                render(frame, area, &mut self.app);
+                render(frame, area, &mut self.app, &subagents);
             })
             .expect("TestBackend draw never fails");
         buffer_to_text(terminal.backend().buffer())
