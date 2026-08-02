@@ -4,7 +4,9 @@
 use crate::agent::model;
 use crate::app::ToolCallInfo;
 use crate::ui::chat_tree;
-use crate::ui::diff::{is_markdown_file, lang_from_title, render_diff, strip_outer_code_fence};
+use crate::ui::diff::{
+    self, is_markdown_file, lang_from_title, render_diff, strip_outer_code_fence,
+};
 use crate::ui::highlight;
 use crate::ui::markdown;
 use crate::ui::theme;
@@ -270,8 +272,19 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
     for content in &tc.content {
         match content {
             model::ToolCallContent::Diff(diff) => {
-                let raw = render_diff(diff, width.saturating_sub(DIFF_BODY_INDENT_WIDTH));
-                let raw = if tc.sdk_tool_name == "Write" { cap_write_diff_lines(raw) } else { raw };
+                let is_write = tc.sdk_tool_name == "Write";
+                // A Write has no old text, so the whole file arrives as
+                // one insert hunk and every line of it used to be
+                // highlighted before the cap discarded all but
+                // `WRITE_DIFF_MAX_LINES`. Both bounds are in rows and
+                // each row wraps to at least one line, so this covers
+                // everything the cap can keep.
+                let window = is_write.then_some(diff::HighlightWindow {
+                    head_rows: WRITE_DIFF_HEAD_LINES,
+                    tail_rows: WRITE_DIFF_MAX_LINES,
+                });
+                let raw = render_diff(diff, width.saturating_sub(DIFF_BODY_INDENT_WIDTH), window);
+                let raw = if is_write { cap_write_diff_lines(raw) } else { raw };
                 lines.extend(indent_rendered_lines(raw, DIFF_BODY_INDENT));
             }
             model::ToolCallContent::McpResource(resource) => {
