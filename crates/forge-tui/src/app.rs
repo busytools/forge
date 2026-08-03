@@ -231,16 +231,24 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         }
 
         // Drain any remaining queued events without blocking.
+        let drain_start = crate::perf::phase_start();
+        // Kept apart because a keystroke and a session update are the
+        // two things #532 needs told from each other.
+        let mut input_ms = 0.0;
+        let mut updates_ms = 0.0;
         loop {
+            let event_start = crate::perf::phase_start();
             // Try terminal events first (keeps typing responsive)
             if let Some(Some(Ok(event))) = events.next().now_or_never() {
                 events::handle_terminal_event(app, event);
+                input_ms += crate::perf::phase_ms(event_start);
                 continue;
             }
             // Then SessionUpdates from workspace
             match app.update_rx.try_recv() {
                 Ok(update) => {
                     events::apply_session_update(app, update);
+                    updates_ms += crate::perf::phase_ms(event_start);
                 }
                 Err(_) => break,
             }
@@ -346,7 +354,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             app.force_redraw = false;
             app.needs_redraw = true;
         }
+        let drain_ms = crate::perf::phase_ms(drain_start);
+        let mut render_ms = None;
         if app.needs_redraw {
+            let render_start = crate::perf::phase_start();
             if let Some(ref mut perf) = app.perf {
                 perf.next_frame();
             }
@@ -367,9 +378,17 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
                 drop(draw_timer);
                 drop(timer);
             }
+            render_ms = Some(crate::perf::phase_ms(render_start));
             app.needs_redraw = false;
             last_render = Instant::now();
         }
+        crate::perf::record_iteration(crate::perf::IterationCost {
+            drain_ms,
+            input_ms,
+            updates_ms,
+            render_ms,
+            animating: is_animating,
+        });
     }
 
     // --- Graceful shutdown ---
