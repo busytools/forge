@@ -504,6 +504,96 @@ mod tests {
         }
     }
 
+    /// Bodies whose rows genuinely wrap at the widths used below. The
+    /// old version of this pin used lines that fit on one row, so it
+    /// never exercised a wrap decision and passed while the property it
+    /// claimed to hold was false. #522.
+    fn wrapping_diff_bodies() -> Vec<(&'static str, String)> {
+        let build = |body: &str| -> String {
+            (0..30).fold(String::new(), |mut s, i| {
+                use std::fmt::Write;
+                writeln!(s, "{}", body.replace("$I", &i.to_string())).unwrap();
+                s
+            })
+        };
+        vec![
+            (
+                "method chain",
+                build("    let x$I = self.alpha().bravo().charlie().delta().echo().foxtrot();"),
+            ),
+            (
+                "use path",
+                build("use aaaa$I::bbbbbb::cccccc::dddddd::eeeeee::ffffff::gggggg::hhhhhh;"),
+            ),
+            (
+                "string literal",
+                build("const S$I: &str = \"abcdefghij_klmnopqrst_uvwxyz0123_456789ABCD\";"),
+            ),
+            (
+                "format! call",
+                build("    map.insert(format!(\"key-{}\", $I), Value::Object(nested.clone()));"),
+            ),
+            (
+                "prose comment",
+                build("    // an ordinary comment $I with plenty of separate words in it"),
+            ),
+        ]
+    }
+
+    #[test]
+    fn skipping_highlighting_changes_neither_the_row_count_nor_the_text() {
+        // The height pass and the render pass must agree on how many
+        // rows a body occupies even when a row renders without syntect,
+        // so an unhighlighted render has to wrap exactly like a
+        // highlighted one. Rows that wrap are the only place this can
+        // break, so every body here wraps at every width used.
+        for (label, new_text) in wrapping_diff_bodies() {
+            let diff = model::Diff::new("src/main.rs", new_text.as_str());
+            for width in [40u16, 50, 60, 82] {
+                let highlighted = render_diff(&diff, width, None);
+                let plain =
+                    render_diff(&diff, width, Some(HighlightWindow { head_rows: 0, tail_rows: 0 }));
+                let text_of = |lines: &[Line<'static>]| -> Vec<String> {
+                    lines
+                        .iter()
+                        .map(|line| {
+                            line.spans.iter().map(|s| s.content.as_ref()).collect::<String>()
+                        })
+                        .collect()
+                };
+                assert_eq!(
+                    highlighted.len(),
+                    plain.len(),
+                    "row count moved with highlighting: {label} at width {width}"
+                );
+                assert_eq!(
+                    text_of(&highlighted),
+                    text_of(&plain),
+                    "row text moved with highlighting: {label} at width {width}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_partial_highlight_window_keeps_the_row_count() {
+        // The shipped Write path highlights a head and a tail and skips
+        // the middle, so the mixed case needs its own pin.
+        for (label, new_text) in wrapping_diff_bodies() {
+            let diff = model::Diff::new("src/main.rs", new_text.as_str());
+            for width in [40u16, 60] {
+                let full = render_diff(&diff, width, None);
+                let windowed =
+                    render_diff(&diff, width, Some(HighlightWindow { head_rows: 4, tail_rows: 6 }));
+                assert_eq!(
+                    full.len(),
+                    windowed.len(),
+                    "row count moved with a partial window: {label} at width {width}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn windowed_render_keeps_the_same_text_as_a_full_render() {
         // The window changes which rows get syntect colours, never the
