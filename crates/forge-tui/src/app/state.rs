@@ -6819,6 +6819,32 @@ mod tests {
     }
 
     #[test]
+    fn enforce_history_retention_prunes_subagent_attribution_for_dropped_tool_calls() {
+        let mut app = make_test_app();
+        *app.active_messages_mut() = vec![
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
+            assistant_tool_message("tool-dropped", model::ToolCallStatus::Completed),
+            assistant_tool_message("tool-kept", model::ToolCallStatus::InProgress),
+        ];
+        app.subagent_attribution_mut().insert("tool-dropped".to_owned(), "Explore".to_owned());
+        app.subagent_attribution_mut().insert("tool-kept".to_owned(), "code-reviewer".to_owned());
+        app.history_retention_mut().max_bytes = 1;
+
+        let stats = app.enforce_history_retention();
+
+        assert_eq!(stats.dropped_messages, 1);
+        assert!(
+            !app.subagent_attribution().contains_key("tool-dropped"),
+            "attribution for a dropped tool call is pruned",
+        );
+        assert_eq!(
+            app.subagent_attribution().get("tool-kept").map(String::as_str),
+            Some("code-reviewer"),
+            "attribution for a still-retained tool call survives",
+        );
+    }
+
+    #[test]
     fn enforce_history_retention_preserves_active_turn_assistant_message() {
         let mut app = make_test_app();
         app.status = AppStatus::Thinking;
