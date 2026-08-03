@@ -6,10 +6,34 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use similar::TextDiff;
 
+/// Rows outside this window render without syntax highlighting.
+///
+/// A Write body is capped to a head and a tail after rendering, so
+/// syntect on the middle of a large file is thrown away before it
+/// reaches the screen. Rows are still built and wrapped either way,
+/// which keeps the omitted-line count exact. Colours in the tail can
+/// differ from a full render: the skipped rows never advance the
+/// highlighter, so a multi-line construct opened in the middle is not
+/// carried across.
+#[derive(Clone, Copy)]
+pub struct HighlightWindow {
+    pub head_rows: usize,
+    pub tail_rows: usize,
+}
+
+fn row_is_highlighted(row_idx: usize, row_total: usize, window: Option<HighlightWindow>) -> bool {
+    let Some(window) = window else { return true };
+    row_idx < window.head_rows || row_idx + window.tail_rows >= row_total
+}
+
 /// Render a diff with proper unified-style output using the `similar` crate.
 /// The model `Diff` struct provides `old_text`/`new_text` -- we compute the actual
 /// line-level changes and show only changed lines with context.
-pub fn render_diff(diff: &model::Diff, width: u16) -> Vec<Line<'static>> {
+pub fn render_diff(
+    diff: &model::Diff,
+    width: u16,
+    highlight_window: Option<HighlightWindow>,
+) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     if let Some(repository) = diff.repository.as_deref() {
         lines.push(Line::from(Span::styled(
@@ -35,6 +59,14 @@ pub fn render_diff(diff: &model::Diff, width: u16) -> Vec<Line<'static>> {
     // Use unified diff with 3 lines of context -- only shows changed hunks
     // instead of the full file content.
     let udiff = text_diff.unified_diff();
+    // Only needed to place the tail edge of the highlight window; the
+    // extra pass walks hunks without building or highlighting anything.
+    let row_total = if highlight_window.is_some() {
+        udiff.iter_hunks().map(|hunk| hunk.iter_changes().count()).sum()
+    } else {
+        0
+    };
+    let mut row_idx = 0usize;
     for hunk in udiff.iter_hunks() {
         // Extract the @@ header from the hunk's Display output (first line).
         let hunk_str = hunk.to_string();
@@ -74,16 +106,24 @@ pub fn render_diff(diff: &model::Diff, width: u16) -> Vec<Line<'static>> {
             // leading spaces at wrap boundaries, so the indent column
             // is rendered explicitly (matches pre-syntect behavior).
             let (leading_indent, content) = split_leading_whitespace(value);
-            let highlighted_spans = match change.tag() {
-                similar::ChangeTag::Delete => left_hl.highlight(content),
-                similar::ChangeTag::Insert => right_hl.highlight(content),
-                similar::ChangeTag::Equal => {
-                    // Feed both sides to keep their state synchronized;
-                    // use right_hl output for display and dim it so the
-                    // context row stays visually distinct from changes.
-                    let _ = left_hl.highlight(content);
-                    right_hl.highlight(content)
+            let highlighted = row_is_highlighted(row_idx, row_total, highlight_window);
+            row_idx += 1;
+            let highlighted_spans = if highlighted {
+                match change.tag() {
+                    similar::ChangeTag::Delete => left_hl.highlight(content),
+                    similar::ChangeTag::Insert => right_hl.highlight(content),
+                    similar::ChangeTag::Equal => {
+                        // Feed both sides to keep their state synchronized;
+                        // use right_hl output for display and dim it so the
+                        // context row stays visually distinct from changes.
+                        let _ = left_hl.highlight(content);
+                        right_hl.highlight(content)
+                    }
                 }
+            } else if content.is_empty() {
+                Vec::new()
+            } else {
+                vec![Span::raw(content.to_owned())]
             };
             let extra_modifier =
                 matches!(change.tag(), similar::ChangeTag::Equal).then_some(Modifier::DIM);
@@ -430,12 +470,72 @@ mod tests {
     }
 
     #[test]
+    fn highlight_window_covers_both_ends_and_skips_the_middle() {
+        // #517: a Write body is capped to `WRITE_DIFF_MAX_LINES` after
+        // rendering, so highlighting the middle of a large file is work
+        // that is thrown away before it reaches the screen. The window
+        // is expressed in rows from each end because the cap keeps a
+        // head and a tail.
+        let window = Some(HighlightWindow { head_rows: 10, tail_rows: 50 });
+        assert!(row_is_highlighted(0, 5000, window));
+        assert!(row_is_highlighted(9, 5000, window));
+        assert!(!row_is_highlighted(10, 5000, window));
+        assert!(!row_is_highlighted(4949, 5000, window));
+        assert!(row_is_highlighted(4950, 5000, window));
+        assert!(row_is_highlighted(4999, 5000, window));
+    }
+
+    #[test]
+    fn no_highlight_window_highlights_every_row() {
+        // Every caller other than Write renders uncapped, so it must
+        // keep full highlighting.
+        for row in [0, 10, 2500, 4999] {
+            assert!(row_is_highlighted(row, 5000, None));
+        }
+    }
+
+    #[test]
+    fn a_window_smaller_than_the_diff_still_highlights_everything() {
+        // Head and tail overlapping means the whole diff survives the
+        // cap, so nothing should be skipped.
+        let window = Some(HighlightWindow { head_rows: 10, tail_rows: 50 });
+        for row in 0..20 {
+            assert!(row_is_highlighted(row, 20, window));
+        }
+    }
+
+    #[test]
+    fn windowed_render_keeps_the_same_text_as_a_full_render() {
+        // The window changes which rows get syntect colours, never the
+        // rows themselves - so line count and text must not move.
+        let new_text: String = (0..400).fold(String::new(), |mut s, i| {
+            use std::fmt::Write;
+            writeln!(s, "let value_{i} = compute({i});").unwrap();
+            s
+        });
+        let diff = model::Diff::new("src/main.rs", new_text.as_str());
+
+        let full = render_diff(&diff, 80, None);
+        let windowed =
+            render_diff(&diff, 80, Some(HighlightWindow { head_rows: 10, tail_rows: 50 }));
+
+        let text_of = |lines: &[Line<'static>]| -> Vec<String> {
+            lines
+                .iter()
+                .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+                .collect()
+        };
+        assert_eq!(text_of(&full), text_of(&windowed));
+    }
+
+    #[test]
     fn render_diff_includes_repository_label() {
         let lines = render_diff(
             &model::Diff::new("src/main.rs", "fn main() {}\n")
                 .old_text(Some("fn old() {}\n"))
                 .repository(Some("acme/project".to_owned())),
             80,
+            None,
         );
         let repository_line: String =
             lines[0].spans.iter().map(|span| span.content.as_ref()).collect();
@@ -466,6 +566,7 @@ mod tests {
                 "This is a long added line that should wrap onto another visual line.\n".to_owned(),
             ),
             28,
+            None,
         );
         let rendered: Vec<String> = lines
             .iter()
@@ -486,6 +587,7 @@ mod tests {
                 "fn main() {\n    if true {\n        return;\n    }\n}\n".to_owned(),
             ),
             80,
+            None,
         );
         let rendered: Vec<String> = lines
             .iter()
@@ -505,6 +607,7 @@ mod tests {
                     .to_owned(),
             ),
             28,
+            None,
         );
         let rendered: Vec<String> = lines
             .iter()
@@ -535,6 +638,7 @@ mod tests {
                 "fn hello() -> &'static str {\n    \"world\"\n}\n".to_owned(),
             ),
             80,
+            None,
         );
         let rust_line = lines
             .iter()
@@ -569,6 +673,7 @@ mod tests {
             &model::Diff::new("src/lib.rs", "fn one() {}\nfn TWO() {}\nfn three() {}\n".to_owned())
                 .old_text(Some("fn one() {}\nfn two() {}\nfn three() {}\n")),
             80,
+            None,
         );
         let line_for = |needle: &str| {
             lines
@@ -599,6 +704,7 @@ mod tests {
             &model::Diff::new("src/lib.rs", "fn TWO() {}\n".to_owned())
                 .old_text(Some("fn two() {}\n")),
             width,
+            None,
         );
         let usize_width = usize::from(width);
 
@@ -647,6 +753,7 @@ mod tests {
             &model::Diff::new("src/lib.rs", "fn one() {}\nfn two() {}\nfn three() {}\n".to_owned())
                 .old_text(Some("fn one() {}\nfn two() {}\nfn THREE() {}\n")),
             80,
+            None,
         );
         // The unchanged `fn one` line is a context row. Its body spans
         // should carry Modifier::DIM (composed with syntect colors).
