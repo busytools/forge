@@ -280,32 +280,61 @@ fn ensure_dir_suffix(mut rel_path: String) -> String {
 /// build in a watched project from costing a full rescan per event.
 pub(crate) struct WatchFilter {
     matcher: Option<ignore::gitignore::Gitignore>,
+    /// The matcher is rooted here and every path is rebased onto it
+    /// before matching. Two reasons, and the second one bites hard:
+    /// the watcher reports canonical paths, so on macOS it says
+    /// `/private/var/...` where the configured root says `/var/...`;
+    /// and `matched_path_or_any_parents` PANICS on a path that is not
+    /// under its root, which would take the watcher thread down on
+    /// the first event rather than merely failing to filter.
+    canonical_root: PathBuf,
 }
 
 impl WatchFilter {
     pub(crate) fn new(root: &Path, respect_gitignore: bool) -> Self {
+        let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         if !respect_gitignore {
-            return Self { matcher: None };
+            return Self { matcher: None, canonical_root };
         }
-        let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
+        let mut builder = ignore::gitignore::GitignoreBuilder::new(&canonical_root);
         for candidate in [".gitignore", ".ignore"] {
             builder.add(root.join(candidate));
         }
         builder.add(root.join(".git").join("info").join("exclude"));
-        Self { matcher: builder.build().ok() }
+        Self { matcher: builder.build().ok(), canonical_root }
     }
 
     fn is_ignored(&self, root: &Path, path: &Path) -> bool {
-        let Ok(rel) = path.strip_prefix(root) else { return false };
+        let Ok(rel) = path.strip_prefix(root).or_else(|_| path.strip_prefix(&self.canonical_root))
+        else {
+            return false;
+        };
         if rel.components().next().is_some_and(|first| first.as_os_str() == ".git") {
             return true;
         }
         let Some(matcher) = self.matcher.as_ref() else { return false };
         // `matched_path_or_any_parents` is the variant that works
         // without having walked down to the path; the plain `matched`
-        // would miss `target/debug/x` against a `/target` rule.
-        matcher.matched_path_or_any_parents(path, path.is_dir()).is_ignore()
+        // would miss `target/debug/x` against a `/target` rule. It is
+        // also the one that panics off-root, hence the rebase.
+        let rebased = self.canonical_root.join(rel);
+        matcher.matched_path_or_any_parents(&rebased, rebased.is_dir()).is_ignore()
     }
+}
+
+/// Whether an event kind can actually change what the ignore rules
+/// mean. A read cannot, and it matters: building the matcher reads
+/// `.gitignore` from inside the watched tree, and on inotify a read is
+/// itself a watchable event. Treating one as a rebuild trigger makes
+/// the rebuild feed itself.
+fn is_content_change(kind: notify::EventKind) -> bool {
+    use notify::event::{EventKind, ModifyKind};
+    matches!(
+        kind,
+        EventKind::Create(_)
+            | EventKind::Remove(_)
+            | EventKind::Modify(ModifyKind::Any | ModifyKind::Data(_) | ModifyKind::Name(_))
+    )
 }
 
 fn classify_watch_event(
@@ -316,7 +345,7 @@ fn classify_watch_event(
 ) -> Option<WatchProgress> {
     use notify::event::{CreateKind, EventKind, ModifyKind, RemoveKind, RenameMode};
 
-    if matches_ignore_semantics_change(root, &event.paths) {
+    if is_content_change(event.kind) && matches_ignore_semantics_change(root, &event.paths) {
         return Some(WatchProgress::Rebuild);
     }
 
@@ -536,6 +565,39 @@ mod tests {
             classify_watch_event(root, true, &filter, &event),
             Some(WatchProgress::Rebuild)
         ));
+    }
+
+    #[test]
+    fn reading_the_gitignore_does_not_trigger_a_rebuild() {
+        // #523: building the matcher reads `.gitignore` from inside
+        // the watched tree, and on inotify a read is a watchable
+        // event. When any event kind on that file forced a rebuild,
+        // and every rebuild rebuilt the matcher, the rebuild fed
+        // itself. Only a content change may trigger one.
+        let dir = fixture();
+        let root = dir.path();
+        let filter = WatchFilter::new(root, true);
+        let read = notify::Event {
+            kind: EventKind::Access(notify::event::AccessKind::Read),
+            paths: vec![root.join(".gitignore")],
+            attrs: notify::event::EventAttributes::new(),
+        };
+        assert!(classify_watch_event(root, true, &filter, &read).is_none());
+    }
+
+    #[test]
+    fn the_filter_still_matches_when_the_root_is_a_symlink() {
+        // macOS hands out `/var/...` while the watcher reports
+        // `/private/var/...`. Without the canonical fallback the
+        // strip_prefix fails for every event and the whole filter
+        // silently passes everything through - which is exactly how
+        // this fix could look like it worked while doing nothing.
+        let dir = fixture();
+        let root = dir.path();
+        let canonical = root.canonicalize().unwrap();
+        let filter = WatchFilter::new(root, true);
+        let event = create_event(&canonical.join("target/debug/liba.rlib"));
+        assert!(classify_watch_event(root, true, &filter, &event).is_none());
     }
 
     #[test]
