@@ -14,6 +14,7 @@
 
 use super::App;
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound;
 use std::path::PathBuf;
 use std::sync::mpsc::{Sender, TryRecvError};
 
@@ -64,7 +65,7 @@ pub enum FileIndexEvent {
 #[derive(Default)]
 struct ScanOverrides {
     exact_paths: BTreeSet<String>,
-    blocked_prefixes: Vec<String>,
+    blocked_prefixes: BTreeSet<String>,
 }
 
 pub fn reset(app: &mut App) {
@@ -343,14 +344,31 @@ impl ScanOverrides {
             }
             FileIndexChange::RemovePrefix { rel_prefix }
             | FileIndexChange::ReplacePrefix { rel_prefix, .. } => {
-                self.blocked_prefixes.push(rel_prefix.clone());
+                self.block_prefix(rel_prefix);
             }
         }
     }
 
+    /// Dropping every prefix covered by a shorter one keeps the set an
+    /// antichain, which is what lets [`Self::blocked_by_prefix`] decide
+    /// from the single nearest-preceding entry.
+    fn block_prefix(&mut self, rel_prefix: &str) {
+        if self.blocked_by_prefix(rel_prefix) {
+            return;
+        }
+        self.blocked_prefixes.retain(|blocked| !blocked.starts_with(rel_prefix));
+        self.blocked_prefixes.insert(rel_prefix.to_owned());
+    }
+
     fn blocks(&self, rel_path: &str) -> bool {
-        self.exact_paths.contains(rel_path)
-            || self.blocked_prefixes.iter().any(|prefix| rel_path.starts_with(prefix))
+        self.exact_paths.contains(rel_path) || self.blocked_by_prefix(rel_path)
+    }
+
+    fn blocked_by_prefix(&self, rel_path: &str) -> bool {
+        self.blocked_prefixes
+            .range::<str, _>((Bound::Unbounded, Bound::Included(rel_path)))
+            .next_back()
+            .is_some_and(|blocked| rel_path.starts_with(blocked))
     }
 }
 
@@ -395,6 +413,90 @@ mod tests {
             basename_lower: env::candidate_basename(rel_path).to_lowercase(),
             depth: rel_path.matches('/').count(),
         }
+    }
+
+    fn overrides_blocking(prefixes: &[&str]) -> ScanOverrides {
+        let mut overrides = ScanOverrides::default();
+        for prefix in prefixes {
+            overrides
+                .record_change(&FileIndexChange::RemovePrefix { rel_prefix: (*prefix).to_owned() });
+        }
+        overrides
+    }
+
+    #[test]
+    fn redundant_blocked_prefixes_collapse_without_changing_answers() {
+        let overrides =
+            overrides_blocking(&["target/", "target/", "target/debug/", "src/app/", "src/"]);
+
+        assert_eq!(overrides.blocked_prefixes.len(), 2);
+        assert!(overrides.blocks("target/debug/build/out.rs"));
+        assert!(overrides.blocks("target/notes.txt"));
+        assert!(overrides.blocks("src/app/file_index.rs"));
+        assert!(overrides.blocks("src/main.rs"));
+        assert!(!overrides.blocks("crates/forge-tui/src/main.rs"));
+    }
+
+    #[test]
+    fn a_root_prefix_blocks_every_candidate() {
+        let overrides = overrides_blocking(&["src/", "", "target/"]);
+
+        assert_eq!(overrides.blocked_prefixes.len(), 1);
+        assert!(overrides.blocks("anything.rs"));
+        assert!(overrides.blocks("src/main.rs"));
+    }
+
+    #[test]
+    fn a_path_between_two_blocked_prefixes_is_not_blocked() {
+        let overrides = overrides_blocking(&["b/", "d/"]);
+
+        assert!(overrides.blocks("b/one.rs"));
+        assert!(overrides.blocks("d/two.rs"));
+        assert!(!overrides.blocks("a/zero.rs"));
+        assert!(!overrides.blocks("c/mid.rs"));
+        assert!(!overrides.blocks("e/last.rs"));
+    }
+
+    /// The reason `ScanOverrides` exists: a watcher change applied
+    /// mid-scan must survive the older scan results still streaming in.
+    #[test]
+    fn a_stale_scan_batch_cannot_undo_a_watcher_removal() {
+        let mut app = App::test_default();
+        let key = forge_workspace::SessionKey::from_str_for_test("a");
+        app.sessions
+            .entry(key.clone())
+            .or_insert_with(|| crate::app::session::UiSession::new(key.clone()));
+        app.active_session_key = Some(key.clone());
+        let generation = app.sessions[&key].file_index.generation;
+
+        apply_event(
+            &mut app,
+            FileIndexEvent::FsBatch {
+                key: key.clone(),
+                generation,
+                changes: vec![
+                    FileIndexChange::RemovePrefix { rel_prefix: "old/".to_owned() },
+                    FileIndexChange::RemovePrefix { rel_prefix: "old/deep/".to_owned() },
+                ],
+            },
+        );
+        apply_event(
+            &mut app,
+            FileIndexEvent::ScanBatch {
+                key: key.clone(),
+                generation,
+                entries: vec![
+                    candidate("old/gone.rs"),
+                    candidate("old/deep/gone.rs"),
+                    candidate("new/keep.rs"),
+                ],
+            },
+        );
+
+        let entries = &app.sessions[&key].file_index.entries;
+        assert!(!entries.contains_key("old/gone.rs"));
+        assert!(!entries.contains_key("old/deep/gone.rs"));
+        assert!(entries.contains_key("new/keep.rs"));
     }
 
     #[test]
