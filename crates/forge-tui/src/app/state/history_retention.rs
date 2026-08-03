@@ -368,6 +368,7 @@ impl super::App {
         *self.terminal_tool_call_membership_mut() = terminal_tool_call_membership;
         let live_ids: HashSet<String> = self.tool_call_index().keys().cloned().collect();
         self.tool_call_scopes_mut().retain(|id, _| live_ids.contains(id));
+        self.subagent_attribution_mut().retain(|id, _| live_ids.contains(id));
         let scopes_snapshot: std::collections::HashMap<String, super::ToolCallScope> =
             self.tool_call_scopes().clone();
         let mut new_active_task_ids: Vec<String> = Vec::new();
