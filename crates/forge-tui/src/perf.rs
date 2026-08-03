@@ -1056,9 +1056,10 @@ pub fn phase_ms(_start: Option<std::time::Instant>) -> f64 {
     0.0
 }
 
-/// What one pass of the app loop cost. `input` and `updates` are
-/// disjoint slices of `drain`; `render_ms` is `None` on a pass that
-/// drained without drawing.
+/// What one pass of the app loop cost. `updates` is a slice of
+/// `drain`; `input` is the select arm's terminal-event handling and
+/// sits outside it. `render_ms` is `None` on a pass that drained
+/// without drawing.
 pub struct IterationCost {
     pub drain_ms: f64,
     pub input_ms: f64,
