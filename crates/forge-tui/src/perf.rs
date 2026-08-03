@@ -28,6 +28,18 @@
 //! # Writes JSON lines:
 //! # {"schema":"forge-perf/v1","kind":"duration","run_id":"...","frame":1234,"ts_ms":1739599900793,"metric":"chat::render","duration_ms":2.345,"extra":{"key":"msgs","value":42}}
 //! ```
+//!
+//! # Reading the log
+//!
+//! Key on `(metric, kind)` and never fall back across kinds: take
+//! `duration_ms` only from `duration` records and `extra.value` only
+//! from `mark` records. Logs written before #516 classified a span as
+//! a `mark` whenever its duration rounded to zero, so one metric can
+//! appear under both kinds and the fallback silently reads an
+//! `extra.value` into a millisecond column.
+//!
+//! Always pin `run_id` too - the file is append-only across restarts
+//! (#483), so an unfiltered query measures several binaries at once.
 
 #[cfg(feature = "perf")]
 mod enabled {
@@ -72,12 +84,32 @@ mod enabled {
         name == "frame_total" || PARENT_SPAN_PREFIXES.iter().any(|p| name.starts_with(p))
     }
 
+    /// Which emitter produced a sample. Carried rather than inferred
+    /// from the duration: a `Timer` span can legitimately measure
+    /// 0.0 ms, and reading that as a marker discards the measurement
+    /// (#516).
+    #[derive(Clone, Copy)]
+    pub(crate) enum SampleKind {
+        Mark,
+        Duration,
+    }
+
+    impl SampleKind {
+        fn as_str(self) -> &'static str {
+            match self {
+                Self::Mark => "mark",
+                Self::Duration => "duration",
+            }
+        }
+    }
+
     /// One buffered sample awaiting the per-frame flush decision.
     /// Storage is cheap (constant size, no heap alloc beyond the
     /// vector backing storage).
     #[derive(Clone)]
     struct BufferedSample {
         name: &'static str,
+        kind: SampleKind,
         ms: f64,
         extra: Option<(&'static str, usize)>,
     }
@@ -144,7 +176,12 @@ mod enabled {
         }
     }
 
-    pub(crate) fn write_entry(name: &'static str, ms: f64, extra: Option<(&'static str, usize)>) {
+    pub(crate) fn write_entry(
+        name: &'static str,
+        kind: SampleKind,
+        ms: f64,
+        extra: Option<(&'static str, usize)>,
+    ) {
         // Fast path: when no `--perf-log` file is open, skip the
         // buffering + decision entirely. Cheap enough that
         // `--features perf` can stay always-on in production builds
@@ -172,7 +209,7 @@ mod enabled {
             // Timers drop at end of scope, after sub-events have
             // already pushed.
             if is_parent_span(name) || buf.len() < FRAME_BUFFER_CAP {
-                buf.push(BufferedSample { name, ms, extra });
+                buf.push(BufferedSample { name, kind, ms, extra });
             }
             if !is_frame_total {
                 return None;
@@ -205,12 +242,15 @@ mod enabled {
                 for sample in &samples {
                     let perf_sample = PerfSample {
                         schema: PERF_SCHEMA,
-                        kind: if sample.ms == 0.0 { "mark" } else { "duration" },
+                        kind: sample.kind.as_str(),
                         run_id: run_id.as_str(),
                         frame,
                         ts_ms,
                         metric: sample.name,
-                        duration_ms: (sample.ms != 0.0).then_some(sample.ms),
+                        duration_ms: match sample.kind {
+                            SampleKind::Duration => Some(sample.ms),
+                            SampleKind::Mark => None,
+                        },
                         extra: sample.extra.map(|(key, value)| PerfExtraField { key, value }),
                     };
                     write_json_line(file, &perf_sample);
@@ -299,14 +339,14 @@ mod enabled {
             Timer { name, start: Instant::now(), extra: Some((extra_name, extra_val)) }
         }
 
-        /// Log an instant marker for the current frame (`ms = 0`).
+        /// Log an instant marker for the current frame.
         pub fn mark(&self, name: &'static str) {
-            write_entry(name, 0.0, None);
+            write_entry(name, SampleKind::Mark, 0.0, None);
         }
 
-        /// Log an instant marker with an extra numeric field (`ms = 0`).
+        /// Log an instant marker with an extra numeric field.
         pub fn mark_with(&self, name: &'static str, extra_name: &'static str, extra_val: usize) {
-            write_entry(name, 0.0, Some((extra_name, extra_val)));
+            write_entry(name, SampleKind::Mark, 0.0, Some((extra_name, extra_val)));
         }
     }
 
@@ -319,7 +359,7 @@ mod enabled {
     impl Drop for Timer {
         fn drop(&mut self) {
             let ms = self.start.elapsed().as_secs_f64() * 1000.0;
-            write_entry(self.name, ms, self.extra);
+            write_entry(self.name, SampleKind::Duration, ms, self.extra);
         }
     }
 
@@ -367,15 +407,15 @@ mod enabled {
 
             // Fill the buffer past cap with sub-events.
             for _ in 0..(FRAME_BUFFER_CAP + 10) {
-                write_entry("msg::cache_miss", 0.0, None);
+                write_entry("msg::cache_miss", SampleKind::Mark, 0.0, None);
             }
             // Parents emit at end-of-frame after sub-events have
             // filled the buffer.
-            write_entry("ui::chat", 1.0, None);
-            write_entry("ui::render", 2.0, None);
-            write_entry("frame::terminal_draw", 3.0, None);
+            write_entry("ui::chat", SampleKind::Duration, 1.0, None);
+            write_entry("ui::render", SampleKind::Duration, 2.0, None);
+            write_entry("frame::terminal_draw", SampleKind::Duration, 3.0, None);
             // Slow `frame_total` triggers the flush.
-            write_entry("frame_total", SLOW_FRAME_THRESHOLD_MS + 1.0, None);
+            write_entry("frame_total", SampleKind::Duration, SLOW_FRAME_THRESHOLD_MS + 1.0, None);
 
             close_log_file();
             let lines = read_log_lines(tmp.path());
@@ -409,9 +449,9 @@ mod enabled {
             let _logger = PerfLogger::open(tmp.path()).expect("perf log opens");
 
             for _ in 0..(FRAME_BUFFER_CAP + 10) {
-                write_entry("msg::cache_miss", 0.0, None);
+                write_entry("msg::cache_miss", SampleKind::Mark, 0.0, None);
             }
-            write_entry("frame_total", SLOW_FRAME_THRESHOLD_MS + 1.0, None);
+            write_entry("frame_total", SampleKind::Duration, SLOW_FRAME_THRESHOLD_MS + 1.0, None);
 
             close_log_file();
             let lines = read_log_lines(tmp.path());
@@ -434,6 +474,93 @@ mod enabled {
         }
 
         #[test]
+        fn zero_length_span_still_records_as_a_duration() {
+            // #516: the record kind used to be derived from the value
+            // (`ms == 0.0` meant "mark"), so any Timer whose span
+            // rounded to exactly zero went out as a point marker with
+            // a null duration and only its `extra` intact.
+            // `chat::paragraph_build` did it on 1379 of 3307 records
+            // from a single `start_with` call site, which reads as a
+            // line count sitting in a millisecond column.
+            reset_thread_locals();
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            let _logger = PerfLogger::open(tmp.path()).expect("perf log opens");
+
+            write_entry("chat::paragraph_build", SampleKind::Duration, 0.0, Some(("lines", 57)));
+            write_entry("frame_total", SampleKind::Duration, SLOW_FRAME_THRESHOLD_MS + 1.0, None);
+
+            close_log_file();
+            let lines = read_log_lines(tmp.path());
+            let record = lines
+                .iter()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .find(|v| {
+                    v.get("metric").and_then(serde_json::Value::as_str)
+                        == Some("chat::paragraph_build")
+                })
+                .expect("paragraph_build record present");
+
+            assert_eq!(record["kind"], "duration");
+            assert_eq!(record["duration_ms"], 0.0);
+        }
+
+        #[test]
+        fn mark_records_as_a_mark_with_no_duration() {
+            // Inverse of `zero_length_span_still_records_as_a_duration`:
+            // a deliberate marker keeps a null duration, so the two
+            // stay distinguishable in the log and a consumer can key
+            // on `(metric, kind)` without falling back across kinds.
+            reset_thread_locals();
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            let _logger = PerfLogger::open(tmp.path()).expect("perf log opens");
+
+            write_entry("msg::cache_miss", SampleKind::Mark, 0.0, Some(("msgs", 42)));
+            write_entry("frame_total", SampleKind::Duration, SLOW_FRAME_THRESHOLD_MS + 1.0, None);
+
+            close_log_file();
+            let lines = read_log_lines(tmp.path());
+            let record = lines
+                .iter()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .find(|v| {
+                    v.get("metric").and_then(serde_json::Value::as_str) == Some("msg::cache_miss")
+                })
+                .expect("cache_miss record present");
+
+            assert_eq!(record["kind"], "mark");
+            assert!(record["duration_ms"].is_null());
+            assert_eq!(record["extra"]["value"], 42);
+        }
+
+        #[test]
+        fn timer_drop_always_emits_a_duration() {
+            // Pins the emitter-side half of #516 through the public
+            // API: whatever the clock reports, a dropped Timer is a
+            // duration record. Guards against the classification
+            // drifting back onto the value.
+            reset_thread_locals();
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            let logger = PerfLogger::open(tmp.path()).expect("perf log opens");
+
+            drop(logger.start("chat::paragraph_build"));
+            write_entry("frame_total", SampleKind::Duration, SLOW_FRAME_THRESHOLD_MS + 1.0, None);
+
+            close_log_file();
+            let lines = read_log_lines(tmp.path());
+            let record = lines
+                .iter()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .find(|v| {
+                    v.get("metric").and_then(serde_json::Value::as_str)
+                        == Some("chat::paragraph_build")
+                })
+                .expect("paragraph_build record present");
+
+            assert_eq!(record["kind"], "duration");
+            assert!(record["duration_ms"].is_number());
+        }
+
+        #[test]
         fn fast_frame_discards_buffered_samples() {
             // Healthy frame: buffer accumulates a few samples, then
             // `frame_total` arrives below the slow threshold; nothing
@@ -444,9 +571,9 @@ mod enabled {
             let tmp = tempfile::NamedTempFile::new().unwrap();
             let _logger = PerfLogger::open(tmp.path()).expect("perf log opens");
 
-            write_entry("ui::chat", 0.5, None);
-            write_entry("msg::cache_hit", 0.0, None);
-            write_entry("frame_total", SLOW_FRAME_THRESHOLD_MS / 2.0, None);
+            write_entry("ui::chat", SampleKind::Duration, 0.5, None);
+            write_entry("msg::cache_hit", SampleKind::Mark, 0.0, None);
+            write_entry("frame_total", SampleKind::Duration, SLOW_FRAME_THRESHOLD_MS / 2.0, None);
 
             close_log_file();
             let lines = read_log_lines(tmp.path());
@@ -557,22 +684,22 @@ pub fn start_with(
     None
 }
 
-/// Write an instant marker for the current frame (`ms = 0`).
+/// Write an instant marker for the current frame.
 #[cfg(feature = "perf")]
 #[inline]
 pub fn mark(name: &'static str) {
-    enabled::write_entry(name, 0.0, None);
+    enabled::write_entry(name, enabled::SampleKind::Mark, 0.0, None);
 }
 
 #[cfg(not(feature = "perf"))]
 #[inline]
 pub fn mark(_name: &'static str) {}
 
-/// Write an instant marker with one numeric field (`ms = 0`).
+/// Write an instant marker with one numeric field.
 #[cfg(feature = "perf")]
 #[inline]
 pub fn mark_with(name: &'static str, extra_name: &'static str, extra_val: usize) {
-    enabled::write_entry(name, 0.0, Some((extra_name, extra_val)));
+    enabled::write_entry(name, enabled::SampleKind::Mark, 0.0, Some((extra_name, extra_val)));
 }
 
 #[cfg(not(feature = "perf"))]
