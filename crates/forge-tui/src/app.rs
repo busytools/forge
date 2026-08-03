@@ -85,7 +85,7 @@ use crossterm::event::{
     EventStream, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
 };
-use futures::{FutureExt as _, StreamExt};
+use futures::StreamExt;
 use std::time::{Duration, Instant};
 
 const SPINNER_FRAME_INTERVAL_NORMAL: Duration = Duration::from_millis(30);
@@ -208,9 +208,14 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 
         // Wait for an event or the next frame tick.
         let time_to_next = tick_duration.saturating_sub(last_render.elapsed());
+        // Measured on the select arm because that is now the only path
+        // terminal events take.
+        let mut input_ms = 0.0;
         tokio::select! {
             Some(Ok(event)) = events.next() => {
+                let input_start = crate::perf::phase_start();
                 events::handle_terminal_event(app, event);
+                input_ms = crate::perf::phase_ms(input_start);
             }
             Some(update) = app.update_rx.recv() => {
                 events::apply_session_update(app, update);
@@ -230,28 +235,16 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             () = tokio::time::sleep(time_to_next) => {}
         }
 
-        // Drain any remaining queued events without blocking.
+        // Drain queued session updates without blocking. Terminal
+        // events stay on the select arm: polling the crossterm stream
+        // here supplies a noop waker, which strands its wake thread on
+        // the internal reader lock and stalls this loop for tens of ms.
         let drain_start = crate::perf::phase_start();
-        // Kept apart because a keystroke and a session update are the
-        // two things #532 needs told from each other.
-        let mut input_ms = 0.0;
         let mut updates_ms = 0.0;
-        loop {
-            let event_start = crate::perf::phase_start();
-            // Try terminal events first (keeps typing responsive)
-            if let Some(Some(Ok(event))) = events.next().now_or_never() {
-                events::handle_terminal_event(app, event);
-                input_ms += crate::perf::phase_ms(event_start);
-                continue;
-            }
-            // Then SessionUpdates from workspace
-            match app.update_rx.try_recv() {
-                Ok(update) => {
-                    events::apply_session_update(app, update);
-                    updates_ms += crate::perf::phase_ms(event_start);
-                }
-                Err(_) => break,
-            }
+        while let Ok(update) = app.update_rx.try_recv() {
+            let update_start = crate::perf::phase_start();
+            events::apply_session_update(app, update);
+            updates_ms += crate::perf::phase_ms(update_start);
         }
 
         file_index::drain_events(app);
