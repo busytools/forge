@@ -18,6 +18,9 @@ use std::time::Duration;
 
 const SCAN_BATCH_SIZE: usize = 256;
 const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// Upper bound on events coalesced into one pass, so a sustained
+/// writer cannot starve the cancel check at the top of the loop.
+const WATCH_BATCH_CAP: usize = 1024;
 
 #[derive(Clone, Debug)]
 pub struct FileCandidate {
@@ -120,26 +123,56 @@ pub fn start_watch(
             return;
         }
 
+        let mut filter = WatchFilter::new(&root, respect_gitignore);
         while !cancel_clone.load(AtomicOrdering::Relaxed) {
-            let event = match watch_rx.recv_timeout(WATCH_POLL_INTERVAL) {
+            let first = match watch_rx.recv_timeout(WATCH_POLL_INTERVAL) {
                 Ok(event) => event,
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => break,
             };
-            match event {
-                Ok(event) => {
-                    if let Some(progress) = classify_watch_event(&root, respect_gitignore, &event)
-                        && tx.send(progress).is_err()
-                    {
-                        break;
+            // Drain whatever else is already queued. A build emits
+            // events in bursts and each one used to be an independent
+            // rescan; taking the burst in one pass lets the dedupe in
+            // `collect_parent_rescan_changes` collapse them.
+            let mut batch = vec![first];
+            while let Ok(event) = watch_rx.try_recv() {
+                batch.push(event);
+                if batch.len() >= WATCH_BATCH_CAP {
+                    break;
+                }
+            }
+
+            let mut changes = Vec::new();
+            let mut rebuild = false;
+            for event in batch {
+                match event {
+                    Ok(event) => {
+                        match classify_watch_event(&root, respect_gitignore, &filter, &event) {
+                            Some(WatchProgress::Rebuild) => rebuild = true,
+                            Some(WatchProgress::Changes(mut batch_changes)) => {
+                                changes.append(&mut batch_changes);
+                            }
+                            None => {}
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(target: "forge_agent::env::file_index", %err, "watcher event failed");
+                        rebuild = true;
                     }
                 }
-                Err(err) => {
-                    tracing::warn!(target: "forge_agent::env::file_index", %err, "watcher event failed");
-                    if tx.send(WatchProgress::Rebuild).is_err() {
-                        break;
-                    }
+            }
+
+            if rebuild {
+                // The ignore rules themselves may be what changed, so
+                // the matcher has to come back with them.
+                filter = WatchFilter::new(&root, respect_gitignore);
+                if tx.send(WatchProgress::Rebuild).is_err() {
+                    break;
                 }
+                continue;
+            }
+            if !changes.is_empty() && tx.send(WatchProgress::Changes(changes)).is_err() {
+                break;
             }
         }
     });
@@ -235,9 +268,50 @@ fn ensure_dir_suffix(mut rel_path: String) -> String {
     rel_path
 }
 
+/// Decides whether a watcher event path is worth acting on at all.
+///
+/// The watcher registers the whole root recursively and `notify` has
+/// no concept of ignore rules, so events under `target/` arrive like
+/// any other. Handing one to the walk does NOT filter it either: the
+/// `ignore` crate applies its rules to what it finds under a walk root
+/// and never to the root itself, so pointing a walk at a changed
+/// directory inside an ignored tree walks the whole tree. Matching
+/// here, against a matcher built once per root, is what keeps a cargo
+/// build in a watched project from costing a full rescan per event.
+pub(crate) struct WatchFilter {
+    matcher: Option<ignore::gitignore::Gitignore>,
+}
+
+impl WatchFilter {
+    pub(crate) fn new(root: &Path, respect_gitignore: bool) -> Self {
+        if !respect_gitignore {
+            return Self { matcher: None };
+        }
+        let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
+        for candidate in [".gitignore", ".ignore"] {
+            builder.add(root.join(candidate));
+        }
+        builder.add(root.join(".git").join("info").join("exclude"));
+        Self { matcher: builder.build().ok() }
+    }
+
+    fn is_ignored(&self, root: &Path, path: &Path) -> bool {
+        let Ok(rel) = path.strip_prefix(root) else { return false };
+        if rel.components().next().is_some_and(|first| first.as_os_str() == ".git") {
+            return true;
+        }
+        let Some(matcher) = self.matcher.as_ref() else { return false };
+        // `matched_path_or_any_parents` is the variant that works
+        // without having walked down to the path; the plain `matched`
+        // would miss `target/debug/x` against a `/target` rule.
+        matcher.matched_path_or_any_parents(path, path.is_dir()).is_ignore()
+    }
+}
+
 fn classify_watch_event(
     root: &Path,
     respect_gitignore: bool,
+    filter: &WatchFilter,
     event: &notify::Event,
 ) -> Option<WatchProgress> {
     use notify::event::{CreateKind, EventKind, ModifyKind, RemoveKind, RenameMode};
@@ -246,9 +320,15 @@ fn classify_watch_event(
         return Some(WatchProgress::Rebuild);
     }
 
+    let paths: Vec<PathBuf> =
+        event.paths.iter().filter(|path| !filter.is_ignored(root, path)).cloned().collect();
+    if paths.is_empty() {
+        return None;
+    }
+
     let changes = match event.kind {
         EventKind::Modify(ModifyKind::Name(RenameMode::Any | RenameMode::Both)) => {
-            collect_rename_changes(root, respect_gitignore, &event.paths)
+            collect_rename_changes(root, respect_gitignore, &paths)
         }
         EventKind::Create(CreateKind::Any | CreateKind::File | CreateKind::Folder)
         | EventKind::Modify(
@@ -256,10 +336,10 @@ fn classify_watch_event(
             | ModifyKind::Data(_)
             | ModifyKind::Metadata(_)
             | ModifyKind::Name(RenameMode::To),
-        ) => collect_create_or_modify_changes(root, respect_gitignore, &event.paths),
+        ) => collect_create_or_modify_changes(root, respect_gitignore, &paths),
         EventKind::Modify(ModifyKind::Name(RenameMode::From))
         | EventKind::Remove(RemoveKind::Any | RemoveKind::File | RemoveKind::Folder) => {
-            collect_remove_changes(root, &event.paths)
+            collect_remove_changes(root, &paths)
         }
         EventKind::Other => return Some(WatchProgress::Rebuild),
         _ => Vec::new(),
@@ -375,4 +455,97 @@ fn replace_subtree_change(
     let rel_prefix = if path == root { String::new() } else { normalized_prefix(root, path)? };
     let entries = scan_subtree(root, path, respect_gitignore);
     Some(FileIndexChange::ReplacePrefix { rel_prefix, entries })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use notify::event::{CreateKind, EventKind};
+
+    fn touch(path: &Path) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, b"x").unwrap();
+    }
+
+    fn create_event(path: &Path) -> notify::Event {
+        notify::Event {
+            kind: EventKind::Create(CreateKind::File),
+            paths: vec![path.to_path_buf()],
+            attrs: notify::event::EventAttributes::new(),
+        }
+    }
+
+    fn fixture() -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join(".gitignore"), "/target\n/node_modules\n").unwrap();
+        touch(&root.join("src/main.rs"));
+        touch(&root.join("target/debug/liba.rlib"));
+        dir
+    }
+
+    #[test]
+    fn an_event_inside_a_gitignored_directory_is_dropped() {
+        // #523: the watcher registers the whole root recursively and
+        // has no ignore filter, so a cargo build under a gitignored
+        // `target/` used to reach `collect_candidates`. That builds a
+        // fresh WalkBuilder aimed at the changed path, and the ignore
+        // crate never filters a walk's own ROOT - so the whole tree
+        // got walked and sorted for an event we do not care about.
+        let dir = fixture();
+        let root = dir.path();
+        let filter = WatchFilter::new(root, true);
+        let event = create_event(&root.join("target/debug/liba.rlib"));
+        assert!(classify_watch_event(root, true, &filter, &event).is_none());
+    }
+
+    #[test]
+    fn an_event_on_a_tracked_file_still_classifies() {
+        let dir = fixture();
+        let root = dir.path();
+        let filter = WatchFilter::new(root, true);
+        let event = create_event(&root.join("src/main.rs"));
+        assert!(matches!(
+            classify_watch_event(root, true, &filter, &event),
+            Some(WatchProgress::Changes(_))
+        ));
+    }
+
+    #[test]
+    fn ignoring_is_off_when_gitignore_is_not_respected() {
+        // `respect_gitignore = false` must keep seeing everything;
+        // the filter is not a second, independent policy.
+        let dir = fixture();
+        let root = dir.path();
+        let filter = WatchFilter::new(root, false);
+        let event = create_event(&root.join("target/debug/liba.rlib"));
+        assert!(classify_watch_event(root, false, &filter, &event).is_some());
+    }
+
+    #[test]
+    fn a_gitignore_edit_still_forces_a_rebuild() {
+        // The rebuild signal must survive the filter, otherwise the
+        // matcher can never be refreshed.
+        let dir = fixture();
+        let root = dir.path();
+        let filter = WatchFilter::new(root, true);
+        let event = create_event(&root.join(".gitignore"));
+        assert!(matches!(
+            classify_watch_event(root, true, &filter, &event),
+            Some(WatchProgress::Rebuild)
+        ));
+    }
+
+    #[test]
+    fn the_git_directory_is_dropped_without_a_gitignore_rule() {
+        // `.git/` is never listed in .gitignore but churns constantly
+        // during any git operation.
+        let dir = fixture();
+        let root = dir.path();
+        let filter = WatchFilter::new(root, true);
+        let event = create_event(&root.join(".git/index.lock"));
+        assert!(classify_watch_event(root, true, &filter, &event).is_none());
+    }
 }
