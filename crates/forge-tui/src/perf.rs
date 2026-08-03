@@ -38,6 +38,12 @@
 //! appear under both kinds and the fallback silently reads an
 //! `extra.value` into a millisecond column.
 //!
+//! `kind: "frame_summary"` is a periodic window aggregate rather than
+//! a per-frame record - it carries no `metric`, and its percentiles
+//! are bucket upper bounds. Take frame cost from its `drain` /
+//! `render` split rather than from `frame_total`, which brackets
+//! `terminal.draw` alone and has never included the drain phase.
+//!
 //! Always pin `run_id` too - the file is append-only across restarts
 //! (#483), so an unfiltered query measures several binaries at once.
 
@@ -48,9 +54,23 @@ mod enabled {
     use std::fs::{File, OpenOptions};
     use std::io::{BufWriter, Write};
     use std::path::Path;
-    use std::time::{Instant, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     const PERF_SCHEMA: &str = "forge-perf/v1";
+
+    /// How often the rolling frame-cost window is summarised. Ten
+    /// seconds still holds thousands of samples per window while
+    /// keeping the log to a few hundred lines an hour.
+    const FRAME_SUMMARY_INTERVAL: Duration = Duration::from_secs(10);
+
+    /// Bucket upper bounds (ms) for the frame-cost histogram. Dense
+    /// below 8 ms because the frame budget is 4 ms; coarse above it
+    /// because `SLOW_FRAME_THRESHOLD_MS` already captures that range
+    /// in full detail.
+    const BUCKET_BOUNDS_MS: [f64; 24] = [
+        0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 13.0, 16.0,
+        20.0, 25.0, 33.0, 50.0, 100.0, 250.0, 1000.0,
+    ];
 
     /// Frame duration (ms) at or above which the per-frame buffer
     /// flushes to disk. 50 ms = below 20 FPS, well into the visible
@@ -120,6 +140,88 @@ mod enabled {
         static FRAME_COUNTER: RefCell<u64> = const { RefCell::new(0) };
         static RUN_ID: RefCell<String> = const { RefCell::new(String::new()) };
         static FRAME_BUFFER: RefCell<Vec<BufferedSample>> = const { RefCell::new(Vec::new()) };
+        static FRAME_WINDOW: RefCell<Option<FrameWindow>> = const { RefCell::new(None) };
+    }
+
+    /// Fixed-width histogram over one loop phase's per-iteration cost.
+    /// Every field is inline storage, so recording never allocates.
+    #[derive(Default)]
+    struct PhaseHistogram {
+        buckets: [u32; BUCKET_BOUNDS_MS.len() + 1],
+        count: u64,
+        total_ms: f64,
+        max_ms: f64,
+    }
+
+    impl PhaseHistogram {
+        fn record(&mut self, ms: f64) {
+            let idx = BUCKET_BOUNDS_MS
+                .iter()
+                .position(|bound| ms <= *bound)
+                .unwrap_or(BUCKET_BOUNDS_MS.len());
+            self.buckets[idx] = self.buckets[idx].saturating_add(1);
+            self.count += 1;
+            self.total_ms += ms;
+            if ms > self.max_ms {
+                self.max_ms = ms;
+            }
+        }
+
+        /// Reports the upper bound of the bucket the rank lands in, so
+        /// a quoted cost is never lower than the real one.
+        fn percentile_ms(&self, pct: u64) -> f64 {
+            if self.count == 0 {
+                return 0.0;
+            }
+            let target = self.count.saturating_mul(pct).div_ceil(100);
+            let mut seen = 0_u64;
+            for (idx, hits) in self.buckets.iter().enumerate() {
+                seen += u64::from(*hits);
+                if seen >= target {
+                    return BUCKET_BOUNDS_MS.get(idx).copied().unwrap_or(self.max_ms);
+                }
+            }
+            self.max_ms
+        }
+
+        fn summary(&self) -> PhaseSummary {
+            PhaseSummary {
+                p50_ms: self.percentile_ms(50),
+                p90_ms: self.percentile_ms(90),
+                p99_ms: self.percentile_ms(99),
+                max_ms: self.max_ms,
+                total_ms: self.total_ms,
+            }
+        }
+    }
+
+    /// One flush window's worth of app-loop cost.
+    struct FrameWindow {
+        started: Instant,
+        iters: u64,
+        renders: u64,
+        animating_iters: u64,
+        animating_renders: u64,
+        drain: PhaseHistogram,
+        input: PhaseHistogram,
+        updates: PhaseHistogram,
+        render: PhaseHistogram,
+    }
+
+    impl FrameWindow {
+        fn new() -> Self {
+            Self {
+                started: Instant::now(),
+                iters: 0,
+                renders: 0,
+                animating_iters: 0,
+                animating_renders: 0,
+                drain: PhaseHistogram::default(),
+                input: PhaseHistogram::default(),
+                updates: PhaseHistogram::default(),
+                render: PhaseHistogram::default(),
+            }
+        }
     }
 
     pub struct PerfLogger {
@@ -142,6 +244,33 @@ mod enabled {
         metric: &'a str,
         duration_ms: Option<f64>,
         extra: Option<PerfExtraField>,
+    }
+
+    #[derive(Serialize)]
+    struct PhaseSummary {
+        p50_ms: f64,
+        p90_ms: f64,
+        p99_ms: f64,
+        max_ms: f64,
+        total_ms: f64,
+    }
+
+    #[derive(Serialize)]
+    struct PerfFrameSummary<'a> {
+        schema: &'static str,
+        kind: &'static str,
+        run_id: &'a str,
+        ts_ms: u128,
+        window_ms: f64,
+        iters: u64,
+        renders: u64,
+        no_render: u64,
+        animating_iters: u64,
+        animating_renders: u64,
+        drain: PhaseSummary,
+        input: PhaseSummary,
+        updates: PhaseSummary,
+        render: PhaseSummary,
     }
 
     #[derive(Serialize)]
@@ -259,6 +388,78 @@ mod enabled {
         });
     }
 
+    /// Fold one pass of the app loop into the open window. Called on
+    /// every iteration, including the ones that never render, so it
+    /// touches nothing but fixed-size state.
+    pub(crate) fn record_iteration(cost: super::IterationCost) {
+        let logging_enabled = LOG_FILE.with(|f| f.borrow().is_some());
+        if !logging_enabled {
+            return;
+        }
+
+        let due = FRAME_WINDOW.with(|w| {
+            let mut slot = w.borrow_mut();
+            let window = slot.get_or_insert_with(FrameWindow::new);
+            window.iters += 1;
+            window.animating_iters += u64::from(cost.animating);
+            window.drain.record(cost.drain_ms);
+            window.input.record(cost.input_ms);
+            window.updates.record(cost.updates_ms);
+            if let Some(ms) = cost.render_ms {
+                window.renders += 1;
+                window.animating_renders += u64::from(cost.animating);
+                window.render.record(ms);
+            }
+            window.started.elapsed() >= FRAME_SUMMARY_INTERVAL
+        });
+
+        if due {
+            flush_frame_summary();
+        }
+    }
+
+    /// Write the open window as one line and start a fresh one. Also
+    /// runs at shutdown so a partial window still lands.
+    pub(crate) fn flush_frame_summary() {
+        let Some(window) = FRAME_WINDOW.with(|w| w.borrow_mut().take()) else {
+            return;
+        };
+        if window.iters == 0 {
+            return;
+        }
+        let ts_ms = unix_ms();
+        let window_ms = window.started.elapsed().as_secs_f64() * 1000.0;
+        LOG_FILE.with(|f| {
+            let mut file_ref = f.borrow_mut();
+            let Some(ref mut file) = *file_ref else {
+                return;
+            };
+            RUN_ID.with(|run| {
+                let run_id = run.borrow();
+                let summary = PerfFrameSummary {
+                    schema: PERF_SCHEMA,
+                    kind: "frame_summary",
+                    run_id: run_id.as_str(),
+                    ts_ms,
+                    window_ms,
+                    iters: window.iters,
+                    renders: window.renders,
+                    no_render: window.iters.saturating_sub(window.renders),
+                    animating_iters: window.animating_iters,
+                    animating_renders: window.animating_renders,
+                    drain: window.drain.summary(),
+                    input: window.input.summary(),
+                    updates: window.updates.summary(),
+                    render: window.render.summary(),
+                };
+                write_json_line(file, &summary);
+            });
+            // One flush per window is free at this cadence and stops a
+            // summary sitting in the writer until the next slow frame.
+            let _ = file.flush();
+        });
+    }
+
     // `start` / `start_with` / `mark` / `mark_with` take `&self` to match
     // call-site ergonomics with the enabled-vs-disabled feature impls,
     // even though the enabled path delegates to thread-local state and
@@ -350,6 +551,17 @@ mod enabled {
         }
     }
 
+    impl Drop for PerfLogger {
+        fn drop(&mut self) {
+            flush_frame_summary();
+            LOG_FILE.with(|f| {
+                if let Some(ref mut file) = *f.borrow_mut() {
+                    let _ = file.flush();
+                }
+            });
+        }
+    }
+
     pub struct Timer {
         pub(crate) name: &'static str,
         pub(crate) start: Instant,
@@ -377,6 +589,32 @@ mod enabled {
             FRAME_COUNTER.with(|c| *c.borrow_mut() = 0);
             RUN_ID.with(|r| r.borrow_mut().clear());
             FRAME_BUFFER.with(|b| b.borrow_mut().clear());
+            FRAME_WINDOW.with(|w| *w.borrow_mut() = None);
+        }
+
+        fn read_summary(path: &Path) -> serde_json::Value {
+            read_log_lines(path)
+                .iter()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .find(|v| {
+                    v.get("kind").and_then(serde_json::Value::as_str) == Some("frame_summary")
+                })
+                .expect("frame summary present")
+        }
+
+        fn cost(
+            drain_ms: f64,
+            input_ms: f64,
+            updates_ms: f64,
+            render_ms: Option<f64>,
+            animating: bool,
+        ) -> super::super::IterationCost {
+            super::super::IterationCost { drain_ms, input_ms, updates_ms, render_ms, animating }
+        }
+
+        fn assert_close(actual: &serde_json::Value, expected: f64) {
+            let got = actual.as_f64().expect("numeric field");
+            assert!((got - expected).abs() < 1e-6, "expected {expected}, got {got}");
         }
 
         /// Drop the BufWriter so its contents land on disk before
@@ -561,6 +799,91 @@ mod enabled {
         }
 
         #[test]
+        fn frame_summary_splits_drain_from_render_and_counts_non_rendering_iterations() {
+            // The drain/render split is the whole point: `frame_total`
+            // brackets `terminal.draw` alone, so no existing record
+            // attributes any cost to the drain phase.
+            reset_thread_locals();
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            let _logger = PerfLogger::open(tmp.path()).expect("perf log opens");
+
+            for _ in 0..6 {
+                record_iteration(cost(0.3, 0.05, 0.1, None, false));
+            }
+            for _ in 0..4 {
+                record_iteration(cost(0.3, 0.05, 0.1, Some(6.0), true));
+            }
+            flush_frame_summary();
+
+            close_log_file();
+            let summary = read_summary(tmp.path());
+
+            assert_eq!(summary["iters"], 10);
+            assert_eq!(summary["renders"], 4);
+            assert_eq!(summary["no_render"], 6);
+            assert_eq!(summary["animating_iters"], 4);
+            assert_eq!(summary["animating_renders"], 4);
+            // Drain is charged on every iteration, render only on the
+            // four that drew - neither total absorbs the other.
+            assert_close(&summary["drain"]["total_ms"], 3.0);
+            assert_close(&summary["input"]["total_ms"], 0.5);
+            assert_close(&summary["updates"]["total_ms"], 1.0);
+            assert_close(&summary["render"]["total_ms"], 24.0);
+            assert_close(&summary["render"]["max_ms"], 6.0);
+            assert_close(&summary["drain"]["max_ms"], 0.3);
+        }
+
+        #[test]
+        fn frame_summary_percentiles_resolve_below_the_frame_budget() {
+            // A 2ms frame and a 12ms frame are indistinguishable under
+            // `SLOW_FRAME_THRESHOLD_MS` - both are discarded. The
+            // histogram has to separate them to say anything about a
+            // 4ms budget.
+            reset_thread_locals();
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            let _logger = PerfLogger::open(tmp.path()).expect("perf log opens");
+
+            for _ in 0..90 {
+                record_iteration(cost(0.0, 0.0, 0.0, Some(2.0), true));
+            }
+            for _ in 0..9 {
+                record_iteration(cost(0.0, 0.0, 0.0, Some(12.0), true));
+            }
+            record_iteration(cost(0.0, 0.0, 0.0, Some(80.0), true));
+            flush_frame_summary();
+
+            close_log_file();
+            let render = read_summary(tmp.path())["render"].clone();
+
+            assert_close(&render["p50_ms"], 2.0);
+            assert_close(&render["p90_ms"], 2.0);
+            assert_close(&render["p99_ms"], 13.0);
+            assert_close(&render["max_ms"], 80.0);
+        }
+
+        #[test]
+        fn thousands_of_iterations_write_one_line_and_never_buffer() {
+            // Bounded output is a hard constraint (#483 reached 554MB)
+            // and the aggregator must stay clear of `FRAME_BUFFER`,
+            // whose `frame::` prefix exemption is uncapped.
+            reset_thread_locals();
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            let _logger = PerfLogger::open(tmp.path()).expect("perf log opens");
+
+            for _ in 0..5000 {
+                record_iteration(cost(0.3, 0.05, 0.1, Some(1.0), true));
+            }
+            FRAME_BUFFER.with(|b| assert!(b.borrow().is_empty()));
+            assert_eq!(read_log_lines(tmp.path()).len(), 1, "only the run_started header so far");
+
+            flush_frame_summary();
+            close_log_file();
+            let lines = read_log_lines(tmp.path());
+            assert_eq!(lines.len(), 2, "5000 iterations collapse to one summary line");
+            assert_eq!(read_summary(tmp.path())["iters"], 5000);
+        }
+
+        #[test]
         fn fast_frame_discards_buffered_samples() {
             // Healthy frame: buffer accumulates a few samples, then
             // `frame_total` arrives below the slow threshold; nothing
@@ -705,6 +1028,55 @@ pub fn mark_with(name: &'static str, extra_name: &'static str, extra_val: usize)
 #[cfg(not(feature = "perf"))]
 #[inline]
 pub fn mark_with(_name: &'static str, _extra_name: &'static str, _extra_val: usize) {}
+
+/// Start timing a loop phase. `None` when the `perf` feature is off or
+/// no log is open, which makes every downstream call a no-op.
+#[cfg(feature = "perf")]
+#[inline]
+pub fn phase_start() -> Option<std::time::Instant> {
+    enabled::LOG_FILE.with(|f| f.borrow().is_some().then(std::time::Instant::now))
+}
+
+#[cfg(not(feature = "perf"))]
+#[inline]
+pub fn phase_start() -> Option<std::time::Instant> {
+    None
+}
+
+/// Milliseconds elapsed since `start`, or 0.0 when timing is off.
+#[cfg(feature = "perf")]
+#[inline]
+pub fn phase_ms(start: Option<std::time::Instant>) -> f64 {
+    start.map_or(0.0, |at| at.elapsed().as_secs_f64() * 1000.0)
+}
+
+#[cfg(not(feature = "perf"))]
+#[inline]
+pub fn phase_ms(_start: Option<std::time::Instant>) -> f64 {
+    0.0
+}
+
+/// What one pass of the app loop cost. `input` and `updates` are
+/// disjoint slices of `drain`; `render_ms` is `None` on a pass that
+/// drained without drawing.
+pub struct IterationCost {
+    pub drain_ms: f64,
+    pub input_ms: f64,
+    pub updates_ms: f64,
+    pub render_ms: Option<f64>,
+    pub animating: bool,
+}
+
+/// Fold one app-loop iteration into the rolling frame-cost window.
+#[cfg(feature = "perf")]
+#[inline]
+pub fn record_iteration(cost: IterationCost) {
+    enabled::record_iteration(cost);
+}
+
+#[cfg(not(feature = "perf"))]
+#[inline]
+pub fn record_iteration(_cost: IterationCost) {}
 
 #[cfg(feature = "perf")]
 pub use enabled::{PerfLogger, Timer};
