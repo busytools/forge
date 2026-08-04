@@ -56,13 +56,13 @@ impl Default for RepaintCadence {
 }
 
 impl RepaintCadence {
-    /// Clamp `fps` into [`FPS_RANGE`] and convert it to a frame
-    /// interval, warning when the value had to move.
+    /// Clamp `fps` into the accepted 30-240 range and convert it to a
+    /// frame interval, warning when the value had to move.
     ///
-    /// The result never exceeds [`DEFAULT_REPAINT_INTERVAL`], which is
-    /// what keeps the repaint gate at least as fine as the quickest
-    /// spinner cadence - a gate coarser than the animation it gates
-    /// drops glyph frames.
+    /// The result never exceeds the 30ms default, which is what keeps
+    /// the repaint gate at least as fine as the quickest spinner
+    /// cadence - a gate coarser than the animation it gates drops
+    /// glyph frames.
     pub fn from_fps(fps: u32) -> Self {
         let clamped = fps.clamp(*FPS_RANGE.start(), *FPS_RANGE.end());
         if clamped != fps {
@@ -86,7 +86,8 @@ impl RepaintCadence {
 /// Lenient deserialize for `[ui] fps`. A non-integer value (a float, a
 /// string, a table) resolves to the default rather than failing the
 /// whole config load - a hand-edited typo must never stop forge
-/// booting. Out-of-range integers are clamped by [`RepaintCadence::from_fps`].
+/// booting. Out-of-range integers clamp instead, in
+/// [`RepaintCadence::from_fps`].
 pub fn deserialize_fps<'de, D>(deserializer: D) -> Result<RepaintCadence, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -344,10 +345,7 @@ mod tests {
         let parsed: UiSettings = toml::from_str("fps = 120\n").expect("parse");
         // 8333us, not a truncated 8ms - the gate divides in micros.
         assert_eq!(parsed.fps.frame_interval(), Duration::from_micros(8333));
-        assert_eq!(
-            RepaintCadence::from_fps(60).frame_interval(),
-            Duration::from_micros(16_666)
-        );
+        assert_eq!(RepaintCadence::from_fps(60).frame_interval(), Duration::from_micros(16_666));
         assert_eq!(RepaintCadence::from_fps(240).frame_interval(), Duration::from_micros(4166));
     }
 
