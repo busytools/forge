@@ -533,7 +533,7 @@ mod tests {
         std::fs::write(
             forge_dir(config_dir.path()).join("forge.toml"),
             format!(
-                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"~/.claude-stargate\"\n\n[ui]\nspinner = \"ember\"\nfps = 120\n"
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"~/.claude-stargate\"\n\n[ui]\nspinner = \"ember\"\nfps = 60\n"
             ),
         )
         .expect("write forge.toml");
@@ -544,7 +544,10 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
         assert_eq!(app.spinner_style, forge_workspace::SpinnerStyle::Ember);
-        assert_eq!(app.repaint_cadence, forge_workspace::RepaintCadence::from_fps(120));
+        // Deliberately not the default, or the assertion would pass on a
+        // config value that never reached the App.
+        assert_eq!(app.repaint_cadence, forge_workspace::RepaintCadence::from_fps(60));
+        assert_ne!(app.repaint_cadence, forge_workspace::RepaintCadence::default());
     }
 
     #[test]
