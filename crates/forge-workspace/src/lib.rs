@@ -81,7 +81,7 @@ pub use domain_session::DomainSession;
 pub use error::WorkspaceError;
 pub use protocol::{Command, DispatchError, SessionUpdate, TurnErrorClass};
 pub use target::{ProjectKey, SessionKey, SessionTarget};
-pub use ui::SpinnerStyle;
+pub use ui::{RepaintCadence, SpinnerStyle};
 pub use views::{AccountRow, ProjectView, SessionView};
 pub use workspace::{SessionChipInfo, SessionChipState, Workspace};
 
