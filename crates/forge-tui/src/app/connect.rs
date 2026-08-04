@@ -173,7 +173,8 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     // the picker doesn't shift if the user edits forge.toml mid-
     // session.
     let active_view = if cli.project.is_none() { ActiveView::Launchpad } else { ActiveView::Chat };
-    let spinner_style = workspace.ui_settings().spinner;
+    let ui_settings = workspace.ui_settings();
+    let spinner_style = ui_settings.spinner;
     let initial_launchpad_state = crate::app::LaunchpadState {
         selected_index: 0,
         opened_at: std::time::Instant::now(),
@@ -221,6 +222,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         spinner_last_advance_at: None,
         spinner_style,
         spinner_epoch: std::time::Instant::now(),
+        repaint_cadence: ui_settings.fps,
         spinner_picker: None,
         account_picker: None,
         tools_collapsed: true,
@@ -524,14 +526,14 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn create_app_seeds_spinner_style_from_config() {
+    async fn create_app_seeds_ui_settings_from_config() {
         let config_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("project tempdir");
         let project_path_str = project_dir.path().to_string_lossy().replace('\\', "/");
         std::fs::write(
             forge_dir(config_dir.path()).join("forge.toml"),
             format!(
-                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"~/.claude-stargate\"\n\n[ui]\nspinner = \"ember\"\n"
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"~/.claude-stargate\"\n\n[ui]\nspinner = \"ember\"\nfps = 120\n"
             ),
         )
         .expect("write forge.toml");
@@ -542,6 +544,7 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
         assert_eq!(app.spinner_style, forge_workspace::SpinnerStyle::Ember);
+        assert_eq!(app.repaint_cadence, forge_workspace::RepaintCadence::from_fps(120));
     }
 
     #[test]

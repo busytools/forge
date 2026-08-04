@@ -391,6 +391,9 @@ pub struct App {
     /// Monotonic start anchor for the time-based spinner. Frame index
     /// derives from `spinner_epoch.elapsed() / cadence_ms`.
     pub spinner_epoch: Instant,
+    /// How often the run loop repaints while something is animating.
+    /// Seeded from the config `fps` field at startup; read-only after.
+    pub repaint_cadence: forge_workspace::RepaintCadence,
     /// Open `/spinner` picker overlay state; `None` when closed.
     pub spinner_picker: Option<crate::app::spinner_picker::SpinnerPickerState>,
     /// Open `/account` picker overlay state; `None` when closed.
@@ -3401,6 +3404,7 @@ impl App {
             spinner_last_advance_at: None,
             spinner_style: forge_workspace::SpinnerStyle::default(),
             spinner_epoch: Instant::now(),
+            repaint_cadence: forge_workspace::RepaintCadence::default(),
             spinner_picker: None,
             account_picker: None,
             tools_collapsed: true,
