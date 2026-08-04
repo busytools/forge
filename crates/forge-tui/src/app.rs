@@ -88,8 +88,13 @@ use crossterm::event::{
 use futures::StreamExt;
 use std::time::{Duration, Instant};
 
-const SPINNER_FRAME_INTERVAL_NORMAL: Duration = Duration::from_millis(30);
+/// Repaint cadence under a reduced-motion preference. Fixed rather than
+/// derived from `[ui] fps`: the point of reduced motion is fewer frames,
+/// so a high frame rate must not pull it up.
 const SPINNER_FRAME_INTERVAL_REDUCED: Duration = Duration::from_millis(120);
+
+/// Loop wake interval at the default cadence.
+const LOOP_TICK: Duration = Duration::from_millis(4);
 
 /// Hard cap on candidates shown in autocomplete dropdowns
 /// (file_index, slash, subagent). The slash dropdown sees the
@@ -194,12 +199,12 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     install_panic_hook();
 
     let mut events = EventStream::new();
-    // 4ms tick → ~250 Hz nominal sleep ceiling; practical FPS during
-    // animation tops out around 120-150 once render overhead (~3ms
-    // per frame) is included. Idle state costs nothing because the
-    // render loop skips when `needs_redraw == false`; only the
-    // wakeup cadence increases (negligible on modern hardware).
-    let tick_duration = Duration::from_millis(4);
+    // Measured from the last render, so it only bounds the first wake
+    // after one: past that the sleep collapses to zero and the loop
+    // re-enters `select!` at the timer's own granularity. Idle costs
+    // nothing regardless because the render is skipped when
+    // `needs_redraw == false`.
+    let tick_duration = loop_tick(app.repaint_cadence.frame_interval());
     let mut last_render = Instant::now();
     let mut last_spinner_repaint_tick = spinner_repaint_tick(app);
 
@@ -457,15 +462,22 @@ fn spinner_repaint_tick(app: &App) -> u128 {
 }
 
 fn spinner_animation_step(elapsed: Duration, interval: Duration) -> u128 {
-    elapsed.as_millis() / interval.as_millis().max(1)
+    elapsed.as_micros() / interval.as_micros().max(1)
 }
 
 fn spinner_interval(app: &App) -> Duration {
     if app.config.prefers_reduced_motion_effective() {
         SPINNER_FRAME_INTERVAL_REDUCED
     } else {
-        SPINNER_FRAME_INTERVAL_NORMAL
+        app.repaint_cadence.frame_interval()
     }
+}
+
+/// Loop wake interval for a given frame interval. A wake cadence coarser
+/// than half the frame interval cannot land near a frame boundary, so a
+/// high `[ui] fps` tightens it; at the default it stays [`LOOP_TICK`].
+fn loop_tick(frame_interval: Duration) -> Duration {
+    LOOP_TICK.min(frame_interval / 2)
 }
 
 fn advance_spinner_frame(app: &mut App, now: Instant) {
@@ -701,6 +713,7 @@ fn finalize_deferred_submit(app: &mut App) {
 mod tests {
     use super::*;
     use crate::agent::model;
+    use forge_workspace::RepaintCadence;
 
     use crate::app::{MessageBlock, MessageRole};
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -1311,14 +1324,15 @@ mod tests {
             .map(|style| style.cadence_ms())
             .min()
             .expect("at least one style");
-        let repaint_ms = SPINNER_FRAME_INTERVAL_NORMAL.as_millis();
+        let repaint_ms = RepaintCadence::default().frame_interval().as_millis();
         assert!(
             repaint_ms <= u128::from(quickest),
             "repaint every {repaint_ms}ms would drop frames from a {quickest}ms style",
         );
         assert!(
             SPINNER_FRAME_INTERVAL_REDUCED
-                <= SPINNER_FRAME_INTERVAL_NORMAL
+                <= RepaintCadence::default()
+                    .frame_interval()
                     .max(Duration::from_millis(crate::ui::spinner::REDUCED_FLOOR_MS)),
             "reduced-motion repaint must still cover the reduced glyph floor",
         );
@@ -1330,7 +1344,7 @@ mod tests {
     /// is what keeps it phase-locked to the rendered glyphs.
     #[test]
     fn spinner_repaint_step_advances_once_per_interval() {
-        let interval = SPINNER_FRAME_INTERVAL_NORMAL;
+        let interval = RepaintCadence::default().frame_interval();
         let steps: Vec<u128> = (0..=15u64)
             .map(|tick| spinner_animation_step(Duration::from_millis(tick * 4), interval))
             .collect();
@@ -1339,6 +1353,44 @@ mod tests {
         assert_eq!(changes, 2, "60ms of 4ms ticks crosses the 30ms cadence twice, not 15 times");
         assert_eq!(steps[0], 0);
         assert_eq!(steps[15], 2, "60ms elapsed sits on step 2");
+    }
+
+    /// A frame interval that isn't a whole number of milliseconds has to
+    /// survive the gate's division, or `fps = 120` silently becomes the
+    /// 8ms/125fps that integer-ms truncation would give.
+    #[test]
+    fn repaint_step_honours_a_sub_millisecond_interval() {
+        let interval = RepaintCadence::from_fps(120).frame_interval();
+        assert_eq!(spinner_animation_step(Duration::from_micros(8332), interval), 0);
+        assert_eq!(spinner_animation_step(Duration::from_micros(8334), interval), 1);
+        assert_eq!(
+            spinner_animation_step(Duration::from_millis(1000), interval),
+            120,
+            "one second of a 120fps gate is 120 repaint steps",
+        );
+    }
+
+    /// The loop's wake tick has to be fine enough to land on a frame
+    /// boundary. At the default cadence it stays 4ms - unchanged - and
+    /// only tightens once the frame interval closes on it.
+    #[test]
+    fn loop_tick_tightens_only_when_the_frame_interval_demands_it() {
+        let tick_for = |fps| loop_tick(RepaintCadence::from_fps(fps).frame_interval());
+        assert_eq!(
+            loop_tick(RepaintCadence::default().frame_interval()),
+            LOOP_TICK,
+            "the default cadence must leave the 4ms tick exactly as it was",
+        );
+        assert_eq!(tick_for(60), LOOP_TICK);
+        assert_eq!(tick_for(120), LOOP_TICK, "8.3ms still has room for two 4ms wakes");
+        assert_eq!(tick_for(240), Duration::from_micros(2083));
+        for fps in [30, 60, 90, 120, 240] {
+            let interval = RepaintCadence::from_fps(fps).frame_interval();
+            assert!(
+                loop_tick(interval) * 2 <= interval,
+                "fps={fps}: a tick coarser than half the frame interval cannot honour it",
+            );
+        }
     }
 
     #[test]
