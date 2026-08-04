@@ -275,6 +275,9 @@ impl super::App {
     /// message quadratic - 5.8ms of a 7.98ms 200-envelope run - because
     /// appending the Nth block re-synced all N.
     pub(crate) fn sync_render_cache_message_tail(&mut self, msg_idx: usize) {
+        if self.render_cache_accounting_suspended() {
+            return;
+        }
         let previous_blocks =
             self.render_cache_slots().get(msg_idx).map(|row| row.len().saturating_sub(1));
         if !self.resize_render_cache_row(msg_idx) {
@@ -292,13 +295,28 @@ impl super::App {
         self.sync_render_cache_slot(msg_idx, block_count);
     }
 
+    /// True while a resume replay is walking history, which
+    /// `load_resume_history` closes with a rebuild. Without this every
+    /// appended message trips the shared guard into a full
+    /// O(messages x blocks) rebuild, because `push_message_tracked`
+    /// leaves the slot rows one short by design.
+    fn render_cache_accounting_suspended(&self) -> bool {
+        self.replay_in_progress
+    }
+
     pub(crate) fn ensure_render_cache_accounting(&mut self) {
+        if self.render_cache_accounting_suspended() {
+            return;
+        }
         if !self.render_cache_slots_match_messages() {
             self.rebuild_render_cache_accounting();
         }
     }
 
     pub(crate) fn sync_render_cache_slot(&mut self, msg_idx: usize, block_idx: usize) {
+        if self.render_cache_accounting_suspended() {
+            return;
+        }
         self.ensure_render_cache_accounting();
         // Catches a block-count change that never announced itself,
         // including a shrink (where indexing the row would still
@@ -389,6 +407,9 @@ impl super::App {
     }
 
     pub(crate) fn sync_render_cache_message(&mut self, msg_idx: usize) {
+        if self.render_cache_accounting_suspended() {
+            return;
+        }
         self.ensure_render_cache_accounting();
         let Some(msg) = self.messages().get(msg_idx) else {
             self.rebuild_render_cache_accounting();
@@ -407,6 +428,9 @@ impl super::App {
     }
 
     pub(crate) fn refresh_tail_message_cache_protection(&mut self) {
+        if self.render_cache_accounting_suspended() {
+            return;
+        }
         self.ensure_render_cache_accounting();
         let next_tail = self.protected_streaming_message_idx();
         if self.render_cache_tail_msg_idx() == next_tail {
