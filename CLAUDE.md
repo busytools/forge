@@ -312,6 +312,27 @@ contract with that binary, nothing more.
       or `agent_sdk_version` slips through. Treat any non-empty scan
       output as a drift signal; the fix is to extend the recursive
       normaliser, not to silence the scan.
+17. **A scoped change must not alter anything else observable.** A
+    performance fix changes only speed. A UI change changes only that
+    surface. If the scoped change *requires* touching behaviour
+    elsewhere, that part is a separate PR, presented on its own terms
+    with the behaviour effect as the headline - not a side note in the
+    original. **Splitting it into a second commit is not sufficient**:
+    that reads as disclosure while still bundling the decision.
+
+    At plan time, state what the change may and may not alter. At
+    review time, ask what the user would SEE that is different, and
+    treat any non-empty answer on a perf or refactor change as a
+    blocker until it is split out and decided on its own.
+
+    Worked example: #543 fixed a 6.5s startup stall in two commits.
+    The first suspended internal accounting during resume replay for a
+    3x, provably identical final state, nothing observable. The second
+    gave the retention budget 12.5% slack for a further 6x - and
+    retained ~780 more messages of scrollback and moved the
+    history-hidden marker. The second was dropped, not deferred. It
+    was small and arguably an improvement; the scope was "make startup
+    faster" and it changed scrollback.
 
 ## Style + Rust idiom
 
