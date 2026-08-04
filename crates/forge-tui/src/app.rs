@@ -225,6 +225,12 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // Measured on the select arm because that is now the only path
         // terminal events take.
         let mut input_ms = 0.0;
+        // Accumulates across both apply sites - the select arm below
+        // and the drain loop - because the first update of a burst
+        // lands on the arm while the loop is parked on `recv`, and a
+        // slow one there blocks the loop exactly as it would in the
+        // drain.
+        let mut updates_ms = 0.0;
         tokio::select! {
             Some(Ok(event)) = events.next() => {
                 let input_start = crate::perf::phase_start();
@@ -232,7 +238,9 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
                 input_ms = crate::perf::phase_ms(input_start);
             }
             Some(update) = app.update_rx.recv() => {
+                let update_start = crate::perf::phase_start();
                 events::apply_session_update(app, update);
+                updates_ms = crate::perf::phase_ms(update_start);
             }
             shutdown = &mut os_shutdown => {
                 if let Err(err) = shutdown {
@@ -254,7 +262,6 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // here supplies a noop waker, which strands its wake thread on
         // the internal reader lock and stalls this loop for tens of ms.
         let drain_start = crate::perf::phase_start();
-        let mut updates_ms = 0.0;
         while let Ok(update) = app.update_rx.try_recv() {
             let update_start = crate::perf::phase_start();
             events::apply_session_update(app, update);
