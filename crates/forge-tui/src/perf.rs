@@ -42,7 +42,10 @@
 //! a per-frame record - it carries no `metric`, and its percentiles
 //! are bucket upper bounds. Take frame cost from its `drain` /
 //! `render` split rather than from `frame_total`, which brackets
-//! `terminal.draw` alone and has never included the drain phase.
+//! `terminal.draw` alone and has never included the drain phase. That
+//! split can still understate a pass that blocked applying an update
+//! on the select arm, which sits outside `drain`; `updates` is the
+//! phase that counts both apply sites.
 //!
 //! Always pin `run_id` too - the file is append-only across restarts
 //! (#483), so an unfiltered query measures several binaries at once.
@@ -1056,10 +1059,12 @@ pub fn phase_ms(_start: Option<std::time::Instant>) -> f64 {
     0.0
 }
 
-/// What one pass of the app loop cost. `updates` is a slice of
-/// `drain`; `input` is the select arm's terminal-event handling and
-/// sits outside it. `render_ms` is `None` on a pass that drained
-/// without drawing.
+/// What one pass of the app loop cost. `updates` totals every
+/// `apply_session_update` call in the pass, the select arm's included,
+/// so it is not a slice of `drain` - an update applied on the arm
+/// lands outside the drain phase entirely. `input` is the select arm's
+/// terminal-event handling. `render_ms` is `None` on a pass that
+/// drained without drawing.
 pub struct IterationCost {
     pub drain_ms: f64,
     pub input_ms: f64,
