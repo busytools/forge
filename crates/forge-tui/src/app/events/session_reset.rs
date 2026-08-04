@@ -332,6 +332,7 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
         i += 1;
     }
     app.replay_in_progress = false;
+    app.rebuild_render_cache_accounting();
     // #289: replay's orphan-marking path (#277 Bug 3b) leaves the
     // section populated with all-terminal entries. The live wire
     // path drains via `clear_*_if_all_terminal` at each status
@@ -419,6 +420,44 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The walk suspends render-cache accounting and rebuilds it once
+    /// at the end, so the accounting it leaves behind has to be
+    /// indistinguishable from one maintained per message. Rebuilding a
+    /// second time must therefore be a no-op on every total the
+    /// eviction path reads.
+    #[test]
+    fn replay_leaves_render_cache_accounting_in_rebuilt_state() {
+        let mut app = App::test_default();
+        let history: Vec<Message> = (0..24)
+            .map(|i| {
+                if i % 3 == 0 {
+                    historical_user_text(&format!("prompt {i}"))
+                } else {
+                    historical_assistant(&format!("reply {i}"))
+                }
+            })
+            .collect();
+
+        load_resume_history(&mut app, &history);
+
+        let slots = app.render_cache_slots().to_vec();
+        let total = app.render_cache_total_bytes();
+        let protected = app.render_cache_protected_bytes();
+        let evictable = app.render_cache_evictable().cloned();
+        assert_eq!(
+            slots.len(),
+            app.messages().len(),
+            "a suspended walk must not leave the slot rows short of the message list",
+        );
+
+        app.rebuild_render_cache_accounting();
+
+        assert_eq!(app.render_cache_slots(), slots.as_slice());
+        assert_eq!(app.render_cache_total_bytes(), total);
+        assert_eq!(app.render_cache_protected_bytes(), protected);
+        assert_eq!(app.render_cache_evictable(), evictable.as_ref());
     }
 
     #[test]
