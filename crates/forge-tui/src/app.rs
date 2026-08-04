@@ -98,8 +98,8 @@ const SPINNER_FRAME_INTERVAL_REDUCED: Duration = Duration::from_millis(120);
 /// scale: the tab-title pulse alternates two glyphs every ten steps and
 /// the inspector scrollbar thumb breathes on a four-step cycle, so past
 /// roughly 15Hz they stop reading as motion and start reading as
-/// flicker. The visible spinner glyphs are unaffected either way - they
-/// derive from the epoch at their own `SpinnerStyle::cadence_ms`.
+/// flicker. Also the coarsest gate `[ui] fps` may produce, since unlike
+/// a glyph cadence this counter is not clamped to what repaints allow.
 const PULSE_INTERVAL: Duration = Duration::from_millis(30);
 
 /// Loop wake interval, tightened by [`loop_tick`] above 120fps.
@@ -1333,32 +1333,24 @@ mod tests {
         assert!(any_background_activity(&app), "a Running session spins, so the gate ticks");
     }
 
-    /// The repaint gate must be no coarser than the quickest thing it
-    /// gates, or an animation frame lands between two repaints and the
-    /// spinner visibly stutters. Two producers: the per-style glyph
-    /// cadence and the `spinner_frame` counter behind the tab title.
+    /// The gate must be no coarser than the unclamped animations. Glyph
+    /// styles are not among them - they coarsen to fit, guarded in
+    /// forge-workspace - but the pulse counter steps on wall clock and
+    /// is never clamped, so a coarser gate really would drop its frames.
+    /// Holds at every accepted fps, not just the default, because the
+    /// interval is capped at the pulse step.
     #[test]
-    fn spinner_repaint_interval_is_no_coarser_than_any_animation() {
-        let quickest = forge_workspace::SpinnerStyle::ALL_STYLES
-            .iter()
-            .map(|style| style.cadence_ms())
-            .min()
-            .expect("at least one style");
-        let repaint = RepaintCadence::default().frame_interval();
-        let repaint_ms = repaint.as_millis();
-        assert!(
-            repaint_ms <= u128::from(quickest),
-            "repaint every {repaint_ms}ms would drop frames from a {quickest}ms style",
-        );
-        assert!(
-            repaint <= PULSE_INTERVAL,
-            "a gate coarser than the pulse step would drop tab-title / thumb frames",
-        );
+    fn repaint_gate_covers_every_unclamped_animation() {
+        for fps in [30, 60, 90, 120, 240] {
+            let repaint = RepaintCadence::from_fps(fps).frame_interval();
+            assert!(
+                repaint <= PULSE_INTERVAL,
+                "fps={fps}: a {repaint:?} gate would drop tab-title / thumb frames",
+            );
+        }
         assert!(
             SPINNER_FRAME_INTERVAL_REDUCED
-                <= RepaintCadence::default()
-                    .frame_interval()
-                    .max(Duration::from_millis(crate::ui::spinner::REDUCED_FLOOR_MS)),
+                <= Duration::from_millis(crate::ui::spinner::REDUCED_FLOOR_MS),
             "reduced-motion repaint must still cover the reduced glyph floor",
         );
     }
