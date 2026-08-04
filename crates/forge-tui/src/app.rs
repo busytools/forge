@@ -88,12 +88,21 @@ use crossterm::event::{
 use futures::StreamExt;
 use std::time::{Duration, Instant};
 
-/// Repaint cadence under a reduced-motion preference. Fixed rather than
-/// derived from `[ui] fps`: the point of reduced motion is fewer frames,
-/// so a high frame rate must not pull it up.
+/// Repaint and pulse cadence under a reduced-motion preference. Fixed
+/// rather than derived from `[ui] fps`: the point of reduced motion is
+/// fewer frames, so a high frame rate must not pull it up.
 const SPINNER_FRAME_INTERVAL_REDUCED: Duration = Duration::from_millis(120);
 
-/// Loop wake interval at the default cadence.
+/// Step interval for [`App::spinner_frame`], pinned rather than
+/// following `[ui] fps`. Its two consumers are not spinners and do not
+/// scale: the tab-title pulse alternates two glyphs every ten steps and
+/// the inspector scrollbar thumb breathes on a four-step cycle, so past
+/// roughly 15Hz they stop reading as motion and start reading as
+/// flicker. The visible spinner glyphs are unaffected either way - they
+/// derive from the epoch at their own `SpinnerStyle::cadence_ms`.
+const PULSE_INTERVAL: Duration = Duration::from_millis(30);
+
+/// Loop wake interval, tightened by [`loop_tick`] above 120fps.
 const LOOP_TICK: Duration = Duration::from_millis(4);
 
 /// Hard cap on candidates shown in autocomplete dropdowns
@@ -321,9 +330,9 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         if is_animating {
             advance_spinner_frame(app, Instant::now());
             tab_title::update_tab_title(&app.status, app.spinner_frame, app.cwd());
-            // The loop ticks every 4ms; the animation only moves every
-            // 30ms, so repainting per tick redraws the same glyph ~8
-            // times over.
+            // The loop wakes more often than the frame interval, so
+            // repainting per wake would redraw an unchanged frame
+            // several times over.
             let tick = spinner_repaint_tick(app);
             if tick != last_spinner_repaint_tick {
                 last_spinner_repaint_tick = tick;
@@ -455,21 +464,32 @@ fn any_background_activity(app: &App) -> bool {
 /// Which animation step the spinner epoch is on. Rendered glyphs divide
 /// that same epoch by their style cadence, so gating repaints on this
 /// cannot drift against them the way a separately-accumulated counter
-/// would; `spinner_interval` is no coarser than the quickest cadence, so
+/// would; `repaint_interval` is no coarser than the quickest cadence, so
 /// no animated surface can change between two consecutive ticks.
 fn spinner_repaint_tick(app: &App) -> u128 {
-    spinner_animation_step(app.spinner_epoch.elapsed(), spinner_interval(app))
+    spinner_animation_step(app.spinner_epoch.elapsed(), repaint_interval(app))
 }
 
 fn spinner_animation_step(elapsed: Duration, interval: Duration) -> u128 {
     elapsed.as_micros() / interval.as_micros().max(1)
 }
 
-fn spinner_interval(app: &App) -> Duration {
+/// Interval between repaints while animating - the `[ui] fps` setting.
+fn repaint_interval(app: &App) -> Duration {
     if app.config.prefers_reduced_motion_effective() {
         SPINNER_FRAME_INTERVAL_REDUCED
     } else {
         app.repaint_cadence.frame_interval()
+    }
+}
+
+/// Interval between [`App::spinner_frame`] steps. Deliberately not the
+/// repaint interval - see [`PULSE_INTERVAL`].
+fn pulse_interval(app: &App) -> Duration {
+    if app.config.prefers_reduced_motion_effective() {
+        SPINNER_FRAME_INTERVAL_REDUCED
+    } else {
+        PULSE_INTERVAL
     }
 }
 
@@ -481,7 +501,7 @@ fn loop_tick(frame_interval: Duration) -> Duration {
 }
 
 fn advance_spinner_frame(app: &mut App, now: Instant) {
-    let interval = spinner_interval(app);
+    let interval = pulse_interval(app);
 
     match app.spinner_last_advance_at {
         Some(last_advance) if now.duration_since(last_advance) < interval => {}
@@ -1324,10 +1344,15 @@ mod tests {
             .map(|style| style.cadence_ms())
             .min()
             .expect("at least one style");
-        let repaint_ms = RepaintCadence::default().frame_interval().as_millis();
+        let repaint = RepaintCadence::default().frame_interval();
+        let repaint_ms = repaint.as_millis();
         assert!(
             repaint_ms <= u128::from(quickest),
             "repaint every {repaint_ms}ms would drop frames from a {quickest}ms style",
+        );
+        assert!(
+            repaint <= PULSE_INTERVAL,
+            "a gate coarser than the pulse step would drop tab-title / thumb frames",
         );
         assert!(
             SPINNER_FRAME_INTERVAL_REDUCED
@@ -1338,21 +1363,29 @@ mod tests {
         );
     }
 
-    /// Eight 4ms loop ticks span one 30ms animation step, so the gate
-    /// must let exactly one repaint through rather than eight. Reading
+    /// Several loop wakes span one animation step, so the gate must let
+    /// one repaint through per step rather than one per wake. Reading
     /// the step off the epoch (rather than accumulating per advance)
-    /// is what keeps it phase-locked to the rendered glyphs.
+    /// is what keeps it phase-locked to the rendered glyphs. Stated as a
+    /// property of the live cadence, so it survives a default change.
     #[test]
     fn spinner_repaint_step_advances_once_per_interval() {
         let interval = RepaintCadence::default().frame_interval();
-        let steps: Vec<u128> = (0..=15u64)
-            .map(|tick| spinner_animation_step(Duration::from_millis(tick * 4), interval))
-            .collect();
+        let tick = loop_tick(interval);
+        let span = interval * 4;
+        let wakes = u32::try_from(span.as_micros() / tick.as_micros()).expect("bounded by cadence");
+        let steps: Vec<u128> =
+            (0..=wakes).map(|wake| spinner_animation_step(tick * wake, interval)).collect();
 
         let changes = steps.windows(2).filter(|w| w[0] != w[1]).count();
-        assert_eq!(changes, 2, "60ms of 4ms ticks crosses the 30ms cadence twice, not 15 times");
+        let last = usize::try_from(*steps.last().expect("at least one wake")).expect("small");
         assert_eq!(steps[0], 0);
-        assert_eq!(steps[15], 2, "60ms elapsed sits on step 2");
+        assert_eq!(changes, last, "the step must advance once per interval crossed, never twice");
+        assert!(
+            steps.len() > changes * 2,
+            "{} wakes over {changes} steps - the gate is not suppressing repaints between steps",
+            steps.len(),
+        );
     }
 
     /// A frame interval that isn't a whole number of milliseconds has to
@@ -1371,16 +1404,17 @@ mod tests {
     }
 
     /// The loop's wake tick has to be fine enough to land on a frame
-    /// boundary. At the default cadence it stays 4ms - unchanged - and
-    /// only tightens once the frame interval closes on it.
+    /// boundary. `loop_tick` only ever tightens it, so the tick tracks
+    /// whichever of the two is finer - at 120 and below that is still
+    /// the 4ms constant.
     #[test]
     fn loop_tick_tightens_only_when_the_frame_interval_demands_it() {
         let tick_for = |fps| loop_tick(RepaintCadence::from_fps(fps).frame_interval());
-        assert_eq!(
-            loop_tick(RepaintCadence::default().frame_interval()),
-            LOOP_TICK,
-            "the default cadence must leave the 4ms tick exactly as it was",
+        assert!(
+            loop_tick(RepaintCadence::default().frame_interval()) <= LOOP_TICK,
+            "the tick may tighten with the default cadence but must never loosen",
         );
+        assert_eq!(tick_for(30), LOOP_TICK);
         assert_eq!(tick_for(60), LOOP_TICK);
         assert_eq!(tick_for(120), LOOP_TICK, "8.3ms still has room for two 4ms wakes");
         assert_eq!(tick_for(240), Duration::from_micros(2083));
@@ -1391,6 +1425,25 @@ mod tests {
                 "fps={fps}: a tick coarser than half the frame interval cannot honour it",
             );
         }
+    }
+
+    /// `[ui] fps` must not reach the pulse counter. Its two consumers
+    /// are a two-glyph tab-title alternation and a four-step thumb
+    /// cycle, both tuned to the pinned step - driven off the repaint
+    /// interval instead, 120fps blinks them at 12Hz and 30Hz.
+    #[test]
+    fn a_high_frame_rate_does_not_speed_up_the_pulse_counter() {
+        let mut app = App::test_default();
+        app.repaint_cadence = RepaintCadence::from_fps(240);
+        let base = Instant::now();
+
+        advance_spinner_frame(&mut app, base);
+        assert_eq!(app.spinner_frame, 1);
+        // A repaint-driven counter would have stepped twice by now.
+        advance_spinner_frame(&mut app, base + Duration::from_millis(10));
+        assert_eq!(app.spinner_frame, 1, "the pulse must not follow [ui] fps");
+        advance_spinner_frame(&mut app, base + PULSE_INTERVAL);
+        assert_eq!(app.spinner_frame, 2, "it steps on its own pinned interval");
     }
 
     #[test]

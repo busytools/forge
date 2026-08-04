@@ -24,26 +24,32 @@ pub struct UiSettings {
     #[serde(default, alias = "launchpad_spinner", deserialize_with = "deserialize_lenient")]
     pub spinner: SpinnerStyle,
     /// Target repaint rate while something on screen is animating.
-    /// Absent, out-of-range or non-integer values resolve to today's
-    /// cadence instead of failing the load (see `deserialize_fps`).
+    /// Absent, out-of-range or non-integer values resolve to the
+    /// default rather than failing the load (see `deserialize_fps`).
     #[serde(default, deserialize_with = "deserialize_fps")]
     pub fps: RepaintCadence,
 }
 
-/// Repaint interval when `[ui] fps` is absent - one repaint per 30ms,
-/// today's cadence, so an unset key changes nothing.
-const DEFAULT_REPAINT_INTERVAL: Duration = Duration::from_millis(30);
+/// Repaint rate when `[ui] fps` is absent.
+const DEFAULT_FPS: u32 = 120;
+
+/// Coarsest interval any `[ui] fps` can produce, tied to the quickest
+/// `SpinnerStyle::cadence_ms` - a repaint gate coarser than the
+/// animation it gates drops glyph frames. So the floor of [`FPS_RANGE`]
+/// is where the setting stops making a difference, not where motion
+/// starts degrading.
+const COARSEST_REPAINT_INTERVAL: Duration = Duration::from_millis(30);
 
 /// Accepted `[ui] fps` values. The ceiling is the loop's own structural
-/// limit (a 4ms wake tick); below the floor the value is indistinguishable
-/// from the default anyway, because the repaint gate never goes coarser
-/// than [`DEFAULT_REPAINT_INTERVAL`].
+/// limit (it tops out near 212fps in practice, and the on-screen fps
+/// readout clamps its own average at 240); the floor is where
+/// [`COARSEST_REPAINT_INTERVAL`] takes over.
 const FPS_RANGE: RangeInclusive<u32> = 30..=240;
 
 /// How often forge repaints while an animation is running, from the
 /// `[ui] fps` key. Stored as the frame interval rather than the frame
-/// rate so the default is exactly today's 30ms instead of a rounded
-/// 33 fps.
+/// rate, so a rate that isn't a whole number of milliseconds keeps its
+/// microseconds instead of rounding to a different rate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RepaintCadence {
     interval: Duration,
@@ -51,7 +57,7 @@ pub struct RepaintCadence {
 
 impl Default for RepaintCadence {
     fn default() -> Self {
-        Self { interval: DEFAULT_REPAINT_INTERVAL }
+        Self::from_fps(DEFAULT_FPS)
     }
 }
 
@@ -59,10 +65,9 @@ impl RepaintCadence {
     /// Clamp `fps` into the accepted 30-240 range and convert it to a
     /// frame interval, warning when the value had to move.
     ///
-    /// The result never exceeds the 30ms default, which is what keeps
-    /// the repaint gate at least as fine as the quickest spinner
-    /// cadence - a gate coarser than the animation it gates drops
-    /// glyph frames.
+    /// The result never exceeds 30ms, which is what keeps the repaint
+    /// gate at least as fine as the quickest spinner cadence at any
+    /// setting.
     pub fn from_fps(fps: u32) -> Self {
         let clamped = fps.clamp(*FPS_RANGE.start(), *FPS_RANGE.end());
         if clamped != fps {
@@ -74,7 +79,7 @@ impl RepaintCadence {
             );
         }
         let interval = Duration::from_micros(1_000_000 / u64::from(clamped));
-        Self { interval: interval.min(DEFAULT_REPAINT_INTERVAL) }
+        Self { interval: interval.min(COARSEST_REPAINT_INTERVAL) }
     }
 
     /// Interval between repaints while animating.
@@ -334,10 +339,20 @@ mod tests {
     }
 
     #[test]
-    fn absent_fps_key_keeps_todays_cadence() {
+    fn absent_fps_key_defaults_to_120() {
         let parsed: UiSettings = toml::from_str("spinner = \"ember\"\n").expect("parse");
         assert_eq!(parsed.fps, RepaintCadence::default());
-        assert_eq!(parsed.fps.frame_interval(), Duration::from_millis(30));
+        assert_eq!(parsed.fps, RepaintCadence::from_fps(120));
+    }
+
+    /// The default has to go through the same microsecond arithmetic as
+    /// an explicit value, or 120 quietly becomes the 8ms/125fps that
+    /// whole-millisecond rounding would give.
+    #[test]
+    fn the_default_interval_is_not_rounded_to_whole_milliseconds() {
+        let interval = RepaintCadence::default().frame_interval();
+        assert_eq!(interval, Duration::from_micros(8333));
+        assert_ne!(interval, Duration::from_millis(8), "8ms would be 125fps, not 120");
     }
 
     #[test]
@@ -353,8 +368,11 @@ mod tests {
     fn out_of_range_fps_clamps_instead_of_failing() {
         let high: UiSettings = toml::from_str("fps = 100000\n").expect("high parses");
         assert_eq!(high.fps, RepaintCadence::from_fps(240));
+        // Clamps to the 30fps floor, then the coarsest-interval cap
+        // rounds that 33.3ms back to 30ms.
         let low: UiSettings = toml::from_str("fps = 0\n").expect("zero parses");
         assert_eq!(low.fps.frame_interval(), Duration::from_millis(30));
+        assert_eq!(low.fps, RepaintCadence::from_fps(30));
         let negative: UiSettings = toml::from_str("fps = -5\n").expect("negative parses");
         assert_eq!(negative.fps, RepaintCadence::default());
     }
