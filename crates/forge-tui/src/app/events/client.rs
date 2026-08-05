@@ -1157,6 +1157,13 @@ fn apply_session_update_key_renamed(app: &mut App, from: &SessionKey, to: Sessio
     }
     if app.active_session_key.as_ref() == Some(from) {
         app.active_session_key = Some(to);
+        // The destination may already have connected - that race is
+        // what the `already_under_to` branch above handles - and then
+        // no further `Connected` arrives to clear the `Connecting`
+        // this session's spawn derived, leaving the input box replaced
+        // by the connecting placeholder until the user switches away
+        // and back.
+        app.refresh_status_from_active_lifecycle();
     }
     app.needs_redraw = true;
 }

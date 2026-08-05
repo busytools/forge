@@ -720,30 +720,38 @@ impl App {
         }
     }
 
+    /// Map a session's lifecycle state to the App-level status, so a
+    /// background turn that completed while the user was away doesn't
+    /// leave a stale `Thinking` / `Running` on the bucket they land on.
+    pub(crate) fn status_for_lifecycle(
+        lifecycle: crate::app::session::SessionLifecycleState,
+    ) -> AppStatus {
+        use crate::app::session::SessionLifecycleState as L;
+        match lifecycle {
+            L::Spawning => AppStatus::Connecting,
+            L::Running => AppStatus::Running,
+            L::Sleeping | L::Idle | L::Attention | L::AuthRequired | L::Failed | L::LoggedOut => {
+                AppStatus::Ready
+            }
+        }
+    }
+
+    /// Re-derive `status` from whichever bucket is active now. Every
+    /// path that moves focus owes this call: the destination carries
+    /// its own lifecycle, and the events that would otherwise correct
+    /// the status only fire for the session they belong to.
+    pub(crate) fn refresh_status_from_active_lifecycle(&mut self) {
+        let Some(lifecycle) = self.active_session().map(|session| session.lifecycle_state) else {
+            return;
+        };
+        self.status = Self::status_for_lifecycle(lifecycle);
+    }
+
     /// Switch which session the renderer reads from. State on both
     /// sides is preserved (in-memory buckets in `sessions`); the
     /// next paint reflects the new active session. No-op if `key`
     /// is already active or unknown.
     pub fn switch_active_session(&mut self, key: forge_workspace::SessionKey) {
-        // Local helper: map a session's lifecycle state to the
-        // App-level status enum so a background turn that completed
-        // while the user was away doesn't leave a stale `Thinking` /
-        // `Running` status on switch-in.
-        fn status_for_lifecycle(
-            lifecycle: crate::app::session::SessionLifecycleState,
-        ) -> AppStatus {
-            use crate::app::session::SessionLifecycleState as L;
-            match lifecycle {
-                L::Spawning => AppStatus::Connecting,
-                L::Running => AppStatus::Running,
-                L::Sleeping
-                | L::Idle
-                | L::Attention
-                | L::AuthRequired
-                | L::Failed
-                | L::LoggedOut => AppStatus::Ready,
-            }
-        }
         if self.active_session_key.as_ref() == Some(&key) {
             return;
         }
@@ -775,7 +783,7 @@ impl App {
             bucket.failed_turn = None;
         }
         self.active_session_key = Some(key);
-        self.status = status_for_lifecycle(incoming_lifecycle);
+        self.status = Self::status_for_lifecycle(incoming_lifecycle);
         // Update terminal/tab title immediately on switch so the host
         // terminal reflects the project the user just selected. The
         // render-loop's tab-title call (in `app::run`) only fires
@@ -5288,6 +5296,92 @@ mod tests {
             app.sessions.get(&dest_key).expect("dest bucket").session_usage.context_usage_in_flight,
             "switch_active_session must call request_context_usage_refresh on the new active \
              (otherwise the launchpad-click bottom-panel bars sit empty)",
+        );
+    }
+
+    /// Switching into a session that is still spawning derives
+    /// `Connecting`, which renders the "Connecting to Claude Code..."
+    /// placeholder in place of the input box. Nothing used to clear
+    /// it when that session finished connecting, so the box stayed
+    /// gone until the user switched away and back and the derivation
+    /// re-ran.
+    #[test]
+    fn connecting_status_clears_once_the_switched_to_session_connects() {
+        let mut app = App::test_default();
+        let _outbox = app.install_testing_stub();
+        let key = forge_workspace::SessionKey::from_str_for_test("still-spawning");
+        let mut bucket = crate::app::session::UiSession::new(key.clone());
+        bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Spawning;
+        app.sessions.insert(key.clone(), bucket);
+
+        app.switch_active_session(key.clone());
+        assert_eq!(
+            app.status,
+            AppStatus::Connecting,
+            "switching into a spawning session shows the connecting placeholder",
+        );
+
+        crate::app::events::apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::Connected {
+                key: key.clone(),
+                session_id: forge_primitives::SessionId::new("still-spawning"),
+                cwd: "/test".to_owned(),
+                current_model: forge_primitives::CurrentModel::new("m", "M", "Model M"),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+            },
+        );
+
+        assert_eq!(
+            app.status,
+            AppStatus::Ready,
+            "the session connected, so the input box has to come back",
+        );
+    }
+
+    /// The same symptom via the rename race: a `Connected` for the
+    /// real key lands before `KeyRenamed`, so the rename finds the
+    /// destination bucket already present, drops the synthetic the
+    /// user is sitting on and moves focus to the real one. That
+    /// bucket already connected, so no further `Connected` arrives to
+    /// clear the `Connecting` the switch derived.
+    #[test]
+    fn connecting_status_clears_when_the_rename_moves_focus_to_a_connected_bucket() {
+        let mut app = App::test_default();
+        let _outbox = app.install_testing_stub();
+        let synthetic = forge_workspace::SessionKey::from_str_for_test("__spawn_infra__");
+        let real = forge_workspace::SessionKey::from_str_for_test("infra-real-session");
+
+        let mut spawning = crate::app::session::UiSession::new(synthetic.clone());
+        spawning.lifecycle_state = crate::app::session::SessionLifecycleState::Spawning;
+        app.sessions.insert(synthetic.clone(), spawning);
+        // The raced-ahead Connected already seeded the real bucket.
+        let mut connected = crate::app::session::UiSession::new(real.clone());
+        connected.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+        app.sessions.insert(real.clone(), connected);
+
+        app.switch_active_session(synthetic.clone());
+        assert_eq!(app.status, AppStatus::Connecting, "still spawning at switch-in");
+
+        crate::app::events::apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::KeyRenamed {
+                from: synthetic.clone(),
+                to: real.clone(),
+            },
+        );
+
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&real),
+            "the rename moves focus to the real bucket",
+        );
+        assert_eq!(
+            app.status,
+            AppStatus::Ready,
+            "focus moved to a bucket that is already connected, so the input box must come back",
         );
     }
 
