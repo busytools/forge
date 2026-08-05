@@ -994,6 +994,10 @@ impl Workspace {
                 accounts.env(&account_key).cloned().unwrap_or_default(),
             )
         };
+        // One account serves many projects, so the project layer is
+        // applied here - where the target and the account are both
+        // known - rather than folded into the account at load.
+        let session_env = self.session_env_for(&target, &account_env);
         let attached_proxy = if account_proxy_enabled { self.proxy.clone() } else { None };
 
         // Hoist DomainSession creation to BEFORE Agent::spawn so the
@@ -1090,7 +1094,7 @@ impl Workspace {
             Some(account_key.0.clone()),
             attached_proxy,
             vec![("forge".to_owned(), forge_server)],
-            account_env,
+            session_env,
         );
         // Project-rooted targets (`Default` / `Named`) resume the
         // project's lead session when the on-disk catalog has one,
@@ -2131,6 +2135,66 @@ impl Workspace {
                     |p| p.accounts.clone(),
                 ),
         }
+    }
+
+    /// The project a spawn under `target` belongs to, for resolving
+    /// that project's `[projects.<name>.env]`.
+    ///
+    /// Deliberately not [`Self::project_accounts_for`]'s resolution:
+    /// that one falls back to the default project on a miss, which is
+    /// right for an account pin and wrong for env, where it would hand
+    /// one project's declared keys to a session in another. It also
+    /// resolves a session through `session_cwd_for`, which misses
+    /// every worker (the catalog holds no worker rows); `cwd_for_session`
+    /// composes a worker's dir from the live registry instead.
+    fn project_name_for_target(&self, target: &SessionTarget) -> Option<String> {
+        match target {
+            SessionTarget::Default => Some(self.config.default_project().name.clone()),
+            SessionTarget::Named(name) => {
+                self.find_project_by_name(name).ok().map(|p| p.name.clone())
+            }
+            SessionTarget::Session(key) => {
+                self.cwd_for_session(key).and_then(|cwd| self.project_name_for_path(&cwd))
+            }
+            SessionTarget::FreshInProject { project_key, .. } => self
+                .config
+                .projects
+                .iter()
+                .find(|p| {
+                    forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                        &p.path.to_string_lossy(),
+                    )) == project_key.as_str()
+                })
+                .map(|p| p.name.clone()),
+        }
+    }
+
+    /// Env for a spawn under `target` on the picked account: the
+    /// account's merged `[env]` + `[accounts.env]` with the target
+    /// project's `[projects.<name>.env]` layered on top.
+    ///
+    /// An unresolved target keeps the account env rather than
+    /// borrowing the default project's. That case warns when any
+    /// project declares env at all, because the symptom otherwise is
+    /// a session silently missing keys its project declared.
+    fn session_env_for(
+        &self,
+        target: &SessionTarget,
+        account_env: &std::collections::HashMap<String, String>,
+    ) -> std::collections::HashMap<String, String> {
+        let Some(name) = self.project_name_for_target(target) else {
+            if self.config.projects.iter().any(|p| !p.env.is_empty()) {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    event_name = "session_env_project_unresolved",
+                    ?target,
+                    "spawn target resolves to no project, so no [projects.<name>.env] is \
+                     applied; the session gets only the account env",
+                );
+            }
+            return account_env.clone();
+        };
+        self.config.session_env(&name, account_env)
     }
 
     /// Look up a project by `name` from `forge.toml`. Returns
@@ -5695,6 +5759,7 @@ impl Workspace {
             accounts: vec!["acct-a".to_owned()],
             auto_start: false,
             static_workers: static_workers.to_vec(),
+            env: std::collections::HashMap::new(),
         });
     }
 
@@ -11943,6 +12008,53 @@ mod git_scan_cwd_tests {
         assert_eq!(
             ws.cwd_for_session(&session_key).as_deref(),
             project_root.join(".claude/worktrees/pyth-review-fixes").to_str(),
+        );
+    }
+
+    /// A worker has no catalog row, so `project_accounts_for`'s
+    /// `session_cwd_for` resolution misses it and falls back to the
+    /// default project. Env must not inherit that fallback: a worker
+    /// resolves to the project whose worktree it runs in.
+    #[test]
+    fn project_name_for_target_resolves_a_worker_session_to_its_project() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let (_root, session_key) = seed_project_and_worker(
+            &ws,
+            "granite-backend",
+            "/tmp/test-granite-env",
+            "pyth-review-fixes",
+            "worker-uuid-env",
+            true,
+        );
+        assert!(
+            ws.session_cwd_for(&session_key).is_none(),
+            "precondition: the catalog holds no worker rows",
+        );
+        assert_eq!(
+            ws.project_name_for_target(&SessionTarget::Session(session_key)).as_deref(),
+            Some("granite-backend"),
+        );
+    }
+
+    /// An unresolvable target must keep the account env rather than
+    /// borrowing whichever project happens to be the default - that
+    /// would hand one project's declared keys to another's session.
+    #[test]
+    fn session_env_for_unresolved_target_keeps_the_account_env() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let account_env: std::collections::HashMap<String, String> =
+            [("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned())]
+                .into_iter()
+                .collect();
+        let orphan = SessionTarget::Session(SessionKey::from_session_id("not-a-known-session"));
+        assert!(
+            ws.project_name_for_target(&orphan).is_none(),
+            "precondition: target resolves to no project"
+        );
+        assert_eq!(
+            ws.session_env_for(&orphan, &account_env),
+            account_env,
+            "unresolved target -> account env verbatim",
         );
     }
 
