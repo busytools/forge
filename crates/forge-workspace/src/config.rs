@@ -797,7 +797,10 @@ BUSYMAIL_TOKEN = "forge-only-secret"
     }
 
     /// Two projects each declaring the SAME key on one account. Each
-    /// must see its own value, not whichever loaded last.
+    /// must see its own value, not whichever loaded last. This does
+    /// NOT substitute for the leak test above - both projects still
+    /// win through the project layer even when the shared account
+    /// snapshot is polluted, so this one passes while that one fails.
     #[test]
     fn each_project_sees_its_own_value_for_a_shared_key() {
         let dir = tempdir().expect("tempdir");
