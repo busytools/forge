@@ -91,7 +91,7 @@ async fn spawn_logs_key_names_and_never_a_declared_value() {
     }
 
     let log = capture.text();
-    assert!(log.contains("session_env_project_applied"), "the per-spawn record is emitted: {log}",);
+    assert!(log.contains("session_env_project_applied"), "the per-spawn record is emitted: {log}");
     assert!(log.contains("BUSYMAIL_TOKEN"), "key names are recorded: {log}");
     assert!(
         !log.contains(TOKEN),

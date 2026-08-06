@@ -76,10 +76,11 @@ impl AgentHandle {
         self.bridge.display_name()
     }
 
-    /// The forge.toml env this handle will stamp onto its `claude`
-    /// subprocess. Test-only: it exists so an integration test can
-    /// observe what a spawn actually receives, rather than what the
-    /// resolution helper returned.
+    /// The bridge's resolved forge.toml env. Test-only, and one hop
+    /// short of what the child receives - the subprocess also gets
+    /// `CLAUDE_CONFIG_DIR`, the proxy trio and the SDK version. It
+    /// exists so a test can observe the map a spawn carries rather
+    /// than what the resolution helper returned.
     #[cfg(any(test, feature = "testing"))]
     pub fn env(&self) -> std::collections::HashMap<String, String> {
         self.bridge.env()
