@@ -965,6 +965,28 @@ C = "3"
         assert!(msg.contains("beta, delta, gamma"), "every name, sorted, in one error: {msg}");
     }
 
+    /// Pins only the sort. The value-absence half of this now lives in
+    /// the log-capture harness, which asserts on the real record. Seven
+    /// keys so an unsorted map landing on sorted order by chance is 1
+    /// in 5040 rather than 1 in 120.
+    #[test]
+    fn applied_env_keys_are_sorted() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!(
+                "{}\n[projects.forge.env]\nZZ = \"1\"\nAA = \"2\"\nMM = \"3\"\nDD = \"4\"\nQQ = \"5\"\nBB = \"6\"\nTT = \"7\"\n",
+                minimal_config()
+            ),
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        assert_eq!(
+            applied_env_keys(named(&config, "forge")),
+            "AA, BB, DD, MM, QQ, TT, ZZ",
+            "log key order is stable across processes",
+        );
+    }
+
     /// One assertion per precedence boundary, so a reordering fails on
     /// the boundary it broke rather than on a single opaque test.
     #[test]
