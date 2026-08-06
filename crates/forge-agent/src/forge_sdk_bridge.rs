@@ -157,8 +157,10 @@ impl ForgeSdkBridge {
     }
 
     /// The resolved forge.toml env to stamp onto every spawned
-    /// `claude` subprocess. Cloned per `spawn_session` call; frozen at
-    /// bridge construction, so a forge.toml edit needs a forge restart.
+    /// `claude` subprocess. Cloned per `spawn_session` call, but the
+    /// values were read from disk once at forge BOOT - a new bridge
+    /// does not re-read them, so a forge.toml edit needs a forge
+    /// restart, not a new session.
     #[cfg(not(any(test, feature = "testing")))]
     pub(crate) fn env(&self) -> HashMap<String, String> {
         self.inner.env.clone()

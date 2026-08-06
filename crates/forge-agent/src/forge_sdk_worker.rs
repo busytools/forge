@@ -1391,8 +1391,8 @@ mod tests {
     #[test]
     fn build_options_still_stamps_a_reserved_key_despite_the_warn() {
         // The collision warns but does not suppress the stamp: a
-        // forge-reserved key in the merged env (global [env] or
-        // per-account [accounts.env]) still lands on the child
+        // forge-reserved key in the merged env, whichever table
+        // declared it, still lands on the child
         // (forge.toml is trusted, hand-authored).
         use crate::client::SessionLaunchSettings;
         use std::path::Path;

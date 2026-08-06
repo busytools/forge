@@ -41,11 +41,10 @@ struct ForgeToml {
     /// stays dormant.
     #[serde(default)]
     gotify: Option<GotifyConfig>,
-    /// Optional top-level `[env]` table - environment stamped onto
-    /// every account's `claude` subprocess as the BASE, with each
-    /// account's `[accounts.env]` overriding it per-key. Merged into
-    /// `LoadedAccount.env` at load (see `load_from_dir`); not exposed
-    /// on the loaded config. Absent table -> empty.
+    /// Optional top-level `[env]` table - the BASE every session
+    /// starts from, overridden per key by `[accounts.env]` and then by
+    /// `[projects.<name>.env]`. Merged into `LoadedAccount.env` at
+    /// load; the project layer is applied at spawn. Absent -> empty.
     #[serde(default)]
     env: HashMap<String, String>,
     /// Optional `[projects.<name>.env]` tables, keyed by the

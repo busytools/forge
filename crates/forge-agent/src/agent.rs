@@ -300,8 +300,10 @@ impl Agent {
     /// constructed by spawn_session so the subprocess inherits
     /// `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` and its wire
     /// classification gets normalised to `cli` shape. `env` carries
-    /// the account's `[accounts.env]` (forge.toml), stamped onto the
-    /// spawned subprocess alongside `CLAUDE_CONFIG_DIR`. Returns a
+    /// the session's resolved forge.toml env - `[env]`, then
+    /// `[accounts.env]`, then the spawning project's
+    /// `[projects.<name>.env]` - stamped onto the spawned subprocess
+    /// alongside `CLAUDE_CONFIG_DIR`. Returns a
     /// handle holding the command sender + events receiver + direct-
     /// accessor passthroughs.
     pub fn spawn(
