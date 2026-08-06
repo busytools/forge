@@ -207,27 +207,37 @@ impl LoadedConfig {
         &self.projects[self.default_index]
     }
 
-    /// Effective env for a session in `project_name` running under an
-    /// account whose merged `[env]` + `[accounts.env]` map is
-    /// `account_env`, completing the chain `[env]` < `[accounts.env]`
-    /// < `[projects.<name>.env]` with the narrowest winning per key.
-    ///
-    /// Additive: a session still inherits forge's own environment, so
-    /// this only adds and overrides declared keys. Merged here rather
-    /// than at load because one account serves many projects - folding
-    /// a project's keys into the account would leak them into every
-    /// other project on that account.
-    pub(crate) fn session_env(
-        &self,
-        project_name: &str,
-        account_env: &HashMap<String, String>,
-    ) -> HashMap<String, String> {
-        let mut env = account_env.clone();
-        if let Some(project) = self.projects.iter().find(|p| p.name == project_name) {
-            env.extend(project.env.iter().map(|(k, v)| (k.clone(), v.clone())));
-        }
-        env
+    /// Sorted key names a project contributes, for the spawn log.
+    /// NAMES only - these tables hold tokens.
+    pub(crate) fn applied_env_keys(project: Option<&LoadedProject>) -> String {
+        let mut keys: Vec<&str> =
+            project.map(|p| p.env.keys().map(String::as_str).collect()).unwrap_or_default();
+        keys.sort_unstable();
+        keys.join(", ")
     }
+}
+
+/// Layer `project`'s `[projects.<name>.env]` over `account_env` (itself
+/// `[env]` merged with `[accounts.env]`), completing
+/// `[env]` < `[accounts.env]` < `[projects.<name>.env]`, narrowest
+/// winning per key. Additive - forge's own environment still reaches
+/// the session untouched.
+///
+/// Takes the resolved project rather than a name because one account
+/// serves many projects: merging at load would leak a project's keys
+/// into every other project on that account.
+pub(crate) fn session_env(
+    project: Option<&LoadedProject>,
+    account_env: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut env = account_env.clone();
+    if let Some(project) = project {
+        env.extend(project.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
+    env
+}
+
+impl LoadedConfig {
 
     /// Iterate every project that should spawn at forge launch
     /// (`auto_start = true`).
@@ -454,6 +464,54 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    /// The spawn log is always-on INFO, so a refactor that widens it
+    /// from key names to entries writes every project's tokens to
+    /// disk. These pin the rendering rather than the log call.
+    #[test]
+    fn applied_env_keys_renders_names_only_and_never_a_value() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[orgs.projects]]
+name = "bare"
+path = "~/Projects/bare"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+
+[projects.forge.env]
+BUSYMAIL_TOKEN = "s3cret-value"
+API_BASE = "https://example.invalid"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+
+        let rendered = LoadedConfig::applied_env_keys(named(&config, "forge"));
+        assert_eq!(rendered, "API_BASE, BUSYMAIL_TOKEN", "sorted key names");
+        for value in ["s3cret-value", "https://example.invalid"] {
+            assert!(!rendered.contains(value), "a declared value reached the log: {rendered}");
+        }
+
+        assert_eq!(
+            LoadedConfig::applied_env_keys(named(&config, "bare")),
+            "",
+            "a project declaring nothing renders empty, not a placeholder",
+        );
+        assert_eq!(LoadedConfig::applied_env_keys(None), "", "an unresolved project renders empty");
+    }
+
+    /// Resolve a project by name for the `session_env` calls below.
+    fn named<'a>(config: &'a LoadedConfig, name: &str) -> Option<&'a LoadedProject> {
+        config.projects.iter().find(|p| p.name == name)
+    }
+
     /// Write `forge/forge.toml` (the production location).
     fn write_config(dir: &std::path::Path, contents: &str) {
         let forge = ensure_forge_data_dir(dir).expect("forge/ dir");
@@ -672,7 +730,7 @@ PROJECT_ONLY = "project"
         write_config(dir.path(), precedence_config());
         let config = load_from_dir(dir.path()).expect("precedence fixture loads");
         let account = &config.accounts[0];
-        config.session_env("forge", &account.env)
+        session_env(named(&config, "forge"), &account.env)
     }
 
     /// `[projects.forge.envs]` - right project, mistyped inner table.
@@ -905,14 +963,14 @@ BUSYMAIL_TOKEN = "forge-only-secret"
         let config = load_from_dir(dir.path()).expect("happy path");
         let account = &config.accounts[0];
 
-        let forge_env = config.session_env("forge", &account.env);
+        let forge_env = session_env(named(&config, "forge"), &account.env);
         assert_eq!(
             forge_env.get("BUSYMAIL_TOKEN").map(String::as_str),
             Some("forge-only-secret"),
             "the declaring project gets its own key",
         );
 
-        let busymail_env = config.session_env("busymail", &account.env);
+        let busymail_env = session_env(named(&config, "busymail"), &account.env);
         assert!(
             !busymail_env.contains_key("BUSYMAIL_TOKEN"),
             "another project on the SAME account must not receive it, got: {busymail_env:?}",
@@ -957,11 +1015,11 @@ API_TOKEN = "busymail-token"
         let config = load_from_dir(dir.path()).expect("happy path");
         let account = &config.accounts[0];
         assert_eq!(
-            config.session_env("forge", &account.env).get("API_TOKEN").map(String::as_str),
+            session_env(named(&config, "forge"), &account.env).get("API_TOKEN").map(String::as_str),
             Some("forge-token"),
         );
         assert_eq!(
-            config.session_env("busymail", &account.env).get("API_TOKEN").map(String::as_str),
+            session_env(named(&config, "busymail"), &account.env).get("API_TOKEN").map(String::as_str),
             Some("busymail-token"),
         );
     }

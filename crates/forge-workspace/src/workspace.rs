@@ -2142,15 +2142,14 @@ impl Workspace {
     /// keys to another's session, and it resolves through
     /// `session_cwd_for`, which misses every worker (the catalog holds
     /// no worker rows).
-    fn project_name_for_target(&self, target: &SessionTarget) -> Option<String> {
+    fn project_for_target(&self, target: &SessionTarget) -> Option<LoadedProject> {
         match target {
-            SessionTarget::Default => Some(self.config.default_project().name.clone()),
-            SessionTarget::Named(name) => {
-                self.find_project_by_name(name).ok().map(|p| p.name.clone())
-            }
-            SessionTarget::Session(key) => {
-                self.cwd_for_session(key).and_then(|cwd| self.project_name_for_path(&cwd))
-            }
+            SessionTarget::Default => Some(self.config.default_project().clone()),
+            SessionTarget::Named(name) => self.find_project_view_by_name(name),
+            SessionTarget::Session(key) => self
+                .cwd_for_session(key)
+                .and_then(|cwd| self.project_name_for_path(&cwd))
+                .and_then(|name| self.find_project_view_by_name(&name)),
             SessionTarget::FreshInProject { project_key, .. } => self
                 .config
                 .projects
@@ -2160,7 +2159,7 @@ impl Workspace {
                         &p.path.to_string_lossy(),
                     )) == project_key.as_str()
                 })
-                .map(|p| p.name.clone()),
+                .cloned(),
         }
     }
 
@@ -2177,7 +2176,7 @@ impl Workspace {
         target: &SessionTarget,
         account_env: &std::collections::HashMap<String, String>,
     ) -> std::collections::HashMap<String, String> {
-        let Some(name) = self.project_name_for_target(target) else {
+        let Some(project) = self.project_for_target(target) else {
             if self.config.projects.iter().any(|p| !p.env.is_empty()) {
                 tracing::warn!(
                     target: "forge_workspace::workspace",
@@ -2190,24 +2189,15 @@ impl Workspace {
             return account_env.clone();
         };
         // Logged even when the project declares nothing, so "resolved to
-        // a project I did not mean" is visible. Key NAMES only - these
-        // tables hold tokens.
-        let mut applied: Vec<&str> = self
-            .config
-            .projects
-            .iter()
-            .find(|p| p.name == name)
-            .map(|p| p.env.keys().map(String::as_str).collect())
-            .unwrap_or_default();
-        applied.sort_unstable();
+        // a project I did not mean" is visible.
         tracing::info!(
             target: "forge_workspace::workspace",
             event_name = "session_env_project_applied",
-            project = %name,
-            keys = %applied.join(", "),
+            project = %project.name,
+            keys = %crate::config::LoadedConfig::applied_env_keys(Some(&project)),
             "resolved the spawn target to a project and applied its [projects.<name>.env]",
         );
-        self.config.session_env(&name, account_env)
+        crate::config::session_env(Some(&project), account_env)
     }
 
     /// Look up a project by `name` from `forge.toml`. Returns
@@ -12107,7 +12097,7 @@ mod git_scan_cwd_tests {
     /// default project. Env must not inherit that fallback: a worker
     /// resolves to the project whose worktree it runs in.
     #[test]
-    fn project_name_for_target_resolves_a_worker_session_to_its_project() {
+    fn project_for_target_resolves_a_worker_session_to_its_project() {
         let (ws, _rx) = Workspace::testing_stub();
         let (_root, session_key) = seed_project_and_worker(
             &ws,
@@ -12122,7 +12112,7 @@ mod git_scan_cwd_tests {
             "precondition: the catalog holds no worker rows",
         );
         assert_eq!(
-            ws.project_name_for_target(&SessionTarget::Session(session_key)).as_deref(),
+            ws.project_for_target(&SessionTarget::Session(session_key)).map(|p| p.name).as_deref(),
             Some("granite-backend"),
         );
     }
@@ -12139,7 +12129,7 @@ mod git_scan_cwd_tests {
                 .collect();
         let orphan = SessionTarget::Session(SessionKey::from_session_id("not-a-known-session"));
         assert!(
-            ws.project_name_for_target(&orphan).is_none(),
+            ws.project_for_target(&orphan).is_none(),
             "precondition: target resolves to no project"
         );
         assert_eq!(
