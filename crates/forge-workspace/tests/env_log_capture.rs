@@ -82,8 +82,7 @@ fn install_capture() -> Capture {
 /// workflow decision rather than something this test can take.
 fn claude_on_path() -> bool {
     std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join("claude").is_file()))
-        .unwrap_or(false)
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join("claude").is_file()))
 }
 
 /// Announce loudly rather than pass quietly. A capture without the spawn
