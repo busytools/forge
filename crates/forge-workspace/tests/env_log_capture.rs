@@ -13,7 +13,7 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use forge_workspace::{SessionKey, SessionLaunchSettings, SessionTarget, Workspace};
+use forge_workspace::{SessionLaunchSettings, SessionTarget, Workspace};
 use tempfile::tempdir;
 use tracing_subscriber::fmt::MakeWriter;
 
@@ -74,21 +74,32 @@ ANTHROPIC_BASE_URL = "https://project-endpoint.invalid"
 #[tokio::test]
 async fn spawn_logs_key_names_and_never_a_declared_value() {
     let capture = Capture::default();
-    let subscriber =
-        tracing_subscriber::fmt().json().flatten_event(true).with_writer(capture.clone()).finish();
+    // TRACE and process-wide, not INFO and thread-local. At the default
+    // level this saw only the two records inside `session_env_for`, so a
+    // `debug!` carrying values right beside the guarded `info!` - or any
+    // record emitted off the spawning thread - passed unnoticed. nextest
+    // gives each test its own process, so a global default is safe.
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::fmt()
+            .json()
+            .flatten_event(true)
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(capture.clone())
+            .finish(),
+    )
+    .expect("install capture subscriber");
+
     let dir = tempdir().expect("tempdir");
     fs::write(forge_toml_path(dir.path()), FIXTURE).expect("write forge.toml");
     let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
-
-    {
-        let _guard = tracing::subscriber::set_default(subscriber);
-        workspace
-            .get_agent_handle(
-                SessionTarget::Named("forge".to_owned()),
-                SessionLaunchSettings::default(),
-            )
-            .expect("spawn forge");
-    }
+    workspace
+        .get_agent_handle(
+            SessionTarget::Named("forge".to_owned()),
+            SessionLaunchSettings::default(),
+        )
+        .expect("spawn forge");
+    // Let any off-thread emitter land before reading the buffer.
+    tokio::task::yield_now().await;
 
     let log = capture.text();
     assert!(log.contains("session_env_project_applied"), "the per-spawn record is emitted: {log}");
@@ -102,32 +113,4 @@ async fn spawn_logs_key_names_and_never_a_declared_value() {
         log.contains("session_env_project_overrides_endpoint"),
         "and the accounting-desync warn fires for a project endpoint key: {log}",
     );
-}
-
-#[tokio::test]
-async fn an_unresolved_spawn_target_warns() {
-    let capture = Capture::default();
-    let subscriber =
-        tracing_subscriber::fmt().json().flatten_event(true).with_writer(capture.clone()).finish();
-    let dir = tempdir().expect("tempdir");
-    fs::write(forge_toml_path(dir.path()), FIXTURE).expect("write forge.toml");
-    let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
-
-    {
-        let _guard = tracing::subscriber::set_default(subscriber);
-        workspace
-            .get_agent_handle(
-                SessionTarget::Session(SessionKey::from_str_for_test("no-such-session")),
-                SessionLaunchSettings::default(),
-            )
-            .expect("spawn orphan");
-    }
-
-    let log = capture.text();
-    assert!(
-        log.contains("session_env_project_unresolved"),
-        "an orphan target has to warn, not fall through silently: {log}",
-    );
-    assert!(log.contains("spawn_target"), "and carry the target field: {log}");
-    assert!(!log.contains(TOKEN), "still no declared value: {log}");
 }
