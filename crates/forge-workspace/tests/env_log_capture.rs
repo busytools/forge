@@ -74,11 +74,8 @@ ANTHROPIC_BASE_URL = "https://project-endpoint.invalid"
 #[tokio::test]
 async fn spawn_logs_key_names_and_never_a_declared_value() {
     let capture = Capture::default();
-    let subscriber = tracing_subscriber::fmt()
-        .json()
-        .flatten_event(true)
-        .with_writer(capture.clone())
-        .finish();
+    let subscriber =
+        tracing_subscriber::fmt().json().flatten_event(true).with_writer(capture.clone()).finish();
     let dir = tempdir().expect("tempdir");
     fs::write(forge_toml_path(dir.path()), FIXTURE).expect("write forge.toml");
     let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
@@ -94,10 +91,7 @@ async fn spawn_logs_key_names_and_never_a_declared_value() {
     }
 
     let log = capture.text();
-    assert!(
-        log.contains("session_env_project_applied"),
-        "the per-spawn record is emitted: {log}",
-    );
+    assert!(log.contains("session_env_project_applied"), "the per-spawn record is emitted: {log}",);
     assert!(log.contains("BUSYMAIL_TOKEN"), "key names are recorded: {log}");
     assert!(
         !log.contains(TOKEN),
@@ -113,11 +107,8 @@ async fn spawn_logs_key_names_and_never_a_declared_value() {
 #[tokio::test]
 async fn an_unresolved_spawn_target_warns() {
     let capture = Capture::default();
-    let subscriber = tracing_subscriber::fmt()
-        .json()
-        .flatten_event(true)
-        .with_writer(capture.clone())
-        .finish();
+    let subscriber =
+        tracing_subscriber::fmt().json().flatten_event(true).with_writer(capture.clone()).finish();
     let dir = tempdir().expect("tempdir");
     fs::write(forge_toml_path(dir.path()), FIXTURE).expect("write forge.toml");
     let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));

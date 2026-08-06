@@ -2143,21 +2143,36 @@ impl Workspace {
         match target {
             SessionTarget::Default => Some(self.config.default_project().clone()),
             SessionTarget::Named(name) => self.find_project_view_by_name(name),
-            SessionTarget::Session(key) => self
-                .cwd_for_session(key)
-                .and_then(|cwd| self.project_name_for_path(&cwd))
-                .and_then(|name| self.find_project_view_by_name(&name)),
-            SessionTarget::FreshInProject { project_key, .. } => self
-                .config
-                .projects
-                .iter()
-                .find(|p| {
-                    forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                        &p.path.to_string_lossy(),
-                    )) == project_key.as_str()
-                })
-                .cloned(),
+            // An account switch on a lead with nothing on disk yet routes
+            // through `__fresh__:<project_key>`, which matches no catalog
+            // row and no worker, so resolving by cwd alone would drop the
+            // project's env on a routine switch.
+            SessionTarget::Session(key) => key
+                .as_str()
+                .strip_prefix("__fresh__:")
+                .and_then(|project_key| self.project_by_storage_key(project_key))
+                .or_else(|| {
+                    self.cwd_for_session(key)
+                        .and_then(|cwd| self.project_name_for_path(&cwd))
+                        .and_then(|name| self.find_project_view_by_name(&name))
+                }),
+            SessionTarget::FreshInProject { project_key, .. } => {
+                self.project_by_storage_key(project_key.as_str())
+            }
         }
+    }
+
+    /// Project whose path sanitises to `project_key`.
+    fn project_by_storage_key(&self, project_key: &str) -> Option<LoadedProject> {
+        self.config
+            .projects
+            .iter()
+            .find(|p| {
+                forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                    &p.path.to_string_lossy(),
+                )) == project_key
+            })
+            .cloned()
     }
 
     /// Env for a spawn under `target` on the picked account. An
@@ -7102,6 +7117,31 @@ SUBSPACE_TOKEN = "subspace-value"
             "the Default arm must resolve to the default project, not None",
         );
         assert!(!env.contains_key("SUBSPACE_TOKEN"), "and not to any other project");
+    }
+
+    /// An account switch on a lead with nothing on disk yet routes
+    /// through `Session(__fresh__:<project_key>)`. That key matches no
+    /// catalog row and no worker registry entry, so resolving by cwd
+    /// alone dropped the project's env on a routine switch.
+    #[test]
+    fn session_env_for_a_fresh_placeholder_key_resolves_its_project() {
+        let (ws, _dir) = stub_with_project_env_fixture();
+        let project_key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "subspace")
+            .expect("subspace project view")
+            .key;
+        let target = SessionTarget::Session(SessionKey::from_session_id(format!(
+            "__fresh__:{}",
+            project_key.as_str()
+        )));
+        let env = ws.session_env_for(&target, &std::collections::HashMap::new());
+        assert_eq!(
+            env.get("SUBSPACE_TOKEN").map(String::as_str),
+            Some("subspace-value"),
+            "an account switch must not drop the project's declared env",
+        );
     }
 
     /// `FreshInProject` is the workers-MCP spawn path. If this arm stops
