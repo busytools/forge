@@ -7063,7 +7063,20 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
     /// Same shape as `ACCOUNT_PIN_FIXTURE` but with per-project env, so
     /// a spawn-target arm that stops resolving shows up as the project's
     /// keys going missing rather than as a silent pass.
+    ///
+    /// Declaration ORDER is load-bearing: `subspace` is declared first
+    /// and `busymail` is alphabetically first, so `projects.first()` and
+    /// `default_project()` disagree. Collapsing them lets a
+    /// `default_project()` regression through on the boot path.
     const PROJECT_ENV_FIXTURE: &str = r#"
+[[orgs]]
+name = "Subspace"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "subspace"
+path = "/tmp/wt-env-subspace"
+auto_start = true
+
 [[orgs]]
 name = "Granite"
 accounts = ["Granite"]
@@ -7071,13 +7084,6 @@ accounts = ["Granite"]
 name = "busymail"
 path = "/tmp/wt-env-busymail"
 auto_start = true
-
-[[orgs]]
-name = "Subspace"
-accounts = ["Subspace"]
-[[orgs.projects]]
-name = "subspace"
-path = "/tmp/wt-env-subspace"
 
 [[accounts]]
 display_name = "Granite"
@@ -7113,6 +7119,29 @@ SUBSPACE_TOKEN = "subspace-value"
             "the Default arm must resolve to the default project, not None",
         );
         assert!(!env.contains_key("SUBSPACE_TOKEN"), "and not to any other project");
+    }
+
+    /// On `testing_stub()` this proved nothing: its config has zero
+    /// projects, so "keep the account env" and "borrow the first
+    /// project's env" are the same answer. Runs on the project-env
+    /// fixture instead, where they differ.
+    #[test]
+    fn session_env_for_unresolved_target_keeps_the_account_env() {
+        let (ws, _dir) = stub_with_project_env_fixture();
+        let account_env: std::collections::HashMap<String, String> =
+            [("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned())]
+                .into_iter()
+                .collect();
+        let orphan = SessionTarget::Session(SessionKey::from_session_id("not-a-known-session"));
+        assert!(
+            ws.project_for_target(&orphan).is_none(),
+            "precondition: target resolves to no project"
+        );
+        assert_eq!(
+            ws.session_env_for(&orphan, &account_env),
+            account_env,
+            "unresolved target -> account env verbatim",
+        );
     }
 
     /// An account switch on a lead with nothing on disk yet routes
@@ -12191,24 +12220,6 @@ mod git_scan_cwd_tests {
     /// An unresolvable target must keep the account env rather than
     /// borrowing whichever project happens to be the default - that
     /// would hand one project's declared keys to another's session.
-    #[test]
-    fn session_env_for_unresolved_target_keeps_the_account_env() {
-        let (ws, _rx) = Workspace::testing_stub();
-        let account_env: std::collections::HashMap<String, String> =
-            [("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned())]
-                .into_iter()
-                .collect();
-        let orphan = SessionTarget::Session(SessionKey::from_session_id("not-a-known-session"));
-        assert!(
-            ws.project_for_target(&orphan).is_none(),
-            "precondition: target resolves to no project"
-        );
-        assert_eq!(
-            ws.session_env_for(&orphan, &account_env),
-            account_env,
-            "unresolved target -> account env verbatim",
-        );
-    }
 
     #[test]
     fn cwd_for_session_is_none_when_the_workers_project_is_not_loaded() {

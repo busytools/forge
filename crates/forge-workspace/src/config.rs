@@ -104,9 +104,8 @@ struct ProjectEntry {
     static_workers: Vec<String>,
 }
 
-/// Unknown fields are rejected for the same reason as `ProjectEntry`:
-/// this table hosts `[accounts.env]`, so `[accounts.envs]` would
-/// otherwise load as an empty env exactly like the project-side typo.
+/// Unknown fields rejected for `ProjectEntry`'s reason: this table
+/// hosts `[accounts.env]`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AccountEntry {
@@ -436,10 +435,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
 
     // Sessions are keyed by a sanitised path that maps every
     // non-alphanumeric character to `-`, so distinct paths - or a
-    // symlink and its target - can share one key. Two projects sharing
-    // it means each can resolve to the other and receive its
-    // `[projects.<name>.env]`, so refuse to boot rather than hand one
-    // project another's secrets.
+    // symlink and its target - can share one key.
     // Gated on at least one side declaring env: two entries for one
     // path is a legitimate existing pattern (the same repo under two
     // org scopes, to spawn under either account list) and loads fine
@@ -766,8 +762,7 @@ PROJECT_ONLY = "project"
 
     /// `[accounts.env]` is the sibling this feature's docs point at, so
     /// the account-side typo has to fail the same way the project-side
-    /// one does. Pins `AccountEntry`'s attribute, which nothing else
-    /// covers - deleting every remaining attribute passed the suite.
+    /// one does. Pins `AccountEntry`'s attribute.
     #[test]
     fn near_miss_env_on_an_account_entry_is_rejected() {
         let dir = tempdir().expect("tempdir");
@@ -1349,9 +1344,56 @@ ANTHROPIC_BASE_URL = ""
             Some(""),
             "an empty project value shadows the account's with an empty variable",
         );
+    }
+
+    /// The counterpart to `every_known_section_loads_together`: these
+    /// three sections host no env table, so they keep their own
+    /// leniency deliberately - `[ui]` in particular documents that a
+    /// hand-edited typo must never stop forge booting. Nothing enforced
+    /// that, so a future consistency pass adding the fourth attribute
+    /// would pass every test and turn a stale `[ui]` key into a refusal
+    /// to boot. The live forge.toml boots today PRECISELY because these
+    /// are lenient.
+    #[test]
+    fn the_lenient_sections_still_tolerate_an_unknown_key() {
+        // (label, stanza with a stray key appended to the base config)
+        let cases = [
+            ("[ui]", "[ui]\nspinner = \"ember\"\nthemez = \"dark\"\n"),
+            (
+                "[gotify]",
+                "[gotify]\nurl = \"https://g.example\"\nclient_token = \"C1\"\nappz = 3\n",
+            ),
+        ];
+        for (label, stanza) in cases {
+            let dir = tempdir().expect("tempdir");
+            write_config(dir.path(), &format!("{}\n{stanza}", minimal_config()));
+            assert!(
+                load_from_dir(dir.path()).is_ok(),
+                "{label} must stay lenient - a stray key there is not a boot failure",
+            );
+        }
+
+        // `[[orgs]]` needs the stray key on an existing org entry rather
+        // than a new section, so it is a different shape.
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+focuz = true
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+"#,
+        );
         assert!(
-            env.contains_key("ANTHROPIC_BASE_URL"),
-            "the key is still present - a project cannot remove an account key",
+            load_from_dir(dir.path()).is_ok(),
+            "[[orgs]] must stay lenient - a stray key there is not a boot failure",
         );
     }
 
