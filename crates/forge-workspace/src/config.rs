@@ -401,6 +401,29 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         }
     }
 
+    // Sessions are keyed by a sanitised path that maps every
+    // non-alphanumeric character to `-`, so distinct paths - or a
+    // symlink and its target - can share one key. Two projects sharing
+    // it means each can resolve to the other and receive its
+    // `[projects.<name>.env]`, so refuse to boot rather than hand one
+    // project another's secrets.
+    let mut seen_storage_keys: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for project in &projects {
+        let key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+            &project.path.to_string_lossy(),
+        ));
+        let label = format!("'{}' ({})", project.name, project.display_path);
+        if let Some(first) = seen_storage_keys.insert(key.clone(), label.clone()) {
+            return Err(WorkspaceError::CollidingProjectStorageKey {
+                first,
+                second: label,
+                key,
+                path,
+            });
+        }
+    }
+
     // A `[projects.<name>.env]` table repeats a project name by hand,
     // so a typo lands nowhere. Same treatment as an org naming an
     // undeclared account: refuse to boot and list the valid names.
@@ -873,6 +896,82 @@ BUSYMAIL_TOKEN = "never-applied"
                 load_from_dir(dir.path()).expect_err("misspelled table must not load").to_string();
             assert!(msg.contains(bad), "error names `{bad}`, got: {msg}");
         }
+    }
+
+    /// `sanitize_path` maps every non-alphanumeric character to `-`,
+    /// so distinct paths collide. Two projects sharing a storage key
+    /// can each resolve to the other, and the loser receives the
+    /// winner's declared env instead of its own.
+    #[test]
+    fn projects_colliding_on_one_storage_key_are_rejected() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("collide");
+        fs::create_dir_all(root.join("a.b")).expect("a.b");
+        fs::create_dir_all(root.join("a-b")).expect("a-b");
+        write_config(
+            dir.path(),
+            &format!(
+                r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "alpha"
+path = "{root}/a.b"
+[[orgs.projects]]
+name = "beta"
+path = "{root}/a-b"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+
+[projects.alpha.env]
+ALPHA_TOKEN = "alpha-only-secret"
+"#,
+                root = root.display()
+            ),
+        );
+        let msg = load_from_dir(dir.path()).expect_err("colliding paths must not load").to_string();
+        assert!(msg.contains("'alpha'") && msg.contains("'beta'"), "names both projects: {msg}");
+        assert!(msg.contains("a.b") && msg.contains("a-b"), "and both paths: {msg}");
+    }
+
+    /// The realistic trigger: two projects pointing at one tree, one
+    /// through a symlinked parent. `canonicalize` resolves both to the
+    /// same realpath, so the keys are identical.
+    #[test]
+    fn projects_colliding_via_a_symlink_are_rejected() {
+        let dir = tempdir().expect("tempdir");
+        let real = dir.path().join("real");
+        fs::create_dir_all(&real).expect("real dir");
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+        write_config(
+            dir.path(),
+            &format!(
+                r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "alpha"
+path = "{real}"
+[[orgs.projects]]
+name = "beta"
+path = "{link}"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+
+[projects.alpha.env]
+ALPHA_TOKEN = "alpha-only-secret"
+"#,
+                real = real.display(),
+                link = link.display()
+            ),
+        );
+        let msg = load_from_dir(dir.path()).expect_err("symlinked pair must not load").to_string();
+        assert!(msg.contains("'alpha'") && msg.contains("'beta'"), "names both projects: {msg}");
     }
 
     #[test]
