@@ -47,20 +47,16 @@ struct ForgeToml {
     /// load; the project layer is applied at spawn. Absent -> empty.
     #[serde(default)]
     env: HashMap<String, String>,
-    /// Optional `[projects.<name>.env]` tables, keyed by the
-    /// `[[orgs.projects]]` name each applies to. Drained into
-    /// `LoadedProject.env` at load; a key naming no declared project
-    /// is a load error rather than a silent no-op. Absent -> empty.
+    /// `[projects.<name>.env]` tables keyed by project name, drained
+    /// into `LoadedProject.env` at load. A name no `[[orgs.projects]]`
+    /// declares is a load error, not a silent no-op.
     #[serde(default)]
     projects: HashMap<String, ProjectEnvEntry>,
 }
 
-/// One `[projects.<name>.env]` table. A wrapper rather than a bare
-/// map so the TOML nests the env under `env`, leaving room for future
-/// per-project keys without moving the existing ones. Unknown fields
-/// are rejected so a mistyped inner table (`envs`) or keys written
-/// without the `.env` nesting fail loudly instead of loading as an
-/// empty env.
+/// One `[projects.<name>.env]` table. Unknown fields are rejected so a
+/// mistyped inner table (`envs`) or keys written without the `.env`
+/// nesting fail loudly instead of loading as an empty env.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProjectEnvEntry {
@@ -190,14 +186,10 @@ pub(crate) struct LoadedProject {
     /// See `crate::team::Role` + `crate::team::validate_label`.
     pub static_workers: Vec<String>,
     /// Per-project environment from `[projects.<name>.env]`, layered
-    /// over the account's env at spawn by
-    /// [`LoadedConfig::session_env`]. Absent table -> empty.
-    ///
-    /// An `ANTHROPIC_BASE_URL` or `ANTHROPIC_AUTH_TOKEN` here desyncs
-    /// forge's own accounting: the session talks to the project's
-    /// endpoint while the usage probe, plan detection, rate-limit
-    /// accounting and account picker all read the ACCOUNT map, so they
-    /// measure a different endpoint and nothing warns.
+    /// over the account's env at spawn. An `ANTHROPIC_BASE_URL` or
+    /// `ANTHROPIC_AUTH_TOKEN` here desyncs forge's own accounting -
+    /// usage probe, plan detection and the picker all read the ACCOUNT
+    /// map, so they measure a different endpoint and nothing warns.
     pub env: HashMap<String, String>,
 }
 
@@ -206,8 +198,8 @@ impl LoadedConfig {
         &self.projects[self.default_index]
     }
 
-    /// Sorted key names a project contributes, for the spawn log.
-    /// NAMES only - these tables hold tokens.
+    /// Sorted key NAMES a project contributes - never values; these
+    /// tables hold tokens.
     pub(crate) fn applied_env_keys(project: Option<&LoadedProject>) -> String {
         let mut keys: Vec<&str> =
             project.map(|p| p.env.keys().map(String::as_str).collect()).unwrap_or_default();
@@ -216,15 +208,11 @@ impl LoadedConfig {
     }
 }
 
-/// Layer `project`'s `[projects.<name>.env]` over `account_env` (itself
-/// `[env]` merged with `[accounts.env]`), completing
-/// `[env]` < `[accounts.env]` < `[projects.<name>.env]`, narrowest
-/// winning per key. Additive - forge's own environment still reaches
-/// the session untouched.
-///
-/// Takes the resolved project rather than a name because one account
-/// serves many projects: merging at load would leak a project's keys
-/// into every other project on that account.
+/// Complete `[env]` < `[accounts.env]` < `[projects.<name>.env]`,
+/// narrowest winning per key, over the already-merged `account_env`.
+/// Applied here rather than at load because one account serves many
+/// projects, so merging earlier would leak a project's keys into every
+/// other project on that account.
 pub(crate) fn session_env(
     project: Option<&LoadedProject>,
     account_env: &HashMap<String, String>,
@@ -237,7 +225,6 @@ pub(crate) fn session_env(
 }
 
 impl LoadedConfig {
-
     /// Iterate every project that should spawn at forge launch
     /// (`auto_start = true`).
     pub(crate) fn auto_start_projects(&self) -> impl Iterator<Item = &LoadedProject> {
@@ -980,6 +967,45 @@ BUSYMAIL_TOKEN = "forge-only-secret"
         );
     }
 
+    /// A project cannot UNSET an account key. `KEY = ""` stamps an
+    /// empty variable on the child rather than removing it, because
+    /// the merge is additive by design (#551 ruled out stripping).
+    /// Pinned so the choice is deliberate rather than incidental.
+    #[test]
+    fn a_project_empty_value_overrides_rather_than_unsets() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+config_dir = "~/.claude-codex"
+[accounts.env]
+ANTHROPIC_BASE_URL = "http://localhost:18765"
+
+[projects.forge.env]
+ANTHROPIC_BASE_URL = ""
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        let env = session_env(named(&config, "forge"), &config.accounts[0].env);
+        assert_eq!(
+            env.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some(""),
+            "an empty project value shadows the account's with an empty variable",
+        );
+        assert!(
+            env.contains_key("ANTHROPIC_BASE_URL"),
+            "the key is still present - a project cannot remove an account key",
+        );
+    }
+
     /// Two projects each declaring the SAME key on one account. Each
     /// must see its own value, not whichever loaded last. This does
     /// NOT substitute for the leak test above - both projects still
@@ -1018,7 +1044,9 @@ API_TOKEN = "busymail-token"
             Some("forge-token"),
         );
         assert_eq!(
-            session_env(named(&config, "busymail"), &account.env).get("API_TOKEN").map(String::as_str),
+            session_env(named(&config, "busymail"), &account.env)
+                .get("API_TOKEN")
+                .map(String::as_str),
             Some("busymail-token"),
         );
     }

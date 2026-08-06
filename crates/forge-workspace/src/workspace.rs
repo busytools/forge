@@ -2134,14 +2134,11 @@ impl Workspace {
         }
     }
 
-    /// The project a spawn under `target` belongs to, for resolving
-    /// that project's `[projects.<name>.env]`.
-    ///
-    /// Not [`Self::project_accounts_for`]'s resolution: that falls back
-    /// to the default project on a miss, which would hand one project's
-    /// keys to another's session, and it resolves through
-    /// `session_cwd_for`, which misses every worker (the catalog holds
-    /// no worker rows).
+    /// The project a spawn under `target` belongs to. Not
+    /// [`Self::project_accounts_for`]'s resolution: that falls back to
+    /// the default project, which would hand one project's keys to
+    /// another's session, and it resolves through `session_cwd_for`,
+    /// which misses every worker (the catalog holds no worker rows).
     fn project_for_target(&self, target: &SessionTarget) -> Option<LoadedProject> {
         match target {
             SessionTarget::Default => Some(self.config.default_project().clone()),
@@ -2163,14 +2160,10 @@ impl Workspace {
         }
     }
 
-    /// Env for a spawn under `target` on the picked account: the
-    /// account's merged `[env]` + `[accounts.env]` with the target
-    /// project's `[projects.<name>.env]` layered on top.
-    ///
-    /// An unresolved target keeps the account env rather than
-    /// borrowing the default project's. That case warns when any
-    /// project declares env at all, because the symptom otherwise is
-    /// a session silently missing keys its project declared.
+    /// Env for a spawn under `target` on the picked account. An
+    /// unresolved target keeps the account env rather than borrowing
+    /// the default project's, and warns when any project declares env,
+    /// since the symptom is otherwise a silently incomplete session.
     fn session_env_for(
         &self,
         target: &SessionTarget,
@@ -2188,8 +2181,8 @@ impl Workspace {
             }
             return account_env.clone();
         };
-        // Logged even when the project declares nothing, so "resolved to
-        // a project I did not mean" is visible.
+        // Logged even when the project declares nothing, so a target
+        // resolving to the wrong project is visible.
         tracing::info!(
             target: "forge_workspace::workspace",
             event_name = "session_env_project_applied",
@@ -7102,10 +7095,14 @@ SUBSPACE_TOKEN = "subspace-value"
     #[test]
     fn session_env_for_fresh_in_project_applies_that_projects_env() {
         let (ws, _dir) = stub_with_project_env_fixture();
-        let project_key =
-            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                "/tmp/wt-env-subspace",
-            )));
+        // Sourced from `list_projects` rather than recomputed with the
+        // same call the implementation makes, so the two can diverge.
+        let project_key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "subspace")
+            .expect("subspace project view")
+            .key;
         let target = SessionTarget::FreshInProject {
             project_key,
             synth_key: SessionKey::from_session_id("__spawn_subspace__"),
