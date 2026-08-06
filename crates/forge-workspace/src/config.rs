@@ -917,6 +917,18 @@ path = "~/Projects/alpha"
 [[orgs.projects]]
 name = "beta"
 path = "~/Projects/beta"
+[[orgs.projects]]
+name = "kappa"
+path = "~/Projects/kappa"
+[[orgs.projects]]
+name = "omega"
+path = "~/Projects/omega"
+[[orgs.projects]]
+name = "sigma"
+path = "~/Projects/sigma"
+[[orgs.projects]]
+name = "theta"
+path = "~/Projects/theta"
 [[accounts]]
 display_name = "Subspace"
 config_dir = "~/.claude-subspace"
@@ -929,10 +941,15 @@ BUSYMAIL_TOKEN = "typo-in-the-project-name"
         let msg = err.to_string();
         assert!(msg.contains("gamma"), "error names the offending project name, got: {msg}");
         assert!(!msg.contains("delta"), "control: only the declared typo appears");
-        assert!(
-            msg.contains("valid projects: alpha, beta"),
-            "error renders the valid-name listing, got: {msg}",
-        );
+        // Sortedness against the listing's own sorted form, over six
+        // names: a two-name literal passed half the time with the sort
+        // dropped, because `seen_project_names` is a HashSet.
+        let listed: Vec<&str> =
+            msg.split("valid projects: ").nth(1).expect("valid listing").split(", ").collect();
+        let mut sorted = listed.clone();
+        sorted.sort_unstable();
+        assert_eq!(listed, sorted, "the valid-name listing is sorted, got: {msg}");
+        assert_eq!(listed.len(), 6, "every declared project is listed, got: {msg}");
     }
 
     /// All bad names at once, so a config with several typos is one
@@ -959,10 +976,28 @@ A = "1"
 B = "2"
 [projects.beta.env]
 C = "3"
+[projects.epsilon.env]
+D = "4"
+[projects.zeta.env]
+E = "5"
+[projects.omicron.env]
+F = "6"
 "#,
         );
         let msg = load_from_dir(dir.path()).expect_err("must not load").to_string();
-        assert!(msg.contains("beta, delta, gamma"), "every name, sorted, in one error: {msg}");
+        let listed: Vec<&str> = msg
+            .split("undeclared projects: ")
+            .nth(1)
+            .expect("offender listing")
+            .split(';')
+            .next()
+            .expect("listing up to the separator")
+            .split(", ")
+            .collect();
+        let mut sorted = listed.clone();
+        sorted.sort_unstable();
+        assert_eq!(listed, sorted, "every name, sorted, in one error: {msg}");
+        assert_eq!(listed.len(), 6, "every undeclared name in one error: {msg}");
     }
 
     /// Pins only the sort. The value-absence half of this now lives in
@@ -1102,6 +1137,72 @@ ANTHROPIC_BASE_URL = ""
         assert!(
             env.contains_key("ANTHROPIC_BASE_URL"),
             "the key is still present - a project cannot remove an account key",
+        );
+    }
+
+    /// Every top-level section and every entry field in one config.
+    /// `deny_unknown_fields` on `ForgeToml` / `ProjectEntry` turns a
+    /// drifted field NAME from a silently-ignored section into a
+    /// refusal to boot, so the accepted surface needs pinning in one
+    /// place rather than a section at a time. `[ui]` had no
+    /// `load_from_dir` coverage at all.
+    #[test]
+    fn every_known_section_loads_together() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[env]
+GLOBAL_KEY = "global-value"
+
+[ui]
+spinner = "ember"
+fps = 30
+
+[gotify]
+url = "https://g.example"
+client_token = "Cabc"
+
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace", "Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+static_workers = ["reviewer"]
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+proxy = false
+experimental = true
+[accounts.env]
+ACCOUNT_KEY = "account-value"
+
+[[accounts]]
+display_name = "Codex"
+config_dir = "~/.claude-codex"
+
+[projects.forge.env]
+PROJECT_KEY = "project-value"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("the full known surface loads");
+        assert_eq!(config.ui.spinner.key(), "ember", "[ui] landed");
+        assert!(config.gotify.is_some(), "[gotify] landed");
+        let project = named(&config, "forge");
+        assert!(project.auto_start, "auto_start landed");
+        assert_eq!(project.static_workers, ["reviewer"], "static_workers landed");
+        assert_eq!(project.env.get("PROJECT_KEY").map(String::as_str), Some("project-value"));
+        let account = &config.accounts[0];
+        assert!(!account.proxy, "proxy landed");
+        assert!(account.experimental, "experimental landed");
+        assert_eq!(account.env.get("ACCOUNT_KEY").map(String::as_str), Some("account-value"));
+        assert_eq!(
+            account.env.get("GLOBAL_KEY").map(String::as_str),
+            Some("global-value"),
+            "[env] landed",
         );
     }
 

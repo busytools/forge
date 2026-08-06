@@ -7171,6 +7171,29 @@ SUBSPACE_TOKEN = "subspace-value"
         assert!(!env.contains_key("BUSYMAIL_TOKEN"), "and not the default project's");
     }
 
+    /// A lead that connected THIS run has a catalog row (mirrored by
+    /// `session_task` on Connected) and no worker registry entry, so it
+    /// resolves through the cwd path. This is the arm every `/account`
+    /// switch on a live lead takes.
+    #[test]
+    fn session_env_for_a_connected_lead_resolves_through_its_catalog_row() {
+        let (ws, _dir) = stub_with_project_env_fixture();
+        ws.record_connected_session("/tmp/wt-env-subspace", "lead-uuid-env", None);
+        let key = SessionKey::from_session_id("lead-uuid-env");
+        assert!(
+            ws.worker_lookup_for_session(&key).is_none(),
+            "precondition: a lead has no worker registry entry",
+        );
+        let env =
+            ws.session_env_for(&SessionTarget::Session(key), &std::collections::HashMap::new());
+        assert_eq!(
+            env.get("SUBSPACE_TOKEN").map(String::as_str),
+            Some("subspace-value"),
+            "a connected lead keeps its project env across a re-spawn",
+        );
+        assert!(!env.contains_key("BUSYMAIL_TOKEN"), "and not another project\x27s");
+    }
+
     #[test]
     fn project_accounts_for_resolves_worktree_session_to_parent_project() {
         // A session whose cwd is a worktree under the subspace root must
