@@ -155,9 +155,13 @@ const SPAWN_RECORD: &str = r#""message":"spawning claude subprocess""#;
 /// Conditional on the record being there at all, because its emission
 /// is asynchronous and lives in another crate: it does not appear on
 /// CI. Demanding it turned this into an environment check that failed
-/// for a reason unrelated to what it guards. When the record is absent
-/// the filter is excluding nothing, so there is no premise to expire -
-/// and the run that matters for expiry is the local rebase onto #564.
+/// for a reason unrelated to what it guards.
+///
+/// So state the limit rather than leave it inferred: this guard is DARK
+/// on CI. The record is absent there while the leak is still live, and
+/// this returns early, so CI can never fire the expiry - only a local
+/// run can, which is where the rebase onto #564 happens. It is a
+/// local-only tripwire, not a build gate.
 fn assert_the_exclusion_is_still_needed(log: &str) {
     let Some(spawn) = log.lines().find(|line| line.contains(SPAWN_RECORD)) else { return };
     assert!(
