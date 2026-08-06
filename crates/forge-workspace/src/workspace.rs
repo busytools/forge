@@ -2187,7 +2187,7 @@ impl Workspace {
                 tracing::warn!(
                     target: "forge_workspace::workspace",
                     event_name = "session_env_project_unresolved",
-                    ?target,
+                    spawn_target = ?target,
                     "spawn target resolves to no project, so no [projects.<name>.env] is \
                      applied; the session gets only the account env",
                 );
