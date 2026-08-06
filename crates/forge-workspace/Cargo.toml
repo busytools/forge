@@ -51,6 +51,11 @@ chrono = { workspace = true }
 redb = { workspace = true }
 
 [dev-dependencies]
+# `json` for the env-log capture harness: the spawn log is always-on
+# INFO, so a regression that widens it from key names to entries would
+# write project tokens to disk. Asserting on the real record is the only
+# thing that pins the call site.
+tracing-subscriber = { workspace = true, features = ["json"] }
 # Self-dep enables this crate's `testing` + `test-helpers` features for
 # its own `tests/*.rs` so a scoped `cargo test -p forge-workspace` (no
 # --all-features) resolves `new_for_test` and the other gated helpers.
