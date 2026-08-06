@@ -130,48 +130,6 @@ ANTHROPIC_BASE_URL = "https://project-endpoint.invalid"
 ANTHROPIC_AUTH_TOKEN = "auth-tok-must-never-be-logged"
 "#;
 
-/// Everything except the one record known to leak today.
-///
-/// `forge-sdk`'s spawn path logs the `Command` at DEBUG, and
-/// `Command`'s `Debug` renders every env var as `KEY="value"` - so the
-/// last hop before exec prints the whole merged environment. That is a
-/// live leak on main, fixed by #564, and it is outside this crate.
-/// Excluding exactly that record keeps this guard failing for any OTHER
-/// leak instead of going red on a known one.
-///
-/// Paired with [`assert_the_exclusion_is_still_needed`] so it expires
-/// on its own: the moment #564 lands and that line stops carrying
-/// values, this filter starts hiding nothing and the assertion goes red
-/// rather than waiting for someone to read a comment.
-fn without_the_known_sdk_leak(log: &str) -> String {
-    log.lines().filter(|line| !line.contains(SPAWN_RECORD)).collect::<Vec<_>>().join("\n")
-}
-
-const SPAWN_RECORD: &str = r#""message":"spawning claude subprocess""#;
-
-/// Fails once the excluded record stops leaking - which is #564's
-/// acceptance test, enforced rather than documented.
-///
-/// Conditional on the record being there at all, because its emission
-/// is asynchronous and lives in another crate: it does not appear on
-/// CI. Demanding it turned this into an environment check that failed
-/// for a reason unrelated to what it guards.
-///
-/// So state the limit rather than leave it inferred: this guard is DARK
-/// on CI. The record is absent there while the leak is still live, and
-/// this returns early, so CI can never fire the expiry - only a local
-/// run can, which is where the rebase onto #564 happens. It is a
-/// local-only tripwire, not a build gate.
-fn assert_the_exclusion_is_still_needed(log: &str) {
-    let Some(spawn) = log.lines().find(|line| line.contains(SPAWN_RECORD)) else { return };
-    assert!(
-        SECRETS.iter().any(|secret| spawn.contains(secret)),
-        "the spawn record no longer carries declared values, so #564 has landed - delete \
-         without_the_known_sdk_leak, its two call sites, SPAWN_RECORD, and this assertion \
-         (leaving SPAWN_RECORD behind fails the build on dead code): {spawn}",
-    );
-}
-
 /// The single record carrying `event_name`, so level and fields are
 /// asserted on the same line rather than anywhere in the capture.
 fn record<'a>(log: &'a str, event_name: &str) -> &'a str {
@@ -227,15 +185,10 @@ async fn spawn_logs_key_names_and_never_a_declared_value() {
     assert!(applied.contains(r#""level":"INFO""#), "the spawn record stays at INFO: {applied}");
     assert!(applied.contains(r#""project":"forge""#), "and names the project: {applied}");
     assert!(applied.contains("BUSYMAIL_TOKEN"), "key names are recorded: {applied}");
-    assert_the_exclusion_is_still_needed(&log);
-    let guarded = without_the_known_sdk_leak(&log);
     for secret in SECRETS {
-        assert!(
-            !guarded.contains(secret),
-            "a declared VALUE reached the log: {secret} in {guarded}"
-        );
+        assert!(!log.contains(secret), "a declared VALUE reached the log: {secret} in {log}");
     }
-    assert!(!guarded.contains(GLOBAL_SECRET), "nor a global [env] value: {guarded}");
+    assert!(!log.contains(GLOBAL_SECRET), "nor a global [env] value: {log}");
     // Counted, not merely present: with one endpoint key in the fixture
     // and a presence assertion, shrinking the guarded key list to one
     // entry passed.
@@ -259,13 +212,12 @@ async fn an_unresolved_spawn_target_warns() {
         "an orphan target warns, and stays at WARN: {unresolved}",
     );
     assert!(unresolved.contains("spawn_target"), "and carries the target field: {unresolved}");
-    let guarded = without_the_known_sdk_leak(&log);
     for secret in SECRETS {
-        assert!(!guarded.contains(secret), "still no declared value: {secret} in {guarded}");
+        assert!(!log.contains(secret), "still no declared value: {secret} in {log}");
     }
     // The unresolved path returns global + account, so the global layer
     // is the one this test most needs to guard.
-    assert!(!guarded.contains(GLOBAL_SECRET), "nor a global [env] value: {guarded}");
+    assert!(!log.contains(GLOBAL_SECRET), "nor a global [env] value: {log}");
 }
 
 /// The record is unconditional by design, and that is the half nothing
