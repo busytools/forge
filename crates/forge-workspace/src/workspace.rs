@@ -7057,6 +7057,85 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
         (ws, dir)
     }
 
+    /// Same shape as `ACCOUNT_PIN_FIXTURE` but with per-project env, so
+    /// a spawn-target arm that stops resolving shows up as the project's
+    /// keys going missing rather than as a silent pass.
+    const PROJECT_ENV_FIXTURE: &str = r#"
+[[orgs]]
+name = "Granite"
+accounts = ["Granite"]
+[[orgs.projects]]
+name = "busymail"
+path = "/tmp/wt-env-busymail"
+auto_start = true
+
+[[orgs]]
+name = "Subspace"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "subspace"
+path = "/tmp/wt-env-subspace"
+
+[[accounts]]
+display_name = "Granite"
+config_dir = "/tmp/wt-env-cfg/granite"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "/tmp/wt-env-cfg/subspace"
+
+[projects.busymail.env]
+BUSYMAIL_TOKEN = "busymail-value"
+[projects.subspace.env]
+SUBSPACE_TOKEN = "subspace-value"
+"#;
+
+    fn stub_with_project_env_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
+        let dir = tempdir().expect("tempdir");
+        let forge_dir = crate::config::ensure_forge_data_dir(dir.path()).expect("forge dir");
+        fs::write(forge_dir.join("forge.toml"), PROJECT_ENV_FIXTURE).expect("write forge.toml");
+        let config = crate::config::load_from_dir(dir.path()).expect("load config");
+        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config);
+        (ws, dir)
+    }
+
+    /// `SessionTarget::Default` is the alphabetically-first auto_start
+    /// project, and its env must reach the spawn.
+    #[test]
+    fn session_env_for_default_target_applies_the_default_projects_env() {
+        let (ws, _dir) = stub_with_project_env_fixture();
+        let env = ws.session_env_for(&SessionTarget::Default, &std::collections::HashMap::new());
+        assert_eq!(
+            env.get("BUSYMAIL_TOKEN").map(String::as_str),
+            Some("busymail-value"),
+            "the Default arm must resolve to the default project, not None",
+        );
+        assert!(!env.contains_key("SUBSPACE_TOKEN"), "and not to any other project");
+    }
+
+    /// `FreshInProject` is the workers-MCP spawn path. If this arm stops
+    /// resolving, a worker runs without its project's declared keys and
+    /// the symptom surfaces inside the worker rather than at boot.
+    #[test]
+    fn session_env_for_fresh_in_project_applies_that_projects_env() {
+        let (ws, _dir) = stub_with_project_env_fixture();
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                "/tmp/wt-env-subspace",
+            )),
+        );
+        let target = SessionTarget::FreshInProject {
+            project_key,
+            synth_key: SessionKey::from_session_id("__spawn_subspace__"),
+        };
+        let env = ws.session_env_for(&target, &std::collections::HashMap::new());
+        assert_eq!(
+            env.get("SUBSPACE_TOKEN").map(String::as_str),
+            Some("subspace-value"),
+            "a fresh worker spawn must get its own project's env",
+        );
+        assert!(!env.contains_key("BUSYMAIL_TOKEN"), "and not the default project's");
+    }
+
     #[test]
     fn project_accounts_for_resolves_worktree_session_to_parent_project() {
         // A session whose cwd is a worktree under the subspace root must
