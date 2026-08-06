@@ -744,6 +744,98 @@ BUSYMAIL_TOKEN = "typo-in-the-project-name"
         );
     }
 
+    /// Two projects on one account, one declaring env. The other must
+    /// not receive it. This is the reason the project layer merges at
+    /// the spawn site instead of into the account at load: an account
+    /// is shared, so a project's keys landing on it would reach every
+    /// other project spawning under the same account.
+    #[test]
+    fn one_projects_env_does_not_reach_another_on_the_same_account() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[orgs.projects]]
+name = "busymail"
+path = "~/Projects/busymail"
+
+[[accounts]]
+display_name = "Codex"
+config_dir = "~/.claude-codex"
+[accounts.env]
+ANTHROPIC_BASE_URL = "http://localhost:18765"
+
+[projects.forge.env]
+BUSYMAIL_TOKEN = "forge-only-secret"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        let account = &config.accounts[0];
+
+        let forge_env = config.session_env("forge", &account.env);
+        assert_eq!(
+            forge_env.get("BUSYMAIL_TOKEN").map(String::as_str),
+            Some("forge-only-secret"),
+            "the declaring project gets its own key",
+        );
+
+        let busymail_env = config.session_env("busymail", &account.env);
+        assert!(
+            !busymail_env.contains_key("BUSYMAIL_TOKEN"),
+            "another project on the SAME account must not receive it, got: {busymail_env:?}",
+        );
+        assert_eq!(
+            busymail_env, account.env,
+            "a project declaring no env gets exactly the account env, nothing borrowed",
+        );
+    }
+
+    /// Two projects each declaring the SAME key on one account. Each
+    /// must see its own value, not whichever loaded last.
+    #[test]
+    fn each_project_sees_its_own_value_for_a_shared_key() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[orgs.projects]]
+name = "busymail"
+path = "~/Projects/busymail"
+
+[[accounts]]
+display_name = "Codex"
+config_dir = "~/.claude-codex"
+
+[projects.forge.env]
+API_TOKEN = "forge-token"
+[projects.busymail.env]
+API_TOKEN = "busymail-token"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        let account = &config.accounts[0];
+        assert_eq!(
+            config.session_env("forge", &account.env).get("API_TOKEN").map(String::as_str),
+            Some("forge-token"),
+        );
+        assert_eq!(
+            config.session_env("busymail", &account.env).get("API_TOKEN").map(String::as_str),
+            Some("busymail-token"),
+        );
+    }
+
     #[test]
     fn account_env_overrides_global_in_session_env() {
         assert_eq!(
