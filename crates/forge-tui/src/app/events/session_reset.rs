@@ -354,8 +354,9 @@ mod tests {
     //! Regression coverage for the launchpad-spinner-stuck bug.
     //! End-to-end: walking on-disk history through the shared SDK
     //! dispatcher must NOT leave the bucket's lifecycle stuck on
-    //! `Running`. The unit-level gate lives in `events/sdk_message.rs`;
-    //! this test pins the integration behaviour.
+    //! `Running`. The unit-level gate lives in `events/sdk_message.rs`.
+    //! The tests below cover a second contract on the same walk: which
+    //! records the replay may emit, and which it must not.
     use super::load_resume_history;
     use crate::app::session::SessionLifecycleState;
     use crate::app::{App, MessageBlock, MessageRole};
@@ -377,6 +378,395 @@ mod tests {
             parent_tool_use_id: None,
             error: None,
             uuid: None,
+        }
+    }
+
+    fn historical_tool_use_named(id: &str, name: &str, input: Value) -> Message {
+        Message::Assistant {
+            message: AssistantEnvelope {
+                id: "msg_history".to_owned(),
+                role: "assistant".to_owned(),
+                model: "claude-test".to_owned(),
+                content: vec![ContentBlock::ToolUse {
+                    id: id.to_owned(),
+                    name: name.to_owned(),
+                    input,
+                }],
+                stop_reason: None,
+                stop_sequence: None,
+                usage: None,
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            error: None,
+            uuid: None,
+        }
+    }
+
+    fn historical_tool_use(id: &str) -> Message {
+        historical_tool_use_named(id, "Bash", serde_json::json!({"command": "echo hi"}))
+    }
+
+    fn historical_tool_result(id: &str, is_error: bool) -> Message {
+        historical_tool_result_text(id, is_error, if is_error { "boom" } else { "ok" })
+    }
+
+    fn historical_tool_result_text(id: &str, is_error: bool, text: &str) -> Message {
+        Message::User {
+            message: UserEnvelope {
+                role: "user".to_owned(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: id.to_owned(),
+                    content: Value::String(text.to_owned()),
+                    is_error,
+                }],
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            uuid: None,
+            tool_use_result: None,
+        }
+    }
+
+    /// One `(level, event_name)` per emitted record.
+    #[derive(Clone, Default)]
+    struct EventCapture(std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String)>>>);
+
+    impl EventCapture {
+        fn names_at(&self, level: tracing::Level) -> Vec<String> {
+            let seen = self.0.lock().expect("capture");
+            seen.iter()
+                .filter(|(seen_level, _)| *seen_level == level)
+                .map(|(_, name)| name.clone())
+                .collect()
+        }
+    }
+
+    struct EventNameVisitor(Option<String>);
+
+    impl tracing::field::Visit for EventNameVisitor {
+        // Every `event_name` arrives here - plain, `%` and `?` alike -
+        // because `record_str` forwards to this arm.
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "event_name" {
+                self.0 = Some(format!("{value:?}").trim_matches('"').to_owned());
+            }
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for EventCapture {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut visitor = EventNameVisitor(None);
+            event.record(&mut visitor);
+            let name = visitor.0.unwrap_or_else(|| event.metadata().name().to_owned());
+            self.0.lock().expect("capture").push((*event.metadata().level(), name));
+        }
+    }
+
+    fn tool_call_status(app: &App, id: &str) -> Option<crate::agent::model::ToolCallStatus> {
+        let (mi, bi) = app.lookup_tool_call(id)?;
+        match app.messages().get(mi)?.blocks.get(bi)? {
+            MessageBlock::ToolCall(tc) => Some(tc.status),
+            _ => None,
+        }
+    }
+
+    /// Returns the capture AND the walked `App`, so liveness can be
+    /// asserted from state rather than from records.
+    fn capture_replay_of(history: &[Message]) -> (EventCapture, App) {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let capture = EventCapture::default();
+        let subscriber = tracing_subscriber::registry().with(capture.clone());
+        let mut app = App::test_default();
+        tracing::subscriber::with_default(subscriber, || {
+            load_resume_history(&mut app, history);
+        });
+        (capture, app)
+    }
+
+    /// The replayed shapes a tool call can reach: completed, failed,
+    /// refused, plus the `TaskCreate` / `TaskUpdate` pair.
+    /// `Killed` is absent because the JSONL parser admits only user,
+    /// assistant and queued-command attachment rows, so no
+    /// status-bearing wire message reaches the walk at all.
+    fn replay_fixture() -> Vec<Message> {
+        vec![
+            historical_user_text("run something"),
+            historical_tool_use("toolu_ok"),
+            // Re-stated in flight - reaches the shared emitter's DEBUG arm.
+            historical_tool_use_named(
+                "toolu_ok",
+                "Bash",
+                serde_json::json!({"command": "echo hi again"}),
+            ),
+            historical_tool_result("toolu_ok", false),
+            historical_tool_use("toolu_err"),
+            historical_tool_result("toolu_err", true),
+            historical_tool_use("toolu_slow"),
+            historical_tool_result_text("toolu_slow", true, "the command timed out after 120s"),
+            historical_tool_use("toolu_refused"),
+            historical_tool_result_text("toolu_refused", true, "permission denied by the user"),
+            historical_tool_use_named(
+                "toolu_task",
+                "TaskCreate",
+                serde_json::json!({"subject": "ship it", "activeForm": "shipping it"}),
+            ),
+            historical_tool_result_text(
+                "toolu_task",
+                false,
+                "Task #7 created successfully: ship it",
+            ),
+            historical_tool_use_named(
+                "toolu_task_done",
+                "TaskUpdate",
+                serde_json::json!({"taskId": "7", "status": "completed"}),
+            ),
+            historical_tool_result_text("toolu_task_done", false, "Task #7 updated"),
+            // A second task, reworded by its update: the first keeps its
+            // create-time `active_form`, this one gets a new one, so a
+            // gate blanking the field on either side has somewhere to
+            // show. `in_progress` is the status the inspector renders
+            // `active_form` for.
+            historical_tool_use_named(
+                "toolu_task2",
+                "TaskCreate",
+                serde_json::json!({"subject": "draft it", "activeForm": "drafting it"}),
+            ),
+            historical_tool_result_text(
+                "toolu_task2",
+                false,
+                "Task #8 created successfully: draft it",
+            ),
+            historical_tool_use_named(
+                "toolu_task2_upd",
+                "TaskUpdate",
+                serde_json::json!({
+                    "taskId": "8",
+                    "subject": "revise it",
+                    "activeForm": "revising it",
+                    "status": "in_progress"
+                }),
+            ),
+            historical_tool_result_text("toolu_task2_upd", false, "Task #8 updated"),
+            // An unrecognised status: the only shape that reaches the
+            // unknown-status warning, and the reason that warning has a
+            // test at all.
+            historical_tool_use_named(
+                "toolu_task2_odd",
+                "TaskUpdate",
+                serde_json::json!({"taskId": "8", "status": "cancelled"}),
+            ),
+            historical_tool_result_text("toolu_task2_odd", false, "Task #8 untouched"),
+            historical_assistant("done"),
+        ]
+    }
+
+    /// Every record the gate is meant to silence, one per emitting site.
+    const SILENCED_ON_REPLAY: [&str; 6] = [
+        "tool_call_received",
+        "command_started",
+        "command_completed",
+        "tool_call_completed",
+        "task_create_applied",
+        "task_update_applied",
+    ];
+
+    /// `Visit::record_str` forwards to `record_debug`, so every way the
+    /// macros write `event_name` arrives through that one arm. Breaking
+    /// it fails this test and every test that reads a name through the
+    /// capture, which is what deleting the redundant override bought.
+    #[test]
+    fn capture_reads_event_name_however_it_was_recorded() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let capture = EventCapture::default();
+        let subscriber = tracing_subscriber::registry().with(capture.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(event_name = "plain", message = "str-recorded");
+            tracing::info!(event_name = %"displayed", message = "display-recorded");
+            tracing::warn!(event_name = ?"debugged", message = "debug-recorded");
+        });
+
+        assert_eq!(capture.names_at(tracing::Level::INFO), vec!["plain", "displayed"]);
+        assert_eq!(capture.names_at(tracing::Level::WARN), vec!["debugged"]);
+    }
+
+    /// Replaying history re-renders envelopes that were already logged
+    /// when they first happened, so the walk must not re-emit them as
+    /// operational records.
+    #[test]
+    fn replay_walk_emits_no_success_records() {
+        let (capture, app) = capture_replay_of(&replay_fixture());
+
+        assert_eq!(
+            tool_call_status(&app, "toolu_ok"),
+            Some(crate::agent::model::ToolCallStatus::Completed),
+            "a completed call must end the walk terminal, not merely exist",
+        );
+        assert!(app.lookup_tool_call("toolu_err").is_some(), "the failed call never landed");
+        assert!(app.lookup_tool_call("toolu_refused").is_some(), "the refused call never landed");
+        assert!(!app.todos().is_empty(), "the Task pair never reached the inspector");
+
+        // Closed world rather than a deny-list.
+        let mut info = capture.names_at(tracing::Level::INFO);
+        info.sort_unstable();
+        info.dedup();
+        assert_eq!(
+            info,
+            vec!["tool_call_refused".to_owned()],
+            "a replay may emit exactly one distinct INFO name, the refusal. Adding another is a \
+             deliberate decision - record it in SILENCED_ON_REPLAY or here, not by widening this \
+             assertion in passing",
+        );
+        // At every level, not only INFO: re-levelling a gated record
+        // still writes it, and `app.command` is at debug in the default
+        // directives, so a record re-levelled there reaches the ring.
+        // ERROR matters most - it sits above every default directive,
+        // so nothing downstream can filter it. TRACE is a forward
+        // guard; the walk emits nothing there today.
+        for level in [
+            tracing::Level::ERROR,
+            tracing::Level::WARN,
+            tracing::Level::DEBUG,
+            tracing::Level::TRACE,
+        ] {
+            let names = capture.names_at(level);
+            for silenced in SILENCED_ON_REPLAY {
+                assert!(
+                    !names.iter().any(|name| name == silenced),
+                    "replay emitted `{silenced}` at {level}, saw {names:?}",
+                );
+            }
+        }
+    }
+
+    /// The other half of the same contract: quieting the replay must
+    /// not quiet what went wrong in it. `tool_call_refused` is INFO
+    /// upstream but is a failure, which is why the gate keys on the
+    /// record's outcome rather than on its level.
+    #[test]
+    fn replay_walk_still_reports_what_went_wrong() {
+        let (capture, _app) = capture_replay_of(&replay_fixture());
+
+        let warnings = capture.names_at(tracing::Level::WARN);
+        for expected in [
+            "command_failed",
+            "tool_call_failed",
+            "tool_call_timeout",
+            "task_update_unknown_status",
+        ] {
+            assert!(
+                warnings.iter().any(|name| name == expected),
+                "replay lost `{expected}`, saw {warnings:?}",
+            );
+        }
+        let info = capture.names_at(tracing::Level::INFO);
+        assert!(
+            info.iter().any(|name| name == "tool_call_refused"),
+            "a refusal is a failure wearing an INFO level - it must survive, saw {info:?}",
+        );
+        let debug = capture.names_at(tracing::Level::DEBUG);
+        assert!(
+            debug.iter().any(|name| name == "tool_call_updated"),
+            "the shared emitter's DEBUG arm must survive, saw {debug:?}",
+        );
+        assert!(
+            debug.iter().any(|name| name == "resume_user_text_rendered"),
+            "the replay path's own debug trail is deliberately kept, saw {debug:?}",
+        );
+    }
+
+    /// The gate decides which records are written. It must never decide
+    /// what the user ends up looking at - so a replayed walk and a live
+    /// walk over the same envelopes have to land the same state. This
+    /// covers the state the task-delta block can reach, which is where
+    /// a gate can suppress one.
+    ///
+    /// Deliberately not a general state diff. Below the gate, the four
+    /// `&App` sites only read fields and hand them to a tracing macro,
+    /// so there is no state for them to suppress - `&App` alone does
+    /// not establish that, since `TerminalMap` is an `Rc<RefCell<_>>` a
+    /// shared reference can still mutate through. A wider fingerprint
+    /// would also fail on clean code, since a replay legitimately adds
+    /// a welcome message, renders user text the live walker drops, and
+    /// rebuilds render-cache accounting.
+    ///
+    /// "Live" here means the reducer: `replay_in_progress` is set only
+    /// inside `load_resume_history` and every reader sits below
+    /// `apply_session_update`, so a divergence introduced above that
+    /// line is a routing defect and a different test's job.
+    #[test]
+    fn replay_and_live_walks_land_identical_state() {
+        let fixture = replay_fixture();
+        let (_capture, replayed) = capture_replay_of(&fixture);
+
+        let mut live = App::test_default();
+        for msg in fixture {
+            super::super::sdk_message::handle_sdk_message(&mut live, msg);
+        }
+
+        for id in [
+            "toolu_ok",
+            "toolu_err",
+            "toolu_slow",
+            "toolu_refused",
+            "toolu_task",
+            "toolu_task_done",
+            "toolu_task2",
+            "toolu_task2_upd",
+            "toolu_task2_odd",
+        ] {
+            assert_eq!(
+                tool_call_status(&replayed, id),
+                tool_call_status(&live, id),
+                "replay and live disagree on the status of `{id}`",
+            );
+        }
+
+        let todos_of = |app: &App| {
+            app.todos()
+                .iter()
+                // Destructured so a new `TodoItem` field is a compile
+                // error here rather than a silently uncompared one.
+                .map(|crate::app::TodoItem { id, content, status, active_form }| {
+                    (id.clone(), content.clone(), status.clone(), active_form.clone())
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            todos_of(&replayed),
+            todos_of(&live),
+            "replay and live disagree on the inspector's task list",
+        );
+    }
+
+    /// The gate has to be OFF everywhere else: a live tool call is an
+    /// event, and these records are how the log says so.
+    #[test]
+    fn live_tool_calls_still_emit_their_operational_records() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let capture = EventCapture::default();
+        let subscriber = tracing_subscriber::registry().with(capture.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            let mut app = App::test_default();
+            assert!(!app.replay_in_progress, "live path: the gate must be off");
+            for msg in replay_fixture() {
+                super::super::sdk_message::handle_sdk_message(&mut app, msg);
+            }
+        });
+
+        let info = capture.names_at(tracing::Level::INFO);
+        for expected in SILENCED_ON_REPLAY {
+            assert!(
+                info.iter().any(|name| name == expected),
+                "live path lost `{expected}`, saw {info:?}",
+            );
         }
     }
 
