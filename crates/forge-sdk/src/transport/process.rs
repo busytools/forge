@@ -102,6 +102,51 @@ fn parse_semver_triple(s: &str) -> Option<(u32, u32, u32)> {
     Some((major, minor, patch))
 }
 
+/// Every flag [`build_args`] can emit.
+///
+/// A flag added there and not added here goes unlogged, which is the
+/// intended direction: the failure mode is silence rather than
+/// disclosure. `extra_args` flags are user-defined and deliberately
+/// absent - admitting arbitrary names is what would let a value
+/// through.
+const LOGGABLE_FLAGS: [&str; 18] = [
+    "output-format",
+    "verbose",
+    "system-prompt",
+    "system-prompt-file",
+    "append-system-prompt",
+    "allowedTools",
+    "max-turns",
+    "model",
+    "permission-prompt-tool",
+    "permission-mode",
+    "resume",
+    "session-id",
+    "settings",
+    "mcp-config",
+    "setting-sources",
+    "plugin-dir",
+    "effort",
+    "input-format",
+];
+
+/// The recognised flag names in an argv, with every value dropped.
+///
+/// Argv is not safe to render: `--mcp-config` serialises each external
+/// MCP server verbatim including its `env` and `headers`, `--settings`
+/// can be inline JSON rather than a path, the system prompt is passed
+/// inline, and `extra_args` values are arbitrary. Matching against
+/// [`LOGGABLE_FLAGS`] rather than on a `--` prefix is what makes a
+/// value unable to reach the log even when it looks like a flag.
+fn flag_names(args: &[String]) -> String {
+    args.iter()
+        .filter_map(|token| token.strip_prefix("--"))
+        .map(|name| name.split('=').next().unwrap_or(name))
+        .filter(|name| LOGGABLE_FLAGS.contains(name))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Outcome of one writer-task operation. Sent back over a oneshot the
 /// caller provides.
 type IoAck = Result<(), Error>;
@@ -180,8 +225,9 @@ impl Subprocess {
                 })?;
             check_cli_version(&reported, min)?;
         }
+        let args = build_args(options)?;
         let mut cmd = Command::new(&options.binary);
-        cmd.args(build_args(options)?);
+        cmd.args(&args);
         if let Some(cwd) = &options.cwd {
             cmd.current_dir(cwd);
         }
@@ -246,7 +292,12 @@ impl Subprocess {
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.kill_on_drop(true);
 
-        debug!(?cmd, "spawning claude subprocess");
+        debug!(
+            binary = %options.binary,
+            cwd = ?options.cwd,
+            flags = %flag_names(&args),
+            "spawning claude subprocess"
+        );
         let mut child = cmd.spawn().map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => Error::CliNotFound { binary: options.binary.clone() },
             _ => Error::Io(e),
@@ -653,6 +704,167 @@ mod tests {
 
     use super::*;
     use std::time::Duration;
+
+    /// Every field of every record, formatted, in one buffer.
+    #[derive(Clone, Default)]
+    struct FieldCapture(Arc<std::sync::Mutex<String>>);
+
+    impl FieldCapture {
+        fn text(&self) -> String {
+            self.0.lock().expect("capture").clone()
+        }
+    }
+
+    struct AllFields<'a>(&'a mut String);
+
+    impl tracing::field::Visit for AllFields<'_> {
+        // `record_str` forwards here, so every field arrives through
+        // this one arm however the macro wrote it.
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            use std::fmt::Write;
+            let _ = write!(self.0, " {}={value:?}", field.name());
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for FieldCapture {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut buf = self.0.lock().expect("capture");
+            buf.push_str(event.metadata().target());
+            event.record(&mut AllFields(&mut buf));
+            buf.push('\n');
+        }
+    }
+
+    /// An `Options` whose every secret-bearing surface carries a
+    /// findable sentinel: the env map, an external MCP server's
+    /// headers, an `extra_args` value, and the inline system prompt.
+    fn options_with_secrets() -> Options {
+        let mut options = crate::OptionsBuilder::new()
+            // Never spawns. The record under test is written before
+            // `cmd.spawn()`, so a missing binary still exercises it.
+            .binary("/nonexistent/claude-for-this-test")
+            .model("claude-test")
+            .resume("session-abc")
+            .system_prompt(crate::SystemPromptKind::Inline(
+                "sentinel-system-prompt-must-never-be-logged".to_owned(),
+            ))
+            .env("ANTHROPIC_AUTH_TOKEN", "sentinel-auth-must-never-be-logged")
+            .env("BUSYMAIL_TOKEN", "sentinel-busymail-must-never-be-logged")
+            .extra_arg("some-flag", Some("sentinel-extra-arg-must-never-be-logged".to_owned()))
+            // A value shaped like a flag. Anything keying on a `--`
+            // prefix rather than on a known name renders this one.
+            .extra_arg("odd-flag", Some("--sentinel-dashed-must-never-be-logged".to_owned()))
+            .build();
+        // The probe is a separate fork+exec that would fail first and
+        // never reach the record under test.
+        options.minimum_cli_version = None;
+        options.external_mcp_servers.insert(
+            "billing".to_owned(),
+            forge_primitives::McpServerConfig::Http {
+                url: "https://mcp.example.com".to_owned(),
+                headers: std::collections::HashMap::from([(
+                    "Authorization".to_owned(),
+                    "Bearer sentinel-mcp-header-must-never-be-logged".to_owned(),
+                )]),
+            },
+        );
+        options
+    }
+
+    /// Declared secrets, read back off the `Options` rather than
+    /// restated, so a sentinel added to the fixture is asserted
+    /// without touching the assertion.
+    fn declared_secrets(options: &Options) -> Vec<String> {
+        let mut secrets: Vec<String> = options.env.values().cloned().collect();
+        secrets.extend(options.extra_args.values().flatten().cloned());
+        for cfg in options.external_mcp_servers.values() {
+            match cfg {
+                forge_primitives::McpServerConfig::Stdio { env, .. } => {
+                    secrets.extend(env.values().cloned());
+                }
+                forge_primitives::McpServerConfig::Sse { headers, .. }
+                | forge_primitives::McpServerConfig::Http { headers, .. } => {
+                    secrets.extend(headers.values().cloned());
+                }
+            }
+        }
+        if let Some(crate::SystemPromptKind::Inline(text)) = &options.system_prompt {
+            secrets.push(text.clone());
+        }
+        secrets
+    }
+
+    /// The spawn record must not render a credential.
+    ///
+    /// Two independent carriers reach that line. `Command`'s unix
+    /// `Debug` writes every explicitly-set variable as `KEY="value"`,
+    /// so `?cmd` published the whole environment. Argv carries the
+    /// rest: `--mcp-config` serialises each external server verbatim
+    /// including `Stdio { env }` and `Sse`/`Http` `{ headers }`,
+    /// `--settings` is inline JSON rather than a path, and
+    /// `extra_args` values are arbitrary.
+    ///
+    /// Captured at TRACE and installed globally so a record emitted
+    /// off the test's own thread still lands - a thread-local
+    /// subscriber at the default level sees none of this.
+    #[tokio::test]
+    async fn spawn_record_renders_no_declared_secret() {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        let capture = FieldCapture::default();
+        tracing_subscriber::registry()
+            .with(capture.clone())
+            .with(tracing_subscriber::filter::LevelFilter::TRACE)
+            .init();
+
+        let options = options_with_secrets();
+        let result = Subprocess::spawn(&options).await;
+        assert!(
+            matches!(result, Err(Error::CliNotFound { .. })),
+            "fixture binary must not exist, got {:?}",
+            result.as_ref().err()
+        );
+
+        let logged = capture.text();
+        assert!(
+            logged.contains("spawning claude subprocess"),
+            "the record under test never fired, so nothing was proved: {logged:?}",
+        );
+        for secret in declared_secrets(&options) {
+            assert!(!logged.contains(&secret), "spawn record leaked a declared secret: {logged:?}");
+        }
+
+        // The other half: redacting must not gut the line. Flag
+        // presence is the triage value it is kept for.
+        assert!(logged.contains("binary=/nonexistent/claude-for-this-test"), "{logged:?}");
+        for flag in ["resume", "model", "mcp-config"] {
+            assert!(logged.contains(flag), "spawn record dropped `--{flag}`: {logged:?}");
+        }
+    }
+
+    /// Recognition is by name, not by a `--` prefix. The dashed value
+    /// is the case that separates the two: anything keying on the
+    /// prefix renders it, and it is a value.
+    #[test]
+    fn flag_names_keeps_known_flags_and_drops_every_value() {
+        let args: Vec<String> = [
+            "--verbose",
+            "--system-prompt",
+            "plain text value",
+            "--setting-sources=user",
+            "--unknown-to-the-list",
+            "--dashed-value-of-an-extra-arg",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+        assert_eq!(flag_names(&args), "verbose system-prompt setting-sources");
+    }
 
     /// Build a [`Subprocess`] wrapping a long-running mock that ignores
     /// stdin (`/bin/sleep 30`). Bypasses [`build_args`] - only relevant
