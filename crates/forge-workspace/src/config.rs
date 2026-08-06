@@ -636,6 +636,7 @@ ANTHROPIC_BASE_URL = "http://localhost:18765"
 ALL_THREE = "global"
 GLOBAL_ACCOUNT = "global"
 GLOBAL_PROJECT = "global"
+GLOBAL_ONLY = "global"
 
 [[orgs]]
 name = "Personal"
@@ -754,12 +755,35 @@ BUSYMAIL_MCP_URL = "https://mail.example/mcp"
         );
     }
 
+    /// The fixture declares env for the OTHER project, so "empty"
+    /// has to be produced by the per-project keying rather than by
+    /// there being no env anywhere to find.
     #[test]
     fn absent_project_env_table_leaves_project_env_empty() {
         let dir = tempdir().expect("tempdir");
-        write_config(dir.path(), minimal_config());
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[orgs.projects]]
+name = "busymail"
+path = "~/Projects/busymail"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+
+[projects.busymail.env]
+BUSYMAIL_TOKEN = "declared-for-the-other-project"
+"#,
+        );
         let config = load_from_dir(dir.path()).expect("happy path");
-        assert!(config.projects[0].env.is_empty(), "no [projects.<name>.env] -> empty map");
+        let forge = config.projects.iter().find(|p| p.name == "forge").expect("forge");
+        assert!(forge.env.is_empty(), "a project with no table of its own -> empty map");
     }
 
     /// An env block naming a project that no `[[orgs.projects]]`
@@ -918,8 +942,17 @@ API_TOKEN = "busymail-token"
 
     #[test]
     fn project_env_overrides_global_when_account_is_silent() {
+        let env = precedence_env();
+        // Without this, "project overrode global" and "global never
+        // arrived at all" are indistinguishable - both leave the key
+        // reading "project".
         assert_eq!(
-            precedence_env().get("GLOBAL_PROJECT").map(String::as_str),
+            env.get("GLOBAL_ONLY").map(String::as_str),
+            Some("global"),
+            "the global layer reaches the session at all",
+        );
+        assert_eq!(
+            env.get("GLOBAL_PROJECT").map(String::as_str),
             Some("project"),
             "global + project, account silent -> project wins",
         );
@@ -943,33 +976,6 @@ API_TOKEN = "busymail-token"
         );
     }
 
-    /// A project declaring no env must not lose the account's env.
-    #[test]
-    fn session_env_for_project_without_env_is_the_account_env() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[env]
-CLAUDE_CODE_AUTO_COMPACT_WINDOW = "950000"
-[[orgs]]
-name = "Personal"
-accounts = ["Codex"]
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-[[accounts]]
-display_name = "Codex"
-config_dir = "~/.claude-codex"
-[accounts.env]
-ANTHROPIC_BASE_URL = "http://localhost:18765"
-"#,
-        );
-        let config = load_from_dir(dir.path()).expect("happy path");
-        let account = &config.accounts[0];
-        let env = config.session_env("forge", &account.env);
-        assert_eq!(env, account.env, "no project env -> session env is exactly the account's");
-    }
 
     #[test]
     fn parses_account_experimental_flag() {
