@@ -322,7 +322,12 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         env.extend(entry.env);
         accounts.push(LoadedAccount {
             display_name: entry.display_name,
-            config_dir: expand_home(&entry.config_dir),
+            config_dir: expand_home(&entry.config_dir).ok_or_else(|| {
+                WorkspaceError::HomeDirUnavailable {
+                    path: path.clone(),
+                    value: entry.config_dir.clone(),
+                }
+            })?,
             proxy: entry.proxy,
             env,
             experimental: entry.experimental,
@@ -397,9 +402,28 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 .remove(&project_entry.name)
                 .map(|table| table.env)
                 .unwrap_or_default();
+            let project_path = expand_home(&project_entry.path).ok_or_else(|| {
+                WorkspaceError::HomeDirUnavailable {
+                    path: path.clone(),
+                    value: project_entry.path.clone(),
+                }
+            })?;
+            // The EXPANDED path, not the raw string: every real entry is
+            // `~/Projects/...`, which is not absolute until expansion.
+            // A relative path reaches `fs::canonicalize`, which resolves
+            // it against the process cwd, so the storage key - and with
+            // it which project's env a session gets - would depend on
+            // the launch directory (HR#15).
+            if !project_path.is_absolute() {
+                return Err(WorkspaceError::RelativeProjectPath {
+                    path,
+                    project: project_entry.name,
+                    value: project_entry.path,
+                });
+            }
             projects.push(LoadedProject {
                 name: project_entry.name,
-                path: expand_home(&project_entry.path),
+                path: project_path,
                 display_path: project_entry.path,
                 org: org_entry.name.clone(),
                 accounts: org_entry.accounts.clone(),
@@ -474,13 +498,16 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     Ok(LoadedConfig { projects, default_index, accounts, ui: parsed.ui, gotify: parsed.gotify })
 }
 
-pub(crate) fn expand_home(path: &str) -> PathBuf {
-    if let Some(stripped) = path.strip_prefix("~/")
-        && let Some(home) = dirs::home_dir()
-    {
-        return home.join(stripped);
+/// `None` when the path needs `$HOME` and it is unavailable. Returning
+/// the literal `~/...` there would leave a relative path that
+/// `fs::canonicalize` resolves against the process cwd, making the
+/// result depend on where forge was launched (HR#15), so the operation
+/// fails instead of substituting a cwd-derived answer.
+pub(crate) fn expand_home(path: &str) -> Option<PathBuf> {
+    match path.strip_prefix("~/") {
+        Some(stripped) => dirs::home_dir().map(|home| home.join(stripped)),
+        None => Some(PathBuf::from(path)),
     }
-    PathBuf::from(path)
 }
 
 #[cfg(test)]
@@ -795,6 +822,78 @@ config_dir = "~/.claude-subspace"
             let msg = load_from_dir(dir.path()).expect_err(label).to_string();
             assert!(msg.contains("env"), "{label}: error must name the stray field, got: {msg}");
         }
+    }
+
+    /// A relative path reaches `fs::canonicalize`, which resolves it
+    /// against the process cwd - so the same forge.toml would load a
+    /// different project, and route a different project's env, per
+    /// launch directory.
+    #[test]
+    fn a_relative_project_path_is_rejected() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "forge"
+path = "relx/forge"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+"#,
+        );
+        let msg = load_from_dir(dir.path()).expect_err("relative path must not load").to_string();
+        assert!(msg.contains("forge"), "names the project: {msg}");
+        assert!(msg.contains("relx/forge"), "and the offending value: {msg}");
+    }
+
+    /// The guard validates the EXPANDED path. Every real entry is
+    /// `~/Projects/...`, which is NOT absolute as a string, so a guard
+    /// on the raw value would refuse every project in the live config.
+    #[test]
+    fn a_tilde_project_path_still_loads() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), minimal_config());
+        let config = load_from_dir(dir.path()).expect("~/ paths must keep loading");
+        assert!(
+            config.projects[0].path.is_absolute(),
+            "expansion produced an absolute path: {:?}",
+            config.projects[0].path,
+        );
+    }
+
+    /// The property the guard exists for: identical config, two launch
+    /// directories, same outcome. Without it the relative path
+    /// canonicalises against the cwd and the two disagree.
+    #[test]
+    fn load_outcome_does_not_depend_on_the_launch_directory() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "forge"
+path = "relx/forge"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+"#,
+        );
+        let from_a = load_from_dir(dir.path()).is_err();
+        let elsewhere = tempdir().expect("second tempdir");
+        std::fs::create_dir_all(elsewhere.path().join("relx/forge")).expect("make it resolvable");
+        let restore = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(elsewhere.path()).expect("chdir");
+        let from_b = load_from_dir(dir.path()).is_err();
+        std::env::set_current_dir(restore).expect("restore cwd");
+        assert_eq!(from_a, from_b, "same config must load the same way from any cwd");
+        assert!(from_a, "and a relative path is refused in both");
     }
 
     /// `sanitize_path` maps every non-alphanumeric character to `-`,

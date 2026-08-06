@@ -139,43 +139,62 @@ fn record<'a>(log: &'a str, event_name: &str) -> &'a str {
         .unwrap_or_else(|| panic!("no {event_name} record in:\n{log}"))
 }
 
-/// Wait for the log to go quiet rather than yielding once. An absence
-/// assertion cannot poll for what must not appear, so it has to outlast
-/// the emitters: a value leaked onto a background task lands tens of
-/// milliseconds after the spawn call returns, and `yield_now` does not
-/// wait for it - which made every absence assertion here a race that
-/// degraded silently in the passing direction.
-async fn settled(capture: &Capture) -> String {
+/// Wait until `anchor` - a tracing target the spawn must reach - has
+/// appeared, then for the log to go quiet. A missing anchor FAILS.
+///
+/// Two things this replaces. Quiescence alone was a heuristic tuned to
+/// an incidental gap in this pipeline: three quiet 50ms samples happen
+/// to fall between two waves, so leaks deferred past ~1.5s survived it.
+/// And the capture silently loses depth by environment - with `claude`
+/// absent from PATH it collapses from ~56 lines to ~10, which is 82% of
+/// the surface gone with every assertion still passing, and the missing
+/// part is exactly where #564's leak lived. Anchoring on a target makes
+/// that collapse a failure instead of a quieter pass.
+async fn settled_after(capture: &Capture, anchor: &str) -> String {
     let mut last = capture.text();
     let mut quiet_rounds = 0;
-    for _ in 0..60 {
+    for _ in 0..120 {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let now = capture.text();
-        quiet_rounds = if now.len() == last.len() { quiet_rounds + 1 } else { 0 };
+        let grew = now.len() != last.len();
         last = now;
-        if quiet_rounds >= 3 {
-            break;
+        quiet_rounds = if grew { 0 } else { quiet_rounds + 1 };
+        if last.contains(anchor) && quiet_rounds >= 3 {
+            return last;
         }
     }
+    assert!(
+        last.contains(anchor),
+        "the spawn never reached {anchor}, so this capture covers less than it claims \
+         ({} lines). A shorter log is not a weaker assertion, it is an absent one: {last}",
+        last.lines().count(),
+    );
     last
 }
 
-async fn spawn_with_capture(target: SessionTarget) -> String {
-    spawn_with_fixture(target, FIXTURE).await
+/// A resolved target spawns the in-process MCP server, so this target
+/// only appears when the spawn got that far.
+const RESOLVED_ANCHOR: &str = "forge_sdk::mcp::server";
+/// An unresolved target still reaches the subprocess spawn, but never
+/// the MCP server - so it needs the shallower anchor.
+const UNRESOLVED_ANCHOR: &str = "forge_sdk::transport::process";
+
+async fn spawn_with_capture(target: SessionTarget, anchor: &str) -> String {
+    spawn_with_fixture(target, FIXTURE, anchor).await
 }
 
-async fn spawn_with_fixture(target: SessionTarget, fixture: &str) -> String {
+async fn spawn_with_fixture(target: SessionTarget, fixture: &str, anchor: &str) -> String {
     let capture = install_capture();
     let dir = tempdir().expect("tempdir");
     fs::write(forge_toml_path(dir.path()), fixture).expect("write forge.toml");
     let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
     workspace.get_agent_handle(target, SessionLaunchSettings::default()).expect("spawn");
-    settled(&capture).await
+    settled_after(&capture, anchor).await
 }
 
 #[tokio::test]
 async fn spawn_logs_key_names_and_never_a_declared_value() {
-    let log = spawn_with_capture(SessionTarget::Named("forge".to_owned())).await;
+    let log = spawn_with_capture(SessionTarget::Named("forge".to_owned()), RESOLVED_ANCHOR).await;
 
     let applied = record(&log, "session_env_project_applied");
     // Level asserted on the record: these are the only diagnostics for
@@ -201,9 +220,10 @@ async fn spawn_logs_key_names_and_never_a_declared_value() {
 
 #[tokio::test]
 async fn an_unresolved_spawn_target_warns() {
-    let log = spawn_with_capture(SessionTarget::Session(SessionKey::from_str_for_test(
-        "no-such-session",
-    )))
+    let log = spawn_with_capture(
+        SessionTarget::Session(SessionKey::from_str_for_test("no-such-session")),
+        UNRESOLVED_ANCHOR,
+    )
     .await;
 
     let unresolved = record(&log, "session_env_project_unresolved");
@@ -226,8 +246,12 @@ async fn an_unresolved_spawn_target_warns() {
 /// project a session actually resolved to.
 #[tokio::test]
 async fn the_applied_record_fires_for_a_project_declaring_no_env() {
-    let log =
-        spawn_with_fixture(SessionTarget::Named("forge".to_owned()), FIXTURE_NO_PROJECT_ENV).await;
+    let log = spawn_with_fixture(
+        SessionTarget::Named("forge".to_owned()),
+        FIXTURE_NO_PROJECT_ENV,
+        RESOLVED_ANCHOR,
+    )
+    .await;
 
     let applied = record(&log, "session_env_project_applied");
     assert!(applied.contains(r#""project":"forge""#), "names the resolved project: {applied}");
@@ -243,6 +267,7 @@ async fn the_unresolved_warn_is_silent_when_no_project_declares_env() {
     let log = spawn_with_fixture(
         SessionTarget::Session(SessionKey::from_str_for_test("no-such-session")),
         FIXTURE_NO_PROJECT_ENV,
+        UNRESOLVED_ANCHOR,
     )
     .await;
     assert!(

@@ -80,6 +80,18 @@ pub enum WorkspaceError {
     )]
     CollidingProjectStorageKey { path: PathBuf, first: String, second: String, key: String },
 
+    #[error(
+        "project '{project}' in forge.toml at {} has a relative path '{value}'. Session storage keys canonicalise against the process working directory, so a relative path makes the project - and which project's [projects.<name>.env] a session receives - depend on where forge was launched. Use an absolute path or a `~/` one",
+        path.display()
+    )]
+    RelativeProjectPath { path: PathBuf, project: String, value: String },
+
+    #[error(
+        "forge.toml at {} uses `~/` in '{value}' but the home directory is unavailable, so it cannot be expanded. Refusing rather than resolving it against the working directory",
+        path.display()
+    )]
+    HomeDirUnavailable { path: PathBuf, value: String },
+
     #[error("no project named '{name}' in forge.toml at {}", path.display())]
     ProjectNotFound { name: String, path: PathBuf },
 

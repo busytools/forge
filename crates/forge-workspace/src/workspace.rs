@@ -3176,7 +3176,7 @@ impl Workspace {
         if cwd.is_empty() {
             return None;
         }
-        let cwd = crate::config::expand_home(cwd);
+        let cwd = crate::config::expand_home(cwd)?;
         self.list_projects()
             .into_iter()
             .filter(|view| cwd.starts_with(&view.path))
