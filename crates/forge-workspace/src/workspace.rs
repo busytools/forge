@@ -2150,29 +2150,16 @@ impl Workspace {
             SessionTarget::Session(key) => key
                 .as_str()
                 .strip_prefix("__fresh__:")
-                .and_then(|project_key| self.project_by_storage_key(project_key))
+                .and_then(|project_key| {
+                    self.project_for_key(&ProjectKey::new(project_key.to_owned()))
+                })
                 .or_else(|| {
                     self.cwd_for_session(key)
                         .and_then(|cwd| self.project_name_for_path(&cwd))
                         .and_then(|name| self.find_project_view_by_name(&name))
                 }),
-            SessionTarget::FreshInProject { project_key, .. } => {
-                self.project_by_storage_key(project_key.as_str())
-            }
+            SessionTarget::FreshInProject { project_key, .. } => self.project_for_key(project_key),
         }
-    }
-
-    /// Project whose path sanitises to `project_key`.
-    fn project_by_storage_key(&self, project_key: &str) -> Option<LoadedProject> {
-        self.config
-            .projects
-            .iter()
-            .find(|p| {
-                forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                    &p.path.to_string_lossy(),
-                )) == project_key
-            })
-            .cloned()
     }
 
     /// Env for a spawn under `target` on the picked account. An
@@ -4558,6 +4545,14 @@ impl Workspace {
     /// spawns and the worktree path for resumed sessions - the two
     /// cases would otherwise need different composition logic).
     pub(crate) fn project_root_for_key(&self, target: &ProjectKey) -> Option<std::path::PathBuf> {
+        self.project_for_key(target).map(|p| p.path)
+    }
+
+    /// The project whose path canonicalises to `target`. Consults the
+    /// test overlay, like every other project lookup - a resolution
+    /// that saw only `config.projects` would return `None` for a seeded
+    /// project and make an absence assertion pass vacuously.
+    pub(crate) fn project_for_key(&self, target: &ProjectKey) -> Option<LoadedProject> {
         let derive_key = |project: &LoadedProject| {
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
                 &project.path.to_string_lossy(),
@@ -4568,10 +4563,10 @@ impl Workspace {
             if let Some(project) =
                 self.test_extra_projects.lock().iter().find(|p| &derive_key(p) == target).cloned()
             {
-                return Some(project.path);
+                return Some(project);
             }
         }
-        self.config.projects.iter().find(|p| &derive_key(p) == target).map(|p| p.path.clone())
+        self.config.projects.iter().find(|p| &derive_key(p) == target).cloned()
     }
 
     /// Resolve the cwd a git-diff scan should run against for the

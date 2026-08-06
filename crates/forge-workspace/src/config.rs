@@ -680,7 +680,6 @@ ANTHROPIC_BASE_URL = "http://localhost:18765"
         r#"
 [env]
 ALL_THREE = "global"
-GLOBAL_ACCOUNT = "global"
 GLOBAL_PROJECT = "global"
 GLOBAL_ONLY = "global"
 
@@ -696,8 +695,6 @@ display_name = "Codex"
 config_dir = "~/.claude-codex"
 [accounts.env]
 ALL_THREE = "account"
-GLOBAL_ACCOUNT = "account"
-ACCOUNT_ONLY = "account"
 
 [projects.forge.env]
 ALL_THREE = "project"
@@ -725,7 +722,10 @@ PROJECT_ONLY = "project"
         let cases = [
             ("mistyped inner table", "[projects.forge.envs]\nK = \"v\"\n", "envs"),
             ("keys without the .env nesting", "[projects.forge]\nK = \"v\"\n", "K"),
-            ("singular top-level table", "[project.forge.env]\nK = \"v\"\n", "project"),
+            // `project` alone also matches serde's "expected one of
+            // ... `projects`" tail, so the needle has to be the key as
+            // serde quotes it.
+            ("singular top-level table", "[project.forge.env]\nK = \"v\"\n", "`project`"),
             ("capitalised top-level table", "[Projects.forge.env]\nK = \"v\"\n", "Projects"),
             ("undeclared project name", "[projects.frge.env]\nK = \"v\"\n", "frge"),
         ];
@@ -798,9 +798,7 @@ config_dir = "~/.claude-subspace"
     }
 
     /// `sanitize_path` maps every non-alphanumeric character to `-`,
-    /// so distinct paths collide. Two projects sharing a storage key
-    /// can each resolve to the other, and the loser receives the
-    /// winner's declared env instead of its own.
+    /// so distinct paths collide.
     #[test]
     fn projects_colliding_on_one_storage_key_are_rejected() {
         let dir = tempdir().expect("tempdir");
@@ -1171,10 +1169,7 @@ F = "6"
     }
 
     /// Two projects on one account, one declaring env. The other must
-    /// not receive it. This is the reason the project layer merges at
-    /// the spawn site instead of into the account at load: an account
-    /// is shared, so a project's keys landing on it would reach every
-    /// other project spawning under the same account.
+    /// not receive it.
     #[test]
     fn one_projects_env_does_not_reach_another_on_the_same_account() {
         let dir = tempdir().expect("tempdir");

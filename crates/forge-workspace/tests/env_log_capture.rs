@@ -86,6 +86,25 @@ const SECRETS: [&str; 4] = [
 ];
 const GLOBAL_SECRET: &str = "global-secret-must-never-be-logged";
 
+/// Same shape with no `[projects.<name>.env]` at all - the case the
+/// applied record exists to cover, since a target resolving to a
+/// project you did not mean is only visible if the record fires when
+/// that project declares nothing.
+const FIXTURE_NO_PROJECT_ENV: &str = r#"
+[[orgs]]
+name = "Default"
+accounts = ["Subspace"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "/tmp/forge-test-logcap-noenv"
+"#;
+
 const FIXTURE: &str = r#"
 [env]
 GLOBAL_KEY = "global-secret-must-never-be-logged"
@@ -175,9 +194,13 @@ async fn settled(capture: &Capture) -> String {
 }
 
 async fn spawn_with_capture(target: SessionTarget) -> String {
+    spawn_with_fixture(target, FIXTURE).await
+}
+
+async fn spawn_with_fixture(target: SessionTarget, fixture: &str) -> String {
     let capture = install_capture();
     let dir = tempdir().expect("tempdir");
-    fs::write(forge_toml_path(dir.path()), FIXTURE).expect("write forge.toml");
+    fs::write(forge_toml_path(dir.path()), fixture).expect("write forge.toml");
     let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
     workspace.get_agent_handle(target, SessionLaunchSettings::default()).expect("spawn");
     settled(&capture).await
@@ -234,4 +257,30 @@ async fn an_unresolved_spawn_target_warns() {
     // The unresolved path returns global + account, so the global layer
     // is the one this test most needs to guard.
     assert!(!guarded.contains(GLOBAL_SECRET), "nor a global [env] value: {guarded}");
+}
+
+/// The record is unconditional by design, and that is the half nothing
+/// else pins: gating the `info!` on the project declaring env passes
+/// every other test, and takes with it the only signal that says which
+/// project a session actually resolved to.
+#[tokio::test]
+async fn the_applied_record_fires_for_a_project_declaring_no_env() {
+    let log =
+        spawn_with_fixture(SessionTarget::Named("forge".to_owned()), FIXTURE_NO_PROJECT_ENV).await;
+
+    let applied = record(&log, "session_env_project_applied");
+    assert!(applied.contains(r#""project":"forge""#), "names the resolved project: {applied}");
+    assert!(applied.contains(r#""keys":"""#), "with an empty key list, not a missing record");
+}
+
+/// The WARN's own gate is the untested half: replacing the
+/// "does any project declare env" condition with `true` fires it on
+/// every resolved spawn, which is noise rather than signal.
+#[tokio::test]
+async fn the_unresolved_warn_stays_silent_on_a_resolved_spawn() {
+    let log = spawn_with_capture(SessionTarget::Named("forge".to_owned())).await;
+    assert!(
+        !log.contains("session_env_project_unresolved"),
+        "a target that resolved must not warn about being unresolved: {log}",
+    );
 }
