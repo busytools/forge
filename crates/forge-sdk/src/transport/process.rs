@@ -136,10 +136,11 @@ const LOGGABLE_FLAGS: [&str; 18] = [
 /// flag - `--mcp-config` alone carries every external MCP server's
 /// `env` and `headers` verbatim.
 ///
-/// The count exists to make a silent omission loud, so it has to read
-/// zero on a healthy spawn. `extra_args` names are excluded because
-/// their own count reports them, which leaves this number meaning
-/// "a `--` token nothing accounts for".
+/// The count exists to make a silent omission loud, so it reads zero
+/// on every shape forge builds today. `extra_args` names are excluded
+/// because their own count reports them, which leaves this number
+/// meaning "a `--` token nothing accounts for". A repeated recognised
+/// flag also raises it - no production path emits one.
 fn flag_names(
     args: &[String],
     extra_args: &std::collections::HashMap<String, Option<String>>,
@@ -833,7 +834,14 @@ mod tests {
     fn declared_secrets(options: &Options) -> Vec<String> {
         let mut secrets: Vec<String> = options.env.values().cloned().collect();
         secrets.extend(options.extra_args.values().flatten().cloned());
+        // The blob AND its field values: `is_some()` is satisfied by
+        // `{}`, which would leave this carrier asserting nothing.
         secrets.extend(options.settings.clone());
+        if let Some(raw) = options.settings.as_deref()
+            && let Ok(serde_json::Value::Object(map)) = serde_json::from_str(raw)
+        {
+            secrets.extend(map.values().filter_map(|v| v.as_str().map(str::to_owned)));
+        }
         for cfg in options.external_mcp_servers.values() {
             match cfg {
                 forge_primitives::McpServerConfig::Stdio { env, .. } => {
@@ -861,10 +869,13 @@ mod tests {
     ///
     /// EVENT fields only. The capture implements `on_event`, so it
     /// cannot see an enclosing span's fields, and the production
-    /// formatter prints those on the same line - `bridge_new_session`
-    /// already contributes `cwd`, and the resume path adds
-    /// `session_id`. A field added to either span reaches this record
-    /// with this assertion still green.
+    /// formatter prints those on the same line. Four ancestors carry
+    /// them here: `agent_dispatch` (`config_dir`), `bridge_new_session`
+    /// (`cwd`), and `bridge_resume_session` and
+    /// `bridge_resume_or_new_session` (`session_id`, `cwd`). Every one
+    /// is a path or an id, so none can carry a credential - which is
+    /// why this is documented rather than instrumented. A field added
+    /// to any of them reaches this record with the assertion green.
     const SPAWN_RECORD_FIELDS: [&str; 6] =
         ["message", "binary", "cwd", "flags", "flags_dropped", "extra_args_len"];
 
@@ -893,7 +904,7 @@ mod tests {
     /// reach it independently: the child environment, and argv.
     #[test]
     fn spawn_record_renders_no_declared_secret() {
-        let mut shapes_seen = 0;
+        let mut prompt_flags: Vec<&str> = Vec::new();
         for shape in [PromptShape::Inline, PromptShape::PresetAppend] {
             let options = options_with_secrets(shape);
             let (logged, result) = capture_spawn(&options);
@@ -918,13 +929,18 @@ mod tests {
                     && options.extra_args.len() == 2
                     && options.settings.is_some()
                     && options.external_mcp_servers.len() == 3
-                    && secrets.len() == 9,
+                    && secrets.len() == 10,
                 "fixture composition changed, so the leak assertion covers less than it reads: \
                  {secrets:?}",
             );
-            shapes_seen += 1;
 
-            let argv = build_args(&options).expect("fixture argv").join("\u{1}");
+            let argv_tokens = build_args(&options).expect("fixture argv");
+            prompt_flags.extend(
+                ["--system-prompt", "--append-system-prompt"]
+                    .into_iter()
+                    .filter(|flag| argv_tokens.iter().any(|token| token == flag)),
+            );
+            let argv = argv_tokens.join("\u{1}");
             for secret in &secrets {
                 // Positive control: a sentinel that reaches neither argv
                 // nor the child env proves nothing by being absent.
@@ -976,10 +992,16 @@ mod tests {
                 );
             }
         }
-        // A count-preserving fixture edit can drop an iteration - and
-        // `PresetAppend` is the shape forge itself builds, so the
-        // droppable one is the production one.
-        assert_eq!(shapes_seen, 2, "a prompt shape stopped being exercised");
+        // Pin which shapes actually reached argv, not how many
+        // iterations ran: pointing `PresetAppend` at `Inline` keeps
+        // every count intact while `--append-system-prompt` stops
+        // being exercised, and that is the shape forge itself builds.
+        prompt_flags.sort_unstable();
+        assert_eq!(
+            prompt_flags,
+            ["--append-system-prompt", "--system-prompt"],
+            "a prompt shape stopped reaching argv",
+        );
     }
 
     /// Recognition is by name, not by a `--` prefix. The dashed value
@@ -1022,27 +1044,13 @@ mod tests {
     /// `Options` emits all of them and a behavioural sweep would miss
     /// whichever branch had no fixture.
     ///
-    /// Scoped to the function body, so a flag named in a doc comment
-    /// above it cannot report drift that does not exist. It sees only
-    /// literals in this file; a flag `build_args` obtains from
-    /// elsewhere is caught instead by the hard `flags_dropped`
+    /// It sees only literals in this file; a flag `build_args` obtains
+    /// from elsewhere is caught instead by the hard `flags_dropped`
     /// assertion in the spawn test, which counts what argv actually
     /// carried.
     #[test]
     fn loggable_flags_matches_every_flag_literal_in_build_args() {
-        let whole = include_str!("../argv.rs");
-        let src = &whole[whole.find("pub fn build_args").expect("build_args in argv.rs")..];
-        let mut found: Vec<&str> = Vec::new();
-        let mut rest = src;
-        while let Some(idx) = rest.find("\"--") {
-            let after = &rest[idx + 3..];
-            let end =
-                after.find(|c: char| !c.is_ascii_alphanumeric() && c != '-').unwrap_or(after.len());
-            if end > 0 {
-                found.push(&after[..end]);
-            }
-            rest = &after[end..];
-        }
+        let mut found = flag_literals_in_build_args(include_str!("../argv.rs"));
         found.sort_unstable();
         found.dedup();
         assert!(!found.is_empty(), "found no flag literals - the scan broke, not argv.rs");
@@ -1054,6 +1062,58 @@ mod tests {
             "LOGGABLE_FLAGS drifted from build_args; a flag missing here is a flag that \
              silently stops being logged",
         );
+    }
+
+    /// Both ends of the slice, on synthetic input. Neither bound is
+    /// exercised by `argv.rs` as it stands - `build_args` is its only
+    /// item - so without this the anchor and the terminator are
+    /// untested and the first edit to that file finds out.
+    #[test]
+    fn flag_literal_scan_reads_the_function_body_and_nothing_else() {
+        let src = "\
+//! Module doc mentioning \"--module-doc-flag\".
+const OTHER: &str = \"--before-the-fn\";
+
+/// Doc comment above the fn mentioning \"--doc-comment-flag\".
+pub fn build_args(options: &Options) -> Vec<String> {
+    // A body comment naming \"--body-comment-flag\".
+    args.push(\"--real-flag\".into());
+    args.push(format!(\"--other-real={}\", x));
+}
+
+#[cfg(test)]
+mod tests {
+    const IN_TESTS: &str = \"--after-the-body\";
+}
+";
+        let mut found = flag_literals_in_build_args(src);
+        found.sort_unstable();
+        assert_eq!(
+            found,
+            vec!["body-comment-flag", "other-real", "real-flag"],
+            "the slice must start at the fn and stop at its closing brace",
+        );
+    }
+
+    /// Flag literals inside `build_args`' body. Anchored at the
+    /// signature so a literal above it cannot report drift that did not
+    /// happen, and terminated at the first line-start `}` so one below
+    /// it cannot either.
+    fn flag_literals_in_build_args(whole: &str) -> Vec<&str> {
+        let from_fn = &whole[whole.find("pub fn build_args").expect("build_args in argv.rs")..];
+        let src = from_fn.find("\n}").map_or(from_fn, |end| &from_fn[..end]);
+        let mut found: Vec<&str> = Vec::new();
+        let mut rest = src;
+        while let Some(idx) = rest.find("\"--") {
+            let after = &rest[idx + 3..];
+            let end =
+                after.find(|c: char| !c.is_ascii_alphanumeric() && c != '-').unwrap_or(after.len());
+            if end > 0 {
+                found.push(&after[..end]);
+            }
+            rest = &after[end..];
+        }
+        found
     }
 
     /// Build a [`Subprocess`] wrapping a long-running mock that ignores
