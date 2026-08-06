@@ -2194,6 +2194,25 @@ impl Workspace {
             }
             return account_env.clone();
         };
+        // Logged on every resolved spawn even when the project declares
+        // nothing, so "resolved to a project I did not mean" is visible
+        // without instrumenting anything. Key NAMES only - these tables
+        // hold tokens.
+        let mut applied: Vec<&str> = self
+            .config
+            .projects
+            .iter()
+            .find(|p| p.name == name)
+            .map(|p| p.env.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        applied.sort_unstable();
+        tracing::info!(
+            target: "forge_workspace::workspace",
+            event_name = "session_env_project_applied",
+            project = %name,
+            keys = %applied.join(", "),
+            "resolved the spawn target to a project and applied its [projects.<name>.env]",
+        );
         self.config.session_env(&name, account_env)
     }
 
