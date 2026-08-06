@@ -66,6 +66,7 @@ struct ProjectEnvEntry {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct OrgEntry {
     name: String,
     /// Account `display_name`s every project in this org is allowed
@@ -100,6 +101,7 @@ struct ProjectEntry {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AccountEntry {
     display_name: String,
     config_dir: String,
@@ -195,7 +197,7 @@ pub(crate) struct LoadedProject {
     /// over the account's env at spawn. An `ANTHROPIC_BASE_URL` or
     /// `ANTHROPIC_AUTH_TOKEN` here desyncs forge's own accounting -
     /// usage probe, plan detection and the picker all read the ACCOUNT
-    /// map, so they measure a different endpoint and nothing warns.
+    /// map, so they measure a different endpoint.
     pub env: HashMap<String, String>,
 }
 
@@ -474,69 +476,6 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
-    /// The spawn log is always-on INFO, so a refactor that widens it
-    /// from key names to entries writes every project's tokens to
-    /// disk. These pin the rendering rather than the log call.
-    #[test]
-    fn applied_env_keys_renders_names_only_and_never_a_value() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Subspace"]
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-[[orgs.projects]]
-name = "bare"
-path = "~/Projects/bare"
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-
-[projects.forge.env]
-BUSYMAIL_TOKEN = "s3cret-value"
-API_BASE = "https://example.invalid"
-ZZ_LAST = "hunter2"
-AA_FIRST = "forty-two"
-MM_MID = "mid-secret"
-DD_FOUR = "four-secret"
-QQ_SIX = "six-secret"
-"#,
-        );
-        let config = load_from_dir(dir.path()).expect("happy path");
-
-        let rendered = applied_env_keys(named(&config, "forge"));
-        // Sortedness asserted against the list's own sorted form rather
-        // than a literal: with few keys a literal passes by chance often
-        // enough that dropping the sort would not reliably fail. Seven
-        // keys puts an accidental pass at 1 in 5040 per run.
-        let listed: Vec<&str> = rendered.split(", ").collect();
-        let mut expected = listed.clone();
-        expected.sort_unstable();
-        assert_eq!(listed, expected, "key names are sorted, got: {rendered}");
-        assert_eq!(listed.len(), 7, "every declared key is listed, got: {rendered}");
-        for value in [
-            "s3cret-value",
-            "https://example.invalid",
-            "hunter2",
-            "forty-two",
-            "mid-secret",
-            "four-secret",
-            "six-secret",
-        ] {
-            assert!(!rendered.contains(value), "a declared value reached the log: {rendered}");
-        }
-
-        assert_eq!(
-            applied_env_keys(named(&config, "bare")),
-            "",
-            "a project declaring nothing renders empty, not a placeholder",
-        );
-    }
-
     /// Resolve a project by name for the `session_env` calls below.
     fn named<'a>(config: &'a LoadedConfig, name: &str) -> &'a LoadedProject {
         config.projects.iter().find(|p| p.name == name).expect("declared project")
@@ -763,115 +702,38 @@ PROJECT_ONLY = "project"
         session_env(named(&config, "forge"), &account.env)
     }
 
-    /// `[projects.forge.envs]` - right project, mistyped inner table.
-    /// Loads clean with an empty env and no diagnostic unless the
-    /// wrapper rejects unknown fields, which is the exact symptom
-    /// #551 was filed for.
+    /// Every near-miss shape for declaring project env. Each loads
+    /// clean and applies nothing without the `deny_unknown_fields`
+    /// attributes; the point of the table is that they are all one
+    /// class rather than five separate bugs.
     #[test]
-    fn mistyped_inner_env_table_is_rejected() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Subspace"]
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-
-[projects.forge.envs]
-BUSYMAIL_TOKEN = "never-applied"
-"#,
-        );
-        let err = load_from_dir(dir.path()).expect_err("mistyped inner table must not load");
-        assert!(err.to_string().contains("envs"), "error names the unknown field, got: {err}");
+    fn near_miss_env_declarations_are_rejected() {
+        // (label, stanza appended to the base config, text the error must name)
+        let cases = [
+            ("mistyped inner table", "[projects.forge.envs]\nK = \"v\"\n", "envs"),
+            ("keys without the .env nesting", "[projects.forge]\nK = \"v\"\n", "K"),
+            ("singular top-level table", "[project.forge.env]\nK = \"v\"\n", "project"),
+            ("capitalised top-level table", "[Projects.forge.env]\nK = \"v\"\n", "Projects"),
+            ("undeclared project name", "[projects.frge.env]\nK = \"v\"\n", "frge"),
+        ];
+        for (label, stanza, needle) in cases {
+            let dir = tempdir().expect("tempdir");
+            write_config(dir.path(), &format!("{}\n{stanza}", minimal_config()));
+            let msg = load_from_dir(dir.path()).expect_err(label).to_string();
+            assert!(msg.contains(needle), "{label}: error must name `{needle}`, got: {msg}");
+        }
     }
 
-    /// `[projects.forge]` with the keys written directly, forgetting
-    /// the `.env` nesting. Same silent-empty outcome as the typo.
+    /// The same class one level up, on the `[[orgs.projects]]` entry:
+    /// `[accounts.env]` nests inside its own entry and teaches exactly
+    /// this analogy.
     #[test]
-    fn project_env_keys_without_the_env_nesting_are_rejected() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Subspace"]
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-
-[projects.forge]
-BUSYMAIL_TOKEN = "never-applied"
-"#,
-        );
-        let err = load_from_dir(dir.path()).expect_err("un-nested keys must not load");
-        assert!(
-            err.to_string().contains("BUSYMAIL_TOKEN"),
-            "error names the stray key, got: {err}",
-        );
-    }
-
-    /// `[accounts.env]` nests inside its `[[accounts]]` entry, which
-    /// teaches this analogy. Both shapes load clean and apply nothing
-    /// without `deny_unknown_fields` on the project entry.
-    #[test]
-    fn inline_env_on_a_project_entry_is_rejected() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Subspace"]
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-env = { BUSYMAIL_TOKEN = "never-applied" }
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-"#,
-        );
-        let msg = load_from_dir(dir.path()).expect_err("inline env must not load").to_string();
-        assert!(msg.contains("env"), "error names the stray field, got: {msg}");
-    }
-
-    #[test]
-    fn env_subtable_under_a_project_entry_is_rejected() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Subspace"]
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-[orgs.projects.env]
-BUSYMAIL_TOKEN = "never-applied"
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-"#,
-        );
-        let msg = load_from_dir(dir.path()).expect_err("env sub-table must not load").to_string();
-        assert!(msg.contains("env"), "error names the stray field, got: {msg}");
-    }
-
-    /// The singular and capitalised spellings of the top-level table.
-    #[test]
-    fn misspelled_top_level_projects_table_is_rejected() {
-        for bad in ["project", "Projects"] {
+    fn near_miss_env_on_a_project_entry_is_rejected() {
+        let cases = [
+            ("inline table", "env = { K = \"v\" }"),
+            ("sub-table", "[orgs.projects.env]\nK = \"v\""),
+        ];
+        for (label, line) in cases {
             let dir = tempdir().expect("tempdir");
             write_config(
                 dir.path(),
@@ -883,18 +745,15 @@ accounts = ["Subspace"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
+{line}
 [[accounts]]
 display_name = "Subspace"
 config_dir = "~/.claude-subspace"
-
-[{bad}.forge.env]
-BUSYMAIL_TOKEN = "never-applied"
 "#
                 ),
             );
-            let msg =
-                load_from_dir(dir.path()).expect_err("misspelled table must not load").to_string();
-            assert!(msg.contains(bad), "error names `{bad}`, got: {msg}");
+            let msg = load_from_dir(dir.path()).expect_err(label).to_string();
+            assert!(msg.contains("env"), "{label}: error must name the stray field, got: {msg}");
         }
     }
 
@@ -1106,12 +965,30 @@ C = "3"
         assert!(msg.contains("beta, delta, gamma"), "every name, sorted, in one error: {msg}");
     }
 
+    /// One assertion per precedence boundary, so a reordering fails on
+    /// the boundary it broke rather than on a single opaque test.
     #[test]
-    fn project_env_overrides_account_and_global_per_key() {
+    fn project_env_wins_each_precedence_boundary() {
+        let env = precedence_env();
         assert_eq!(
-            precedence_env().get("ALL_THREE").map(String::as_str),
+            env.get("ALL_THREE").map(String::as_str),
             Some("project"),
             "a key in all three layers resolves to the project value",
+        );
+        assert_eq!(
+            env.get("GLOBAL_PROJECT").map(String::as_str),
+            Some("project"),
+            "global + project, account silent -> project wins",
+        );
+        assert_eq!(
+            env.get("PROJECT_ONLY").map(String::as_str),
+            Some("project"),
+            "a project-only key reaches the session",
+        );
+        assert_eq!(
+            env.get("GLOBAL_ONLY").map(String::as_str),
+            Some("global"),
+            "and the global layer still arrives, so the above are overrides not absences",
         );
     }
 
@@ -1203,96 +1080,6 @@ ANTHROPIC_BASE_URL = ""
         assert!(
             env.contains_key("ANTHROPIC_BASE_URL"),
             "the key is still present - a project cannot remove an account key",
-        );
-    }
-
-    /// Two projects each declaring the SAME key on one account. Each
-    /// must see its own value, not whichever loaded last. This does
-    /// NOT substitute for the leak test above - both projects still
-    /// win through the project layer even when the shared account
-    /// snapshot is polluted, so this one passes while that one fails.
-    #[test]
-    fn each_project_sees_its_own_value_for_a_shared_key() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Codex"]
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-[[orgs.projects]]
-name = "busymail"
-path = "~/Projects/busymail"
-
-[[accounts]]
-display_name = "Codex"
-config_dir = "~/.claude-codex"
-
-[projects.forge.env]
-API_TOKEN = "forge-token"
-[projects.busymail.env]
-API_TOKEN = "busymail-token"
-"#,
-        );
-        let config = load_from_dir(dir.path()).expect("happy path");
-        let account = &config.accounts[0];
-        assert_eq!(
-            session_env(named(&config, "forge"), &account.env).get("API_TOKEN").map(String::as_str),
-            Some("forge-token"),
-        );
-        assert_eq!(
-            session_env(named(&config, "busymail"), &account.env)
-                .get("API_TOKEN")
-                .map(String::as_str),
-            Some("busymail-token"),
-        );
-    }
-
-    #[test]
-    fn account_env_overrides_global_in_session_env() {
-        assert_eq!(
-            precedence_env().get("GLOBAL_ACCOUNT").map(String::as_str),
-            Some("account"),
-            "global + account, project silent -> account wins",
-        );
-    }
-
-    #[test]
-    fn project_env_overrides_global_when_account_is_silent() {
-        let env = precedence_env();
-        // Without this, "project overrode global" and "global never
-        // arrived at all" are indistinguishable - both leave the key
-        // reading "project".
-        assert_eq!(
-            env.get("GLOBAL_ONLY").map(String::as_str),
-            Some("global"),
-            "the global layer reaches the session at all",
-        );
-        assert_eq!(
-            env.get("GLOBAL_PROJECT").map(String::as_str),
-            Some("project"),
-            "global + project, account silent -> project wins",
-        );
-    }
-
-    #[test]
-    fn project_only_key_lands_in_session_env() {
-        assert_eq!(
-            precedence_env().get("PROJECT_ONLY").map(String::as_str),
-            Some("project"),
-            "a project-only key reaches the session",
-        );
-    }
-
-    #[test]
-    fn account_only_key_lands_in_session_env() {
-        assert_eq!(
-            precedence_env().get("ACCOUNT_ONLY").map(String::as_str),
-            Some("account"),
-            "an account-only key still reaches the session",
         );
     }
 

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 /// Connection to a Gotify server, parsed from the `[gotify]` block of
 /// forge.toml. One server per v1.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GotifyConfig {
     pub url: String,
     /// Client token for the receive stream (`/stream?token=`) and the
