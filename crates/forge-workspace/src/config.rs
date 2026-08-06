@@ -25,6 +25,7 @@ use crate::error::WorkspaceError;
 use crate::ui::UiSettings;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ForgeToml {
     #[serde(default)]
     orgs: Vec<OrgEntry>,
@@ -74,7 +75,12 @@ struct OrgEntry {
     projects: Vec<ProjectEntry>,
 }
 
+/// Unknown fields are rejected because `[accounts.env]` nests inside
+/// its `[[accounts]]` entry and teaches that analogy, so an inline
+/// `env = { … }` or an `[orgs.projects.env]` sub-table here is a
+/// likely mistake that would otherwise apply nothing.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProjectEntry {
     name: String,
     path: String,
@@ -774,6 +780,84 @@ BUSYMAIL_TOKEN = "never-applied"
             err.to_string().contains("BUSYMAIL_TOKEN"),
             "error names the stray key, got: {err}",
         );
+    }
+
+    /// `[accounts.env]` nests inside its `[[accounts]]` entry, which
+    /// teaches this analogy. Both shapes load clean and apply nothing
+    /// without `deny_unknown_fields` on the project entry.
+    #[test]
+    fn inline_env_on_a_project_entry_is_rejected() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+env = { BUSYMAIL_TOKEN = "never-applied" }
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+"#,
+        );
+        let msg = load_from_dir(dir.path()).expect_err("inline env must not load").to_string();
+        assert!(msg.contains("env"), "error names the stray field, got: {msg}");
+    }
+
+    #[test]
+    fn env_subtable_under_a_project_entry_is_rejected() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[orgs.projects.env]
+BUSYMAIL_TOKEN = "never-applied"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+"#,
+        );
+        let msg = load_from_dir(dir.path()).expect_err("env sub-table must not load").to_string();
+        assert!(msg.contains("env"), "error names the stray field, got: {msg}");
+    }
+
+    /// The singular and capitalised spellings of the top-level table.
+    #[test]
+    fn misspelled_top_level_projects_table_is_rejected() {
+        for bad in ["project", "Projects"] {
+            let dir = tempdir().expect("tempdir");
+            write_config(
+                dir.path(),
+                &format!(
+                    r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+
+[{bad}.forge.env]
+BUSYMAIL_TOKEN = "never-applied"
+"#
+                ),
+            );
+            let msg =
+                load_from_dir(dir.path()).expect_err("misspelled table must not load").to_string();
+            assert!(msg.contains(bad), "error names `{bad}`, got: {msg}");
+        }
     }
 
     #[test]
@@ -1533,14 +1617,19 @@ config_dir = "~/.claude-other"
         assert!(matches!(err, WorkspaceError::DuplicateAccount { name, .. } if name == "Subspace"));
     }
 
+    /// The `[selection]` section was removed when the selection policy
+    /// became fixed. It used to load and do nothing; now it fails
+    /// loudly, so a stale section gets deleted rather than silently
+    /// meaning nothing.
     #[test]
-    fn legacy_selection_section_is_silently_ignored() {
+    fn legacy_selection_section_is_now_rejected() {
         let dir = tempdir().expect("tempdir");
         let mut config_text = minimal_config().to_owned();
         config_text.push_str("\n[selection]\npolicy = \"round_robin\"\n");
         write_config(dir.path(), &config_text);
-        let config = load_from_dir(dir.path()).expect("legacy [selection] should be ignored");
-        assert_eq!(config.default_project().name, "forge");
+        let msg =
+            load_from_dir(dir.path()).expect_err("stale [selection] must not load").to_string();
+        assert!(msg.contains("selection"), "error names the stale section, got: {msg}");
     }
 }
 
