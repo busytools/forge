@@ -531,7 +531,7 @@ pub(crate) fn parse_permission_mode(mode: &str) -> anyhow::Result<PermissionMode
 /// measuring.
 const EXCLUDE_DYNAMIC_SECTIONS: bool = false;
 
-/// Forge-stamped env keys an `[accounts.env]` entry can actually
+/// Forge-stamped env keys a forge.toml env table can actually
 /// override: `CLAUDE_CONFIG_DIR` (stamped into `options.env` before the
 /// account-env loop) and `HTTPS_PROXY` / `HTTP_PROXY` /
 /// `NODE_EXTRA_CA_CERTS` (stamped by `forge_sdk::transport::process`
@@ -552,8 +552,9 @@ fn is_reserved_env_key(key: &str) -> bool {
 /// Per-account spawn binding threaded into every `claude` subprocess:
 /// the account's `config_dir` (exported as `CLAUDE_CONFIG_DIR`),
 /// whether to attach the wire-classification rewriter `proxy`, and the
-/// account's `[accounts.env]` extras. All three come from the bridge's
-/// account binding, distinct from the per-launch `SessionLaunchSettings`.
+/// session's resolved env - `[env]` merged with `[accounts.env]` and the
+/// spawning project's `[projects.<name>.env]`. All three come from the
+/// bridge, distinct from the per-launch `SessionLaunchSettings`.
 pub(crate) struct AccountBinding<'a> {
     pub config_dir: &'a Path,
     pub proxy: Option<forge_sdk::transport::proxy::ProxyHandle>,
@@ -755,11 +756,11 @@ fn build_options_with_callback(
     // Threaded through as a typed `Path` from the bridge.
     b = b.env("CLAUDE_CONFIG_DIR", binding.config_dir.to_string_lossy().to_string());
 
-    // The account's effective env from forge.toml (hand-authored,
-    // trusted) - the global `[env]` base merged with per-account
-    // `[accounts.env]` (account wins) - stamped onto the child so an
-    // account can point `claude` at an alternate endpoint
-    // (`ANTHROPIC_BASE_URL`) or set any other env it needs. Runs after
+    // The session's effective env from forge.toml (hand-authored,
+    // trusted) - `[env]`, then `[accounts.env]`, then the spawning
+    // project's `[projects.<name>.env]`, narrowest winning - stamped
+    // onto the child so an account or project can point `claude` at an
+    // alternate endpoint or set any other env it needs. Runs after
     // the `CLAUDE_CONFIG_DIR` stamp so a caller could override it
     // deliberately; process.rs stamps `CLAUDE_AGENT_SDK_VERSION` last
     // regardless.
@@ -768,7 +769,7 @@ fn build_options_with_callback(
             tracing::warn!(
                 target: crate::logging::targets::BRIDGE_LIFECYCLE,
                 key = %key,
-                "forge.toml [env] / [accounts.env] sets a forge-reserved key; it overrides forge's own stamp and can defeat the wire-classification rewriter",
+                "forge.toml [env] / [accounts.env] / [projects.<name>.env] sets a forge-reserved key; it overrides forge's own stamp and can defeat the wire-classification rewriter",
             );
         }
         b = b.env(key, value);
