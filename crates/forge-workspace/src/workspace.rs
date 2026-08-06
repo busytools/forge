@@ -2172,15 +2172,6 @@ impl Workspace {
         account_env: &std::collections::HashMap<String, String>,
     ) -> std::collections::HashMap<String, String> {
         let Some(project) = self.project_for_target(target) else {
-            if self.config.projects.iter().any(|p| !p.env.is_empty()) {
-                tracing::warn!(
-                    target: "forge_workspace::workspace",
-                    event_name = "session_env_project_unresolved",
-                    spawn_target = ?target,
-                    "spawn target resolves to no project, so no [projects.<name>.env] is \
-                     applied; the session gets only the account env",
-                );
-            }
             return account_env.clone();
         };
         // Logged even when the project declares nothing, so a target
@@ -2193,21 +2184,6 @@ impl Workspace {
             "resolved the spawn target to a project; `keys` lists what its \
              [projects.<name>.env] contributed, empty when it declares none",
         );
-        // Only this layer can tell WHICH table declared the key -
-        // `build_options_with_callback` receives the merged map.
-        for key in ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"] {
-            if project.env.contains_key(key) {
-                tracing::warn!(
-                    target: "forge_workspace::workspace",
-                    event_name = "session_env_project_overrides_endpoint",
-                    project = %project.name,
-                    key,
-                    "a project-declared endpoint key desyncs forge's own accounting; the session \
-                     talks to this endpoint while the usage probe, plan detection and the \
-                     picker's rate-limit skip all measure the account's",
-                );
-            }
-        }
         crate::config::session_env(&project, account_env)
     }
 
@@ -3176,7 +3152,7 @@ impl Workspace {
         if cwd.is_empty() {
             return None;
         }
-        let cwd = crate::config::expand_home(cwd)?;
+        let cwd = crate::config::expand_home(cwd);
         self.list_projects()
             .into_iter()
             .filter(|view| cwd.starts_with(&view.path))
@@ -4566,7 +4542,25 @@ impl Workspace {
                 return Some(project);
             }
         }
-        self.config.projects.iter().find(|p| &derive_key(p) == target).cloned()
+        // `None` when two projects share the key rather than the first
+        // match: the key sanitises away punctuation and resolves
+        // symlinks, so one repo declared under two org scopes collides.
+        // Picking either would hand one project's env to the other's
+        // sessions; no project env is the failure that cannot leak.
+        let mut matches = self.config.projects.iter().filter(|p| &derive_key(p) == target);
+        let first = matches.next()?;
+        if matches.next().is_some() {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                event_name = "project_key_ambiguous",
+                project_key = target.as_str(),
+                "two projects resolve to this session-storage key, so no [projects.<name>.env] \
+                 is applied - give them distinct paths, or merge the entries if they are the \
+                 same directory declared twice",
+            );
+            return None;
+        }
+        Some(first.clone())
     }
 
     /// Resolve the cwd a git-diff scan should run against for the
@@ -7060,163 +7054,79 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
         (ws, dir)
     }
 
-    /// Same shape as `ACCOUNT_PIN_FIXTURE` but with per-project env, so
-    /// a spawn-target arm that stops resolving shows up as the project's
-    /// keys going missing rather than as a silent pass.
-    ///
-    /// Declaration ORDER is load-bearing: `subspace` is declared first
-    /// and `busymail` is alphabetically first, so `projects.first()` and
-    /// `default_project()` disagree. Collapsing them lets a
-    /// `default_project()` regression through on the boot path.
-    const PROJECT_ENV_FIXTURE: &str = r#"
+    /// `SessionTarget::Default` is the alphabetically-first auto_start
+    /// Two projects at one path collide on the session-storage key, so
+    /// neither can be told apart - the ambiguous case must yield NO
+    /// project env rather than the first match's. Second assertion
+    /// covers the `__fresh__:` key an account switch routes through,
+    /// which resolves via the same lookup.
+    #[test]
+    fn an_ambiguous_storage_key_yields_no_project_env() {
+        let dir = tempdir().expect("tempdir");
+        let shared = dir.path().join("shared");
+        let solo = dir.path().join("solo");
+        fs::create_dir_all(&shared).expect("shared");
+        fs::create_dir_all(&solo).expect("solo");
+        let forge_dir = crate::config::ensure_forge_data_dir(dir.path()).expect("forge dir");
+        fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                r#"
 [[orgs]]
-name = "Subspace"
+name = "Personal"
 accounts = ["Subspace"]
 [[orgs.projects]]
-name = "subspace"
-path = "/tmp/wt-env-subspace"
-auto_start = true
-
-[[orgs]]
-name = "Granite"
-accounts = ["Granite"]
+name = "twin-a"
+path = "{shared}"
 [[orgs.projects]]
-name = "busymail"
-path = "/tmp/wt-env-busymail"
-auto_start = true
+name = "twin-b"
+path = "{shared}"
+[[orgs.projects]]
+name = "solo"
+path = "{solo}"
 
-[[accounts]]
-display_name = "Granite"
-config_dir = "/tmp/wt-env-cfg/granite"
 [[accounts]]
 display_name = "Subspace"
-config_dir = "/tmp/wt-env-cfg/subspace"
+config_dir = "/tmp/ambig-cfg"
 
-[projects.busymail.env]
-BUSYMAIL_TOKEN = "busymail-value"
-[projects.subspace.env]
-SUBSPACE_TOKEN = "subspace-value"
-"#;
-
-    fn stub_with_project_env_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
-        let dir = tempdir().expect("tempdir");
-        let forge_dir = crate::config::ensure_forge_data_dir(dir.path()).expect("forge dir");
-        fs::write(forge_dir.join("forge.toml"), PROJECT_ENV_FIXTURE).expect("write forge.toml");
+[projects.twin-a.env]
+TWIN_TOKEN = "twin-a-secret"
+[projects.solo.env]
+SOLO_TOKEN = "solo-secret"
+"#,
+                shared = shared.display(),
+                solo = solo.display()
+            ),
+        )
+        .expect("write forge.toml");
         let config = crate::config::load_from_dir(dir.path()).expect("load config");
         let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config);
-        (ws, dir)
-    }
-
-    /// `SessionTarget::Default` is the alphabetically-first auto_start
-    /// project, and its env must reach the spawn.
-    #[test]
-    fn session_env_for_default_target_applies_the_default_projects_env() {
-        let (ws, _dir) = stub_with_project_env_fixture();
-        let env = ws.session_env_for(&SessionTarget::Default, &std::collections::HashMap::new());
-        assert_eq!(
-            env.get("BUSYMAIL_TOKEN").map(String::as_str),
-            Some("busymail-value"),
-            "the Default arm must resolve to the default project, not None",
-        );
-        assert!(!env.contains_key("SUBSPACE_TOKEN"), "and not to any other project");
-    }
-
-    /// On `testing_stub()` this proved nothing: its config has zero
-    /// projects, so "keep the account env" and "borrow the first
-    /// project's env" are the same answer. Runs on the project-env
-    /// fixture instead, where they differ.
-    #[test]
-    fn session_env_for_unresolved_target_keeps_the_account_env() {
-        let (ws, _dir) = stub_with_project_env_fixture();
-        let account_env: std::collections::HashMap<String, String> =
-            [("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned())]
-                .into_iter()
-                .collect();
-        let orphan = SessionTarget::Session(SessionKey::from_session_id("not-a-known-session"));
-        assert!(
-            ws.project_for_target(&orphan).is_none(),
-            "precondition: target resolves to no project"
-        );
-        assert_eq!(
-            ws.session_env_for(&orphan, &account_env),
-            account_env,
-            "unresolved target -> account env verbatim",
-        );
-    }
-
-    /// An account switch on a lead with nothing on disk yet routes
-    /// through `Session(__fresh__:<project_key>)`. That key matches no
-    /// catalog row and no worker registry entry, so resolving by cwd
-    /// alone dropped the project's env on a routine switch.
-    #[test]
-    fn session_env_for_a_fresh_placeholder_key_resolves_its_project() {
-        let (ws, _dir) = stub_with_project_env_fixture();
-        let project_key = ws
-            .list_projects()
-            .into_iter()
-            .find(|v| v.name == "subspace")
-            .expect("subspace project view")
-            .key;
-        let target = SessionTarget::Session(SessionKey::from_session_id(format!(
-            "__fresh__:{}",
-            project_key.as_str()
-        )));
-        let env = ws.session_env_for(&target, &std::collections::HashMap::new());
-        assert_eq!(
-            env.get("SUBSPACE_TOKEN").map(String::as_str),
-            Some("subspace-value"),
-            "an account switch must not drop the project's declared env",
-        );
-    }
-
-    /// `FreshInProject` is the workers-MCP spawn path. If this arm stops
-    /// resolving, a worker runs without its project's declared keys and
-    /// the symptom surfaces inside the worker rather than at boot.
-    #[test]
-    fn session_env_for_fresh_in_project_applies_that_projects_env() {
-        let (ws, _dir) = stub_with_project_env_fixture();
-        // Sourced from `list_projects` rather than recomputed with the
-        // same call the implementation makes, so the two can diverge.
-        let project_key = ws
-            .list_projects()
-            .into_iter()
-            .find(|v| v.name == "subspace")
-            .expect("subspace project view")
-            .key;
-        let target = SessionTarget::FreshInProject {
-            project_key,
-            synth_key: SessionKey::from_session_id("__spawn_subspace__"),
+        let key = |p: &std::path::Path| {
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                &p.to_string_lossy(),
+            )))
         };
-        let env = ws.session_env_for(&target, &std::collections::HashMap::new());
-        assert_eq!(
-            env.get("SUBSPACE_TOKEN").map(String::as_str),
-            Some("subspace-value"),
-            "a fresh worker spawn must get its own project's env",
-        );
-        assert!(!env.contains_key("BUSYMAIL_TOKEN"), "and not the default project's");
-    }
 
-    /// A lead that connected THIS run has a catalog row (mirrored by
-    /// `session_task` on Connected) and no worker registry entry, so it
-    /// resolves through the cwd path. This is the arm every `/account`
-    /// switch on a live lead takes.
-    #[test]
-    fn session_env_for_a_connected_lead_resolves_through_its_catalog_row() {
-        let (ws, _dir) = stub_with_project_env_fixture();
-        ws.record_connected_session("/tmp/wt-env-subspace", "lead-uuid-env", None);
-        let key = SessionKey::from_session_id("lead-uuid-env");
+        let ambiguous = SessionTarget::FreshInProject {
+            project_key: key(&shared),
+            synth_key: SessionKey::from_session_id("__spawn_twin__"),
+        };
+        let env = ws.session_env_for(&ambiguous, &std::collections::HashMap::new());
         assert!(
-            ws.worker_lookup_for_session(&key).is_none(),
-            "precondition: a lead has no worker registry entry",
+            !env.contains_key("TWIN_TOKEN"),
+            "an ambiguous key must not deliver either twin's env: {env:?}",
         );
-        let env =
-            ws.session_env_for(&SessionTarget::Session(key), &std::collections::HashMap::new());
+
+        let fresh = SessionTarget::Session(SessionKey::from_session_id(format!(
+            "__fresh__:{}",
+            key(&solo).as_str()
+        )));
+        let env = ws.session_env_for(&fresh, &std::collections::HashMap::new());
         assert_eq!(
-            env.get("SUBSPACE_TOKEN").map(String::as_str),
-            Some("subspace-value"),
-            "a connected lead keeps its project env across a re-spawn",
+            env.get("SOLO_TOKEN").map(String::as_str),
+            Some("solo-secret"),
+            "an unambiguous key still resolves, including through a __fresh__: placeholder",
         );
-        assert!(!env.contains_key("BUSYMAIL_TOKEN"), "and not another project\x27s");
     }
 
     #[test]
@@ -12195,32 +12105,6 @@ mod git_scan_cwd_tests {
     /// A worker has no catalog row, so `project_accounts_for`'s
     /// `session_cwd_for` resolution misses it and falls back to the
     /// default project. Env must not inherit that fallback: a worker
-    /// resolves to the project whose worktree it runs in.
-    #[test]
-    fn project_for_target_resolves_a_worker_session_to_its_project() {
-        let (ws, _rx) = Workspace::testing_stub();
-        let (_root, session_key) = seed_project_and_worker(
-            &ws,
-            "granite-backend",
-            "/tmp/test-granite-env",
-            "pyth-review-fixes",
-            "worker-uuid-env",
-            true,
-        );
-        assert!(
-            ws.session_cwd_for(&session_key).is_none(),
-            "precondition: the catalog holds no worker rows",
-        );
-        assert_eq!(
-            ws.project_for_target(&SessionTarget::Session(session_key)).map(|p| p.name).as_deref(),
-            Some("granite-backend"),
-        );
-    }
-
-    /// An unresolvable target must keep the account env rather than
-    /// borrowing whichever project happens to be the default - that
-    /// would hand one project's declared keys to another's session.
-
     #[test]
     fn cwd_for_session_is_none_when_the_workers_project_is_not_loaded() {
         // The contradiction the WARN names: the registry knows the

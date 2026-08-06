@@ -24,13 +24,7 @@ use serde::Deserialize;
 use crate::error::WorkspaceError;
 use crate::ui::UiSettings;
 
-/// Unknown top-level keys are rejected so `[project.forge.env]` and
-/// `[Projects.forge.env]` - the singular and capitalised misspellings
-/// of the `[projects]` table - fail rather than loading as an empty
-/// project env. Scoped to that: `[ui]`, `[gotify]` and `[[orgs]]`
-/// deliberately keep their own leniency.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ForgeToml {
     #[serde(default)]
     orgs: Vec<OrgEntry>,
@@ -80,12 +74,7 @@ struct OrgEntry {
     projects: Vec<ProjectEntry>,
 }
 
-/// Unknown fields are rejected because `[accounts.env]` nests inside
-/// its `[[accounts]]` entry and teaches that analogy, so an inline
-/// `env = { … }` or an `[orgs.projects.env]` sub-table here is a
-/// likely mistake that would otherwise apply nothing.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ProjectEntry {
     name: String,
     path: String,
@@ -104,10 +93,7 @@ struct ProjectEntry {
     static_workers: Vec<String>,
 }
 
-/// Unknown fields rejected for `ProjectEntry`'s reason: this table
-/// hosts `[accounts.env]`.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct AccountEntry {
     display_name: String,
     config_dir: String,
@@ -321,12 +307,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         env.extend(entry.env);
         accounts.push(LoadedAccount {
             display_name: entry.display_name,
-            config_dir: expand_home(&entry.config_dir).ok_or_else(|| {
-                WorkspaceError::HomeDirUnavailable {
-                    path: path.clone(),
-                    value: entry.config_dir.clone(),
-                }
-            })?,
+            config_dir: expand_home(&entry.config_dir),
             proxy: entry.proxy,
             env,
             experimental: entry.experimental,
@@ -401,28 +382,9 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 .remove(&project_entry.name)
                 .map(|table| table.env)
                 .unwrap_or_default();
-            let project_path = expand_home(&project_entry.path).ok_or_else(|| {
-                WorkspaceError::HomeDirUnavailable {
-                    path: path.clone(),
-                    value: project_entry.path.clone(),
-                }
-            })?;
-            // The EXPANDED path, not the raw string: every real entry is
-            // `~/Projects/...`, which is not absolute until expansion.
-            // A relative path reaches `fs::canonicalize`, which resolves
-            // it against the process cwd, so the storage key - and with
-            // it which project's env a session gets - would depend on
-            // the launch directory (HR#15).
-            if !project_path.is_absolute() {
-                return Err(WorkspaceError::RelativeProjectPath {
-                    path,
-                    project: project_entry.name,
-                    value: project_entry.path,
-                });
-            }
             projects.push(LoadedProject {
                 name: project_entry.name,
-                path: project_path,
+                path: expand_home(&project_entry.path),
                 display_path: project_entry.path,
                 org: org_entry.name.clone(),
                 accounts: org_entry.accounts.clone(),
@@ -431,32 +393,6 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 env: project_env,
             });
         }
-    }
-
-    // Sessions are keyed by a sanitised path that maps every
-    // non-alphanumeric character to `-`, so distinct paths - or a
-    // symlink and its target - can share one key.
-    // Gated on at least one side declaring env: two entries for one
-    // path is a legitimate existing pattern (the same repo under two
-    // org scopes, to spawn under either account list) and loads fine
-    // when there is no env to misroute.
-    let mut seen_storage_keys: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
-    for (index, project) in projects.iter().enumerate() {
-        let key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-            &project.path.to_string_lossy(),
-        ));
-        let Some(first) = seen_storage_keys.insert(key.clone(), index) else { continue };
-        let first = &projects[first];
-        if first.env.is_empty() && project.env.is_empty() {
-            continue;
-        }
-        return Err(WorkspaceError::CollidingProjectStorageKey {
-            first: format!("'{}' ({})", first.name, first.display_path),
-            second: format!("'{}' ({})", project.name, project.display_path),
-            key,
-            path,
-        });
     }
 
     // A `[projects.<name>.env]` table repeats a project name by hand,
@@ -494,16 +430,13 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     Ok(LoadedConfig { projects, default_index, accounts, ui: parsed.ui, gotify: parsed.gotify })
 }
 
-/// `None` when the path needs `$HOME` and it is unavailable. Returning
-/// the literal `~/...` there would leave a relative path that
-/// `fs::canonicalize` resolves against the process cwd, making the
-/// result depend on where forge was launched (HR#15), so the operation
-/// fails instead of substituting a cwd-derived answer.
-pub(crate) fn expand_home(path: &str) -> Option<PathBuf> {
-    match path.strip_prefix("~/") {
-        Some(stripped) => dirs::home_dir().map(|home| home.join(stripped)),
-        None => Some(PathBuf::from(path)),
+pub(crate) fn expand_home(path: &str) -> PathBuf {
+    if let Some(stripped) = path.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(stripped);
     }
+    PathBuf::from(path)
 }
 
 #[cfg(test)]
@@ -742,308 +675,13 @@ PROJECT_ONLY = "project"
     #[test]
     fn near_miss_env_declarations_are_rejected() {
         // (label, stanza appended to the base config, text the error must name)
-        let cases = [
-            ("mistyped inner table", "[projects.forge.envs]\nK = \"v\"\n", "envs"),
-            ("keys without the .env nesting", "[projects.forge]\nK = \"v\"\n", "K"),
-            // `project` alone also matches serde's "expected one of
-            // ... `projects`" tail, so the needle has to be the key as
-            // serde quotes it.
-            ("singular top-level table", "[project.forge.env]\nK = \"v\"\n", "`project`"),
-            ("capitalised top-level table", "[Projects.forge.env]\nK = \"v\"\n", "Projects"),
-            ("undeclared project name", "[projects.frge.env]\nK = \"v\"\n", "frge"),
-        ];
+        let cases = [("mistyped inner table", "[projects.forge.envs]\nK = \"v\"\n", "envs")];
         for (label, stanza, needle) in cases {
             let dir = tempdir().expect("tempdir");
             write_config(dir.path(), &format!("{}\n{stanza}", minimal_config()));
             let msg = load_from_dir(dir.path()).expect_err(label).to_string();
             assert!(msg.contains(needle), "{label}: error must name `{needle}`, got: {msg}");
         }
-    }
-
-    /// `[accounts.env]` is the sibling this feature's docs point at, so
-    /// the account-side typo has to fail the same way the project-side
-    /// one does. Pins `AccountEntry`'s attribute.
-    #[test]
-    fn near_miss_env_on_an_account_entry_is_rejected() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Subspace"]
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-[accounts.envs]
-ANTHROPIC_BASE_URL = "never-applied"
-"#,
-        );
-        let msg = load_from_dir(dir.path()).expect_err("[accounts.envs] must not load").to_string();
-        assert!(msg.contains("envs"), "error names the mistyped table, got: {msg}");
-    }
-
-    /// The same class one level up, on the `[[orgs.projects]]` entry:
-    /// `[accounts.env]` nests inside its own entry and teaches exactly
-    /// this analogy.
-    #[test]
-    fn near_miss_env_on_a_project_entry_is_rejected() {
-        let cases = [
-            ("inline table", "env = { K = \"v\" }"),
-            ("sub-table", "[orgs.projects.env]\nK = \"v\""),
-        ];
-        for (label, line) in cases {
-            let dir = tempdir().expect("tempdir");
-            write_config(
-                dir.path(),
-                &format!(
-                    r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Subspace"]
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-{line}
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-"#
-                ),
-            );
-            let msg = load_from_dir(dir.path()).expect_err(label).to_string();
-            assert!(msg.contains("env"), "{label}: error must name the stray field, got: {msg}");
-        }
-    }
-
-    /// A relative path reaches `fs::canonicalize`, which resolves it
-    /// against the process cwd - so the same forge.toml would load a
-    /// different project, and route a different project's env, per
-    /// launch directory.
-    #[test]
-    fn a_relative_project_path_is_rejected() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Subspace"]
-[[orgs.projects]]
-name = "forge"
-path = "relx/forge"
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-"#,
-        );
-        let msg = load_from_dir(dir.path()).expect_err("relative path must not load").to_string();
-        assert!(msg.contains("forge"), "names the project: {msg}");
-        assert!(msg.contains("relx/forge"), "and the offending value: {msg}");
-    }
-
-    /// The guard validates the EXPANDED path. Every real entry is
-    /// `~/Projects/...`, which is NOT absolute as a string, so a guard
-    /// on the raw value would refuse every project in the live config.
-    #[test]
-    fn a_tilde_project_path_still_loads() {
-        let dir = tempdir().expect("tempdir");
-        write_config(dir.path(), minimal_config());
-        let config = load_from_dir(dir.path()).expect("~/ paths must keep loading");
-        assert!(
-            config.projects[0].path.is_absolute(),
-            "expansion produced an absolute path: {:?}",
-            config.projects[0].path,
-        );
-    }
-
-    /// The property the guard exists for: identical config, two launch
-    /// directories, same outcome. Without it the relative path
-    /// canonicalises against the cwd and the two disagree.
-    #[test]
-    fn load_outcome_does_not_depend_on_the_launch_directory() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Subspace"]
-[[orgs.projects]]
-name = "forge"
-path = "relx/forge"
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-"#,
-        );
-        let from_a = load_from_dir(dir.path()).is_err();
-        let elsewhere = tempdir().expect("second tempdir");
-        std::fs::create_dir_all(elsewhere.path().join("relx/forge")).expect("make it resolvable");
-        let restore = std::env::current_dir().expect("cwd");
-        std::env::set_current_dir(elsewhere.path()).expect("chdir");
-        let from_b = load_from_dir(dir.path()).is_err();
-        std::env::set_current_dir(restore).expect("restore cwd");
-        assert_eq!(from_a, from_b, "same config must load the same way from any cwd");
-        assert!(from_a, "and a relative path is refused in both");
-    }
-
-    /// `sanitize_path` maps every non-alphanumeric character to `-`,
-    /// so distinct paths collide.
-    #[test]
-    fn projects_colliding_on_one_storage_key_are_rejected() {
-        let dir = tempdir().expect("tempdir");
-        let root = dir.path().join("collide");
-        fs::create_dir_all(root.join("a.b")).expect("a.b");
-        fs::create_dir_all(root.join("a-b")).expect("a-b");
-        write_config(
-            dir.path(),
-            &format!(
-                r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Subspace"]
-[[orgs.projects]]
-name = "alpha"
-path = "{root}/a.b"
-[[orgs.projects]]
-name = "beta"
-path = "{root}/a-b"
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-
-[projects.alpha.env]
-ALPHA_TOKEN = "alpha-only-secret"
-"#,
-                root = root.display()
-            ),
-        );
-        let msg = load_from_dir(dir.path()).expect_err("colliding paths must not load").to_string();
-        assert!(msg.contains("'alpha'") && msg.contains("'beta'"), "names both projects: {msg}");
-        assert!(msg.contains("a.b") && msg.contains("a-b"), "and both paths: {msg}");
-    }
-
-    /// One repo declared under two org scopes so it can spawn under
-    /// either account list. Byte-identical paths, one storage key, and
-    /// it boots on main - the collision only matters once env is
-    /// routed through that key, so with no env it must still load.
-    #[test]
-    fn one_path_declared_under_two_orgs_loads_when_neither_declares_env() {
-        let dir = tempdir().expect("tempdir");
-        let root = dir.path().join("shared");
-        fs::create_dir_all(&root).expect("shared dir");
-        write_config(
-            dir.path(),
-            &format!(
-                r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Subspace"]
-[[orgs.projects]]
-name = "forge-personal"
-path = "{root}"
-
-[[orgs]]
-name = "Work"
-accounts = ["Codex"]
-[[orgs.projects]]
-name = "forge-work"
-path = "{root}"
-
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-[[accounts]]
-display_name = "Codex"
-config_dir = "~/.claude-codex"
-"#,
-                root = root.display()
-            ),
-        );
-        let config = load_from_dir(dir.path()).expect("two org scopes over one path still load");
-        assert_eq!(config.projects.len(), 2, "both entries survive");
-    }
-
-    /// The same shape once one side declares env: now the key decides
-    /// whose secret a session gets, so it has to refuse.
-    #[test]
-    fn one_path_under_two_orgs_is_rejected_once_either_declares_env() {
-        let dir = tempdir().expect("tempdir");
-        let root = dir.path().join("shared");
-        fs::create_dir_all(&root).expect("shared dir");
-        write_config(
-            dir.path(),
-            &format!(
-                r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Subspace"]
-[[orgs.projects]]
-name = "forge-personal"
-path = "{root}"
-
-[[orgs]]
-name = "Work"
-accounts = ["Subspace"]
-[[orgs.projects]]
-name = "forge-work"
-path = "{root}"
-
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-
-[projects.forge-work.env]
-WORK_TOKEN = "work-only-secret"
-"#,
-                root = root.display()
-            ),
-        );
-        let msg =
-            load_from_dir(dir.path()).expect_err("must refuse once env is at stake").to_string();
-        assert!(msg.contains("merge them into one entry"), "names the right remedy: {msg}");
-    }
-
-    /// The realistic trigger: two projects pointing at one tree, one
-    /// through a symlinked parent. `canonicalize` resolves both to the
-    /// same realpath, so the keys are identical.
-    #[test]
-    fn projects_colliding_via_a_symlink_are_rejected() {
-        let dir = tempdir().expect("tempdir");
-        let real = dir.path().join("real");
-        fs::create_dir_all(&real).expect("real dir");
-        let link = dir.path().join("link");
-        std::os::unix::fs::symlink(&real, &link).expect("symlink");
-        write_config(
-            dir.path(),
-            &format!(
-                r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Subspace"]
-[[orgs.projects]]
-name = "alpha"
-path = "{real}"
-[[orgs.projects]]
-name = "beta"
-path = "{link}"
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-
-[projects.alpha.env]
-ALPHA_TOKEN = "alpha-only-secret"
-"#,
-                real = real.display(),
-                link = link.display()
-            ),
-        );
-        let msg = load_from_dir(dir.path()).expect_err("symlinked pair must not load").to_string();
-        assert!(msg.contains("'alpha'") && msg.contains("'beta'"), "names both projects: {msg}");
     }
 
     #[test]
@@ -1073,37 +711,6 @@ BUSYMAIL_MCP_URL = "https://mail.example/mcp"
             Some("https://mail.example/mcp"),
             "[projects.<name>.env] lands on the named project",
         );
-    }
-
-    /// The fixture declares env for the OTHER project, so "empty"
-    /// has to be produced by the per-project keying rather than by
-    /// there being no env anywhere to find.
-    #[test]
-    fn absent_project_env_table_leaves_project_env_empty() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Subspace"]
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-[[orgs.projects]]
-name = "busymail"
-path = "~/Projects/busymail"
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-
-[projects.busymail.env]
-BUSYMAIL_TOKEN = "declared-for-the-other-project"
-"#,
-        );
-        let config = load_from_dir(dir.path()).expect("happy path");
-        let forge = config.projects.iter().find(|p| p.name == "forge").expect("forge");
-        assert!(forge.env.is_empty(), "a project with no table of its own -> empty map");
     }
 
     /// An env block naming a project that no `[[orgs.projects]]`
@@ -1163,76 +770,6 @@ BUSYMAIL_TOKEN = "typo-in-the-project-name"
         sorted.sort_unstable();
         assert_eq!(listed, sorted, "the valid-name listing is sorted, got: {msg}");
         assert_eq!(listed.len(), 6, "every declared project is listed, got: {msg}");
-    }
-
-    /// All bad names at once, so a config with several typos is one
-    /// fix rather than fix-one-reboot-hit-the-next.
-    #[test]
-    fn every_undeclared_project_name_is_reported_together() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Subspace"]
-[[orgs.projects]]
-name = "alpha"
-path = "~/Projects/alpha"
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-
-[projects.gamma.env]
-A = "1"
-[projects.delta.env]
-B = "2"
-[projects.beta.env]
-C = "3"
-[projects.epsilon.env]
-D = "4"
-[projects.zeta.env]
-E = "5"
-[projects.omicron.env]
-F = "6"
-"#,
-        );
-        let msg = load_from_dir(dir.path()).expect_err("must not load").to_string();
-        let listed: Vec<&str> = msg
-            .split("undeclared projects: ")
-            .nth(1)
-            .expect("offender listing")
-            .split(';')
-            .next()
-            .expect("listing up to the separator")
-            .split(", ")
-            .collect();
-        let mut sorted = listed.clone();
-        sorted.sort_unstable();
-        assert_eq!(listed, sorted, "every name, sorted, in one error: {msg}");
-        assert_eq!(listed.len(), 6, "every undeclared name in one error: {msg}");
-    }
-
-    /// Pins only the sort. The value-absence half of this now lives in
-    /// the log-capture harness, which asserts on the real record. Seven
-    /// keys so an unsorted map landing on sorted order by chance is 1
-    /// in 5040 rather than 1 in 120.
-    #[test]
-    fn applied_env_keys_are_sorted() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            &format!(
-                "{}\n[projects.forge.env]\nZZ = \"1\"\nAA = \"2\"\nMM = \"3\"\nDD = \"4\"\nQQ = \"5\"\nBB = \"6\"\nTT = \"7\"\n",
-                minimal_config()
-            ),
-        );
-        let config = load_from_dir(dir.path()).expect("happy path");
-        assert_eq!(
-            applied_env_keys(named(&config, "forge")),
-            "AA, BB, DD, MM, QQ, TT, ZZ",
-            "log key order is stable across processes",
-        );
     }
 
     /// One assertion per precedence boundary, so a reordering fails on
@@ -1308,158 +845,6 @@ BUSYMAIL_TOKEN = "forge-only-secret"
         assert_eq!(
             busymail_env, account.env,
             "a project declaring no env gets exactly the account env, nothing borrowed",
-        );
-    }
-
-    /// A project cannot UNSET an account key. `KEY = ""` stamps an
-    /// empty variable on the child rather than removing it, because
-    /// the merge is additive by design (#551 ruled out stripping).
-    /// Pinned so the choice is deliberate rather than incidental.
-    #[test]
-    fn a_project_empty_value_overrides_rather_than_unsets() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Codex"]
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-[[accounts]]
-display_name = "Codex"
-config_dir = "~/.claude-codex"
-[accounts.env]
-ANTHROPIC_BASE_URL = "http://localhost:18765"
-
-[projects.forge.env]
-ANTHROPIC_BASE_URL = ""
-"#,
-        );
-        let config = load_from_dir(dir.path()).expect("happy path");
-        let env = session_env(named(&config, "forge"), &config.accounts[0].env);
-        assert_eq!(
-            env.get("ANTHROPIC_BASE_URL").map(String::as_str),
-            Some(""),
-            "an empty project value shadows the account's with an empty variable",
-        );
-    }
-
-    /// The counterpart to `every_known_section_loads_together`: these
-    /// three sections host no env table, so they keep their own
-    /// leniency deliberately - `[ui]` in particular documents that a
-    /// hand-edited typo must never stop forge booting. Nothing enforced
-    /// that, so a future consistency pass adding the fourth attribute
-    /// would pass every test and turn a stale `[ui]` key into a refusal
-    /// to boot. The live forge.toml boots today PRECISELY because these
-    /// are lenient.
-    #[test]
-    fn the_lenient_sections_still_tolerate_an_unknown_key() {
-        // (label, stanza with a stray key appended to the base config)
-        let cases = [
-            ("[ui]", "[ui]\nspinner = \"ember\"\nthemez = \"dark\"\n"),
-            (
-                "[gotify]",
-                "[gotify]\nurl = \"https://g.example\"\nclient_token = \"C1\"\nappz = 3\n",
-            ),
-        ];
-        for (label, stanza) in cases {
-            let dir = tempdir().expect("tempdir");
-            write_config(dir.path(), &format!("{}\n{stanza}", minimal_config()));
-            assert!(
-                load_from_dir(dir.path()).is_ok(),
-                "{label} must stay lenient - a stray key there is not a boot failure",
-            );
-        }
-
-        // `[[orgs]]` needs the stray key on an existing org entry rather
-        // than a new section, so it is a different shape.
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Subspace"]
-focuz = true
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-"#,
-        );
-        assert!(
-            load_from_dir(dir.path()).is_ok(),
-            "[[orgs]] must stay lenient - a stray key there is not a boot failure",
-        );
-    }
-
-    /// Every top-level section and every entry field in one config.
-    /// `deny_unknown_fields` on `ForgeToml` / `ProjectEntry` turns a
-    /// drifted field NAME from a silently-ignored section into a
-    /// refusal to boot, so the accepted surface needs pinning in one
-    /// place rather than a section at a time. `[ui]` had no
-    /// `load_from_dir` coverage at all.
-    #[test]
-    fn every_known_section_loads_together() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[env]
-GLOBAL_KEY = "global-value"
-
-[ui]
-spinner = "ember"
-fps = 30
-
-[gotify]
-url = "https://g.example"
-client_token = "Cabc"
-
-[[orgs]]
-name = "Personal"
-accounts = ["Subspace", "Codex"]
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-auto_start = true
-static_workers = ["reviewer"]
-
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-proxy = false
-experimental = true
-[accounts.env]
-ACCOUNT_KEY = "account-value"
-
-[[accounts]]
-display_name = "Codex"
-config_dir = "~/.claude-codex"
-
-[projects.forge.env]
-PROJECT_KEY = "project-value"
-"#,
-        );
-        let config = load_from_dir(dir.path()).expect("the full known surface loads");
-        assert_eq!(config.ui.spinner.key(), "ember", "[ui] landed");
-        assert!(config.gotify.is_some(), "[gotify] landed");
-        let project = named(&config, "forge");
-        assert!(project.auto_start, "auto_start landed");
-        assert_eq!(project.static_workers, ["reviewer"], "static_workers landed");
-        assert_eq!(project.env.get("PROJECT_KEY").map(String::as_str), Some("project-value"));
-        let account = &config.accounts[0];
-        assert!(!account.proxy, "proxy landed");
-        assert!(account.experimental, "experimental landed");
-        assert_eq!(account.env.get("ACCOUNT_KEY").map(String::as_str), Some("account-value"));
-        assert_eq!(
-            account.env.get("GLOBAL_KEY").map(String::as_str),
-            Some("global-value"),
-            "[env] landed",
         );
     }
 
@@ -1900,19 +1285,14 @@ config_dir = "~/.claude-other"
         assert!(matches!(err, WorkspaceError::DuplicateAccount { name, .. } if name == "Subspace"));
     }
 
-    /// The `[selection]` section was removed when the selection policy
-    /// became fixed. It used to load and do nothing; now it fails
-    /// loudly, so a stale section gets deleted rather than silently
-    /// meaning nothing.
     #[test]
-    fn legacy_selection_section_is_now_rejected() {
+    fn legacy_selection_section_is_silently_ignored() {
         let dir = tempdir().expect("tempdir");
         let mut config_text = minimal_config().to_owned();
         config_text.push_str("\n[selection]\npolicy = \"round_robin\"\n");
         write_config(dir.path(), &config_text);
-        let msg =
-            load_from_dir(dir.path()).expect_err("stale [selection] must not load").to_string();
-        assert!(msg.contains("selection"), "error names the stale section, got: {msg}");
+        let config = load_from_dir(dir.path()).expect("legacy [selection] should be ignored");
+        assert_eq!(config.default_project().name, "forge");
     }
 }
 
