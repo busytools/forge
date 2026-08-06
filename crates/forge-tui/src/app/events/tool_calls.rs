@@ -103,6 +103,10 @@ fn log_tool_call_received(
     scope: &ToolCallScope,
     sdk_tool_name: &str,
 ) {
+    // INFO-only helper, so function entry IS the INFO arm.
+    if super::skip_operational_log_during_replay(app) {
+        return;
+    }
     let session_id = current_session_id(app);
     tracing::info!(
         target: crate::logging::targets::APP_TOOL,
@@ -505,22 +509,27 @@ pub(super) fn log_command_started(app: &App, tc: &ToolCallInfo) {
     }
 
     match tc.status {
-        model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress => tracing::info!(
-            target: crate::logging::targets::APP_COMMAND,
-            event_name = "command_started",
-            message = "command execution started",
-            outcome = "start",
-            session_id = %current_session_id(app),
-            tool_call_id = %tc.id,
-            terminal_id = %tc.terminal_id.as_deref().unwrap_or(""),
-            size_bytes = u64::try_from(tc.raw_input_bytes).unwrap_or_default(),
-            tool_name = %tc.sdk_tool_name,
-            tool_status = ?tc.status,
-            has_terminal = tc.terminal_id.is_some(),
-            has_command = tc.terminal_command.is_some(),
-            terminal_output_bytes = u64::try_from(tc.terminal_output_len).unwrap_or_default(),
-            assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
-        ),
+        model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress => {
+            if super::skip_operational_log_during_replay(app) {
+                return;
+            }
+            tracing::info!(
+                target: crate::logging::targets::APP_COMMAND,
+                event_name = "command_started",
+                message = "command execution started",
+                outcome = "start",
+                session_id = %current_session_id(app),
+                tool_call_id = %tc.id,
+                terminal_id = %tc.terminal_id.as_deref().unwrap_or(""),
+                size_bytes = u64::try_from(tc.raw_input_bytes).unwrap_or_default(),
+                tool_name = %tc.sdk_tool_name,
+                tool_status = ?tc.status,
+                has_terminal = tc.terminal_id.is_some(),
+                has_command = tc.terminal_command.is_some(),
+                terminal_output_bytes = u64::try_from(tc.terminal_output_len).unwrap_or_default(),
+                assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
+            );
+        }
         model::ToolCallStatus::Completed => tracing::info!(
             target: crate::logging::targets::APP_COMMAND,
             event_name = "command_completed",

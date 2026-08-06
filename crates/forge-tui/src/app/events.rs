@@ -27,6 +27,16 @@ use crossterm::event::{Event, KeyEventKind};
 
 pub use client::apply_session_update;
 
+/// True while the resume walk re-renders history, where an INFO record
+/// would describe a repaint as an event. What a replay must keep is the
+/// failure subset - these helpers emit warnings from other arms, and
+/// those have to survive. Three sites get that by checking inside the
+/// INFO arm; of the two that check above the level match, one carries
+/// the outcome and the level, the other the status.
+fn skip_operational_log_during_replay(app: &App) -> bool {
+    app.replay_in_progress
+}
+
 /// Set the bucket's `lifecycle_state` for `key`. Reducer-side helper
 /// used by the per-event handlers in this module tree (`session`,
 /// `client`, `turn`) plus `app::input_submit`. No-op when no bucket

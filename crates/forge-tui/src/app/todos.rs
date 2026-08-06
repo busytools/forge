@@ -30,6 +30,10 @@ pub(crate) struct TaskCreateInput {
 pub(crate) struct TaskUpdateInput {
     pub task_id: String,
     pub status: Option<TaskStatusUpdate>,
+    /// The raw `status` string when it matched no known variant. The
+    /// caller warns rather than the parser, so the record carries the
+    /// session and tool call the value arrived on.
+    pub unknown_status: Option<String>,
     pub content: Option<String>,     // wire: `subject` (when present)
     pub active_form: Option<String>, // wire: `activeForm` (when present)
 }
@@ -99,16 +103,22 @@ pub(crate) fn parse_task_update_input(raw_input: &serde_json::Value) -> Option<T
     let status = parse_status_field(raw_input);
     let content = raw_input.get("subject").and_then(|v| v.as_str()).map(str::to_owned);
     let active_form = raw_input.get("activeForm").and_then(|v| v.as_str()).map(str::to_owned);
-    Some(TaskUpdateInput { task_id, status, content, active_form })
+    let unknown_status = unknown_status_field(raw_input);
+    Some(TaskUpdateInput { task_id, status, unknown_status, content, active_form })
 }
 
-/// Read `raw_input.status` and map a recognised variant to its
-/// `TaskStatusUpdate`. When the field is absent or carries an
-/// unrecognised value, returns `None` so the caller falls through to
-/// no status mutation. A warn-log naming the unknown variant fires
-/// so a future CLI emitting a new shape (e.g. `cancelled`) surfaces
-/// in production logs before the inspector silently drops the
-/// transition.
+/// The raw `status` string when it matched no known variant, so a
+/// future CLI emitting a new shape surfaces instead of the inspector
+/// silently dropping the transition.
+fn unknown_status_field(raw_input: &serde_json::Value) -> Option<String> {
+    let raw = raw_input.get("status")?.as_str()?;
+    parse_status_field(raw_input).is_none().then(|| raw.to_owned())
+}
+
+/// Map a recognised `status` value to its `TaskStatusUpdate`. `None`
+/// for both an absent field and an unrecognised one - the reducer
+/// treats those identically, and `unknown_status_field` distinguishes
+/// them for the caller that reports it.
 fn parse_status_field(raw_input: &serde_json::Value) -> Option<TaskStatusUpdate> {
     let raw = raw_input.get("status")?.as_str()?;
     match raw {
@@ -116,16 +126,7 @@ fn parse_status_field(raw_input: &serde_json::Value) -> Option<TaskStatusUpdate>
         "in_progress" => Some(TaskStatusUpdate::InProgress),
         "completed" => Some(TaskStatusUpdate::Completed),
         "deleted" => Some(TaskStatusUpdate::Deleted),
-        other => {
-            tracing::warn!(
-                target: crate::logging::targets::APP_TOOL,
-                event_name = "task_update_unknown_status",
-                message = "TaskUpdate carried an unrecognised status value; no status mutation applied",
-                outcome = "skipped",
-                status = %other,
-            );
-            None
-        }
+        _ => None,
     }
 }
 
@@ -151,13 +152,15 @@ pub(crate) fn apply_task_create(app: &mut App, input: TaskCreateInput, id: Strin
 /// - `status == Some(Deleted)` -> remove the matching item.
 /// - Otherwise -> mutate matching item's fields in place (status,
 ///   content, active_form), each optional.
-pub(crate) fn apply_task_update(app: &mut App, update: TaskUpdateInput) {
+pub(crate) fn apply_task_update(app: &mut App, update: TaskUpdateInput, tool_call_id: &str) {
     let Some(idx) = app.todos().iter().position(|t| t.id == update.task_id) else {
         tracing::warn!(
             target: crate::logging::targets::APP_TOOL,
             event_name = "task_update_unknown_id",
             message = "TaskUpdate addresses an id absent from the inspector list; no-op",
             outcome = "skipped",
+            session_id = %app.session_id().map_or_else(String::new, |id| id.to_string()),
+            tool_call_id = %tool_call_id,
             task_id = %update.task_id,
         );
         return;
@@ -283,10 +286,12 @@ mod tests {
             &mut app,
             TaskUpdateInput {
                 task_id: "1".to_owned(),
+                unknown_status: None,
                 status: Some(TaskStatusUpdate::InProgress),
                 content: None,
                 active_form: None,
             },
+            "toolu_test",
         );
         assert_eq!(app.todos().len(), 1, "no new item added");
         assert_eq!(app.todos()[0].status, TodoStatus::InProgress);
@@ -310,10 +315,12 @@ mod tests {
             &mut app,
             TaskUpdateInput {
                 task_id: "1".to_owned(),
+                unknown_status: None,
                 status: Some(TaskStatusUpdate::Deleted),
                 content: None,
                 active_form: None,
             },
+            "toolu_test",
         );
         assert_eq!(app.todos().len(), 1, "deleted item is removed, the other stays");
         assert_eq!(app.todos()[0].id, "2");
@@ -363,10 +370,12 @@ mod tests {
             &mut app,
             TaskUpdateInput {
                 task_id: "1".to_owned(),
+                unknown_status: None,
                 status: Some(TaskStatusUpdate::InProgress),
                 content: None,
                 active_form: None,
             },
+            "toolu_test",
         );
         let parsed = parse_task_update_input(&json!({
             "taskId": "1",
@@ -375,7 +384,7 @@ mod tests {
         }))
         .expect("taskId present");
         assert!(parsed.status.is_none(), "unknown status maps to None");
-        apply_task_update(&mut app, parsed);
+        apply_task_update(&mut app, parsed, "toolu_test");
         assert_eq!(
             app.todos()[0].status,
             TodoStatus::InProgress,
@@ -400,10 +409,12 @@ mod tests {
             &mut app,
             TaskUpdateInput {
                 task_id: "999".to_owned(),
+                unknown_status: None,
                 status: Some(TaskStatusUpdate::Completed),
                 content: None,
                 active_form: None,
             },
+            "toolu_test",
         );
         assert_eq!(app.todos().len(), 1, "no change when id misses");
         assert_eq!(app.todos()[0].status, TodoStatus::Pending);

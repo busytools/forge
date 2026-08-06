@@ -47,7 +47,7 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
         });
     apply_tool_scope_status_update(app, &id_str, tool_scope.as_ref(), tcu.fields.status);
 
-    let update_outcome = apply_tool_call_update_to_indexed_block(app, mi, bi, &id_str, tcu);
+    let update_outcome = apply_tool_call_update_to_indexed_block(app, mi, bi, tcu);
     if let Some(mi) = update_outcome.layout_dirty_idx {
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
@@ -65,9 +65,57 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
     // - they're append / mutate / remove deltas, not full-list
     // replacements, so they bypass any "all-completed clears" cascade.
     if let Some(delta) = update_outcome.pending_task_delta {
+        let quiet = super::skip_operational_log_during_replay(app);
         match delta {
-            TaskDelta::Create { input, id } => apply_task_create(app, input, id),
-            TaskDelta::Update(update) => apply_task_update(app, update),
+            TaskDelta::Create { input, id } => {
+                if !quiet {
+                    let session_id = current_session_id(app);
+                    tracing::info!(
+                        target: crate::logging::targets::APP_TOOL,
+                        event_name = "task_create_applied",
+                        message = "TaskCreate item added to inspector list",
+                        outcome = "success",
+                        session_id = %session_id,
+                        tool_call_id = %id_str,
+                        task_id = %id,
+                        tool_name = "TaskCreate",
+                    );
+                }
+                apply_task_create(app, input, id);
+            }
+            TaskDelta::Update(update) => {
+                if !quiet {
+                    let session_id = current_session_id(app);
+                    tracing::info!(
+                        target: crate::logging::targets::APP_TOOL,
+                        event_name = "task_update_applied",
+                        message = "TaskUpdate applied to inspector list",
+                        outcome = "success",
+                        session_id = %session_id,
+                        tool_call_id = %id_str,
+                        task_id = %update.task_id,
+                        tool_name = "TaskUpdate",
+                    );
+                }
+                if let Some(unknown) = update.unknown_status.as_deref() {
+                    // Reported here rather than in the parser: the two
+                    // records that used to carry this one's session and
+                    // tool call are silenced during a replay, and a
+                    // warning nothing can be attributed to is close to
+                    // no warning at all.
+                    tracing::warn!(
+                        target: crate::logging::targets::APP_TOOL,
+                        event_name = "task_update_unknown_status",
+                        message = "TaskUpdate carried an unrecognised status value; no status mutation applied",
+                        outcome = "skipped",
+                        session_id = %current_session_id(app),
+                        tool_call_id = %id_str,
+                        task_id = %update.task_id,
+                        status = %unknown,
+                    );
+                }
+                apply_task_update(app, update, &id_str);
+            }
         }
     }
     if matches!(app.status, AppStatus::Running) && !has_in_progress_tool_calls(app) {
@@ -130,7 +178,6 @@ fn apply_tool_call_update_to_indexed_block(
     app: &mut App,
     mi: usize,
     bi: usize,
-    id_str: &str,
     tcu: &model::ToolCallUpdate,
 ) -> ToolCallUpdateApplyOutcome {
     let mut out = ToolCallUpdateApplyOutcome {
@@ -142,7 +189,6 @@ fn apply_tool_call_update_to_indexed_block(
         Some(t) => std::rc::Rc::clone(t),
         None => std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new())),
     };
-    let session_id = current_session_id(app);
     // Snapshot upfront so the per-tool mutable-borrow of `app.active_messages_mut()`
     // doesn't conflict with `&app.cwd_raw`.
     let cwd_raw = app.cwd_raw();
@@ -175,7 +221,7 @@ fn apply_tool_call_update_to_indexed_block(
         // reaches `Completed` AND its raw_input + (for TaskCreate)
         // raw_output are present. TaskGet / TaskList carry no
         // delta - they're chat-suppressed but produce no state.
-        out.pending_task_delta = extract_task_delta_from_tool_call_update(id_str, &session_id, tc);
+        out.pending_task_delta = extract_task_delta_from_tool_call_update(tc);
         detach_terminal = detach_terminal_if_final(tc);
 
         if changed {
@@ -406,11 +452,7 @@ fn detach_terminal_if_final(tc: &mut ToolCallInfo) -> bool {
 /// `TaskUpdate` requires a parseable `taskId` in `raw_input`; if
 /// the input is missing or malformed (no taskId field, non-string),
 /// returns `None`.
-fn extract_task_delta_from_tool_call_update(
-    id_str: &str,
-    session_id: &str,
-    tc: &ToolCallInfo,
-) -> Option<TaskDelta> {
+fn extract_task_delta_from_tool_call_update(tc: &ToolCallInfo) -> Option<TaskDelta> {
     match tc.sdk_tool_name.as_str() {
         "TaskCreate" => {
             if tc.status != model::ToolCallStatus::Completed {
@@ -422,31 +464,11 @@ fn extract_task_delta_from_tool_call_update(
             let input = parse_task_create_input(raw_input)?;
             let result_text = tool_call_text_output(tc)?;
             let id = parse_task_create_result_id(&result_text)?;
-            tracing::info!(
-                target: crate::logging::targets::APP_TOOL,
-                event_name = "task_create_applied",
-                message = "TaskCreate item added to inspector list",
-                outcome = "success",
-                session_id = %session_id,
-                tool_call_id = %id_str,
-                task_id = %id,
-                tool_name = "TaskCreate",
-            );
             Some(TaskDelta::Create { input, id })
         }
         "TaskUpdate" => {
             let raw_input = tc.raw_input.as_ref()?;
             let update = parse_task_update_input(raw_input)?;
-            tracing::info!(
-                target: crate::logging::targets::APP_TOOL,
-                event_name = "task_update_applied",
-                message = "TaskUpdate applied to inspector list",
-                outcome = "success",
-                session_id = %session_id,
-                tool_call_id = %id_str,
-                task_id = %update.task_id,
-                tool_name = "TaskUpdate",
-            );
             Some(TaskDelta::Update(update))
         }
         _ => None,
@@ -514,8 +536,18 @@ fn log_tool_call_update_applied(
         return;
     };
 
-    let session_id = current_session_id(app);
     let log_spec = tool_update_log_spec(tc, tcu, previous_status);
+    // Level as well as outcome: `tool_call_updated` is DEBUG and also
+    // carries `success`, so a condition without the level would silence
+    // it too. Hoisted above the field work rather than sitting in the
+    // arm, since none of it is written when this returns.
+    if matches!(log_spec.level, ToolUpdateLogLevel::Info)
+        && log_spec.outcome == "success"
+        && super::skip_operational_log_during_replay(app)
+    {
+        return;
+    }
+    let session_id = current_session_id(app);
     let scope_name = tool_scope.map_or("unknown", tool_scope_name);
     let raw_output_chars = tcu.fields.raw_output.as_ref().and_then(|value| match value {
         serde_json::Value::String(text) => Some(text.chars().count()),
@@ -526,23 +558,25 @@ fn log_tool_call_update_applied(
     let location_count = tcu.fields.locations.as_ref().map_or(0, Vec::len);
 
     match log_spec.level {
-        ToolUpdateLogLevel::Info => tracing::info!(
-            target: crate::logging::targets::APP_TOOL,
-            event_name = log_spec.event_name,
-            message = log_spec.message,
-            outcome = log_spec.outcome,
-            session_id = %session_id,
-            tool_call_id = %id_str,
-            tool_name = %tc.sdk_tool_name,
-            tool_title = %tc.title,
-            tool_scope = scope_name,
-            previous_status = ?previous_status,
-            tool_status = ?tc.status,
-            content_block_count,
-            raw_output_chars = raw_output_chars.unwrap_or_default(),
-            has_output_metadata = tc.output_metadata.is_some(),
-            has_task_metadata = tc.task_metadata.is_some(),
-        ),
+        ToolUpdateLogLevel::Info => {
+            tracing::info!(
+                target: crate::logging::targets::APP_TOOL,
+                event_name = log_spec.event_name,
+                message = log_spec.message,
+                outcome = log_spec.outcome,
+                session_id = %session_id,
+                tool_call_id = %id_str,
+                tool_name = %tc.sdk_tool_name,
+                tool_title = %tc.title,
+                tool_scope = scope_name,
+                previous_status = ?previous_status,
+                tool_status = ?tc.status,
+                content_block_count,
+                raw_output_chars = raw_output_chars.unwrap_or_default(),
+                has_output_metadata = tc.output_metadata.is_some(),
+                has_task_metadata = tc.task_metadata.is_some(),
+            );
+        }
         ToolUpdateLogLevel::Warn => tracing::warn!(
             target: crate::logging::targets::APP_TOOL,
             event_name = log_spec.event_name,
@@ -732,21 +766,31 @@ fn log_command_update_applied(
         return;
     }
 
+    // Status in the condition: the warning arm below must survive a
+    // replay, and `command_failure_kind` lowercases the whole terminal
+    // output, which is wasted for a record that will not be written.
+    if matches!(tc.status, model::ToolCallStatus::Completed)
+        && super::skip_operational_log_during_replay(app)
+    {
+        return;
+    }
     let failure_kind = command_failure_kind(tc);
     match tc.status {
-        model::ToolCallStatus::Completed => tracing::info!(
-            target: crate::logging::targets::APP_COMMAND,
-            event_name = "command_completed",
-            message = "command execution completed",
-            outcome = "success",
-            session_id = %current_session_id(app),
-            tool_call_id = %tc.id,
-            terminal_id = %tc.terminal_id.as_deref().unwrap_or(""),
-            tool_name = %tc.sdk_tool_name,
-            terminal_output_bytes = u64::try_from(tc.terminal_output_len).unwrap_or_default(),
-            has_terminal = tc.terminal_id.is_some(),
-            assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
-        ),
+        model::ToolCallStatus::Completed => {
+            tracing::info!(
+                target: crate::logging::targets::APP_COMMAND,
+                event_name = "command_completed",
+                message = "command execution completed",
+                outcome = "success",
+                session_id = %current_session_id(app),
+                tool_call_id = %tc.id,
+                terminal_id = %tc.terminal_id.as_deref().unwrap_or(""),
+                tool_name = %tc.sdk_tool_name,
+                terminal_output_bytes = u64::try_from(tc.terminal_output_len).unwrap_or_default(),
+                has_terminal = tc.terminal_id.is_some(),
+                assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
+            );
+        }
         model::ToolCallStatus::Failed | model::ToolCallStatus::Killed => tracing::warn!(
             target: crate::logging::targets::APP_COMMAND,
             event_name = if matches!(tc.status, model::ToolCallStatus::Killed) {
