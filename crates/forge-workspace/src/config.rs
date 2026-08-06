@@ -199,38 +199,33 @@ pub(crate) struct LoadedProject {
     pub env: HashMap<String, String>,
 }
 
-impl LoadedConfig {
-    pub(crate) fn default_project(&self) -> &LoadedProject {
-        &self.projects[self.default_index]
-    }
-
-    /// Sorted key NAMES a project contributes - never values; these
-    /// tables hold tokens.
-    pub(crate) fn applied_env_keys(project: Option<&LoadedProject>) -> String {
-        let mut keys: Vec<&str> =
-            project.map(|p| p.env.keys().map(String::as_str).collect()).unwrap_or_default();
-        keys.sort_unstable();
-        keys.join(", ")
-    }
-}
-
 /// Complete `[env]` < `[accounts.env]` < `[projects.<name>.env]`,
 /// narrowest winning per key, over the already-merged `account_env`.
 /// Applied here rather than at load because one account serves many
 /// projects, so merging earlier would leak a project's keys into every
 /// other project on that account.
 pub(crate) fn session_env(
-    project: Option<&LoadedProject>,
+    project: &LoadedProject,
     account_env: &HashMap<String, String>,
 ) -> HashMap<String, String> {
     let mut env = account_env.clone();
-    if let Some(project) = project {
-        env.extend(project.env.iter().map(|(k, v)| (k.clone(), v.clone())));
-    }
+    env.extend(project.env.iter().map(|(k, v)| (k.clone(), v.clone())));
     env
 }
 
+/// Sorted key NAMES a project contributes - never values; these tables
+/// hold tokens.
+pub(crate) fn applied_env_keys(project: &LoadedProject) -> String {
+    let mut keys: Vec<&str> = project.env.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    keys.join(", ")
+}
+
 impl LoadedConfig {
+    pub(crate) fn default_project(&self) -> &LoadedProject {
+        &self.projects[self.default_index]
+    }
+
     /// Iterate every project that should spawn at forge launch
     /// (`auto_start = true`).
     pub(crate) fn auto_start_projects(&self) -> impl Iterator<Item = &LoadedProject> {
@@ -481,27 +476,47 @@ config_dir = "~/.claude-subspace"
 [projects.forge.env]
 BUSYMAIL_TOKEN = "s3cret-value"
 API_BASE = "https://example.invalid"
+ZZ_LAST = "hunter2"
+AA_FIRST = "forty-two"
+MM_MID = "mid-secret"
+DD_FOUR = "four-secret"
+QQ_SIX = "six-secret"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
 
-        let rendered = LoadedConfig::applied_env_keys(named(&config, "forge"));
-        assert_eq!(rendered, "API_BASE, BUSYMAIL_TOKEN", "sorted key names");
-        for value in ["s3cret-value", "https://example.invalid"] {
+        let rendered = applied_env_keys(named(&config, "forge"));
+        // Sortedness asserted against the list's own sorted form rather
+        // than a literal: with few keys a literal passes by chance often
+        // enough that dropping the sort would not reliably fail. Seven
+        // keys puts an accidental pass at 1 in 5040 per run.
+        let listed: Vec<&str> = rendered.split(", ").collect();
+        let mut expected = listed.clone();
+        expected.sort_unstable();
+        assert_eq!(listed, expected, "key names are sorted, got: {rendered}");
+        assert_eq!(listed.len(), 7, "every declared key is listed, got: {rendered}");
+        for value in [
+            "s3cret-value",
+            "https://example.invalid",
+            "hunter2",
+            "forty-two",
+            "mid-secret",
+            "four-secret",
+            "six-secret",
+        ] {
             assert!(!rendered.contains(value), "a declared value reached the log: {rendered}");
         }
 
         assert_eq!(
-            LoadedConfig::applied_env_keys(named(&config, "bare")),
+            applied_env_keys(named(&config, "bare")),
             "",
             "a project declaring nothing renders empty, not a placeholder",
         );
-        assert_eq!(LoadedConfig::applied_env_keys(None), "", "an unresolved project renders empty");
     }
 
     /// Resolve a project by name for the `session_env` calls below.
-    fn named<'a>(config: &'a LoadedConfig, name: &str) -> Option<&'a LoadedProject> {
-        config.projects.iter().find(|p| p.name == name)
+    fn named<'a>(config: &'a LoadedConfig, name: &str) -> &'a LoadedProject {
+        config.projects.iter().find(|p| p.name == name).expect("declared project")
     }
 
     /// Write `forge/forge.toml` (the production location).
@@ -984,10 +999,12 @@ config_dir = "~/.claude-subspace"
 A = "1"
 [projects.delta.env]
 B = "2"
+[projects.beta.env]
+C = "3"
 "#,
         );
         let msg = load_from_dir(dir.path()).expect_err("must not load").to_string();
-        assert!(msg.contains("delta, gamma"), "both names, sorted, in one error: {msg}");
+        assert!(msg.contains("beta, delta, gamma"), "every name, sorted, in one error: {msg}");
     }
 
     #[test]

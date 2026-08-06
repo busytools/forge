@@ -2187,10 +2187,25 @@ impl Workspace {
             target: "forge_workspace::workspace",
             event_name = "session_env_project_applied",
             project = %project.name,
-            keys = %crate::config::LoadedConfig::applied_env_keys(Some(&project)),
+            keys = %crate::config::applied_env_keys(&project),
             "resolved the spawn target to a project and applied its [projects.<name>.env]",
         );
-        crate::config::session_env(Some(&project), account_env)
+        // Only this layer can tell WHICH table declared the key -
+        // `build_options_with_callback` receives the merged map.
+        for key in ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"] {
+            if project.env.contains_key(key) {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    event_name = "session_env_project_overrides_endpoint",
+                    project = %project.name,
+                    key,
+                    "a project-declared endpoint key desyncs forge's own accounting; the session \
+                     talks to this endpoint while the usage probe, plan detection and the \
+                     picker's rate-limit skip all measure the account's",
+                );
+            }
+        }
+        crate::config::session_env(&project, account_env)
     }
 
     /// Look up a project by `name` from `forge.toml`. Returns
