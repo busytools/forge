@@ -416,21 +416,27 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     // it means each can resolve to the other and receive its
     // `[projects.<name>.env]`, so refuse to boot rather than hand one
     // project another's secrets.
-    let mut seen_storage_keys: std::collections::HashMap<String, String> =
+    // Gated on at least one side declaring env: two entries for one
+    // path is a legitimate existing pattern (the same repo under two
+    // org scopes, to spawn under either account list) and loads fine
+    // when there is no env to misroute.
+    let mut seen_storage_keys: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
-    for project in &projects {
+    for (index, project) in projects.iter().enumerate() {
         let key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
             &project.path.to_string_lossy(),
         ));
-        let label = format!("'{}' ({})", project.name, project.display_path);
-        if let Some(first) = seen_storage_keys.insert(key.clone(), label.clone()) {
-            return Err(WorkspaceError::CollidingProjectStorageKey {
-                first,
-                second: label,
-                key,
-                path,
-            });
+        let Some(first) = seen_storage_keys.insert(key.clone(), index) else { continue };
+        let first = &projects[first];
+        if first.env.is_empty() && project.env.is_empty() {
+            continue;
         }
+        return Err(WorkspaceError::CollidingProjectStorageKey {
+            first: format!("'{}' ({})", first.name, first.display_path),
+            second: format!("'{}' ({})", project.name, project.display_path),
+            key,
+            path,
+        });
     }
 
     // A `[projects.<name>.env]` table repeats a project name by hand,
@@ -827,6 +833,87 @@ ALPHA_TOKEN = "alpha-only-secret"
         let msg = load_from_dir(dir.path()).expect_err("colliding paths must not load").to_string();
         assert!(msg.contains("'alpha'") && msg.contains("'beta'"), "names both projects: {msg}");
         assert!(msg.contains("a.b") && msg.contains("a-b"), "and both paths: {msg}");
+    }
+
+    /// One repo declared under two org scopes so it can spawn under
+    /// either account list. Byte-identical paths, one storage key, and
+    /// it boots on main - the collision only matters once env is
+    /// routed through that key, so with no env it must still load.
+    #[test]
+    fn one_path_declared_under_two_orgs_loads_when_neither_declares_env() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("shared");
+        fs::create_dir_all(&root).expect("shared dir");
+        write_config(
+            dir.path(),
+            &format!(
+                r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "forge-personal"
+path = "{root}"
+
+[[orgs]]
+name = "Work"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge-work"
+path = "{root}"
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+[[accounts]]
+display_name = "Codex"
+config_dir = "~/.claude-codex"
+"#,
+                root = root.display()
+            ),
+        );
+        let config = load_from_dir(dir.path()).expect("two org scopes over one path still load");
+        assert_eq!(config.projects.len(), 2, "both entries survive");
+    }
+
+    /// The same shape once one side declares env: now the key decides
+    /// whose secret a session gets, so it has to refuse.
+    #[test]
+    fn one_path_under_two_orgs_is_rejected_once_either_declares_env() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("shared");
+        fs::create_dir_all(&root).expect("shared dir");
+        write_config(
+            dir.path(),
+            &format!(
+                r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "forge-personal"
+path = "{root}"
+
+[[orgs]]
+name = "Work"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "forge-work"
+path = "{root}"
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+
+[projects.forge-work.env]
+WORK_TOKEN = "work-only-secret"
+"#,
+                root = root.display()
+            ),
+        );
+        let msg =
+            load_from_dir(dir.path()).expect_err("must refuse once env is at stake").to_string();
+        assert!(msg.contains("merge them into one entry"), "names the right remedy: {msg}");
     }
 
     /// The realistic trigger: two projects pointing at one tree, one

@@ -75,7 +75,7 @@ pub enum WorkspaceError {
     UnknownProjectEnv { path: PathBuf, projects: String, valid: String },
 
     #[error(
-        "projects {first} and {second} in forge.toml at {} resolve to the same session-storage key '{key}'; their paths differ only in characters the key drops, or one is a symlink to the other. Give them distinct real paths - forge cannot tell their sessions apart, and each would receive the other's [projects.<name>.env]",
+        "projects {first} and {second} in forge.toml at {} resolve to the same session-storage key '{key}', and at least one of them declares [projects.<name>.env]. forge cannot tell their sessions apart, so each could receive the other's env. If they are the same directory declared twice, merge them into one entry; if the paths differ, make them differ in more than the punctuation the key drops. This compares canonical paths only - a project reached through a symlink that lands under another project's root gets a distinct key and is not covered here (see #565)",
         path.display()
     )]
     CollidingProjectStorageKey { path: PathBuf, first: String, second: String, key: String },
