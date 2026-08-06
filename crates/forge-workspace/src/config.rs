@@ -193,6 +193,12 @@ pub(crate) struct LoadedProject {
     /// Per-project environment from `[projects.<name>.env]`, layered
     /// over the account's env at spawn by
     /// [`LoadedConfig::session_env`]. Absent table -> empty.
+    ///
+    /// An `ANTHROPIC_BASE_URL` or `ANTHROPIC_AUTH_TOKEN` here desyncs
+    /// forge's own accounting: the session talks to the project's
+    /// endpoint while the usage probe, plan detection, rate-limit
+    /// accounting and account picker all read the ACCOUNT map, so they
+    /// measure a different endpoint and nothing warns.
     pub env: HashMap<String, String>,
 }
 
@@ -1004,7 +1010,6 @@ API_TOKEN = "busymail-token"
             "an account-only key still reaches the session",
         );
     }
-
 
     #[test]
     fn parses_account_experimental_flag() {

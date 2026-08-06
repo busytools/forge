@@ -994,9 +994,6 @@ impl Workspace {
                 accounts.env(&account_key).cloned().unwrap_or_default(),
             )
         };
-        // One account serves many projects, so the project layer is
-        // applied here - where the target and the account are both
-        // known - rather than folded into the account at load.
         let session_env = self.session_env_for(&target, &account_env);
         let attached_proxy = if account_proxy_enabled { self.proxy.clone() } else { None };
 
@@ -2140,13 +2137,11 @@ impl Workspace {
     /// The project a spawn under `target` belongs to, for resolving
     /// that project's `[projects.<name>.env]`.
     ///
-    /// Deliberately not [`Self::project_accounts_for`]'s resolution:
-    /// that one falls back to the default project on a miss, which is
-    /// right for an account pin and wrong for env, where it would hand
-    /// one project's declared keys to a session in another. It also
-    /// resolves a session through `session_cwd_for`, which misses
-    /// every worker (the catalog holds no worker rows); `cwd_for_session`
-    /// composes a worker's dir from the live registry instead.
+    /// Not [`Self::project_accounts_for`]'s resolution: that falls back
+    /// to the default project on a miss, which would hand one project's
+    /// keys to another's session, and it resolves through
+    /// `session_cwd_for`, which misses every worker (the catalog holds
+    /// no worker rows).
     fn project_name_for_target(&self, target: &SessionTarget) -> Option<String> {
         match target {
             SessionTarget::Default => Some(self.config.default_project().name.clone()),
@@ -2194,10 +2189,9 @@ impl Workspace {
             }
             return account_env.clone();
         };
-        // Logged on every resolved spawn even when the project declares
-        // nothing, so "resolved to a project I did not mean" is visible
-        // without instrumenting anything. Key NAMES only - these tables
-        // hold tokens.
+        // Logged even when the project declares nothing, so "resolved to
+        // a project I did not mean" is visible. Key NAMES only - these
+        // tables hold tokens.
         let mut applied: Vec<&str> = self
             .config
             .projects
@@ -7118,11 +7112,10 @@ SUBSPACE_TOKEN = "subspace-value"
     #[test]
     fn session_env_for_fresh_in_project_applies_that_projects_env() {
         let (ws, _dir) = stub_with_project_env_fixture();
-        let project_key = ProjectKey::new(
-            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
                 "/tmp/wt-env-subspace",
-            )),
-        );
+            )));
         let target = SessionTarget::FreshInProject {
             project_key,
             synth_key: SessionKey::from_session_id("__spawn_subspace__"),
