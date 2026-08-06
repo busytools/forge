@@ -167,7 +167,8 @@ fn assert_the_exclusion_is_still_needed(log: &str) {
     assert!(
         SECRETS.iter().any(|secret| spawn.contains(secret)),
         "the spawn record no longer carries declared values, so #564 has landed - delete \
-         without_the_known_sdk_leak, its call sites and this assertion: {spawn}",
+         without_the_known_sdk_leak, its two call sites, SPAWN_RECORD, and this assertion \
+         (leaving SPAWN_RECORD behind fails the build on dead code): {spawn}",
     );
 }
 
