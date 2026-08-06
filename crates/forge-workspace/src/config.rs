@@ -767,6 +767,10 @@ BUSYMAIL_MCP_URL = "https://mail.example/mcp"
     /// account, which `load_from_dir` already refuses to boot on. A
     /// silently-ignored env block is the failure mode #551 exists to
     /// kill, so it must not load.
+    /// Project names here deliberately avoid `forge`: the message
+    /// contains the literal `forge.toml` and the interpolated path is
+    /// `<tempdir>/forge/forge.toml`, so asserting on `forge` would
+    /// pass with the valid-names listing dropped entirely.
     #[test]
     fn env_table_for_undeclared_project_is_rejected() {
         let dir = tempdir().expect("tempdir");
@@ -777,22 +781,25 @@ BUSYMAIL_MCP_URL = "https://mail.example/mcp"
 name = "Personal"
 accounts = ["Subspace"]
 [[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
+name = "alpha"
+path = "~/Projects/alpha"
+[[orgs.projects]]
+name = "beta"
+path = "~/Projects/beta"
 [[accounts]]
 display_name = "Subspace"
 config_dir = "~/.claude-subspace"
 
-[projects.frge.env]
+[projects.gamma.env]
 BUSYMAIL_TOKEN = "typo-in-the-project-name"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("undeclared project name must not load");
         let msg = err.to_string();
-        assert!(msg.contains("frge"), "error names the offending project name, got: {msg}");
+        assert!(msg.contains("gamma"), "error names the offending project name, got: {msg}");
         assert!(
-            msg.contains("forge"),
-            "error lists the valid project names so the typo is obvious, got: {msg}",
+            msg.contains("valid projects: alpha, beta"),
+            "error renders the valid-name listing, got: {msg}",
         );
     }
 
