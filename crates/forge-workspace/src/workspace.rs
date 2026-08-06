@@ -2203,7 +2203,8 @@ impl Workspace {
             event_name = "session_env_project_applied",
             project = %project.name,
             keys = %crate::config::applied_env_keys(&project),
-            "resolved the spawn target to a project and applied its [projects.<name>.env]",
+            "resolved the spawn target to a project; `keys` lists what its \
+             [projects.<name>.env] contributed, empty when it declares none",
         );
         // Only this layer can tell WHICH table declared the key -
         // `build_options_with_callback` receives the merged map.

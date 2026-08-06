@@ -24,6 +24,11 @@ use serde::Deserialize;
 use crate::error::WorkspaceError;
 use crate::ui::UiSettings;
 
+/// Unknown top-level keys are rejected so `[project.forge.env]` and
+/// `[Projects.forge.env]` - the singular and capitalised misspellings
+/// of the `[projects]` table - fail rather than loading as an empty
+/// project env. Scoped to that: `[ui]`, `[gotify]` and `[[orgs]]`
+/// deliberately keep their own leniency.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ForgeToml {
@@ -66,7 +71,6 @@ struct ProjectEnvEntry {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct OrgEntry {
     name: String,
     /// Account `display_name`s every project in this org is allowed
@@ -100,6 +104,9 @@ struct ProjectEntry {
     static_workers: Vec<String>,
 }
 
+/// Unknown fields are rejected for the same reason as `ProjectEntry`:
+/// this table hosts `[accounts.env]`, so `[accounts.envs]` would
+/// otherwise load as an empty env exactly like the project-side typo.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AccountEntry {
@@ -722,6 +729,33 @@ PROJECT_ONLY = "project"
             let msg = load_from_dir(dir.path()).expect_err(label).to_string();
             assert!(msg.contains(needle), "{label}: error must name `{needle}`, got: {msg}");
         }
+    }
+
+    /// `[accounts.env]` is the sibling this feature's docs point at, so
+    /// the account-side typo has to fail the same way the project-side
+    /// one does. Pins `AccountEntry`'s attribute, which nothing else
+    /// covers - deleting every remaining attribute passed the suite.
+    #[test]
+    fn near_miss_env_on_an_account_entry_is_rejected() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+[accounts.envs]
+ANTHROPIC_BASE_URL = "never-applied"
+"#,
+        );
+        let msg = load_from_dir(dir.path()).expect_err("[accounts.envs] must not load").to_string();
+        assert!(msg.contains("envs"), "error names the mistyped table, got: {msg}");
     }
 
     /// The same class one level up, on the `[[orgs.projects]]` entry:

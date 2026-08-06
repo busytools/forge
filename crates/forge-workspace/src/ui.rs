@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 /// absent `[ui]` section in `forge.toml` is equivalent to all
 /// defaults.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct UiSettings {
     /// Active spinner style for every animated surface (launchpad,
     /// chat thinking/working, input box, projects pane, inspector).
