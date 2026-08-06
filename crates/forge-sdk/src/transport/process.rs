@@ -292,10 +292,14 @@ impl Subprocess {
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.kill_on_drop(true);
 
+        // `argv_len` against the rendered flag count makes a flag
+        // missing from `LOGGABLE_FLAGS` visible rather than silent.
         debug!(
             binary = %options.binary,
             cwd = ?options.cwd,
             flags = %flag_names(&args),
+            argv_len = args.len(),
+            extra_args_len = options.extra_args.len(),
             "spawning claude subprocess"
         );
         let mut child = cmd.spawn().map_err(|e| match e.kind() {
@@ -845,6 +849,19 @@ mod tests {
         for flag in ["resume", "model", "mcp-config"] {
             assert!(logged.contains(flag), "spawn record dropped `--{flag}`: {logged:?}");
         }
+
+        // The counts are what keep an unrecognised flag from
+        // degrading the line silently. Derived, not restated.
+        let args = build_args(&options).expect("fixture argv");
+        assert!(logged.contains(&format!("argv_len={}", args.len())), "{logged:?}");
+        assert!(
+            logged.contains(&format!("extra_args_len={}", options.extra_args.len())),
+            "{logged:?}",
+        );
+        assert!(
+            !logged.contains("odd-flag"),
+            "extra_args names are user-defined and must stay unrendered: {logged:?}",
+        );
     }
 
     /// Recognition is by name, not by a `--` prefix. The dashed value
