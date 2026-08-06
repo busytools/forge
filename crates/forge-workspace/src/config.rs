@@ -404,11 +404,11 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     let mut unknown_env_projects: Vec<&str> =
         project_env_tables.keys().map(String::as_str).collect();
     unknown_env_projects.sort_unstable();
-    if let Some(project) = unknown_env_projects.first() {
+    if !unknown_env_projects.is_empty() {
         let mut valid: Vec<&str> = seen_project_names.iter().map(String::as_str).collect();
         valid.sort_unstable();
         return Err(WorkspaceError::UnknownProjectEnv {
-            project: (*project).to_owned(),
+            projects: unknown_env_projects.join(", "),
             valid: valid.join(", "),
             path,
         });
@@ -821,10 +821,39 @@ BUSYMAIL_TOKEN = "typo-in-the-project-name"
         let err = load_from_dir(dir.path()).expect_err("undeclared project name must not load");
         let msg = err.to_string();
         assert!(msg.contains("gamma"), "error names the offending project name, got: {msg}");
+        assert!(!msg.contains("delta"), "control: only the declared typo appears");
         assert!(
             msg.contains("valid projects: alpha, beta"),
             "error renders the valid-name listing, got: {msg}",
         );
+    }
+
+    /// All bad names at once, so a config with several typos is one
+    /// fix rather than fix-one-reboot-hit-the-next.
+    #[test]
+    fn every_undeclared_project_name_is_reported_together() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "alpha"
+path = "~/Projects/alpha"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+
+[projects.gamma.env]
+A = "1"
+[projects.delta.env]
+B = "2"
+"#,
+        );
+        let msg = load_from_dir(dir.path()).expect_err("must not load").to_string();
+        assert!(msg.contains("delta, gamma"), "both names, sorted, in one error: {msg}");
     }
 
     #[test]
