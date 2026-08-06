@@ -51,6 +51,10 @@ chrono = { workspace = true }
 redb = { workspace = true }
 
 [dev-dependencies]
+# Captures the applied record for the value-absence guard. That record is
+# emitted in this crate before any spawn, so the test needs no `claude`
+# binary and runs on CI - unlike a capture driven through a real spawn.
+tracing-subscriber = { workspace = true }
 # Self-dep enables this crate's `testing` + `test-helpers` features for
 # its own `tests/*.rs` so a scoped `cargo test -p forge-workspace` (no
 # --all-features) resolves `new_for_test` and the other gated helpers.

@@ -7055,6 +7055,77 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
     }
 
     /// `SessionTarget::Default` is the alphabetically-first auto_start
+    /// Buffer tracing output so the applied record can be read back.
+    #[derive(Clone, Default)]
+    struct LogCapture(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogCapture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// The applied record names the keys a project contributed and must
+    /// never carry their values - it is always-on, so a widened field
+    /// writes tokens to disk on every spawn. Asserted on a DIRECT call:
+    /// the record is emitted in this crate before any subprocess, so
+    /// this needs no binary and no wait.
+    #[test]
+    fn the_applied_record_logs_key_names_and_never_a_value() {
+        const SENTINEL: &str = "value-must-never-be-logged";
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("solo");
+        fs::create_dir_all(&root).expect("root");
+        let forge_dir = crate::config::ensure_forge_data_dir(dir.path()).expect("forge dir");
+        fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "solo"
+path = "{root}"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "/tmp/applied-record-cfg"
+
+[projects.solo.env]
+SOLO_TOKEN = "value-must-never-be-logged"
+"#,
+                root = root.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let config = crate::config::load_from_dir(dir.path()).expect("load config");
+        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config);
+
+        let capture = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt().with_writer(capture.clone()).finish();
+        tracing::subscriber::with_default(subscriber, || {
+            ws.session_env_for(
+                &SessionTarget::Named("solo".to_owned()),
+                &std::collections::HashMap::new(),
+            );
+        });
+        let log = String::from_utf8_lossy(&capture.0.lock()).into_owned();
+
+        assert!(log.contains("SOLO_TOKEN"), "the record names the key: {log}");
+        assert!(!log.contains(SENTINEL), "and never its value: {log}");
+    }
+
     /// Two projects at one path collide on the session-storage key, so
     /// neither can be told apart - the ambiguous case must yield NO
     /// project env rather than the first match's. Second assertion
