@@ -273,14 +273,19 @@ async fn the_applied_record_fires_for_a_project_declaring_no_env() {
     assert!(applied.contains(r#""keys":"""#), "with an empty key list, not a missing record");
 }
 
-/// The WARN's own gate is the untested half: replacing the
-/// "does any project declare env" condition with `true` fires it on
-/// every resolved spawn, which is noise rather than signal.
+/// The WARN's gate suppresses it when NO project declares env, so the
+/// control has to be an unresolved target in a config that declares
+/// none - a resolved spawn never reaches the gate at all, and asserting
+/// on one pins nothing.
 #[tokio::test]
-async fn the_unresolved_warn_stays_silent_on_a_resolved_spawn() {
-    let log = spawn_with_capture(SessionTarget::Named("forge".to_owned())).await;
+async fn the_unresolved_warn_is_silent_when_no_project_declares_env() {
+    let log = spawn_with_fixture(
+        SessionTarget::Session(SessionKey::from_str_for_test("no-such-session")),
+        FIXTURE_NO_PROJECT_ENV,
+    )
+    .await;
     assert!(
         !log.contains("session_env_project_unresolved"),
-        "a target that resolved must not warn about being unresolved: {log}",
+        "nothing to misroute, so the warn is noise here: {log}",
     );
 }
