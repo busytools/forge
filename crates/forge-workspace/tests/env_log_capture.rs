@@ -116,15 +116,32 @@ ANTHROPIC_AUTH_TOKEN = "auth-tok-must-never-be-logged"
 /// `forge-sdk`'s spawn path logs the `Command` at DEBUG, and
 /// `Command`'s `Debug` renders every env var as `KEY="value"` - so the
 /// last hop before exec prints the whole merged environment. That is a
-/// live leak on main, being fixed in its own PR, and it is outside this
-/// crate. Excluding exactly that record keeps this guard failing for
-/// any OTHER leak instead of going red on a known one; deleting this
-/// filter is the acceptance test for that fix.
+/// live leak on main, fixed by #564, and it is outside this crate.
+/// Excluding exactly that record keeps this guard failing for any OTHER
+/// leak instead of going red on a known one.
+///
+/// Paired with [`assert_the_exclusion_is_still_needed`] so it expires
+/// on its own: the moment #564 lands and that line stops carrying
+/// values, this filter starts hiding nothing and the assertion goes red
+/// rather than waiting for someone to read a comment.
 fn without_the_known_sdk_leak(log: &str) -> String {
-    log.lines()
-        .filter(|line| !line.contains(r#""message":"spawning claude subprocess""#))
-        .collect::<Vec<_>>()
-        .join("\n")
+    log.lines().filter(|line| !line.contains(SPAWN_RECORD)).collect::<Vec<_>>().join("\n")
+}
+
+const SPAWN_RECORD: &str = r#""message":"spawning claude subprocess""#;
+
+/// Fails once the excluded record stops leaking - which is #564's
+/// acceptance test, enforced rather than documented.
+fn assert_the_exclusion_is_still_needed(log: &str) {
+    let spawn = log
+        .lines()
+        .find(|line| line.contains(SPAWN_RECORD))
+        .expect("no spawn record: delete without_the_known_sdk_leak and this assertion");
+    assert!(
+        SECRETS.iter().any(|secret| spawn.contains(secret)),
+        "the spawn record no longer carries declared values, so #564 has landed - delete \
+         without_the_known_sdk_leak, its call sites and this assertion: {spawn}",
+    );
 }
 
 /// The single record carrying `event_name`, so level and fields are
@@ -178,6 +195,7 @@ async fn spawn_logs_key_names_and_never_a_declared_value() {
     assert!(applied.contains(r#""level":"INFO""#), "the spawn record stays at INFO: {applied}");
     assert!(applied.contains(r#""project":"forge""#), "and names the project: {applied}");
     assert!(applied.contains("BUSYMAIL_TOKEN"), "key names are recorded: {applied}");
+    assert_the_exclusion_is_still_needed(&log);
     let guarded = without_the_known_sdk_leak(&log);
     for secret in SECRETS {
         assert!(
