@@ -58,8 +58,12 @@ struct ForgeToml {
 
 /// One `[projects.<name>.env]` table. A wrapper rather than a bare
 /// map so the TOML nests the env under `env`, leaving room for future
-/// per-project keys without moving the existing ones.
+/// per-project keys without moving the existing ones. Unknown fields
+/// are rejected so a mistyped inner table (`envs`) or keys written
+/// without the `.env` nesting fail loudly instead of loading as an
+/// empty env.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProjectEnvEntry {
     #[serde(default)]
     env: HashMap<String, String>,
@@ -662,6 +666,63 @@ PROJECT_ONLY = "project"
         let config = load_from_dir(dir.path()).expect("precedence fixture loads");
         let account = &config.accounts[0];
         config.session_env("forge", &account.env)
+    }
+
+    /// `[projects.forge.envs]` - right project, mistyped inner table.
+    /// Loads clean with an empty env and no diagnostic unless the
+    /// wrapper rejects unknown fields, which is the exact symptom
+    /// #551 was filed for.
+    #[test]
+    fn mistyped_inner_env_table_is_rejected() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+
+[projects.forge.envs]
+BUSYMAIL_TOKEN = "never-applied"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("mistyped inner table must not load");
+        assert!(err.to_string().contains("envs"), "error names the unknown field, got: {err}");
+    }
+
+    /// `[projects.forge]` with the keys written directly, forgetting
+    /// the `.env` nesting. Same silent-empty outcome as the typo.
+    #[test]
+    fn project_env_keys_without_the_env_nesting_are_rejected() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+
+[projects.forge]
+BUSYMAIL_TOKEN = "never-applied"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("un-nested keys must not load");
+        assert!(
+            err.to_string().contains("BUSYMAIL_TOKEN"),
+            "error names the stray key, got: {err}",
+        );
     }
 
     #[test]
