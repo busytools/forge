@@ -76,6 +76,15 @@ impl AgentHandle {
         self.bridge.display_name()
     }
 
+    /// The forge.toml env this handle will stamp onto its `claude`
+    /// subprocess. Test-only: it exists so an integration test can
+    /// observe what a spawn actually receives, rather than what the
+    /// resolution helper returned.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn env(&self) -> std::collections::HashMap<String, String> {
+        self.bridge.env()
+    }
+
     // ---- Fire-and-forget AgentCommand shorthands ----
     //
     // Each method builds the matching `AgentCommand` variant and pushes it
