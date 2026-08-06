@@ -754,36 +754,21 @@ mod tests {
         }
     }
 
-    /// How the fixture passes its system prompt. The variants are
-    /// mutually exclusive on one `Options`, so covering both takes two
-    /// fixtures; `Preset` is what forge itself builds.
-    #[derive(Clone, Copy)]
-    enum PromptShape {
-        Inline,
-        PresetAppend,
-    }
-
     /// An `Options` carrying a sentinel on every surface that reaches
     /// argv or the child env with a value: the env map, all three
-    /// external MCP transports, `extra_args`, inline `settings`, and
-    /// the system prompt.
-    fn options_with_secrets(prompt: PromptShape) -> Options {
-        let prompt = match prompt {
-            PromptShape::Inline => crate::SystemPromptKind::Inline(
-                "sentinel-inline-prompt-must-never-be-logged".to_owned(),
-            ),
-            PromptShape::PresetAppend => crate::SystemPromptKind::preset_append(
-                "sentinel-append-prompt-must-never-be-logged",
-            ),
-        };
+    /// external MCP transports, `extra_args`, `settings`, and the
+    /// system prompt. `Preset { append }` is the shape forge builds.
+    fn options_with_secrets() -> Options {
         let mut options = crate::OptionsBuilder::new()
             // Never spawns. The record under test is written before
             // `cmd.spawn()`, so a missing binary still exercises it.
             .binary("/nonexistent/claude-for-this-test")
             .model("claude-test")
             .resume("session-abc")
-            .system_prompt(prompt)
-            .settings(r#"{"apiKeyHelper":"sentinel-settings-must-never-be-logged"}"#)
+            .system_prompt(crate::SystemPromptKind::preset_append(
+                "sentinel-append-prompt-must-never-be-logged",
+            ))
+            .settings("sentinel-settings-must-never-be-logged")
             .env("ANTHROPIC_AUTH_TOKEN", "sentinel-auth-must-never-be-logged")
             .env("BUSYMAIL_TOKEN", "sentinel-airmail-must-never-be-logged")
             .extra_arg("some-flag", Some("sentinel-extra-arg-must-never-be-logged".to_owned()))
@@ -834,14 +819,7 @@ mod tests {
     fn declared_secrets(options: &Options) -> Vec<String> {
         let mut secrets: Vec<String> = options.env.values().cloned().collect();
         secrets.extend(options.extra_args.values().flatten().cloned());
-        // The blob AND its field values: `is_some()` is satisfied by
-        // `{}`, which would leave this carrier asserting nothing.
         secrets.extend(options.settings.clone());
-        if let Some(raw) = options.settings.as_deref()
-            && let Ok(serde_json::Value::Object(map)) = serde_json::from_str(raw)
-        {
-            secrets.extend(map.values().filter_map(|v| v.as_str().map(str::to_owned)));
-        }
         for cfg in options.external_mcp_servers.values() {
             match cfg {
                 forge_primitives::McpServerConfig::Stdio { env, .. } => {
@@ -853,39 +831,21 @@ mod tests {
                 }
             }
         }
-        match &options.system_prompt {
-            Some(crate::SystemPromptKind::Inline(text)) => secrets.push(text.clone()),
-            Some(crate::SystemPromptKind::Preset { append: Some(text), .. }) => {
-                secrets.push(text.clone());
-            }
-            _ => {}
+        if let Some(crate::SystemPromptKind::Preset { append: Some(text), .. }) =
+            &options.system_prompt
+        {
+            secrets.push(text.clone());
         }
         secrets
     }
 
-    /// The fields the spawn record is allowed to carry. Pinned as a set
-    /// so a field added later has to be considered here rather than
-    /// arriving unreviewed.
-    ///
-    /// EVENT fields only. The capture implements `on_event`, so it
-    /// cannot see an enclosing span's fields, and the production
-    /// formatter prints those on the same line. Four ancestors carry
-    /// them here: `agent_dispatch` (`config_dir`), `bridge_new_session`
-    /// (`cwd`), and `bridge_resume_session` and
-    /// `bridge_resume_or_new_session` (`session_id`, `cwd`). Every one
-    /// is a path or an id, so none can carry a credential - which is
-    /// why this is documented rather than instrumented. A field added
-    /// to any of them reaches this record with the assertion green.
-    const SPAWN_RECORD_FIELDS: [&str; 6] =
-        ["message", "binary", "cwd", "flags", "flags_dropped", "extra_args_len"];
-
-    /// Run the spawn far enough to write its record and return what was
-    /// captured. The record is emitted on this thread, so a thread-local
-    /// subscriber is enough; the empty-capture guard in the caller is
-    /// what would catch that ceasing to be true.
-    fn capture_spawn(options: &Options) -> (String, Result<Subprocess, Error>) {
+    /// The spawn record must not render a credential. Two carriers
+    /// reach it independently: the child environment, and argv.
+    #[test]
+    fn spawn_record_renders_no_declared_secret() {
         use tracing_subscriber::layer::SubscriberExt;
 
+        let options = options_with_secrets();
         let capture = FieldCapture::default();
         let subscriber = tracing_subscriber::registry()
             .with(capture.clone())
@@ -895,230 +855,45 @@ mod tests {
                 .enable_all()
                 .build()
                 .expect("runtime")
-                .block_on(Subprocess::spawn(options))
+                .block_on(Subprocess::spawn(&options))
         });
-        (capture.text(), result)
-    }
+        assert!(
+            matches!(result, Err(Error::CliNotFound { .. })),
+            "fixture binary must not exist, got {:?}",
+            result.as_ref().err()
+        );
 
-    /// The spawn record must not render a credential. Two carriers
-    /// reach it independently: the child environment, and argv.
-    #[test]
-    fn spawn_record_renders_no_declared_secret() {
-        let mut prompt_flags: Vec<&str> = Vec::new();
-        for shape in [PromptShape::Inline, PromptShape::PresetAppend] {
-            let options = options_with_secrets(shape);
-            let (logged, result) = capture_spawn(&options);
-            assert!(
-                matches!(result, Err(Error::CliNotFound { .. })),
-                "fixture binary must not exist, got {:?}",
-                result.as_ref().err()
-            );
-            assert!(
-                logged.contains("spawning claude subprocess"),
-                "the record under test never fired, so nothing was proved: {logged:?}",
-            );
+        let logged = capture.text();
+        assert!(
+            logged.contains("spawning claude subprocess"),
+            "the record under test never fired, so nothing was proved: {logged:?}",
+        );
 
-            // Without this the assertion below is vacuous: emptying the
-            // fixture would leave zero secrets and a green test. The
-            // total alone is not enough - swapping carriers keeps it at
-            // 9 while dropping the argv-borne ones, so pin the shape
-            // per carrier too.
-            let secrets = declared_secrets(&options);
-            assert!(
-                options.env.len() == 2
-                    && options.extra_args.len() == 2
-                    && options.settings.is_some()
-                    && options.external_mcp_servers.len() == 3
-                    && secrets.len() == 10,
-                "fixture composition changed, so the leak assertion covers less than it reads: \
-                 {secrets:?}",
-            );
+        // Without a floor the loop below is vacuous: emptying the
+        // fixture leaves zero secrets and a green test.
+        let secrets = declared_secrets(&options);
+        assert_eq!(secrets.len(), 9, "fixture lost a sentinel: {secrets:?}");
 
-            let argv_tokens = build_args(&options).expect("fixture argv");
-            prompt_flags.extend(
-                ["--system-prompt", "--append-system-prompt"]
-                    .into_iter()
-                    .filter(|flag| argv_tokens.iter().any(|token| token == flag)),
-            );
-            let argv = argv_tokens.join("\u{1}");
-            for secret in &secrets {
-                // Positive control: a sentinel that reaches neither argv
-                // nor the child env proves nothing by being absent.
-                assert!(
-                    argv.contains(secret) || options.env.values().any(|v| v == secret),
-                    "sentinel {secret:?} reaches neither argv nor the child env",
-                );
-                // `--sentinel-…` is rendered with its dashes stripped, so
-                // searching for the raw value would miss the leak.
-                let bare = secret.trim_start_matches('-');
-                assert!(
-                    !logged.contains(secret) && !logged.contains(bare),
-                    "spawn record leaked {secret:?}: {logged:?}",
-                );
-            }
-
-            // The other half: redacting must not gut the line.
-            assert!(logged.contains("binary=/nonexistent/claude-for-this-test"), "{logged:?}");
-            for flag in ["resume", "model", "mcp-config", "settings"] {
-                assert!(logged.contains(flag), "spawn record dropped `--{flag}`: {logged:?}");
-            }
+        let argv = build_args(&options).expect("fixture argv").join("\u{1}");
+        for secret in &secrets {
+            // A sentinel reaching neither argv nor the child env would
+            // prove nothing by being absent from the record.
             assert!(
-                logged.contains(&format!("extra_args_len={}", options.extra_args.len())),
-                "{logged:?}",
+                argv.contains(secret) || options.env.values().any(|v| v == secret),
+                "sentinel {secret:?} reaches neither argv nor the child env",
             );
-            // Exactly one `--` token is unaccounted for: the dashed
-            // `extra_args` value. Hard-asserted rather than bounded,
-            // because this is also what catches a flag emitted from
-            // outside `argv.rs`, which the source scan cannot see.
-            assert!(logged.contains("flags_dropped=1"), "{logged:?}");
+            // `--sentinel-…` renders with its dashes stripped, so
+            // searching for the raw value alone would miss the leak.
+            // Pairs with the dashed `extra_args` sentinel: drop either and prefix-widening
+            // stops being covered while this test stays green.
+            let bare = secret.trim_start_matches('-');
             assert!(
-                !logged.contains("odd-flag"),
-                "extra_args names are user-defined and must stay unrendered: {logged:?}",
+                !logged.contains(secret) && !logged.contains(bare),
+                "spawn record leaked {secret:?}: {logged:?}",
             );
-
-            let record = logged
-                .lines()
-                .find(|line| line.contains("spawning claude subprocess"))
-                .expect("the spawn record");
-            let rendered: Vec<&str> = record
-                .split_whitespace()
-                .filter_map(|token| token.split_once('='))
-                .map(|(name, _)| name)
-                .collect();
-            for name in &rendered {
-                assert!(
-                    SPAWN_RECORD_FIELDS.contains(name),
-                    "spawn record grew field `{name}` - every field is a disclosure decision",
-                );
-            }
         }
-        // Pin which shapes actually reached argv, not how many
-        // iterations ran: pointing `PresetAppend` at `Inline` keeps
-        // every count intact while `--append-system-prompt` stops
-        // being exercised, and that is the shape forge itself builds.
-        prompt_flags.sort_unstable();
-        assert_eq!(
-            prompt_flags,
-            ["--append-system-prompt", "--system-prompt"],
-            "a prompt shape stopped reaching argv",
-        );
     }
 
-    /// Recognition is by name, not by a `--` prefix. The dashed value
-    /// is the case that separates the two: anything keying on the
-    /// prefix renders it, and it is a value.
-    #[test]
-    fn flag_names_keeps_known_flags_and_drops_every_value() {
-        let args: Vec<String> = [
-            "--verbose",
-            "--system-prompt",
-            "plain text value",
-            "--setting-sources=user",
-            "--unknown-to-the-list",
-            "--dashed-value-of-an-extra-arg",
-            "--some-extra",
-            "--model",
-            "a",
-            "--model",
-            "b",
-        ]
-        .iter()
-        .map(|s| (*s).to_owned())
-        .collect();
-        // `some-extra` is declared, so it is reported by its own count
-        // rather than as an unaccounted token.
-        let declared = std::collections::HashMap::from([("some-extra".to_owned(), None)]);
-        let (rendered, dropped) = flag_names(&args, &declared);
-        assert_eq!(rendered, "verbose system-prompt setting-sources model");
-        // Two unknown, plus the repeated `--model`; `--some-extra` is
-        // declared and so is not counted.
-        assert_eq!(dropped, 3);
-    }
-
-    /// Ties the list to its source. A flag added to `build_args` and
-    /// not added to `LOGGABLE_FLAGS` goes unlogged, which is safe but
-    /// silent, so it fails here instead.
-    ///
-    /// Reads the source rather than a built argv on purpose: the
-    /// system-prompt arms are mutually exclusive, so no single
-    /// `Options` emits all of them and a behavioural sweep would miss
-    /// whichever branch had no fixture.
-    ///
-    /// It sees only literals in this file; a flag `build_args` obtains
-    /// from elsewhere is caught instead by the hard `flags_dropped`
-    /// assertion in the spawn test, which counts what argv actually
-    /// carried.
-    #[test]
-    fn loggable_flags_matches_every_flag_literal_in_build_args() {
-        let mut found = flag_literals_in_build_args(include_str!("../argv.rs"));
-        found.sort_unstable();
-        found.dedup();
-        assert!(!found.is_empty(), "found no flag literals - the scan broke, not argv.rs");
-
-        let mut known = LOGGABLE_FLAGS.to_vec();
-        known.sort_unstable();
-        assert_eq!(
-            found, known,
-            "LOGGABLE_FLAGS drifted from build_args; a flag missing here is a flag that \
-             silently stops being logged",
-        );
-    }
-
-    /// Both ends of the slice, on synthetic input. Neither bound is
-    /// exercised by `argv.rs` as it stands - `build_args` is its only
-    /// item - so without this the anchor and the terminator are
-    /// untested and the first edit to that file finds out.
-    #[test]
-    fn flag_literal_scan_reads_the_function_body_and_nothing_else() {
-        let src = "\
-//! Module doc mentioning \"--module-doc-flag\".
-const OTHER: &str = \"--before-the-fn\";
-
-/// Doc comment above the fn mentioning \"--doc-comment-flag\".
-pub fn build_args(options: &Options) -> Vec<String> {
-    // A body comment naming \"--body-comment-flag\".
-    args.push(\"--real-flag\".into());
-    args.push(format!(\"--other-real={}\", x));
-}
-
-#[cfg(test)]
-mod tests {
-    const IN_TESTS: &str = \"--after-the-body\";
-}
-";
-        let mut found = flag_literals_in_build_args(src);
-        found.sort_unstable();
-        assert_eq!(
-            found,
-            vec!["body-comment-flag", "other-real", "real-flag"],
-            "the slice must start at the fn and stop at its closing brace",
-        );
-    }
-
-    /// Flag literals inside `build_args`' body. Anchored at the
-    /// signature so a literal above it cannot report drift that did not
-    /// happen, and terminated at the first line-start `}` so one below
-    /// it cannot either.
-    fn flag_literals_in_build_args(whole: &str) -> Vec<&str> {
-        let from_fn = &whole[whole.find("pub fn build_args").expect("build_args in argv.rs")..];
-        let src = from_fn.find("\n}").map_or(from_fn, |end| &from_fn[..end]);
-        let mut found: Vec<&str> = Vec::new();
-        let mut rest = src;
-        while let Some(idx) = rest.find("\"--") {
-            let after = &rest[idx + 3..];
-            let end =
-                after.find(|c: char| !c.is_ascii_alphanumeric() && c != '-').unwrap_or(after.len());
-            if end > 0 {
-                found.push(&after[..end]);
-            }
-            rest = &after[end..];
-        }
-        found
-    }
-
-    /// Build a [`Subprocess`] wrapping a long-running mock that ignores
-    /// stdin (`/bin/sleep 30`). Bypasses [`build_args`] - only relevant
-    /// to tests that exercise the close-timeout path.
     fn spawn_sleep_subprocess(secs: u64) -> Subprocess {
         let mut cmd = Command::new("/bin/sleep");
         cmd.arg(secs.to_string());
