@@ -102,9 +102,10 @@ fn parse_semver_triple(s: &str) -> Option<(u32, u32, u32)> {
     Some((major, minor, patch))
 }
 
-/// Every flag [`build_args`] can emit. `extra_args` flags are
-/// user-defined, so no list can cover them and they are counted
-/// rather than named.
+/// Every flag [`build_args`] can emit. A user-defined `extra_args`
+/// name is not covered, except where it collides with one of these -
+/// forge routes `--effort` that way, so the collision is the common
+/// case rather than a corner.
 const LOGGABLE_FLAGS: [&str; 18] = [
     "output-format",
     "verbose",
@@ -127,18 +128,22 @@ const LOGGABLE_FLAGS: [&str; 18] = [
 ];
 
 /// The recognised flag names in an argv, and a count of the `--`
-/// tokens left out.
+/// tokens that are neither recognised nor a declared `extra_args`
+/// name.
 ///
-/// Argv is not safe to render: `--mcp-config` serialises each external
-/// MCP server verbatim including its `env` and `headers`, `--settings`
-/// can be inline JSON rather than a path, the system prompt is passed
-/// inline, and `extra_args` values are arbitrary. Matching against
-/// [`LOGGABLE_FLAGS`] rather than on a `--` prefix is what makes a
-/// value unable to reach the log even when it looks like a flag.
+/// Matching against [`LOGGABLE_FLAGS`] rather than on a `--` prefix is
+/// what stops a value reaching the log when it happens to look like a
+/// flag - `--mcp-config` alone carries every external MCP server's
+/// `env` and `headers` verbatim.
 ///
-/// The count is what keeps the omission visible: a flag absent from
-/// the list, a repeat, and a `--`-shaped value all raise it.
-fn flag_names(args: &[String]) -> (String, usize) {
+/// The count exists to make a silent omission loud, so it has to read
+/// zero on a healthy spawn. `extra_args` names are excluded because
+/// their own count reports them, which leaves this number meaning
+/// "a `--` token nothing accounts for".
+fn flag_names(
+    args: &[String],
+    extra_args: &std::collections::HashMap<String, Option<String>>,
+) -> (String, usize) {
     let mut names: Vec<&str> = Vec::new();
     let mut dropped = 0;
     for token in args {
@@ -146,7 +151,7 @@ fn flag_names(args: &[String]) -> (String, usize) {
         let name = name.split_once('=').map_or(name, |(before, _)| before);
         if LOGGABLE_FLAGS.contains(&name) && !names.contains(&name) {
             names.push(name);
-        } else {
+        } else if !extra_args.contains_key(name) {
             dropped += 1;
         }
     }
@@ -298,7 +303,7 @@ impl Subprocess {
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.kill_on_drop(true);
 
-        let (flags, flags_dropped) = flag_names(&args);
+        let (flags, flags_dropped) = flag_names(&args, &options.extra_args);
         debug!(
             binary = %options.binary,
             cwd = ?options.cwd,
@@ -853,6 +858,13 @@ mod tests {
     /// The fields the spawn record is allowed to carry. Pinned as a set
     /// so a field added later has to be considered here rather than
     /// arriving unreviewed.
+    ///
+    /// EVENT fields only. The capture implements `on_event`, so it
+    /// cannot see an enclosing span's fields, and the production
+    /// formatter prints those on the same line - `bridge_new_session`
+    /// already contributes `cwd`, and the resume path adds
+    /// `session_id`. A field added to either span reaches this record
+    /// with this assertion still green.
     const SPAWN_RECORD_FIELDS: [&str; 6] =
         ["message", "binary", "cwd", "flags", "flags_dropped", "extra_args_len"];
 
@@ -877,17 +889,11 @@ mod tests {
         (capture.text(), result)
     }
 
-    /// The spawn record must not render a credential.
-    ///
-    /// Two independent carriers reach that line. `Command`'s unix
-    /// `Debug` writes every explicitly-set variable as `KEY="value"`,
-    /// so `?cmd` published the whole environment. Argv carries the
-    /// rest: `--mcp-config` serialises each external server verbatim
-    /// including `Stdio { env }` and `Sse`/`Http` `{ headers }`,
-    /// `--settings` is inline JSON rather than a path, the system
-    /// prompt is inline, and `extra_args` values are arbitrary.
+    /// The spawn record must not render a credential. Two carriers
+    /// reach it independently: the child environment, and argv.
     #[test]
     fn spawn_record_renders_no_declared_secret() {
+        let mut shapes_seen = 0;
         for shape in [PromptShape::Inline, PromptShape::PresetAppend] {
             let options = options_with_secrets(shape);
             let (logged, result) = capture_spawn(&options);
@@ -902,14 +908,21 @@ mod tests {
             );
 
             // Without this the assertion below is vacuous: emptying the
-            // fixture would leave zero secrets and a green test.
+            // fixture would leave zero secrets and a green test. The
+            // total alone is not enough - swapping carriers keeps it at
+            // 9 while dropping the argv-borne ones, so pin the shape
+            // per carrier too.
             let secrets = declared_secrets(&options);
-            assert_eq!(
-                secrets.len(),
-                9,
-                "fixture lost a sentinel, so the leak assertion covers less than it reads: \
+            assert!(
+                options.env.len() == 2
+                    && options.extra_args.len() == 2
+                    && options.settings.is_some()
+                    && options.external_mcp_servers.len() == 3
+                    && secrets.len() == 9,
+                "fixture composition changed, so the leak assertion covers less than it reads: \
                  {secrets:?}",
             );
+            shapes_seen += 1;
 
             let argv = build_args(&options).expect("fixture argv").join("\u{1}");
             for secret in &secrets {
@@ -937,15 +950,21 @@ mod tests {
                 logged.contains(&format!("extra_args_len={}", options.extra_args.len())),
                 "{logged:?}",
             );
-            // Three `--` tokens are left out: two user-defined
-            // `extra_args` flags and the dashed value of one of them.
-            assert!(logged.contains("flags_dropped=3"), "{logged:?}");
+            // Exactly one `--` token is unaccounted for: the dashed
+            // `extra_args` value. Hard-asserted rather than bounded,
+            // because this is also what catches a flag emitted from
+            // outside `argv.rs`, which the source scan cannot see.
+            assert!(logged.contains("flags_dropped=1"), "{logged:?}");
             assert!(
                 !logged.contains("odd-flag"),
                 "extra_args names are user-defined and must stay unrendered: {logged:?}",
             );
 
-            let rendered: Vec<&str> = logged
+            let record = logged
+                .lines()
+                .find(|line| line.contains("spawning claude subprocess"))
+                .expect("the spawn record");
+            let rendered: Vec<&str> = record
                 .split_whitespace()
                 .filter_map(|token| token.split_once('='))
                 .map(|(name, _)| name)
@@ -957,6 +976,10 @@ mod tests {
                 );
             }
         }
+        // A count-preserving fixture edit can drop an iteration - and
+        // `PresetAppend` is the shape forge itself builds, so the
+        // droppable one is the production one.
+        assert_eq!(shapes_seen, 2, "a prompt shape stopped being exercised");
     }
 
     /// Recognition is by name, not by a `--` prefix. The dashed value
@@ -971,6 +994,7 @@ mod tests {
             "--setting-sources=user",
             "--unknown-to-the-list",
             "--dashed-value-of-an-extra-arg",
+            "--some-extra",
             "--model",
             "a",
             "--model",
@@ -979,9 +1003,13 @@ mod tests {
         .iter()
         .map(|s| (*s).to_owned())
         .collect();
-        let (rendered, dropped) = flag_names(&args);
+        // `some-extra` is declared, so it is reported by its own count
+        // rather than as an unaccounted token.
+        let declared = std::collections::HashMap::from([("some-extra".to_owned(), None)]);
+        let (rendered, dropped) = flag_names(&args, &declared);
         assert_eq!(rendered, "verbose system-prompt setting-sources model");
-        // Two unknown, plus the repeated `--model`.
+        // Two unknown, plus the repeated `--model`; `--some-extra` is
+        // declared and so is not counted.
         assert_eq!(dropped, 3);
     }
 
@@ -993,9 +1021,17 @@ mod tests {
     /// system-prompt arms are mutually exclusive, so no single
     /// `Options` emits all of them and a behavioural sweep would miss
     /// whichever branch had no fixture.
+    ///
+    /// Scoped to the function body, so a flag named in a doc comment
+    /// above it cannot report drift that does not exist. It sees only
+    /// literals in this file; a flag `build_args` obtains from
+    /// elsewhere is caught instead by the hard `flags_dropped`
+    /// assertion in the spawn test, which counts what argv actually
+    /// carried.
     #[test]
     fn loggable_flags_matches_every_flag_literal_in_build_args() {
-        let src = include_str!("../argv.rs");
+        let whole = include_str!("../argv.rs");
+        let src = &whole[whole.find("pub fn build_args").expect("build_args in argv.rs")..];
         let mut found: Vec<&str> = Vec::new();
         let mut rest = src;
         while let Some(idx) = rest.find("\"--") {
