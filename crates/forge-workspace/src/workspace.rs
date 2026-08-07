@@ -994,6 +994,7 @@ impl Workspace {
                 accounts.env(&account_key).cloned().unwrap_or_default(),
             )
         };
+        let session_env = self.session_env_for(&target, &account_env);
         let attached_proxy = if account_proxy_enabled { self.proxy.clone() } else { None };
 
         // Hoist DomainSession creation to BEFORE Agent::spawn so the
@@ -1090,7 +1091,7 @@ impl Workspace {
             Some(account_key.0.clone()),
             attached_proxy,
             vec![("forge".to_owned(), forge_server)],
-            account_env,
+            session_env,
         );
         // Project-rooted targets (`Default` / `Named`) resume the
         // project's lead session when the on-disk catalog has one,
@@ -2131,6 +2132,59 @@ impl Workspace {
                     |p| p.accounts.clone(),
                 ),
         }
+    }
+
+    /// The project a spawn under `target` belongs to. Not
+    /// [`Self::project_accounts_for`]'s resolution: that falls back to
+    /// the default project, which would hand one project's keys to
+    /// another's session, and it resolves through `session_cwd_for`,
+    /// which misses every worker (the catalog holds no worker rows).
+    fn project_for_target(&self, target: &SessionTarget) -> Option<LoadedProject> {
+        match target {
+            SessionTarget::Default => Some(self.config.default_project().clone()),
+            SessionTarget::Named(name) => self.find_project_view_by_name(name),
+            // An account switch on a lead with nothing on disk yet routes
+            // through `__fresh__:<project_key>`, which matches no catalog
+            // row and no worker, so resolving by cwd alone would drop the
+            // project's env on a routine switch.
+            SessionTarget::Session(key) => key
+                .as_str()
+                .strip_prefix("__fresh__:")
+                .and_then(|project_key| {
+                    self.project_for_key(&ProjectKey::new(project_key.to_owned()))
+                })
+                .or_else(|| {
+                    self.cwd_for_session(key)
+                        .and_then(|cwd| self.project_name_for_path(&cwd))
+                        .and_then(|name| self.find_project_view_by_name(&name))
+                }),
+            SessionTarget::FreshInProject { project_key, .. } => self.project_for_key(project_key),
+        }
+    }
+
+    /// Env for a spawn under `target` on the picked account. An
+    /// unresolved target keeps the account env rather than borrowing
+    /// the default project's, and warns when any project declares env,
+    /// since the symptom is otherwise a silently incomplete session.
+    fn session_env_for(
+        &self,
+        target: &SessionTarget,
+        account_env: &std::collections::HashMap<String, String>,
+    ) -> std::collections::HashMap<String, String> {
+        let Some(project) = self.project_for_target(target) else {
+            return account_env.clone();
+        };
+        // Logged even when the project declares nothing, so a target
+        // resolving to the wrong project is visible.
+        tracing::info!(
+            target: "forge_workspace::workspace",
+            event_name = "session_env_project_applied",
+            project = %project.name,
+            keys = %crate::config::applied_env_keys(&project),
+            "resolved the spawn target to a project; `keys` lists what its \
+             [projects.<name>.env] contributed, empty when it declares none",
+        );
+        crate::config::session_env(&project, account_env)
     }
 
     /// Look up a project by `name` from `forge.toml`. Returns
@@ -4467,6 +4521,14 @@ impl Workspace {
     /// spawns and the worktree path for resumed sessions - the two
     /// cases would otherwise need different composition logic).
     pub(crate) fn project_root_for_key(&self, target: &ProjectKey) -> Option<std::path::PathBuf> {
+        self.project_for_key(target).map(|p| p.path)
+    }
+
+    /// The project whose path canonicalises to `target`. Consults the
+    /// test overlay, like every other project lookup - a resolution
+    /// that saw only `config.projects` would return `None` for a seeded
+    /// project and make an absence assertion pass vacuously.
+    pub(crate) fn project_for_key(&self, target: &ProjectKey) -> Option<LoadedProject> {
         let derive_key = |project: &LoadedProject| {
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
                 &project.path.to_string_lossy(),
@@ -4477,10 +4539,28 @@ impl Workspace {
             if let Some(project) =
                 self.test_extra_projects.lock().iter().find(|p| &derive_key(p) == target).cloned()
             {
-                return Some(project.path);
+                return Some(project);
             }
         }
-        self.config.projects.iter().find(|p| &derive_key(p) == target).map(|p| p.path.clone())
+        // `None` when two projects share the key rather than the first
+        // match: the key sanitises away punctuation and resolves
+        // symlinks, so one repo declared under two org scopes collides.
+        // Picking either would hand one project's env to the other's
+        // sessions; no project env is the failure that cannot leak.
+        let mut matches = self.config.projects.iter().filter(|p| &derive_key(p) == target);
+        let first = matches.next()?;
+        if matches.next().is_some() {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                event_name = "project_key_ambiguous",
+                project_key = target.as_str(),
+                "two projects resolve to this session-storage key, so no [projects.<name>.env] \
+                 is applied - give them distinct paths, or merge the entries if they are the \
+                 same directory declared twice",
+            );
+            return None;
+        }
+        Some(first.clone())
     }
 
     /// Resolve the cwd a git-diff scan should run against for the
@@ -5695,6 +5775,7 @@ impl Workspace {
             accounts: vec!["acct-a".to_owned()],
             auto_start: false,
             static_workers: static_workers.to_vec(),
+            env: std::collections::HashMap::new(),
         });
     }
 
@@ -6971,6 +7052,152 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
         let config = crate::config::load_from_dir(dir.path()).expect("load config");
         let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config);
         (ws, dir)
+    }
+
+    /// `SessionTarget::Default` is the alphabetically-first auto_start
+    /// Buffer tracing output so the applied record can be read back.
+    #[derive(Clone, Default)]
+    struct LogCapture(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogCapture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// The applied record names the keys a project contributed and must
+    /// never carry their values - it is always-on, so a widened field
+    /// writes tokens to disk on every spawn. Asserted on a DIRECT call:
+    /// the record is emitted in this crate before any subprocess, so
+    /// this needs no binary and no wait.
+    #[test]
+    fn the_applied_record_logs_key_names_and_never_a_value() {
+        const SENTINEL: &str = "value-must-never-be-logged";
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("solo");
+        fs::create_dir_all(&root).expect("root");
+        let forge_dir = crate::config::ensure_forge_data_dir(dir.path()).expect("forge dir");
+        fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "solo"
+path = "{root}"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "/tmp/applied-record-cfg"
+
+[projects.solo.env]
+SOLO_TOKEN = "value-must-never-be-logged"
+"#,
+                root = root.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let config = crate::config::load_from_dir(dir.path()).expect("load config");
+        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config);
+
+        let capture = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt().with_writer(capture.clone()).finish();
+        tracing::subscriber::with_default(subscriber, || {
+            ws.session_env_for(
+                &SessionTarget::Named("solo".to_owned()),
+                &std::collections::HashMap::new(),
+            );
+        });
+        let log = String::from_utf8_lossy(&capture.0.lock()).into_owned();
+
+        assert!(log.contains("SOLO_TOKEN"), "the record names the key: {log}");
+        assert!(!log.contains(SENTINEL), "and never its value: {log}");
+    }
+
+    /// Two projects at one path collide on the session-storage key, so
+    /// neither can be told apart - the ambiguous case must yield NO
+    /// project env rather than the first match's. Second assertion
+    /// covers the `__fresh__:` key an account switch routes through,
+    /// which resolves via the same lookup.
+    #[test]
+    fn an_ambiguous_storage_key_yields_no_project_env() {
+        let dir = tempdir().expect("tempdir");
+        let shared = dir.path().join("shared");
+        let solo = dir.path().join("solo");
+        fs::create_dir_all(&shared).expect("shared");
+        fs::create_dir_all(&solo).expect("solo");
+        let forge_dir = crate::config::ensure_forge_data_dir(dir.path()).expect("forge dir");
+        fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "twin-a"
+path = "{shared}"
+[[orgs.projects]]
+name = "twin-b"
+path = "{shared}"
+[[orgs.projects]]
+name = "solo"
+path = "{solo}"
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "/tmp/ambig-cfg"
+
+[projects.twin-a.env]
+TWIN_TOKEN = "twin-a-secret"
+[projects.solo.env]
+SOLO_TOKEN = "solo-secret"
+"#,
+                shared = shared.display(),
+                solo = solo.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let config = crate::config::load_from_dir(dir.path()).expect("load config");
+        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config);
+        let key = |p: &std::path::Path| {
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                &p.to_string_lossy(),
+            )))
+        };
+
+        let ambiguous = SessionTarget::FreshInProject {
+            project_key: key(&shared),
+            synth_key: SessionKey::from_session_id("__spawn_twin__"),
+        };
+        let env = ws.session_env_for(&ambiguous, &std::collections::HashMap::new());
+        assert!(
+            !env.contains_key("TWIN_TOKEN"),
+            "an ambiguous key must not deliver either twin's env: {env:?}",
+        );
+
+        let fresh = SessionTarget::Session(SessionKey::from_session_id(format!(
+            "__fresh__:{}",
+            key(&solo).as_str()
+        )));
+        let env = ws.session_env_for(&fresh, &std::collections::HashMap::new());
+        assert_eq!(
+            env.get("SOLO_TOKEN").map(String::as_str),
+            Some("solo-secret"),
+            "an unambiguous key still resolves, including through a __fresh__: placeholder",
+        );
     }
 
     #[test]
@@ -11946,6 +12173,9 @@ mod git_scan_cwd_tests {
         );
     }
 
+    /// A worker has no catalog row, so `project_accounts_for`'s
+    /// `session_cwd_for` resolution misses it and falls back to the
+    /// default project. Env must not inherit that fallback: a worker
     #[test]
     fn cwd_for_session_is_none_when_the_workers_project_is_not_loaded() {
         // The contradiction the WARN names: the registry knows the

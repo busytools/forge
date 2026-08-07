@@ -108,11 +108,12 @@ pub(crate) struct BridgeInner {
     /// the same `forge` server name. Cheap to clone - each entry
     /// is just a name + a few `Arc<dyn Tool>`s.
     extra_mcp_servers: Vec<(String, forge_sdk::mcp::McpServer)>,
-    /// Per-account `[accounts.env]` from forge.toml, stamped onto the
-    /// spawned `claude` subprocess by
-    /// `forge_sdk_worker::build_options_with_callback`. Empty when
-    /// `Agent::spawn` is called directly without a workspace (tests,
-    /// smoke) or for an account with no `[accounts.env]` table.
+    /// The session's resolved forge.toml env - `[env]` merged with
+    /// `[accounts.env]` and the spawning project's
+    /// `[projects.<name>.env]` - stamped onto the spawned `claude`
+    /// subprocess by `forge_sdk_worker::build_options_with_callback`.
+    /// Empty when `Agent::spawn` is called directly without a
+    /// workspace (tests, smoke) or when no table declares anything.
     env: HashMap<String, String>,
 }
 
@@ -155,8 +156,11 @@ impl ForgeSdkBridge {
         self.inner.proxy.clone()
     }
 
-    /// Per-account `[accounts.env]` map to stamp onto every spawned
-    /// `claude` subprocess. Cloned per `spawn_session` call.
+    /// The resolved forge.toml env to stamp onto every spawned
+    /// `claude` subprocess. Cloned per `spawn_session` call, but the
+    /// values were read from disk once at forge BOOT - a new bridge
+    /// does not re-read them, so a forge.toml edit needs a forge
+    /// restart, not a new session.
     pub(crate) fn env(&self) -> HashMap<String, String> {
         self.inner.env.clone()
     }
