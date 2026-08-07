@@ -76,6 +76,16 @@ impl AgentHandle {
         self.bridge.display_name()
     }
 
+    /// The bridge's resolved forge.toml env. Test-only, and one hop
+    /// short of what the child receives - the subprocess also gets
+    /// `CLAUDE_CONFIG_DIR`, the proxy trio and the SDK version. It
+    /// exists so a test can observe the map a spawn carries rather
+    /// than what the resolution helper returned.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn env(&self) -> std::collections::HashMap<String, String> {
+        self.bridge.env()
+    }
+
     // ---- Fire-and-forget AgentCommand shorthands ----
     //
     // Each method builds the matching `AgentCommand` variant and pushes it
@@ -291,8 +301,10 @@ impl Agent {
     /// constructed by spawn_session so the subprocess inherits
     /// `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` and its wire
     /// classification gets normalised to `cli` shape. `env` carries
-    /// the account's `[accounts.env]` (forge.toml), stamped onto the
-    /// spawned subprocess alongside `CLAUDE_CONFIG_DIR`. Returns a
+    /// the session's resolved forge.toml env - `[env]`, then
+    /// `[accounts.env]`, then the spawning project's
+    /// `[projects.<name>.env]` - stamped onto the spawned subprocess
+    /// alongside `CLAUDE_CONFIG_DIR`. Returns a
     /// handle holding the command sender + events receiver + direct-
     /// accessor passthroughs.
     pub fn spawn(

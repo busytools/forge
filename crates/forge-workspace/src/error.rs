@@ -68,6 +68,12 @@ pub enum WorkspaceError {
     )]
     UnknownOrgAccount { path: PathBuf, org: String, account: String, valid: String },
 
+    #[error(
+        "forge.toml at {} has [projects.<name>.env] for undeclared projects: {projects}; valid projects: {valid}",
+        path.display()
+    )]
+    UnknownProjectEnv { path: PathBuf, projects: String, valid: String },
+
     #[error("no project named '{name}' in forge.toml at {}", path.display())]
     ProjectNotFound { name: String, path: PathBuf },
 

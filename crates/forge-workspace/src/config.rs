@@ -41,11 +41,25 @@ struct ForgeToml {
     /// stays dormant.
     #[serde(default)]
     gotify: Option<GotifyConfig>,
-    /// Optional top-level `[env]` table - environment stamped onto
-    /// every account's `claude` subprocess as the BASE, with each
-    /// account's `[accounts.env]` overriding it per-key. Merged into
-    /// `LoadedAccount.env` at load (see `load_from_dir`); not exposed
-    /// on the loaded config. Absent table -> empty.
+    /// Optional top-level `[env]` table - the BASE every session
+    /// starts from, overridden per key by `[accounts.env]` and then by
+    /// `[projects.<name>.env]`. Merged into `LoadedAccount.env` at
+    /// load; the project layer is applied at spawn. Absent -> empty.
+    #[serde(default)]
+    env: HashMap<String, String>,
+    /// `[projects.<name>.env]` tables keyed by project name, drained
+    /// into `LoadedProject.env` at load. A name no `[[orgs.projects]]`
+    /// declares is a load error, not a silent no-op.
+    #[serde(default)]
+    projects: HashMap<String, ProjectEnvEntry>,
+}
+
+/// One `[projects.<name>.env]` table. Unknown fields are rejected so a
+/// mistyped inner table (`envs`) or keys written without the `.env`
+/// nesting fail loudly instead of loading as an empty env.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectEnvEntry {
     #[serde(default)]
     env: HashMap<String, String>,
 }
@@ -171,6 +185,34 @@ pub(crate) struct LoadedProject {
     /// lazily at spawn time, not here). Empty means no static workers.
     /// See `crate::team::Role` + `crate::team::validate_label`.
     pub static_workers: Vec<String>,
+    /// Per-project environment from `[projects.<name>.env]`, layered
+    /// over the account's env at spawn. An `ANTHROPIC_BASE_URL` or
+    /// `ANTHROPIC_AUTH_TOKEN` here desyncs forge's own accounting -
+    /// usage probe, plan detection and the picker all read the ACCOUNT
+    /// map, so they measure a different endpoint.
+    pub env: HashMap<String, String>,
+}
+
+/// Complete `[env]` < `[accounts.env]` < `[projects.<name>.env]`,
+/// narrowest winning per key, over the already-merged `account_env`.
+/// Applied here rather than at load because one account serves many
+/// projects, so merging earlier would leak a project's keys into every
+/// other project on that account.
+pub(crate) fn session_env(
+    project: &LoadedProject,
+    account_env: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut env = account_env.clone();
+    env.extend(project.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    env
+}
+
+/// Sorted key NAMES a project contributes - never values; these tables
+/// hold tokens.
+pub(crate) fn applied_env_keys(project: &LoadedProject) -> String {
+    let mut keys: Vec<&str> = project.env.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    keys.join(", ")
 }
 
 impl LoadedConfig {
@@ -248,6 +290,10 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     // from; the account's own `[accounts.env]` extends it, so account
     // keys override global keys.
     let global_env = parsed.env;
+
+    // Drained per project as the org loop builds the project list;
+    // whatever is left over named no declared project.
+    let mut project_env_tables = parsed.projects;
 
     // Validate accounts first - orgs cross-reference them.
     let mut seen_account_names: std::collections::HashSet<String> =
@@ -332,6 +378,10 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 }
                 static_worker_labels.push(label);
             }
+            let project_env = project_env_tables
+                .remove(&project_entry.name)
+                .map(|table| table.env)
+                .unwrap_or_default();
             projects.push(LoadedProject {
                 name: project_entry.name,
                 path: expand_home(&project_entry.path),
@@ -340,8 +390,25 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 accounts: org_entry.accounts.clone(),
                 auto_start: project_entry.auto_start,
                 static_workers: static_worker_labels,
+                env: project_env,
             });
         }
+    }
+
+    // A `[projects.<name>.env]` table repeats a project name by hand,
+    // so a typo lands nowhere. Same treatment as an org naming an
+    // undeclared account: refuse to boot and list the valid names.
+    let mut unknown_env_projects: Vec<&str> =
+        project_env_tables.keys().map(String::as_str).collect();
+    unknown_env_projects.sort_unstable();
+    if !unknown_env_projects.is_empty() {
+        let mut valid: Vec<&str> = seen_project_names.iter().map(String::as_str).collect();
+        valid.sort_unstable();
+        return Err(WorkspaceError::UnknownProjectEnv {
+            projects: unknown_env_projects.join(", "),
+            valid: valid.join(", "),
+            path,
+        });
     }
 
     if projects.is_empty() {
@@ -377,6 +444,11 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    /// Resolve a project by name for the `session_env` calls below.
+    fn named<'a>(config: &'a LoadedConfig, name: &str) -> &'a LoadedProject {
+        config.projects.iter().find(|p| p.name == name).expect("declared project")
+    }
 
     /// Write `forge/forge.toml` (the production location).
     fn write_config(dir: &std::path::Path, contents: &str) {
@@ -554,6 +626,225 @@ ANTHROPIC_BASE_URL = "http://localhost:18765"
         assert_eq!(
             account.env.get("ANTHROPIC_BASE_URL").map(String::as_str),
             Some("http://localhost:18765"),
+        );
+    }
+
+    /// One key per precedence boundary, so a test can assert a single
+    /// boundary and a future reordering of the merge fails on exactly
+    /// the boundary it broke.
+    fn precedence_config() -> &'static str {
+        r#"
+[env]
+ALL_THREE = "global"
+GLOBAL_PROJECT = "global"
+GLOBAL_ONLY = "global"
+
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+
+[[accounts]]
+display_name = "Codex"
+config_dir = "~/.claude-codex"
+[accounts.env]
+ALL_THREE = "account"
+
+[projects.forge.env]
+ALL_THREE = "project"
+GLOBAL_PROJECT = "project"
+PROJECT_ONLY = "project"
+"#
+    }
+
+    /// `session_env` for the fixture's single project + account.
+    fn precedence_env() -> HashMap<String, String> {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), precedence_config());
+        let config = load_from_dir(dir.path()).expect("precedence fixture loads");
+        let account = &config.accounts[0];
+        session_env(named(&config, "forge"), &account.env)
+    }
+
+    /// Every near-miss shape for declaring project env. Each loads
+    /// clean and applies nothing without the `deny_unknown_fields`
+    /// attributes; the point of the table is that they are all one
+    /// class rather than five separate bugs.
+    #[test]
+    fn near_miss_env_declarations_are_rejected() {
+        // (label, stanza appended to the base config, text the error must name)
+        let cases = [("mistyped inner table", "[projects.forge.envs]\nK = \"v\"\n", "envs")];
+        for (label, stanza, needle) in cases {
+            let dir = tempdir().expect("tempdir");
+            write_config(dir.path(), &format!("{}\n{stanza}", minimal_config()));
+            let msg = load_from_dir(dir.path()).expect_err(label).to_string();
+            assert!(msg.contains(needle), "{label}: error must name `{needle}`, got: {msg}");
+        }
+    }
+
+    #[test]
+    fn parses_project_env_table() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
+
+[projects.forge.env]
+BUSYMAIL_MCP_URL = "https://mail.example/mcp"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        let project = &config.projects[0];
+        assert_eq!(
+            project.env.get("BUSYMAIL_MCP_URL").map(String::as_str),
+            Some("https://mail.example/mcp"),
+            "[projects.<name>.env] lands on the named project",
+        );
+    }
+
+    /// An env block naming a project that no `[[orgs.projects]]`
+    /// declares is the same typo class as an org naming an undeclared
+    /// account, which `load_from_dir` already refuses to boot on. A
+    /// silently-ignored env block is the failure mode #551 exists to
+    /// kill, so it must not load.
+    /// Project names here deliberately avoid `forge`: the message
+    /// contains the literal `forge.toml` and the interpolated path is
+    /// `<tempdir>/forge/forge.toml`, so asserting on `forge` would
+    /// pass with the valid-names listing dropped entirely.
+    #[test]
+    fn env_table_for_undeclared_project_is_rejected() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "alpha"
+path = "~/Projects/alpha"
+[[orgs.projects]]
+name = "beta"
+path = "~/Projects/beta"
+[[orgs.projects]]
+name = "kappa"
+path = "~/Projects/kappa"
+[[orgs.projects]]
+name = "omega"
+path = "~/Projects/omega"
+[[orgs.projects]]
+name = "sigma"
+path = "~/Projects/sigma"
+[[orgs.projects]]
+name = "theta"
+path = "~/Projects/theta"
+[[accounts]]
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
+
+[projects.gamma.env]
+BUSYMAIL_TOKEN = "typo-in-the-project-name"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("undeclared project name must not load");
+        let msg = err.to_string();
+        assert!(msg.contains("gamma"), "error names the offending project name, got: {msg}");
+        assert!(!msg.contains("delta"), "control: only the declared typo appears");
+        // Sortedness against the listing's own sorted form, over six
+        // names: a two-name literal passed half the time with the sort
+        // dropped, because `seen_project_names` is a HashSet.
+        let listed: Vec<&str> =
+            msg.split("valid projects: ").nth(1).expect("valid listing").split(", ").collect();
+        let mut sorted = listed.clone();
+        sorted.sort_unstable();
+        assert_eq!(listed, sorted, "the valid-name listing is sorted, got: {msg}");
+        assert_eq!(listed.len(), 6, "every declared project is listed, got: {msg}");
+    }
+
+    /// One assertion per precedence boundary, so a reordering fails on
+    /// the boundary it broke rather than on a single opaque test.
+    #[test]
+    fn project_env_wins_each_precedence_boundary() {
+        let env = precedence_env();
+        assert_eq!(
+            env.get("ALL_THREE").map(String::as_str),
+            Some("project"),
+            "a key in all three layers resolves to the project value",
+        );
+        assert_eq!(
+            env.get("GLOBAL_PROJECT").map(String::as_str),
+            Some("project"),
+            "global + project, account silent -> project wins",
+        );
+        assert_eq!(
+            env.get("PROJECT_ONLY").map(String::as_str),
+            Some("project"),
+            "a project-only key reaches the session",
+        );
+        assert_eq!(
+            env.get("GLOBAL_ONLY").map(String::as_str),
+            Some("global"),
+            "and the global layer still arrives, so the above are overrides not absences",
+        );
+    }
+
+    /// Two projects on one account, one declaring env. The other must
+    /// not receive it.
+    #[test]
+    fn one_projects_env_does_not_reach_another_on_the_same_account() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[orgs.projects]]
+name = "airmail"
+path = "~/Projects/airmail"
+
+[[accounts]]
+display_name = "Codex"
+config_dir = "~/.claude-codex"
+[accounts.env]
+ANTHROPIC_BASE_URL = "http://localhost:18765"
+
+[projects.forge.env]
+BUSYMAIL_TOKEN = "forge-only-secret"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        let account = &config.accounts[0];
+
+        let forge_env = session_env(named(&config, "forge"), &account.env);
+        assert_eq!(
+            forge_env.get("BUSYMAIL_TOKEN").map(String::as_str),
+            Some("forge-only-secret"),
+            "the declaring project gets its own key",
+        );
+
+        let airmail_env = session_env(named(&config, "airmail"), &account.env);
+        assert!(
+            !airmail_env.contains_key("BUSYMAIL_TOKEN"),
+            "another project on the SAME account must not receive it, got: {airmail_env:?}",
+        );
+        assert_eq!(
+            airmail_env, account.env,
+            "a project declaring no env gets exactly the account env, nothing borrowed",
         );
     }
 

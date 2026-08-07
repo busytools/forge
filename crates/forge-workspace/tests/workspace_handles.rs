@@ -129,3 +129,88 @@ config_dir = "/tmp/forge-test-display-gateway"
         "second spawn also binds to Stargate under cold cache",
     );
 }
+
+/// The wiring itself: everything else stops at the resolution helper's
+/// return value, so replacing the one line that applies it at the spawn
+/// site passes every unit test. This asserts on what the handle
+/// actually carries.
+///
+/// `Named` is the arm production takes - every `auto_start = true`
+/// project and every `--project NAME` reaches it. It also covers
+/// `[accounts.env]`, which had no end-to-end coverage of its own.
+#[tokio::test]
+async fn declared_env_reaches_the_spawned_handle() {
+    let dir = tempdir().expect("tempdir");
+    fs::write(
+        forge_toml_path(dir.path()),
+        r#"
+[env]
+GLOBAL_KEY = "global-value"
+
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[orgs.projects]]
+name = "airmail"
+path = "~/Projects/airmail"
+
+[[accounts]]
+display_name = "Stargate"
+config_dir = "/tmp/forge-test-env-stargate"
+[accounts.env]
+ACCOUNT_KEY = "account-value"
+
+[projects.forge.env]
+BUSYMAIL_TOKEN = "forge-value"
+"#,
+    )
+    .expect("write forge.toml");
+
+    let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+
+    let handle = workspace
+        .get_agent_handle(
+            SessionTarget::Named("forge".to_owned()),
+            SessionLaunchSettings::default(),
+        )
+        .expect("spawn forge");
+    let env = handle.env();
+    assert_eq!(
+        env.get("BUSYMAIL_TOKEN").map(String::as_str),
+        Some("forge-value"),
+        "the project's declared env has to reach the handle, not just the helper",
+    );
+    assert_eq!(
+        env.get("ACCOUNT_KEY").map(String::as_str),
+        Some("account-value"),
+        "[accounts.env] reaches the handle too",
+    );
+    assert_eq!(
+        env.get("GLOBAL_KEY").map(String::as_str),
+        Some("global-value"),
+        "and the global [env] base",
+    );
+
+    let other = workspace
+        .get_agent_handle(
+            SessionTarget::Named("airmail".to_owned()),
+            SessionLaunchSettings::default(),
+        )
+        .expect("spawn airmail");
+    let other_env = other.env();
+    assert!(
+        !other_env.contains_key("BUSYMAIL_TOKEN"),
+        "a second project on the same account must not receive it: {other_env:?}",
+    );
+    assert_eq!(
+        other_env.get("ACCOUNT_KEY").map(String::as_str),
+        Some("account-value"),
+        "while still getting the account's own",
+    );
+}
