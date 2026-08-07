@@ -487,7 +487,18 @@ fn read_env_file(project: &str, raw_path: &str) -> HashMap<String, String> {
         }
         match line.split_once('=') {
             Some((key, value)) if !key.trim().is_empty() => {
-                env.insert(key.trim().to_owned(), value.trim().to_owned());
+                // Strip one matching pair of surrounding quotes, as
+                // dotenv and direnv do. TOML forces quoting, so a value
+                // moved out of `[projects.<name>.env]` arrives with
+                // them, and keeping them yields a token silently longer
+                // than intended that fails far from the cause.
+                let value = value.trim();
+                let value = value
+                    .strip_prefix('"')
+                    .and_then(|inner| inner.strip_suffix('"'))
+                    .or_else(|| value.strip_prefix('\'').and_then(|inner| inner.strip_suffix('\'')))
+                    .unwrap_or(value);
+                env.insert(key.trim().to_owned(), value.to_owned());
             }
             _ => skipped("malformed-line", &format!("line {}", number + 1)),
         }
@@ -781,12 +792,25 @@ env_file = "{file}"
 
     #[test]
     fn env_file_entries_join_the_project_env() {
-        let dir = config_with_env_file("# a comment\n\nBUSYMAIL_TOKEN = tok-from-file\n", "");
+        let dir = config_with_env_file(
+            "# a comment\n\nBUSYMAIL_TOKEN = tok-from-file\nQUOTED = \"in-quotes\"\n\
+             SINGLE = 'in-singles'\nUNMATCHED = \"dangling\n",
+            "",
+        );
         let config = load_from_dir(dir.path()).expect("happy path");
+        let env = &config.projects[0].env;
         assert_eq!(
-            config.projects[0].env.get("BUSYMAIL_TOKEN").map(String::as_str),
+            env.get("BUSYMAIL_TOKEN").map(String::as_str),
             Some("tok-from-file"),
             "comments and blank lines skipped, the key lands",
+        );
+        // Quoted is the shape a value moved out of forge.toml arrives in.
+        assert_eq!(env.get("QUOTED").map(String::as_str), Some("in-quotes"));
+        assert_eq!(env.get("SINGLE").map(String::as_str), Some("in-singles"));
+        assert_eq!(
+            env.get("UNMATCHED").map(String::as_str),
+            Some("\"dangling"),
+            "an unmatched quote is part of the value, not a delimiter",
         );
     }
 
