@@ -62,6 +62,11 @@ struct ForgeToml {
 struct ProjectEnvEntry {
     #[serde(default)]
     env: HashMap<String, String>,
+    /// Path to a `KEY=value` file whose entries join this project's env,
+    /// so a secret can live outside forge.toml. Read once at load, like
+    /// every other value here, so rotating it needs a forge restart.
+    #[serde(default)]
+    env_file: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -380,7 +385,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             }
             let project_env = project_env_tables
                 .remove(&project_entry.name)
-                .map(|table| table.env)
+                .map(|table| resolve_project_env(&project_entry.name, table))
                 .unwrap_or_default();
             projects.push(LoadedProject {
                 name: project_entry.name,
@@ -428,6 +433,77 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     };
 
     Ok(LoadedConfig { projects, default_index, accounts, ui: parsed.ui, gotify: parsed.gotify })
+}
+
+/// A project's env: the `env_file` entries with the inline `env` table
+/// layered over them, since the inline form is the more explicit
+/// statement of the two.
+fn resolve_project_env(project: &str, entry: ProjectEnvEntry) -> HashMap<String, String> {
+    let mut env = entry.env_file.map(|path| read_env_file(project, &path)).unwrap_or_default();
+    env.extend(entry.env);
+    env
+}
+
+/// Parse `KEY=value` lines, skipping blanks and `#` comments. Every way
+/// this can go wrong warns and yields the keys it did read - a project's
+/// env file is not worth refusing to boot over, and a partial read is
+/// visible in the per-spawn applied record's key list.
+fn read_env_file(project: &str, raw_path: &str) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    let skipped = |reason: &str, detail: &str| {
+        tracing::warn!(
+            target: "forge_workspace::config",
+            event_name = "project_env_file_skipped",
+            project,
+            path = raw_path,
+            reason,
+            detail,
+            "a [projects.<name>.env_file] entry did not fully apply",
+        );
+    };
+
+    let path = expand_home(raw_path);
+    if !path.is_absolute() {
+        // A relative path resolves against the process working
+        // directory, so the same config would read a different file per
+        // launch directory (HR#15). Skipping is failing the operation;
+        // what the rule forbids is substituting a cwd-derived answer.
+        skipped("not-absolute", "use an absolute or ~/ path");
+        return env;
+    }
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) => {
+            let reason =
+                if err.kind() == std::io::ErrorKind::NotFound { "missing" } else { "unreadable" };
+            skipped(reason, &err.to_string());
+            return env;
+        }
+    };
+    for (number, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        match line.split_once('=') {
+            Some((key, value)) if !key.trim().is_empty() => {
+                // Strip one matching pair of surrounding quotes, as
+                // dotenv and direnv do. TOML forces quoting, so a value
+                // moved out of `[projects.<name>.env]` arrives with
+                // them, and keeping them yields a token silently longer
+                // than intended that fails far from the cause.
+                let value = value.trim();
+                let value = value
+                    .strip_prefix('"')
+                    .and_then(|inner| inner.strip_suffix('"'))
+                    .or_else(|| value.strip_prefix('\'').and_then(|inner| inner.strip_suffix('\'')))
+                    .unwrap_or(value);
+                env.insert(key.trim().to_owned(), value.to_owned());
+            }
+            _ => skipped("malformed-line", &format!("line {}", number + 1)),
+        }
+    }
+    env
 }
 
 pub(crate) fn expand_home(path: &str) -> PathBuf {
@@ -682,6 +758,109 @@ PROJECT_ONLY = "project"
             let msg = load_from_dir(dir.path()).expect_err(label).to_string();
             assert!(msg.contains(needle), "{label}: error must name `{needle}`, got: {msg}");
         }
+    }
+
+    /// Write an env file and a config pointing at it. Returns the dir
+    /// so it outlives the load.
+    fn config_with_env_file(contents: &str, inline: &str) -> tempfile::TempDir {
+        let dir = tempdir().expect("tempdir");
+        let file = dir.path().join("secrets.env");
+        fs::write(&file, contents).expect("write env file");
+        write_config(
+            dir.path(),
+            &format!(
+                r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+
+[projects.forge]
+env_file = "{file}"
+{inline}
+"#,
+                file = file.display()
+            ),
+        );
+        dir
+    }
+
+    #[test]
+    fn env_file_entries_join_the_project_env() {
+        let dir = config_with_env_file(
+            "# a comment\n\nBUSYMAIL_TOKEN = tok-from-file\nQUOTED = \"in-quotes\"\n\
+             SINGLE = 'in-singles'\nUNMATCHED = \"dangling\n",
+            "",
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        let env = &config.projects[0].env;
+        assert_eq!(
+            env.get("BUSYMAIL_TOKEN").map(String::as_str),
+            Some("tok-from-file"),
+            "comments and blank lines skipped, the key lands",
+        );
+        // Quoted is the shape a value moved out of forge.toml arrives in.
+        assert_eq!(env.get("QUOTED").map(String::as_str), Some("in-quotes"));
+        assert_eq!(env.get("SINGLE").map(String::as_str), Some("in-singles"));
+        assert_eq!(
+            env.get("UNMATCHED").map(String::as_str),
+            Some("\"dangling"),
+            "an unmatched quote is part of the value, not a delimiter",
+        );
+    }
+
+    #[test]
+    fn the_inline_table_wins_over_the_env_file_per_key() {
+        let dir = config_with_env_file(
+            "SHARED = from-file\nFILE_ONLY = from-file\n",
+            "[projects.forge.env]\nSHARED = \"from-inline\"",
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        let env = &config.projects[0].env;
+        assert_eq!(env.get("SHARED").map(String::as_str), Some("from-inline"));
+        assert_eq!(env.get("FILE_ONLY").map(String::as_str), Some("from-file"));
+    }
+
+    #[test]
+    fn a_missing_env_file_leaves_the_project_env_empty_and_still_loads() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!(
+                r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+
+[projects.forge]
+env_file = "{}/nope.env"
+"#,
+                dir.path().display()
+            ),
+        );
+        let config = load_from_dir(dir.path()).expect("a missing env file must not fail the load");
+        assert!(config.projects[0].env.is_empty(), "and contributes no keys");
+    }
+
+    #[test]
+    fn a_malformed_line_is_skipped_and_the_rest_applies() {
+        let dir = config_with_env_file("GOOD = yes\nthis line has no equals\nALSO = fine\n", "");
+        let config = load_from_dir(dir.path()).expect("happy path");
+        let env = &config.projects[0].env;
+        assert_eq!(env.get("GOOD").map(String::as_str), Some("yes"));
+        assert_eq!(env.get("ALSO").map(String::as_str), Some("fine"));
+        assert_eq!(env.len(), 2, "only the malformed line is dropped: {env:?}");
     }
 
     #[test]
