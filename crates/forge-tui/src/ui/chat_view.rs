@@ -49,6 +49,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Projects pane before consulting `pane_hit_targets`.
     app.layout = areas.clone();
 
+    // Dropped per frame so a pane that does not paint leaves no rect for
+    // the wheel hit-test to claim; each renderer below re-stamps its own.
+    app.rendered_projects_pane_body_area = Rect::default();
+    app.rendered_inspector_body_area = Rect::default();
+
     // One build per frame, shared by the chat spinner and the Inspector
     // section. Gated because `subagents_view` indexes the whole session
     // before it discovers there is nothing live to show.
