@@ -1235,6 +1235,66 @@ mod tests {
         assert_eq!(PointerShape::Default.osc(), "\x1b]22;default\x07");
     }
 
+    /// A pane the frame did not paint must not claim the wheel: its
+    /// body rect is last-frame geometry the chat has since expanded
+    /// into. The Narrow inspector overlay is the total case - its body
+    /// spans the whole chat, so closing it kills chat scrolling
+    /// outright; the two inline cases leave an edge strip.
+    #[test]
+    fn a_pane_that_did_not_render_this_frame_does_not_claim_the_wheel() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        // Render once with the pane up, apply `hide`, render again, then
+        // wheel over every column of the chat that is now on screen.
+        let assert_chat_keeps_wheel = |label: &str, width, height, hide: &dyn Fn(&mut App)| {
+            let mut app = App::test_default();
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+            if width < crate::ui::layout::MEDIUM_TIER_MIN_WIDTH {
+                app.inspector_pane_overlay_open = true;
+            }
+            terminal.draw(|f| crate::ui::render(f, &mut app)).expect("draw");
+            hide(&mut app);
+            terminal.draw(|f| crate::ui::render(f, &mut app)).expect("redraw");
+
+            let chat = app.rendered_chat_area;
+            let row = chat.y + chat.height / 2;
+            for column in chat.x..chat.right() {
+                // Re-arm per column so each one is an independent probe
+                // rather than a running total that bottoms out at 0.
+                let before = 30;
+                let vp = app.active_viewport_mut();
+                vp.scroll_target = before;
+                vp.scroll_offset = before;
+                vp.scroll_pos = before as f32;
+                handle_mouse_event(
+                    &mut app,
+                    MouseEvent {
+                        kind: MouseEventKind::ScrollUp,
+                        column,
+                        row,
+                        modifiers: crossterm::event::KeyModifiers::empty(),
+                    },
+                );
+                assert_eq!(
+                    app.viewport().scroll_target,
+                    before - MOUSE_SCROLL_LINES,
+                    "{label}: wheel at column {column} of the chat did not scroll it",
+                );
+            }
+        };
+
+        assert_chat_keeps_wheel("inline inspector hidden", 200, 50, &|app| {
+            app.inspector_pane_visible = false;
+        });
+        assert_chat_keeps_wheel("inline projects hidden", 200, 50, &|app| {
+            app.projects_pane_visible = false;
+        });
+        assert_chat_keeps_wheel("narrow inspector overlay closed", 100, 30, &|app| {
+            app.inspector_pane_overlay_open = false;
+        });
+    }
+
     fn moved(column: u16, row: u16) -> MouseEvent {
         MouseEvent {
             kind: MouseEventKind::Moved,
