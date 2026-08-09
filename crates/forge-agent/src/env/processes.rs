@@ -391,30 +391,32 @@ pub fn configured_mcp_servers(servers: &[McpServerStatus]) -> Vec<ConfiguredMcpS
         .collect()
 }
 
-/// Friendly label for a known-infra process, preferring the CONFIGURED
-/// MCP server name when the process's command + args uniquely match one of
-/// `configured`, otherwise the package-derived name from
-/// [`classify_known_infra`]. `None` when the process isn't a recognized
-/// MCP server at all.
+/// Friendly label for a known-infra process: the CONFIGURED MCP server name
+/// when the process's command + args uniquely match one of `configured`,
+/// else the package-derived name from [`classify_known_infra`]. `None` when
+/// neither produces a name - the process isn't a recognized MCP server.
+///
+/// The configured match is tried FIRST because [`classify_known_infra`] only
+/// knows package-naming conventions: a locally-launched script fits none of
+/// them, so gating on it would drop a configured server to a generic row.
 pub fn resolve_infra_label(
     cmdline: &str,
     configured: &[ConfiguredMcpServer],
 ) -> Option<InfraLabel> {
     let inner = extract_inner_command(cmdline).unwrap_or_else(|| cmdline.to_owned());
-    let package = classify_known_infra(&inner)?;
     let haystack = normalize_ws(&inner);
     let matched: Vec<&ConfiguredMcpServer> =
         configured.iter().filter(|server| configured_server_matches(&haystack, server)).collect();
     match matched.as_slice() {
         [only] => Some(InfraLabel { name: strip_plugin_namespace(&only.name).to_owned() }),
-        [] => Some(package),
+        [] => classify_known_infra(&inner),
         many => {
             tracing::debug!(
                 candidates = ?many.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
                 cmdline = %cmdline,
                 "MCP process matched multiple configured servers; using package name"
             );
-            Some(package)
+            classify_known_infra(&inner)
         }
     }
 }
@@ -861,6 +863,17 @@ mod tests {
         )
         .expect("playwright");
         assert_eq!(label.name, "playwright");
+    }
+
+    #[test]
+    fn resolve_infra_label_names_local_node_script_by_configured_name() {
+        // A locally-launched server fits no package-naming convention, so
+        // `classify_known_infra` can't name it. The configured match must be
+        // tried FIRST or the row degrades to a raw-invocation generic process.
+        let servers = vec![configured("busymail", "node", &["/Users/x/busymail/dist/server.js"])];
+        let label = resolve_infra_label("node /Users/x/busymail/dist/server.js", &servers)
+            .expect("busymail");
+        assert_eq!(label.name, "busymail");
     }
 
     #[test]
