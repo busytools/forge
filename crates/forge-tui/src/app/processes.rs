@@ -340,7 +340,7 @@ fn rows_from_os_snapshot<'a>(
             (r.pid, subtree_memory(r, &children_of, &mut visited))
         })
         .collect();
-    sort_siblings_inplace(&mut roots, wire_alive, Some(&root_subtree));
+    sort_siblings_inplace(&mut roots, wire_alive, configured, Some(&root_subtree));
 
     let mut rows = Vec::new();
     let n_roots = roots.len();
@@ -396,7 +396,7 @@ fn emit_with_descendants<'a>(
     // child.
     let mut kids: Vec<&ProcessEntry> =
         kids_ref.iter().copied().filter(|kid| !is_redundant_mcp_child(entry, kid)).collect();
-    sort_siblings_inplace(&mut kids, wire_alive, None);
+    sort_siblings_inplace(&mut kids, wire_alive, configured, None);
 
     // The next level's ancestor_has_more appends THIS row's
     // "more-siblings-below" bit so a deep descendant knows whether
@@ -573,6 +573,7 @@ fn mcp_server_row(entry: &ProcessEntry, infra: &InfraLabel) -> ProcessRow {
 fn sort_siblings_inplace(
     entries: &mut [&ProcessEntry],
     wire_alive: &[&ToolCallInfo],
+    configured: &[ConfiguredMcpServer],
     subtree_totals: Option<&std::collections::HashMap<u32, u64>>,
 ) {
     let sort_mem = |e: &ProcessEntry| -> u64 {
@@ -581,12 +582,15 @@ fn sort_siblings_inplace(
     // Mirror build_row_for_entry's kind arms so sort tier and render kind never
     // disagree: matched Bash renders BashBackgrounded (0); a matched Monitor
     // renders generic (2 - its authoritative surface is the MONITORS section);
-    // otherwise MCP-server infra (1) or unrecognized generic (2).
+    // otherwise MCP-server infra (1) or unrecognized generic (2). The MCP arm
+    // resolves exactly as the row builder does - a configured-only match names
+    // a row the package conventions can't, so reading `classify_known_infra`
+    // here would sort it as generic.
     let tier = |e: &ProcessEntry| -> u8 {
         match wire_match(e, wire_alive) {
             Some(tc) if is_monitor_tool_name(&tc.sdk_tool_name) => 2,
             Some(tc) if is_execute_tool_name(&tc.sdk_tool_name) => 0,
-            _ if classify_known_infra(&e.command).is_some() => 1,
+            _ if resolve_infra_label(&e.command, configured).is_some() => 1,
             _ => 2,
         }
     };
@@ -1233,6 +1237,39 @@ mod tests {
             "MCP above generic despite less memory; got {rows:?}"
         );
         assert_eq!(rows[2].kind, ProcessKind::Process, "generic last; got {rows:?}");
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_sorts_config_matched_server_in_the_mcp_tier() {
+        // airmail is named ONLY by the configured match - it fits no package
+        // convention - so the tier closure has to consult the same resolver the
+        // row builder does. Reading `classify_known_infra` instead renders it as
+        // MCP infra while sorting it as generic, and a heavier unrelated process
+        // splits the MCP tier apart.
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                fake_entry(100, "npm", "npm exec @upstash/context7-mcp", 46 * 1024 * 1024),
+                fake_entry(200, "node", "node /Users/x/airmail/dist/server.js", 78 * 1024 * 1024),
+                fake_entry(300, "npm", "npm run build", 88 * 1024 * 1024),
+            ],
+        };
+        let configured = vec![ConfiguredMcpServer {
+            name: "airmail".to_owned(),
+            command: "node".to_owned(),
+            args: vec!["/Users/x/airmail/dist/server.js".to_owned()],
+        }];
+        let rows = rows_from_os_snapshot(&snapshot, &[], &configured);
+        assert_eq!(
+            rows.iter().map(|r| r.headline.as_str()).collect::<Vec<_>>(),
+            vec!["airmail", "context7", "npm run build"],
+            "MCP tier stays contiguous above the heavier generic row; got {rows:?}",
+        );
+        // Sort tier and render kind agree for the config-matched row.
+        assert_eq!(
+            rows.iter().map(|r| r.kind.clone()).collect::<Vec<_>>(),
+            vec![ProcessKind::McpServer, ProcessKind::McpServer, ProcessKind::Process],
+        );
     }
 
     #[test]
