@@ -3412,6 +3412,31 @@ mod tests {
     }
 
     #[test]
+    fn processes_section_appends_pid_after_memory_only_when_set() {
+        // An MCP server's process child is the only row carrying a pid; every
+        // other row keeps exactly the bare memory suffix it has always had.
+        let mut with_pid =
+            make_row_with_memory(ProcessKind::Process, "npm exec", "", 132 * 1024 * 1024);
+        with_pid.pid = Some(47903);
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &collection(vec![with_pid]), 40, '\u{280B}');
+        assert_eq!(
+            line_text(&lines[2]),
+            " \u{280B} npm exec \u{00B7} 132 MB \u{00B7} 47903",
+            "pid renders after memory",
+        );
+
+        let without = make_row_with_memory(ProcessKind::Process, "cargo", "", 12 * 1024 * 1024);
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &collection(vec![without]), 40, '\u{280B}');
+        assert_eq!(
+            line_text(&lines[2]),
+            " \u{280B} cargo \u{00B7} 12 MB",
+            "a pid-less row's suffix is the memory alone",
+        );
+    }
+
+    #[test]
     fn processes_section_drops_memory_suffix_at_medium_width() {
         // 30-col Medium-tier inspector - width below threshold so
         // the row stays bare (no memory suffix).
