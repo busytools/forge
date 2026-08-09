@@ -24,3 +24,14 @@ pub fn relative_time(activity: SystemTime, now: SystemTime) -> String {
     }
     format!("{}w", (secs / 604_800).min(99))
 }
+
+/// Pluralise an MCP server's tool count: `no tools`, `1 tool`,
+/// `N tools`. Single-sourced so `/mcp` and the Inspector's PROCESSES
+/// rows can't drift into two phrasings for the same number.
+pub fn tool_summary(tool_count: usize) -> String {
+    match tool_count {
+        0 => "no tools".to_owned(),
+        1 => "1 tool".to_owned(),
+        count => format!("{count} tools"),
+    }
+}

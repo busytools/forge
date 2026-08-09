@@ -2347,7 +2347,15 @@ fn append_process_row(
     // Cron metadata for wire-only registrations. Always include it
     // when set; the headline truncates with `...` to make room.
     let suffix_text: Option<String> = match (include_memory, process.memory_bytes) {
-        (true, Some(bytes)) => Some(format_memory_short(bytes)),
+        (true, Some(bytes)) => {
+            let memory = format_memory_short(bytes);
+            // Only an MCP server's process child carries a pid, so every
+            // other row's suffix is byte-identical to before.
+            Some(match process.pid {
+                Some(pid) => format!("{memory} \u{00B7} {pid}"),
+                None => memory,
+            })
+        }
         _ => {
             if process.metadata.is_empty() {
                 None
@@ -3379,6 +3387,7 @@ mod tests {
             metadata: metadata.to_owned(),
             status: ToolCallStatus::InProgress,
             memory_bytes: Some(memory_bytes),
+            pid: None,
             depth: 0,
             is_last_sibling: true,
             ancestor_has_more: Vec::new(),
