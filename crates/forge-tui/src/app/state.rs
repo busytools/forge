@@ -7648,7 +7648,7 @@ mod tests {
         vp.set_message_height(0, 12);
         vp.mark_message_height_measured(0);
         vp.rebuild_prefix_sums();
-        assert_eq!(vp.ready_scroll_anchor_to_restore(), Some(anchor));
+        assert_eq!(vp.take_ready_scroll_anchor(), Some(anchor));
 
         vp.restore_scroll_anchor(anchor.0, anchor.1);
         assert_eq!(vp.scroll_offset, 14);
@@ -7675,12 +7675,12 @@ mod tests {
         let anchor = vp.resize_scroll_anchor().expect("resize should preserve an anchor");
         assert_eq!(anchor, (2, 2));
         assert_eq!(vp.scroll_anchor_to_restore(), Some(anchor));
-        assert_eq!(vp.ready_scroll_anchor_to_restore(), None);
+        assert_eq!(vp.take_ready_scroll_anchor(), None);
 
         vp.set_message_height(2, 9);
         vp.mark_message_height_measured(2);
         vp.rebuild_prefix_sums();
-        assert_eq!(vp.ready_scroll_anchor_to_restore(), None);
+        assert_eq!(vp.take_ready_scroll_anchor(), None);
 
         vp.set_message_height(0, 11);
         vp.mark_message_height_measured(0);
@@ -7688,7 +7688,7 @@ mod tests {
         vp.mark_message_height_measured(1);
         vp.rebuild_prefix_sums();
 
-        assert_eq!(vp.ready_scroll_anchor_to_restore(), Some(anchor));
+        assert_eq!(vp.take_ready_scroll_anchor(), Some(anchor));
     }
 
     #[test]

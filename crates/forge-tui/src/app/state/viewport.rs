@@ -702,13 +702,22 @@ impl ChatViewport {
         })
     }
 
-    /// Return the preserved scroll anchor only once rows above it are exact.
-    pub fn ready_scroll_anchor_to_restore(&self) -> Option<(usize, usize)> {
-        self.remeasure_plan.and_then(|plan| {
-            plan.preserved_scroll_anchor.and_then(|anchor| {
-                self.prefix_is_exact_through(anchor.index).then_some((anchor.index, anchor.offset))
-            })
-        })
+    /// Take the preserved scroll anchor once rows above it are exact.
+    ///
+    /// One-shot: a plan outlives its anchor's job whenever nothing will
+    /// converge it - an off-screen `MessageChanged` leaves the target
+    /// stale without arming the background loop - and re-applying the
+    /// anchor every frame then reverts each later user scroll.
+    pub fn take_ready_scroll_anchor(&mut self) -> Option<(usize, usize)> {
+        let plan = self.remeasure_plan?;
+        let anchor = plan.preserved_scroll_anchor?;
+        if !self.prefix_is_exact_through(anchor.index) {
+            return None;
+        }
+        if let Some(plan) = self.remeasure_plan.as_mut() {
+            plan.preserved_scroll_anchor = None;
+        }
+        Some((anchor.index, anchor.offset))
     }
 
     /// Return the preserved pre-width-resize scroll anchor.

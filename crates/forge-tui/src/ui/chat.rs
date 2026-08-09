@@ -527,7 +527,7 @@ fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: &SpinnerState) -> u
     }
     {
         let vp = app.active_viewport_mut();
-        if let Some((anchor_idx, anchor_offset)) = vp.ready_scroll_anchor_to_restore() {
+        if let Some((anchor_idx, anchor_offset)) = vp.take_ready_scroll_anchor() {
             vp.restore_scroll_anchor(anchor_idx, anchor_offset);
         }
     }
@@ -1700,6 +1700,41 @@ mod tests {
         assert!(
             app.active_viewport_mut().message_height_is_current(off_screen_idx),
             "after entering the visible window the height becomes current again",
+        );
+    }
+
+    /// A manually-scrolled reader must keep scrolling while the agent
+    /// churns the off-screen tail. The tail invalidation arrives as
+    /// `MessageChanged`, which leaves the target stale but does not arm
+    /// the background convergence loop, so the remeasure plan it opens
+    /// never finalizes - and its preserved anchor re-pins the scroll on
+    /// every frame.
+    #[test]
+    fn scroll_keeps_moving_after_an_off_screen_tail_invalidation() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        let history: Vec<ChatMessage> =
+            (0..80).map(|i| assistant_text_message(&format!("msg {i}\nsecond line"))).collect();
+        *app.active_messages_mut() = history;
+
+        converge(&mut app, 80, 24);
+        assert!(
+            !app.active_viewport_mut().resize_remeasure_active(),
+            "setup must converge before the invalidation under test",
+        );
+
+        app.active_viewport_mut().scroll_up(30);
+        let last = app.messages().len() - 1;
+        app.invalidate_layout(InvalidationLevel::MessageChanged(last));
+        let _ = first_frame_render(&mut app, 80, 24);
+
+        let before = app.viewport().scroll_offset;
+        app.active_viewport_mut().scroll_up(5);
+        let _ = first_frame_render(&mut app, 80, 24);
+
+        assert!(
+            app.viewport().scroll_offset < before,
+            "scroll must still move; stayed at {before}",
         );
     }
 
