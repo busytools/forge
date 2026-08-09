@@ -20,10 +20,11 @@
 
 use std::collections::{HashMap, HashSet};
 
+use forge_primitives::{McpServerConnectionStatus, McpServerStatus};
 use forge_workspace::env::processes::{
     ConfiguredMcpServer, InfraLabel, ProcessEntry, ProcessSnapshot, basename_exe,
     classify_known_infra, configured_mcp_servers, extract_inner_command,
-    process_cmdline_matches_tool_input, resolve_infra_label,
+    process_cmdline_matches_tool_input, resolve_infra_label, strip_plugin_namespace,
 };
 use serde_json::Value;
 
@@ -41,6 +42,10 @@ use crate::app::state::types::BackgroundTask;
 /// as a footer row (the scrollbar IS the overflow indicator) but
 /// is kept so future surfaces can show "n hidden" if needed.
 const PROCESSES_MAX: usize = 50;
+
+/// Suffix an MCP row falls back to when there is no scope to show - and what
+/// the compact single row carries at Medium, where memory drops.
+const MCP_SERVER_TAG: &str = "MCP server";
 
 /// One row in the PROCESSES section.
 #[derive(Debug, PartialEq, Eq)]
@@ -71,6 +76,10 @@ pub struct ProcessRow {
     /// wire-only rows (e.g. Cron registrations have no process).
     /// Used for (a) sort ordering and (b) Wide-tier metadata suffix.
     pub memory_bytes: Option<u64>,
+    /// OS process id, rendered after memory on an MCP server's process
+    /// child so a long-lived server can be found with `ps` / `kill`.
+    /// `None` everywhere else.
+    pub pid: Option<u32>,
     /// Tree depth. `0` = direct child of `claude` (a "supervisor"
     /// row); `>= 1` = a transitive descendant rendered nested
     /// underneath. The renderer uses this for indentation +
@@ -207,8 +216,7 @@ pub fn collect_active_processes(app: &App) -> ProcessCollection {
     // RUNNING). CronCreate registrations live in the dedicated
     // SCHEDULES Inspector section, not here.
     if let Some(snapshot) = session.process_snapshot.as_ref() {
-        let configured = configured_mcp_servers(&app.mcp().servers);
-        rows.extend(rows_from_os_snapshot(snapshot, &wire_alive, &configured));
+        rows.extend(rows_from_os_snapshot(snapshot, &wire_alive, &app.mcp().servers));
     }
 
     rows.truncate(PROCESSES_MAX);
@@ -302,6 +310,7 @@ fn synthetic_background_bash_row(description: &str, task_type: &str) -> ProcessR
         metadata: task_type.to_owned(),
         status: ToolCallStatus::InProgress,
         memory_bytes: None,
+        pid: None,
         depth: 0,
         is_last_sibling: true,
         ancestor_has_more: Vec::new(),
@@ -316,8 +325,10 @@ fn synthetic_background_bash_row(description: &str, task_type: &str) -> ProcessR
 fn rows_from_os_snapshot<'a>(
     snapshot: &'a ProcessSnapshot,
     wire_alive: &'a [&'a ToolCallInfo],
-    configured: &[ConfiguredMcpServer],
+    servers: &[McpServerStatus],
 ) -> Vec<ProcessRow> {
+    let configured = configured_mcp_servers(servers);
+    let configured = configured.as_slice();
     // Index by pid + build a parent → children adjacency list.
     let by_pid: HashMap<u32, &ProcessEntry> =
         snapshot.processes.iter().map(|e| (e.pid, e)).collect();
@@ -353,6 +364,7 @@ fn rows_from_os_snapshot<'a>(
             &children_of,
             wire_alive,
             configured,
+            servers,
             &mut rows,
         );
     }
@@ -371,31 +383,51 @@ fn emit_with_descendants<'a>(
     children_of: &std::collections::HashMap<u32, Vec<&'a ProcessEntry>>,
     wire_alive: &[&ToolCallInfo],
     configured: &[ConfiguredMcpServer],
+    servers: &[McpServerStatus],
     out: &mut Vec<ProcessRow>,
 ) {
     let mut row = build_row_for_entry(entry, wire_alive, configured);
     row.depth = depth;
+    let mut visited = HashSet::new();
+    let subtree_bytes = subtree_memory(entry, children_of, &mut visited);
     // Supervisor (depth-0) rows show the whole subtree's resident
     // memory; a bare parent's own RSS (a 2 MB zsh over a 256 MB cargo
     // child) reads wrong. Descendants keep their own RSS.
     if depth == 0 {
-        let mut visited = HashSet::new();
-        row.memory_bytes = Some(subtree_memory(entry, children_of, &mut visited));
+        row.memory_bytes = Some(subtree_bytes);
     }
     row.is_last_sibling = is_last_sibling;
     row.ancestor_has_more = ancestor_has_more.to_vec();
+
+    // A connected MCP server becomes a small tree: the logical server keeps
+    // the name + scope, and its facts move to children that each get a full
+    // row's width instead of sharing one.
+    // Only a CONNECTED server earns the tree: a failed or pending one has no
+    // handshake child to gain and would lose the memory off its parent row.
+    let mcp_children = (row.kind == ProcessKind::McpServer)
+        .then(|| matched_status(servers, &row.headline))
+        .flatten()
+        .filter(|status| matches!(status.status, McpServerConnectionStatus::Connected))
+        .and_then(|status| {
+            mcp_tree_children(entry, status, subtree_bytes).map(|kids| (status, kids))
+        });
+    if let Some((status, _)) = mcp_children.as_ref() {
+        row.metadata = status.scope.clone().unwrap_or_else(|| MCP_SERVER_TAG.to_owned());
+        row.memory_bytes = None;
+    }
     out.push(row);
 
-    let Some(kids_ref) = children_of.get(&entry.pid) else {
-        return;
-    };
+    let kids_ref = children_of.get(&entry.pid);
     // Collapse a same-name MCP server's redundant backing child (the
     // `node ...context7-mcp` leaf under its `npm exec @upstash/context7-mcp`
     // parent, which classifies to the same name) - the parent already
     // represents the server and its subtree memory already counts the
     // child.
-    let mut kids: Vec<&ProcessEntry> =
-        kids_ref.iter().copied().filter(|kid| !is_redundant_mcp_child(entry, kid)).collect();
+    let mut kids: Vec<&ProcessEntry> = kids_ref
+        .map(|kids| {
+            kids.iter().copied().filter(|kid| !is_redundant_mcp_child(entry, kid)).collect()
+        })
+        .unwrap_or_default();
     sort_siblings_inplace(&mut kids, wire_alive, configured, None);
 
     // The next level's ancestor_has_more appends THIS row's
@@ -404,6 +436,19 @@ fn emit_with_descendants<'a>(
     let mut next_ancestors = ancestor_has_more.to_vec();
     next_ancestors.push(!is_last_sibling);
 
+    if let Some((_, synthetic)) = mcp_children {
+        let last = synthetic.len();
+        for (i, mut child) in synthetic.into_iter().enumerate() {
+            child.depth = depth.saturating_add(1);
+            child.is_last_sibling = kids.is_empty() && i + 1 == last;
+            child.ancestor_has_more.clone_from(&next_ancestors);
+            out.push(child);
+        }
+    }
+
+    if kids.is_empty() {
+        return;
+    }
     let n = kids.len();
     // Cap per-parent children at MAX_CHILDREN_PER_PARENT - when a
     // process spawns a swarm (cargo → N rustc workers, supervisor →
@@ -432,6 +477,7 @@ fn emit_with_descendants<'a>(
             children_of,
             wire_alive,
             configured,
+            servers,
             out,
         );
     }
@@ -480,6 +526,7 @@ fn overflow_row(hidden: usize, depth: u8, ancestor_has_more: Vec<bool>) -> Proce
         metadata: String::new(),
         status: ToolCallStatus::InProgress,
         memory_bytes: None,
+        pid: None,
         depth,
         is_last_sibling: true,
         ancestor_has_more,
@@ -549,10 +596,74 @@ fn mcp_server_row(entry: &ProcessEntry, infra: &InfraLabel) -> ProcessRow {
         kind: ProcessKind::McpServer,
         headline: infra.name.clone(),
         detail: None,
-        metadata: "MCP server".to_owned(),
+        metadata: MCP_SERVER_TAG.to_owned(),
         status: ToolCallStatus::InProgress,
         memory_bytes: Some(entry.memory_bytes),
+        pid: None,
         depth: 0,
+        is_last_sibling: true,
+        ancestor_has_more: Vec::new(),
+    }
+}
+
+/// The configured server whose name resolves to `headline`. Matched
+/// through [`strip_plugin_namespace`] because the resolver already stripped
+/// it off the row's name, so a `plugin:<plugin>:<server>` entry still joins.
+fn matched_status<'a>(
+    servers: &'a [McpServerStatus],
+    headline: &str,
+) -> Option<&'a McpServerStatus> {
+    servers.iter().find(|server| strip_plugin_namespace(&server.name) == headline)
+}
+
+/// The dim children under a connected MCP server: the handshake product,
+/// version and tool count, then the backing OS process with its memory and
+/// pid. `None` when the CLI reported nothing worth a tree, so the caller
+/// keeps the compact single row.
+///
+/// Both borrow [`ProcessKind::Process`] for its dim descendant styling;
+/// only the second one is actually a process.
+fn mcp_tree_children(
+    entry: &ProcessEntry,
+    status: &McpServerStatus,
+    subtree_bytes: u64,
+) -> Option<Vec<ProcessRow>> {
+    let mut handshake: Vec<String> = Vec::new();
+    if let Some(info) = status.server_info.as_ref() {
+        handshake.push(format!("{} {}", info.name, info.version));
+    }
+    if let Some(tools) = status.tools.as_ref() {
+        handshake.push(crate::ui::format::tool_summary(tools.len()));
+    }
+    if handshake.is_empty() && status.scope.is_none() {
+        return None;
+    }
+    let mut rows = Vec::new();
+    if !handshake.is_empty() {
+        rows.push(mcp_child_row(handshake.join(" \u{00B7} "), None, None));
+    }
+    // The subtree total, not this entry's own RSS - a collapsed backing leaf
+    // sits inside it and own-RSS would silently under-report the server.
+    rows.push(mcp_child_row(
+        basename_exe(entry.command.trim()),
+        Some(subtree_bytes),
+        Some(entry.pid),
+    ));
+    Some(rows)
+}
+
+/// One dim child row under an MCP server. Tree position is stamped by the
+/// walker, which owns the sibling bookkeeping.
+fn mcp_child_row(headline: String, memory_bytes: Option<u64>, pid: Option<u32>) -> ProcessRow {
+    ProcessRow {
+        kind: ProcessKind::Process,
+        headline,
+        detail: None,
+        metadata: String::new(),
+        status: ToolCallStatus::InProgress,
+        memory_bytes,
+        pid,
+        depth: 1,
         is_last_sibling: true,
         ancestor_has_more: Vec::new(),
     }
@@ -626,6 +737,7 @@ fn enriched_bash_row(tc: &ToolCallInfo, entry: &ProcessEntry) -> ProcessRow {
         metadata: "Bash · running".to_owned(),
         status: ToolCallStatus::InProgress,
         memory_bytes: Some(entry.memory_bytes),
+        pid: None,
         depth: 0,
         is_last_sibling: true,
         ancestor_has_more: Vec::new(),
@@ -663,6 +775,7 @@ fn generic_os_row(entry: &ProcessEntry) -> ProcessRow {
         metadata: "Process · running".to_owned(),
         status: ToolCallStatus::InProgress,
         memory_bytes: Some(entry.memory_bytes),
+        pid: None,
         depth: 0,
         is_last_sibling: true,
         ancestor_has_more: Vec::new(),
@@ -883,29 +996,23 @@ mod tests {
         // Real config shape: `npx -y @playwright/mcp@latest --cdp-endpoint <url>`.
         // The leading `-y` is stripped when npx re-execs into the `npm exec`
         // process above, so the matcher must not require it.
-        let configured = vec![
-            ConfiguredMcpServer {
-                name: "playwright".to_owned(),
-                command: "npx".to_owned(),
-                args: vec![
-                    "-y".to_owned(),
-                    "@playwright/mcp@latest".to_owned(),
-                    "--cdp-endpoint".to_owned(),
-                    "http://10.10.2.8:9222".to_owned(),
-                ],
-            },
-            ConfiguredMcpServer {
-                name: "playwright-local".to_owned(),
-                command: "npx".to_owned(),
-                args: vec![
-                    "-y".to_owned(),
-                    "@playwright/mcp@latest".to_owned(),
-                    "--cdp-endpoint".to_owned(),
-                    "http://127.0.0.1:9222".to_owned(),
-                ],
-            },
+        // Neither reports a handshake, so both stay compact single rows and
+        // this test keeps asserting naming rather than tree shape.
+        let servers = vec![
+            status(
+                "playwright",
+                "npx",
+                &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://10.10.2.8:9222"],
+                None,
+            ),
+            status(
+                "playwright-local",
+                "npx",
+                &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://127.0.0.1:9222"],
+                None,
+            ),
         ];
-        let rows = rows_from_os_snapshot(&snapshot, &[], &configured);
+        let rows = rows_from_os_snapshot(&snapshot, &[], &servers);
         // Both node children collapse under their npm parent -> exactly two rows.
         assert_eq!(rows.len(), 2, "redundant playwright-mcp children must collapse, no stray rows");
         assert!(rows.iter().all(|r| r.kind == ProcessKind::McpServer));
@@ -1239,6 +1346,153 @@ mod tests {
         assert_eq!(rows[2].kind, ProcessKind::Process, "generic last; got {rows:?}");
     }
 
+    /// A stdio-configured server the process matcher can match on.
+    /// `connected` supplies the handshake product + version, tool count and
+    /// scope that drive the tree; `None` leaves all three absent, which keeps
+    /// the server on the compact single row.
+    fn status(
+        name: &str,
+        command: &str,
+        args: &[&str],
+        connected: Option<(&str, &str, usize, &str)>,
+    ) -> forge_primitives::McpServerStatus {
+        forge_primitives::McpServerStatus {
+            name: name.to_owned(),
+            status: forge_primitives::McpServerConnectionStatus::Connected,
+            server_info: connected.map(|(product, version, ..)| forge_primitives::McpServerInfo {
+                name: product.to_owned(),
+                version: version.to_owned(),
+            }),
+            error: None,
+            config: Some(serde_json::json!({"type": "stdio", "command": command, "args": args})),
+            scope: connected.map(|(.., scope)| scope.to_owned()),
+            tools: connected.map(|(.., count, _)| {
+                (0..count)
+                    .map(|i| forge_primitives::McpToolInfo {
+                        name: format!("t{i}"),
+                        description: None,
+                        annotations: None,
+                    })
+                    .collect()
+            }),
+            sampling_configured: None,
+            sampling_required: None,
+        }
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_expands_a_connected_mcp_server_into_a_tree() {
+        // One OS entry becomes three rows: the logical server carrying its
+        // scope, the handshake child, and the backing process child.
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                fake_entry(200, "npm", "npm exec @playwright/mcp@latest", 100 * 1024 * 1024),
+                // The redundant backing leaf collapses, but its RSS is still
+                // inside the subtree total the process child must report.
+                ProcessEntry {
+                    pid: 201,
+                    parent_pid: 200,
+                    name: "node".to_owned(),
+                    command: "node /x/.bin/playwright-mcp".to_owned(),
+                    memory_bytes: 32 * 1024 * 1024,
+                },
+            ],
+        };
+        let servers = vec![status(
+            "playwright-local",
+            "npx",
+            &["@playwright/mcp@latest"],
+            Some(("playwright-mcp", "0.0.41", 24, "user")),
+        )];
+        let rows = rows_from_os_snapshot(&snapshot, &[], &servers);
+        assert_eq!(rows.len(), 3, "server + handshake child + process child; got {rows:?}");
+
+        assert_eq!(rows[0].kind, ProcessKind::McpServer);
+        assert_eq!(rows[0].headline, "playwright-local");
+        assert_eq!(rows[0].metadata, "user", "scope rides the headline");
+        assert!(rows[0].memory_bytes.is_none(), "memory moved to the process child");
+        assert_eq!(rows[0].depth, 0);
+
+        assert_eq!(rows[1].headline, "playwright-mcp 0.0.41 \u{00B7} 24 tools");
+        assert_eq!(rows[1].depth, 1);
+        assert!(!rows[1].is_last_sibling, "the process child follows it");
+
+        assert_eq!(rows[2].headline, "npm exec @playwright/mcp@latest");
+        assert_eq!(rows[2].depth, 1);
+        assert!(rows[2].is_last_sibling);
+        assert_eq!(rows[2].pid, Some(200));
+        assert_eq!(
+            rows[2].memory_bytes,
+            Some(132 * 1024 * 1024),
+            "SUBTREE total - own RSS would silently drop the collapsed leaf",
+        );
+    }
+
+    /// One entry, one configured server - the smallest snapshot that forms a tree.
+    fn one_server(server: forge_primitives::McpServerStatus) -> Vec<ProcessRow> {
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![fake_entry(
+                300,
+                "npm",
+                "npm exec @upstash/context7-mcp",
+                46 * 1024 * 1024,
+            )],
+        };
+        rows_from_os_snapshot(&snapshot, &[], &[server])
+    }
+
+    #[test]
+    fn mcp_tree_joins_a_plugin_namespaced_server() {
+        // The CLI namespaces a plugin-provided server `plugin:<plugin>:<server>`
+        // and the resolver strips that off the headline, so the join has to strip
+        // it too. context7 is plugin-provided in a real config, which makes this
+        // the likeliest server to render a tree at all.
+        let rows = one_server(status(
+            "plugin:context7:context7",
+            "npx",
+            &["-y", "@upstash/context7-mcp"],
+            Some(("context7", "1.0.14", 2, "user")),
+        ));
+        assert_eq!(rows.len(), 3, "the namespaced server still forms a tree; got {rows:?}");
+        assert_eq!(rows[0].headline, "context7");
+        assert_eq!(rows[0].metadata, "user");
+    }
+
+    #[test]
+    fn mcp_tree_needs_a_connected_handshake_and_keeps_a_suffix_without_scope() {
+        // A failed server keeps the compact row - it has no handshake child to
+        // gain and would lose the memory off its parent.
+        let failed = forge_primitives::McpServerStatus {
+            status: forge_primitives::McpServerConnectionStatus::Failed,
+            ..status(
+                "context7",
+                "npx",
+                &["@upstash/context7-mcp"],
+                Some(("context7", "1.0.14", 2, "user")),
+            )
+        };
+        let rows = one_server(failed);
+        assert_eq!(rows.len(), 1, "no tree for a failed server; got {rows:?}");
+        assert_eq!(rows[0].memory_bytes, Some(46 * 1024 * 1024), "keeps its memory");
+
+        // Connected but no scope reported: the suffix falls back to the kind tag
+        // rather than blanking, which would leave a bare `⬢ context7`.
+        let scopeless = forge_primitives::McpServerStatus {
+            scope: None,
+            ..status(
+                "context7",
+                "npx",
+                &["@upstash/context7-mcp"],
+                Some(("context7", "1.0.14", 2, "user")),
+            )
+        };
+        let rows = one_server(scopeless);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].metadata, "MCP server", "never a blank suffix; got {rows:?}");
+    }
+
     #[test]
     fn rows_from_os_snapshot_sorts_config_matched_server_in_the_mcp_tier() {
         // busymail is named ONLY by the configured match - it fits no package
@@ -1254,12 +1508,10 @@ mod tests {
                 fake_entry(300, "npm", "npm run build", 88 * 1024 * 1024),
             ],
         };
-        let configured = vec![ConfiguredMcpServer {
-            name: "busymail".to_owned(),
-            command: "node".to_owned(),
-            args: vec!["/Users/x/busymail/dist/server.js".to_owned()],
-        }];
-        let rows = rows_from_os_snapshot(&snapshot, &[], &configured);
+        // No handshake / tools / scope reported, so this server stays the
+        // compact single row and the assertions below are about tier only.
+        let servers = vec![status("busymail", "node", &["/Users/x/busymail/dist/server.js"], None)];
+        let rows = rows_from_os_snapshot(&snapshot, &[], &servers);
         assert_eq!(
             rows.iter().map(|r| r.headline.as_str()).collect::<Vec<_>>(),
             vec!["busymail", "context7", "npm run build"],

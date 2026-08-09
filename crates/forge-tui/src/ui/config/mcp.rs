@@ -187,7 +187,7 @@ fn server_detail_lines(server: &McpServerStatus) -> Vec<Line<'static>> {
         detail_kv("Transport", transport_label(server.config.as_ref()), Color::White),
         detail_kv(
             "Tools",
-            &tool_summary(server.tools.as_deref().map_or(0, <[_]>::len)),
+            &crate::ui::format::tool_summary(server.tools.as_deref().map_or(0, <[_]>::len)),
             Color::White,
         ),
     ];
@@ -374,7 +374,7 @@ fn server_summary_line(server: &McpServerStatus) -> String {
         parts.push(format!("{} {}", info.name, info.version));
     }
     let tool_count = server.tools.as_deref().map_or(0, <[_]>::len);
-    parts.push(tool_summary(tool_count));
+    parts.push(crate::ui::format::tool_summary(tool_count));
     if let Some(config) = server.config.as_ref() {
         match config.get("type").and_then(Value::as_str) {
             Some("stdio") => {
@@ -396,14 +396,6 @@ fn server_summary_line(server: &McpServerStatus) -> String {
         }
     }
     parts.join("  |  ")
-}
-
-fn tool_summary(tool_count: usize) -> String {
-    match tool_count {
-        0 => "no tools".to_owned(),
-        1 => "1 tool".to_owned(),
-        count => format!("{count} tools"),
-    }
 }
 
 fn status_color(status: McpServerConnectionStatus) -> Color {
