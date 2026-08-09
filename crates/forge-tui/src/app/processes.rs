@@ -20,7 +20,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use forge_primitives::McpServerStatus;
+use forge_primitives::{McpServerConnectionStatus, McpServerStatus};
 use forge_workspace::env::processes::{
     ConfiguredMcpServer, InfraLabel, ProcessEntry, ProcessSnapshot, basename_exe,
     classify_known_infra, configured_mcp_servers, extract_inner_command,
@@ -42,6 +42,10 @@ use crate::app::state::types::BackgroundTask;
 /// as a footer row (the scrollbar IS the overflow indicator) but
 /// is kept so future surfaces can show "n hidden" if needed.
 const PROCESSES_MAX: usize = 50;
+
+/// Suffix an MCP row falls back to when there is no scope to show - and what
+/// the compact single row carries at Medium, where memory drops.
+const MCP_SERVER_TAG: &str = "MCP server";
 
 /// One row in the PROCESSES section.
 #[derive(Debug, PartialEq, Eq)]
@@ -398,14 +402,17 @@ fn emit_with_descendants<'a>(
     // A connected MCP server becomes a small tree: the logical server keeps
     // the name + scope, and its facts move to children that each get a full
     // row's width instead of sharing one.
+    // Only a CONNECTED server earns the tree: a failed or pending one has no
+    // handshake child to gain and would lose the memory off its parent row.
     let mcp_children = (row.kind == ProcessKind::McpServer)
         .then(|| matched_status(servers, &row.headline))
         .flatten()
+        .filter(|status| matches!(status.status, McpServerConnectionStatus::Connected))
         .and_then(|status| {
             mcp_tree_children(entry, status, subtree_bytes).map(|kids| (status, kids))
         });
     if let Some((status, _)) = mcp_children.as_ref() {
-        row.metadata = status.scope.clone().unwrap_or_default();
+        row.metadata = status.scope.clone().unwrap_or_else(|| MCP_SERVER_TAG.to_owned());
         row.memory_bytes = None;
     }
     out.push(row);
@@ -589,7 +596,7 @@ fn mcp_server_row(entry: &ProcessEntry, infra: &InfraLabel) -> ProcessRow {
         kind: ProcessKind::McpServer,
         headline: infra.name.clone(),
         detail: None,
-        metadata: "MCP server".to_owned(),
+        metadata: MCP_SERVER_TAG.to_owned(),
         status: ToolCallStatus::InProgress,
         memory_bytes: Some(entry.memory_bytes),
         pid: None,
@@ -1420,6 +1427,70 @@ mod tests {
             Some(132 * 1024 * 1024),
             "SUBTREE total - own RSS would silently drop the collapsed leaf",
         );
+    }
+
+    /// One entry, one configured server - the smallest snapshot that forms a tree.
+    fn one_server(server: forge_primitives::McpServerStatus) -> Vec<ProcessRow> {
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![fake_entry(
+                300,
+                "npm",
+                "npm exec @upstash/context7-mcp",
+                46 * 1024 * 1024,
+            )],
+        };
+        rows_from_os_snapshot(&snapshot, &[], &[server])
+    }
+
+    #[test]
+    fn mcp_tree_joins_a_plugin_namespaced_server() {
+        // The CLI namespaces a plugin-provided server `plugin:<plugin>:<server>`
+        // and the resolver strips that off the headline, so the join has to strip
+        // it too. context7 is plugin-provided in a real config, which makes this
+        // the likeliest server to render a tree at all.
+        let rows = one_server(status(
+            "plugin:context7:context7",
+            "npx",
+            &["-y", "@upstash/context7-mcp"],
+            Some(("context7", "1.0.14", 2, "user")),
+        ));
+        assert_eq!(rows.len(), 3, "the namespaced server still forms a tree; got {rows:?}");
+        assert_eq!(rows[0].headline, "context7");
+        assert_eq!(rows[0].metadata, "user");
+    }
+
+    #[test]
+    fn mcp_tree_needs_a_connected_handshake_and_keeps_a_suffix_without_scope() {
+        // A failed server keeps the compact row - it has no handshake child to
+        // gain and would lose the memory off its parent.
+        let failed = forge_primitives::McpServerStatus {
+            status: forge_primitives::McpServerConnectionStatus::Failed,
+            ..status(
+                "context7",
+                "npx",
+                &["@upstash/context7-mcp"],
+                Some(("context7", "1.0.14", 2, "user")),
+            )
+        };
+        let rows = one_server(failed);
+        assert_eq!(rows.len(), 1, "no tree for a failed server; got {rows:?}");
+        assert_eq!(rows[0].memory_bytes, Some(46 * 1024 * 1024), "keeps its memory");
+
+        // Connected but no scope reported: the suffix falls back to the kind tag
+        // rather than blanking, which would leave a bare `⬢ context7`.
+        let scopeless = forge_primitives::McpServerStatus {
+            scope: None,
+            ..status(
+                "context7",
+                "npx",
+                &["@upstash/context7-mcp"],
+                Some(("context7", "1.0.14", 2, "user")),
+            )
+        };
+        let rows = one_server(scopeless);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].metadata, "MCP server", "never a blank suffix; got {rows:?}");
     }
 
     #[test]
