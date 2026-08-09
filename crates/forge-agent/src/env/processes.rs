@@ -425,7 +425,7 @@ pub fn resolve_infra_label(
 /// exposes a plugin-provided MCP server as `plugin:<plugin>:<server>`, which
 /// reads worse than the package-derived name; anything else (including a
 /// plain name that merely contains a colon) is returned verbatim.
-fn strip_plugin_namespace(name: &str) -> &str {
+pub fn strip_plugin_namespace(name: &str) -> &str {
     let mut parts = name.splitn(3, ':');
     match (parts.next(), parts.next(), parts.next()) {
         (Some("plugin"), Some(plugin), Some(server))
