@@ -1707,8 +1707,8 @@ mod tests {
     /// churns the off-screen tail. The tail invalidation arrives as
     /// `MessageChanged`, which leaves the target stale but does not arm
     /// the background convergence loop, so the remeasure plan it opens
-    /// never finalizes - and its preserved anchor re-pins the scroll on
-    /// every frame.
+    /// never finalizes - and its preserved anchor would re-pin the
+    /// scroll on every frame.
     #[test]
     fn scroll_keeps_moving_after_an_off_screen_tail_invalidation() {
         let mut app = App::test_default();
