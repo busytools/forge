@@ -3969,6 +3969,77 @@ mod tests {
         assert!(lines.is_empty(), "empty view -> section emits zero lines; got {lines:?}");
     }
 
+    #[test]
+    fn mcp_version_child_keeps_its_tool_count_at_wide_width() {
+        // The real playwright-local handshake, which is what made this a bug:
+        // its version alone is 23 chars against a 35-col child budget at
+        // Wide. Prefixing the `Playwright` product name pushed the row to 45
+        // and truncated 10 chars into the version, so the tool count - the
+        // only fact on the row the parent doesn't already carry - never
+        // rendered at all.
+        use forge_workspace::env::processes::{ProcessEntry, ProcessSnapshot};
+        let mut app = App::test_default();
+        app.set_active_process_snapshot_for_test(ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![ProcessEntry {
+                pid: 12949,
+                parent_pid: 1,
+                name: "npm".to_owned(),
+                command: "npm exec @playwright/mcp@latest --cdp-endpoint http://127.0.0.1:9222"
+                    .to_owned(),
+                memory_bytes: 223 * 1024 * 1024,
+            }],
+        });
+        app.mcp_mut().servers = vec![forge_primitives::McpServerStatus {
+            name: "playwright-local".to_owned(),
+            status: forge_primitives::McpServerConnectionStatus::Connected,
+            server_info: Some(forge_primitives::McpServerInfo {
+                name: "Playwright".to_owned(),
+                version: "1.63.0-alpha-2026-08-05".to_owned(),
+            }),
+            error: None,
+            config: Some(serde_json::json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://127.0.0.1:9222"],
+            })),
+            scope: Some("user".to_owned()),
+            tools: Some(
+                (0..24)
+                    .map(|i| forge_primitives::McpToolInfo {
+                        name: format!("t{i}"),
+                        description: None,
+                        annotations: None,
+                    })
+                    .collect(),
+            ),
+            sampling_configured: None,
+            sampling_required: None,
+        }];
+
+        let coll = crate::app::processes::collect_active_processes(&app);
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &coll, 40, '\u{280B}');
+        let version_row = lines
+            .iter()
+            .map(line_text)
+            .find(|t| t.contains("1.63.0"))
+            .expect("version child renders");
+        assert!(
+            version_row.contains("24 tools"),
+            "the tool count must survive at 40 cols; got {version_row:?}",
+        );
+        assert!(
+            !version_row.contains("Playwright"),
+            "the product name only restates the parent row; got {version_row:?}",
+        );
+        assert!(
+            version_row.chars().count() <= 40,
+            "row must still fit the pane; got {} cols in {version_row:?}",
+            version_row.chars().count(),
+        );
+    }
+
     // ---------------------------------------------------------
     // blank-line spacing between WORKFLOWS entries.
     // ---------------------------------------------------------
