@@ -437,6 +437,90 @@ pub fn strip_plugin_namespace(name: &str) -> &str {
     }
 }
 
+/// One depth-0 process the elimination join may consider, with whether an
+/// alive wire tool call already claims it.
+#[derive(Debug, Clone, Copy)]
+pub struct RootProcess<'a> {
+    pub pid: u32,
+    pub cmdline: &'a str,
+    pub wire_matched: bool,
+}
+
+/// Executables an stdio MCP server's live process image runs under, matched on
+/// the argv[0] basename so a server that `exec`ed out of its configured
+/// `sh -c` wrapper still qualifies.
+///
+/// **No shell belongs here.** A shell is how claude spawns both its Bash-tool
+/// wrapper and its `type: "command"` hooks, and both land as direct children of
+/// the same pid - so whitelisting one puts every tool call and hook in the
+/// candidate pool, which declines the pairing and drops the row out of the MCP
+/// tier while it runs. Nothing is lost: a server that has `exec`ed is no longer
+/// shell-shaped, and one that hasn't still text-matches its own `-c` script.
+const INTERPRETERS: [&str; 7] = ["node", "python", "python3", "deno", "bun", "npx", "uvx"];
+
+/// True when a root process may stand in for an unmatched server: its argv[0]
+/// is one of [`INTERPRETERS`]. Keeps transient tool processes (an `rg` from a
+/// Grep) out of the pool, which would otherwise decline the pairing on any scan
+/// where one was alive and flicker the row.
+fn is_elimination_candidate(cmdline: &str) -> bool {
+    let Some(exe) = cmdline.split_whitespace().next() else {
+        return false;
+    };
+    let base = exe.rsplit('/').next().unwrap_or(exe);
+    INTERPRETERS.contains(&base)
+}
+
+/// Pair the sole unmatched `Connected` stdio server with the sole unmatched
+/// candidate process, returning that process's pid and the name its row takes.
+///
+/// A join by ELIMINATION, not identity - nothing observable ties a server to
+/// its process - so two leftovers on either side decline rather than guess.
+///
+/// What the `Connected` filter buys is narrow, and it is not liveness: it only
+/// guarantees the name attached comes from a server the CLI last reported as
+/// connected, so a `Pending` or `Failed` server can never lend its name. It
+/// does NOT establish that the elected process belongs to a live server. A
+/// server that connected and then died still reads `Connected` until the CLI
+/// notices, and there is no liveness signal on the wire to check - so in that
+/// window the sole remaining candidate can be paired with a dead server's name.
+/// Declining on snapshot age would not help: in that case the snapshot is fresh
+/// and still says `Connected`.
+pub fn elect_unmatched_server(
+    servers: &[McpServerStatus],
+    configured: &[ConfiguredMcpServer],
+    roots: &[RootProcess<'_>],
+) -> Option<(u32, String)> {
+    let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut candidate = None;
+    let mut candidates = 0usize;
+    for root in roots.iter().filter(|root| !root.wire_matched) {
+        if let Some(label) = resolve_infra_label(root.cmdline, configured) {
+            claimed.insert(label.name);
+        } else if is_elimination_candidate(root.cmdline) {
+            candidates += 1;
+            candidate = Some(root.pid);
+        }
+    }
+    if candidates != 1 {
+        return None;
+    }
+    let mut unmatched = configured
+        .iter()
+        .map(|server| strip_plugin_namespace(&server.name))
+        .filter(|name| !claimed.contains(*name))
+        .filter(|name| {
+            servers.iter().any(|server| {
+                strip_plugin_namespace(&server.name) == *name
+                    && server.status == forge_primitives::McpServerConnectionStatus::Connected
+            })
+        });
+    let elected = unmatched.next()?;
+    if unmatched.next().is_some() {
+        return None;
+    }
+    Some((candidate?, elected.to_owned()))
+}
+
 /// True when `haystack` (a whitespace-normalized process cmdline) contains
 /// every match token of `server`. Leading `npx`/`npm` passthrough flags
 /// (e.g. `-y`) are dropped first: `npx -y <pkg>` re-execs into `npm exec
@@ -894,6 +978,129 @@ mod tests {
             .name,
             "playwright"
         );
+    }
+
+    /// The live airmail shape. Its config `exec`s a downloaded shim, so the
+    /// process image shares no text with the command it launched from - the
+    /// case the elimination join exists for. Captured via `ps -axww`.
+    const SHIM: &str = "node /var/folders/0q/q18_z8w555v6z6q3q_3fc_t00000gn/T/tmp.9Vg/shim.mjs";
+
+    fn root(pid: u32, cmdline: &str) -> RootProcess<'_> {
+        RootProcess { pid, cmdline, wire_matched: false }
+    }
+
+    /// airmail's real config, plus the three servers that DO text-match.
+    fn airmail_config() -> Vec<ConfiguredMcpServer> {
+        vec![
+            configured(
+                "airmail",
+                "sh",
+                &["-c", "shim=$(mktemp -d)/shim.mjs && exec node \"$shim\""],
+            ),
+            configured("context7", "npx", &["-y", "@upstash/context7-mcp"]),
+        ]
+    }
+
+    fn connected(names: &[&str]) -> Vec<McpServerStatus> {
+        names.iter().map(|name| mcp_status(name, None)).collect()
+    }
+
+    #[test]
+    fn elects_the_sole_unmatched_connected_server_for_the_sole_candidate() {
+        // context7's process text-matches, so it claims its server and drops
+        // out of both sides; airmail and the shim are the only leftovers.
+        let elected = elect_unmatched_server(
+            &connected(&["airmail", "context7"]),
+            &airmail_config(),
+            &[root(100, "npm exec @upstash/context7-mcp"), root(200, SHIM)],
+        );
+        assert_eq!(elected, Some((200, "airmail".to_owned())));
+    }
+
+    #[test]
+    fn declines_when_a_second_server_is_unmatched() {
+        // Two unmatched servers and one leftover process: which one the
+        // process belongs to is unknowable, so no row gets named.
+        let elected = elect_unmatched_server(
+            &connected(&["airmail", "context7"]),
+            &airmail_config(),
+            &[root(200, SHIM)],
+        );
+        assert_eq!(elected, None);
+    }
+
+    #[test]
+    fn declines_when_a_second_candidate_process_is_unmatched() {
+        let elected = elect_unmatched_server(
+            &connected(&["airmail", "context7"]),
+            &airmail_config(),
+            &[
+                root(100, "npm exec @upstash/context7-mcp"),
+                root(200, SHIM),
+                root(300, "node /Users/x/other-service.mjs"),
+            ],
+        );
+        assert_eq!(elected, None);
+    }
+
+    #[test]
+    fn declines_a_server_that_has_not_handshaken() {
+        // Without the Connected gate a crashed server would pair with any
+        // leftover process - labelling an unrelated build as airmail.
+        let mut servers = connected(&["airmail", "context7"]);
+        servers[0].status = forge_primitives::McpServerConnectionStatus::Pending;
+        let elected = elect_unmatched_server(
+            &servers,
+            &airmail_config(),
+            &[root(100, "npm exec @upstash/context7-mcp"), root(200, SHIM)],
+        );
+        assert_eq!(elected, None);
+    }
+
+    #[test]
+    fn a_transient_tool_process_does_not_spoil_the_election() {
+        // The stability property. An `rg` from a Grep call is alive at scan
+        // time and is not interpreter-shaped; counting it would decline the
+        // pairing and flicker airmail's row back to a raw path every time
+        // the user searched.
+        let elected = elect_unmatched_server(
+            &connected(&["airmail", "context7"]),
+            &airmail_config(),
+            &[
+                root(100, "npm exec @upstash/context7-mcp"),
+                root(200, SHIM),
+                root(300, "rg --json -e pattern /Users/x/Projects"),
+            ],
+        );
+        assert_eq!(elected, Some((200, "airmail".to_owned())));
+    }
+
+    #[test]
+    fn a_shell_spawned_child_of_claude_does_not_spoil_the_election() {
+        // Claude spawns its Bash-tool wrapper AND its `type: "command"` hooks
+        // through a shell, both as direct children of the same pid - so any
+        // shell in INTERPRETERS would put every tool call and hook in the pool,
+        // declining the pairing and dropping the row out of the MCP tier while
+        // it runs. Re-adding one fails this test.
+        let wrapper = "/bin/bash -c source /Users/x/.claude/snap.sh 2>/dev/null || true && eval 'cargo build' < /dev/null && pwd -P >| /tmp/claude-ab12-cwd";
+        let elected = elect_unmatched_server(
+            &connected(&["airmail", "context7"]),
+            &airmail_config(),
+            &[root(100, "npm exec @upstash/context7-mcp"), root(200, SHIM), root(400, wrapper)],
+        );
+        assert_eq!(elected, Some((200, "airmail".to_owned())));
+    }
+
+    #[test]
+    fn a_wire_matched_process_is_never_a_candidate() {
+        // A foreground Bash already owns its row; it must not stand in for a
+        // server even when its image is interpreter-shaped.
+        let elected = elect_unmatched_server(
+            &connected(&["airmail"]),
+            &airmail_config()[..1],
+            &[RootProcess { pid: 200, cmdline: "node build.mjs", wire_matched: true }],
+        );
+        assert_eq!(elected, None);
     }
 
     #[test]

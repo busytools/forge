@@ -22,8 +22,8 @@ use std::collections::{HashMap, HashSet};
 
 use forge_primitives::{McpServerConnectionStatus, McpServerStatus};
 use forge_workspace::env::processes::{
-    ConfiguredMcpServer, InfraLabel, ProcessEntry, ProcessSnapshot, basename_exe,
-    classify_known_infra, configured_mcp_servers, extract_inner_command,
+    ConfiguredMcpServer, InfraLabel, ProcessEntry, ProcessSnapshot, RootProcess, basename_exe,
+    classify_known_infra, configured_mcp_servers, elect_unmatched_server, extract_inner_command,
     process_cmdline_matches_tool_input, resolve_infra_label, strip_plugin_namespace,
 };
 use serde_json::Value;
@@ -344,6 +344,21 @@ fn rows_from_os_snapshot<'a>(
     // whose parent is init - both parents sit outside the snapshot.
     let mut roots: Vec<&ProcessEntry> =
         snapshot.processes.iter().filter(|e| !by_pid.contains_key(&e.parent_pid)).collect();
+    // A server whose process shares no text with its configured command can
+    // still be named when it is the only leftover on both sides. Computed
+    // over all roots before the walk, since the decision is global.
+    let elected = elect_unmatched_server(
+        servers,
+        configured,
+        &roots
+            .iter()
+            .map(|root| RootProcess {
+                pid: root.pid,
+                cmdline: root.command.as_str(),
+                wire_matched: wire_match(root, wire_alive).is_some(),
+            })
+            .collect::<Vec<_>>(),
+    );
     // Depth-0 roots sort by the subtree total they display, not their
     // own RSS - precompute it once per root rather than per-comparison.
     let root_subtree: HashMap<u32, u64> = roots
@@ -353,24 +368,27 @@ fn rows_from_os_snapshot<'a>(
             (r.pid, subtree_memory(r, &children_of, &mut visited))
         })
         .collect();
-    sort_siblings_inplace(&mut roots, wire_alive, configured, Some(&root_subtree));
+    let elected_ref = elected.as_ref().map(|(pid, name)| (*pid, name.as_str()));
+    sort_siblings_inplace(&mut roots, wire_alive, configured, Some(&root_subtree), elected_ref);
 
+    let walk = Walk { children_of: &children_of, wire_alive, configured, servers, elected_ref };
     let mut rows = Vec::new();
     let n_roots = roots.len();
     for (idx, root) in roots.iter().enumerate() {
-        emit_with_descendants(
-            root,
-            0,
-            idx + 1 == n_roots,
-            &[],
-            &children_of,
-            wire_alive,
-            configured,
-            servers,
-            &mut rows,
-        );
+        emit_with_descendants(root, 0, idx + 1 == n_roots, &[], &walk, &mut rows);
     }
     rows
+}
+
+/// The walk-invariant inputs to [`emit_with_descendants`] - identical at every
+/// node, unlike the per-node tree position.
+struct Walk<'a> {
+    children_of: &'a HashMap<u32, Vec<&'a ProcessEntry>>,
+    wire_alive: &'a [&'a ToolCallInfo],
+    configured: &'a [ConfiguredMcpServer],
+    servers: &'a [McpServerStatus],
+    /// pid + row name of the server paired by elimination, when it fired.
+    elected_ref: Option<(u32, &'a str)>,
 }
 
 /// Emit `entry` + DFS its children, sorted siblings-first. Each
@@ -382,13 +400,11 @@ fn emit_with_descendants<'a>(
     depth: u8,
     is_last_sibling: bool,
     ancestor_has_more: &[bool],
-    children_of: &std::collections::HashMap<u32, Vec<&'a ProcessEntry>>,
-    wire_alive: &[&ToolCallInfo],
-    configured: &[ConfiguredMcpServer],
-    servers: &[McpServerStatus],
+    walk: &Walk<'a>,
     out: &mut Vec<ProcessRow>,
 ) {
-    let mut row = build_row_for_entry(entry, wire_alive, configured);
+    let Walk { children_of, wire_alive, configured, servers, elected_ref } = *walk;
+    let mut row = build_row_for_entry(entry, wire_alive, configured, elected_ref);
     row.depth = depth;
     let mut visited = HashSet::new();
     let subtree_bytes = subtree_memory(entry, children_of, &mut visited);
@@ -430,7 +446,7 @@ fn emit_with_descendants<'a>(
             kids.iter().copied().filter(|kid| !is_redundant_mcp_child(entry, kid)).collect()
         })
         .unwrap_or_default();
-    sort_siblings_inplace(&mut kids, wire_alive, configured, None);
+    sort_siblings_inplace(&mut kids, wire_alive, configured, None, elected_ref);
 
     // The next level's ancestor_has_more appends THIS row's
     // "more-siblings-below" bit so a deep descendant knows whether
@@ -476,10 +492,7 @@ fn emit_with_descendants<'a>(
             depth.saturating_add(1),
             kid_is_last,
             &next_ancestors,
-            children_of,
-            wire_alive,
-            configured,
-            servers,
+            walk,
             out,
         );
     }
@@ -557,6 +570,7 @@ fn build_row_for_entry(
     entry: &ProcessEntry,
     wire_alive: &[&ToolCallInfo],
     configured: &[ConfiguredMcpServer],
+    elected: Option<(u32, &str)>,
 ) -> ProcessRow {
     let matched = wire_match(entry, wire_alive);
     match matched {
@@ -571,12 +585,24 @@ fn build_row_for_entry(
         Some(tc) if is_execute_tool_name(&tc.sdk_tool_name) => enriched_bash_row(tc, entry),
         // No wire match: a known-infra process (MCP server) gets a
         // friendly-labeled row - its CONFIGURED name when it uniquely
-        // matches one, else the package name; everything else is generic.
-        _ => match resolve_infra_label(&entry.command, configured) {
+        // matches one, else the package name, else the name the elimination
+        // join paired it with; everything else is generic.
+        _ => match resolve_infra_label(&entry.command, configured)
+            .or_else(|| elected_label(entry.pid, elected))
+        {
             Some(infra) => mcp_server_row(entry, &infra),
             None => generic_os_row(entry),
         },
     }
+}
+
+/// The label an elimination-paired process takes, when `pid` is the one the
+/// join elected. Shared by the row builder and the sibling sort so a paired
+/// row's kind and its sort tier can't disagree.
+fn elected_label(pid: u32, elected: Option<(u32, &str)>) -> Option<InfraLabel> {
+    elected
+        .filter(|(elected_pid, _)| *elected_pid == pid)
+        .map(|(_, name)| InfraLabel { name: name.to_owned() })
 }
 
 /// True when `child` classifies as the SAME MCP server name as
@@ -696,6 +722,7 @@ fn sort_siblings_inplace(
     wire_alive: &[&ToolCallInfo],
     configured: &[ConfiguredMcpServer],
     subtree_totals: Option<&std::collections::HashMap<u32, u64>>,
+    elected: Option<(u32, &str)>,
 ) {
     const MCP_TIER: u8 = 1;
     let sort_mem = |e: &ProcessEntry| -> u64 {
@@ -707,18 +734,21 @@ fn sort_siblings_inplace(
     // otherwise MCP-server infra (1) or unrecognized generic (2). The MCP arm
     // resolves exactly as the row builder does - a configured-only match names
     // a row the package conventions can't, so reading `classify_known_infra`
-    // here would sort it as generic.
+    // here would sort it as generic, and so would ignoring the elected pid.
+    let resolved = |e: &ProcessEntry| {
+        resolve_infra_label(&e.command, configured).or_else(|| elected_label(e.pid, elected))
+    };
     let tier = |e: &ProcessEntry| -> u8 {
         match wire_match(e, wire_alive) {
             Some(tc) if is_monitor_tool_name(&tc.sdk_tool_name) => 2,
             Some(tc) if is_execute_tool_name(&tc.sdk_tool_name) => 0,
-            _ if resolve_infra_label(&e.command, configured).is_some() => MCP_TIER,
+            _ if resolved(e).is_some() => MCP_TIER,
             _ => 2,
         }
     };
     // The same resolver the row builder names the row with, so the sorted
     // order matches what the user reads.
-    let mcp_name = |e: &ProcessEntry| resolve_infra_label(&e.command, configured).map(|l| l.name);
+    let mcp_name = |e: &ProcessEntry| resolved(e).map(|l| l.name);
     entries.sort_by(|a, b| {
         let tier_a = tier(a);
         tier_a
@@ -971,6 +1001,122 @@ mod tests {
     }
 
     #[test]
+    fn rows_from_os_snapshot_names_the_elimination_paired_server_in_the_mcp_tier() {
+        // Live shape captured via `ps -axww`: airmail's config execs a
+        // downloaded shim, so its process shares no text with the command it
+        // launched from and no text match can reach it. context7's process
+        // matches, leaving one server and one process unpaired - so the shim
+        // takes airmail's name. It must also SORT in the MCP tier: 0.22.54
+        // stabilised this section's order, and a row rendering as an MCP
+        // server while sorting as generic would reintroduce movement.
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                ProcessEntry {
+                    pid: 100,
+                    parent_pid: 1,
+                    name: "npm".to_owned(),
+                    command: "npm exec @upstash/context7-mcp".to_owned(),
+                    memory_bytes: 86 * 1024 * 1024,
+                },
+                ProcessEntry {
+                    pid: 200,
+                    parent_pid: 1,
+                    name: "node".to_owned(),
+                    command: "node /var/folders/0q/q18/T/tmp.9Vg/shim.mjs".to_owned(),
+                    memory_bytes: 90 * 1024 * 1024,
+                },
+            ],
+        };
+        let servers = vec![
+            status(
+                "airmail",
+                "sh",
+                &["-c", "shim=$(mktemp -d)/shim.mjs && exec node \"$shim\""],
+                None,
+            ),
+            status("context7", "npx", &["-y", "@upstash/context7-mcp"], None),
+        ];
+        let rows = rows_from_os_snapshot(&snapshot, &[], &servers);
+        assert_eq!(rows.len(), 2);
+        let shim = rows.iter().find(|r| r.headline == "airmail").expect("shim takes the name");
+        assert_eq!(shim.kind, ProcessKind::McpServer);
+        assert!(shim.metadata.contains("MCP server"));
+    }
+
+    #[test]
+    fn elimination_paired_row_sorts_in_the_mcp_tier_not_the_generic_one() {
+        // 0.22.54 stabilised this section's order after the user reported rows
+        // moving between frames. A row that RENDERS as an MCP server while
+        // SORTING as generic would sit below the generic tier's memory-ordered
+        // rows and move as their memory changed - so the sort must resolve the
+        // paired pid exactly as the row builder does.
+        let heavy_generic = ProcessEntry {
+            pid: 300,
+            parent_pid: 1,
+            name: "cargo".to_owned(),
+            command: "cargo build --release".to_owned(),
+            memory_bytes: 900 * 1024 * 1024,
+        };
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                heavy_generic,
+                ProcessEntry {
+                    pid: 200,
+                    parent_pid: 1,
+                    name: "node".to_owned(),
+                    command: "node /var/folders/0q/q18/T/tmp.9Vg/shim.mjs".to_owned(),
+                    memory_bytes: 90 * 1024 * 1024,
+                },
+            ],
+        };
+        let servers = vec![status(
+            "airmail",
+            "sh",
+            &["-c", "shim=$(mktemp -d)/shim.mjs && exec node \"$shim\""],
+            None,
+        )];
+        let rows = rows_from_os_snapshot(&snapshot, &[], &servers);
+        // The MCP tier sorts above the generic tier regardless of memory, so
+        // the 90 MB paired row leads the 900 MB cargo.
+        assert_eq!(
+            rows.iter().map(|r| r.headline.as_str()).collect::<Vec<_>>(),
+            vec!["airmail", "cargo build --release"]
+        );
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_leaves_the_shim_generic_when_a_second_server_is_unpaired() {
+        // Same tree, but context7's process is gone - two servers unpaired
+        // against one leftover process. Naming the shim would be a guess, so
+        // it stays a generic row.
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![ProcessEntry {
+                pid: 200,
+                parent_pid: 1,
+                name: "node".to_owned(),
+                command: "node /var/folders/0q/q18/T/tmp.9Vg/shim.mjs".to_owned(),
+                memory_bytes: 90 * 1024 * 1024,
+            }],
+        };
+        let servers = vec![
+            status(
+                "airmail",
+                "sh",
+                &["-c", "shim=$(mktemp -d)/shim.mjs && exec node \"$shim\""],
+                None,
+            ),
+            status("context7", "npx", &["-y", "@upstash/context7-mcp"], None),
+        ];
+        let rows = rows_from_os_snapshot(&snapshot, &[], &servers);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, ProcessKind::Process);
+        assert_eq!(rows[0].headline, "node /var/folders/0q/q18/T/tmp.9Vg/shim.mjs");
+    }
+
+    #[test]
     fn rows_from_os_snapshot_names_same_package_servers_by_configured_name() {
         // Two playwright MCP servers on the same @playwright/mcp package,
         // distinguished only by --cdp-endpoint. Each parent's redundant
@@ -1049,7 +1195,7 @@ mod tests {
         // An MCP server process (no wire match) gets a friendly name +
         // McpServer kind, and stays visible (not filtered).
         let entry = fake_entry(50, "npm", "npm exec @upstash/context7-mcp", 46 * 1024 * 1024);
-        let row = build_row_for_entry(&entry, &[], &[]);
+        let row = build_row_for_entry(&entry, &[], &[], None);
         assert_eq!(row.kind, ProcessKind::McpServer);
         assert_eq!(row.headline, "context7");
         assert!(row.metadata.contains("MCP server"));
