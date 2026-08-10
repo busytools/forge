@@ -261,7 +261,6 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         connection_started: false,
         startup_project: cli.project.clone(),
         replay_in_progress: false,
-        input_draft_snapshot: None,
     };
 
     if let Err(err) = super::config::initialize_shared_state(&mut app) {

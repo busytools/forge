@@ -207,14 +207,14 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 let prompt = crate::app::prompt::PromptState::from_permission(tool_id, request);
                 crate::app::prompt::enqueue_prompt(session, prompt);
             }
-            crate::app::prompt::snapshot_draft_if_needed(app);
+            crate::app::prompt::snapshot_draft_if_needed(app, &key);
         }
         SessionUpdate::QuestionRequest { key, tool_id, request } => {
             if let Some(session) = app.session_mut(&key) {
                 let prompt = crate::app::prompt::PromptState::from_question(tool_id, request);
                 crate::app::prompt::enqueue_prompt(session, prompt);
             }
-            crate::app::prompt::snapshot_draft_if_needed(app);
+            crate::app::prompt::snapshot_draft_if_needed(app, &key);
         }
         SessionUpdate::McpOperationError { key, error } => {
             crate::app::config::handle_mcp_operation_error(app, &key, &error);
