@@ -90,6 +90,9 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         Some(key) => app.active_session_key.as_ref() == Some(key),
         None => true,
     };
+    // Polled events can arrive unchanged; their reducer clears this so a
+    // no-op response doesn't wake the render loop.
+    let mut redraw = is_active_or_global;
     match update {
         SessionUpdate::Spawning { key, project_name, cwd, display_name } => {
             apply_session_update_spawning(app, key, &project_name, &cwd, &display_name);
@@ -170,7 +173,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             apply_session_update_context_usage_snapshot(app, &session_id, percentage, max_tokens);
         }
         SessionUpdate::McpSnapshot { session_id, servers, error } => {
-            apply_session_update_mcp_snapshot(app, &session_id, servers, error);
+            redraw &= apply_session_update_mcp_snapshot(app, &session_id, servers, error);
         }
         SessionUpdate::ChatAppended { session_id, msg } => {
             apply_session_update_chat_appended(app, &session_id, msg);
@@ -398,7 +401,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             apply_session_update_chat_appended(app, &session_id, synthetic);
         }
     }
-    if is_active_or_global {
+    if redraw {
         app.needs_redraw = true;
     }
 }
@@ -698,13 +701,16 @@ fn apply_context_usage_snapshot_presentation(
 /// index. Background-session targeting only writes the per-session
 /// MCP state into the bucket - the overlay reconciliation is
 /// inherently active-session UI.
+/// Returns whether anything the active view renders actually changed -
+/// the background poll re-asks on a timer, and an identical snapshot
+/// must not wake the render loop.
 pub(super) fn apply_session_update_mcp_snapshot(
     app: &mut App,
     session_id: &str,
     servers: Vec<forge_primitives::McpServerStatus>,
     error: Option<String>,
-) {
-    apply_mcp_snapshot_presentation(app, session_id, servers, error);
+) -> bool {
+    apply_mcp_snapshot_presentation(app, session_id, servers, error)
 }
 
 fn apply_mcp_snapshot_presentation(
@@ -712,14 +718,15 @@ fn apply_mcp_snapshot_presentation(
     session_id: &str,
     servers: Vec<forge_primitives::McpServerStatus>,
     error: Option<String>,
-) {
+) -> bool {
     let session_key = SessionKey::from_session_id(session_id.to_owned());
     let is_active = app.active_session_key.as_ref() == Some(&session_key);
     let server_count = servers.len();
     let error_present = error.is_some();
-    if is_active {
+    let changed = if is_active {
         {
             let mcp = app.mcp_mut();
+            let changed = mcp.servers != servers || mcp.in_flight || error.is_some();
             mcp.servers = servers;
             mcp.in_flight = false;
             // Only a snapshot carrying its own error overwrites the slot.
@@ -730,15 +737,17 @@ fn apply_mcp_snapshot_presentation(
             if error.is_some() {
                 mcp.last_error = error;
             }
+            changed
         }
-        app.config.mcp_selected_server_index =
-            app.config.mcp_selected_server_index.min(app.mcp().servers.len().saturating_sub(1));
     } else if let Some(session) = app.session_mut(&session_key) {
         session.mcp.servers = servers;
         session.mcp.in_flight = false;
         if error.is_some() {
             session.mcp.last_error = error;
         }
+        // A background bucket's rows aren't on screen; the caller's
+        // active-session gate already suppresses the repaint.
+        false
     } else {
         tracing::warn!(
             target: crate::logging::targets::APP_CONFIG,
@@ -748,7 +757,11 @@ fn apply_mcp_snapshot_presentation(
             session_id = %session_id,
             reason = "unknown_session",
         );
-        return;
+        return false;
+    };
+    if changed && is_active {
+        app.config.mcp_selected_server_index =
+            app.config.mcp_selected_server_index.min(app.mcp().servers.len().saturating_sub(1));
     }
     tracing::info!(
         target: crate::logging::targets::APP_CONFIG,
@@ -760,6 +773,7 @@ fn apply_mcp_snapshot_presentation(
         server_count,
         error_present,
     );
+    changed
 }
 
 /// `SessionUpdate::ChatAppended` reducer for the session bucket
