@@ -2,6 +2,7 @@ use super::{ConfigOverlayState, ConfigState};
 use crate::app::App;
 use crate::app::view::ActiveView;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum McpServerActionKind {
@@ -91,21 +92,67 @@ pub(crate) fn refresh_mcp_snapshot(app: &mut App) {
     request_mcp_snapshot(app);
 }
 
+/// Re-poll cadence for the background snapshot refresh: fast while a
+/// server is still `Pending`, since its handshake product and tool list
+/// aren't on the wire until it connects.
+const MCP_PENDING_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+/// Slow cadence once nothing is pending, so a server that later fails or
+/// reconnects still reaches the Inspector.
+const MCP_SETTLED_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Re-ask for the snapshot when the held one has aged past its cadence.
+///
+/// Unlike [`refresh_mcp_snapshot`] this neither clears `servers` nor
+/// raises `in_flight`, so a background poll can't blank the Inspector's
+/// MCP rows, flash the standalone view's loading line, or wipe the error
+/// from a failed manual reconnect.
+pub(crate) fn request_mcp_snapshot_if_needed(app: &mut App, now: Instant) {
+    let interval = if app
+        .mcp()
+        .servers
+        .iter()
+        .any(|server| server.status == forge_primitives::McpServerConnectionStatus::Pending)
+    {
+        MCP_PENDING_REFRESH_INTERVAL
+    } else {
+        MCP_SETTLED_REFRESH_INTERVAL
+    };
+    if app.mcp().last_refresh_requested.is_some_and(|last| now.duration_since(last) < interval) {
+        return;
+    }
+    dispatch_mcp_snapshot_request(app, now, false);
+}
+
 pub(crate) fn request_mcp_snapshot(app: &mut App) {
+    dispatch_mcp_snapshot_request(app, Instant::now(), true);
+}
+
+/// Ask the workspace for a fresh snapshot. `mark_in_flight` drives the
+/// user-facing loading state, which only a user-initiated refresh owns.
+fn dispatch_mcp_snapshot_request(app: &mut App, now: Instant, mark_in_flight: bool) {
     let Some(workspace) = app.workspace.clone() else {
-        app.mcp_mut().in_flight = false;
+        if mark_in_flight {
+            app.mcp_mut().in_flight = false;
+        }
         return;
     };
     let Some(key) = app.active_session_key.clone() else {
-        app.mcp_mut().in_flight = false;
+        if mark_in_flight {
+            app.mcp_mut().in_flight = false;
+        }
         return;
     };
     let Some(session_id) = app.session_id().map(|s| s.to_string()) else {
-        app.mcp_mut().in_flight = false;
+        if mark_in_flight {
+            app.mcp_mut().in_flight = false;
+        }
         return;
     };
-    app.mcp_mut().in_flight = true;
-    app.mcp_mut().last_error = None;
+    app.mcp_mut().last_refresh_requested = Some(now);
+    if mark_in_flight {
+        app.mcp_mut().in_flight = true;
+        app.mcp_mut().last_error = None;
+    }
     match workspace.refresh_mcp_snapshot(&key) {
         Ok(()) => tracing::debug!(
             target: crate::logging::targets::APP_CONFIG,
@@ -115,8 +162,10 @@ pub(crate) fn request_mcp_snapshot(app: &mut App) {
             session_id = %session_id,
         ),
         Err(err) => {
-            app.mcp_mut().in_flight = false;
-            app.mcp_mut().last_error = Some(err.to_string());
+            if mark_in_flight {
+                app.mcp_mut().in_flight = false;
+                app.mcp_mut().last_error = Some(err.to_string());
+            }
             tracing::warn!(
                 target: crate::logging::targets::APP_CONFIG,
                 event_name = "mcp_snapshot_request_failed",

@@ -1559,6 +1559,105 @@ mod tests {
         assert!(app.mcp().servers.is_empty());
     }
 
+    fn mcp_server_with_status(
+        name: &str,
+        status: forge_primitives::McpServerConnectionStatus,
+    ) -> forge_primitives::McpServerStatus {
+        forge_primitives::McpServerStatus {
+            name: name.into(),
+            status,
+            server_info: None,
+            error: None,
+            config: None,
+            scope: None,
+            tools: None,
+            sampling_configured: None,
+            sampling_required: None,
+        }
+    }
+
+    /// Connect, drain the connect-time snapshot request, and hand back an
+    /// app holding `servers`, plus the instant its last request was
+    /// stamped at - tests advance past that rather than backdating it.
+    fn app_after_connect_with_servers(
+        servers: Vec<forge_primitives::McpServerStatus>,
+    ) -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>, Instant) {
+        let (mut app, mut rx) = app_with_bridge_connection();
+        apply_session_update(&mut app, connected_event("claude-test"));
+        while rx.try_recv().is_ok() {}
+        // Stand in for the connect-time snapshot having landed; the
+        // reducer clears `in_flight` when the response arrives.
+        app.mcp_mut().in_flight = false;
+        app.mcp_mut().servers = servers;
+        let stamped = Instant::now();
+        app.mcp_mut().last_refresh_requested = Some(stamped);
+        (app, rx, stamped)
+    }
+
+    #[test]
+    fn mcp_snapshot_repolls_while_a_server_is_still_pending() {
+        let (mut app, mut rx, stamped) =
+            app_after_connect_with_servers(vec![mcp_server_with_status(
+                "busymail",
+                forge_primitives::McpServerConnectionStatus::Pending,
+            )]);
+
+        crate::app::config::request_mcp_snapshot_if_needed(
+            &mut app,
+            stamped + std::time::Duration::from_secs(3),
+        );
+
+        assert_eq!(
+            rx.try_recv().expect("a pending server re-polls on the fast cadence"),
+            forge_primitives::AgentCommand::GetMcpSnapshot {
+                session_id: forge_primitives::SessionId::new("test-session".to_owned()),
+            }
+        );
+    }
+
+    #[test]
+    fn mcp_snapshot_holds_the_slow_cadence_once_nothing_is_pending() {
+        let (mut app, mut rx, stamped) =
+            app_after_connect_with_servers(vec![mcp_server_with_status(
+                "playwright",
+                forge_primitives::McpServerConnectionStatus::Connected,
+            )]);
+
+        crate::app::config::request_mcp_snapshot_if_needed(
+            &mut app,
+            stamped + std::time::Duration::from_secs(3),
+        );
+        assert!(rx.try_recv().is_err(), "a settled snapshot must not re-poll on the fast cadence");
+
+        crate::app::config::request_mcp_snapshot_if_needed(
+            &mut app,
+            stamped + std::time::Duration::from_secs(31),
+        );
+        assert!(rx.try_recv().is_ok(), "a settled snapshot re-polls once the slow interval passes");
+    }
+
+    #[test]
+    fn background_mcp_refresh_leaves_servers_and_loading_state_alone() {
+        let (mut app, _rx, stamped) = app_after_connect_with_servers(vec![mcp_server_with_status(
+            "playwright",
+            forge_primitives::McpServerConnectionStatus::Pending,
+        )]);
+        app.mcp_mut().last_error = Some("reconnect failed".to_owned());
+
+        crate::app::config::request_mcp_snapshot_if_needed(
+            &mut app,
+            stamped + std::time::Duration::from_secs(3),
+        );
+
+        assert_eq!(app.mcp().servers.len(), 1, "a background poll must not blank the rows");
+        assert!(!app.mcp().in_flight, "a background poll must not raise the loading state");
+        assert_eq!(
+            app.mcp().last_error.as_deref(),
+            Some("reconnect failed"),
+            "a background poll must not wipe a user-visible error"
+        );
+    }
+
     #[test]
     fn connected_updates_cwd_and_clears_resuming_marker() {
         let mut app = make_test_app();

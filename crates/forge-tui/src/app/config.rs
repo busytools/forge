@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 pub(crate) use mcp::{
     McpDetailsOverlayState, available_mcp_actions, handle_mcp_operation_error,
-    is_mcp_action_available, refresh_mcp_snapshot,
+    is_mcp_action_available, refresh_mcp_snapshot, request_mcp_snapshot_if_needed,
 };
 use serde_json::Value;
 
