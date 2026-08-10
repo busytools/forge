@@ -134,6 +134,15 @@ pub(crate) fn request_mcp_snapshot(app: &mut App) {
 /// Ask the workspace for a fresh snapshot. `mark_in_flight` drives the
 /// user-facing loading state, which only a user-initiated refresh owns.
 fn dispatch_mcp_snapshot_request(app: &mut App, now: Instant, mark_in_flight: bool) {
+    // Borrow-only check first. Pre-connect there is no session id and the
+    // background poll reaches here on every 4ms loop tick, so the clones
+    // below must not run just to be dropped.
+    let Some(session_id) = app.session_id().map(|s| s.to_string()) else {
+        if mark_in_flight {
+            app.mcp_mut().in_flight = false;
+        }
+        return;
+    };
     let Some(workspace) = app.workspace.clone() else {
         if mark_in_flight {
             app.mcp_mut().in_flight = false;
@@ -141,12 +150,6 @@ fn dispatch_mcp_snapshot_request(app: &mut App, now: Instant, mark_in_flight: bo
         return;
     };
     let Some(key) = app.active_session_key.clone() else {
-        if mark_in_flight {
-            app.mcp_mut().in_flight = false;
-        }
-        return;
-    };
-    let Some(session_id) = app.session_id().map(|s| s.to_string()) else {
         if mark_in_flight {
             app.mcp_mut().in_flight = false;
         }
