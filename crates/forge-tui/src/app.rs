@@ -296,6 +296,11 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // so the actual fetch only fires once per TTL window.
         crate::app::usage::request_refresh_if_needed(app);
 
+        // The CLI reports every server as `pending` with no handshake for
+        // the first moments after connect, so the connect-time fetch alone
+        // would freeze that pre-handshake state for the session's life.
+        crate::app::config::request_mcp_snapshot_if_needed(app, Instant::now());
+
         // Tick the burst detector: flush any held/buffered content
         // that has timed out. Routed by which editor has focus, not by
         // view - the /diff review editors take dictation too.

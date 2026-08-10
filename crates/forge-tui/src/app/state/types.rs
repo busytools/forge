@@ -577,6 +577,10 @@ pub struct McpState {
     pub servers: Vec<forge_primitives::McpServerStatus>,
     pub in_flight: bool,
     pub last_error: Option<String>,
+    /// When the last snapshot request went out, for the background
+    /// re-poll cadence. Stamped by every request path, not just the
+    /// background one, so a manual refresh also defers the next poll.
+    pub last_refresh_requested: Option<std::time::Instant>,
 }
 
 // Per-session SDK turn state lives in
