@@ -567,11 +567,6 @@ pub struct App {
     /// this flag is true. Cleared at end of replay so subsequent live
     /// messages on the same session behave normally.
     pub replay_in_progress: bool,
-    /// Captured chat-input draft text. Set when the prompt queue
-    /// transitions from empty → non-empty (the dock morphs from chat
-    /// box to prompt widget); restored when the queue drains back to
-    /// empty. `None` when no draft was captured.
-    pub input_draft_snapshot: Option<String>,
 }
 
 impl App {
@@ -3444,7 +3439,6 @@ impl App {
             connection_started: false,
             startup_project: None,
             replay_in_progress: false,
-            input_draft_snapshot: None,
         }
     }
 

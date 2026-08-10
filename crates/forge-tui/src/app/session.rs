@@ -439,6 +439,12 @@ pub struct UiSession {
     /// `prompt_queue.front()` when this session is active.
     pub prompt_queue: std::collections::VecDeque<crate::app::prompt::PromptState>,
 
+    /// This session's chat draft, parked while its dock is morphed into
+    /// the prompt widget and restored when `prompt_queue` drains. Lives
+    /// on the bucket rather than on `App` so a draft captured under one
+    /// session can never be restored into another.
+    pub input_draft_snapshot: Option<String>,
+
     /// Set when a turn on this session died, cleared when the user
     /// switches to the session or it starts another turn. Drives the
     /// Inspector NEEDS ATTENTION row and the Projects-pane `✕`.
@@ -627,6 +633,7 @@ impl Default for UiSession {
             last_chat_render_trace_state: Option::default(),
             input: InputState::default(),
             prompt_queue: std::collections::VecDeque::new(),
+            input_draft_snapshot: Option::default(),
             failed_turn: Option::default(),
             review_replies_waiting: Option::default(),
             last_api_retry: Option::default(),

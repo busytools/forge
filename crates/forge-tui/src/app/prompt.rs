@@ -505,38 +505,42 @@ pub fn cancel_prompt(app: &mut crate::app::App) {
     restore_draft_if_empty_queue(app);
 }
 
-/// Snapshot the chat-input draft if it hasn't been snapshotted yet.
-/// Idempotent - when multiple prompts arrive in a burst the first
-/// snapshot wins, so subsequent prompts don't clobber the original
-/// draft. Called from the inbound event handler right after
-/// [`enqueue_prompt`]. ALWAYS clears the editor so it's a fresh slate
-/// for the morphed dock - when the focused option is `Notes`-kind the
-/// editor is reused as the notes input, and any leftover draft would
-/// otherwise pre-populate that input incorrectly. The snapshot itself
-/// is only stored when there's text worth restoring.
-pub fn snapshot_draft_if_needed(app: &mut crate::app::App) {
-    if app.input_draft_snapshot.is_some() {
-        // Already snapshotted; subsequent prompts in the same burst
-        // share the same snapshot, but we still ensure the editor is
-        // clear (the previous prompt may have left typed notes behind).
-        app.input_mut().clear();
+/// Snapshot the prompt session's chat-input draft if it hasn't been
+/// snapshotted yet. Idempotent per session - when multiple prompts
+/// arrive in a burst the first snapshot wins, so subsequent prompts
+/// don't clobber the original draft. Called from the inbound event
+/// handler right after [`enqueue_prompt`]. ALWAYS clears that session's
+/// editor so it's a fresh slate for the morphed dock - when the focused
+/// option is `Notes`-kind the editor is reused as the notes input, and
+/// any leftover draft would otherwise pre-populate that input
+/// incorrectly. The snapshot itself is only stored when there's text
+/// worth restoring. Keyed to the prompt's own session, so a prompt for a
+/// background session leaves the focused editor untouched.
+pub fn snapshot_draft_if_needed(app: &mut crate::app::App, key: &forge_workspace::SessionKey) {
+    let Some(session) = app.session_mut(key) else {
         return;
+    };
+    if session.input_draft_snapshot.is_none() {
+        let text = session.input.text();
+        if !text.is_empty() {
+            session.input_draft_snapshot = Some(text);
+        }
     }
-    let text = app.input().text();
-    if !text.is_empty() {
-        app.input_draft_snapshot = Some(text);
-    }
-    app.input_mut().clear();
+    session.input.clear();
 }
 
-/// Restore a previously-snapshotted draft into the chat input when
-/// the active session's prompt queue is empty. Called from
+/// Restore the active session's previously-snapshotted draft into its
+/// chat input when its prompt queue is empty. Called from
 /// [`submit_prompt`] / [`cancel_prompt`] AFTER popping. No-op when
 /// there's no snapshot or the queue still has prompts pending.
 pub fn restore_draft_if_empty_queue(app: &mut crate::app::App) {
-    let queue_empty = app.active_session().is_none_or(|s| s.prompt_queue.is_empty());
-    if queue_empty && let Some(draft) = app.input_draft_snapshot.take() {
-        app.input_mut().set_text(&draft);
+    let Some(session) = app.try_active_bucket_mut() else {
+        return;
+    };
+    if session.prompt_queue.is_empty()
+        && let Some(draft) = session.input_draft_snapshot.take()
+    {
+        session.input.set_text(&draft);
     }
 }
 
@@ -1143,7 +1147,7 @@ pub(crate) mod tests {
                 PromptState::from_permission("tc-1".into(), make_permission_request()),
             );
         }
-        snapshot_draft_if_needed(&mut app);
+        snapshot_draft_if_needed(&mut app, &key);
         assert_eq!(app.input().text(), "", "input cleared while prompt active");
         // User responds; prompt is popped.
         submit_prompt(&mut app);
@@ -1163,8 +1167,11 @@ pub(crate) mod tests {
                 PromptState::from_permission("tc-1".into(), make_permission_request()),
             );
         }
-        snapshot_draft_if_needed(&mut app);
-        assert!(app.input_draft_snapshot.is_none(), "no draft to snapshot");
+        snapshot_draft_if_needed(&mut app, &key);
+        assert!(
+            app.sessions.get(&key).expect("bucket").input_draft_snapshot.is_none(),
+            "no draft to snapshot",
+        );
         submit_prompt(&mut app);
         assert_eq!(app.input().text(), "");
     }
@@ -1180,7 +1187,7 @@ pub(crate) mod tests {
                 PromptState::from_permission("tc-1".into(), make_permission_request()),
             );
         }
-        snapshot_draft_if_needed(&mut app);
+        snapshot_draft_if_needed(&mut app, &key);
         // A second prompt arrives - must NOT overwrite the snapshot.
         if let Some(session) = app.session_mut(&key) {
             enqueue_prompt(
@@ -1188,13 +1195,72 @@ pub(crate) mod tests {
                 PromptState::from_permission("tc-2".into(), make_permission_request()),
             );
         }
-        snapshot_draft_if_needed(&mut app);
+        snapshot_draft_if_needed(&mut app, &key);
         // Resolve first prompt - queue still has tc-2, draft NOT restored.
         submit_prompt(&mut app);
         assert_eq!(app.input().text(), "", "queue non-empty, draft not yet restored");
         // Resolve second prompt - queue empty, draft restored.
         submit_prompt(&mut app);
         assert_eq!(app.input().text(), "first draft");
+    }
+
+    #[test]
+    fn background_prompt_leaves_the_focused_draft_alone() {
+        let mut app = crate::app::App::test_default();
+        let active = app.active_session_key.clone().expect("session");
+        app.input_mut().set_text("half-typed message");
+
+        let background = forge_workspace::SessionKey::from_session_id("bg");
+        app.sessions
+            .insert(background.clone(), crate::app::session::UiSession::new(background.clone()));
+
+        crate::app::events::apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::PermissionRequest {
+                key: background.clone(),
+                tool_id: "tc-bg".into(),
+                request: make_permission_request(),
+            },
+        );
+
+        assert_eq!(app.input().text(), "half-typed message");
+        assert_eq!(app.sessions.get(&background).expect("bg bucket").prompt_queue.len(), 1);
+        assert!(app.sessions.get(&active).expect("active bucket").prompt_queue.is_empty());
+    }
+
+    #[test]
+    fn a_parked_draft_never_lands_in_another_session() {
+        let mut app = crate::app::App::test_default();
+        let a = app.active_session_key.clone().expect("session");
+        app.input_mut().set_text("session A draft");
+
+        let b = forge_workspace::SessionKey::from_session_id("session-b");
+        app.sessions.insert(b.clone(), crate::app::session::UiSession::new(b.clone()));
+
+        crate::app::events::apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::PermissionRequest {
+                key: a.clone(),
+                tool_id: "tc-a".into(),
+                request: make_permission_request(),
+            },
+        );
+        assert_eq!(app.input().text(), "", "A's dock morphed, so its editor is a fresh slate");
+
+        // The user switches to B, types there, then answers a prompt in B.
+        app.active_session_key = Some(b.clone());
+        app.input_mut().set_text("session B draft");
+        crate::app::events::apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::PermissionRequest {
+                key: b.clone(),
+                tool_id: "tc-b".into(),
+                request: make_permission_request(),
+            },
+        );
+        submit_prompt(&mut app);
+
+        assert_eq!(app.input().text(), "session B draft");
     }
 
     #[test]
@@ -1208,7 +1274,7 @@ pub(crate) mod tests {
                 PromptState::from_permission("tc-1".into(), make_permission_request()),
             );
         }
-        snapshot_draft_if_needed(&mut app);
+        snapshot_draft_if_needed(&mut app, &key);
         cancel_prompt(&mut app);
         assert_eq!(app.input().text(), "partial thought");
     }
