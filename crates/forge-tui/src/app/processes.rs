@@ -616,10 +616,15 @@ fn matched_status<'a>(
     servers.iter().find(|server| strip_plugin_namespace(&server.name) == headline)
 }
 
-/// The dim children under a connected MCP server: the handshake product,
-/// version and tool count, then the backing OS process with its memory and
+/// The dim children under a connected MCP server: the handshake version
+/// and tool count, then the backing OS process with its memory and
 /// pid. `None` when the CLI reported nothing worth a tree, so the caller
 /// keeps the compact single row.
+///
+/// The product name is omitted: at the ~35-col child budget it costs the
+/// whole tool count (`Playwright 1.63.0-alpha-2026-08-05 · 24 tools` is 45
+/// chars and truncates mid-version), and it only ever restates the server
+/// name on the parent row.
 ///
 /// Both borrow [`ProcessKind::Process`] for its dim descendant styling;
 /// only the second one is actually a process.
@@ -630,7 +635,7 @@ fn mcp_tree_children(
 ) -> Option<Vec<ProcessRow>> {
     let mut handshake: Vec<String> = Vec::new();
     if let Some(info) = status.server_info.as_ref() {
-        handshake.push(format!("{} {}", info.name, info.version));
+        handshake.push(info.version.clone());
     }
     if let Some(tools) = status.tools.as_ref() {
         handshake.push(crate::ui::format::tool_summary(tools.len()));
@@ -1403,7 +1408,7 @@ mod tests {
             "playwright-local",
             "npx",
             &["@playwright/mcp@latest"],
-            Some(("playwright-mcp", "0.0.41", 24, "user")),
+            Some(("Playwright", "1.63.0-alpha-2026-08-05", 24, "user")),
         )];
         let rows = rows_from_os_snapshot(&snapshot, &[], &servers);
         assert_eq!(rows.len(), 3, "server + handshake child + process child; got {rows:?}");
@@ -1414,7 +1419,8 @@ mod tests {
         assert!(rows[0].memory_bytes.is_none(), "memory moved to the process child");
         assert_eq!(rows[0].depth, 0);
 
-        assert_eq!(rows[1].headline, "playwright-mcp 0.0.41 \u{00B7} 24 tools");
+        // Version + tool count, no product name - it only restates rows[0].
+        assert_eq!(rows[1].headline, "1.63.0-alpha-2026-08-05 \u{00B7} 24 tools");
         assert_eq!(rows[1].depth, 1);
         assert!(!rows[1].is_last_sibling, "the process child follows it");
 
@@ -1491,6 +1497,44 @@ mod tests {
         let rows = one_server(scopeless);
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].metadata, "MCP server", "never a blank suffix; got {rows:?}");
+    }
+
+    #[test]
+    fn mcp_version_child_drops_each_absent_segment_independently() {
+        // The `status` helper couples handshake + tools + scope, so each case
+        // overrides one field to exercise the segments independently.
+        let base = || {
+            status(
+                "context7",
+                "npx",
+                &["@upstash/context7-mcp"],
+                Some(("Context7", "4.0.0", 2, "user")),
+            )
+        };
+
+        let no_version =
+            one_server(forge_primitives::McpServerStatus { server_info: None, ..base() });
+        assert_eq!(no_version[1].headline, "2 tools", "absent version drops its segment");
+
+        let no_tools = one_server(forge_primitives::McpServerStatus { tools: None, ..base() });
+        assert_eq!(no_tools[1].headline, "4.0.0", "unreported tools are omitted, not zeroed");
+
+        let empty_tools =
+            one_server(forge_primitives::McpServerStatus { tools: Some(Vec::new()), ..base() });
+        assert_eq!(
+            empty_tools[1].headline, "4.0.0 \u{00B7} no tools",
+            "an empty list is a reported fact, unlike None",
+        );
+
+        // Neither reported, but a scope keeps the tree: the version child is
+        // skipped entirely rather than rendering an empty row.
+        let scope_only = one_server(forge_primitives::McpServerStatus {
+            server_info: None,
+            tools: None,
+            ..base()
+        });
+        assert_eq!(scope_only.len(), 2, "server + process child only; got {scope_only:?}");
+        assert_eq!(scope_only[1].pid, Some(300), "the surviving child is the process one");
     }
 
     #[test]
