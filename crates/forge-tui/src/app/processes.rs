@@ -151,9 +151,10 @@ impl ProcessCollection {
 /// Order: registry-fed backgrounded `local_bash` rows the OS scan missed
 /// lead, then the OS walk in DFS pre-order from claude's direct children.
 /// Within each sibling group, rows sort by tier - matched work, then MCP
-/// servers, then generic processes - with `memory_bytes` descending and PID
-/// as the tie-break inside each tier. Final list is capped at
-/// [`PROCESSES_MAX`] for sanity.
+/// servers, then generic processes - with `memory_bytes` descending inside
+/// the matched-work and generic tiers, server name inside the MCP tier, and
+/// PID as the tie-break. Final list is capped at [`PROCESSES_MAX`] for
+/// sanity.
 pub fn collect_active_processes(app: &App) -> ProcessCollection {
     let Some(session) = app.active_session() else {
         return ProcessCollection { rows: Vec::new() };
@@ -320,8 +321,9 @@ fn synthetic_background_bash_row(description: &str, task_type: &str) -> ProcessR
 /// DFS the OS snapshot's process tree from claude's direct children
 /// down, emitting one [`ProcessRow`] per node in pre-order with
 /// correct `depth` + tree-connector metadata. Siblings within each
-/// group are ordered by [`sort_siblings_inplace`] (kind tier, then
-/// memory descending with PID as the stable tie-break).
+/// group are ordered by [`sort_siblings_inplace`] (kind tier, then memory
+/// descending - or server name in the MCP tier - with PID as the stable
+/// tie-break).
 fn rows_from_os_snapshot<'a>(
     snapshot: &'a ProcessSnapshot,
     wire_alive: &'a [&'a ToolCallInfo],
@@ -621,10 +623,9 @@ fn matched_status<'a>(
 /// pid. `None` when the CLI reported nothing worth a tree, so the caller
 /// keeps the compact single row.
 ///
-/// The product name is omitted: at the ~35-col child budget it costs the
-/// whole tool count (`Playwright 1.63.0-alpha-2026-08-05 · 24 tools` is 45
-/// chars and truncates mid-version), and it only ever restates the server
-/// name on the parent row.
+/// The handshake product name is deliberately dropped: it restates the
+/// parent row's name, and at the ~35-col child budget it truncates the tool
+/// count away entirely.
 ///
 /// Both borrow [`ProcessKind::Process`] for its dim descendant styling;
 /// only the second one is actually a process.
@@ -681,6 +682,10 @@ fn mcp_child_row(headline: String, memory_bytes: Option<u64>, pid: Option<u32>) 
 /// so a light MCP server still sorts above a heavier loose process, and
 /// memory only orders within a tier.
 ///
+/// The MCP tier orders by resolved server name instead, because near-equal
+/// steady-state servers visibly swap rows as each ~1 s scan moves their
+/// memory.
+///
 /// `subtree_totals`, when supplied for depth-0 roots, overrides each
 /// entry's sort-memory with its subtree total - so a supervisor sorts
 /// by the same figure it displays (a 2 MB zsh wrapper over a 1 GB
@@ -692,6 +697,7 @@ fn sort_siblings_inplace(
     configured: &[ConfiguredMcpServer],
     subtree_totals: Option<&std::collections::HashMap<u32, u64>>,
 ) {
+    const MCP_TIER: u8 = 1;
     let sort_mem = |e: &ProcessEntry| -> u64 {
         subtree_totals.and_then(|m| m.get(&e.pid).copied()).unwrap_or(e.memory_bytes)
     };
@@ -706,14 +712,24 @@ fn sort_siblings_inplace(
         match wire_match(e, wire_alive) {
             Some(tc) if is_monitor_tool_name(&tc.sdk_tool_name) => 2,
             Some(tc) if is_execute_tool_name(&tc.sdk_tool_name) => 0,
-            _ if resolve_infra_label(&e.command, configured).is_some() => 1,
+            _ if resolve_infra_label(&e.command, configured).is_some() => MCP_TIER,
             _ => 2,
         }
     };
+    // The same resolver the row builder names the row with, so the sorted
+    // order matches what the user reads.
+    let mcp_name = |e: &ProcessEntry| resolve_infra_label(&e.command, configured).map(|l| l.name);
     entries.sort_by(|a, b| {
-        tier(a)
+        let tier_a = tier(a);
+        tier_a
             .cmp(&tier(b))
-            .then_with(|| sort_mem(b).cmp(&sort_mem(a)))
+            .then_with(|| {
+                if tier_a == MCP_TIER {
+                    mcp_name(a).cmp(&mcp_name(b))
+                } else {
+                    sort_mem(b).cmp(&sort_mem(a))
+                }
+            })
             .then_with(|| a.pid.cmp(&b.pid))
     });
 }
@@ -1535,6 +1551,54 @@ mod tests {
         });
         assert_eq!(scope_only.len(), 2, "server + process child only; got {scope_only:?}");
         assert_eq!(scope_only[1].pid, Some(300), "the surviving child is the process one");
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_orders_the_mcp_tier_by_name_not_memory() {
+        // Three real servers within 27 MB of each other: memory descending
+        // reordered them as the ~1 s scan moved those numbers. Memory below is
+        // the exact REVERSE of name order, so a memory sort can't pass by luck.
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                fake_entry(
+                    12949,
+                    "npm",
+                    "npm exec @playwright/mcp@latest --cdp-endpoint http://127.0.0.1:9222",
+                    223 * 1024 * 1024,
+                ),
+                fake_entry(
+                    12801,
+                    "npm",
+                    "npm exec @playwright/mcp@latest --cdp-endpoint http://10.10.2.8:9222",
+                    219 * 1024 * 1024,
+                ),
+                fake_entry(13320, "npm", "npm exec @upstash/context7-mcp", 196 * 1024 * 1024),
+            ],
+        };
+        // No handshake reported, so each server stays a compact single row and
+        // the assertion is about order alone.
+        let servers = vec![
+            status(
+                "playwright-local",
+                "npx",
+                &["@playwright/mcp@latest", "--cdp-endpoint", "http://127.0.0.1:9222"],
+                None,
+            ),
+            status(
+                "playwright",
+                "npx",
+                &["@playwright/mcp@latest", "--cdp-endpoint", "http://10.10.2.8:9222"],
+                None,
+            ),
+            status("context7", "npx", &["@upstash/context7-mcp"], None),
+        ];
+        let rows = rows_from_os_snapshot(&snapshot, &[], &servers);
+        assert_eq!(
+            rows.iter().map(|r| r.headline.as_str()).collect::<Vec<_>>(),
+            vec!["context7", "playwright", "playwright-local"],
+            "MCP tier orders by name; got {rows:?}",
+        );
     }
 
     #[test]
