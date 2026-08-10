@@ -722,14 +722,23 @@ fn apply_mcp_snapshot_presentation(
             let mcp = app.mcp_mut();
             mcp.servers = servers;
             mcp.in_flight = false;
-            mcp.last_error = error;
+            // Only a snapshot carrying its own error overwrites the slot.
+            // A reconnect failure arrives on `handle_mcp_operation_error`,
+            // so a background poll's `error: None` would erase it before
+            // the user has seen it. User-initiated refreshes still clear
+            // it - `refresh_mcp_snapshot` nulls it at request time.
+            if error.is_some() {
+                mcp.last_error = error;
+            }
         }
         app.config.mcp_selected_server_index =
             app.config.mcp_selected_server_index.min(app.mcp().servers.len().saturating_sub(1));
     } else if let Some(session) = app.session_mut(&session_key) {
         session.mcp.servers = servers;
         session.mcp.in_flight = false;
-        session.mcp.last_error = error;
+        if error.is_some() {
+            session.mcp.last_error = error;
+        }
     } else {
         tracing::warn!(
             target: crate::logging::targets::APP_CONFIG,

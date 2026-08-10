@@ -104,8 +104,12 @@ const MCP_SETTLED_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 ///
 /// Unlike [`refresh_mcp_snapshot`] this neither clears `servers` nor
 /// raises `in_flight`, so a background poll can't blank the Inspector's
-/// MCP rows, flash the standalone view's loading line, or wipe the error
-/// from a failed manual reconnect.
+/// MCP rows or flash the standalone view's loading line. Preserving a
+/// failed reconnect's error is the response leg's job, not this one -
+/// see `apply_mcp_snapshot_presentation`.
+///
+/// Reads the active bucket only, so a background session's rows stay as
+/// its connect-time snapshot left them until the user focuses it.
 pub(crate) fn request_mcp_snapshot_if_needed(app: &mut App, now: Instant) {
     let interval = if app
         .mcp()

@@ -1604,6 +1604,15 @@ mod tests {
 
         crate::app::config::request_mcp_snapshot_if_needed(
             &mut app,
+            stamped + std::time::Duration::from_secs(1),
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "the fast cadence must not re-poll inside its own interval"
+        );
+
+        crate::app::config::request_mcp_snapshot_if_needed(
+            &mut app,
             stamped + std::time::Duration::from_secs(3),
         );
 
@@ -1656,6 +1665,70 @@ mod tests {
             Some("reconnect failed"),
             "a background poll must not wipe a user-visible error"
         );
+    }
+
+    /// The reconnect failure arrives on its own channel, so the poll's
+    /// own snapshot carries `error: None` - applying it verbatim erases
+    /// an error the user has not seen yet.
+    #[test]
+    fn background_snapshot_does_not_erase_a_failed_reconnect_error() {
+        let (mut app, _rx, _stamped) =
+            app_after_connect_with_servers(vec![mcp_server_with_status(
+                "playwright",
+                forge_primitives::McpServerConnectionStatus::Connected,
+            )]);
+        app.mcp_mut().last_error = Some("Failed to reconnect MCP server playwright".to_owned());
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::McpSnapshot {
+                session_id: "test-session".into(),
+                servers: vec![mcp_server_with_status(
+                    "playwright",
+                    forge_primitives::McpServerConnectionStatus::Connected,
+                )],
+                error: None,
+            },
+        );
+
+        assert_eq!(
+            app.mcp().last_error.as_deref(),
+            Some("Failed to reconnect MCP server playwright"),
+            "a poll's error: None must not clear a reconnect failure"
+        );
+    }
+
+    #[test]
+    fn an_unchanged_mcp_snapshot_does_not_wake_the_render_loop() {
+        let servers = vec![mcp_server_with_status(
+            "playwright",
+            forge_primitives::McpServerConnectionStatus::Connected,
+        )];
+        let (mut app, _rx, _stamped) = app_after_connect_with_servers(servers.clone());
+        app.needs_redraw = false;
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::McpSnapshot {
+                session_id: "test-session".into(),
+                servers,
+                error: None,
+            },
+        );
+        assert!(!app.needs_redraw, "an identical snapshot changes nothing on screen");
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::McpSnapshot {
+                session_id: "test-session".into(),
+                servers: vec![mcp_server_with_status(
+                    "playwright",
+                    forge_primitives::McpServerConnectionStatus::Failed,
+                )],
+                error: None,
+            },
+        );
+        assert!(app.needs_redraw, "a changed snapshot must still repaint");
     }
 
     #[test]
