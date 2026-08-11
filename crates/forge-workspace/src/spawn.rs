@@ -1268,8 +1268,17 @@ fn reap_worker_branch(repo: &std::path::Path, label: &str) -> Option<String> {
     use forge_agent::env::worktree::BranchReapOutcome;
 
     let branch = format!("worktree-{label}");
-    match forge_agent::env::worktree::reap_worktree_branch(repo, &branch) {
-        BranchReapOutcome::Reaped | BranchReapOutcome::NotPresent => None,
+    let warning = match forge_agent::env::worktree::reap_worktree_branch(repo, &branch) {
+        BranchReapOutcome::Reaped => None,
+        BranchReapOutcome::NotPresent => {
+            tracing::debug!(
+                target: "forge_workspace::spawn",
+                label = %label,
+                branch = %branch,
+                "despawn: no worktree branch to reap"
+            );
+            None
+        }
         BranchReapOutcome::Kept { count, tip } => {
             let plural = if count == 1 { "" } else { "s" };
             Some(format!(
@@ -1286,7 +1295,19 @@ fn reap_worker_branch(repo: &std::path::Path, label: &str) -> Option<String> {
             "branch '{branch}' holds no unique commits, but the delete failed ({reason}). \
              Retry with 'git branch -D {branch}'."
         )),
+    };
+    // The oneshot reply reaches an LLM's tool result and nothing else, so
+    // without this the operator's log has no record of a kept branch.
+    if let Some(warning) = &warning {
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            label = %label,
+            branch = %branch,
+            warning = %warning,
+            "despawn: worktree branch kept"
+        );
     }
+    warning
 }
 
 /// Handle a `Command::DeliverWorkerPrompt`: route a wrapped peer-style
