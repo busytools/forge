@@ -101,7 +101,11 @@ pub enum DespawnResult {
     /// the worker is still gone; only the worktree directory lingers.
     /// Teardown and worktree cleanup are independent: a cleanup failure
     /// never rolls back the kill.
-    Despawned { worktree_cleanup_warning: Option<String> },
+    ///
+    /// `branch_cleanup_warning` is `Some` when the worker's
+    /// `worktree-<label>` branch was left in place - it holds commits
+    /// reachable from no other ref, or the check itself failed.
+    Despawned { worktree_cleanup_warning: Option<String>, branch_cleanup_warning: Option<String> },
     /// Despawn refused: the worktree has uncommitted/untracked changes
     /// or unpushed commits and `force` was not set. Nothing was torn
     /// down; the worker stays live. `reason` names what is dirty.
