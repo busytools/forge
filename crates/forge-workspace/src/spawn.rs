@@ -1282,6 +1282,10 @@ fn reap_worker_branch(repo: &std::path::Path, label: &str) -> Option<String> {
             "branch '{branch}' kept: could not verify it holds no unique commits ({reason}). \
              Check 'git log {branch}' and delete it by hand."
         )),
+        BranchReapOutcome::DeleteFailed { reason } => Some(format!(
+            "branch '{branch}' holds no unique commits, but the delete failed ({reason}). \
+             Retry with 'git branch -D {branch}'."
+        )),
     }
 }
 

@@ -134,9 +134,9 @@ pub fn remove_worktree(path: &Path, force: bool) -> Result<(), WorktreeError> {
     }
 }
 
-/// Outcome of [`reap_worktree_branch`]. `Kept` and `KeptOnError` each
-/// leave a branch behind and the caller warns differently for each;
-/// `NotPresent` warns about nothing.
+/// Outcome of [`reap_worktree_branch`]. `Kept`, `KeptOnError` and
+/// `DeleteFailed` each leave a branch behind and the caller warns
+/// differently for each; `NotPresent` warns about nothing.
 #[derive(Debug, PartialEq, Eq)]
 pub enum BranchReapOutcome {
     /// Deleted. No commit became unreachable.
@@ -149,6 +149,8 @@ pub enum BranchReapOutcome {
     /// The check could not be completed, so whether the branch holds
     /// unique commits is unknown.
     KeptOnError { reason: String },
+    /// The check passed and only the delete failed.
+    DeleteFailed { reason: String },
 }
 
 /// Delete `branch` from the repo at `repo` if no commit would become
@@ -206,8 +208,8 @@ pub fn reap_worktree_branch(repo: &Path, branch: &str) -> BranchReapOutcome {
     // branch whenever HEAD predates the commit it was created from.
     match Command::new("git").args(["branch", "-D", branch]).current_dir(repo).output() {
         Ok(out) if out.status.success() => BranchReapOutcome::Reaped,
-        Ok(out) => BranchReapOutcome::KeptOnError { reason: git_error(&out) },
-        Err(err) => BranchReapOutcome::KeptOnError { reason: err.to_string() },
+        Ok(out) => BranchReapOutcome::DeleteFailed { reason: git_error(&out) },
+        Err(err) => BranchReapOutcome::DeleteFailed { reason: err.to_string() },
     }
 }
 
@@ -526,6 +528,17 @@ mod tests {
             reap_worktree_branch(dir.path(), "worktree-never-existed"),
             BranchReapOutcome::NotPresent
         );
+    }
+
+    #[test]
+    fn a_refused_delete_is_not_reported_as_a_verification_failure() {
+        let (dir, _wt, branch) = init_repo_with_worker_worktree("lbl");
+        let outcome = reap_worktree_branch(dir.path(), &branch);
+        let BranchReapOutcome::DeleteFailed { reason } = outcome else {
+            panic!("a refused delete reports DeleteFailed, got {outcome:?}");
+        };
+        assert!(!reason.is_empty(), "the warning can name git's complaint");
+        assert!(branch_exists(dir.path(), &branch), "the branch survives a refused delete");
     }
 
     #[test]
