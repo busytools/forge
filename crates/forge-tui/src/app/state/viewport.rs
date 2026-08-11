@@ -660,6 +660,14 @@ impl ChatViewport {
         }
     }
 
+    /// Whether the plan holds an anchor no frame has applied yet - teardown
+    /// must respect it, since a near-bottom anchor's readiness gate only opens
+    /// on the frame the plan completes and the one site that applies it runs
+    /// later in that same frame.
+    fn owes_unapplied_anchor(&self) -> bool {
+        self.remeasure_plan.is_some_and(|plan| plan.preserved_scroll_anchor.is_some())
+    }
+
     /// Resume outward remeasurement from the current visible anchor.
     pub fn next_remeasure_index(&mut self, message_count: usize) -> Option<usize> {
         let prioritize_above_for_anchor = self.remeasure_plan.is_some_and(|plan| {
@@ -668,6 +676,7 @@ impl ChatViewport {
                     .preserved_scroll_anchor
                     .is_some_and(|anchor| !self.prefix_is_exact_through(anchor.index))
         });
+        let owes_unapplied_anchor = self.owes_unapplied_anchor();
         let plan = self.remeasure_plan.as_mut()?;
         let choose_above = match (plan.next_above, plan.next_below < message_count) {
             (Some(_), true) if prioritize_above_for_anchor => true,
@@ -679,7 +688,9 @@ impl ChatViewport {
             (Some(_), false) => true,
             (None, true) => false,
             (None, false) => {
-                self.remeasure_plan = None;
+                if !owes_unapplied_anchor {
+                    self.remeasure_plan = None;
+                }
                 return None;
             }
         };
@@ -776,8 +787,11 @@ impl ChatViewport {
         self.message_heights_width = self.width;
         self.measured_message_widths.fill(self.width);
         self.priority_remeasure.clear();
-        self.remeasure_plan = None;
         self.background_convergence_pending = false;
+        if self.owes_unapplied_anchor() {
+            return;
+        }
+        self.remeasure_plan = None;
     }
 
     /// Mark all message heights exact at the current width.

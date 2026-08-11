@@ -1738,6 +1738,39 @@ mod tests {
         );
     }
 
+    /// A width resize must land the reader on the message they were
+    /// reading. The preserved anchor's readiness gate wants every row
+    /// above it exact, which for a near-bottom anchor is only true on
+    /// the frame the whole plan completes - the same frame the plan is
+    /// torn down, taking the anchor with it.
+    #[test]
+    fn width_resize_keeps_the_reader_on_the_same_message() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        // Wide enough to wrap at 40 but not at 80, so the resize
+        // actually moves every height - a fixture whose messages
+        // measure the same at both widths never leaves the anchor
+        // anything to correct.
+        let filler = "w".repeat(55);
+        let history: Vec<ChatMessage> = (0..120)
+            .map(|i| assistant_text_message(&format!("msg {i} {filler}\nsecond {filler}")))
+            .collect();
+        *app.active_messages_mut() = history;
+
+        converge(&mut app, 80, 24);
+        app.active_viewport_mut().scroll_up(30);
+        let _ = first_frame_render(&mut app, 80, 24);
+        let top_before = app.viewport().find_first_visible(app.viewport().scroll_offset);
+
+        converge(&mut app, 40, 24);
+
+        let top_after = app.viewport().find_first_visible(app.viewport().scroll_offset);
+        assert_eq!(
+            top_after, top_before,
+            "resize must keep the same message at the top; jumped {top_before} -> {top_after}",
+        );
+    }
+
     /// Bootstrap of a long session must NOT relocate the O(history)
     /// cost into the first frame: the priority + visible loops should
     /// stop after measuring roughly a viewport-worth of messages, and
