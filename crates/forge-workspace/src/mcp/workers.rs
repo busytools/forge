@@ -218,14 +218,16 @@ fn format_spawn_error(err: &WorkerSpawnError) -> String {
 /// `workers__despawn` - lead-only. Closes a worker by label and cleans
 /// up its git worktree. A clean worktree is removed; a dirty one
 /// (uncommitted/untracked or unpushed commits) blocks the despawn
-/// unless `force`.
+/// unless `force`. The `worktree-<label>` branch behind the worktree is
+/// reaped with it when no commit would become unreachable.
 ///
 /// Arguments:
 /// - `label` (string, required) - the worker to close, from `workers__list`
 /// - `force` (bool, optional, default false) - discard a dirty worktree
 ///
 /// Returns `{ "status": "despawned" }` (optionally with a
-/// `worktree_cleanup_warning`), or `{ "status": "blocked", "reason": ... }`.
+/// `worktree_cleanup_warning` or a `branch_cleanup_warning`), or
+/// `{ "status": "blocked", "reason": ... }`.
 pub(crate) struct Despawn {
     pub(crate) facade: Arc<dyn WorkerFacade>,
     pub(crate) caller_key: CallerKeyResolver,
@@ -255,9 +257,17 @@ impl Tool for Despawn {
          or unpushed commits) BLOCKS the despawn and returns a reason - \
          clean it up (commit + push, or reset) and retry, or pass \
          force=true to tear down and discard the worktree. Nothing is \
-         ever silently discarded. Returns {status:\"despawned\"} (with an \
+         ever silently discarded. The worktree-<label> branch claude \
+         created for the worker is deleted alongside the worktree, but \
+         only when every commit on it is reachable from some other ref - \
+         another branch, a tag, a remote-tracking ref, or a worktree's \
+         HEAD, so a branch \
+         you already pushed still counts as reapable. One carrying \
+         commits that exist nowhere else is left alone and named in a \
+         branch_cleanup_warning. Returns {status:\"despawned\"} (with an \
          optional worktree_cleanup_warning when the worktree removal \
-         itself failed) or {status:\"blocked\", reason}. This is how you \
+         itself failed, and an optional branch_cleanup_warning when the \
+         branch was kept) or {status:\"blocked\", reason}. This is how you \
          PERMANENTLY remove a durable worker: a spawned worker otherwise \
          survives forge restarts and re-spawns automatically, so despawn \
          is what makes it stop coming back. Closing the worker's row in \
@@ -300,13 +310,21 @@ impl Tool for Despawn {
             .despawn_worker(&caller_key, &args.label, args.force.unwrap_or(false))
             .await
         {
-            Ok(DespawnOutcome::Despawned { worktree_cleanup_warning }) => {
+            Ok(DespawnOutcome::Despawned { worktree_cleanup_warning, branch_cleanup_warning }) => {
                 let mut body = serde_json::json!({ "status": "despawned" });
                 if let Some(warning) = worktree_cleanup_warning
                     && let Some(map) = body.as_object_mut()
                 {
                     map.insert(
                         "worktree_cleanup_warning".to_owned(),
+                        serde_json::Value::String(warning),
+                    );
+                }
+                if let Some(warning) = branch_cleanup_warning
+                    && let Some(map) = body.as_object_mut()
+                {
+                    map.insert(
+                        "branch_cleanup_warning".to_owned(),
                         serde_json::Value::String(warning),
                     );
                 }
@@ -1474,6 +1492,35 @@ mod tests {
             serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
         assert_eq!(parsed["status"], "blocked");
         assert!(parsed["reason"].as_str().expect("reason present").contains("unpushed"));
+    }
+
+    /// A kept branch has to reach the caller, so the warning renders as
+    /// its own key on an otherwise successful despawn.
+    #[tokio::test]
+    async fn despawn_surfaces_branch_cleanup_warning() {
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        mock.workers.lock().insert("forge".into(), vec![fake_worker("reviewer", "c")]);
+        *mock.despawn_outcome.lock() = Some(DespawnOutcome::Despawned {
+            worktree_cleanup_warning: None,
+            branch_cleanup_warning: Some("branch 'worktree-reviewer' kept: 2 commits".into()),
+        });
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Despawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output =
+            tool.call(ToolInput { value: serde_json::json!({ "label": "reviewer" }) }).await;
+        assert!(!output.is_error, "a kept branch is not an error: {:?}", output.blocks);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
+        assert_eq!(parsed["status"], "despawned");
+        assert!(
+            parsed["branch_cleanup_warning"]
+                .as_str()
+                .expect("branch warning present")
+                .contains("worktree-reviewer"),
+            "the warning names the branch: {parsed}"
+        );
     }
 
     #[tokio::test]

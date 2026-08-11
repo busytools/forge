@@ -105,7 +105,10 @@ pub enum DespawnOutcome {
     /// Worker torn down. `worktree_cleanup_warning` is `Some` when the
     /// post-teardown `git worktree remove` failed (the worker is still
     /// gone; only the worktree directory lingers).
-    Despawned { worktree_cleanup_warning: Option<String> },
+    /// `branch_cleanup_warning` is `Some` when the `worktree-<label>`
+    /// branch was left in place because it holds commits reachable from
+    /// no other ref, or the check failed.
+    Despawned { worktree_cleanup_warning: Option<String>, branch_cleanup_warning: Option<String> },
     /// Despawn refused: the worktree is dirty (uncommitted/untracked or
     /// unpushed) and `force` was not set. `reason` names what is dirty;
     /// the worker stays live.
@@ -538,8 +541,11 @@ impl WorkerFacade for ProdWorkerFacade {
             });
         }
         match rx.await {
-            Ok(crate::protocol::DespawnResult::Despawned { worktree_cleanup_warning }) => {
-                Ok(DespawnOutcome::Despawned { worktree_cleanup_warning })
+            Ok(crate::protocol::DespawnResult::Despawned {
+                worktree_cleanup_warning,
+                branch_cleanup_warning,
+            }) => {
+                Ok(DespawnOutcome::Despawned { worktree_cleanup_warning, branch_cleanup_warning })
             }
             Ok(crate::protocol::DespawnResult::Blocked { reason }) => {
                 Ok(DespawnOutcome::Blocked { reason })
@@ -730,7 +736,7 @@ pub struct MockWorkerFacade {
     /// Captured `despawn_worker` calls: (caller, label, force).
     pub despawn_calls: parking_lot::Mutex<Vec<(SessionKey, String, bool)>>,
     /// Pre-loaded outcome for `despawn_worker` on a known label. When
-    /// `None`, defaults to `Despawned { worktree_cleanup_warning: None }`.
+    /// `None`, defaults to `Despawned` with neither warning set.
     pub despawn_outcome: parking_lot::Mutex<Option<DespawnOutcome>>,
 }
 
@@ -820,11 +826,10 @@ impl WorkerFacade for MockWorkerFacade {
             });
         }
         self.despawn_calls.lock().push((caller.clone(), label.to_owned(), force));
-        Ok(self
-            .despawn_outcome
-            .lock()
-            .clone()
-            .unwrap_or(DespawnOutcome::Despawned { worktree_cleanup_warning: None }))
+        Ok(self.despawn_outcome.lock().clone().unwrap_or(DespawnOutcome::Despawned {
+            worktree_cleanup_warning: None,
+            branch_cleanup_warning: None,
+        }))
     }
 
     fn list_workers(&self, caller: &SessionKey) -> Vec<WorkerStatus> {

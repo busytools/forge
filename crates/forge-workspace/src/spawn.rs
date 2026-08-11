@@ -1166,11 +1166,10 @@ pub(crate) fn handle_despawn_worker(
     // Resolve the worktree path for git-repo workers (claude's
     // `<project_root>/.claude/worktrees/<label>/`). Non-git workers
     // have no worktree to clean.
+    let project_view = workspace.list_projects().into_iter().find(|v| v.key == *project_key);
     let worktree_path = if entry.is_git_repo_at_spawn {
-        workspace
-            .list_projects()
-            .into_iter()
-            .find(|v| v.key == *project_key)
+        project_view
+            .as_ref()
             .map(|v| crate::mcp::workers::types::worker_tag_dir(&v.path, label, true))
     } else {
         None
@@ -1208,8 +1207,7 @@ pub(crate) fn handle_despawn_worker(
             );
             return None;
         };
-        let Some(name) = workspace.list_projects().into_iter().find(|v| v.key == *project_key).map(|v| v.name)
-        else {
+        let Some(name) = project_view.as_ref().map(|v| v.name.clone()) else {
             tracing::warn!(
                 target: "forge_workspace::spawn",
                 project = %project_key.as_str(),
@@ -1225,6 +1223,7 @@ pub(crate) fn handle_despawn_worker(
     // Worktree cleanup runs AFTER teardown on a verified-clean (or
     // forced) worktree. A failure here is reported but never rolls
     // back the already-completed teardown.
+    let mut branch_cleanup_warning = None;
     let worktree_cleanup_warning = match worktree_path.as_ref() {
         Some(path) => match forge_agent::env::worktree::remove_worktree(path, force) {
             Ok(()) => {
@@ -1232,6 +1231,11 @@ pub(crate) fn handle_despawn_worker(
                     workspace.delete_review_threads(project, branch);
                     workspace.delete_reviews(project, branch);
                 }
+                // Only after a successful removal: while the worktree
+                // stands it holds the branch checked out, and git refuses
+                // to delete a checked-out branch.
+                branch_cleanup_warning =
+                    project_view.as_ref().and_then(|v| reap_worker_branch(&v.path, label));
                 None
             }
             Err(err) => {
@@ -1248,7 +1252,62 @@ pub(crate) fn handle_despawn_worker(
         None => None,
     };
 
-    let _ = respond.send(DespawnResult::Despawned { worktree_cleanup_warning });
+    let _ =
+        respond.send(DespawnResult::Despawned { worktree_cleanup_warning, branch_cleanup_warning });
+}
+
+/// Reap the `worktree-<label>` branch claude creates for a worker's
+/// worktree, which outlives the worktree itself. Returns a warning when
+/// the branch was left in place, `None` when it was deleted or never
+/// existed.
+///
+/// The branch is named by convention, never taken from whatever the
+/// worktree had checked out: a worker that made its own feature branch
+/// has real work on that one, and this must not aim at it.
+fn reap_worker_branch(repo: &std::path::Path, label: &str) -> Option<String> {
+    use forge_agent::env::worktree::BranchReapOutcome;
+
+    let branch = format!("worktree-{label}");
+    let warning = match forge_agent::env::worktree::reap_worktree_branch(repo, &branch) {
+        BranchReapOutcome::Reaped => None,
+        BranchReapOutcome::NotPresent => {
+            tracing::debug!(
+                target: "forge_workspace::spawn",
+                label = %label,
+                branch = %branch,
+                "despawn: no worktree branch to reap"
+            );
+            None
+        }
+        BranchReapOutcome::Kept { count, tip } => {
+            let plural = if count == 1 { "" } else { "s" };
+            Some(format!(
+                "branch '{branch}' kept: {count} commit{plural} reachable from no other ref \
+                 (tip {tip}). Inspect with 'git log -{count} {tip}', then 'git branch -D \
+                 {branch}' once it has landed."
+            ))
+        }
+        BranchReapOutcome::KeptOnError { reason } => Some(format!(
+            "branch '{branch}' kept: could not verify it holds no unique commits ({reason}). \
+             Check 'git log {branch}' and delete it by hand."
+        )),
+        BranchReapOutcome::DeleteFailed { reason } => Some(format!(
+            "branch '{branch}' holds no unique commits, but the delete failed ({reason}). \
+             Retry with 'git branch -D {branch}'."
+        )),
+    };
+    // The oneshot reply reaches an LLM's tool result and nothing else, so
+    // without this the operator's log has no record of a kept branch.
+    if let Some(warning) = &warning {
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            label = %label,
+            branch = %branch,
+            warning = %warning,
+            "despawn: worktree branch kept"
+        );
+    }
+    warning
 }
 
 /// Handle a `Command::DeliverWorkerPrompt`: route a wrapped peer-style
@@ -1900,6 +1959,19 @@ config_dir = "~/.claude-stargate"
         assert!(status.success(), "git {args:?} failed in {dir:?}");
     }
 
+    fn branch_exists(repo: &std::path::Path, branch: &str) -> bool {
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
+            .current_dir(repo)
+            .output()
+            .expect("spawn git");
+        match out.status.code() {
+            Some(0) => true,
+            Some(1) => false,
+            other => panic!("git rev-parse in {repo:?} exited {other:?}, so absence is unproven"),
+        }
+    }
+
     fn fake_git_worker_entry(label: &str, key: &str) -> crate::mcp::workers::types::WorkerEntry {
         let mut entry = fake_worker_entry(label, key);
         entry.is_git_repo_at_spawn = true;
@@ -1921,7 +1993,10 @@ config_dir = "~/.claude-stargate"
         assert!(
             matches!(
                 result,
-                crate::protocol::DespawnResult::Despawned { worktree_cleanup_warning: None }
+                crate::protocol::DespawnResult::Despawned {
+                    worktree_cleanup_warning: None,
+                    branch_cleanup_warning: None,
+                }
             ),
             "non-git worker despawns cleanly: {result:?}"
         );
@@ -1986,17 +2061,30 @@ config_dir = "~/.claude-stargate"
 
         let wt = project_path.join(".claude").join("worktrees").join(label);
         std::fs::create_dir_all(wt.parent().expect("wt parent")).expect("mkdir worktrees");
-        run_git(&project_path, &["worktree", "add", "-q", wt.to_str().expect("utf8 path")]);
+        // `-b worktree-<label>` is what claude's `--worktree <label>` does;
+        // without it git auto-names the branch after the directory and the
+        // reap has nothing matching to find.
+        run_git(
+            &project_path,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                &format!("worktree-{label}"),
+                wt.to_str().expect("utf8 path"),
+            ],
+        );
 
         workspace.insert_live_worker(&project_key, fake_git_worker_entry(label, "worker-1"));
         (workspace, project_key, wt, repo, config)
     }
 
     /// A git worker with a clean worktree despawns AND removes the
-    /// worktree.
+    /// worktree AND reaps the `worktree-<label>` branch behind it.
     #[tokio::test]
     async fn despawn_git_worker_removes_clean_worktree() {
-        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer").await;
+        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer").await;
         assert!(wt.exists(), "worktree exists before despawn");
         let (tx, rx) = tokio::sync::oneshot::channel();
         handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
@@ -2004,12 +2092,99 @@ config_dir = "~/.claude-stargate"
         assert!(
             matches!(
                 result,
-                crate::protocol::DespawnResult::Despawned { worktree_cleanup_warning: None }
+                crate::protocol::DespawnResult::Despawned {
+                    worktree_cleanup_warning: None,
+                    branch_cleanup_warning: None,
+                }
             ),
             "clean git worktree despawns + removes: {result:?}"
         );
         assert!(workspace.list_live_workers(&project_key).is_empty(), "worker removed");
         assert!(!wt.exists(), "clean worktree removed");
+        assert!(
+            !branch_exists(repo.path(), "worktree-reviewer"),
+            "the worktree branch is reaped, not left behind"
+        );
+    }
+
+    /// The despawn keeps a `worktree-<label>` branch the worker committed
+    /// to, and names it in a warning rather than discarding the commits.
+    #[tokio::test]
+    async fn despawn_keeps_a_worktree_branch_holding_unique_commits() {
+        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer").await;
+        std::fs::write(wt.join("work.txt"), "a worker committed here").expect("write work");
+        run_git(&wt, &["add", "."]);
+        run_git(&wt, &["commit", "-q", "-m", "real work"]);
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
+        let result = rx.await.expect("result");
+        let crate::protocol::DespawnResult::Despawned {
+            worktree_cleanup_warning: None,
+            branch_cleanup_warning: Some(warning),
+        } = result
+        else {
+            panic!("despawn succeeds with a branch warning, got {result:?}");
+        };
+        assert!(warning.contains("worktree-reviewer"), "warning names the branch: {warning}");
+        assert!(
+            warning.contains("1 commit reachable"),
+            "warning names the commit count, not just a digit from the sha: {warning}"
+        );
+        assert!(warning.contains("git log"), "warning is executable: {warning}");
+        assert!(!wt.exists(), "the worktree is still removed - the request succeeded");
+        assert!(
+            branch_exists(repo.path(), "worktree-reviewer"),
+            "the branch with unique commits survives"
+        );
+    }
+
+    /// The two quiet arms: nothing to reap says nothing, an unreadable repo
+    /// warns rather than passing for a clean despawn.
+    #[test]
+    fn reap_worker_branch_warns_only_when_it_cannot_verify() {
+        let not_a_repo = tempdir().expect("tempdir");
+        let warning =
+            reap_worker_branch(not_a_repo.path(), "reviewer").expect("an unreadable repo warns");
+        assert!(warning.contains("could not verify"), "names the real cause: {warning}");
+
+        let repo = tempdir().expect("repo tempdir");
+        run_git(repo.path(), &["init", "-q"]);
+        assert!(
+            reap_worker_branch(repo.path(), "reviewer").is_none(),
+            "no such branch is silent, not a spurious warning on every despawn",
+        );
+    }
+
+    /// The reap targets `worktree-<label>` by convention, never whatever the
+    /// worktree has checked out - a worker that made its own branch has real
+    /// work on that one.
+    #[tokio::test]
+    async fn despawn_reaps_the_conventional_branch_not_the_checked_out_one() {
+        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer").await;
+        run_git(&wt, &["checkout", "-q", "-b", "feature-x"]);
+        std::fs::write(wt.join("work.txt"), "the worker's real work").expect("write work");
+        run_git(&wt, &["add", "."]);
+        run_git(&wt, &["commit", "-q", "-m", "real work"]);
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
+        let result = rx.await.expect("result");
+        assert!(
+            matches!(
+                result,
+                crate::protocol::DespawnResult::Despawned {
+                    worktree_cleanup_warning: None,
+                    branch_cleanup_warning: None,
+                }
+            ),
+            "the conventional branch is pristine, so nothing is kept: {result:?}"
+        );
+        assert!(
+            !branch_exists(repo.path(), "worktree-reviewer"),
+            "the conventional branch is reaped"
+        );
+        assert!(branch_exists(repo.path(), "feature-x"), "the worker's own branch survives");
     }
 
     /// Despawning a git worker deletes both the review threads AND the
