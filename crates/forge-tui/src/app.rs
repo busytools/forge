@@ -97,7 +97,7 @@ const SPINNER_FRAME_INTERVAL_REDUCED: Duration = Duration::from_millis(120);
 /// following `[ui] fps`. Its one consumer is not a spinner and does not
 /// scale: the tab-title pulse alternates two glyphs every ten steps, so
 /// driven off a fast repaint rate it reads as flicker rather than
-/// motion. Also the value the repaint gate is floored at, see
+/// motion. Also the coarsest interval the repaint gate can use, see
 /// `forge_workspace::ui::COARSEST_REPAINT_INTERVAL`.
 const PULSE_INTERVAL: Duration = Duration::from_millis(30);
 
