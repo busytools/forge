@@ -4960,7 +4960,7 @@ mod tests {
         let baseline = rail_symbols(0);
         assert!(
             baseline.iter().any(|s| s == "\u{2590}"),
-            "fixture must overflow and actually paint a thumb: {baseline:?}",
+            "fixture must overflow, and the thumb must paint ▐: {baseline:?}",
         );
         // 20 covers any cycle up to that length, including the ten-step
         // shape `tab_title::pulse_char` uses.
