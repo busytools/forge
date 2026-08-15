@@ -42,7 +42,7 @@ const COARSEST_REPAINT_INTERVAL: Duration = Duration::from_millis(30);
 
 /// Accepted `[ui] fps` values. The ceiling is the loop's own structural
 /// limit (it tops out near 212fps in practice, and the on-screen fps
-/// readout clamps its own average at 240); the floor is where
+/// readout clamps its own average at 240); from 33 down,
 /// [`COARSEST_REPAINT_INTERVAL`] takes over.
 const FPS_RANGE: RangeInclusive<u32> = 30..=240;
 
