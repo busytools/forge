@@ -33,12 +33,11 @@ pub struct UiSettings {
 /// Repaint rate when `[ui] fps` is absent.
 const DEFAULT_FPS: u32 = 120;
 
-/// Coarsest interval any `[ui] fps` can produce. Tied to the 30ms step
-/// of the tab-title / scrollbar-thumb pulse counter, which is a wall
-/// -clock counter rather than a clamped animation and so is the one
-/// surface that would actually lose frames to a coarser gate. Spinner
-/// styles need no such protection - they coarsen to fit (see
-/// [`RepaintCadence::effective_cadence_ms`]).
+/// Coarsest interval any `[ui] fps` can produce, matching the 30ms step
+/// of the `App::spinner_frame` pulse counter; it binds only for `fps`
+/// 30-33, holding those at the pre-120fps cadence. No animation depends
+/// on it now, so it reads as removable - but dropping it changes what
+/// `fps = 30` repaints at (busytools/forge#587).
 const COARSEST_REPAINT_INTERVAL: Duration = Duration::from_millis(30);
 
 /// Accepted `[ui] fps` values. The ceiling is the loop's own structural
@@ -64,10 +63,8 @@ impl Default for RepaintCadence {
 
 impl RepaintCadence {
     /// Clamp `fps` into the accepted 30-240 range and convert it to a
-    /// frame interval, warning when the value had to move.
-    ///
-    /// The result never exceeds 30ms, which is what keeps every pulse
-    /// step paintable at any setting.
+    /// frame interval, warning when the value had to move. The result
+    /// never exceeds `COARSEST_REPAINT_INTERVAL`.
     pub fn from_fps(fps: u32) -> Self {
         let clamped = fps.clamp(*FPS_RANGE.start(), *FPS_RANGE.end());
         if clamped != fps {

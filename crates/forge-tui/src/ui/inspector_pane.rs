@@ -60,7 +60,6 @@ use crate::agent::model::ToolCallStatus;
 use crate::app::App;
 use crate::app::AttentionEntry;
 use crate::app::AttentionKind;
-use crate::app::MessageBlock;
 use crate::app::PaneHitTarget;
 use crate::app::TodoStatus;
 use crate::app::processes::{
@@ -457,31 +456,8 @@ fn render_scrollable_body(
     }
 
     // Scrollbar - thumb-only, no rail, painted as a block cell in
-    // `ROLE_ASSISTANT` colour. Animated when work is in flight so
-    // the indicator reads as "alive" vs. a static dot. Matches the
-    // chat scrollbar's visual weight (small thumb) plus a subtle
-    // breathing pulse.
-    let pulse = inspector_thumb_pulse(app);
-    render_inspector_thumb(frame, body_area, total, visible, offset, pulse);
-}
-
-/// Frame index for the inspector thumb's breathing pulse. Wraps to
-/// `None` when the active session has no observable work (no
-/// backgrounded task in the session roster AND no in-progress tool
-/// call), so the thumb sits still during idle periods and only pulses
-/// while something is actually running.
-fn inspector_thumb_pulse(app: &App) -> Option<usize> {
-    let session = app.active_session()?;
-    // Session-scoped so the pulse keeps animating for backgrounded work
-    // that outlives its spawning turn; the turn-scoped alive set is wiped
-    // at the turn boundary while the task keeps running.
-    let has_background_work = session.has_live_background_work();
-    let has_in_progress_tool = session.messages.iter().any(|msg| {
-        msg.blocks.iter().any(|block| {
-            matches!(block, MessageBlock::ToolCall(tc) if tc.status == ToolCallStatus::InProgress)
-        })
-    });
-    (has_background_work || has_in_progress_tool).then_some(app.spinner_frame)
+    // `ROLE_ASSISTANT` to match the chat scrollbar's visual weight.
+    render_inspector_thumb(frame, body_area, total, visible, offset);
 }
 
 /// Paint the inspector body's scroll thumb. Mirrors
@@ -505,7 +481,6 @@ fn render_inspector_thumb(
     total: usize,
     visible: usize,
     offset: u16,
-    pulse: Option<usize>,
 ) {
     let Some(geometry) = crate::app::compute_scrollbar_geometry(total, visible, f32::from(offset))
     else {
@@ -535,7 +510,7 @@ fn render_inspector_thumb(
     let thumb_end = thumb_top.saturating_add(thumb_size).min(area_h);
     let thumb_style = Style::default().fg(theme::ROLE_ASSISTANT);
     let rail_x = body_area.right().saturating_sub(1);
-    let symbol = thumb_symbol(pulse);
+    let symbol = "\u{2590}";
     let buf = frame.buffer_mut();
     for row in thumb_top..thumb_end {
         let y = body_area.y.saturating_add(u16::try_from(row).unwrap_or(u16::MAX));
@@ -543,23 +518,6 @@ fn render_inspector_thumb(
             cell.set_symbol(symbol);
             cell.set_style(thumb_style);
         }
-    }
-}
-
-/// Glyph used for the inspector thumb cell. When `pulse` is `Some`
-/// (work is in flight), cycle through a 4-frame breathing pattern
-/// driven by `App.spinner_frame` so the thumb reads as "alive". When
-/// `pulse` is `None`, stay on the static block glyph the chat
-/// scrollbar uses - same look, no movement.
-fn thumb_symbol(pulse: Option<usize>) -> &'static str {
-    const STATIC_THUMB: &str = "\u{2590}"; // ▐ right half block - chat baseline
-    const THIN_THUMB: &str = "\u{2595}"; // ▕ right one-eighth block - pulse-out frame
-    match pulse {
-        None => STATIC_THUMB,
-        Some(frame) => match frame % 4 {
-            0 | 1 => STATIC_THUMB,
-            _ => THIN_THUMB,
-        },
     }
 }
 
@@ -4955,29 +4913,59 @@ mod tests {
         assert_eq!(attention_detail(&entry, earlier), "question \u{00B7} 0s");
     }
 
+    /// The thumb reports scroll position, not liveness, so its glyph must
+    /// not vary with the pulse counter even for a session whose in-flight
+    /// tool call drives every other live-work surface.
     #[test]
-    fn inspector_thumb_pulse_animates_on_backgrounded_roster_without_turn_state() {
-        let mut app = App::test_default();
-        // No turn-scoped alive task and no in-progress tool - only the
-        // session-scoped roster lists live backgrounded work, exactly the
-        // post-turn-reset state where the pulse used to freeze.
-        *app.background_tasks_mut() = vec![crate::app::BackgroundTask {
-            task_id: "task-bg".to_owned(),
-            task_type: "local_bash".to_owned(),
-            description: "sleep 60".to_owned(),
-        }];
-        assert!(
-            inspector_thumb_pulse(&app).is_some(),
-            "pulse keeps animating while a backgrounded task is in the session roster",
-        );
-    }
+    fn inspector_thumb_symbol_does_not_follow_the_pulse_counter() {
+        use crate::app::{ChatMessage, MessageBlock, MessageRole};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
-    #[test]
-    fn inspector_thumb_pulse_still_when_idle() {
-        let app = App::test_default();
+        let rail_symbols = |spinner_frame: usize| {
+            let mut app = App::test_default();
+            let mut bash = subagent_test_child_info("tu-bash", "Bash", "cargo nextest run");
+            bash.raw_input = Some(serde_json::json!({
+                "command": "cargo nextest run",
+                "description": "Run unit tests",
+                "run_in_background": true,
+            }));
+            bash.status = crate::agent::model::ToolCallStatus::InProgress;
+            app.push_message_tracked(ChatMessage::new(
+                MessageRole::Assistant,
+                vec![MessageBlock::ToolCall(Box::new(bash))],
+            ));
+            app.insert_session_task_mapping("b1".to_owned(), "tu-bash".to_owned());
+            *app.background_tasks_mut() = vec![crate::app::BackgroundTask {
+                task_id: "b1".to_owned(),
+                task_type: "local_bash".to_owned(),
+                description: "Run unit tests".to_owned(),
+            }];
+            app.spinner_frame = spinner_frame;
+
+            let (width, height) = (32u16, 6u16);
+            let mut term = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+            term.draw(|f| render(f, Rect { x: 0, y: 0, width, height }, &mut app, &[]))
+                .expect("draw");
+
+            let body = app.rendered_inspector_body_area;
+            let buffer = term.backend().buffer().clone();
+            let w = usize::from(buffer.area.width);
+            let rail_x = usize::from(body.right().saturating_sub(1));
+            (body.y..body.bottom())
+                .map(|y| buffer.content[usize::from(y) * w + rail_x].symbol().to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        let at_thick_phase = rail_symbols(0);
+        let at_thin_phase = rail_symbols(2);
         assert!(
-            inspector_thumb_pulse(&app).is_none(),
-            "no backgrounded work and no in-progress tool - the thumb sits still",
+            at_thick_phase.iter().any(|s| s == "\u{2590}"),
+            "fixture must overflow and actually paint a thumb: {at_thick_phase:?}",
+        );
+        assert_eq!(
+            at_thin_phase, at_thick_phase,
+            "the thumb glyph must not vary with spinner_frame",
         );
     }
 }

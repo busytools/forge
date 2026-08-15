@@ -94,12 +94,11 @@ use std::time::{Duration, Instant};
 const SPINNER_FRAME_INTERVAL_REDUCED: Duration = Duration::from_millis(120);
 
 /// Step interval for [`App::spinner_frame`], pinned rather than
-/// following `[ui] fps`. Its two consumers are not spinners and do not
-/// scale: the tab-title pulse alternates two glyphs every ten steps and
-/// the inspector scrollbar thumb breathes on a four-step cycle, so past
-/// roughly 15Hz they stop reading as motion and start reading as
-/// flicker. Also the coarsest gate `[ui] fps` may produce, since unlike
-/// a glyph cadence this counter is not clamped to what repaints allow.
+/// following `[ui] fps`. Its one consumer is not a spinner and does not
+/// scale: the tab-title pulse alternates two glyphs every ten steps, so
+/// driven off a fast repaint rate it reads as flicker rather than
+/// motion. Also the value the repaint gate is floored at, see
+/// `forge_workspace::ui::COARSEST_REPAINT_INTERVAL`.
 const PULSE_INTERVAL: Duration = Duration::from_millis(30);
 
 /// Loop wake interval, tightened by [`loop_tick`] above 120fps.
@@ -1345,19 +1344,17 @@ mod tests {
         assert!(any_background_activity(&app), "a Running session spins, so the gate ticks");
     }
 
-    /// The gate must be no coarser than the unclamped animations. Glyph
-    /// styles are not among them - they coarsen to fit, guarded in
-    /// forge-workspace - but the pulse counter steps on wall clock and
-    /// is never clamped, so a coarser gate really would drop its frames.
-    /// Holds at every accepted fps, not just the default, because the
-    /// interval is capped at the pulse step.
+    /// The gate never lands above either pinned step, at every accepted
+    /// fps rather than just the default. Nothing renders off the pulse
+    /// step any more, so that half is held deliberately - see
+    /// busytools/forge#587.
     #[test]
-    fn repaint_gate_covers_every_unclamped_animation() {
+    fn repaint_gate_stays_at_or_under_every_pinned_step() {
         for fps in [30, 60, 90, 120, 240] {
             let repaint = RepaintCadence::from_fps(fps).frame_interval();
             assert!(
                 repaint <= PULSE_INTERVAL,
-                "fps={fps}: a {repaint:?} gate would drop tab-title / thumb frames",
+                "fps={fps}: a {repaint:?} gate is coarser than the pulse step",
             );
         }
         assert!(
