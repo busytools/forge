@@ -579,7 +579,7 @@ mod tests {
     /// braille spinner frame, not the green check. The snapshot pins
     /// the new line shape; the inline assertion below confirms a
     /// braille codepoint appears in the buffer (the actual spinner
-    /// frame varies with `App::spinner_frame`, so we assert the
+    /// frame varies with the spinner epoch, so we assert the
     /// CLASS of glyph rather than a specific char).
     #[test]
     fn render_in_flight_group_l2_shows_spinner_status_icon() {
