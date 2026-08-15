@@ -35,9 +35,9 @@ const DEFAULT_FPS: u32 = 120;
 
 /// Coarsest interval any `[ui] fps` can produce, matching the 30ms step
 /// of the `App::spinner_frame` pulse counter; it binds only for `fps`
-/// 30-33, holding those at the pre-120fps cadence. No animation depends
-/// on it now, so it reads as removable - but dropping it changes what
-/// `fps = 30` repaints at (busytools/forge#587).
+/// 30-33, holding those at the pre-120fps cadence. Nothing would drop
+/// frames without it - spinner styles coarsen to fit - but dropping it
+/// steps `fps` 30-32 on 31-33ms rather than 30ms (busytools/forge#587).
 const COARSEST_REPAINT_INTERVAL: Duration = Duration::from_millis(30);
 
 /// Accepted `[ui] fps` values. The ceiling is the loop's own structural
