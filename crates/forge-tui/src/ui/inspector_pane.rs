@@ -510,7 +510,7 @@ fn render_inspector_thumb(
     let thumb_end = thumb_top.saturating_add(thumb_size).min(area_h);
     let thumb_style = Style::default().fg(theme::ROLE_ASSISTANT);
     let rail_x = body_area.right().saturating_sub(1);
-    let symbol = "\u{2590}";
+    let symbol = "\u{2590}"; // ▐ right half block
     let buf = frame.buffer_mut();
     for row in thumb_top..thumb_end {
         let y = body_area.y.saturating_add(u16::try_from(row).unwrap_or(u16::MAX));
