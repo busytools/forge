@@ -455,8 +455,6 @@ fn render_scrollable_body(
         });
     }
 
-    // Scrollbar - thumb-only, no rail, painted as a block cell in
-    // `ROLE_ASSISTANT` to match the chat scrollbar's visual weight.
     render_inspector_thumb(frame, body_area, total, visible, offset);
 }
 
