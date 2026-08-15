@@ -4957,15 +4957,19 @@ mod tests {
                 .collect::<Vec<_>>()
         };
 
-        let at_thick_phase = rail_symbols(0);
-        let at_thin_phase = rail_symbols(2);
+        let baseline = rail_symbols(0);
         assert!(
-            at_thick_phase.iter().any(|s| s == "\u{2590}"),
-            "fixture must overflow and actually paint a thumb: {at_thick_phase:?}",
+            baseline.iter().any(|s| s == "\u{2590}"),
+            "fixture must overflow and actually paint a thumb: {baseline:?}",
         );
-        assert_eq!(
-            at_thin_phase, at_thick_phase,
-            "the thumb glyph must not vary with spinner_frame",
-        );
+        // 20 covers any cycle up to that length, including the ten-step
+        // shape `tab_title::pulse_char` uses.
+        for frame in 1..=20 {
+            assert_eq!(
+                rail_symbols(frame),
+                baseline,
+                "the thumb glyph must not vary with spinner_frame={frame}",
+            );
+        }
     }
 }
