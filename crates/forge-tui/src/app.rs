@@ -1345,8 +1345,9 @@ mod tests {
     }
 
     /// The gate never lands above either pinned step, at every accepted
-    /// fps rather than just the default. Nothing renders off the pulse
-    /// step any more, so that half is held deliberately - see
+    /// fps rather than just the default. The tab-title pulse is written
+    /// outside the repaint gate, so nothing the gate paints depends on
+    /// the pulse step; that half is held deliberately - see
     /// busytools/forge#587.
     #[test]
     fn repaint_gate_stays_at_or_under_every_pinned_step() {
