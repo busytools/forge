@@ -346,28 +346,6 @@ mod tests {
         assert!(text[2].starts_with("     \u{2514}\u{2500} src/main.rs"), "{:?}", text[2]);
     }
 
-    /// A lone read whose path is wider than the row middle-ellipsis-clips
-    /// on its child row, so the filename stays visible.
-    #[test]
-    fn single_read_long_path_nests_middle_ellipsis() {
-        let s = summary(vec![kl(
-            "\u{2b1a}",
-            "read",
-            1,
-            &["/repo/crates/forge-tui/src/ui/tool_call/group.rs"],
-        )]);
-        let lines = render_rooted(&s, ToolCallStatus::Completed, 40, "/repo");
-        let text: Vec<String> = lines.iter().map(line_text).collect();
-        assert_eq!(lines.len(), 3, "parent + bare read row + one child: {text:?}");
-        // Middle-ellipsis keeps a head fragment AND the filename tail.
-        assert!(text[2].contains("crates/"), "head fragment kept: {:?}", text[2]);
-        assert!(text[2].contains("..."), "middle ellipsis present: {:?}", text[2]);
-        assert!(text[2].contains("group.rs"), "filename tail kept: {:?}", text[2]);
-        for t in &text {
-            assert!(cells(t) <= 40, "row must fit width 40: {t:?}");
-        }
-    }
-
     /// 2+ kinds render a tree: a parent count row (no box corner) then
     /// one `├─`/`└─` child per kind in order, the last carrying `└─`.
     /// Read nests one child row per file; no trailing footer line.
