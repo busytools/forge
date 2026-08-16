@@ -108,7 +108,6 @@ pub struct LayoutRemeasurePlan {
     reason: LayoutRemeasureReason,
     scroll_anchor_index: usize,
     scroll_anchor_offset: usize,
-    preserved_scroll_anchor: Option<PreservedScrollAnchor>,
     priority_start: usize,
     priority_end: usize,
     next_above: Option<usize>,
@@ -121,7 +120,6 @@ impl LayoutRemeasurePlan {
         reason: LayoutRemeasureReason,
         scroll_anchor_index: usize,
         scroll_anchor_offset: usize,
-        preserved_scroll_anchor: Option<PreservedScrollAnchor>,
         priority_start: usize,
         priority_end: usize,
         message_count: usize,
@@ -130,16 +128,10 @@ impl LayoutRemeasurePlan {
         let scroll_anchor_index = scroll_anchor_index.min(last_idx);
         let priority_start = priority_start.min(last_idx);
         let priority_end = priority_end.min(last_idx).max(priority_start);
-        let preserved_scroll_anchor = preserved_scroll_anchor.map(|anchor| PreservedScrollAnchor {
-            reason: anchor.reason,
-            index: anchor.index.min(last_idx),
-            offset: anchor.offset,
-        });
         Self {
             reason,
             scroll_anchor_index,
             scroll_anchor_offset,
-            preserved_scroll_anchor,
             priority_start,
             priority_end,
             next_above: priority_start.checked_sub(1),
@@ -152,14 +144,12 @@ impl LayoutRemeasurePlan {
         reason: LayoutRemeasureReason,
         scroll_anchor_index: usize,
         scroll_anchor_offset: usize,
-        preserved_scroll_anchor: Option<PreservedScrollAnchor>,
         message_count: usize,
     ) -> Self {
         Self::new(
             reason,
             scroll_anchor_index,
             scroll_anchor_offset,
-            preserved_scroll_anchor,
             scroll_anchor_index,
             scroll_anchor_index,
             message_count,
@@ -213,6 +203,9 @@ pub struct ChatViewport {
     priority_remeasure: Vec<usize>,
     /// Visible-first queued remeasurement plan.
     pub remeasure_plan: Option<LayoutRemeasurePlan>,
+    /// Message-local scroll position held across a layout change, owned by the
+    /// viewport rather than the plan so plan teardown cannot discard it.
+    preserved_scroll_anchor: Option<PreservedScrollAnchor>,
     /// True while a `Resize` / `Global` / `MessagesFrom` invalidation
     /// has pending off-screen work that the background re-measure
     /// loop must converge. `MessageChanged` events (single tool /
@@ -261,6 +254,7 @@ impl ChatViewport {
             stale_message_heights: Vec::new(),
             priority_remeasure: Vec::new(),
             remeasure_plan: None,
+            preserved_scroll_anchor: None,
             background_convergence_pending: false,
             height_prefix_sums: Vec::new(),
             prefix_sums_width: 0,
@@ -309,6 +303,7 @@ impl ChatViewport {
             self.prefix_sums_width = 0;
             self.prefix_dirty_from = None;
             self.remeasure_plan = None;
+            self.preserved_scroll_anchor = None;
             self.priority_remeasure.clear();
             self.layout_generation = self.layout_generation.wrapping_add(1);
             return;
@@ -381,14 +376,21 @@ impl ChatViewport {
         if count == 0 {
             self.priority_remeasure.clear();
             self.remeasure_plan = None;
+            self.preserved_scroll_anchor = None;
             self.prefix_dirty_from = None;
             self.height_prefix_sums.clear();
             return;
         }
 
+        let anchor_out_of_range =
+            self.preserved_scroll_anchor.is_some_and(|anchor| anchor.index >= count);
+        if let Some(anchor) = self.preserved_scroll_anchor.as_mut() {
+            anchor.index = anchor.index.min(count.saturating_sub(1));
+        }
+
         if let Some(plan) = self.remeasure_plan
             && (plan.scroll_anchor_index >= count
-                || plan.preserved_scroll_anchor.is_some_and(|anchor| anchor.index >= count)
+                || anchor_out_of_range
                 || plan.priority_start >= count
                 || plan.priority_end >= count
                 || plan.next_below > count)
@@ -397,7 +399,6 @@ impl ChatViewport {
                 plan.reason,
                 plan.scroll_anchor_index.min(count.saturating_sub(1)),
                 plan.scroll_anchor_offset,
-                plan.preserved_scroll_anchor,
                 plan.priority_start.min(count.saturating_sub(1)),
                 plan.priority_end.min(count.saturating_sub(1)),
                 count,
@@ -540,6 +541,7 @@ impl ChatViewport {
     fn schedule_remeasure(&mut self, reason: LayoutRemeasureReason) {
         if self.message_heights.is_empty() {
             self.remeasure_plan = None;
+            self.preserved_scroll_anchor = None;
             return;
         }
         // Convergent invalidations (Resize / Global / MessagesFrom)
@@ -569,24 +571,24 @@ impl ChatViewport {
             _ => reason,
         };
         let (anchor_index, anchor_offset) = self.current_scroll_anchor();
-        let preserved_scroll_anchor = if self.auto_scroll {
-            self.remeasure_plan.and_then(|plan| plan.preserved_scroll_anchor)
-        } else if let Some(anchor) =
-            self.remeasure_plan.and_then(|plan| plan.preserved_scroll_anchor)
-        {
-            Some(anchor)
-        } else {
-            Some(PreservedScrollAnchor {
+        if self.auto_scroll {
+            // Returning to the bottom retires a scrolled-up anchor; without
+            // this it would outlive the position it describes and win over
+            // the fresh arm taken once the reader moves again.
+            if self.remeasure_plan.is_none() {
+                self.preserved_scroll_anchor = None;
+            }
+        } else if self.preserved_scroll_anchor.is_none() {
+            self.preserved_scroll_anchor = Some(PreservedScrollAnchor {
                 reason: effective_reason,
                 index: anchor_index,
                 offset: anchor_offset,
-            })
-        };
+            });
+        }
         self.remeasure_plan = Some(LayoutRemeasurePlan::from_scroll_anchor(
             effective_reason,
             anchor_index,
             anchor_offset,
-            preserved_scroll_anchor,
             self.message_heights.len(),
         ));
     }
@@ -606,6 +608,7 @@ impl ChatViewport {
     ) {
         if self.message_heights.is_empty() {
             self.remeasure_plan = None;
+            self.preserved_scroll_anchor = None;
             return;
         }
 
@@ -614,19 +617,16 @@ impl ChatViewport {
             index: anchor_index.min(self.message_heights.len().saturating_sub(1)),
             offset: anchor_offset,
         };
+        self.preserved_scroll_anchor = Some(anchor);
 
-        if let Some(plan) = self.remeasure_plan.as_mut() {
-            plan.preserved_scroll_anchor = Some(anchor);
-            return;
+        if self.remeasure_plan.is_none() {
+            self.remeasure_plan = Some(LayoutRemeasurePlan::from_scroll_anchor(
+                reason,
+                anchor.index,
+                anchor.offset,
+                self.message_heights.len(),
+            ));
         }
-
-        self.remeasure_plan = Some(LayoutRemeasurePlan::from_scroll_anchor(
-            reason,
-            anchor.index,
-            anchor.offset,
-            Some(anchor),
-            self.message_heights.len(),
-        ));
     }
 
     /// Reset the outward expansion frontiers around the current visible window.
@@ -646,7 +646,6 @@ impl ChatViewport {
             plan.reason,
             plan.scroll_anchor_index,
             plan.scroll_anchor_offset,
-            plan.preserved_scroll_anchor,
             visible_start,
             visible_end,
             message_count,
@@ -660,23 +659,13 @@ impl ChatViewport {
         }
     }
 
-    /// Whether the plan holds an anchor no frame has applied yet - teardown
-    /// must respect it, since a near-bottom anchor's readiness gate only opens
-    /// on the frame the plan completes and the one site that applies it runs
-    /// later in that same frame.
-    fn owes_unapplied_anchor(&self) -> bool {
-        self.remeasure_plan.is_some_and(|plan| plan.preserved_scroll_anchor.is_some())
-    }
-
     /// Resume outward remeasurement from the current visible anchor.
     pub fn next_remeasure_index(&mut self, message_count: usize) -> Option<usize> {
         let prioritize_above_for_anchor = self.remeasure_plan.is_some_and(|plan| {
             matches!(plan.reason, LayoutRemeasureReason::Resize) && plan.next_above.is_some()
-                || plan
-                    .preserved_scroll_anchor
-                    .is_some_and(|anchor| !self.prefix_is_exact_through(anchor.index))
-        });
-        let owes_unapplied_anchor = self.owes_unapplied_anchor();
+        }) || self
+            .preserved_scroll_anchor
+            .is_some_and(|anchor| !self.prefix_is_exact_through(anchor.index));
         let plan = self.remeasure_plan.as_mut()?;
         let choose_above = match (plan.next_above, plan.next_below < message_count) {
             (Some(_), true) if prioritize_above_for_anchor => true,
@@ -688,9 +677,7 @@ impl ChatViewport {
             (Some(_), false) => true,
             (None, true) => false,
             (None, false) => {
-                if !owes_unapplied_anchor {
-                    self.remeasure_plan = None;
-                }
+                self.remeasure_plan = None;
                 return None;
             }
         };
@@ -708,36 +695,28 @@ impl ChatViewport {
     /// Return the preserved scroll anchor that should be restored while remeasure
     /// remains in flight.
     pub fn scroll_anchor_to_restore(&self) -> Option<(usize, usize)> {
-        self.remeasure_plan.and_then(|plan| {
-            plan.preserved_scroll_anchor.map(|anchor| (anchor.index, anchor.offset))
-        })
+        self.preserved_scroll_anchor.map(|anchor| (anchor.index, anchor.offset))
     }
 
     /// Take the preserved scroll anchor once rows above it are exact.
     ///
-    /// One-shot: a plan outlives its anchor's job whenever nothing will
-    /// converge it - an off-screen `MessageChanged` leaves the target
-    /// stale without arming the background loop - and re-applying the
-    /// anchor every frame then reverts each later user scroll.
+    /// One-shot: an off-screen `MessageChanged` leaves its target stale
+    /// without arming the background loop, so an anchor re-applied every
+    /// frame would revert each later user scroll.
     pub fn take_ready_scroll_anchor(&mut self) -> Option<(usize, usize)> {
-        let plan = self.remeasure_plan?;
-        let anchor = plan.preserved_scroll_anchor?;
+        let anchor = self.preserved_scroll_anchor?;
         if !self.prefix_is_exact_through(anchor.index) {
             return None;
         }
-        if let Some(plan) = self.remeasure_plan.as_mut() {
-            plan.preserved_scroll_anchor = None;
-        }
+        self.preserved_scroll_anchor = None;
         Some((anchor.index, anchor.offset))
     }
 
     /// Return the preserved pre-width-resize scroll anchor.
     pub fn resize_scroll_anchor(&self) -> Option<(usize, usize)> {
-        self.remeasure_plan.and_then(|plan| {
-            plan.preserved_scroll_anchor.and_then(|anchor| {
-                (anchor.reason == LayoutRemeasureReason::Resize)
-                    .then_some((anchor.index, anchor.offset))
-            })
+        self.preserved_scroll_anchor.and_then(|anchor| {
+            (anchor.reason == LayoutRemeasureReason::Resize)
+                .then_some((anchor.index, anchor.offset))
         })
     }
 
@@ -788,9 +767,6 @@ impl ChatViewport {
         self.measured_message_widths.fill(self.width);
         self.priority_remeasure.clear();
         self.background_convergence_pending = false;
-        if self.owes_unapplied_anchor() {
-            return;
-        }
         self.remeasure_plan = None;
     }
 
