@@ -24,7 +24,7 @@ pub fn resolve_collapsed_bool(per_item: Option<bool>, global_collapsed: bool) ->
 /// L2 -> L1 -> L0 mouse-click cycle); absent falls through to the
 /// global directive's level-equivalent:
 ///
-/// - `global_collapsed = true`  -> `L2Summary` (one-line summary)
+/// - `global_collapsed = true`  -> `L2Summary` (the summary tree)
 /// - `global_collapsed = false` -> `L0Bodies`  (full bodies)
 ///
 /// `L1Titles` is reachable only via the per-group click cycle, never

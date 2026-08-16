@@ -353,7 +353,8 @@ fn command_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
 /// Group expand level. ctrl+x cycles L2 -> L1 -> L0 -> L2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum GroupCollapseLevel {
-    /// Default: a single summary line.
+    /// Default: the summary tree - a parent count row, a row per kind,
+    /// and a row per target.
     #[default]
     L2Summary,
     /// All individual tool TITLE rows; bodies stay closed.
