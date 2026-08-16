@@ -2140,17 +2140,17 @@ config_dir = "~/.claude-subspace"
         );
     }
 
-    /// The worktree disposition on the latest `Removed` event, or `None`
-    /// when none was emitted.
-    fn drain_removed_disposition(
+    /// Every `Removed` event's worktree disposition, in order, so a
+    /// caller can pin the count as well as the value.
+    fn drain_removed_dispositions(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>,
-    ) -> Option<WorktreeDisposition> {
-        let mut seen = None;
+    ) -> Vec<WorktreeDisposition> {
+        let mut seen = Vec::new();
         while let Ok(update) = rx.try_recv() {
             if let SessionUpdate::WorkerStatusChanged { action, worktree, .. } = update
                 && action == WorkerStatusAction::Removed
             {
-                seen = Some(worktree);
+                seen.push(worktree);
             }
         }
         seen
@@ -2165,7 +2165,7 @@ config_dir = "~/.claude-subspace"
 
         handle_close_worker(&workspace, &project_key, "reviewer");
 
-        assert_eq!(drain_removed_disposition(&mut rx), Some(WorktreeDisposition::Intact));
+        assert_eq!(drain_removed_dispositions(&mut rx), vec![WorktreeDisposition::Intact]);
         assert!(wt.exists(), "the x button does not touch the worktree");
     }
 
@@ -2180,7 +2180,7 @@ config_dir = "~/.claude-subspace"
         handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
         let _ = resp_rx.await.expect("result");
 
-        assert_eq!(drain_removed_disposition(&mut rx), Some(WorktreeDisposition::Removed));
+        assert_eq!(drain_removed_dispositions(&mut rx), vec![WorktreeDisposition::Removed]);
         assert!(!wt.exists(), "the worktree really is gone");
     }
 
@@ -2207,7 +2207,7 @@ config_dir = "~/.claude-subspace"
             "the removal failed: {result:?}"
         );
         assert!(wt.exists(), "the worktree genuinely lingers - that is what the toast claims");
-        assert_eq!(drain_removed_disposition(&mut rx), Some(WorktreeDisposition::RemovalFailed));
+        assert_eq!(drain_removed_dispositions(&mut rx), vec![WorktreeDisposition::RemovalFailed]);
     }
 
     /// A worktree already gone from disk is Removed, whatever git's exit
@@ -2230,7 +2230,7 @@ config_dir = "~/.claude-subspace"
             ),
             "git still reports its own failure to the caller: {result:?}"
         );
-        assert_eq!(drain_removed_disposition(&mut rx), Some(WorktreeDisposition::Removed));
+        assert_eq!(drain_removed_dispositions(&mut rx), vec![WorktreeDisposition::Removed]);
     }
 
     /// The despawn keeps a `worktree-<label>` branch the worker committed
