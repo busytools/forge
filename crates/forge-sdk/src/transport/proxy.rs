@@ -356,7 +356,7 @@ impl HttpHandler for Rewriter {
         // is indistinguishable from native at the endpoint-coverage
         // layer.
         if let Some(stub) = try_local_intercept(&req) {
-            debug!(uri = %req.uri(), "wire-rewriter: local-intercept stub returned");
+            debug!(path = %req.uri().path(), "wire-rewriter: local-intercept stub returned");
             return RequestOrResponse::Response(stub);
         }
         match rewrite_request(req).await {
