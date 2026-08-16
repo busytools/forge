@@ -2018,7 +2018,9 @@ mod tests {
                 project_key: project_key.clone(),
                 action: WorkerStatusAction::Removed,
                 status: entry.to_status(),
-                is_git_repo_at_spawn: entry.is_git_repo_at_spawn,
+                worktree: forge_workspace::protocol::WorktreeDisposition::untouched(
+                    entry.is_git_repo_at_spawn,
+                ),
             },
         );
         assert!(app.needs_redraw, "Removed reducer must request a redraw");

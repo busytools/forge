@@ -2974,13 +2974,13 @@ impl Workspace {
         let cascade_project = cascade_project.map(|view| view.key);
         if let Some(project_key) = cascade_project {
             for entry in self.drain_live_workers(&project_key) {
-                let status = entry.to_status();
-                let is_git_repo_at_spawn = entry.is_git_repo_at_spawn;
+                let worktree =
+                    crate::protocol::WorktreeDisposition::untouched(entry.is_git_repo_at_spawn);
                 let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
                     project_key: project_key.clone(),
                     action: crate::protocol::WorkerStatusAction::Removed,
-                    status,
-                    is_git_repo_at_spawn,
+                    status: entry.to_status(),
+                    worktree,
                 });
                 self.release_session(&entry.session_key);
             }
@@ -3535,7 +3535,7 @@ impl Workspace {
     }
 
     /// Delete the whole review-thread set for `(project, branch)`. Called
-    /// on branch/worktree teardown so an abandoned or merged branch's
+    /// on worktree teardown once the branch itself is gone, so orphaned
     /// threads don't linger.
     pub fn delete_review_threads(&self, project: &str, branch: &str) {
         if let Some(db) = self.db.lock().as_ref()
@@ -3552,8 +3552,8 @@ impl Workspace {
     }
 
     /// Delete the whole review set for `(project, branch)`. Called beside
-    /// [`Self::delete_review_threads`] on branch/worktree teardown so a
-    /// reused branch doesn't inherit phantom reviews.
+    /// [`Self::delete_review_threads`] so a later branch reusing a dead
+    /// one's name doesn't inherit phantom reviews.
     pub fn delete_reviews(&self, project: &str, branch: &str) {
         if let Some(db) = self.db.lock().as_ref()
             && let Err(error) = crate::store::review::delete_reviews(db, project, branch)
@@ -4747,7 +4747,9 @@ impl Workspace {
                 project_key,
                 action: crate::protocol::WorkerStatusAction::Removed,
                 status: entry.to_status(),
-                is_git_repo_at_spawn: entry.is_git_repo_at_spawn,
+                worktree: crate::protocol::WorktreeDisposition::untouched(
+                    entry.is_git_repo_at_spawn,
+                ),
             });
         } else {
             // Non-worktree failure (resume not found, generic
@@ -4910,13 +4912,14 @@ impl Workspace {
                     );
                     let removed = workspace.remove_latest_worker(&project_key, &label);
                     if let Some(entry) = removed {
-                        let status = entry.to_status();
-                        let is_git_repo_at_spawn = entry.is_git_repo_at_spawn;
+                        let worktree = crate::protocol::WorktreeDisposition::untouched(
+                            entry.is_git_repo_at_spawn,
+                        );
                         let _ = workspace.update_tx.send(SessionUpdate::WorkerStatusChanged {
                             project_key,
                             action: crate::protocol::WorkerStatusAction::Removed,
-                            status,
-                            is_git_repo_at_spawn,
+                            status: entry.to_status(),
+                            worktree,
                         });
                     }
                     workspace.release_session(&session_key);
@@ -5028,7 +5031,9 @@ impl Workspace {
                             project_key,
                             action: crate::protocol::WorkerStatusAction::StatusChanged,
                             status,
-                            is_git_repo_at_spawn,
+                            worktree: crate::protocol::WorktreeDisposition::untouched(
+                                is_git_repo_at_spawn,
+                            ),
                         });
                     }
                 }
@@ -5839,7 +5844,7 @@ fn transition_worker_to_running(
             project_key: project_key.clone(),
             action: crate::protocol::WorkerStatusAction::StatusChanged,
             status,
-            is_git_repo_at_spawn,
+            worktree: crate::protocol::WorktreeDisposition::untouched(is_git_repo_at_spawn),
         });
     }
 }
@@ -5905,7 +5910,7 @@ pub(crate) fn transition_worker_to_failed(
             project_key: project_key.clone(),
             action: crate::protocol::WorkerStatusAction::StatusChanged,
             status,
-            is_git_repo_at_spawn,
+            worktree: crate::protocol::WorktreeDisposition::untouched(is_git_repo_at_spawn),
         });
     }
 }
@@ -7431,11 +7436,10 @@ SOLO_TOKEN = "solo-secret"
         );
     }
 
-    /// `teardown_worker` (the shared Projects-pane close + workers__despawn
-    /// routine) drops the worker's durable Gotify subs alongside its
+    /// Closing a worker drops its durable Gotify subs alongside its
     /// dynamic-worker row; the lead's sub survives.
     #[tokio::test]
-    async fn teardown_worker_drops_the_workers_durable_gotify_subs() {
+    async fn closing_a_worker_drops_the_workers_durable_gotify_subs() {
         let (ws, _rx) = Workspace::testing_stub();
         let dir = tempdir().expect("tempdir");
         ws.install_db_for_test(
@@ -7456,7 +7460,7 @@ SOLO_TOKEN = "solo-secret"
         ws.add_gotify_subscription(scratch_sub.clone(), true);
         ws.add_gotify_subscription(lead_sub.clone(), true);
 
-        crate::spawn::teardown_worker(&ws, &view_key, "scratch");
+        crate::spawn::handle_close_worker(&ws, &view_key, "scratch");
 
         let in_mem = ws.gotify_subscriptions_for_project("forge");
         assert!(
@@ -7523,7 +7527,7 @@ SOLO_TOKEN = "solo-secret"
         ws.add_gotify_subscription(scratch_sub.clone(), true);
         ws.add_gotify_subscription(lead_sub.clone(), true);
 
-        crate::spawn::teardown_worker(&ws, &view_key, "scratch");
+        crate::spawn::handle_close_worker(&ws, &view_key, "scratch");
 
         let crons = ws.crons_for_project("forge");
         assert!(
@@ -7578,7 +7582,7 @@ SOLO_TOKEN = "solo-secret"
         reviewer_sub.team_role = Some("reviewer".to_owned());
         ws.add_gotify_subscription(reviewer_sub.clone(), true);
 
-        crate::spawn::teardown_worker(&ws, &view_key, "reviewer");
+        crate::spawn::handle_close_worker(&ws, &view_key, "reviewer");
 
         assert!(
             ws.crons_for_project("forge").iter().any(|c| c.id == reviewer_cron.id),
