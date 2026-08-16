@@ -6,12 +6,12 @@
 //!
 //! Every kind follows one rule: a kind with targets nests one clipped
 //! child row per target (uncapped), so every detail shares a column
-//! whatever the call count; a target-less kind shows a bare row with
-//! `×N`. Nothing wraps - each row is a single line clipped to fit. Read
-//! relativizes its paths against the project root and clips with a
-//! middle-ellipsis (keeps the filename); every other kind clips with an
-//! end-ellipsis (keeps the head - the command name / domain / pattern
-//! start).
+//! whatever the call count; a target-less kind shows a bare row, with
+//! `×N` when called more than once. Nothing wraps - each row is a
+//! single line clipped to fit. Read relativizes its paths against the
+//! project root and clips with a middle-ellipsis (keeps the filename);
+//! every other kind clips with an end-ellipsis (keeps the head - the
+//! command name / domain / pattern start).
 //!
 //! The L1 (title rows) and L0 (full bodies) levels are produced by the
 //! standard per-tool render path threaded with a `force_collapsed`
