@@ -1354,10 +1354,10 @@ mod tests {
 
     /// The leaf rows clip to a computed budget, because the outer
     /// layout char-wraps without the tree gutter and an overflowing row
-    /// shears the tree. The messaging hint is longer than the tool one,
-    /// so the parent row is the tightest case.
+    /// shears the tree. Messaging is the tightest fixture for that, its
+    /// expand hint being longer than the tool one.
     #[test]
-    fn every_row_fits_a_narrow_width() {
+    fn leaf_rows_fit_a_narrow_width() {
         let blocks = vec![
             inbound_block(
                 "Message",
