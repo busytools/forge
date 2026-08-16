@@ -8,10 +8,11 @@
 //! child row per target (uncapped), so every detail shares a column
 //! whatever the call count; a target-less kind shows a bare row, with
 //! `×N` when called more than once. Nothing wraps - each row is a
-//! single line clipped to fit. Read relativizes its paths against the
-//! project root and clips with a middle-ellipsis (keeps the filename);
-//! every other kind clips with an end-ellipsis (keeps the head - the
-//! command name / domain / pattern start).
+//! single line, and the nested target rows are the only ones that clip.
+//! Read relativizes its paths against the project root and clips with
+//! a middle-ellipsis (keeps the filename); every other kind clips with
+//! an end-ellipsis (keeps the head - the command name / domain /
+//! pattern start).
 //!
 //! The L1 (title rows) and L0 (full bodies) levels are produced by the
 //! standard per-tool render path threaded with a `force_collapsed`
@@ -51,7 +52,8 @@ impl SummaryChrome {
 }
 
 /// Absolute floor for a target slot even on extremely narrow chat
-/// areas, so something useful always renders.
+/// areas, so something useful always renders. Below a `max_width` of
+/// 16 the floor beats the fence and a child row can overflow.
 const MIN_TARGET_BUDGET: usize = 8;
 
 /// Render the L2 summary tree for a grouped run (the module doc has the
@@ -85,10 +87,20 @@ pub fn render_group_summary_line(
     ])];
 
     let n = summary.lines.len();
-    let label_w = summary.lines.iter().map(|l| cells(&l.label)).max().unwrap_or(0);
-    // Every row below is clipped to fit `max_width` so the outer message
-    // layout (which char-wraps WITHOUT the tree gutter) never re-wraps a
-    // row and shears the tree - see the module doc / message.rs gotcha.
+    // A `×N` rides only a target-less row called more than once, so
+    // only those labels set the column it pads to.
+    let label_w = summary
+        .lines
+        .iter()
+        .filter(|l| l.targets.is_empty() && l.count > 1)
+        .map(|l| cells(&l.label))
+        .max()
+        .unwrap_or(0);
+    // Of the rows below, only the nested target ones clip, and only to
+    // their own budget - a long kind label overflows at any width. The
+    // outer message layout char-wraps WITHOUT the tree gutter, so an
+    // overflowing row here shears the tree; the parent row above is
+    // exempt because its connectors live on these rows, not on it.
     for (i, line) in summary.lines.iter().enumerate() {
         let last = i + 1 == n;
         let connector = chat_tree::connector(last);
@@ -687,6 +699,61 @@ mod tests {
         let child = line_text(lines.last().unwrap());
         assert!(child.contains("tool"), "bare label expected: {child:?}");
         assert!(!child.contains('\u{d7}'), "no multiplier for a lone call: {child:?}");
+    }
+
+    /// The `×N` column is set by target-less labels alone: a longer
+    /// label on a kind that nests its detail on a child row sits
+    /// nowhere near that column, so it must not push the marker right.
+    #[test]
+    fn multiplier_column_ignores_target_bearing_labels() {
+        let column_of_multiplier = |s: &KindSummary| {
+            let row = render(s, ToolCallStatus::Completed, 80)
+                .iter()
+                .map(line_text)
+                .find(|t| t.contains('\u{d7}'))
+                .expect("a ×N row");
+            let idx = row.find('\u{d7}').expect("the multiplier");
+            cells(&row[..idx])
+        };
+        let alone = summary(vec![kl("\u{2699}", "lsp", 3, &[])]);
+        let mixed = summary(vec![
+            kl("\u{25c8}", "context7", 1, &["query-docs"]),
+            kl("\u{2699}", "lsp", 3, &[]),
+        ]);
+        assert_eq!(
+            column_of_multiplier(&mixed),
+            column_of_multiplier(&alone),
+            "a target-bearing label must not move the ×N column",
+        );
+    }
+
+    /// Two target-less kinds share the `×N` column whatever their label
+    /// widths, and a target-less kind called once renders no `×N`, so
+    /// its label must not widen that column either.
+    #[test]
+    fn multiplier_columns_align_across_target_less_kinds() {
+        let columns = |s: &KindSummary| -> Vec<usize> {
+            render(s, ToolCallStatus::Completed, 80)
+                .iter()
+                .map(line_text)
+                .filter(|t| t.contains('\u{d7}'))
+                .map(|t| cells(&t[..t.find('\u{d7}').expect("the multiplier")]))
+                .collect()
+        };
+        let paired = summary(vec![kl("\u{2699}", "lsp", 3, &[]), kl("\u{25cb}", "tool", 2, &[])]);
+        let with_silent = summary(vec![
+            kl("\u{2699}", "lsp", 3, &[]),
+            kl("\u{2316}", "toolsearch", 1, &[]),
+            kl("\u{25cb}", "tool", 2, &[]),
+        ]);
+        let paired_columns = columns(&paired);
+        assert_eq!(paired_columns.len(), 2, "both kinds carry a ×N");
+        assert_eq!(paired_columns[0], paired_columns[1], "the ×N markers must share a column");
+        assert_eq!(
+            columns(&with_silent),
+            paired_columns,
+            "a target-less kind carrying no ×N must not move the column",
+        );
     }
 
     /// A lone web call (count 1, one target) nests its URL and clips
