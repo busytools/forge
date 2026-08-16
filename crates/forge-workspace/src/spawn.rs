@@ -1076,7 +1076,7 @@ pub(crate) fn handle_spawn_worker(
 /// via `Workspace::expire_inflight_for_closed_worker` so their
 /// caller's LLM receives a `DeliveryFailureNotice` instead of
 /// waiting forever for a reply.
-pub(crate) fn teardown_worker(
+fn teardown_worker(
     workspace: &Arc<Workspace>,
     project_key: &ProjectKey,
     label: &str,

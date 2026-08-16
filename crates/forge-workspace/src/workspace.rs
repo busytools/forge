@@ -7436,11 +7436,10 @@ SOLO_TOKEN = "solo-secret"
         );
     }
 
-    /// `teardown_worker` (the shared Projects-pane close + workers__despawn
-    /// routine) drops the worker's durable Gotify subs alongside its
+    /// Closing a worker drops its durable Gotify subs alongside its
     /// dynamic-worker row; the lead's sub survives.
     #[tokio::test]
-    async fn teardown_worker_drops_the_workers_durable_gotify_subs() {
+    async fn closing_a_worker_drops_the_workers_durable_gotify_subs() {
         let (ws, _rx) = Workspace::testing_stub();
         let dir = tempdir().expect("tempdir");
         ws.install_db_for_test(
@@ -7461,7 +7460,7 @@ SOLO_TOKEN = "solo-secret"
         ws.add_gotify_subscription(scratch_sub.clone(), true);
         ws.add_gotify_subscription(lead_sub.clone(), true);
 
-        crate::spawn::teardown_worker(&ws, &view_key, "scratch");
+        crate::spawn::handle_close_worker(&ws, &view_key, "scratch");
 
         let in_mem = ws.gotify_subscriptions_for_project("forge");
         assert!(
@@ -7528,7 +7527,7 @@ SOLO_TOKEN = "solo-secret"
         ws.add_gotify_subscription(scratch_sub.clone(), true);
         ws.add_gotify_subscription(lead_sub.clone(), true);
 
-        crate::spawn::teardown_worker(&ws, &view_key, "scratch");
+        crate::spawn::handle_close_worker(&ws, &view_key, "scratch");
 
         let crons = ws.crons_for_project("forge");
         assert!(
@@ -7583,7 +7582,7 @@ SOLO_TOKEN = "solo-secret"
         reviewer_sub.team_role = Some("reviewer".to_owned());
         ws.add_gotify_subscription(reviewer_sub.clone(), true);
 
-        crate::spawn::teardown_worker(&ws, &view_key, "reviewer");
+        crate::spawn::handle_close_worker(&ws, &view_key, "reviewer");
 
         assert!(
             ws.crons_for_project("forge").iter().any(|c| c.id == reviewer_cron.id),
