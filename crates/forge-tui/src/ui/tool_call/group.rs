@@ -87,7 +87,15 @@ pub fn render_group_summary_line(
     ])];
 
     let n = summary.lines.len();
-    let label_w = summary.lines.iter().map(|l| cells(&l.label)).max().unwrap_or(0);
+    // Only target-less rows carry a `×N`, so only their labels set the
+    // column it pads to.
+    let label_w = summary
+        .lines
+        .iter()
+        .filter(|l| l.targets.is_empty())
+        .map(|l| cells(&l.label))
+        .max()
+        .unwrap_or(0);
     // Only the nested target rows clip, and only to their own budget;
     // the outer message layout char-wraps WITHOUT the tree gutter, so
     // any row that does overflow `max_width` shears the tree.
@@ -689,6 +697,32 @@ mod tests {
         let child = line_text(lines.last().unwrap());
         assert!(child.contains("tool"), "bare label expected: {child:?}");
         assert!(!child.contains('\u{d7}'), "no multiplier for a lone call: {child:?}");
+    }
+
+    /// The `×N` column is set by target-less labels alone: a longer
+    /// label on a kind that nests its detail on a child row sits
+    /// nowhere near that column, so it must not push the marker right.
+    #[test]
+    fn multiplier_column_ignores_target_bearing_labels() {
+        let column_of_multiplier = |s: &KindSummary| {
+            let row = render(s, ToolCallStatus::Completed, 80)
+                .iter()
+                .map(line_text)
+                .find(|t| t.contains('\u{d7}'))
+                .expect("a ×N row");
+            let idx = row.find('\u{d7}').expect("the multiplier");
+            cells(&row[..idx])
+        };
+        let alone = summary(vec![kl("\u{2699}", "lsp", 3, &[])]);
+        let mixed = summary(vec![
+            kl("\u{25c8}", "context7", 1, &["query-docs"]),
+            kl("\u{2699}", "lsp", 3, &[]),
+        ]);
+        assert_eq!(
+            column_of_multiplier(&mixed),
+            column_of_multiplier(&alone),
+            "a target-bearing label must not move the ×N column",
+        );
     }
 
     /// A lone web call (count 1, one target) nests its URL and clips
