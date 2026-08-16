@@ -126,8 +126,6 @@ pub fn render_group_summary_line(
             continue;
         }
 
-        // Nest: the bare kind row, then one clipped child row per target
-        // (uncapped) one level deeper under the spine.
         lines.push(Line::from(vec![
             Span::raw("  ".to_owned()),
             Span::styled(connector.to_owned(), mark),
