@@ -4,14 +4,14 @@
 //! child per kind, matching the projects-pane connectors + `│` spine so
 //! chat and the side panes read as one tree system.
 //!
-//! Every kind follows one rule: a genuine single call (one call, one
-//! target) rides the kind row inline; a kind with more calls or targets
-//! nests one clipped child row per target (uncapped); a target-less
-//! kind shows a bare row with `×N`. Nothing wraps - each row is a single
-//! line clipped to fit. Read relativizes its paths against the project
-//! root and clips with a middle-ellipsis (keeps the filename); every
-//! other kind clips with an end-ellipsis (keeps the head - the command
-//! name / domain / pattern start).
+//! Every kind follows one rule: a kind with targets nests one clipped
+//! child row per target (uncapped), so every detail shares a column
+//! whatever the call count; a target-less kind shows a bare row with
+//! `×N`. Nothing wraps - each row is a single line clipped to fit. Read
+//! relativizes its paths against the project root and clips with a
+//! middle-ellipsis (keeps the filename); every other kind clips with an
+//! end-ellipsis (keeps the head - the command name / domain / pattern
+//! start).
 //!
 //! The L1 (title rows) and L0 (full bodies) levels are produced by the
 //! standard per-tool render path threaded with a `force_collapsed`
@@ -42,19 +42,12 @@ pub struct SummaryChrome {
     /// NOT a shared constant - the tool hint stays understated by
     /// decision, so sharing one would silently reverse it.
     pub expand_hint: &'static str,
-    /// Tool groups inline a kind holding one call with one target.
-    /// Messaging always nests, so peer names share a column.
-    pub allow_inline: bool,
 }
 
 impl SummaryChrome {
-    pub const TOOL: Self =
-        Self { noun: ("tool call", "tool calls"), expand_hint: EXPAND_HINT, allow_inline: true };
-    pub const MESSAGING: Self = Self {
-        noun: ("message", "messages"),
-        expand_hint: "   click or ctrl+x to expand",
-        allow_inline: false,
-    };
+    pub const TOOL: Self = Self { noun: ("tool call", "tool calls"), expand_hint: EXPAND_HINT };
+    pub const MESSAGING: Self =
+        Self { noun: ("message", "messages"), expand_hint: "   click or ctrl+x to expand" };
 }
 
 /// Absolute floor for a target slot even on extremely narrow chat
@@ -133,26 +126,8 @@ pub fn render_group_summary_line(
             continue;
         }
 
-        // A genuine single (one call, one target) rides the kind row
-        // inline. Guard on BOTH count and target count: an N-call kind
-        // that only resolved one target still nests, so the row never
-        // implies "1 call".
-        if chrome.allow_inline && line.count == 1 && targets.len() == 1 {
-            let prefix_cells = 2 + 3 + cells(line.glyph) + 1 + label_w + 1;
-            let budget = max_width.saturating_sub(prefix_cells).max(MIN_TARGET_BUDGET);
-            lines.push(Line::from(vec![
-                Span::raw("  ".to_owned()),
-                Span::styled(connector.to_owned(), mark),
-                Span::styled(format!("{} ", line.glyph), bold),
-                Span::styled(format!("{} ", pad_right(&line.label, label_w)), bold),
-                Span::styled(clip_target(&targets[0], budget, is_read), dim),
-            ]));
-            continue;
-        }
-
-        // Otherwise nest: the bare kind row, then one clipped child row
-        // per target (uncapped) one level deeper under the spine.
-        let kind_style = if line.warn { bold.fg(theme::STATUS_WARNING) } else { bold };
+        // Nest: the bare kind row, then one clipped child row per target
+        // (uncapped) one level deeper under the spine.
         lines.push(Line::from(vec![
             Span::raw("  ".to_owned()),
             Span::styled(connector.to_owned(), mark),
@@ -357,25 +332,24 @@ mod tests {
         assert!(text.iter().any(|t| t.trim_start().starts_with("\u{2514}\u{2500} c.rs")));
     }
 
-    /// A lone read of ONE file rides the read row inline (no separate
-    /// child row) - the tighter form for the common single-read case.
+    /// A lone read of ONE file nests its file on a child row like every
+    /// other kind, so the file column never depends on the call count.
     #[test]
-    fn single_read_one_file_inlines() {
+    fn single_read_one_file_nests() {
         let s = summary(vec![kl("\u{2b1a}", "read", 1, &["src/main.rs"])]);
         let lines = render(&s, ToolCallStatus::Completed, 80);
         let text: Vec<String> = lines.iter().map(line_text).collect();
-        assert_eq!(lines.len(), 2, "parent + one inline read row; got {text:?}");
+        assert_eq!(lines.len(), 3, "parent + bare read row + one child; got {text:?}");
         assert!(text[0].contains("1 tool call"), "parent count row: {text:?}");
-        assert!(text[1].contains("\u{2514}\u{2500} \u{2b1a} read src/main.rs"), "inline: {text:?}");
+        assert!(text[1].contains("\u{2514}\u{2500} \u{2b1a} read"), "bare read row: {:?}", text[1]);
+        assert!(!text[1].contains("src/main.rs"), "the file nests, not inline: {:?}", text[1]);
+        assert!(text[2].starts_with("     \u{2514}\u{2500} src/main.rs"), "{:?}", text[2]);
     }
 
-    /// A lone read (count 1, one file) whose path is wider than the row
-    /// rides the read row inline AND middle-ellipsis-clips, so the
-    /// filename stays visible. Direct coverage for the inline-read clip
-    /// branch: the nest tests exercise the child-row clip, and the
-    /// short-path inline test never fires the clip.
+    /// A lone read whose path is wider than the row middle-ellipsis-clips
+    /// on its child row, so the filename stays visible.
     #[test]
-    fn single_read_long_path_inlines_middle_ellipsis() {
+    fn single_read_long_path_nests_middle_ellipsis() {
         let s = summary(vec![kl(
             "\u{2b1a}",
             "read",
@@ -384,34 +358,14 @@ mod tests {
         )]);
         let lines = render_rooted(&s, ToolCallStatus::Completed, 40, "/repo");
         let text: Vec<String> = lines.iter().map(line_text).collect();
-        assert_eq!(lines.len(), 2, "parent + one inline read row, no child: {text:?}");
-        assert!(text[1].contains("\u{2514}\u{2500} \u{2b1a} read "), "read inlines: {:?}", text[1]);
+        assert_eq!(lines.len(), 3, "parent + bare read row + one child: {text:?}");
         // Middle-ellipsis keeps a head fragment AND the filename tail.
-        assert!(text[1].contains("crates/"), "head fragment kept: {:?}", text[1]);
-        assert!(text[1].contains("..."), "middle ellipsis present: {:?}", text[1]);
-        assert!(text[1].contains("group.rs"), "filename tail kept: {:?}", text[1]);
+        assert!(text[2].contains("crates/"), "head fragment kept: {:?}", text[2]);
+        assert!(text[2].contains("..."), "middle ellipsis present: {:?}", text[2]);
+        assert!(text[2].contains("group.rs"), "filename tail kept: {:?}", text[2]);
         for t in &text {
             assert!(cells(t) <= 40, "row must fit width 40: {t:?}");
         }
-    }
-
-    /// A read with more CALLS than resolved paths (3 calls, one path
-    /// extracted) must NOT inline as a single file - it nests, so the
-    /// row never implies "1 file" for what was an N-call read.
-    #[test]
-    fn multi_call_read_with_one_resolved_path_nests() {
-        let s = summary(vec![kl("\u{2b1a}", "read", 3, &["src/main.rs"])]);
-        let lines = render(&s, ToolCallStatus::Completed, 80);
-        let text: Vec<String> = lines.iter().map(line_text).collect();
-        // The read row is bare (no inline path); the one file nests below.
-        assert!(
-            text.iter().any(|t| t.contains("\u{2b1a} read") && !t.contains("src/main.rs")),
-            "read row must stay bare (no inline path): {text:?}",
-        );
-        assert!(
-            text.iter().any(|t| t.trim_start().starts_with("\u{2514}\u{2500} src/main.rs")),
-            "the resolved path nests as a child row: {text:?}",
-        );
     }
 
     /// 2+ kinds render a tree: a parent count row (no box corner) then
@@ -426,8 +380,8 @@ mod tests {
         ]);
         let lines = render(&s, ToolCallStatus::Completed, 80);
         let text: Vec<String> = lines.iter().map(line_text).collect();
-        // parent + read parent + 2 read children + bash + web = 6 rows.
-        assert_eq!(lines.len(), 6, "parent + read(+2 files) + bash + web; got {text:?}");
+        // parent + read(+2) + bash(+1) + web(+1) = 8 rows.
+        assert_eq!(lines.len(), 8, "every kind gets a bare row plus children; got {text:?}");
 
         let parent = &text[0];
         assert!(!parent.contains('\u{250c}'), "parent must NOT draw a box corner: {parent:?}");
@@ -440,9 +394,13 @@ mod tests {
         assert!(!text[1].contains("a.rs"), "read files nest, not inline: {:?}", text[1]);
         assert!(text[2].contains("\u{2502}  \u{251c}\u{2500} a.rs"), "{:?}", text[2]);
         assert!(text[3].contains("\u{2502}  \u{2514}\u{2500} b.rs"), "{:?}", text[3]);
-        // Bash (middle) and web (last, `└─`).
-        assert!(text[4].contains("\u{251c}\u{2500} \u{25b6} bash cargo check"), "{:?}", text[4]);
-        assert!(text[5].contains("\u{2514}\u{2500} \u{2295} web"), "{:?}", text[5]);
+        // Bash (middle) and web (last, `└─`) each nest their lone target,
+        // so all three kinds put their detail in the same column.
+        assert!(text[4].contains("\u{251c}\u{2500} \u{25b6} bash"), "{:?}", text[4]);
+        assert!(!text[4].contains("cargo check"), "bash nests, not inline: {:?}", text[4]);
+        assert!(text[5].contains("\u{2502}  \u{2514}\u{2500} cargo check"), "{:?}", text[5]);
+        assert!(text[6].contains("\u{2514}\u{2500} \u{2295} web"), "{:?}", text[6]);
+        assert!(text[7].starts_with("     \u{2514}\u{2500} docs.rs/tokio"), "{:?}", text[7]);
         assert!(!text.last().unwrap().trim_end().ends_with('\u{2514}'), "no bare `└` footer line");
     }
 
@@ -456,13 +414,14 @@ mod tests {
         ]);
         let lines = render(&s, ToolCallStatus::Completed, 80);
         let text: Vec<String> = lines.iter().map(line_text).collect();
-        // parent + bash + read parent + 2 children.
         assert!(text.iter().any(|t| t.contains("\u{2514}\u{2500} \u{2b1a} read")), "{text:?}");
         // Children indent with 5 leading spaces (blank spine), NOT `│`.
         assert!(text.iter().any(|t| t.starts_with("     \u{251c}\u{2500} a.rs")), "{text:?}");
         assert!(text.iter().any(|t| t.starts_with("     \u{2514}\u{2500} b.rs")), "{text:?}");
         assert!(
-            !text.iter().any(|t| t.contains("\u{2502}")),
+            !text
+                .iter()
+                .any(|t| t.contains("\u{2502}") && (t.contains("a.rs") || t.contains("b.rs"))),
             "read-last children must not draw a spine: {text:?}",
         );
     }
@@ -514,26 +473,26 @@ mod tests {
     fn tree_connectors_and_spine_align() {
         let s = summary(vec![
             kl("\u{2b1a}", "read", 1, &["a.rs"]),
-            // A multi-instance bash (not the last kind) nests children
-            // under a `│` spine so the spine row exists to check its
-            // column.
             kl("\u{25b6}", "bash", 3, &["cargo check", "cargo build", "cargo test"]),
             kl("\u{2295}", "web", 1, &["docs.rs/tokio"]),
         ]);
         let lines = render(&s, ToolCallStatus::Completed, 48);
         let col = |glyph: char, text: &str| text.chars().position(|c| c == glyph);
-        // First kind connector `├` at column 2 (the inline read row).
+        // First kind connector `├` at column 2.
         assert_eq!(col('\u{251c}', &line_text(&lines[1])), Some(2), "├ column");
-        // Bash is not the last kind, so its nested children carry a `│`
-        // spine at the same column 2.
+        // A non-last kind's nested children carry a `│` spine at the same
+        // column 2.
         let spine_row = lines
             .iter()
             .map(line_text)
             .find(|t| t.contains('\u{2502}'))
             .expect("a nested non-last kind emits a spine row");
         assert_eq!(col('\u{2502}', &spine_row), Some(2), "│ spine column");
-        // Last kind connector `└` at column 2 (the inline web row).
-        assert_eq!(col('\u{2514}', &line_text(lines.last().unwrap())), Some(2), "└ column");
+        // Last kind connector `└` at column 2 (the web kind row, not its
+        // child - a child's connector sits at column 5).
+        let web_row =
+            lines.iter().map(line_text).find(|t| t.contains('\u{2295}')).expect("a web kind row");
+        assert_eq!(col('\u{2514}', &web_row), Some(2), "└ column");
     }
 
     /// MCP-server lines carry the distinct `◈` glyph and the server
@@ -560,27 +519,23 @@ mod tests {
         assert!(!joined.contains("query-docs, resolve-library-id"), "no comma-join: {joined:?}");
     }
 
-    /// A lone bash (count 1, one target) rides the kind row INLINE and
-    /// CLIPS with an end-ellipsis - the head (command name) is kept, the
-    /// tail dropped, and the row stays a single line that fits the width.
-    /// This is the deliberate flip from the old wrap-to-multiple-rows.
+    /// A lone bash (count 1, one target) nests its command on a child row
+    /// and CLIPS with an end-ellipsis - the head (command name) is kept,
+    /// the tail dropped, and the row stays a single line that fits.
     #[test]
-    fn single_kind_bash_inlines_clipped() {
+    fn single_kind_bash_nests_clipped() {
         let long = "run the full workspace gate including fmt, the unicode-punct lint, \
                     clippy pedantic, nextest and the doc checks";
         let s = summary(vec![kl("\u{25b6}", "bash", 1, &[long])]);
         let lines = render(&s, ToolCallStatus::Completed, 56);
         let text: Vec<String> = lines.iter().map(line_text).collect();
-        assert_eq!(lines.len(), 2, "parent + one inline bash row, no wrap: {text:?}");
+        assert_eq!(lines.len(), 3, "parent + bare bash row + one child, no wrap: {text:?}");
         assert!(text[0].contains("1 tool call"), "parent count row: {:?}", text[0]);
         assert!(text[0].contains("ctrl+x to expand"), "hint on parent row: {:?}", text[0]);
-        assert!(
-            text[1].contains("\u{2514}\u{2500} \u{25b6} bash run"),
-            "inline head: {:?}",
-            text[1]
-        );
-        assert!(text[1].contains("..."), "end-ellipsis clip: {:?}", text[1]);
-        assert!(!text[1].contains("doc checks"), "tail dropped by the clip: {:?}", text[1]);
+        assert!(text[1].contains("\u{2514}\u{2500} \u{25b6} bash"), "bare bash row: {:?}", text[1]);
+        assert!(text[2].starts_with("     \u{2514}\u{2500} run"), "nested head: {:?}", text[2]);
+        assert!(text[2].contains("..."), "end-ellipsis clip: {:?}", text[2]);
+        assert!(!text[2].contains("doc checks"), "tail dropped by the clip: {:?}", text[2]);
         assert!(!text.iter().any(|t| t.contains("= ")), "no `=` marker: {text:?}");
         for t in &text {
             assert!(cells(t) <= 56, "row must fit width 56: {t:?}");
@@ -758,41 +713,36 @@ mod tests {
         assert!(!child.contains('\u{d7}'), "no multiplier for a lone call: {child:?}");
     }
 
-    /// A lone web call (count 1, one target) rides the kind row inline
-    /// and clips end-ellipsis when the URL is wider than the row - the
-    /// head (domain) stays visible, no child row.
+    /// A lone web call (count 1, one target) nests its URL and clips
+    /// end-ellipsis when it is wider than the row - the head (domain)
+    /// stays visible.
     #[test]
-    fn lone_web_inlines_clipped() {
+    fn lone_web_nests_clipped() {
         let long = "docs.rs/tokio/latest/tokio/runtime/struct.Runtime.html#method.block_on";
         let s = summary(vec![kl("\u{2295}", "web", 1, &[long])]);
         let lines = render(&s, ToolCallStatus::Completed, 44);
         let text: Vec<String> = lines.iter().map(line_text).collect();
-        assert_eq!(lines.len(), 2, "parent + one inline web row: {text:?}");
-        assert!(
-            text[1].contains("\u{2514}\u{2500} \u{2295} web docs.rs"),
-            "inline head: {:?}",
-            text[1]
-        );
-        assert!(text[1].contains("..."), "end-ellipsis clip: {:?}", text[1]);
-        assert!(!text[1].contains("block_on"), "tail dropped: {:?}", text[1]);
+        assert_eq!(lines.len(), 3, "parent + bare web row + one child: {text:?}");
+        assert!(text[1].contains("\u{2514}\u{2500} \u{2295} web"), "bare web row: {:?}", text[1]);
+        assert!(text[2].starts_with("     \u{2514}\u{2500} docs.rs"), "nested head: {:?}", text[2]);
+        assert!(text[2].contains("..."), "end-ellipsis clip: {:?}", text[2]);
+        assert!(!text[2].contains("block_on"), "tail dropped: {:?}", text[2]);
         for t in &text {
             assert!(cells(t) <= 44, "row must fit width 44: {t:?}");
         }
     }
 
-    /// A lone MCP call (count 1, one tool sub-name) rides the server row
-    /// inline - no child row.
+    /// A lone MCP call (count 1, one tool sub-name) nests the sub-name
+    /// under the server row, like a server with several calls.
     #[test]
-    fn lone_mcp_inlines() {
+    fn lone_mcp_nests() {
         let s = summary(vec![kl("\u{25c8}", "context7", 1, &["query-docs"])]);
         let lines = render(&s, ToolCallStatus::Completed, 80);
         let text: Vec<String> = lines.iter().map(line_text).collect();
-        assert_eq!(lines.len(), 2, "parent + one inline mcp row: {text:?}");
-        assert!(
-            text[1].contains("\u{2514}\u{2500} \u{25c8} context7 query-docs"),
-            "inline server + tool: {:?}",
-            text[1],
-        );
+        assert_eq!(lines.len(), 3, "parent + bare server row + one child: {text:?}");
+        assert!(text[1].contains("\u{2514}\u{2500} \u{25c8} context7"), "{:?}", text[1]);
+        assert!(!text[1].contains("query-docs"), "tool name nests: {:?}", text[1]);
+        assert!(text[2].starts_with("     \u{2514}\u{2500} query-docs"), "{:?}", text[2]);
     }
 
     /// Multi-instance web and MCP kinds each nest one clipped child per
