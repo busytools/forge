@@ -1276,8 +1276,8 @@ pub(crate) fn handle_despawn_worker(
     };
 
     // Ground-truthed against the directory rather than git's exit code:
-    // removing a path git never registered fails while leaving nothing
-    // behind, and the toast's only claim is what is on disk.
+    // git errors for a path it no longer tracks whether or not the
+    // directory survives, and the toast's only claim is what is on disk.
     let worktree = match (worktree_path.as_ref(), worktree_cleanup_warning.as_ref()) {
         (None, _) => WorktreeDisposition::untouched(entry.is_git_repo_at_spawn),
         (Some(path), Some(_)) if path.exists() => WorktreeDisposition::RemovalFailed,
