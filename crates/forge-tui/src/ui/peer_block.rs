@@ -1352,11 +1352,10 @@ mod tests {
         }
     }
 
-    /// Nothing wraps: every row is one line clipped to a computed
-    /// budget, because the outer layout char-wraps without the tree
-    /// gutter and an overflowing row shears the tree. The messaging
-    /// hint is longer than the tool one, so the parent row is the
-    /// tightest case.
+    /// The leaf rows clip to a computed budget, because the outer
+    /// layout char-wraps without the tree gutter and an overflowing row
+    /// shears the tree. The messaging hint is longer than the tool one,
+    /// so the parent row is the tightest case.
     #[test]
     fn every_row_fits_a_narrow_width() {
         let blocks = vec![

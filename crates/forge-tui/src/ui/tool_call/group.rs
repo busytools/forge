@@ -8,10 +8,11 @@
 //! child row per target (uncapped), so every detail shares a column
 //! whatever the call count; a target-less kind shows a bare row, with
 //! `×N` when called more than once. Nothing wraps - each row is a
-//! single line clipped to fit. Read relativizes its paths against the
-//! project root and clips with a middle-ellipsis (keeps the filename);
-//! every other kind clips with an end-ellipsis (keeps the head - the
-//! command name / domain / pattern start).
+//! single line, and the nested target rows are the only ones that clip.
+//! Read relativizes its paths against the project root and clips with
+//! a middle-ellipsis (keeps the filename); every other kind clips with
+//! an end-ellipsis (keeps the head - the command name / domain /
+//! pattern start).
 //!
 //! The L1 (title rows) and L0 (full bodies) levels are produced by the
 //! standard per-tool render path threaded with a `force_collapsed`
@@ -51,7 +52,8 @@ impl SummaryChrome {
 }
 
 /// Absolute floor for a target slot even on extremely narrow chat
-/// areas, so something useful always renders.
+/// areas, so something useful always renders. Below a `max_width` of
+/// 16 the floor beats the fence and a child row can overflow.
 const MIN_TARGET_BUDGET: usize = 8;
 
 /// Render the L2 summary tree for a grouped run (the module doc has the
@@ -86,9 +88,9 @@ pub fn render_group_summary_line(
 
     let n = summary.lines.len();
     let label_w = summary.lines.iter().map(|l| cells(&l.label)).max().unwrap_or(0);
-    // Every row below is clipped to fit `max_width` so the outer message
-    // layout (which char-wraps WITHOUT the tree gutter) never re-wraps a
-    // row and shears the tree - see the module doc / message.rs gotcha.
+    // Only the nested target rows clip, and only to their own budget;
+    // the outer message layout char-wraps WITHOUT the tree gutter, so
+    // any row that does overflow `max_width` shears the tree.
     for (i, line) in summary.lines.iter().enumerate() {
         let last = i + 1 == n;
         let connector = chat_tree::connector(last);
