@@ -1761,8 +1761,16 @@ mod tests {
         app.active_viewport_mut().scroll_up(30);
         let _ = first_frame_render(&mut app, 80, 24);
         let top_before = app.viewport().find_first_visible(app.viewport().scroll_offset);
+        let rows_above_before = app.viewport().cumulative_height_before(top_before);
 
         converge(&mut app, 40, 24);
+
+        let rows_above_after = app.viewport().cumulative_height_before(top_before);
+        assert_ne!(
+            rows_above_before, rows_above_after,
+            "fixture must re-wrap at 40 so the anchor has real drift to correct; \
+             message {top_before} sat at row {rows_above_before} at both widths",
+        );
 
         let top_after = app.viewport().find_first_visible(app.viewport().scroll_offset);
         assert_eq!(
