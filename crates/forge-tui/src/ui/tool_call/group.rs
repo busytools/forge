@@ -96,9 +96,11 @@ pub fn render_group_summary_line(
         .map(|l| cells(&l.label))
         .max()
         .unwrap_or(0);
-    // Only the nested target rows clip, and only to their own budget;
-    // the outer message layout char-wraps WITHOUT the tree gutter, so
-    // any row that does overflow `max_width` shears the tree.
+    // Of the rows below, only the nested target ones clip, and only to
+    // their own budget - a long kind label overflows at any width. The
+    // outer message layout char-wraps WITHOUT the tree gutter, so an
+    // overflowing row here shears the tree; the parent row above is
+    // exempt because its connectors live on these rows, not on it.
     for (i, line) in summary.lines.iter().enumerate() {
         let last = i + 1 == n;
         let connector = chat_tree::connector(last);
