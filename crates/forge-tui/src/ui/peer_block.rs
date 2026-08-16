@@ -1287,9 +1287,9 @@ mod tests {
         assert!(!rendered[0].contains("inbound from"), "got {rendered:?}");
     }
 
-    /// Always nest, never inline. The tool renderer rides a kind holding
-    /// one call with one target on the kind row itself; here that would
-    /// put peer names at ragged columns with nothing to run the eye down.
+    /// Always nest, never inline: a kind with one message still gets its
+    /// own leaf, so peer names share a column instead of sitting at
+    /// ragged widths.
     #[test]
     fn a_single_message_kind_still_nests_its_leaf() {
         let blocks = vec![

@@ -4,7 +4,8 @@ expression: snapshot
 ---
 Forge · 11.9s
   ✓ 1 tool call   ctrl+x to expand
-  └─ ⌖ toolsearch select:Monitor,TaskStop
+  └─ ⌖ toolsearch
+     └─ select:Monitor,TaskStop
   ✓ Monitor · forge-monitor-test · completed
 
 Monitor armed. Waiting for the three events.
