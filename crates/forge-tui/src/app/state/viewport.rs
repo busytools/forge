@@ -571,7 +571,14 @@ impl ChatViewport {
             _ => reason,
         };
         let (anchor_index, anchor_offset) = self.current_scroll_anchor();
-        if !self.auto_scroll && self.preserved_scroll_anchor.is_none() {
+        if self.auto_scroll {
+            // Returning to the bottom retires a scrolled-up anchor; without
+            // this it would outlive the position it describes and win over
+            // the fresh arm taken once the reader moves again.
+            if self.remeasure_plan.is_none() {
+                self.preserved_scroll_anchor = None;
+            }
+        } else if self.preserved_scroll_anchor.is_none() {
             self.preserved_scroll_anchor = Some(PreservedScrollAnchor {
                 reason: effective_reason,
                 index: anchor_index,

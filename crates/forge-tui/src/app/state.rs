@@ -7719,10 +7719,11 @@ mod tests {
         );
     }
 
-    /// An anchor that outlived its plan must survive a later invalidation
-    /// arriving while the reader is back at the bottom.
+    /// An anchor that outlived its plan describes a position the reader has
+    /// left, so returning to the bottom must retire it rather than let it
+    /// win over the arm taken when they next move.
     #[test]
-    fn viewport_anchor_outliving_its_plan_survives_an_auto_scroll_remeasure() {
+    fn viewport_anchor_outliving_its_plan_is_retired_by_an_auto_scroll_remeasure() {
         let mut vp = ChatViewport::new();
         let _ = vp.on_frame(80, 24);
         vp.sync_message_count(4);
@@ -7756,8 +7757,21 @@ mod tests {
 
         assert_eq!(
             vp.scroll_anchor_to_restore(),
-            Some(anchor),
-            "returning to the bottom must not discard an anchor that outlived its plan",
+            None,
+            "returning to the bottom must retire an anchor that outlived its plan",
+        );
+
+        // Heights are [12, 5, 5, 5], so message 2 starts at row 17.
+        vp.auto_scroll = false;
+        vp.scroll_offset = 18;
+        vp.scroll_target = 18;
+        vp.scroll_pos = 18.0;
+        vp.invalidate_message(2);
+
+        assert_eq!(
+            vp.scroll_anchor_to_restore(),
+            Some((2, 1)),
+            "the next arm must capture where the reader is now, not where they were",
         );
     }
 
