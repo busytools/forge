@@ -137,7 +137,7 @@ pub enum WorktreeDisposition {
     Intact,
     /// The despawn removed it.
     Removed,
-    /// The despawn tried to remove it and failed, so it is still there.
+    /// The despawn's removal failed and the worktree is still on disk.
     RemovalFailed,
 }
 

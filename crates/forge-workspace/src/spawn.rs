@@ -1275,10 +1275,13 @@ pub(crate) fn handle_despawn_worker(
         None => None,
     };
 
+    // Ground-truthed against the directory rather than git's exit code:
+    // removing a path git never registered fails while leaving nothing
+    // behind, and the toast's only claim is what is on disk.
     let worktree = match (worktree_path.as_ref(), worktree_cleanup_warning.as_ref()) {
         (None, _) => WorktreeDisposition::untouched(entry.is_git_repo_at_spawn),
-        (Some(_), None) => WorktreeDisposition::Removed,
-        (Some(_), Some(_)) => WorktreeDisposition::RemovalFailed,
+        (Some(path), Some(_)) if path.exists() => WorktreeDisposition::RemovalFailed,
+        (Some(_), _) => WorktreeDisposition::Removed,
     };
     emit_worker_removed(workspace, project_key, &entry, worktree);
 
@@ -2186,8 +2189,10 @@ config_dir = "~/.claude-subspace"
     #[tokio::test]
     async fn despawn_reports_a_failed_removal_apart_from_a_successful_one() {
         let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer").await;
-        // Make git forget the worktree so its own `remove` errors.
-        run_git(repo.path(), &["worktree", "remove", wt.to_str().expect("utf8 path")]);
+        // Deregister only. `git worktree remove` would also delete the
+        // directory, which is the case that reads as Removed.
+        std::fs::remove_dir_all(repo.path().join(".git").join("worktrees").join("reviewer"))
+            .expect("deregister the worktree");
         let mut rx = workspace.subscribe().expect("subscribe");
 
         let (tx, resp_rx) = tokio::sync::oneshot::channel();
@@ -2201,7 +2206,31 @@ config_dir = "~/.claude-subspace"
             ),
             "the removal failed: {result:?}"
         );
+        assert!(wt.exists(), "the worktree genuinely lingers - that is what the toast claims");
         assert_eq!(drain_removed_disposition(&mut rx), Some(WorktreeDisposition::RemovalFailed));
+    }
+
+    /// A worktree already gone from disk is Removed, whatever git's exit
+    /// code says - the toast's only claim is about the directory.
+    #[tokio::test]
+    async fn despawn_reports_removed_when_the_worktree_is_already_off_disk() {
+        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer").await;
+        run_git(repo.path(), &["worktree", "remove", wt.to_str().expect("utf8 path")]);
+        assert!(!wt.exists(), "nothing on disk before the despawn");
+        let mut rx = workspace.subscribe().expect("subscribe");
+
+        let (tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project_key, "reviewer", true, tx);
+        let result = resp_rx.await.expect("result");
+
+        assert!(
+            matches!(
+                result,
+                crate::protocol::DespawnResult::Despawned { worktree_cleanup_warning: Some(_), .. }
+            ),
+            "git still reports its own failure to the caller: {result:?}"
+        );
+        assert_eq!(drain_removed_disposition(&mut rx), Some(WorktreeDisposition::Removed));
     }
 
     /// The despawn keeps a `worktree-<label>` branch the worker committed
