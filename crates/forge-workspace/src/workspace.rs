@@ -2974,13 +2974,13 @@ impl Workspace {
         let cascade_project = cascade_project.map(|view| view.key);
         if let Some(project_key) = cascade_project {
             for entry in self.drain_live_workers(&project_key) {
-                let status = entry.to_status();
-                let is_git_repo_at_spawn = entry.is_git_repo_at_spawn;
+                let worktree =
+                    crate::protocol::WorktreeDisposition::untouched(entry.is_git_repo_at_spawn);
                 let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
                     project_key: project_key.clone(),
                     action: crate::protocol::WorkerStatusAction::Removed,
-                    status,
-                    is_git_repo_at_spawn,
+                    status: entry.to_status(),
+                    worktree,
                 });
                 self.release_session(&entry.session_key);
             }
@@ -4747,7 +4747,9 @@ impl Workspace {
                 project_key,
                 action: crate::protocol::WorkerStatusAction::Removed,
                 status: entry.to_status(),
-                is_git_repo_at_spawn: entry.is_git_repo_at_spawn,
+                worktree: crate::protocol::WorktreeDisposition::untouched(
+                    entry.is_git_repo_at_spawn,
+                ),
             });
         } else {
             // Non-worktree failure (resume not found, generic
@@ -4910,13 +4912,14 @@ impl Workspace {
                     );
                     let removed = workspace.remove_latest_worker(&project_key, &label);
                     if let Some(entry) = removed {
-                        let status = entry.to_status();
-                        let is_git_repo_at_spawn = entry.is_git_repo_at_spawn;
+                        let worktree = crate::protocol::WorktreeDisposition::untouched(
+                            entry.is_git_repo_at_spawn,
+                        );
                         let _ = workspace.update_tx.send(SessionUpdate::WorkerStatusChanged {
                             project_key,
                             action: crate::protocol::WorkerStatusAction::Removed,
-                            status,
-                            is_git_repo_at_spawn,
+                            status: entry.to_status(),
+                            worktree,
                         });
                     }
                     workspace.release_session(&session_key);
@@ -5028,7 +5031,9 @@ impl Workspace {
                             project_key,
                             action: crate::protocol::WorkerStatusAction::StatusChanged,
                             status,
-                            is_git_repo_at_spawn,
+                            worktree: crate::protocol::WorktreeDisposition::untouched(
+                                is_git_repo_at_spawn,
+                            ),
                         });
                     }
                 }
@@ -5839,7 +5844,7 @@ fn transition_worker_to_running(
             project_key: project_key.clone(),
             action: crate::protocol::WorkerStatusAction::StatusChanged,
             status,
-            is_git_repo_at_spawn,
+            worktree: crate::protocol::WorktreeDisposition::untouched(is_git_repo_at_spawn),
         });
     }
 }
@@ -5905,7 +5910,7 @@ pub(crate) fn transition_worker_to_failed(
             project_key: project_key.clone(),
             action: crate::protocol::WorkerStatusAction::StatusChanged,
             status,
-            is_git_repo_at_spawn,
+            worktree: crate::protocol::WorktreeDisposition::untouched(is_git_repo_at_spawn),
         });
     }
 }

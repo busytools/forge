@@ -125,6 +125,29 @@ pub enum WorkerStatusAction {
     StatusChanged,
 }
 
+/// What has happened to a worker's git worktree as of the
+/// `SessionUpdate::WorkerStatusChanged` event carrying it. Only the
+/// `workers__despawn` path ever removes one, so every other emitter
+/// reports [`Self::untouched`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorktreeDisposition {
+    /// The worker was spawned outside a git repo, so it never had one.
+    Absent,
+    /// On disk and untouched.
+    Intact,
+    /// The despawn removed it.
+    Removed,
+    /// The despawn tried to remove it and failed, so it is still there.
+    RemovalFailed,
+}
+
+impl WorktreeDisposition {
+    /// The disposition when nothing has touched the worktree.
+    pub fn untouched(is_git_repo_at_spawn: bool) -> Self {
+        if is_git_repo_at_spawn { Self::Intact } else { Self::Absent }
+    }
+}
+
 /// Command envelope: forge-tui -> forge-workspace.
 ///
 /// Every variant carries a `SessionKey` identifying the target
@@ -663,16 +686,15 @@ pub enum SessionUpdate {
     /// TUI reducer updates the projects pane's tree-children based on
     /// `action`. `status` is the snapshot at the moment of the change
     /// (relevant for Added and StatusChanged; ignored for Removed but
-    /// carried for symmetry). `is_git_repo_at_spawn` is the worker's
-    /// cached "was the project a git repo at spawn time" flag - the
-    /// TUI's close-toast formatter reads it on `Removed` events
-    /// (after which the `WorkerEntry` is gone from `live_workers`,
-    /// so a lookup-by-label would fail).
+    /// carried for symmetry). `worktree` is what has become of the
+    /// worker's worktree - the TUI's close-toast formatter reads it on
+    /// `Removed` events (after which the `WorkerEntry` is gone from
+    /// `live_workers`, so a lookup-by-label would fail).
     WorkerStatusChanged {
         project_key: crate::ProjectKey,
         action: WorkerStatusAction,
         status: forge_primitives::WorkerStatus,
-        is_git_repo_at_spawn: bool,
+        worktree: WorktreeDisposition,
     },
     /// A peer-coordination envelope arrived at session `session_id`.
     /// Carries the typed `WrappedPrompt` so the TUI reducer can build
@@ -878,12 +900,12 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("key", key)
                 .field("stats", stats)
                 .finish(),
-            Self::WorkerStatusChanged { project_key, action, status, is_git_repo_at_spawn } => f
+            Self::WorkerStatusChanged { project_key, action, status, worktree } => f
                 .debug_struct("WorkerStatusChanged")
                 .field("project_key", project_key)
                 .field("action", action)
                 .field("label", &status.label)
-                .field("is_git_repo_at_spawn", is_git_repo_at_spawn)
+                .field("worktree", worktree)
                 .finish_non_exhaustive(),
             Self::PeerEnvelopeAppended { session_id, wrapped } => f
                 .debug_struct("PeerEnvelopeAppended")
@@ -958,7 +980,7 @@ mod workers_command_tests {
                 spawned_by_session_id: "lead-uuid".into(),
                 diagnostic: None,
             },
-            is_git_repo_at_spawn: true,
+            worktree: WorktreeDisposition::Intact,
         };
     }
 }

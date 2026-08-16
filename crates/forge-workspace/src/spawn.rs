@@ -20,7 +20,9 @@ use crate::domain_session::DomainSession;
 use crate::mcp::gotify::types::GotifyNotification;
 use crate::mcp::peers::facade::PeerStatsDelta;
 use crate::mcp::peers::types::WrappedPrompt;
-use crate::protocol::{Command, SessionUpdate, WorkerSpawnReply, WorkerStatusAction};
+use crate::protocol::{
+    Command, SessionUpdate, WorkerSpawnReply, WorkerStatusAction, WorktreeDisposition,
+};
 use crate::target::ProjectKey;
 use crate::team::load_lead_charter_or_default;
 use crate::workspace::Workspace;
@@ -976,7 +978,7 @@ pub(crate) fn handle_spawn_worker(
             project_key: project_key.clone(),
             action: WorkerStatusAction::Added,
             status: entry.to_status(),
-            is_git_repo_at_spawn: entry.is_git_repo_at_spawn,
+            worktree: WorktreeDisposition::untouched(entry.is_git_repo_at_spawn),
         },
     );
 
@@ -1047,7 +1049,7 @@ pub(crate) fn handle_spawn_worker(
                         project_key,
                         action: WorkerStatusAction::Removed,
                         status: rolled.to_status(),
-                        is_git_repo_at_spawn: rolled.is_git_repo_at_spawn,
+                        worktree: WorktreeDisposition::untouched(rolled.is_git_repo_at_spawn),
                     },
                 );
             }
@@ -1060,10 +1062,14 @@ pub(crate) fn handle_spawn_worker(
 /// X-button) and `handle_despawn_worker` (the `workers__despawn` MCP
 /// tool): remove the latest-spawned worker matching `label` from
 /// `live_workers[project_key]`, release its session (terminates the
-/// claude subprocess on drop), expire its inflight asks, and emit a
-/// `Removed` status event. Returns the removed `WorkerEntry`, or
-/// `None` when no live worker matched. JSONL on disk is NOT deleted -
-/// teardown only removes the in-memory live state.
+/// claude subprocess on drop), and expire its inflight asks. Returns
+/// the removed `WorkerEntry`, or `None` when no live worker matched.
+/// JSONL on disk is NOT deleted - teardown only removes the in-memory
+/// live state.
+///
+/// The `Removed` event is the caller's to emit via
+/// [`emit_worker_removed`]: the despawn path only learns what became
+/// of the worktree after this returns.
 ///
 /// Worker-bound asks whose `target_project` composite
 /// (`<project_key>::<label>`) names the torn-down worker are expired
@@ -1093,8 +1099,6 @@ pub(crate) fn teardown_worker(
         workspace.remove_gotify_subscriptions_for_worker(project_key, label);
         workspace.delete_crons_for_worker(project_key, label);
     }
-    let status = entry.to_status();
-    let is_git_repo_at_spawn = entry.is_git_repo_at_spawn;
     // MUST call the non-cascading `release_session` primitive (NOT
     // `release_session_with_cascade`). By the time we get here the
     // worker is already gone from `live_workers` (via
@@ -1105,13 +1109,23 @@ pub(crate) fn teardown_worker(
     // affect the single worker being closed.
     workspace.release_session(&entry.session_key);
     workspace.expire_inflight_for_closed_worker(project_key, label);
+    Some(entry)
+}
+
+/// Announce a torn-down worker to the TUI, carrying what became of its
+/// worktree for the close toast to state.
+fn emit_worker_removed(
+    workspace: &Arc<Workspace>,
+    project_key: &ProjectKey,
+    entry: &crate::mcp::workers::types::WorkerEntry,
+    worktree: WorktreeDisposition,
+) {
     let _ = workspace.update_tx().send(SessionUpdate::WorkerStatusChanged {
         project_key: project_key.clone(),
         action: WorkerStatusAction::Removed,
-        status,
-        is_git_repo_at_spawn,
+        status: entry.to_status(),
+        worktree,
     });
-    Some(entry)
 }
 
 /// Handle a `Command::CloseWorker` (the TUI per-row X-button): tear
@@ -1123,14 +1137,17 @@ pub(crate) fn handle_close_worker(
     project_key: &ProjectKey,
     label: &str,
 ) {
-    if teardown_worker(workspace, project_key, label).is_none() {
+    let Some(entry) = teardown_worker(workspace, project_key, label) else {
         tracing::warn!(
             target: "forge_workspace::spawn",
             project = %project_key.as_str(),
             label = %label,
             "handle_close_worker: no matching live worker"
         );
-    }
+        return;
+    };
+    let worktree = WorktreeDisposition::untouched(entry.is_git_repo_at_spawn);
+    emit_worker_removed(workspace, project_key, &entry, worktree);
 }
 
 /// Handle a `Command::DespawnWorker` (the `workers__despawn` MCP
@@ -1188,10 +1205,10 @@ pub(crate) fn handle_despawn_worker(
     // Teardown (kills the subprocess on drop). The single-threaded
     // command loop means nothing mutated `live_workers` between the
     // peek above and here, but re-checking the removal is defensive.
-    if teardown_worker(workspace, project_key, label).is_none() {
+    let Some(entry) = teardown_worker(workspace, project_key, label) else {
         let _ = respond.send(DespawnResult::NotFound);
         return;
-    }
+    };
 
     // Resolve the torn-down worktree's `(project name, branch)` while
     // the path still exists, so its persisted review threads can be
@@ -1251,6 +1268,13 @@ pub(crate) fn handle_despawn_worker(
         },
         None => None,
     };
+
+    let worktree = match (worktree_path.as_ref(), worktree_cleanup_warning.as_ref()) {
+        (None, _) => WorktreeDisposition::untouched(entry.is_git_repo_at_spawn),
+        (Some(_), None) => WorktreeDisposition::Removed,
+        (Some(_), Some(_)) => WorktreeDisposition::RemovalFailed,
+    };
+    emit_worker_removed(workspace, project_key, &entry, worktree);
 
     let _ =
         respond.send(DespawnResult::Despawned { worktree_cleanup_warning, branch_cleanup_warning });
@@ -2105,6 +2129,73 @@ config_dir = "~/.claude-subspace"
             !branch_exists(repo.path(), "worktree-reviewer"),
             "the worktree branch is reaped, not left behind"
         );
+    }
+
+    /// The worktree disposition on the latest `Removed` event, or `None`
+    /// when none was emitted.
+    fn drain_removed_disposition(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>,
+    ) -> Option<WorktreeDisposition> {
+        let mut seen = None;
+        while let Ok(update) = rx.try_recv() {
+            if let SessionUpdate::WorkerStatusChanged { action, worktree, .. } = update
+                && action == WorkerStatusAction::Removed
+            {
+                seen = Some(worktree);
+            }
+        }
+        seen
+    }
+
+    /// The `x` button leaves the worktree on disk, so its event still
+    /// reports it intact.
+    #[tokio::test]
+    async fn close_worker_reports_the_worktree_intact() {
+        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer").await;
+        let mut rx = workspace.subscribe().expect("subscribe");
+
+        handle_close_worker(&workspace, &project_key, "reviewer");
+
+        assert_eq!(drain_removed_disposition(&mut rx), Some(WorktreeDisposition::Intact));
+        assert!(wt.exists(), "the x button does not touch the worktree");
+    }
+
+    /// A despawn that removed the worktree says so on the event the
+    /// close toast is built from.
+    #[tokio::test]
+    async fn despawn_reports_the_worktree_removed() {
+        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer").await;
+        let mut rx = workspace.subscribe().expect("subscribe");
+
+        let (tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
+        let _ = resp_rx.await.expect("result");
+
+        assert_eq!(drain_removed_disposition(&mut rx), Some(WorktreeDisposition::Removed));
+        assert!(!wt.exists(), "the worktree really is gone");
+    }
+
+    /// A despawn whose removal FAILED leaves the worktree behind, and the
+    /// event separates that from a successful removal.
+    #[tokio::test]
+    async fn despawn_reports_a_failed_removal_apart_from_a_successful_one() {
+        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer").await;
+        // Make git forget the worktree so its own `remove` errors.
+        run_git(repo.path(), &["worktree", "remove", wt.to_str().expect("utf8 path")]);
+        let mut rx = workspace.subscribe().expect("subscribe");
+
+        let (tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project_key, "reviewer", true, tx);
+        let result = resp_rx.await.expect("result");
+
+        assert!(
+            matches!(
+                result,
+                crate::protocol::DespawnResult::Despawned { worktree_cleanup_warning: Some(_), .. }
+            ),
+            "the removal failed: {result:?}"
+        );
+        assert_eq!(drain_removed_disposition(&mut rx), Some(WorktreeDisposition::RemovalFailed));
     }
 
     /// The despawn keeps a `worktree-<label>` branch the worker committed

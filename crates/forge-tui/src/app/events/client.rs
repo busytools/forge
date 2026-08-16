@@ -279,7 +279,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 &message,
             );
         }
-        SessionUpdate::WorkerStatusChanged { action, status, is_git_repo_at_spawn, .. } => {
+        SessionUpdate::WorkerStatusChanged { action, status, worktree, .. } => {
             // Workspace owns the authoritative live_workers map; the
             // projects-pane renderer reads from `workspace.list_live_workers`
             // each frame so a redraw covers Added / StatusChanged.
@@ -287,8 +287,8 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             // the worker's spawning-lead session (not the focused one,
             // so a despawn can't leak its toast across projects;
             // dropped when that lead isn't live here) so the operator
-            // knows the worker is gone and, for git-repo workers, that
-            // the worktree is preserved on disk. Removed ALSO drops the
+            // knows the worker is gone and what became of its worktree.
+            // Removed ALSO drops the
             // worker's UiSession bucket from `app.sessions` and, when
             // it was the active session, falls back to the worker's
             // spawning lead (or any other live session) - without
@@ -297,10 +297,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             // worker, so the chat view renders the dead worker's
             // history instead of the lead's.
             if matches!(action, forge_workspace::protocol::WorkerStatusAction::Removed) {
-                let toast = crate::ui::worker_status::format_close_toast(
-                    &status.label,
-                    is_git_repo_at_spawn,
-                );
+                let toast = crate::ui::worker_status::format_close_toast(&status.label, worktree);
                 let lead_key = SessionKey::from_session_id(status.spawned_by_session_id.clone());
                 super::push_system_message_to_session(
                     app,
@@ -1186,6 +1183,8 @@ fn apply_session_update_key_renamed(app: &mut App, from: &SessionKey, to: Sessio
 
 #[cfg(test)]
 mod tests {
+    use forge_workspace::protocol::WorktreeDisposition;
+
     use super::*;
     use crate::app::session::UiSession;
 
@@ -2232,9 +2231,12 @@ mod tests {
     }
 
     /// Helper: build a `WorkerStatusChanged { Removed }` event with
-    /// the given label + git-repo flag for the worker-close-toast
+    /// the given label + worktree disposition for the worker-close-toast
     /// tests.
-    fn worker_removed_event(label: &str, is_git_repo_at_spawn: bool) -> SessionUpdate {
+    fn worker_removed_event(
+        label: &str,
+        worktree: forge_workspace::protocol::WorktreeDisposition,
+    ) -> SessionUpdate {
         SessionUpdate::WorkerStatusChanged {
             project_key: forge_workspace::ProjectKey::new_for_test("forge"),
             action: forge_workspace::protocol::WorkerStatusAction::Removed,
@@ -2247,7 +2249,7 @@ mod tests {
                 spawned_by_session_id: "lead-uuid".to_owned(),
                 diagnostic: None,
             },
-            is_git_repo_at_spawn,
+            worktree,
         }
     }
 
@@ -2271,7 +2273,10 @@ mod tests {
             .insert(lead_key.clone(), crate::app::session::UiSession::new(lead_key.clone()));
         let before = app.sessions.get(&lead_key).expect("lead bucket").messages.len();
 
-        apply_session_update(&mut app, worker_removed_event("reviewer", true));
+        apply_session_update(
+            &mut app,
+            worker_removed_event("reviewer", WorktreeDisposition::Intact),
+        );
 
         let bucket = app.sessions.get(&lead_key).expect("lead bucket");
         assert!(bucket.messages.len() > before, "Removed event should push a system-message toast");
@@ -2291,7 +2296,7 @@ mod tests {
         app.sessions
             .insert(lead_key.clone(), crate::app::session::UiSession::new(lead_key.clone()));
 
-        apply_session_update(&mut app, worker_removed_event("notes", false));
+        apply_session_update(&mut app, worker_removed_event("notes", WorktreeDisposition::Absent));
 
         let bucket = app.sessions.get(&lead_key).expect("lead bucket");
         let toast = chat_message_text(bucket.messages.last().expect("toast message present"));
@@ -2317,7 +2322,10 @@ mod tests {
         let lead_before = app.sessions.get(&lead_key).expect("lead bucket").messages.len();
         let focused_before = app.sessions.get(&focused_key).expect("focused bucket").messages.len();
 
-        apply_session_update(&mut app, worker_removed_event("reviewer", false));
+        apply_session_update(
+            &mut app,
+            worker_removed_event("reviewer", WorktreeDisposition::Absent),
+        );
 
         let lead = app.sessions.get(&lead_key).expect("lead bucket");
         assert!(
@@ -2344,7 +2352,10 @@ mod tests {
         // No `lead-uuid` bucket: the worker's owning project isn't open here.
         let active_before = app.sessions.get(&active_key).expect("active bucket").messages.len();
 
-        apply_session_update(&mut app, worker_removed_event("reviewer", true));
+        apply_session_update(
+            &mut app,
+            worker_removed_event("reviewer", WorktreeDisposition::Intact),
+        );
 
         assert_eq!(
             app.sessions.get(&active_key).expect("active bucket").messages.len(),
@@ -2365,7 +2376,10 @@ mod tests {
             .insert(worker_key.clone(), crate::app::session::UiSession::new(worker_key.clone()));
         assert!(app.sessions.contains_key(&worker_key));
 
-        apply_session_update(&mut app, worker_removed_event("reviewer", true));
+        apply_session_update(
+            &mut app,
+            worker_removed_event("reviewer", WorktreeDisposition::Intact),
+        );
 
         assert!(
             !app.sessions.contains_key(&worker_key),
@@ -2386,7 +2400,10 @@ mod tests {
             .insert(worker_key.clone(), crate::app::session::UiSession::new(worker_key.clone()));
         app.active_session_key = Some(worker_key.clone());
 
-        apply_session_update(&mut app, worker_removed_event("reviewer", true));
+        apply_session_update(
+            &mut app,
+            worker_removed_event("reviewer", WorktreeDisposition::Intact),
+        );
 
         assert_eq!(
             app.active_session_key.as_ref(),
@@ -2410,7 +2427,10 @@ mod tests {
             .insert(worker_key.clone(), crate::app::session::UiSession::new(worker_key.clone()));
         app.active_session_key = Some(worker_key.clone());
 
-        apply_session_update(&mut app, worker_removed_event("reviewer", true));
+        apply_session_update(
+            &mut app,
+            worker_removed_event("reviewer", WorktreeDisposition::Intact),
+        );
 
         assert_ne!(
             app.active_session_key.as_ref(),
@@ -2438,7 +2458,10 @@ mod tests {
             .insert(worker_key.clone(), crate::app::session::UiSession::new(worker_key.clone()));
         app.active_session_key = Some(lead_key.clone());
 
-        apply_session_update(&mut app, worker_removed_event("reviewer", true));
+        apply_session_update(
+            &mut app,
+            worker_removed_event("reviewer", WorktreeDisposition::Intact),
+        );
 
         assert_eq!(
             app.active_session_key.as_ref(),
