@@ -288,14 +288,13 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             // so a despawn can't leak its toast across projects;
             // dropped when that lead isn't live here) so the operator
             // knows the worker is gone and what became of its worktree.
-            // Removed ALSO drops the
-            // worker's UiSession bucket from `app.sessions` and, when
-            // it was the active session, falls back to the worker's
-            // spawning lead (or any other live session) - without
-            // this cleanup the bucket lingers with stale chat data
-            // and `active_session_key` keeps pointing at the released
-            // worker, so the chat view renders the dead worker's
-            // history instead of the lead's.
+            // Removed ALSO drops the worker's UiSession bucket from
+            // `app.sessions` and, when it was the active session, falls
+            // back to the worker's spawning lead (or any other live
+            // session) - without this cleanup the bucket lingers with
+            // stale chat data and `active_session_key` keeps pointing at
+            // the released worker, so the chat view renders the dead
+            // worker's history instead of the lead's.
             if matches!(action, forge_workspace::protocol::WorkerStatusAction::Removed) {
                 let toast = crate::ui::worker_status::format_close_toast(&status.label, worktree);
                 let lead_key = SessionKey::from_session_id(status.spawned_by_session_id.clone());
