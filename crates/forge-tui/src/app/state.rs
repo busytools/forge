@@ -7685,6 +7685,40 @@ mod tests {
         assert_eq!(vp.take_ready_scroll_anchor(), Some(anchor));
     }
 
+    /// The anchor is viewport state, not plan state: a teardown site added
+    /// later must not be able to discard it.
+    #[test]
+    fn viewport_preserved_anchor_outlives_plan_teardown() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        for idx in 0..4 {
+            vp.set_message_height(idx, 5);
+        }
+        vp.mark_heights_valid();
+        vp.rebuild_prefix_sums();
+
+        vp.auto_scroll = false;
+        vp.scroll_offset = 7;
+        vp.scroll_target = 7;
+        vp.scroll_pos = 7.0;
+
+        vp.invalidate_message(0);
+        let anchor =
+            vp.scroll_anchor_to_restore().expect("a manual-scroll invalidation arms an anchor");
+
+        vp.set_message_height(0, 12);
+        vp.mark_message_height_measured(0);
+        vp.finalize_remeasure_if_clean();
+
+        assert!(!vp.remeasure_active(), "teardown must actually clear the plan");
+        assert_eq!(
+            vp.scroll_anchor_to_restore(),
+            Some(anchor),
+            "the anchor must outlive the plan that happened to be open when it was armed",
+        );
+    }
+
     #[test]
     fn viewport_prioritizes_rows_above_preserved_anchor_until_restore_is_exact() {
         let mut vp = ChatViewport::new();
