@@ -213,6 +213,21 @@ pub fn reap_worktree_branch(repo: &Path, branch: &str) -> BranchReapOutcome {
     }
 }
 
+/// Whether `branch` resolves in the repo at `repo`. A repo git cannot
+/// read answers `true`, so a caller cleaning up on absence never
+/// discards state it failed to inspect.
+pub fn branch_ref_exists(repo: &Path, branch: &str) -> bool {
+    let refname = format!("refs/heads/{branch}");
+    match Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", &refname])
+        .current_dir(repo)
+        .output()
+    {
+        Ok(out) => out.status.code() != Some(1),
+        Err(_) => true,
+    }
+}
+
 /// git's stderr, or its exit status when it said nothing.
 fn git_error(out: &std::process::Output) -> String {
     let stderr = String::from_utf8_lossy(&out.stderr).trim().to_owned();
@@ -550,6 +565,22 @@ mod tests {
                 BranchReapOutcome::KeptOnError { .. }
             ),
             "a repo we cannot read is never treated as a branch that does not exist",
+        );
+    }
+
+    #[test]
+    fn branch_ref_exists_separates_present_from_absent() {
+        let (dir, _wt, branch) = init_repo_with_worker_worktree("lbl");
+        assert!(branch_ref_exists(dir.path(), &branch));
+        assert!(!branch_ref_exists(dir.path(), "never-created"));
+    }
+
+    #[test]
+    fn branch_ref_exists_reads_an_unreadable_repo_as_present() {
+        let dir = tempdir().expect("tempdir");
+        assert!(
+            branch_ref_exists(dir.path(), "worktree-lbl"),
+            "a repo we cannot read must not read as a branch that is gone",
         );
     }
 }

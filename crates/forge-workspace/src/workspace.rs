@@ -3535,7 +3535,7 @@ impl Workspace {
     }
 
     /// Delete the whole review-thread set for `(project, branch)`. Called
-    /// on branch/worktree teardown so an abandoned or merged branch's
+    /// on worktree teardown once the branch itself is gone, so orphaned
     /// threads don't linger.
     pub fn delete_review_threads(&self, project: &str, branch: &str) {
         if let Some(db) = self.db.lock().as_ref()
@@ -3552,8 +3552,8 @@ impl Workspace {
     }
 
     /// Delete the whole review set for `(project, branch)`. Called beside
-    /// [`Self::delete_review_threads`] on branch/worktree teardown so a
-    /// reused branch doesn't inherit phantom reviews.
+    /// [`Self::delete_review_threads`] so a later branch reusing a dead
+    /// one's name doesn't inherit phantom reviews.
     pub fn delete_reviews(&self, project: &str, branch: &str) {
         if let Some(db) = self.db.lock().as_ref()
             && let Err(error) = crate::store::review::delete_reviews(db, project, branch)
