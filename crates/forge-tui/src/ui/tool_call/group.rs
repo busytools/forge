@@ -87,12 +87,12 @@ pub fn render_group_summary_line(
     ])];
 
     let n = summary.lines.len();
-    // Only target-less rows carry a `×N`, so only their labels set the
-    // column it pads to.
+    // A `×N` rides only a target-less row called more than once, so
+    // only those labels set the column it pads to.
     let label_w = summary
         .lines
         .iter()
-        .filter(|l| l.targets.is_empty())
+        .filter(|l| l.targets.is_empty() && l.count > 1)
         .map(|l| cells(&l.label))
         .max()
         .unwrap_or(0);
@@ -725,21 +725,33 @@ mod tests {
         );
     }
 
-    /// Two target-less kinds share the `×N` column whatever their
-    /// label widths - the alignment the pad exists for, and the one a
-    /// single target-less kind cannot demonstrate.
+    /// Two target-less kinds share the `×N` column whatever their label
+    /// widths, and a target-less kind called once renders no `×N`, so
+    /// its label must not widen that column either.
     #[test]
     fn multiplier_columns_align_across_target_less_kinds() {
-        let s = summary(vec![kl("\u{2699}", "lsp", 3, &[]), kl("\u{25cb}", "tool", 2, &[])]);
-        let rows: Vec<String> = render(&s, ToolCallStatus::Completed, 80)
-            .iter()
-            .map(line_text)
-            .filter(|t| t.contains('\u{d7}'))
-            .collect();
-        assert_eq!(rows.len(), 2, "both kinds carry a ×N: {rows:?}");
-        let columns: Vec<usize> =
-            rows.iter().map(|t| cells(&t[..t.find('\u{d7}').expect("the multiplier")])).collect();
-        assert_eq!(columns[0], columns[1], "the ×N markers must share a column: {rows:?}");
+        let columns = |s: &KindSummary| -> Vec<usize> {
+            render(s, ToolCallStatus::Completed, 80)
+                .iter()
+                .map(line_text)
+                .filter(|t| t.contains('\u{d7}'))
+                .map(|t| cells(&t[..t.find('\u{d7}').expect("the multiplier")]))
+                .collect()
+        };
+        let paired = summary(vec![kl("\u{2699}", "lsp", 3, &[]), kl("\u{25cb}", "tool", 2, &[])]);
+        let with_silent = summary(vec![
+            kl("\u{2699}", "lsp", 3, &[]),
+            kl("\u{2316}", "toolsearch", 1, &[]),
+            kl("\u{25cb}", "tool", 2, &[]),
+        ]);
+        let paired_columns = columns(&paired);
+        assert_eq!(paired_columns.len(), 2, "both kinds carry a ×N");
+        assert_eq!(paired_columns[0], paired_columns[1], "the ×N markers must share a column");
+        assert_eq!(
+            columns(&with_silent),
+            paired_columns,
+            "a target-less kind carrying no ×N must not move the column",
+        );
     }
 
     /// A lone web call (count 1, one target) nests its URL and clips
