@@ -213,18 +213,27 @@ pub fn reap_worktree_branch(repo: &Path, branch: &str) -> BranchReapOutcome {
     }
 }
 
-/// Whether `branch` resolves in the repo at `repo`. A repo git cannot
-/// read answers `true`, so a caller cleaning up on absence never
-/// discards state it failed to inspect.
+/// Whether `branch` resolves at `repo`, as a local head or as any
+/// remote-tracking ref. A repo git cannot read answers `true`, so a
+/// caller cleaning up on absence never discards state it failed to
+/// inspect.
+///
+/// Remote-tracking refs count because [`reap_worktree_branch`] deletes a
+/// local head whose commits are reachable from one, and a branch that
+/// survives on a remote is still open for review.
 pub fn branch_ref_exists(repo: &Path, branch: &str) -> bool {
-    let refname = format!("refs/heads/{branch}");
     match Command::new("git")
-        .args(["rev-parse", "--verify", "--quiet", &refname])
+        .args([
+            "for-each-ref",
+            "--format=%(refname)",
+            &format!("refs/heads/{branch}"),
+            &format!("refs/remotes/*/{branch}"),
+        ])
         .current_dir(repo)
         .output()
     {
-        Ok(out) => out.status.code() != Some(1),
-        Err(_) => true,
+        Ok(out) if out.status.success() => !String::from_utf8_lossy(&out.stdout).trim().is_empty(),
+        _ => true,
     }
 }
 
@@ -573,6 +582,45 @@ mod tests {
         let (dir, _wt, branch) = init_repo_with_worker_worktree("lbl");
         assert!(branch_ref_exists(dir.path(), &branch));
         assert!(!branch_ref_exists(dir.path(), "never-created"));
+    }
+
+    /// The reap counts a remote-tracking ref as reachability and so deletes
+    /// a pushed local head. Existence has to count the same ref or the two
+    /// disagree about a branch that is still open for review.
+    #[test]
+    fn branch_ref_exists_counts_a_branch_that_only_survives_on_a_remote() {
+        let (dir, wt, branch) = init_repo_with_worker_worktree("lbl");
+        let remote = tempdir().expect("remote tempdir");
+        run_git(remote.path(), &["init", "-q", "--bare"]);
+        run_git(&wt, &["remote", "add", "origin", remote.path().to_str().expect("utf8 path")]);
+        fs::write(wt.join("work.txt"), "pushed work").expect("write work");
+        run_git(&wt, &["add", "."]);
+        run_git(&wt, &["commit", "-q", "-m", "real work"]);
+        run_git(&wt, &["push", "-q", "-u", "origin", &branch]);
+        drop_worktree(dir.path(), &wt);
+        assert_eq!(reap_worktree_branch(dir.path(), &branch), BranchReapOutcome::Reaped);
+
+        assert!(!branch_exists(dir.path(), &branch), "the local head really is gone");
+        assert!(
+            branch_ref_exists(dir.path(), &branch),
+            "a branch alive only on a remote still exists for review purposes",
+        );
+    }
+
+    /// A slashed name must not let the remote-ref glob over-match.
+    #[test]
+    fn branch_ref_exists_handles_a_slashed_branch_name() {
+        let (dir, wt, _branch) = init_repo_with_worker_worktree("lbl");
+        let remote = tempdir().expect("remote tempdir");
+        run_git(remote.path(), &["init", "-q", "--bare"]);
+        run_git(&wt, &["remote", "add", "origin", remote.path().to_str().expect("utf8 path")]);
+        run_git(&wt, &["checkout", "-q", "-b", "fix/deep/name"]);
+        run_git(&wt, &["push", "-q", "-u", "origin", "fix/deep/name"]);
+        run_git(&wt, &["checkout", "-q", "-"]);
+        run_git(dir.path(), &["branch", "-D", "fix/deep/name"]);
+
+        assert!(branch_ref_exists(dir.path(), "fix/deep/name"));
+        assert!(!branch_ref_exists(dir.path(), "fix/deep"));
     }
 
     #[test]

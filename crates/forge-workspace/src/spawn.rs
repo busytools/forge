@@ -2343,6 +2343,36 @@ config_dir = "~/.claude-subspace"
         );
     }
 
+    /// A pushed branch is reaped locally because the remote holds its
+    /// commits, so the review state has to key off the remote-tracking ref
+    /// rather than the local head that the reap just removed.
+    #[tokio::test]
+    async fn despawn_keeps_review_state_for_a_branch_pushed_to_a_remote() {
+        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer").await;
+        let remote = tempdir().expect("remote tempdir");
+        run_git(remote.path(), &["init", "-q", "--bare"]);
+        run_git(&wt, &["remote", "add", "origin", remote.path().to_str().expect("utf8 path")]);
+        std::fs::write(wt.join("work.txt"), "pushed work").expect("write work");
+        run_git(&wt, &["add", "."]);
+        run_git(&wt, &["commit", "-q", "-m", "real work"]);
+        run_git(&wt, &["push", "-q", "-u", "origin", "worktree-reviewer"]);
+        workspace.save_review_threads("forge", "worktree-reviewer", &[review_thread("a")]);
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
+        let _ = rx.await.expect("result");
+
+        assert!(
+            !branch_exists(repo.path(), "worktree-reviewer"),
+            "the local head is reaped - without that this passes for the wrong reason",
+        );
+        assert_eq!(
+            workspace.load_review_threads("forge", "worktree-reviewer").expect("load").len(),
+            1,
+            "a branch still on the remote keeps its review threads",
+        );
+    }
+
     /// Despawning a git worker deletes both the review threads AND the
     /// submitted reviews for the torn-down worktree's branch once that
     /// branch is gone, leaving other branches' rows intact (else a reused
