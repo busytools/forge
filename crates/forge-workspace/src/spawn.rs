@@ -2034,15 +2034,11 @@ config_dir = "~/.claude-subspace"
             "non-git worker despawns cleanly: {result:?}"
         );
         assert!(workspace.list_live_workers(&project).is_empty(), "worker removed");
-        let mut saw_removed = false;
-        while let Ok(update) = rx.try_recv() {
-            if let SessionUpdate::WorkerStatusChanged { action, .. } = update
-                && action == WorkerStatusAction::Removed
-            {
-                saw_removed = true;
-            }
-        }
-        assert!(saw_removed, "Removed event emitted");
+        assert_eq!(
+            drain_removed_dispositions(&mut rx),
+            vec![WorktreeDisposition::Absent],
+            "a worker that never had a worktree must not claim one",
+        );
     }
 
     /// Despawning an unknown label reports NotFound and emits nothing.
