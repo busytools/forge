@@ -7719,6 +7719,48 @@ mod tests {
         );
     }
 
+    /// An anchor that outlived its plan must survive a later invalidation
+    /// arriving while the reader is back at the bottom.
+    #[test]
+    fn viewport_anchor_outliving_its_plan_survives_an_auto_scroll_remeasure() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        for idx in 0..4 {
+            vp.set_message_height(idx, 5);
+        }
+        vp.mark_heights_valid();
+        vp.rebuild_prefix_sums();
+
+        vp.auto_scroll = false;
+        vp.scroll_offset = 7;
+        vp.scroll_target = 7;
+        vp.scroll_pos = 7.0;
+
+        vp.invalidate_message(0);
+        let anchor =
+            vp.scroll_anchor_to_restore().expect("a manual-scroll invalidation arms an anchor");
+
+        vp.set_message_height(0, 12);
+        vp.mark_message_height_measured(0);
+        vp.finalize_remeasure_if_clean();
+        assert!(!vp.remeasure_active(), "the state under test needs the plan already torn down");
+        assert_eq!(
+            vp.scroll_anchor_to_restore(),
+            Some(anchor),
+            "the state under test needs a live anchor there to lose",
+        );
+
+        vp.auto_scroll = true;
+        vp.invalidate_message(1);
+
+        assert_eq!(
+            vp.scroll_anchor_to_restore(),
+            Some(anchor),
+            "returning to the bottom must not discard an anchor that outlived its plan",
+        );
+    }
+
     #[test]
     fn viewport_prioritizes_rows_above_preserved_anchor_until_restore_is_exact() {
         let mut vp = ChatViewport::new();
