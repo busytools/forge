@@ -524,11 +524,12 @@ mod tests {
     /// v2 regression-lock: single-item groups behave IDENTICALLY to
     /// multi-item - no `len == 1` special-casing anywhere in the
     /// render dispatch. A lone Read at default L2 renders the tree
-    /// summary (parent count row + inline read row) just like a 5-Read
-    /// group; the cycle walks L2 (summary) -> L1 (title) -> L0 (title +
-    /// body). Decision 3 lock from the brainstorm: UI consistency wins
-    /// over body-visible-by-default; failed lone tools sit collapsed
-    /// at L2 and need one ctrl+x to expand.
+    /// summary (parent count row + bare read row + the file nested)
+    /// just like a 5-Read group; the cycle walks L2 (summary) -> L1
+    /// (title) -> L0 (title + body). Decision 3 lock from the
+    /// brainstorm: UI consistency wins over body-visible-by-default;
+    /// failed lone tools sit collapsed at L2 and need one ctrl+x to
+    /// expand.
     #[test]
     fn render_single_item_group_cycle_walks_l2_l1_l0_like_multi_item() {
         let leader_id = first_chat_group_leader(&build_app_with_consecutive_reads(1))
@@ -536,16 +537,16 @@ mod tests {
 
         let mut harness = ReplayHarness::from_app(build_app_with_consecutive_reads(1));
         let snap_l2 = harness.snapshot_chat(80, 10);
-        // Read always nests: a lone read renders the tree parent count
-        // row + the read row with the sole file inline (project-relative
-        // path, lowercase `read`), NOT the full `Read <path>` title row.
+        // A lone read renders the tree parent count row + a bare read row
+        // + the sole file nested (project-relative path, lowercase
+        // `read`), NOT the full `Read <path>` title row.
         assert!(
             snap_l2.contains("1 tool call"),
             "single-item L2 must carry the tree parent count row; got:\n{snap_l2}",
         );
         assert!(
-            snap_l2.contains("read crates/forge-tui/src/0.rs"),
-            "single-item L2 must surface the file inline on the read row; got:\n{snap_l2}",
+            snap_l2.contains("\u{2514}\u{2500} crates/forge-tui/src/0.rs"),
+            "single-item L2 must nest the file under the read row; got:\n{snap_l2}",
         );
         assert!(
             !snap_l2.contains("Read crates/forge-tui/src/0.rs"),
