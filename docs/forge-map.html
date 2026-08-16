@@ -679,8 +679,8 @@ chat continues here...
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
       <li><code>Absent</code> - the worker was spawned outside a git repo: <code>Worker &lt;label&gt; closed.</code></li>
       <li><code>Intact</code> - the <code>x</code> button on its <a href="#projects-pane-workers">tree-child row</a>, or a cascade triggered by the lead's close, neither of which touches the worktree: <code>Worker &lt;label&gt; closed. Worktree preserved at .claude/worktrees/&lt;label&gt;/</code></li>
-      <li><code>Removed</code> - <code>workers__despawn</code> deleted it: <code>Worker &lt;label&gt; closed. Worktree removed from .claude/worktrees/&lt;label&gt;/</code></li>
-      <li><code>RemovalFailed</code> - the despawn tried and git refused, so it is still on disk: <code>Worker &lt;label&gt; closed. Worktree removal failed; it is still at .claude/worktrees/&lt;label&gt;/</code></li>
+      <li><code>Removed</code> - gone from disk by the time <code>workers__despawn</code> finished, whether or not the despawn is what removed it: <code>Worker &lt;label&gt; closed. Worktree removed from .claude/worktrees/&lt;label&gt;/</code></li>
+      <li><code>RemovalFailed</code> - the despawn tried, git refused, and the directory is still on disk: <code>Worker &lt;label&gt; closed. Worktree removal failed; it is still at .claude/worktrees/&lt;label&gt;/</code></li>
     </ul>
     <p>The branch outcome is deliberately absent from the toast: the reaped branch is a different object from the worktree, and the <code>branch_cleanup_warning</code> already reaches the lead on the <code>workers__despawn</code> tool result. Text in <code>ui::worker_status::format_close_toast</code>, routed through <code>push_system_message_to_session(_, Info, _)</code>.</p>
     <p>Item glyphs and styles:</p>
