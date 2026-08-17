@@ -600,9 +600,11 @@ mod tests {
             .await;
         drop(app);
 
+        let contents = std::fs::read_to_string(config_dir.path().join("forge-perf.log"))
+            .expect("perf sidecar should open under the directory the caller supplied");
         assert!(
-            config_dir.path().join("forge-perf.log").exists(),
-            "perf sidecar should open under the directory the caller supplied",
+            contents.contains("run_started"),
+            "this boot's run header should land in the redirected log, got {contents:?}"
         );
     }
 
