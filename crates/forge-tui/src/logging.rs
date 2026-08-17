@@ -232,6 +232,9 @@ impl RollingFileWriter {
         if append {
             let current_size = metadata(path).map_or(0, |m| m.len());
             if current_size >= max_bytes {
+                // The recursion's `clear_rotated_files` is the intended
+                // outcome: an already-over-cap log is discarded, not
+                // preserved as `.1`.
                 rotate_file_window(path, max_files)?;
                 return Self::new(path, false, max_bytes, max_files);
             }
