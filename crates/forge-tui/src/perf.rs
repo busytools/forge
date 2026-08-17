@@ -47,8 +47,10 @@
 //! on the select arm, which sits outside `drain`; `updates` is the
 //! phase that counts both apply sites.
 //!
-//! Always pin `run_id` too - the file is append-only across restarts,
-//! so an unfiltered query measures several binaries at once.
+//! Always pin `run_id` too - the file is appended to across restarts,
+//! so an unfiltered query measures several binaries at once, and older
+//! history rolls into `forge-perf.log.1` through `.5` rather than
+//! staying in the file you are reading.
 
 #[cfg(feature = "perf")]
 mod enabled {
