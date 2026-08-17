@@ -933,6 +933,27 @@ mod enabled {
         }
 
         #[test]
+        fn opening_an_under_cap_log_appends_rather_than_truncating() {
+            // A restart straight after a perf-relevant bug must not
+            // erase the evidence that produced it.
+            reset_thread_locals();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("forge-perf.log");
+            std::fs::write(&path, "{\"kind\":\"earlier_run\"}\n").unwrap();
+
+            let _logger = PerfLogger::open(&path).expect("perf log opens");
+            close_log_file();
+
+            let lines = read_log_lines(&path);
+            assert_eq!(
+                lines.first().map(String::as_str),
+                Some("{\"kind\":\"earlier_run\"}"),
+                "the pre-existing record should survive the open"
+            );
+            assert!(lines.len() > 1, "the run header should land after it, not replace it");
+        }
+
+        #[test]
         fn an_oversized_log_is_rolled_away_when_it_opens() {
             reset_thread_locals();
             let dir = tempfile::tempdir().unwrap();
