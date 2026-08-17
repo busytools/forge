@@ -35,8 +35,8 @@ const BRIDGE_LINE_PREVIEW_LIMIT: usize = 240;
 const DEFAULT_LOG_DIR: &str = "forge-tui";
 const DEFAULT_LOG_FILE_NAME: &str = "forge.log";
 pub(crate) const DEFAULT_PERF_FILE_NAME: &str = "forge-perf.log";
-const LOG_ROTATION_MAX_BYTES: u64 = 10 * 1024 * 1024;
-const LOG_ROTATION_MAX_FILES: usize = 5;
+pub(crate) const LOG_ROTATION_MAX_BYTES: u64 = 10 * 1024 * 1024;
+pub(crate) const LOG_ROTATION_MAX_FILES: usize = 5;
 static BRIDGE_DIAGNOSTICS_ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub struct LoggingRuntime {
@@ -206,7 +206,7 @@ fn default_diagnostics_dir() -> anyhow::Result<PathBuf> {
 }
 
 #[derive(Debug)]
-struct RollingFileWriter {
+pub(crate) struct RollingFileWriter {
     base_path: PathBuf,
     max_bytes: u64,
     max_files: usize,
@@ -215,7 +215,12 @@ struct RollingFileWriter {
 }
 
 impl RollingFileWriter {
-    fn new(path: &Path, append: bool, max_bytes: u64, max_files: usize) -> anyhow::Result<Self> {
+    pub(crate) fn new(
+        path: &Path,
+        append: bool,
+        max_bytes: u64,
+        max_files: usize,
+    ) -> anyhow::Result<Self> {
         if let Some(parent) = path.parent() {
             create_dir_all(parent)
                 .with_context(|| format!("failed to create log directory {}", parent.display()))?;
@@ -711,6 +716,26 @@ mod tests {
 
         assert_eq!(current, "abc");
         assert_eq!(rotated, "1234567890");
+    }
+
+    #[test]
+    fn rolling_writer_discards_the_oldest_beyond_max_files() {
+        let dir = tempdir().expect("temp dir");
+        let base = dir.path().join("runtime.log");
+        let mut writer = RollingFileWriter::new(&base, false, 10, 2).expect("writer");
+
+        for chunk in [b"aaaaa", b"bbbbb", b"ccccc", b"ddddd", b"eeeee", b"fffff", b"ggggg"] {
+            writer.write_all(chunk).expect("write");
+        }
+        writer.flush().expect("flush");
+
+        assert_eq!(fs::read_to_string(&base).expect("current log"), "ggggg");
+        assert_eq!(fs::read_to_string(rotated_log_path(&base, 1)).expect("first"), "eeeeefffff");
+        assert_eq!(fs::read_to_string(rotated_log_path(&base, 2)).expect("second"), "cccccddddd");
+        assert!(
+            !rotated_log_path(&base, 3).exists(),
+            "the window must stay capped at max_files, dropping the oldest"
+        );
     }
 
     #[test]

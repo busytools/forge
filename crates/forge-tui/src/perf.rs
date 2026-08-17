@@ -47,15 +47,15 @@
 //! on the select arm, which sits outside `drain`; `updates` is the
 //! phase that counts both apply sites.
 //!
-//! Always pin `run_id` too - the file is append-only across restarts
-//! (#483), so an unfiltered query measures several binaries at once.
+//! Always pin `run_id` too - the file is append-only across restarts,
+//! so an unfiltered query measures several binaries at once.
 
 #[cfg(feature = "perf")]
 mod enabled {
+    use crate::logging::{LOG_ROTATION_MAX_BYTES, LOG_ROTATION_MAX_FILES, RollingFileWriter};
     use serde::Serialize;
     use std::cell::RefCell;
-    use std::fs::{File, OpenOptions};
-    use std::io::{BufWriter, Write};
+    use std::io::Write;
     use std::path::Path;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -139,7 +139,8 @@ mod enabled {
 
     // Thread-local file handle so Timer::drop can log without borrowing PerfLogger.
     thread_local! {
-        pub(crate) static LOG_FILE: RefCell<Option<BufWriter<File>>> = const { RefCell::new(None) };
+        pub(crate) static LOG_FILE: RefCell<Option<RollingFileWriter>> =
+            const { RefCell::new(None) };
         static FRAME_COUNTER: RefCell<u64> = const { RefCell::new(0) };
         static RUN_ID: RefCell<String> = const { RefCell::new(String::new()) };
         static FRAME_BUFFER: RefCell<Vec<BufferedSample>> = const { RefCell::new(Vec::new()) };
@@ -290,7 +291,7 @@ mod enabled {
         SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_millis())
     }
 
-    fn write_json_line<T: Serialize>(file: &mut BufWriter<File>, value: &T) {
+    fn write_json_line<T: Serialize>(file: &mut RollingFileWriter, value: &T) {
         if let Err(err) = serde_json::to_writer(&mut *file, value) {
             tracing::debug!(
                 target: "forge_tui::perf",
@@ -470,13 +471,16 @@ mod enabled {
     #[allow(clippy::unused_self)]
     impl PerfLogger {
         /// Open (or create) the log file. Returns `None` on I/O error
-        /// after logging the failure at warn level. Always appends -
-        /// matches the standard log rolling behaviour so a forge
-        /// restart immediately after a perf-relevant bug doesn't
-        /// erase the evidence.
+        /// after logging the failure at warn level. Appends under the
+        /// same size cap and rolled-file window as the tracing log.
         pub fn open(path: &Path) -> Option<Self> {
-            let file = match OpenOptions::new().create(true).append(true).open(path) {
-                Ok(f) => f,
+            let mut writer = match RollingFileWriter::new(
+                path,
+                true,
+                LOG_ROTATION_MAX_BYTES,
+                LOG_ROTATION_MAX_FILES,
+            ) {
+                Ok(writer) => writer,
                 Err(err) => {
                     tracing::warn!(
                         target: "forge_tui::perf",
@@ -487,7 +491,6 @@ mod enabled {
                     return None;
                 }
             };
-            let mut writer = BufWriter::new(file);
             let run_id = uuid::Uuid::new_v4().to_string();
             let ts_ms = unix_ms();
             let started = PerfRunStarted {
@@ -581,6 +584,7 @@ mod enabled {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use std::fs::File;
         use std::io::Read;
 
         /// Drain the in-memory thread-local state between tests so a
@@ -866,7 +870,7 @@ mod enabled {
 
         #[test]
         fn thousands_of_iterations_write_one_line_and_never_buffer() {
-            // Bounded output is a hard constraint (#483 reached 554MB)
+            // Bounded output is a hard constraint (the live log reached 554MB)
             // and the aggregator must stay clear of `FRAME_BUFFER`,
             // whose `frame::` prefix exemption is uncapped.
             reset_thread_locals();
@@ -884,6 +888,30 @@ mod enabled {
             let lines = read_log_lines(tmp.path());
             assert_eq!(lines.len(), 2, "5000 iterations collapse to one summary line");
             assert_eq!(read_summary(tmp.path())["iters"], 5000);
+        }
+
+        #[test]
+        fn an_oversized_log_is_rolled_away_when_it_opens() {
+            reset_thread_locals();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("forge-perf.log");
+            File::create(&path)
+                .unwrap()
+                .set_len(crate::logging::LOG_ROTATION_MAX_BYTES + 1)
+                .unwrap();
+
+            let _logger = PerfLogger::open(&path).expect("perf log opens");
+            close_log_file();
+
+            let len = std::fs::metadata(&path).unwrap().len();
+            assert!(
+                len < crate::logging::LOG_ROTATION_MAX_BYTES,
+                "an over-cap log should be rolled at open, not appended to; got {len} bytes"
+            );
+            assert!(
+                !dir.path().join("forge-perf.log.1").exists(),
+                "the superseded log is discarded rather than kept alongside the fresh one"
+            );
         }
 
         #[test]
