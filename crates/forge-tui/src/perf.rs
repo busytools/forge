@@ -291,20 +291,27 @@ mod enabled {
         SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_millis())
     }
 
+    // One `write_all` per record: the rolling writer decides rotation
+    // from the length it is handed, so a record streamed in pieces can
+    // be split across the roll.
     fn write_json_line<T: Serialize>(file: &mut RollingFileWriter, value: &T) {
-        if let Err(err) = serde_json::to_writer(&mut *file, value) {
+        let mut line = match serde_json::to_vec(value) {
+            Ok(line) => line,
+            Err(err) => {
+                tracing::debug!(
+                    target: "forge_tui::perf",
+                    error = %err,
+                    "perf JSON serialize failed"
+                );
+                return;
+            }
+        };
+        line.push(b'\n');
+        if let Err(err) = file.write_all(&line) {
             tracing::debug!(
                 target: "forge_tui::perf",
                 error = %err,
-                "perf JSON serialize failed"
-            );
-            return;
-        }
-        if let Err(err) = writeln!(file) {
-            tracing::debug!(
-                target: "forge_tui::perf",
-                error = %err,
-                "perf log newline write failed; JSONL stream may be corrupted from this point"
+                "perf log write failed; JSONL stream may be corrupted from this point"
             );
         }
     }
@@ -888,6 +895,39 @@ mod enabled {
             let lines = read_log_lines(tmp.path());
             assert_eq!(lines.len(), 2, "5000 iterations collapse to one summary line");
             assert_eq!(read_summary(tmp.path())["iters"], 5000);
+        }
+
+        #[test]
+        fn a_rotation_never_splits_a_record_across_two_files() {
+            let dir = tempfile::tempdir().unwrap();
+            let base = dir.path().join("perf.log");
+            let mut writer = RollingFileWriter::new(&base, false, 120, 2).unwrap();
+
+            for frame in 0..8 {
+                let sample = PerfSample {
+                    schema: PERF_SCHEMA,
+                    kind: "duration",
+                    run_id: "test-run",
+                    frame,
+                    ts_ms: 1,
+                    metric: "frame_total",
+                    duration_ms: Some(1.0),
+                    extra: None,
+                };
+                write_json_line(&mut writer, &sample);
+            }
+            writer.flush().unwrap();
+
+            for path in [base.clone(), base.with_extension("log.1"), base.with_extension("log.2")] {
+                let Ok(contents) = std::fs::read_to_string(&path) else { continue };
+                for line in contents.lines().filter(|line| !line.is_empty()) {
+                    assert!(
+                        serde_json::from_str::<serde_json::Value>(line).is_ok(),
+                        "unparseable line in {}: {line}",
+                        path.display()
+                    );
+                }
+            }
         }
 
         #[test]
