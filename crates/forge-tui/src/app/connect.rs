@@ -59,17 +59,6 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     create_app_impl(cli, workspace, None)
 }
 
-/// Redirects the perf sidecar into a caller-owned directory so tests
-/// never append to the user's real diagnostic log.
-#[cfg(test)]
-pub fn create_app_for_test(
-    cli: &Cli,
-    workspace: Arc<forge_workspace::Workspace>,
-    perf_dir: &std::path::Path,
-) -> App {
-    create_app_impl(cli, workspace, Some(perf_dir.join(crate::logging::DEFAULT_PERF_FILE_NAME)))
-}
-
 fn create_app_impl(
     cli: &Cli,
     workspace: Arc<forge_workspace::Workspace>,
@@ -409,8 +398,23 @@ pub fn start_connection(app: &mut App) {
 
 #[cfg(test)]
 mod tests {
+    use super::App;
     use crate::Cli;
     use std::sync::Arc;
+
+    /// Redirects the perf sidecar into a caller-owned directory so
+    /// tests never append to the user's real diagnostic log.
+    fn create_app_for_test(
+        cli: &Cli,
+        workspace: Arc<forge_workspace::Workspace>,
+        perf_dir: &std::path::Path,
+    ) -> App {
+        super::create_app_impl(
+            cli,
+            workspace,
+            Some(perf_dir.join(crate::logging::DEFAULT_PERF_FILE_NAME)),
+        )
+    }
 
     /// Ensure `forge/` exists and return it, so tests write forge's
     /// config + state where forge reads them (not the legacy fallback).
@@ -461,9 +465,7 @@ mod tests {
 
         let local = tokio::task::LocalSet::new();
         let app = local
-            .run_until(async {
-                super::create_app_for_test(&cli, Arc::new(workspace), config_dir.path())
-            })
+            .run_until(async { create_app_for_test(&cli, Arc::new(workspace), config_dir.path()) })
             .await;
 
         assert!(
@@ -492,9 +494,7 @@ mod tests {
 
         let local = tokio::task::LocalSet::new();
         let app = local
-            .run_until(async {
-                super::create_app_for_test(&cli, Arc::new(workspace), config_dir.path())
-            })
+            .run_until(async { create_app_for_test(&cli, Arc::new(workspace), config_dir.path()) })
             .await;
 
         assert_eq!(
@@ -516,9 +516,7 @@ mod tests {
         let cli = cli_with(None);
         let local = tokio::task::LocalSet::new();
         let app = local
-            .run_until(async {
-                super::create_app_for_test(&cli, Arc::new(workspace), config_dir.path())
-            })
+            .run_until(async { create_app_for_test(&cli, Arc::new(workspace), config_dir.path()) })
             .await;
         assert_eq!(app.active_view, crate::app::ActiveView::Launchpad);
     }
@@ -534,9 +532,7 @@ mod tests {
         let cli = cli_with(Some("forge-test"));
         let local = tokio::task::LocalSet::new();
         let app = local
-            .run_until(async {
-                super::create_app_for_test(&cli, Arc::new(workspace), config_dir.path())
-            })
+            .run_until(async { create_app_for_test(&cli, Arc::new(workspace), config_dir.path()) })
             .await;
         // With argv supplied the boot view is NOT Launchpad. The
         // invariant the launchpad change cares about is just
@@ -556,9 +552,7 @@ mod tests {
         cli.new = true;
         let local = tokio::task::LocalSet::new();
         let app = local
-            .run_until(async {
-                super::create_app_for_test(&cli, Arc::new(workspace), config_dir.path())
-            })
+            .run_until(async { create_app_for_test(&cli, Arc::new(workspace), config_dir.path()) })
             .await;
         assert!(app.start_new_run, "--new threads onto App.start_new_run");
     }
@@ -581,9 +575,7 @@ mod tests {
         let cli = cli_with(None);
         let local = tokio::task::LocalSet::new();
         let app = local
-            .run_until(async {
-                super::create_app_for_test(&cli, Arc::new(workspace), config_dir.path())
-            })
+            .run_until(async { create_app_for_test(&cli, Arc::new(workspace), config_dir.path()) })
             .await;
         assert_eq!(app.spinner_style, forge_workspace::SpinnerStyle::Ember);
         // Deliberately not the default, or the assertion would pass on a
@@ -604,9 +596,7 @@ mod tests {
         let cli = cli_with(None);
         let local = tokio::task::LocalSet::new();
         let app = local
-            .run_until(async {
-                super::create_app_for_test(&cli, Arc::new(workspace), config_dir.path())
-            })
+            .run_until(async { create_app_for_test(&cli, Arc::new(workspace), config_dir.path()) })
             .await;
         drop(app);
 
