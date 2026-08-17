@@ -56,6 +56,14 @@ pub(crate) fn session_launch_settings_for_resume(
 /// Hard Rule #15) - chat-direct mode picks up `project.path`,
 /// launchpad mode leaves it empty.
 pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App {
+    create_app_impl(cli, workspace, None)
+}
+
+fn create_app_impl(
+    cli: &Cli,
+    workspace: Arc<forge_workspace::Workspace>,
+    perf_log: Option<std::path::PathBuf>,
+) -> App {
     // Resolve the pre-Connect seed cwd from `forge.toml`:
     //
     // - `forge <project>` (chat-direct): look up `project.path`.
@@ -88,7 +96,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     // initial probe in #246); the poller carries the refresh
     // cadence from here on.
     workspace.start_usage_poller();
-    let perf_path = match crate::logging::resolve_perf_path(cli) {
+    let perf_path = perf_log.or_else(|| match crate::logging::resolve_perf_path(cli) {
         Ok(path) => path,
         Err(err) => {
             tracing::warn!(
@@ -102,7 +110,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
             );
             None
         }
-    };
+    });
     let perf = perf_path.as_deref().and_then(|path| {
         let logger = crate::perf::PerfLogger::open(path);
         if logger.is_some() {
@@ -390,8 +398,23 @@ pub fn start_connection(app: &mut App) {
 
 #[cfg(test)]
 mod tests {
+    use super::App;
     use crate::Cli;
     use std::sync::Arc;
+
+    /// Redirects the perf sidecar into a caller-owned directory so
+    /// tests never append to the user's real diagnostic log.
+    fn create_app_for_test(
+        cli: &Cli,
+        workspace: Arc<forge_workspace::Workspace>,
+        perf_dir: &std::path::Path,
+    ) -> App {
+        super::create_app_impl(
+            cli,
+            workspace,
+            Some(perf_dir.join(crate::logging::DEFAULT_PERF_FILE_NAME)),
+        )
+    }
 
     /// Ensure `forge/` exists and return it, so tests write forge's
     /// config + state where forge reads them (not the legacy fallback).
@@ -441,7 +464,9 @@ mod tests {
         let cli = cli_with(None);
 
         let local = tokio::task::LocalSet::new();
-        let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
+        let app = local
+            .run_until(async { create_app_for_test(&cli, Arc::new(workspace), config_dir.path()) })
+            .await;
 
         assert!(
             app.cwd_raw().is_empty(),
@@ -468,7 +493,9 @@ mod tests {
         let cli = cli_with(Some("forge-test"));
 
         let local = tokio::task::LocalSet::new();
-        let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
+        let app = local
+            .run_until(async { create_app_for_test(&cli, Arc::new(workspace), config_dir.path()) })
+            .await;
 
         assert_eq!(
             app.cwd_raw(),
@@ -488,7 +515,9 @@ mod tests {
             .expect("workspace");
         let cli = cli_with(None);
         let local = tokio::task::LocalSet::new();
-        let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
+        let app = local
+            .run_until(async { create_app_for_test(&cli, Arc::new(workspace), config_dir.path()) })
+            .await;
         assert_eq!(app.active_view, crate::app::ActiveView::Launchpad);
     }
 
@@ -502,7 +531,9 @@ mod tests {
             .expect("workspace");
         let cli = cli_with(Some("forge-test"));
         let local = tokio::task::LocalSet::new();
-        let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
+        let app = local
+            .run_until(async { create_app_for_test(&cli, Arc::new(workspace), config_dir.path()) })
+            .await;
         // With argv supplied the boot view is NOT Launchpad. The
         // invariant the launchpad change cares about is just
         // "argv supplied ⇒ never the launchpad."
@@ -520,7 +551,9 @@ mod tests {
         let mut cli = cli_with(Some("forge-test"));
         cli.new = true;
         let local = tokio::task::LocalSet::new();
-        let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
+        let app = local
+            .run_until(async { create_app_for_test(&cli, Arc::new(workspace), config_dir.path()) })
+            .await;
         assert!(app.start_new_run, "--new threads onto App.start_new_run");
     }
 
@@ -541,12 +574,38 @@ mod tests {
             .expect("workspace");
         let cli = cli_with(None);
         let local = tokio::task::LocalSet::new();
-        let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
+        let app = local
+            .run_until(async { create_app_for_test(&cli, Arc::new(workspace), config_dir.path()) })
+            .await;
         assert_eq!(app.spinner_style, forge_workspace::SpinnerStyle::Ember);
         // Deliberately not the default, or the assertion would pass on a
         // config value that never reached the App.
         assert_eq!(app.repaint_cadence, forge_workspace::RepaintCadence::from_fps(60));
         assert_ne!(app.repaint_cadence, forge_workspace::RepaintCadence::default());
+    }
+
+    #[cfg(feature = "perf")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn create_app_for_test_puts_the_perf_log_in_the_caller_s_directory() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("project tempdir");
+        write_default_forge_toml(config_dir.path(), project_dir.path());
+        let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
+            .await
+            .expect("workspace");
+        let cli = cli_with(None);
+        let local = tokio::task::LocalSet::new();
+        let app = local
+            .run_until(async { create_app_for_test(&cli, Arc::new(workspace), config_dir.path()) })
+            .await;
+        drop(app);
+
+        let contents = std::fs::read_to_string(config_dir.path().join("forge-perf.log"))
+            .expect("perf sidecar should open under the directory the caller supplied");
+        assert!(
+            contents.contains("run_started"),
+            "this boot's run header should land in the redirected log, got {contents:?}"
+        );
     }
 
     #[test]
