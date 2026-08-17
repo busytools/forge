@@ -205,6 +205,10 @@ fn default_diagnostics_dir() -> anyhow::Result<PathBuf> {
     anyhow::bail!("no resolvable data/cache/home dir for diagnostics path")
 }
 
+/// Rotation is decided from the current `write` call's length, so a
+/// caller must hand over one whole record per call and keep it under
+/// the buffer capacity - a partial write re-enters the check with only
+/// the remainder.
 #[derive(Debug)]
 pub(crate) struct RollingFileWriter {
     base_path: PathBuf,
