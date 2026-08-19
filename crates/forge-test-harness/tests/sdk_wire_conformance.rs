@@ -42,7 +42,7 @@ fn write_trace(scenario: &str, log: &TraceLog) -> std::path::PathBuf {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/wire-traces");
     std::fs::create_dir_all(&target).expect("create wire-traces dir");
     let path = target.join(format!("capture-{scenario}-{}.jsonl", timestamp_tag()));
-    let body = log.to_jsonl().expect("jsonl serialise");
+    let body = log.to_jsonl().expect("redact + serialise trace");
     std::fs::write(&path, body).expect("write trace");
     path
 }
