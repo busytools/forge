@@ -153,11 +153,17 @@ pub fn attach_recording(builder: OptionsBuilder) -> (OptionsBuilder, Arc<Mutex<T
 
 /// Pinned CLI version these baselines were captured against.
 ///
-/// Bumping it means re-capturing every scenario against the new CLI
-/// (`just conformance-capture-sdk <scenario>`) and promoting the
-/// results into a fresh `baselines/sdk/<version>/`. Replay is expected
-/// to fail in between. The full ritual is in
-/// `.claude/skills/claude-cli-upgrade/`.
+/// Bumping it means re-capturing the live-capture baselines against
+/// the new CLI and promoting them into a fresh
+/// `baselines/sdk/<version>/`. Replay is expected to fail in between.
+///
+/// `just conformance-capture-sdk <test>` takes a NEXTEST TEST NAME, not
+/// a baseline name; the two namespaces diverge (`worker_spawn.jsonl`
+/// comes from `worker_spawn_scenario`). It substring-matches, so a
+/// loose argument fires several live captures and bills for all of
+/// them. The `real_session_*` baselines have no capture recipe at all -
+/// they come from the `sdk_redact_session` example. The full ritual is
+/// in `.claude/skills/claude-cli-upgrade/`.
 pub const PINNED_CLI_VERSION: &str = "2.1.220";
 
 /// Directory holding the committed trace baselines for the pinned CLI

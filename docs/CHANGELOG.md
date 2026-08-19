@@ -1,9 +1,11 @@
 # Changelog (archived)
 
-A record of `forge-sdk`'s early development, covering 0.0.1 through
-0.1.64. It is not maintained: every crate in the workspace now shares
-one version from `[workspace.package]`, and the release record is the
-`v*` git tags.
+A record of `forge-sdk`'s early development: releases 0.0.1 through
+0.1.64, plus an `[Unreleased]` section of work that landed after
+0.1.64 and was never cut under a version of its own. It stops there
+and is not maintained. Every crate in the workspace now shares one
+version from `[workspace.package]`, and the release record is the `v*`
+git tags.
 
 The entries below are history, not current direction. They are written
 in terms of parity with the Python `claude-agent-sdk`, and the version
