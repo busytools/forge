@@ -56,6 +56,29 @@ to capture fresh baselines when the pinned CLI version bumps, or to
 validate that forge-sdk is still wire-compatible against the live
 binary.
 
+A dump written under `capture-*` is redacted; `diag-*` is not. That
+split is deliberate - the promotion glob above only reaches `capture-*`,
+and a failure dump keeps the real cwd because that is what you read it
+for. Never promote a `diag-*` file.
+
+### Redacting a capture
+
+`tests/sdk_capture_hygiene.rs` asserts every committed capture is a
+fixed point of `session_redact::WireRedactor` - redacting it again
+changes nothing. Two ways to satisfy it:
+
+- **Baselines** are redacted on the way out of `TraceLog::to_jsonl`, so
+  a `capture-*` file promoted per the step above is already clean.
+- **Reference captures** under
+  `.claude/skills/claude-cli-upgrade/reference-captures/` are a raw
+  shell redirect of `claude --print`, so nothing redacts them. There is
+  no committed tool for this yet: regenerate them via the
+  `claude-cli-upgrade` skill, then pass each line through
+  `WireRedactor::for_trace` / `redact_line` before committing, and check
+  the gate. Read `session_redact`'s "what it does not cover" first -
+  prose in a captured tool result is not redacted, and the gate cannot
+  see that.
+
 ## Running
 
 ```bash
