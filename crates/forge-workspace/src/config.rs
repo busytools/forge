@@ -85,8 +85,8 @@ struct ProjectEntry {
     path: String,
     /// When `true`, the project's lead session spawns automatically
     /// at forge launch. Multiple projects can carry this; they all
-    /// spawn in the background while the launchpad picker decides
-    /// which one becomes the focused tab. Defaults to `false`.
+    /// spawn in the background, and from the launchpad none of them
+    /// is focused until the user picks one. Defaults to `false`.
     #[serde(default)]
     auto_start: bool,
     /// Static (config-defined) worker role labels to auto-spawn

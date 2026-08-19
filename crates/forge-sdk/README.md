@@ -10,7 +10,9 @@ is whatever serves [`forge-agent`](../forge-agent) (and through it,
 Not a Python-parity port. See the [`CLAUDE.md`](../../CLAUDE.md)
 workspace guide for the current direction.
 
-- Release history: [`../../docs/CHANGELOG.md`](../../docs/CHANGELOG.md).
+- Early development history (archived, 0.0.1 to 0.1.64):
+  [`../../docs/CHANGELOG.md`](../../docs/CHANGELOG.md). Current
+  releases are the `v*` git tags.
 
 ## Scope
 

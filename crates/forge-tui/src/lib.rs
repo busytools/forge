@@ -56,9 +56,11 @@ impl DiagnosticsPreset {
 #[derive(Parser, Debug)]
 #[command(name = "forge", about = "Native Rust terminal for Claude Code", version)]
 pub struct Cli {
-    /// Project name to open. When omitted, opens the project marked
-    /// `default = true` in forge.toml. Must match a project's `name`
-    /// field in forge.toml exactly.
+    /// Project to open, matching an `[[orgs.projects]]` `name` in
+    /// forge.toml exactly. When omitted, forge opens the launchpad
+    /// picker rather than a project: every `auto_start = true` project
+    /// still spawns in the background, but none is focused until you
+    /// pick one.
     #[arg(value_name = "PROJECT")]
     pub project: Option<String>,
 

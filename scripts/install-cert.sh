@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/install-cert.sh — install (or report on, or uninstall)
+# scripts/install-cert.sh - install (or report on, or uninstall)
 # forge's wire-classification rewriter CA cert as a trusted root in
 # the macOS System keychain.
 #
@@ -11,10 +11,10 @@
 #
 # Content-idempotent: compares the SHA-256 fingerprint of the CA on
 # disk against the cert in the keychain. If they match (one copy,
-# same bytes), do nothing — no sudo, no Touch ID, no work. If they
+# same bytes), do nothing - no sudo, no Touch ID, no work. If they
 # differ (missing, multiple copies, drifted), drop any existing
 # copies and add the fresh one. Touch ID only fires on a genuine
-# refresh — i.e. first install or after a CA rotation. The macOS 26
+# refresh - i.e. first install or after a CA rotation. The macOS 26
 # TIL at ~/.claude/memory/til/2026-05-21-macos-26-trust-settings-admin-write-locked.md
 # documents why the prompt is unavoidable when an actual refresh is
 # needed; we minimise the surface by gating on fingerprint compare.
@@ -56,7 +56,7 @@ FORGE_CA_PATH="${FORGE_CA_PATH:-$HOME/Library/Application Support/forge-tui/ca/c
 # not the O (organisation). forge's CA carries:
 #   subject = CN="forge wire-classification rewriter", O="forge-tui"
 # so the lookup MUST use the CN. Matching by O silently returns
-# nothing — the script then thinks the cert is missing and triggers
+# nothing - the script then thinks the cert is missing and triggers
 # a fresh `security add-trusted-cert` (Touch ID prompt) on every run.
 # See ~/.claude/memory/til/2026-05-21-macos-26-trust-settings-admin-write-locked.md
 # for the empirical proof.
@@ -124,19 +124,19 @@ keychain_fps=$(/usr/bin/security find-certificate -c "$FORGE_CA_CN" -a -Z "$KEYC
 kfp_count=$(printf '%s' "$keychain_fps" | grep -c . || true)
 
 # Common path on repeat installs: exactly one keychain copy matching
-# disk. No-op — no sudo, no Touch ID.
+# disk. No-op - no sudo, no Touch ID.
 if [[ "$kfp_count" -eq 1 ]] && printf '%s' "$keychain_fps" | grep -qFx "$disk_fp"; then
-    log_info "forge CA in keychain matches disk — no refresh needed"
+    log_info "forge CA in keychain matches disk - no refresh needed"
     exit 0
 fi
 
 # Refresh path: Touch ID will fire once for the add step.
 if [[ "$kfp_count" -eq 0 ]]; then
-    log_info "forge CA not in keychain — installing (Touch ID prompt)"
+    log_info "forge CA not in keychain - installing (Touch ID prompt)"
 elif [[ "$kfp_count" -gt 1 ]]; then
-    log_info "$kfp_count forge CA copies in keychain — cleaning up + reinstalling (Touch ID prompt)"
+    log_info "$kfp_count forge CA copies in keychain - cleaning up + reinstalling (Touch ID prompt)"
 else
-    log_info "forge CA in keychain is stale — refreshing (Touch ID prompt)"
+    log_info "forge CA in keychain is stale - refreshing (Touch ID prompt)"
 fi
 
 # Drop any existing forge-tui certs (handles drift + multi-copy).
@@ -150,6 +150,6 @@ done
 if sudo /usr/bin/security add-trusted-cert -d -r trustRoot -k "$KEYCHAIN" "$FORGE_CA_PATH"; then
     log_success "forge CA trusted in System keychain"
 else
-    log_warn "CA trust step failed or was cancelled — re-run scripts/install-cert.sh to retry"
+    log_warn "CA trust step failed or was cancelled - re-run scripts/install-cert.sh to retry"
     exit 0
 fi
