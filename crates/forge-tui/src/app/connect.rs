@@ -353,14 +353,13 @@ pub fn start_connection(app: &mut App) {
         return;
     }
 
-    // Chat branch: argv supplied OR default-focus path. If the user
-    // passed `--project NAME`, that wins as the first (focused)
-    // startup spawn. Otherwise, every project with `auto_start = true`
-    // in forge.toml spawns; `auto_start_project_names` returns them in
-    // forge.toml declaration order, so the first one DECLARED becomes
-    // the focused tab. With no explicit project AND no auto_start
-    // opt-ins, fall through to the default project (alphabetically
-    // first overall).
+    // Chat branch. Only reachable with a project argv: `active_view`
+    // is Chat exactly when `cli.project.is_some()`, and
+    // `startup_project` IS `cli.project`, so in production the first
+    // match arm always wins and that project is the focused spawn.
+    // The two `None` arms exist for `App::test_default()`, which
+    // leaves `startup_project` unset - hence also the alphabetical
+    // `default_index` fallback they reach through `StartDefault`.
     let auto_start = workspace.auto_start_project_names();
     let dispatch_targets: Vec<Option<String>> = match (&app.startup_project, auto_start.as_slice())
     {
