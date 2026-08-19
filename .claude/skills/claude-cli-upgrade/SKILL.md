@@ -114,7 +114,7 @@ Cross-reference against the Phase 1 tool union. For each tool in the union with 
 - **Generic / low-shape tool** (e.g. ToolSearch which is a single-arg lookup): low priority; may not need a scenario.
 - **Removed tool** (was covered, no longer in the union): retire the scenario file + delete its baseline.
 
-The upgrade PR lands without these new scenarios; they ship as separate follow-up PRs over time. The skill flags the gap so the user / engineering team can prioritise.
+The upgrade PR lands without these new scenarios; they ship as separate follow-up PRs over time. The skill flags the gap so it can be prioritised.
 
 ## Phase 2: Decoder sanity against OLD baselines (agent runs)
 
@@ -238,7 +238,7 @@ This is the same routine as a release pre-flight - the difference is that we run
 
 ## Phase 7: Renderer / inspector adjustments (if Phase 1 flagged adds)
 
-If Phase 1 surfaced new tool names forge-tui doesn't handle (e.g. `TaskCreate` family), file a tracking issue per cluster and dispatch via the engineering team. The PR for those changes can land separately from the version bump PR if it's substantial, but the upgrade is incomplete until the renderer catches up. Pin the issue in the upgrade PR's description so future readers see the linkage.
+If Phase 1 surfaced new tool names forge-tui doesn't handle (e.g. `TaskCreate` family), file a tracking issue per cluster. The PR for those changes can land separately from the version bump PR if it's substantial, but the upgrade is incomplete until the renderer catches up. Pin the issue in the upgrade PR's description so future readers see the linkage.
 
 ## Phase 8: Land the upgrade
 

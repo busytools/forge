@@ -143,14 +143,14 @@ mod tests {
             "loggedIn": true,
             "authMethod": "claude.ai",
             "apiProvider": "firstParty",
-            "email": "ved@neutralfarming.earth",
-            "orgId": "f0a43d2e-a197-4a9f-94af-7ab882844c4d",
-            "orgName": "Neutral Farming",
+            "email": "dev@example.com",
+            "orgId": "00000000-0000-4000-8000-000000000000",
+            "orgName": "Example Org",
             "subscriptionType": "team"
         }"#;
         let info = parse_auth_status(stdout).expect("parsed");
-        assert_eq!(info.email.as_deref(), Some("ved@neutralfarming.earth"));
-        assert_eq!(info.organization.as_deref(), Some("Neutral Farming"));
+        assert_eq!(info.email.as_deref(), Some("dev@example.com"));
+        assert_eq!(info.organization.as_deref(), Some("Example Org"));
         assert_eq!(info.subscription_type.as_deref(), Some("team"));
         assert_eq!(info.api_provider.as_deref(), Some("firstParty"));
         assert_eq!(info.api_key_source.as_deref(), Some("oauth"));

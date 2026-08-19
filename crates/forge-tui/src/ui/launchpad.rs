@@ -37,7 +37,7 @@ const FORGE_WORDMARK: [&str; 6] = [
 ];
 
 /// Picker frame inner width in cells. Sized to fit the longest
-/// project row we expect (`├─ ⠋  hub-modules    (granite1)     spawning`)
+/// project row we expect (`├─ ⠋  service-api    (work-acct)     spawning`)
 /// with a generous margin. Constant so the layout is stable across
 /// terminal widths.
 const PICKER_WIDTH: u16 = 56;
@@ -1068,7 +1068,7 @@ mod tests {
 
     #[test]
     fn truncate_appends_ellipsis() {
-        assert_eq!(truncate_to("hub-modules-extended", 10), "hub-modul…");
+        assert_eq!(truncate_to("service-api-extended", 10), "service-a…");
     }
 
     #[test]

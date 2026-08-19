@@ -7,7 +7,7 @@ version = "0.22.62"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/busytools/forge"
-authors = ["Vedhavyas Singareddi <ved@subspace.network>"]
+authors = ["Vedhavyas Singareddi <7549475+vedhavyas@users.noreply.github.com>"]
 rust-version = "1.88"
 
 [workspace.dependencies]

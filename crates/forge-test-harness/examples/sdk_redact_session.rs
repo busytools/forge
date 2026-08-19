@@ -1,8 +1,8 @@
-//! Redact a Claude Code session `.jsonl` into a forge-conformance
+//! Redact a Claude Code session `.jsonl` into a wire-conformance
 //! baseline. Run:
 //!
 //! ```bash
-//! cargo run -p forge-test-harness --example redact_session -- \
+//! cargo run -p forge-test-harness --example sdk_redact_session -- \
 //!   <input-session.jsonl> <output-baseline.jsonl>
 //! ```
 //!
@@ -12,8 +12,8 @@
 //! read what those do and do not cover before committing the output,
 //! since prose content in a captured tool result is not among them.
 //! Output is deterministic, and replays cleanly through
-//! `forge-conformance`'s `all_baselines_decode_cleanly` when placed
-//! under `baselines/<PINNED_CLI_VERSION>/`.
+//! `all_baselines_decode_cleanly` when placed under
+//! `baselines/sdk/<PINNED_CLI_VERSION>/`.
 //!
 //! This writes its own `{"dir","line"}` envelope rather than going
 //! through `TraceLog::to_jsonl`, so the wire-trace redaction does not

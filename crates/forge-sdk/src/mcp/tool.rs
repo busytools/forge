@@ -53,10 +53,14 @@ pub struct ToolOutputBlock {
 #[async_trait::async_trait]
 pub trait Tool: Send + Sync {
     /// Tool name. Exposed to the model as `mcp__<server>__<tool>`.
-    fn name(&self) -> &str;
+    ///
+    /// `'static` rather than borrowed from `&self`: a tool's identity is
+    /// fixed at compile time, and eliding the lifetime here made every
+    /// impl in the tree trip `clippy::unnecessary_literal_bound`.
+    fn name(&self) -> &'static str;
 
     /// One-line description.
-    fn description(&self) -> &str;
+    fn description(&self) -> &'static str;
 
     /// JSON Schema describing the tool's arguments.
     fn input_schema(&self) -> Value;

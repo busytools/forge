@@ -1579,7 +1579,7 @@ accounts = ["acct-a"]
 [[orgs.projects]]
 name = "p1"
 path = "/tmp/p1"
-static_workers = ["planner", "researcher", "hub-modules/custom"]
+static_workers = ["planner", "researcher", "backend/custom"]
 
 [[accounts]]
 display_name = "acct-a"
@@ -1590,7 +1590,7 @@ config_dir = "/tmp/acct-a"
         let p = cfg.projects.iter().find(|p| p.name == "p1").expect("p1 present");
         assert_eq!(
             p.static_workers,
-            vec!["planner".to_owned(), "researcher".to_owned(), "hub-modules/custom".to_owned(),]
+            vec!["planner".to_owned(), "researcher".to_owned(), "backend/custom".to_owned(),]
         );
     }
 
