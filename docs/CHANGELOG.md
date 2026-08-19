@@ -11,6 +11,10 @@ numbers here were picked to track it. forge does not work that way:
 forge-sdk and the Python SDK are peer clients of the same binary,
 sharing a wire contract with `claude` and nothing else.
 
+For the same reason, the parity documents these entries point at,
+`PARITY.md` and `docs/parity-check.md`, were both removed. Nothing in
+the repository replaces them.
+
 ## [Unreleased]
 
 ### Added - parity-gap closures (seventh pass, 2026-04-22)
