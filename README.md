@@ -1,49 +1,89 @@
 # forge
 
-A Rust workspace for personal-use agentic tooling around Anthropic's
-`claude` CLI. forge is a **peer reference implementation** of clients
-to that binary - it shares the stream-json wire contract with the CLI,
-but otherwise gets to be its own thing (idiomatic Rust, channels-based
-concurrency, no Python-parity contract).
+A Rust workspace that drives Anthropic's `claude` CLI: a multi-session
+terminal UI, plus an SDK that speaks the CLI's stream-json wire
+protocol over stdio.
 
-See [`CLAUDE.md`](CLAUDE.md) for the current project guide.
+forge never calls the Anthropic API directly. It spawns `claude` and
+talks to it, so the CLI stays the thing that runs the agent loop.
+
+**[Documentation](https://busytools.github.io/forge/)**
+
+## Not a port of the Python SDK
+
+`forge-sdk` and Anthropic's Python `claude-agent-sdk` wrap the same
+binary. That is the whole of the relationship: they share a wire
+contract with `claude` and nothing else. There is no shared API shape
+and no parity target. What is fixed is the wire, and a difference
+between what forge writes to the CLI's stdin and what `claude` expects
+is a bug.
 
 ## Crates
 
-The workspace is layered, with strictly acyclic dependencies:
+Strictly acyclic:
 
 ```
-forge-primitives ──── leaf (pure data, no logic)
-forge-sdk        ──→ primitives
-forge-agent      ──→ primitives + sdk
-forge-workspace  ──→ primitives + agent          (the MVVM orchestrator)
-forge-tui        ──→ primitives + workspace      (no direct agent dep)
+forge-primitives      leaf: pure data, no logic, no I/O, no async
+forge-sdk         ->  primitives
+forge-agent       ->  primitives + sdk
+forge-workspace   ->  primitives + agent + sdk
+forge-tui         ->  primitives + workspace
+forge-test-harness->  primitives + sdk
 ```
 
 | Crate | Description |
 |---|---|
-| [`forge-primitives`](crates/forge-primitives) | Workspace-shared wire-shape types - message envelopes, content blocks, hook/permission/option/subagent data, channel commands, IDs, render-side views. Pure data, no I/O. |
-| [`forge-sdk`](crates/forge-sdk) | Wraps the `claude` CLI subprocess. Owns the stream-json codec, transport, control dispatch, in-process MCP host, and the callback registries (Hooks/HooksBuilder, CanUseToolCallback). |
-| [`forge-agent`](crates/forge-agent) | Drives one `forge-sdk` Client behind a channel-based `Agent`/`AgentHandle` API. Owns userdata (settings, trust, sessions catalog, memory, plugins), cloud (oauth, usage, account, service status), env (git context), translate (event ↔ message conversions), and tooling. |
-| [`forge-workspace`](crates/forge-workspace) | Multi-session orchestrator and TUI-facing facade. Per-session `DomainSession` holds the authoritative operational state; per-session `SessionTask` actors pump `AgentHandle::take_events()` into `SessionUpdate`s and route `Command`s back. TUI's single point of contact with the agent layer. |
-| [`forge-tui`](crates/forge-tui) | Native terminal interface. Pure view layer; consumes `SessionUpdate` and dispatches `Command` via `forge-workspace`. Holds per-session `UiSession` (messages, viewport, input editor, hover hints). No direct `forge-agent` dependency. |
-| [`forge-test-harness`](crates/forge-test-harness) | Wire-conformance harness for `forge-sdk` ↔ `claude` CLI. Replay-based offline tests + opt-in live capture. |
+| [`forge-primitives`](crates/forge-primitives) | Every type that crosses a crate boundary: message envelopes, content blocks, hook and permission payloads, IDs, render-side views. Pure data. |
+| [`forge-sdk`](crates/forge-sdk) | The `claude` subprocess. Stream-json codec, transport, control dispatch, in-process MCP host, options builder, wire-classification proxy. |
+| [`forge-agent`](crates/forge-agent) | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. User-data reads, cloud calls, environment probes, event translation, tooling. |
+| [`forge-workspace`](crates/forge-workspace) | Multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml`, per-session actors, the machine-local state store, and the peer and worker MCP servers. |
+| [`forge-tui`](crates/forge-tui) | The view layer, and the `forge` binary. Rendering, input handling, per-session presentation state. No direct `forge-agent` dependency. |
+| [`forge-test-harness`](crates/forge-test-harness) | Wire-conformance harness: replay-based offline tests plus opt-in live capture. |
 
-Multiple sessions = one `forge` process per tmux/zellij pane, with
-multiple `Workspace`-managed sessions inside it. No daemon, no shared
-state across processes.
+[`docs/forge-map.html`](docs/forge-map.html) is the visual map of every
+surface the TUI can currently render. Open it in a browser.
 
-## Development
+## Getting started
 
-Requires nightly Rust pinned via `rust-toolchain.toml`.
+Requires nightly Rust at the date pinned in `rust-toolchain.toml`
+(rustup applies it automatically), the `claude` CLI, and
+`cargo-nextest`.
 
 ```bash
-just check               # fmt + clippy + nextest + docs in one shot
-cargo nextest run
-cargo clippy --all-targets -- -D warnings
-cargo fmt --check
+just check      # fmt + unicode gate + clippy + nextest + docs
+just install    # build and install the `forge` binary
 ```
+
+forge reads exactly one configuration file,
+`<config_dir>/forge/forge.toml`, and needs it before it will start. The
+[configuration reference](https://busytools.github.io/forge/configuration.html)
+documents every key and has a complete example.
+
+## Two things to know before running it
+
+forge starts a local man-in-the-middle HTTPS proxy at boot, generates a
+local certificate authority, points every spawned `claude` child at it,
+and normalises the CLI's classification fields on the way out. If the
+proxy cannot start, forge refuses to boot. The
+[proxy page](https://busytools.github.io/forge/classification-proxy.html)
+describes the mechanism and its consequences in full.
+
+forge takes an exclusive lock on a config directory. A second forge on
+the same config directory is refused at boot and reports the holder's
+PID.
+
+## Scope
+
+forge was written for one person's use across a few machines.
+Development is macOS-first: OAuth credentials are read from the macOS
+Keychain behind a `cfg` gate, and on other targets that reader returns
+nothing. It is open source because the code may be useful to read or
+build on, not because it has been generalised.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Licence
 
-MIT.
+MIT. See [LICENSE](LICENSE).
