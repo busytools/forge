@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://busytools.github.io/forge/
+    about: Install, configuration reference, architecture and the wire contract.
+  - name: Contributing guide
+    url: https://github.com/busytools/forge/blob/main/CONTRIBUTING.md
+    about: How to run the checks and what a patch needs before it lands.
