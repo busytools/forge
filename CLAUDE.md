@@ -360,8 +360,6 @@ live in `~/.claude/memory/code-conventions.md`. forge-specific:
   baseline layout, adding a scenario).
 - `.claude/skills/wire-equivalence-check/` - proving forge is
   wire-indistinguishable from native `claude`.
-- `.claude/skills/upstream-watch/` - the weekly Python
-  `claude-agent-sdk` idea-scan (forge does not feature-parity-track it).
 
 ## Team context (for team-lead agents)
 
