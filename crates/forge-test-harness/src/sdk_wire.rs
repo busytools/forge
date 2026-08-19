@@ -153,8 +153,11 @@ pub fn attach_recording(builder: OptionsBuilder) -> (OptionsBuilder, Arc<Mutex<T
 
 /// Pinned CLI version these baselines were captured against.
 ///
-/// When we run the `just upgrade-cli` ritual, this constant bumps along
-/// with the baselines under `baselines/<version>/`.
+/// Bumping it means re-capturing every scenario against the new CLI
+/// (`just conformance-capture-sdk <scenario>`) and promoting the
+/// results into a fresh `baselines/sdk/<version>/`. Replay is expected
+/// to fail in between. The full ritual is in
+/// `.claude/skills/claude-cli-upgrade/`.
 pub const PINNED_CLI_VERSION: &str = "2.1.220";
 
 /// Directory holding the committed trace baselines for the pinned CLI

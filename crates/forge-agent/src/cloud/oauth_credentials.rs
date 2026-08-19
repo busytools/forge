@@ -13,10 +13,11 @@
 //! practice; the cfg gate keeps the crate compiling on other targets
 //! without dragging in a Linux-keyring shim).
 //!
-//! The returned [`OauthCredentials`] feeds the
-//! `cloud::oauth_usage` HTTP client (Bearer header) - no other consumer
-//! reads them today. When the keychain token is past its `expires_at`
-//! and the live probe returns 401, callers can fire
+//! The returned [`OauthCredentials`] supply the Bearer header for the
+//! `cloud::oauth_usage` probe. Three callers read them: that probe,
+//! `forge_sdk_bridge`, and `forge_workspace::account_loader`'s
+//! boot-time per-account load. When the keychain token is past its
+//! `expires_at` and the live probe returns 401, callers can fire
 //! [`refresh_via_cli_spawn`] to nudge the claude CLI into rotating the
 //! keychain entry on the user's behalf.
 
