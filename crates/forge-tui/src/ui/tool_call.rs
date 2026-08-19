@@ -44,6 +44,7 @@ fn stable_hash_usize(s: &str) -> usize {
     use std::hash::{Hash, Hasher};
     let mut h = DefaultHasher::new();
     s.hash(&mut h);
+    // Narrowing a 64-bit hash is what this function is for.
     #[allow(clippy::cast_possible_truncation)]
     let truncated = h.finish() as usize;
     truncated

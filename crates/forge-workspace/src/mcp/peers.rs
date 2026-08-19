@@ -80,13 +80,11 @@ pub(crate) struct Whoami {
 impl Tool for Whoami {
     // `&'static str` literal returned where the trait sigs `&str`.
     // Matches the established convention in `forge_sdk::mcp::macros`.
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "peers__whoami"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Returns your own forge-agent identity (project name, organization, \
          filesystem path, current model, and your in-flight peer-message \
          counters). Useful when an inbound wrapper says 'from/to agent X' \
@@ -147,13 +145,11 @@ pub(crate) struct ListAgents {
 
 #[async_trait::async_trait]
 impl Tool for ListAgents {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "peers__list_agents"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Discover which forge agents (projects loaded from forge.toml) you \
          can talk to via peers__ask_agent / peers__tell_agent. Returns each \
          agent's project name, organization, filesystem path, current \
@@ -237,13 +233,11 @@ struct TellArgs {
 
 #[async_trait::async_trait]
 impl Tool for TellAgent {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "peers__tell_agent"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Send a one-way message to another forge agent (project). Returns \
          immediately with a correlation_id; no reply is expected from the \
          target. Two shapes: (1) REPLY to an inbound peers__ask_agent - \
@@ -494,13 +488,11 @@ struct AskArgs {
 
 #[async_trait::async_trait]
 impl Tool for AskAgent {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "peers__ask_agent"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Ask another forge agent (project) a question and receive their \
          reply asynchronously. Returns IMMEDIATELY with a correlation_id \
          (e.g. q-7f3a92e0); this tool does NOT wait for the reply. The \

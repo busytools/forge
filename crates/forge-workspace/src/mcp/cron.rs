@@ -116,13 +116,11 @@ struct CreateArgs {
 
 #[async_trait::async_trait]
 impl Tool for Create {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "cron__create"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Schedule a durable prompt that fires into YOUR project's session and survives forge \
          restarts. Provide EXACTLY ONE of `schedule` (a 5-field cron expression like \"0 9 * * *\" \
          for 9am daily, evaluated in your local timezone) or `run_once_at` (an RFC3339 timestamp \
@@ -220,13 +218,11 @@ struct List {
 
 #[async_trait::async_trait]
 impl Tool for List {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "cron__list"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "List the durable crons registered for YOUR project. Returns a JSON array of {id, \
          project, schedule, prompt, next_fire}. Use an id with cron__delete. An empty array means \
          no crons are scheduled. Takes no arguments. Any session in the project may call this."
@@ -266,13 +262,11 @@ struct DeleteArgs {
 
 #[async_trait::async_trait]
 impl Tool for Delete {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "cron__delete"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Delete a durable cron in YOUR project by id (from cron__list / cron__create). Any \
          session in the project may call this."
     }

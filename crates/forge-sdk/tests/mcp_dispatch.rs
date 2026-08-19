@@ -17,10 +17,10 @@ struct EchoTool;
 
 #[async_trait]
 impl Tool for EchoTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "echo"
     }
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Echoes its input"
     }
     fn input_schema(&self) -> serde_json::Value {
@@ -35,10 +35,10 @@ struct NamedTool(&'static str);
 
 #[async_trait]
 impl Tool for NamedTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         self.0
     }
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Named probe tool"
     }
     fn input_schema(&self) -> serde_json::Value {

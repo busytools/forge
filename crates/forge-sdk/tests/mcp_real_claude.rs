@@ -22,10 +22,10 @@ struct GreetTool;
 
 #[async_trait]
 impl Tool for GreetTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "greet"
     }
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Greet someone by name"
     }
     fn input_schema(&self) -> serde_json::Value {

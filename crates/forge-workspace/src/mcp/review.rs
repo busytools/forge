@@ -273,13 +273,11 @@ pub(crate) struct ReviewList {
 
 #[async_trait::async_trait]
 impl Tool for ReviewList {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "review__list"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "List the review sets the reviewer submitted on your current branch, \
          newest first. Each entry has a review_id, its 1-based number, the \
          optional overview summary, when it was created, and a per-state \
@@ -356,13 +354,11 @@ struct GetArgs {
 
 #[async_trait::async_trait]
 impl Tool for ReviewGet {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "review__get"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Read one review's overview and its comments. Returns the review's \
          summary plus a comment array; each comment has a comment_id (use \
          it with review__reply / review__resolve), its file, line, and \
@@ -423,13 +419,11 @@ struct ReplyArgs {
 
 #[async_trait::async_trait]
 impl Tool for ReviewReply {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "review__reply"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Reply to one review comment. Appends your message to that comment's \
          thread and flips it from open to addressed so the reviewer sees you \
          acted on it (a comment already resolved stays resolved). Use this to \
@@ -489,13 +483,11 @@ struct ResolveArgs {
 
 #[async_trait::async_trait]
 impl Tool for ReviewResolve {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "review__resolve"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Mark one review comment resolved - you consider it done. Prefer \
          replying first (review__reply) to say what you changed, then \
          resolve; or leave a comment addressed and let the reviewer resolve \

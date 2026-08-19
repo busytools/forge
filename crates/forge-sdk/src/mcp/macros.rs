@@ -31,22 +31,18 @@ macro_rules! tool {
         call: |$input:ident : $input_ty:ty| async move $body:block,
         tool_type: $ty:ident $(,)?
     ) => {
-        // The `tool!` macro generates a unit struct named by the caller -
-        // doc requirements and lifetime nits don't apply at the call site.
         #[derive(Clone, Copy, Debug, Default)]
+        // The caller names this struct, so it cannot carry a doc comment
+        // the macro wrote.
         #[allow(missing_docs)]
         pub struct $ty;
 
         #[$crate::__private::async_trait]
         impl $crate::mcp::Tool for $ty {
-            // `&'static str` literal returned where the trait sigs `&str`.
-            // The widening is intentional; the lint flags it as needless.
-            #[allow(clippy::unnecessary_literal_bound)]
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 $name
             }
-            #[allow(clippy::unnecessary_literal_bound)]
-            fn description(&self) -> &str {
+            fn description(&self) -> &'static str {
                 $desc
             }
             fn input_schema(&self) -> ::serde_json::Value {
