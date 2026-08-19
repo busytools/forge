@@ -16,8 +16,8 @@ consecutive runs can be compared to see "fixed since last run" vs
 Usage:
     analyze.py --native /tmp/forge-wire-check/flows-native.mitm \
                --alt    /tmp/forge-wire-check/flows-alt.mitm \
-               --accepted ~/Projects/forge/.claude/skills/wire-equivalence-check/accepted-divergences.json \
-               [--audit-dir ~/Projects/forge/audits/wire-equivalence] \
+               --accepted .claude/skills/wire-equivalence-check/accepted-divergences.json \
+               [--audit-dir audits/wire-equivalence] \
                [--verbose]
 
 Exits:
@@ -543,7 +543,7 @@ def main():
     p.add_argument('--native', required=True)
     p.add_argument('--alt', required=True)
     p.add_argument('--accepted', default=None)
-    p.add_argument('--audit-dir', default=os.path.expanduser('~/Projects/forge/audits/wire-equivalence'))
+    p.add_argument('--audit-dir', default='audits/wire-equivalence')
     p.add_argument('--verbose', action='store_true')
     args = p.parse_args()
 

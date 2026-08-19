@@ -1,12 +1,12 @@
 {
-  "_doc": "Endpoints forge intentionally hits that native claude doesn't. The analyzer filters these out of the 'regression' list. Edit when the forge team makes a new product decision about an endpoint divergence. Each entry should explain WHY the divergence is accepted so future maintainers understand. host+path_contains is a substring match.",
+  "_doc": "Endpoints forge intentionally hits that native claude doesn't. The analyzer filters these out of the 'regression' list. Edit when a new product decision is made about an endpoint divergence. Each entry should explain WHY the divergence is accepted so future maintainers understand. host+path_contains is a substring match.",
   "endpoints_in_alt_not_native": [
     {
       "host": "api.anthropic.com",
       "path_contains": "/api/oauth/usage",
       "reason": "forge polls user OAuth quota for UI usage panel; ~20 hits per session",
       "decision_date": "2026-05-20",
-      "accepted_by": "forge-team",
+      "accepted_by": "maintainer",
       "review_after": "2026-08-20"
     },
     {
@@ -14,7 +14,7 @@
       "path_contains": "/@anthropic-ai/claude-code/latest",
       "reason": "forge probes npm for latest claude-code package version to show update notifications; 1 hit at session start",
       "decision_date": "2026-05-20",
-      "accepted_by": "forge-team",
+      "accepted_by": "maintainer",
       "review_after": "2026-08-20"
     },
     {
@@ -22,21 +22,21 @@
       "path_contains": "/api/v2/summary.json",
       "reason": "forge proactively fetches Anthropic's status page for in-app banners; 1 hit at session start",
       "decision_date": "2026-05-20",
-      "accepted_by": "forge-team",
+      "accepted_by": "maintainer",
       "review_after": "2026-08-20"
     },
     {
       "host": "registry.npmjs.org",
       "path_contains": "/@playwright%2fmcp",
-      "reason": "forge probes npm for the Playwright MCP server package — not visible to Anthropic; user explicitly accepted on 2026-05-28: 'ignore the npmjs, we only care about api that captures data in some form and anthropic has access to it'",
+      "reason": "forge probes npm for the Playwright MCP server package. Not an Anthropic-visible channel, and the scope of this check is endpoints that carry data Anthropic can see.",
       "decision_date": "2026-05-28",
-      "accepted_by": "forge-team",
+      "accepted_by": "maintainer",
       "review_after": "2026-08-28"
     },
     {
       "host": "mcp-proxy.anthropic.com",
       "path_contains": "/v1/mcp/mcpsrv_",
-      "reason": "Symmetric mirror of the native-only entry below. MCP-server hits depend on which side of the capture happened to have MCP servers attached during the session. Per-session state, not a forge feature divergence — grep confirms zero references in forge source; the claude subprocess itself emits these.",
+      "reason": "Symmetric mirror of the native-only entry below. MCP-server hits depend on which side of the capture happened to have MCP servers attached during the session. Per-session state, not a forge feature divergence: grep confirms zero references in forge source, and the claude subprocess itself emits these.",
       "decision_date": "2026-05-29",
       "accepted_by": "wire-equivalence-skill",
       "review_after": "n/a"
@@ -44,7 +44,7 @@
     {
       "host": "api.anthropic.com",
       "path_contains": "/v1/code/triggers",
-      "reason": "Endpoint emitted by claude CLI 2.1.153 (User-Agent: 'claude-cli/2.1.153 (external, cli)'), not by forge. Grep confirms zero references in forge source. Fires conditionally — only when CLI decides to. Accepted because forge's role is to wrap claude transparently; CLI-emitted endpoints are by definition wire-equivalent.",
+      "reason": "Endpoint emitted by claude CLI 2.1.153 (User-Agent: 'claude-cli/2.1.153 (external, cli)'), not by forge. Grep confirms zero references in forge source. Fires conditionally, only when the CLI decides to. Accepted because forge's role is to wrap claude transparently; CLI-emitted endpoints are by definition wire-equivalent.",
       "decision_date": "2026-05-29",
       "accepted_by": "wire-equivalence-skill",
       "review_after": "2026-08-29"
