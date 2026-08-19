@@ -1,0 +1,41 @@
+name: Feature request
+description: Suggest a change to what forge does.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        forge was written for one person's use and is deliberately
+        narrow. Proposals that fit the existing shape land more easily
+        than ones that broaden it, so it is worth saying which yours is.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and where forge gets in the way today.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like instead
+      description: If you have a specific shape in mind, describe it. If not, the problem alone is fine.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part
+      options:
+        - TUI
+        - Sessions and orchestration
+        - forge.toml configuration
+        - SDK and wire protocol
+        - The in-process MCP server (peers, workers, review, cron, gotify)
+        - Build, tooling or docs
+        - Not sure
+    validations:
+      required: false

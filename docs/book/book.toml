@@ -1,0 +1,16 @@
+[book]
+title = "forge"
+description = "A Rust workspace that drives Anthropic's claude CLI: a multi-session terminal UI plus an SDK that speaks the CLI's stream-json wire protocol."
+src = "src"
+language = "en"
+
+[build]
+# Keep generated output inside the already-ignored target dir so the
+# repo needs no extra ignore rule.
+build-dir = "../../target/book"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/busytools/forge"
+edit-url-template = "https://github.com/busytools/forge/edit/main/docs/book/{path}"
+default-theme = "rust"
