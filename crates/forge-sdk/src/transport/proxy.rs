@@ -2,8 +2,8 @@
 //!
 //! Runs an in-process MITM HTTP proxy that intercepts the `claude`
 //! subprocess's HTTPS traffic and normalises the 6 classification
-//! signal channels documented in
-//! `~/.claude/memory/reference_claude_cli_integration_modes.md`:
+//! signal channels, each found by capturing a native session and
+//! diffing it against a forge one:
 //!
 //! 1. `GET /api/claude_cli/bootstrap?entrypoint=...` query string
 //! 2. `User-Agent` on `POST /v1/messages`
