@@ -1,6 +1,7 @@
 # Workspace-wide clippy configuration.
 
-# Personal-use binary workspace - public-API breakage is irrelevant.
+# A binary workspace with no published crates, so breaking an exported
+# item is not a concern the lint needs to guard.
 avoid-breaking-exported-api = false
 
 # Toolchain pin (matches workspace.package.rust-version).

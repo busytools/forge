@@ -71,7 +71,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # classification channels the `claude` CLI broadcasts (bootstrap qs,
 # User-Agent, event_logging body, statsig body, datadog ddtags +
 # body) from sdk-cli shape to cli (interactive subscription) shape.
-# See ~/.claude/memory/reference_claude_cli_integration_modes.md.
+# The channels are enumerated in `forge-sdk::transport::proxy`.
 # hudsucker re-exports rcgen + rustls + hyper, so we only need the
 # external surface bits (Bytes, http-body-util, url) directly.
 # hyper-proxy2 lets us chain forge's embedded proxy through an upstream
@@ -118,7 +118,8 @@ dead_code = "deny"
 unused_imports = "deny"
 unused_must_use = "deny"
 unused_variables = "deny"
-# Personal-use scope - no docs.rs publishing target, no public API contract.
+# Nothing here is published, so there is no docs.rs target and no
+# public API contract to document against.
 missing_docs = "allow"
 # `unused_crate_dependencies` fires false positives at the build-target
 # level (integration tests + examples don't import every workspace dep
@@ -134,7 +135,7 @@ panic = "deny"
 exit = "deny"
 todo = "deny"
 unimplemented = "deny"
-# Pedantic exemptions: not load-bearing for personal-use scope.
+# Pedantic exemptions, each with its reason inline.
 module_name_repetitions = "allow"   # Rust-idiomatic; not actually repetition.
 must_use_candidate = "allow"        # Most fns don't need the marker.
 return_self_not_must_use = "allow"  # Pair with must_use_candidate; builder
