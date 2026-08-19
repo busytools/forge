@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Raw mock (no initialize handshake) - for Subprocess-level transport tests
+# Raw mock (no initialize handshake) — for Subprocess-level transport tests
 # that bypass Client::spawn. Emits init, then per stdin line emits
 # assistant+result.
 

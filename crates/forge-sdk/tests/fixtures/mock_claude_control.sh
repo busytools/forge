@@ -2,13 +2,13 @@
 # Mock: handles the initialize handshake, then loops reading one
 # outbound control_request at a time and replies with a matching
 # control_response. Used exclusively by the control-subtype
-# integration tests - never emits user-message or result frames.
+# integration tests — never emits user-message or result frames.
 #
-# When `FORGED_MOCK_ECHO_SUBTYPE` is set, every
+# Round 3 — M8. When `FORGED_MOCK_ECHO_SUBTYPE` is set, every
 # observed control_request's subtype is appended (one per line) to
 # the file at `$FORGED_MOCK_ECHO_SUBTYPE`. M3 dispatch tests can read
 # the file post-call to discriminate "the right Client::* method
-# fired" from "the dispatch path reached the actor" - strengthening
+# fired" from "the dispatch path reached the actor" — strengthening
 # the dispatch contract beyond the current "no SessionNotFound, no
 # actor-gone" check. Default (env unset) keeps the mock byte-for-byte
 # compatible with existing forge-sdk tests.

@@ -22,4 +22,4 @@ IFS= read -r init_req
 init_id=$(printf '%s' "$init_req" | python3 -c 'import sys, json; print(json.load(sys.stdin).get("request_id",""))' 2>/dev/null || echo "")
 printf '%s\n' "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"$init_id\",\"response\":{}}}"
 
-# Exit - caller disconnects immediately.
+# Exit — caller disconnects immediately.
