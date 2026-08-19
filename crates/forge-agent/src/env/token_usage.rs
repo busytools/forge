@@ -29,7 +29,7 @@ const WORKTREE_MARKER: &str = "--claude-worktrees-";
 /// project it belongs to.
 ///
 /// The slug is the project's absolute path with `/` and `.` both
-/// replaced by `-`, so it is lossy: `trader-cc` and `trader/cc` encode
+/// replaced by `-`, so it is lossy: `web-api` and `web/api` encode
 /// identically. Resolution therefore consults the filesystem (the
 /// user's `~/Projects`) rather than splitting on `-`. Worktrees and
 /// sub-paths fold to their repo, `/tmp` paths to `scratch`.
@@ -51,7 +51,7 @@ fn fold_project_in(slug: &str, projects_prefix: &str, projects_root: &Path) -> S
         return fold_project_in(&slug[..idx], projects_prefix, projects_root);
     }
     // (b) A path under <home>/Projects/: resolve the repo name against
-    // the filesystem so a dashed name (`trader-cc`) isn't mis-split.
+    // the filesystem so a dashed name (`web-api`) isn't mis-split.
     if !projects_prefix.is_empty()
         && let Some(remainder) = slug.strip_prefix(projects_prefix)
         && !remainder.is_empty()
@@ -476,7 +476,7 @@ mod tests {
     use tempfile::TempDir;
     use time_tz::timezones;
 
-    const PREFIX: &str = "-Users-vedhavyas-Projects-";
+    const PREFIX: &str = "-Users-developer-Projects-";
 
     fn utc() -> &'static Tz {
         timezones::db::UTC
@@ -501,23 +501,23 @@ mod tests {
 
     #[test]
     fn worktree_slug_folds_to_parent_repo() {
-        let root = projects_root_with(&["busymail"]);
-        let slug = "-Users-vedhavyas-Projects-busymail--claude-worktrees-abuse-hardening";
-        assert_eq!(fold_project_in(slug, PREFIX, root.path()), "busymail");
+        let root = projects_root_with(&["airmail"]);
+        let slug = "-Users-developer-Projects-airmail--claude-worktrees-abuse-hardening";
+        assert_eq!(fold_project_in(slug, PREFIX, root.path()), "airmail");
     }
 
     #[test]
     fn sub_crate_slug_folds_to_repo_not_dash_split() {
         let root = projects_root_with(&["forge"]);
-        let slug = "-Users-vedhavyas-Projects-forge-crates-forge-test-harness";
+        let slug = "-Users-developer-Projects-forge-crates-forge-test-harness";
         assert_eq!(fold_project_in(slug, PREFIX, root.path()), "forge");
     }
 
     #[test]
     fn dashed_project_name_is_not_split_on_internal_dash() {
-        let root = projects_root_with(&["trader-cc"]);
-        let slug = "-Users-vedhavyas-Projects-trader-cc";
-        assert_eq!(fold_project_in(slug, PREFIX, root.path()), "trader-cc");
+        let root = projects_root_with(&["web-api"]);
+        let slug = "-Users-developer-Projects-web-api";
+        assert_eq!(fold_project_in(slug, PREFIX, root.path()), "web-api");
     }
 
     #[test]
@@ -542,7 +542,7 @@ mod tests {
         // The repo dir is gone, so resolution can't confirm the name;
         // the leading path component is the best-effort repo label.
         let root = projects_root_with(&[]);
-        let slug = "-Users-vedhavyas-Projects-ghostrepo-src-main";
+        let slug = "-Users-developer-Projects-ghostrepo-src-main";
         assert_eq!(fold_project_in(slug, PREFIX, root.path()), "ghostrepo");
     }
 
@@ -552,12 +552,12 @@ mod tests {
         // `~/Projects/.hidden` (dir gone) encodes the `.` as a second
         // dash; the empty candidate must not match projects_root itself.
         assert_eq!(
-            fold_project_in("-Users-vedhavyas-Projects--hidden", PREFIX, root.path()),
+            fold_project_in("-Users-developer-Projects--hidden", PREFIX, root.path()),
             "hidden",
         );
         // `~/Projects/forge/.config` still folds to the repo.
         assert_eq!(
-            fold_project_in("-Users-vedhavyas-Projects-forge--config", PREFIX, root.path()),
+            fold_project_in("-Users-developer-Projects-forge--config", PREFIX, root.path()),
             "forge",
         );
     }

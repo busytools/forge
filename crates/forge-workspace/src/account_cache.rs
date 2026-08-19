@@ -130,12 +130,12 @@ mod tests {
         let db = crate::store::Db::open(&cfg.path().join("db.redb")).expect("open db");
         store_spinner(&db, Some(crate::ui::SpinnerStyle::Ember));
         let mut entries = std::collections::BTreeMap::new();
-        entries.insert("Granite".to_owned(), fixture_entry());
+        entries.insert("Gateway".to_owned(), fixture_entry());
         store(&db, &entries);
 
         let loaded = load(&db);
         assert_eq!(loaded.spinner, Some(crate::ui::SpinnerStyle::Ember), "the spinner reloads");
-        assert!(loaded.account_usage.contains_key("Granite"), "the usage cache reloads");
+        assert!(loaded.account_usage.contains_key("Gateway"), "the usage cache reloads");
     }
 
     #[test]

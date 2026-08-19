@@ -423,19 +423,19 @@ mod tests {
 
     #[test]
     fn app_name_to_id_maps() {
-        let body = r#"[{"id":3,"name":"trader-cc","token":"A.abc","description":""}]"#;
+        let body = r#"[{"id":3,"name":"web-api","token":"A.abc","description":""}]"#;
         let apps: Vec<GotifyApp> = serde_json::from_str(body).expect("parse application list");
         let index = build_app_index(apps);
-        assert_eq!(index.get("trader-cc"), Some(&3));
+        assert_eq!(index.get("web-api"), Some(&3));
     }
 
     #[test]
     fn app_names_extracts_names_in_server_order() {
         let apps = vec![
-            GotifyApp { id: 3, name: "trader-cc".to_owned() },
+            GotifyApp { id: 3, name: "web-api".to_owned() },
             GotifyApp { id: 1, name: "Backups".to_owned() },
         ];
-        assert_eq!(build_app_names(apps), vec!["trader-cc".to_owned(), "Backups".to_owned()]);
+        assert_eq!(build_app_names(apps), vec!["web-api".to_owned(), "Backups".to_owned()]);
     }
 
     #[test]

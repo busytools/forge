@@ -2494,13 +2494,13 @@ mod team_hook_tests {
         }
     }
 
-    /// A project-scoped worker (bare label `steward` in `hub-modules`)
-    /// resolves its kick project-first to `hub-modules/steward/kick.md`,
+    /// A project-scoped worker (bare label `steward` in `data-modules`)
+    /// resolves its kick project-first to `data-modules/steward/kick.md`,
     /// even though no global `steward` exists.
     #[tokio::test]
     async fn worker_kick_resolves_project_scoped_role() {
         let tmp = tempfile::tempdir().expect("tmp");
-        let steward = tmp.path().join("hub-modules").join("steward");
+        let steward = tmp.path().join("data-modules").join("steward");
         std::fs::create_dir_all(&steward).expect("mkdir");
         std::fs::write(steward.join("charter.md"), "description: Hub steward\n").expect("charter");
         std::fs::write(steward.join("kick.md"), "STEWARD-KICK: tend the modules\n").expect("kick");
@@ -2510,16 +2510,16 @@ mod team_hook_tests {
         workspace.enable_test_dispatch_intercept();
         workspace.start_kick_dispatcher();
         workspace.seed_test_project_with_static_workers(
-            "hub-modules",
-            "/tmp/hub-modules",
+            "data-modules",
+            "/tmp/data-modules",
             &["steward".to_owned()],
         );
         // Build the worker synth key from the seeded project's resolved
-        // key so the kick hook recovers `hub-modules` as the namespace.
+        // key so the kick hook recovers `data-modules` as the namespace.
         let project_key = workspace
             .list_projects()
             .into_iter()
-            .find(|v| v.name == "hub-modules")
+            .find(|v| v.name == "data-modules")
             .expect("seeded project present")
             .key;
         let synth = SessionKey::from_session_id(format!(
@@ -2537,7 +2537,7 @@ mod team_hook_tests {
         if let Command::Prompt { text, .. } = prompts[0] {
             assert!(
                 text.contains("STEWARD-KICK"),
-                "kick resolved from hub-modules/steward/kick.md; got: {text}",
+                "kick resolved from data-modules/steward/kick.md; got: {text}",
             );
         }
     }

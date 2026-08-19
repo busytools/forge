@@ -4290,7 +4290,7 @@ mod tests {
     fn envelope_streak_different_project_is_start() {
         let blocks = vec![
             envelope_block("forge", "Personal", "first"),
-            envelope_block("granite-backend", "Granite", "second"),
+            envelope_block("gateway-backend", "Gateway", "second"),
         ];
         assert_eq!(envelope_streak_positions(&blocks)[1], Some(EnvelopeStreakPosition::Start));
     }

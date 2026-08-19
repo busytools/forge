@@ -22,15 +22,15 @@ fn write_default_config(dir: &std::path::Path) {
         r#"
 [[orgs]]
 name = "Default"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
 auto_start = true
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 "#,
     )
     .expect("write forge.toml");

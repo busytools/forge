@@ -134,7 +134,7 @@ mod tests {
     fn once_entry_serde_round_trips() {
         let entry = CronEntry {
             id: CronId::from("id-2"),
-            project_name: "busymail".to_owned(),
+            project_name: "airmail".to_owned(),
             kind: CronKind::Once(epoch(1_700_100_000)),
             prompt: "deploy".to_owned(),
             description: None,

@@ -1028,12 +1028,15 @@ mod mock_tests {
         // IS the scope check now (a project sees its own roles + globals).
         use crate::team::roles::{override_forge_team_root_for_test, resolve_role};
         let tmp = tempfile::tempdir().expect("tmp");
-        let steward = tmp.path().join("hub-modules").join("steward");
+        let steward = tmp.path().join("data-modules").join("steward");
         std::fs::create_dir_all(&steward).expect("mkdir");
         std::fs::write(steward.join("charter.md"), "description: Hub steward\n").expect("charter");
         let _guard = override_forge_team_root_for_test(tmp.path().to_path_buf());
 
-        assert_eq!(resolve_role("steward", "hub-modules").as_deref(), Some("hub-modules/steward"));
+        assert_eq!(
+            resolve_role("steward", "data-modules").as_deref(),
+            Some("data-modules/steward")
+        );
         assert_eq!(resolve_role("steward", "forge"), None);
     }
 

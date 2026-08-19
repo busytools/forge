@@ -18,7 +18,7 @@
 //! Typical invocation:
 //!
 //! ```bash
-//! FORGE_REAL_SESSIONS=$HOME/.claude-subspace/projects \
+//! FORGE_REAL_SESSIONS=$HOME/.claude-stargate/projects \
 //!   cargo nextest run -p forge-test-harness --no-capture \
 //!   real_session_decode_probe
 //! ```
@@ -82,7 +82,7 @@ fn real_session_decode_probe() {
     let Ok(root_str) = std::env::var("FORGE_REAL_SESSIONS") else {
         eprintln!(
             "FORGE_REAL_SESSIONS not set; skipping real-session probe. \
-             Set it to e.g. $HOME/.claude-subspace/projects to run."
+             Set it to e.g. $HOME/.claude-stargate/projects to run."
         );
         return;
     };

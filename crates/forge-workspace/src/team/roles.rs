@@ -424,16 +424,19 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmp");
         let root = tmp.path();
         mk(root, "implementer"); // global
-        mk(root, "hub-modules/steward"); // project
+        mk(root, "data-modules/steward"); // project
         mk(root, "forge/implementer"); // project override of a global
         let _guard = override_forge_team_root_for_test(root.to_path_buf());
 
         // bare project role resolves to <ns>/<label> from its own project
-        assert_eq!(resolve_role("steward", "hub-modules").as_deref(), Some("hub-modules/steward"));
+        assert_eq!(
+            resolve_role("steward", "data-modules").as_deref(),
+            Some("data-modules/steward")
+        );
         // from another project, the project role does NOT resolve (scope)
         assert_eq!(resolve_role("steward", "forge"), None);
         // global resolves anywhere when no project role shadows it
-        assert_eq!(resolve_role("implementer", "hub-modules").as_deref(), Some("implementer"));
+        assert_eq!(resolve_role("implementer", "data-modules").as_deref(), Some("implementer"));
         // project role shadows a global of the same bare name
         assert_eq!(resolve_role("implementer", "forge").as_deref(), Some("forge/implementer"));
     }

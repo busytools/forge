@@ -400,7 +400,7 @@ mod tests {
         // on the title should be stripped so we render
         // "Read /path/to/file.rs" exactly once.
         let tc = test_tool_call(
-            "Read /Users/vedhavyas/Projects/forge/Cargo.toml",
+            "Read /Users/developer/Projects/forge/Cargo.toml",
             "Read",
             model::ToolCallStatus::Completed,
         );
@@ -421,7 +421,7 @@ mod tests {
             "duplicate 'Read' prefix not stripped; got: {rendered:?}"
         );
         assert!(
-            rendered.contains("/Users/vedhavyas/Projects/forge/Cargo.toml"),
+            rendered.contains("/Users/developer/Projects/forge/Cargo.toml"),
             "expected path body in title; got: {rendered:?}"
         );
     }
@@ -794,7 +794,7 @@ mod tests {
         tc.content = vec![model::ToolCallContent::Diff(
             model::Diff::new("src/main.rs", "new".to_owned())
                 .old_text(Some("old".to_owned()))
-                .repository(Some("acme/project".to_owned())),
+                .repository(Some("stargate/project".to_owned())),
         )];
 
         let body = standard::render_tool_call_body(&tc, 80);
@@ -803,7 +803,7 @@ mod tests {
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
             .collect();
 
-        assert!(rendered.iter().any(|line| line.starts_with("  │    [acme/project]")));
+        assert!(rendered.iter().any(|line| line.starts_with("  │    [stargate/project]")));
         assert!(rendered.iter().any(|line| line.starts_with("  │    lines ")));
         assert!(rendered.iter().any(|line| {
             (line.starts_with("  │   ") || line.starts_with("  └─   ")) && line.contains("+  new")

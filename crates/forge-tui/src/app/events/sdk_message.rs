@@ -3338,20 +3338,20 @@ mod commands_changed_tests {
         handle_sdk_message(
             &mut app,
             commands_event(vec![
-                json!({"name": "granite-upgrade", "description": "upgrade flow", "argumentHint": ""}),
+                json!({"name": "gateway-upgrade", "description": "upgrade flow", "argumentHint": ""}),
                 json!({"name": "greptile", "description": "code search", "argumentHint": "<query>"}),
             ]),
         );
 
         let names: Vec<&str> = app.available_commands().iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, vec!["granite-upgrade", "greptile"], "list replaced, not appended");
+        assert_eq!(names, vec!["gateway-upgrade", "greptile"], "list replaced, not appended");
         // argumentHint parses into input_hint; an empty hint drops to None.
         let greptile =
             app.available_commands().iter().find(|c| c.name == "greptile").expect("greptile");
         assert_eq!(greptile.input_hint.as_deref(), Some("<query>"));
-        let granite =
-            app.available_commands().iter().find(|c| c.name == "granite-upgrade").expect("granite");
-        assert_eq!(granite.input_hint, None, "empty argumentHint collapses to None");
+        let gateway =
+            app.available_commands().iter().find(|c| c.name == "gateway-upgrade").expect("gateway");
+        assert_eq!(gateway.input_hint, None, "empty argumentHint collapses to None");
     }
 
     #[test]

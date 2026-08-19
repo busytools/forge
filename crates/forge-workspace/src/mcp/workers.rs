@@ -1298,7 +1298,7 @@ mod tests {
         *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
             session_id: "u".into(),
             tag: "forge:worker:reviewer".into(),
-            rate_limited_account: Some("granite".into()),
+            rate_limited_account: Some("gateway".into()),
             durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
@@ -1312,7 +1312,7 @@ mod tests {
         let body: serde_json::Value =
             serde_json::from_str(&output.blocks[0].text).expect("valid json body");
         let notice = body["notice"].as_str().expect("notice present when rate-limited");
-        assert!(notice.contains("granite"), "notice names the rate-limited account: {notice}");
+        assert!(notice.contains("gateway"), "notice names the rate-limited account: {notice}");
     }
 
     #[tokio::test]
@@ -2284,7 +2284,7 @@ mod tests {
         // lead). The worker replies with workers__tell(target="lead",
         // in_reply_to=q-y). The reply must route by correlation
         // straight to the asking lead's session and close the ask -
-        // the exact busymail scenario, now via the right tool.
+        // the exact airmail scenario, now via the right tool.
         let mock = Arc::new(MockWorkerFacade::new());
         let lead_key = fake_key("lead-uuid");
         let worker_key = fake_key("worker-uuid");

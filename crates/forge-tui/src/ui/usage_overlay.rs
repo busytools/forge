@@ -551,7 +551,7 @@ mod tests {
 
     #[test]
     fn render_shows_summary_and_total() {
-        let mut app = app_with(Some(report_with(&["forge", "trader-cc"], true)));
+        let mut app = app_with(Some(report_with(&["forge", "web-api"], true)));
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
         terminal.draw(|frame| render(frame, &mut app)).expect("draw");
         let rendered = buffer_text(terminal.backend().buffer());

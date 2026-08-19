@@ -1014,7 +1014,7 @@ fn peer_badge_spans(
 // stable-shape block:
 //
 //   ─────────────────────────
-//     Profile  Subspace
+//     Profile  Stargate
 //     Mode     Auto
 //     Model    Opus 1M
 //     Effort   Max
@@ -1723,7 +1723,7 @@ mod tests {
 
     #[test]
     fn truncate_long_string_head_with_ellipsis() {
-        assert_eq!(truncate_with_ellipsis("subspace-chain-pulse", 12), "subspace-ch…");
+        assert_eq!(truncate_with_ellipsis("stargate-chain-pulse", 12), "stargate-ch…");
     }
 
     #[test]
