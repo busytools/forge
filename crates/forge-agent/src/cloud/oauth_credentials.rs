@@ -13,12 +13,17 @@
 //! practice; the cfg gate keeps the crate compiling on other targets
 //! without dragging in a Linux-keyring shim).
 //!
-//! The returned [`OauthCredentials`] feeds the
-//! `cloud::oauth_usage` HTTP client (Bearer header) - no other consumer
-//! reads them today. When the keychain token is past its `expires_at`
-//! and the live probe returns 401, callers can fire
-//! [`refresh_via_cli_spawn`] to nudge the claude CLI into rotating the
-//! keychain entry on the user's behalf.
+//! Four readers: [`crate::cloud::oauth_usage`], which is the only one
+//! that turns them into a Bearer header; [`refresh_via_cli_spawn`]
+//! below, before and after its spawn; `ForgeSdkBridge`; and
+//! forge-workspace's boot-time per-account loader. Note that
+//! `oauth_usage` skips this loader entirely on the
+//! `ProbePlan::BaseUrl` path, building credentials from
+//! `ANTHROPIC_AUTH_TOKEN` instead.
+//!
+//! When the keychain token is past its `expires_at` and the live probe
+//! returns 401, callers can fire [`refresh_via_cli_spawn`] to nudge the
+//! claude CLI into rotating the keychain entry on the user's behalf.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

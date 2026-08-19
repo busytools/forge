@@ -1,11 +1,21 @@
-# Changelog
+# Changelog (archived)
 
-All notable changes to `forge-sdk` are documented here.
+A record of `forge-sdk`'s early development: releases 0.0.1 through
+0.1.64, plus an `[Unreleased]` section of work that landed after
+0.1.64 and was never cut under a version of its own. It stops there
+and is not maintained. Every crate in the workspace now shares one
+version from `[workspace.package]`, and the release record is the `v*`
+git tags.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
-this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-Version numbers mirror the Python SDK release they target parity with
-(e.g. `forge-sdk 0.1.0` targets `claude-agent-sdk` v0.1.64+).
+The entries below are history, not current direction. They are written
+in terms of parity with the Python `claude-agent-sdk`, and the version
+numbers here were picked to track it. forge does not work that way:
+forge-sdk and the Python SDK are peer clients of the same binary,
+sharing a wire contract with `claude` and nothing else.
+
+For the same reason, the parity documents these entries point at,
+`PARITY.md` and `docs/parity-check.md`, were both removed. Nothing in
+the repository replaces them.
 
 ## [Unreleased]
 

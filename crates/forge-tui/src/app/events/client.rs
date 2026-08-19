@@ -410,8 +410,8 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
 /// **Focus rule:** auto-focus the new spawn ONLY when there's no
 /// real focused session yet - i.e. `active_session_key` is `None`
 /// or still pointing at the pre-Connect placeholder. Once a real
-/// session is focused (the StartDefault target after `forge.toml`'s
-/// `focus = true` project's Connected fires), subsequent
+/// session is focused (the StartDefault target, i.e. the project named
+/// on the command line, once its Connected fires), subsequent
 /// auto_start projects' `Spawning` events must NOT steal focus.
 ///
 /// Existing buckets (user clicked a stale row to re-wake) still
@@ -462,8 +462,9 @@ fn apply_session_update_spawning(
     // **Focus stays where it is.** Auto-focus over the pre-Connect
     // placeholder would let whichever auto_start project's Spawning
     // event arrives first steal the focused tab - but pre-Connect
-    // is reserved for the `focus = true` project's StartDefault
-    // migration (which doesn't go through this reducer at all; it
+    // is reserved for the StartDefault target's migration (the
+    // project named on the command line, which doesn't go through
+    // this reducer at all; it
     // uses KeyRenamed to swap the pre-Connect bucket onto the real
     // key in-place). So a Spawning event for a non-focused
     // auto_start project must just register the bucket and trigger

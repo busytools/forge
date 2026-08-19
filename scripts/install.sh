@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/install.sh — build forge-tui from the current checkout and
+# scripts/install.sh - build forge-tui from the current checkout and
 # install the `forge` binary into cargo's default install root
 # (~/.cargo/bin/forge).
 #
@@ -7,7 +7,7 @@
 # invocation also works for users who don't have `just` on PATH.
 #
 # Build source is THIS repo's working tree (the script's parent
-# directory). Whatever branch is checked out is what gets built — the
+# directory). Whatever branch is checked out is what gets built - the
 # script does not clone, fetch, or reset.
 #
 # `--features perf` is enabled by default. forge's perf sidecar is
@@ -40,7 +40,7 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         -h|--help)
-            sed -n '2,30p' "$0"
+            sed -n '2,28p' "$0"
             exit 0
             ;;
         *)
@@ -68,7 +68,7 @@ require_cmd cargo
 require_cmd git
 
 [ -d "$FORGE_REPO/.git" ] \
-    || die "forge checkout missing .git at $FORGE_REPO — script must run from inside the forge repo"
+    || die "forge checkout missing .git at $FORGE_REPO - script must run from inside the forge repo"
 [ -d "$FORGE_REPO/crates/forge-tui" ] \
     || die "forge-tui crate not found at $FORGE_REPO/crates/forge-tui"
 
@@ -89,7 +89,7 @@ if [ -d "$LEGACY_FORGE_ROOT" ]; then
     rm -rf "$LEGACY_FORGE_ROOT"
 fi
 
-log_info "Building forge-tui ($BUILD_LABEL — this can take a few minutes)"
+log_info "Building forge-tui ($BUILD_LABEL - this can take a few minutes)"
 CARGO_ARGS=(
     --path "$FORGE_REPO/crates/forge-tui"
     --bin forge
@@ -99,7 +99,7 @@ CARGO_ARGS=(
 if [ "$PERF_FEATURE" -eq 1 ]; then
     CARGO_ARGS+=(--features perf)
 fi
-# cd into FORGE_REPO so rustup picks up its rust-toolchain.toml — without
+# cd into FORGE_REPO so rustup picks up its rust-toolchain.toml - without
 # this, cargo uses the global default toolchain which may be older than
 # what forge-tui requires.
 (

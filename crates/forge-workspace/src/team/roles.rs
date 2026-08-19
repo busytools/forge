@@ -3,11 +3,17 @@
 //! and `~/.claude/forge-team/<label>/kick.md`. Labels may contain `/`
 //! for namespace subdirectories (e.g. `hub-modules/researcher`).
 //!
-//! Default content for the canonical 5 roles + lead ships in
-//! `docs/forge-team-defaults/<label>/{charter,kick}.md` in the repo.
-//! Users copy from there on first setup; Syncthing distributes the
-//! files across the user's machines after that. No runtime bootstrap;
-//! spawn fails fast when a referenced label's files don't exist.
+//! A role may also carry `resume-kick.md`, read by [`load_resume_kick`]
+//! when a worker resumes rather than starts fresh.
+//!
+//! Starting content for some roles ships in the repo under
+//! `docs/forge-team-defaults/<label>/` (currently `implementer`, with
+//! `resume-kick.md`, and `lead`). Users copy from there on first setup
+//! and author the rest. No runtime bootstrap: a label whose files are
+//! missing is skipped with a warning, `lead` included when it is named
+//! in `static_workers`. The one fallback is on the lead-spawn path,
+//! where an absent lead CHARTER resolves to [`DEFAULT_LEAD_CHARTER`];
+//! nothing supplies a missing `kick.md`.
 
 use std::io;
 use std::path::PathBuf;

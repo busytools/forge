@@ -293,9 +293,11 @@ fn create_app_impl(
     app
 }
 
-/// Kick off the startup connection via the workspace command bus.
-/// Dispatches `Command::StartDefault`; the workspace owns the
-/// spawn from there.
+/// Kick off the startup connection via the workspace command bus, once
+/// per process. From the launchpad that is one `SpawnProject` per
+/// auto-start project and nothing focused; with a project argv it is
+/// `StartDefault` for that project. The workspace owns the spawn from
+/// there.
 pub fn start_connection(app: &mut App) {
     if app.connection_started {
         return;
@@ -353,13 +355,11 @@ pub fn start_connection(app: &mut App) {
         return;
     }
 
-    // Chat branch: argv supplied OR default-focus path. If the user
-    // passed `--project NAME`, that wins as the first (focused)
-    // startup spawn. Otherwise, every project with `auto_start = true`
-    // in forge.toml spawns; the alphabetically-first auto_start
-    // project becomes the focused tab. With no explicit project AND
-    // no auto_start opt-ins, fall through to the default project
-    // (alphabetically-first overall).
+    // Chat branch. Only reachable with a project argv: `active_view`
+    // is Chat exactly when `cli.project.is_some()`, and
+    // `startup_project` IS `cli.project`, so the first arm always wins
+    // here and that project is the focused spawn. The `None` arms are
+    // exhaustiveness over `Option<String>`, not a reachable path.
     let auto_start = workspace.auto_start_project_names();
     let dispatch_targets: Vec<Option<String>> = match (&app.startup_project, auto_start.as_slice())
     {

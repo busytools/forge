@@ -42,7 +42,7 @@ from pathlib import Path
 
 BANNED = re.compile(r"[–—―‘’“”]")
 
-INCLUDE_SUFFIXES = (".rs", ".toml", ".md", ".html")
+INCLUDE_SUFFIXES = (".rs", ".toml", ".md", ".html", ".sh")
 
 EXCLUDE_DIRS_ANY_DEPTH = {
     ".git",
