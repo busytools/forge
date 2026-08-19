@@ -118,14 +118,14 @@ mod tests {
             project_name: "forge".to_owned(),
             kind: CronKind::Recurring("0 9 * * *".to_owned()),
             prompt: "stand-up summary".to_owned(),
-            description: Some("Morning hub summary".to_owned()),
+            description: Some("Morning summary".to_owned()),
             created_at: epoch(1_700_000_000),
             last_fire: None,
             next_fire: epoch(1_700_032_400),
             team_role: None,
         };
         let json = serde_json::to_string(&entry).expect("serialize");
-        assert!(json.contains("Morning hub summary"), "a set description serializes");
+        assert!(json.contains("Morning summary"), "a set description serializes");
         let back: CronEntry = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(entry, back);
     }

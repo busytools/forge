@@ -866,7 +866,7 @@ mod tests {
             configured(
                 "playwright",
                 "npx",
-                &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://10.10.2.8:9222"],
+                &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://192.0.2.10:9222"],
             ),
             configured(
                 "playwright-local",
@@ -885,7 +885,7 @@ mod tests {
             Some(serde_json::json!({
                 "type": "stdio",
                 "command": "npx",
-                "args": ["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://10.10.2.8:9222"],
+                "args": ["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://192.0.2.10:9222"],
                 "env": {},
             })),
         )];
@@ -894,7 +894,7 @@ mod tests {
             vec![configured(
                 "playwright",
                 "npx",
-                &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://10.10.2.8:9222"],
+                &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://192.0.2.10:9222"],
             )]
         );
     }
@@ -916,9 +916,9 @@ mod tests {
         // only by --cdp-endpoint. Package-only naming collapses both to
         // "playwright"; the configured match keeps them distinct.
         let servers = playwright_pair();
-        let hub = "npm exec @playwright/mcp@latest --cdp-endpoint http://10.10.2.8:9222";
+        let remote = "npm exec @playwright/mcp@latest --cdp-endpoint http://192.0.2.10:9222";
         let local = "npm exec @playwright/mcp@latest --cdp-endpoint http://127.0.0.1:9222";
-        assert_eq!(resolve_infra_label(hub, &servers).expect("hub").name, "playwright");
+        assert_eq!(resolve_infra_label(remote, &servers).expect("remote").name, "playwright");
         assert_eq!(resolve_infra_label(local, &servers).expect("local").name, "playwright-local");
     }
 
@@ -940,7 +940,7 @@ mod tests {
             configured("pw-b", "npx", &["@playwright/mcp@latest"]),
         ];
         let label = resolve_infra_label(
-            "npm exec @playwright/mcp@latest --cdp-endpoint http://10.10.2.8:9222",
+            "npm exec @playwright/mcp@latest --cdp-endpoint http://192.0.2.10:9222",
             &servers,
         )
         .expect("playwright");
@@ -969,7 +969,7 @@ mod tests {
         // No configured servers -> identical to classify_known_infra.
         assert_eq!(
             resolve_infra_label(
-                "npm exec @playwright/mcp@latest --cdp-endpoint http://10.10.2.8:9222",
+                "npm exec @playwright/mcp@latest --cdp-endpoint http://192.0.2.10:9222",
                 &[],
             )
             .expect("playwright")
@@ -1123,11 +1123,11 @@ mod tests {
         // A single configured server on the right package but a DIFFERENT
         // --cdp-endpoint than the process: the endpoint token is absent, so
         // the every-token match fails and the package name wins. An
-        // any-token match would wrongly pick "pw-hub".
+        // any-token match would wrongly pick "pw-remote".
         let servers = vec![configured(
-            "pw-hub",
+            "pw-remote",
             "npx",
-            &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://10.10.2.8:9222"],
+            &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://192.0.2.10:9222"],
         )];
         let label = resolve_infra_label(
             "npm exec @playwright/mcp@latest --cdp-endpoint http://127.0.0.1:9222",
