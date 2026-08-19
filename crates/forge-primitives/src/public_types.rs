@@ -427,9 +427,9 @@ mod forge_account_identity_tests {
 
     #[test]
     fn equality_compares_display_name() {
-        let a = ForgeAccountIdentity { display_name: "Subspace".into() };
-        let b = ForgeAccountIdentity { display_name: "Subspace".into() };
-        let c = ForgeAccountIdentity { display_name: "Granite".into() };
+        let a = ForgeAccountIdentity { display_name: "Stargate".into() };
+        let b = ForgeAccountIdentity { display_name: "Stargate".into() };
+        let c = ForgeAccountIdentity { display_name: "Gateway".into() };
         assert_eq!(a, b);
         assert_ne!(a, c);
     }

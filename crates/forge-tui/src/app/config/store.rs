@@ -600,7 +600,7 @@ mod tests {
     /// Regression: a symlink at the write target must be preserved.
     /// `std::fs::rename(temp, symlink_path)` replaces the symlink
     /// itself, clobbering profile setups such as
-    /// `~/.claude-subspace/settings.json -> ~/.claude/settings.json`.
+    /// `~/.claude-stargate/settings.json -> ~/.claude/settings.json`.
     #[test]
     fn save_preserves_a_symlink_at_the_write_target() {
         let dir = tempfile::tempdir().expect("tempdir");

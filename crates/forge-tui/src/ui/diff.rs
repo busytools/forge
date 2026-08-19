@@ -533,13 +533,13 @@ mod tests {
         let lines = render_diff(
             &model::Diff::new("src/main.rs", "fn main() {}\n")
                 .old_text(Some("fn old() {}\n"))
-                .repository(Some("acme/project".to_owned())),
+                .repository(Some("stargate/project".to_owned())),
             80,
             None,
         );
         let repository_line: String =
             lines[0].spans.iter().map(|span| span.content.as_ref()).collect();
-        assert!(repository_line.contains("[acme/project]"));
+        assert!(repository_line.contains("[stargate/project]"));
     }
 
     #[test]

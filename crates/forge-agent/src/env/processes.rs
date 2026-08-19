@@ -954,10 +954,10 @@ mod tests {
         // A locally-launched server fits no package-naming convention, so
         // `classify_known_infra` can't name it. The configured match must be
         // tried FIRST or the row degrades to a raw-invocation generic process.
-        let servers = vec![configured("busymail", "node", &["/Users/x/busymail/dist/server.js"])];
-        let label = resolve_infra_label("node /Users/x/busymail/dist/server.js", &servers)
-            .expect("busymail");
-        assert_eq!(label.name, "busymail");
+        let servers = vec![configured("airmail", "node", &["/Users/x/airmail/dist/server.js"])];
+        let label =
+            resolve_infra_label("node /Users/x/airmail/dist/server.js", &servers).expect("airmail");
+        assert_eq!(label.name, "airmail");
     }
 
     #[test]
@@ -980,7 +980,7 @@ mod tests {
         );
     }
 
-    /// The live busymail shape. Its config `exec`s a downloaded shim, so the
+    /// The live airmail shape. Its config `exec`s a downloaded shim, so the
     /// process image shares no text with the command it launched from - the
     /// case the elimination join exists for. Captured via `ps -axww`.
     const SHIM: &str = "node /var/folders/0q/q18_z8w555v6z6q3q_3fc_t00000gn/T/tmp.9Vg/shim.mjs";
@@ -989,11 +989,11 @@ mod tests {
         RootProcess { pid, cmdline, wire_matched: false }
     }
 
-    /// busymail's real config, plus the three servers that DO text-match.
-    fn busymail_config() -> Vec<ConfiguredMcpServer> {
+    /// airmail's real config, plus the three servers that DO text-match.
+    fn airmail_config() -> Vec<ConfiguredMcpServer> {
         vec![
             configured(
-                "busymail",
+                "airmail",
                 "sh",
                 &["-c", "shim=$(mktemp -d)/shim.mjs && exec node \"$shim\""],
             ),
@@ -1008,13 +1008,13 @@ mod tests {
     #[test]
     fn elects_the_sole_unmatched_connected_server_for_the_sole_candidate() {
         // context7's process text-matches, so it claims its server and drops
-        // out of both sides; busymail and the shim are the only leftovers.
+        // out of both sides; airmail and the shim are the only leftovers.
         let elected = elect_unmatched_server(
-            &connected(&["busymail", "context7"]),
-            &busymail_config(),
+            &connected(&["airmail", "context7"]),
+            &airmail_config(),
             &[root(100, "npm exec @upstash/context7-mcp"), root(200, SHIM)],
         );
-        assert_eq!(elected, Some((200, "busymail".to_owned())));
+        assert_eq!(elected, Some((200, "airmail".to_owned())));
     }
 
     #[test]
@@ -1022,8 +1022,8 @@ mod tests {
         // Two unmatched servers and one leftover process: which one the
         // process belongs to is unknowable, so no row gets named.
         let elected = elect_unmatched_server(
-            &connected(&["busymail", "context7"]),
-            &busymail_config(),
+            &connected(&["airmail", "context7"]),
+            &airmail_config(),
             &[root(200, SHIM)],
         );
         assert_eq!(elected, None);
@@ -1032,8 +1032,8 @@ mod tests {
     #[test]
     fn declines_when_a_second_candidate_process_is_unmatched() {
         let elected = elect_unmatched_server(
-            &connected(&["busymail", "context7"]),
-            &busymail_config(),
+            &connected(&["airmail", "context7"]),
+            &airmail_config(),
             &[
                 root(100, "npm exec @upstash/context7-mcp"),
                 root(200, SHIM),
@@ -1046,12 +1046,12 @@ mod tests {
     #[test]
     fn declines_a_server_that_has_not_handshaken() {
         // Without the Connected gate a crashed server would pair with any
-        // leftover process - labelling an unrelated build as busymail.
-        let mut servers = connected(&["busymail", "context7"]);
+        // leftover process - labelling an unrelated build as airmail.
+        let mut servers = connected(&["airmail", "context7"]);
         servers[0].status = forge_primitives::McpServerConnectionStatus::Pending;
         let elected = elect_unmatched_server(
             &servers,
-            &busymail_config(),
+            &airmail_config(),
             &[root(100, "npm exec @upstash/context7-mcp"), root(200, SHIM)],
         );
         assert_eq!(elected, None);
@@ -1061,18 +1061,18 @@ mod tests {
     fn a_transient_tool_process_does_not_spoil_the_election() {
         // The stability property. An `rg` from a Grep call is alive at scan
         // time and is not interpreter-shaped; counting it would decline the
-        // pairing and flicker busymail's row back to a raw path every time
+        // pairing and flicker airmail's row back to a raw path every time
         // the user searched.
         let elected = elect_unmatched_server(
-            &connected(&["busymail", "context7"]),
-            &busymail_config(),
+            &connected(&["airmail", "context7"]),
+            &airmail_config(),
             &[
                 root(100, "npm exec @upstash/context7-mcp"),
                 root(200, SHIM),
                 root(300, "rg --json -e pattern /Users/x/Projects"),
             ],
         );
-        assert_eq!(elected, Some((200, "busymail".to_owned())));
+        assert_eq!(elected, Some((200, "airmail".to_owned())));
     }
 
     #[test]
@@ -1084,11 +1084,11 @@ mod tests {
         // it runs. Re-adding one fails this test.
         let wrapper = "/bin/bash -c source /Users/x/.claude/snap.sh 2>/dev/null || true && eval 'cargo build' < /dev/null && pwd -P >| /tmp/claude-ab12-cwd";
         let elected = elect_unmatched_server(
-            &connected(&["busymail", "context7"]),
-            &busymail_config(),
+            &connected(&["airmail", "context7"]),
+            &airmail_config(),
             &[root(100, "npm exec @upstash/context7-mcp"), root(200, SHIM), root(400, wrapper)],
         );
-        assert_eq!(elected, Some((200, "busymail".to_owned())));
+        assert_eq!(elected, Some((200, "airmail".to_owned())));
     }
 
     #[test]
@@ -1096,8 +1096,8 @@ mod tests {
         // A foreground Bash already owns its row; it must not stand in for a
         // server even when its image is interpreter-shaped.
         let elected = elect_unmatched_server(
-            &connected(&["busymail"]),
-            &busymail_config()[..1],
+            &connected(&["airmail"]),
+            &airmail_config()[..1],
             &[RootProcess { pid: 200, cmdline: "node build.mjs", wire_matched: true }],
         );
         assert_eq!(elected, None);

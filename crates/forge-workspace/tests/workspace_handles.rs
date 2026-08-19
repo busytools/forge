@@ -28,8 +28,8 @@ fn forge_toml_path(config_dir: &std::path::Path) -> PathBuf {
 async fn cold_cache_dual_spawns_rotate_across_allow_list() {
     // Round-robin cursor advances per pick - under a cold usage
     // cache (both accounts in tier 0 / Usable), the first spawn
-    // picks Subspace (cursor=0 → first allow-list entry) and the
-    // second rotates to Granite (cursor=1). Spreads load across
+    // picks Stargate (cursor=0 → first allow-list entry) and the
+    // second rotates to Gateway (cursor=1). Spreads load across
     // healthy accounts instead of always hammering the first.
     let dir = tempdir().expect("tempdir");
     fs::write(
@@ -37,7 +37,7 @@ async fn cold_cache_dual_spawns_rotate_across_allow_list() {
         r#"
 [[orgs]]
 name = "Default"
-accounts = ["Subspace", "Granite"]
+accounts = ["Stargate", "Gateway"]
 
 [[orgs.projects]]
 name = "forge"
@@ -45,12 +45,12 @@ path = "~/Projects/forge"
 auto_start = true
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "/tmp/forge-test-subspace"
+display_name = "Stargate"
+config_dir = "/tmp/forge-test-stargate"
 
 [[accounts]]
-display_name = "Granite"
-config_dir = "/tmp/forge-test-granite"
+display_name = "Gateway"
+config_dir = "/tmp/forge-test-gateway"
 "#,
     )
     .expect("write forge.toml");
@@ -62,20 +62,20 @@ config_dir = "/tmp/forge-test-granite"
         .expect("first spawn");
     assert_eq!(
         h1.config_dir(),
-        PathBuf::from("/tmp/forge-test-subspace"),
-        "first spawn (cursor=0) binds to Subspace's config_dir (first usable in allow-list)",
+        PathBuf::from("/tmp/forge-test-stargate"),
+        "first spawn (cursor=0) binds to Stargate's config_dir (first usable in allow-list)",
     );
 
     // Second spawn under a distinct SessionTarget - same allow-list,
-    // cursor advances to 1, rotates to Granite.
+    // cursor advances to 1, rotates to Gateway.
     let other = SessionKey::from_str_for_test("dual-account-other");
     let h2 = workspace
         .get_agent_handle(SessionTarget::Session(other), SessionLaunchSettings::default())
         .expect("second spawn");
     assert_eq!(
         h2.config_dir(),
-        PathBuf::from("/tmp/forge-test-granite"),
-        "second spawn (cursor=1) rotates to Granite's config_dir (round-robin)",
+        PathBuf::from("/tmp/forge-test-gateway"),
+        "second spawn (cursor=1) rotates to Gateway's config_dir (round-robin)",
     );
 }
 
@@ -87,7 +87,7 @@ async fn picker_display_name_reaches_bridge() {
         r#"
 [[orgs]]
 name = "Default"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 
 [[orgs.projects]]
 name = "forge"
@@ -95,19 +95,19 @@ path = "~/Projects/forge"
 auto_start = true
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "/tmp/forge-test-display-subspace"
+display_name = "Stargate"
+config_dir = "/tmp/forge-test-display-stargate"
 
 [[accounts]]
-display_name = "Granite"
-config_dir = "/tmp/forge-test-display-granite"
+display_name = "Gateway"
+config_dir = "/tmp/forge-test-display-gateway"
 "#,
     )
     .expect("write forge.toml");
 
     let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
 
-    // Cold cache → both spawns pick Subspace (first in pin). The
+    // Cold cache → both spawns pick Stargate (first in pin). The
     // important assertion here is that the bridge actually carries
     // a display_name through to the AgentHandle.
     let h1 = workspace
@@ -115,8 +115,8 @@ config_dir = "/tmp/forge-test-display-granite"
         .expect("first spawn");
     assert_eq!(
         h1.display_name().as_deref(),
-        Some("Subspace"),
-        "first spawn binds to Subspace's display_name (first in pin, cold cache)",
+        Some("Stargate"),
+        "first spawn binds to Stargate's display_name (first in pin, cold cache)",
     );
 
     let other = SessionKey::from_str_for_test("display-name-other");
@@ -125,8 +125,8 @@ config_dir = "/tmp/forge-test-display-granite"
         .expect("second spawn");
     assert_eq!(
         h2.display_name().as_deref(),
-        Some("Subspace"),
-        "second spawn also binds to Subspace under cold cache",
+        Some("Stargate"),
+        "second spawn also binds to Stargate under cold cache",
     );
 }
 
@@ -149,7 +149,7 @@ GLOBAL_KEY = "global-value"
 
 [[orgs]]
 name = "Default"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 
 [[orgs.projects]]
 name = "forge"
@@ -157,17 +157,17 @@ path = "~/Projects/forge"
 auto_start = true
 
 [[orgs.projects]]
-name = "busymail"
-path = "~/Projects/busymail"
+name = "airmail"
+path = "~/Projects/airmail"
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "/tmp/forge-test-env-subspace"
+display_name = "Stargate"
+config_dir = "/tmp/forge-test-env-stargate"
 [accounts.env]
 ACCOUNT_KEY = "account-value"
 
 [projects.forge.env]
-BUSYMAIL_TOKEN = "forge-value"
+AIRMAIL_TOKEN = "forge-value"
 "#,
     )
     .expect("write forge.toml");
@@ -182,7 +182,7 @@ BUSYMAIL_TOKEN = "forge-value"
         .expect("spawn forge");
     let env = handle.env();
     assert_eq!(
-        env.get("BUSYMAIL_TOKEN").map(String::as_str),
+        env.get("AIRMAIL_TOKEN").map(String::as_str),
         Some("forge-value"),
         "the project's declared env has to reach the handle, not just the helper",
     );
@@ -199,13 +199,13 @@ BUSYMAIL_TOKEN = "forge-value"
 
     let other = workspace
         .get_agent_handle(
-            SessionTarget::Named("busymail".to_owned()),
+            SessionTarget::Named("airmail".to_owned()),
             SessionLaunchSettings::default(),
         )
-        .expect("spawn busymail");
+        .expect("spawn airmail");
     let other_env = other.env();
     assert!(
-        !other_env.contains_key("BUSYMAIL_TOKEN"),
+        !other_env.contains_key("AIRMAIL_TOKEN"),
         "a second project on the same account must not receive it: {other_env:?}",
     );
     assert_eq!(

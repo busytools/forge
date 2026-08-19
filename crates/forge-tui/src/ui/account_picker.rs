@@ -274,8 +274,8 @@ mod tests {
         let future = SystemTime::now() + Duration::from_secs(3600 + 42 * 60);
         let rows = vec![
             AccountRow {
-                display_name: "Granite".to_owned(),
-                config_dir: PathBuf::from("/c/granite"),
+                display_name: "Gateway".to_owned(),
+                config_dir: PathBuf::from("/c/gateway"),
                 is_current: true,
                 usable: false,
                 five_hour_util: 100.0,
@@ -284,8 +284,8 @@ mod tests {
                 experimental: false,
             },
             AccountRow {
-                display_name: "Granite1".to_owned(),
-                config_dir: PathBuf::from("/c/granite1"),
+                display_name: "Gateway1".to_owned(),
+                config_dir: PathBuf::from("/c/gateway1"),
                 is_current: false,
                 usable: true,
                 five_hour_util: 34.0,
@@ -311,10 +311,10 @@ mod tests {
         // The reset ETA shows ONLY on the capped row.
         let capped = lines
             .iter()
-            .find(|l| l.contains("Granite") && !l.contains("Granite1"))
+            .find(|l| l.contains("Gateway") && !l.contains("Gateway1"))
             .expect("capped row present");
         assert!(capped.contains("resets"), "capped account shows a reset ETA: {capped}");
-        let usable = lines.iter().find(|l| l.contains("Granite1")).expect("usable row present");
+        let usable = lines.iter().find(|l| l.contains("Gateway1")).expect("usable row present");
         assert!(!usable.contains("resets"), "usable account shows no reset ETA: {usable}");
     }
 
@@ -323,8 +323,8 @@ mod tests {
         let mut app = App::test_default();
         let rows = vec![
             AccountRow {
-                display_name: "Granite".to_owned(),
-                config_dir: PathBuf::from("/c/granite"),
+                display_name: "Gateway".to_owned(),
+                config_dir: PathBuf::from("/c/gateway"),
                 is_current: true,
                 usable: true,
                 five_hour_util: 10.0,
@@ -351,18 +351,18 @@ mod tests {
         assert!(joined.contains("EXPERIMENTAL"), "experimental section header present: {joined}");
         let codex = lines.iter().find(|l| l.contains("Codex")).expect("codex row present");
         assert!(codex.contains("experimental"), "experimental row carries the amber tag: {codex}");
-        let granite = lines.iter().find(|l| l.contains("Granite")).expect("granite row present");
+        let gateway = lines.iter().find(|l| l.contains("Gateway")).expect("gateway row present");
         assert!(
-            !granite.contains("experimental"),
-            "regular row has no experimental tag: {granite}"
+            !gateway.contains("experimental"),
+            "regular row has no experimental tag: {gateway}"
         );
 
         // The dim header separates the group: it sits after the regular
         // row and before the experimental one.
-        let granite_idx = lines.iter().position(|l| l.contains("Granite")).expect("granite idx");
+        let gateway_idx = lines.iter().position(|l| l.contains("Gateway")).expect("gateway idx");
         let header_idx = lines.iter().position(|l| l.contains("EXPERIMENTAL")).expect("header idx");
         let codex_idx = lines.iter().position(|l| l.contains("Codex")).expect("codex idx");
-        assert!(granite_idx < header_idx, "header follows the regular rows");
+        assert!(gateway_idx < header_idx, "header follows the regular rows");
         assert!(header_idx < codex_idx, "header precedes the experimental rows");
     }
 }

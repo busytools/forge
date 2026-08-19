@@ -148,7 +148,7 @@ mod tests {
         write_charter(root, "implementer", "description: Generic code-writer\n");
         write_charter(root, "lead", "description: lead\n"); // excluded
         // project namespaces
-        write_charter(root, "hub-modules/steward", "description: Hub steward\n");
+        write_charter(root, "data-modules/steward", "description: Hub steward\n");
         write_charter(root, "forge/probe", "description: Forge probe\n");
         let _guard = override_forge_team_root_for_test(root.to_path_buf());
 

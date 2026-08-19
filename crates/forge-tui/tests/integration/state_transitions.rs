@@ -111,7 +111,7 @@ async fn chunks_across_turns_open_a_new_assistant_message() {
     // (no active turn bound, e.g. a Monitor / Task notification
     // firing on its own) merged into the prior turn's last assistant
     // message - producing rendered output like
-    // "...granite-backend/pull/107Monitor closed cleanly." with no
+    // "...gateway-backend/pull/107Monitor closed cleanly." with no
     // separator. Each unprompted assistant turn must now open its
     // own ChatMessage so the renderer can space them.
     let mut app = test_app();

@@ -1557,7 +1557,7 @@ mod tests {
             r#"
 [[orgs]]
 name = "Default"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 
 [[orgs.projects]]
 name = "forge"
@@ -1565,8 +1565,8 @@ path = "~/Projects/forge"
 auto_start = true
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 "#,
         )
         .expect("write forge.toml");
@@ -1737,7 +1737,7 @@ config_dir = "~/.claude-subspace"
             r#"
 [[orgs]]
 name = "Default"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 
 [[orgs.projects]]
 name = "forge"
@@ -1745,13 +1745,13 @@ path = "~/Projects/forge"
 auto_start = true
 
 [[orgs.projects]]
-name = "granite-backend"
-path = "~/Projects/granite-backend"
+name = "gateway-backend"
+path = "~/Projects/gateway-backend"
 auto_start = false
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 "#,
         )
         .expect("write forge.toml");
@@ -1760,10 +1760,10 @@ config_dir = "~/.claude-subspace"
         let caller = SessionKey::from_str_for_test("caller-sleep");
         let w = fixture_wrapped();
 
-        handle_deliver_peer_prompt(&workspace, caller, "granite-backend".to_owned(), w.clone());
+        handle_deliver_peer_prompt(&workspace, caller, "gateway-backend".to_owned(), w.clone());
 
         // Sleeping branch parks the wrapped at a synthetic
-        // `__spawn_granite-backend__` key, then dispatches
+        // `__spawn_gateway-backend__` key, then dispatches
         // SpawnProject which (synchronously inside dispatch)
         // migrates the buffered state onto the real resolved
         // session key. Either way, EXACTLY ONE DomainSession in
@@ -1799,7 +1799,7 @@ config_dir = "~/.claude-subspace"
             r#"
 [[orgs]]
 name = "Default"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 
 [[orgs.projects]]
 name = "forge"
@@ -1807,13 +1807,13 @@ path = "~/Projects/forge"
 auto_start = true
 
 [[orgs.projects]]
-name = "granite-backend"
-path = "~/Projects/granite-backend"
+name = "gateway-backend"
+path = "~/Projects/gateway-backend"
 auto_start = false
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 "#,
         )
         .expect("write forge.toml");
@@ -1824,7 +1824,7 @@ config_dir = "~/.claude-subspace"
         let caller = SessionKey::from_str_for_test("caller-tell");
         let w = fixture_wrapped(); // WrappedKind::Message (tell)
 
-        handle_deliver_peer_prompt(&workspace, caller, "granite-backend".to_owned(), w);
+        handle_deliver_peer_prompt(&workspace, caller, "gateway-backend".to_owned(), w);
 
         // Drain the update channel - the spawn path may emit other
         // events (ProjectSpawned, ConfigDirsChanged, etc.) but it MUST
@@ -2076,7 +2076,7 @@ config_dir = "~/.claude-subspace"
         std::fs::write(
             forge_toml_path(config.path()),
             format!(
-                "[[orgs]]\nname = \"Default\"\naccounts = [\"Subspace\"]\n\n[[orgs.projects]]\nname = \"forge\"\npath = \"{repo_path_str}\"\n\n[[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\n"
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge\"\npath = \"{repo_path_str}\"\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"~/.claude-stargate\"\n"
             ),
         )
         .expect("write forge.toml");
@@ -2611,7 +2611,7 @@ config_dir = "~/.claude-subspace"
                 r#"
 [[orgs]]
 name = "Default"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 
 [[orgs.projects]]
 name = "forge"
@@ -2619,8 +2619,8 @@ path = "{project_path}"
 auto_start = true
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 "#,
             ),
         )

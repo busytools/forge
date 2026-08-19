@@ -1002,11 +1002,11 @@ mod tests {
 
     #[test]
     fn rows_from_os_snapshot_names_the_elimination_paired_server_in_the_mcp_tier() {
-        // Live shape captured via `ps -axww`: busymail's config execs a
+        // Live shape captured via `ps -axww`: airmail's config execs a
         // downloaded shim, so its process shares no text with the command it
         // launched from and no text match can reach it. context7's process
         // matches, leaving one server and one process unpaired - so the shim
-        // takes busymail's name. It must also SORT in the MCP tier: 0.22.54
+        // takes airmail's name. It must also SORT in the MCP tier: 0.22.54
         // stabilised this section's order, and a row rendering as an MCP
         // server while sorting as generic would reintroduce movement.
         let snapshot = ProcessSnapshot {
@@ -1030,7 +1030,7 @@ mod tests {
         };
         let servers = vec![
             status(
-                "busymail",
+                "airmail",
                 "sh",
                 &["-c", "shim=$(mktemp -d)/shim.mjs && exec node \"$shim\""],
                 None,
@@ -1039,7 +1039,7 @@ mod tests {
         ];
         let rows = rows_from_os_snapshot(&snapshot, &[], &servers);
         assert_eq!(rows.len(), 2);
-        let shim = rows.iter().find(|r| r.headline == "busymail").expect("shim takes the name");
+        let shim = rows.iter().find(|r| r.headline == "airmail").expect("shim takes the name");
         assert_eq!(shim.kind, ProcessKind::McpServer);
         assert!(shim.metadata.contains("MCP server"));
     }
@@ -1072,7 +1072,7 @@ mod tests {
             ],
         };
         let servers = vec![status(
-            "busymail",
+            "airmail",
             "sh",
             &["-c", "shim=$(mktemp -d)/shim.mjs && exec node \"$shim\""],
             None,
@@ -1082,7 +1082,7 @@ mod tests {
         // the 90 MB paired row leads the 900 MB cargo.
         assert_eq!(
             rows.iter().map(|r| r.headline.as_str()).collect::<Vec<_>>(),
-            vec!["busymail", "cargo build --release"]
+            vec!["airmail", "cargo build --release"]
         );
     }
 
@@ -1103,7 +1103,7 @@ mod tests {
         };
         let servers = vec![
             status(
-                "busymail",
+                "airmail",
                 "sh",
                 &["-c", "shim=$(mktemp -d)/shim.mjs && exec node \"$shim\""],
                 None,
@@ -1749,7 +1749,7 @@ mod tests {
 
     #[test]
     fn rows_from_os_snapshot_sorts_config_matched_server_in_the_mcp_tier() {
-        // busymail is named ONLY by the configured match - it fits no package
+        // airmail is named ONLY by the configured match - it fits no package
         // convention - so the tier closure has to consult the same resolver the
         // row builder does. Reading `classify_known_infra` instead renders it as
         // MCP infra while sorting it as generic, and a heavier unrelated process
@@ -1758,17 +1758,17 @@ mod tests {
             scanned_at: std::time::SystemTime::now(),
             processes: vec![
                 fake_entry(100, "npm", "npm exec @upstash/context7-mcp", 46 * 1024 * 1024),
-                fake_entry(200, "node", "node /Users/x/busymail/dist/server.js", 78 * 1024 * 1024),
+                fake_entry(200, "node", "node /Users/x/airmail/dist/server.js", 78 * 1024 * 1024),
                 fake_entry(300, "npm", "npm run build", 88 * 1024 * 1024),
             ],
         };
         // No handshake / tools / scope reported, so this server stays the
         // compact single row and the assertions below are about tier only.
-        let servers = vec![status("busymail", "node", &["/Users/x/busymail/dist/server.js"], None)];
+        let servers = vec![status("airmail", "node", &["/Users/x/airmail/dist/server.js"], None)];
         let rows = rows_from_os_snapshot(&snapshot, &[], &servers);
         assert_eq!(
             rows.iter().map(|r| r.headline.as_str()).collect::<Vec<_>>(),
-            vec!["busymail", "context7", "npm run build"],
+            vec!["airmail", "context7", "npm run build"],
             "MCP tier stays contiguous above the heavier generic row; got {rows:?}",
         );
         // Sort tier and render kind agree for the config-matched row.

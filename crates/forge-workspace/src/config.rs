@@ -1,7 +1,7 @@
 //! `forge.toml` schema + loader.
 //!
-//! **Org model.** Projects are grouped under `[[orgs]]` (Subspace,
-//! Granite, Personal, etc.). Each org carries the `accounts = [...]`
+//! **Org model.** Projects are grouped under `[[orgs]]` (Stargate,
+//! Gateway, Personal, etc.). Each org carries the `accounts = [...]`
 //! pin shared by all its projects, replacing the per-project pin
 //! that lived here before. Projects within an org keep a flat list
 //! via `[[orgs.projects]]`. Multiple projects can carry
@@ -536,7 +536,7 @@ mod tests {
         r#"
 [[orgs]]
 name = "Personal"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 
 [[orgs.projects]]
 name = "forge"
@@ -544,8 +544,8 @@ path = "~/Projects/forge"
 auto_start = true
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 "#
     }
 
@@ -619,13 +619,13 @@ ANTHROPIC_AUTH_TOKEN = "unused"
 CLAUDE_CODE_AUTO_COMPACT_WINDOW = "950000"
 [[orgs]]
 name = "Personal"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
@@ -647,7 +647,7 @@ config_dir = "~/.claude-subspace"
 CLAUDE_CODE_AUTO_COMPACT_WINDOW = "950000"
 [[orgs]]
 name = "Personal"
-accounts = ["Codex", "Granite"]
+accounts = ["Codex", "Gateway"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
@@ -657,21 +657,21 @@ config_dir = "~/.claude-codex"
 [accounts.env]
 CLAUDE_CODE_AUTO_COMPACT_WINDOW = "372000"
 [[accounts]]
-display_name = "Granite"
+display_name = "Gateway"
 config_dir = "~/.claude"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
         let codex = config.accounts.iter().find(|a| a.display_name == "Codex").expect("Codex");
-        let granite =
-            config.accounts.iter().find(|a| a.display_name == "Granite").expect("Granite");
+        let gateway =
+            config.accounts.iter().find(|a| a.display_name == "Gateway").expect("Gateway");
         assert_eq!(
             codex.env.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW").map(String::as_str),
             Some("372000"),
             "per-account [accounts.env] overrides the global [env] key",
         );
         assert_eq!(
-            granite.env.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW").map(String::as_str),
+            gateway.env.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW").map(String::as_str),
             Some("950000"),
             "an account with no override inherits the global [env] key",
         );
@@ -772,13 +772,13 @@ PROJECT_ONLY = "project"
                 r#"
 [[orgs]]
 name = "Personal"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 
 [projects.forge]
 env_file = "{file}"
@@ -793,14 +793,14 @@ env_file = "{file}"
     #[test]
     fn env_file_entries_join_the_project_env() {
         let dir = config_with_env_file(
-            "# a comment\n\nBUSYMAIL_TOKEN = tok-from-file\nQUOTED = \"in-quotes\"\n\
+            "# a comment\n\nAIRMAIL_TOKEN = tok-from-file\nQUOTED = \"in-quotes\"\n\
              SINGLE = 'in-singles'\nUNMATCHED = \"dangling\n",
             "",
         );
         let config = load_from_dir(dir.path()).expect("happy path");
         let env = &config.projects[0].env;
         assert_eq!(
-            env.get("BUSYMAIL_TOKEN").map(String::as_str),
+            env.get("AIRMAIL_TOKEN").map(String::as_str),
             Some("tok-from-file"),
             "comments and blank lines skipped, the key lands",
         );
@@ -835,13 +835,13 @@ env_file = "{file}"
                 r#"
 [[orgs]]
 name = "Personal"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 
 [projects.forge]
 env_file = "{}/nope.env"
@@ -871,22 +871,22 @@ env_file = "{}/nope.env"
             r#"
 [[orgs]]
 name = "Personal"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 
 [projects.forge.env]
-BUSYMAIL_MCP_URL = "https://mail.example/mcp"
+AIRMAIL_MCP_URL = "https://mail.example/mcp"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
         let project = &config.projects[0];
         assert_eq!(
-            project.env.get("BUSYMAIL_MCP_URL").map(String::as_str),
+            project.env.get("AIRMAIL_MCP_URL").map(String::as_str),
             Some("https://mail.example/mcp"),
             "[projects.<name>.env] lands on the named project",
         );
@@ -909,7 +909,7 @@ BUSYMAIL_MCP_URL = "https://mail.example/mcp"
             r#"
 [[orgs]]
 name = "Personal"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 [[orgs.projects]]
 name = "alpha"
 path = "~/Projects/alpha"
@@ -929,11 +929,11 @@ path = "~/Projects/sigma"
 name = "theta"
 path = "~/Projects/theta"
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 
 [projects.gamma.env]
-BUSYMAIL_TOKEN = "typo-in-the-project-name"
+AIRMAIL_TOKEN = "typo-in-the-project-name"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("undeclared project name must not load");
@@ -993,8 +993,8 @@ accounts = ["Codex"]
 name = "forge"
 path = "~/Projects/forge"
 [[orgs.projects]]
-name = "busymail"
-path = "~/Projects/busymail"
+name = "airmail"
+path = "~/Projects/airmail"
 
 [[accounts]]
 display_name = "Codex"
@@ -1003,7 +1003,7 @@ config_dir = "~/.claude-codex"
 ANTHROPIC_BASE_URL = "http://localhost:18765"
 
 [projects.forge.env]
-BUSYMAIL_TOKEN = "forge-only-secret"
+AIRMAIL_TOKEN = "forge-only-secret"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
@@ -1011,18 +1011,18 @@ BUSYMAIL_TOKEN = "forge-only-secret"
 
         let forge_env = session_env(named(&config, "forge"), &account.env);
         assert_eq!(
-            forge_env.get("BUSYMAIL_TOKEN").map(String::as_str),
+            forge_env.get("AIRMAIL_TOKEN").map(String::as_str),
             Some("forge-only-secret"),
             "the declaring project gets its own key",
         );
 
-        let busymail_env = session_env(named(&config, "busymail"), &account.env);
+        let airmail_env = session_env(named(&config, "airmail"), &account.env);
         assert!(
-            !busymail_env.contains_key("BUSYMAIL_TOKEN"),
-            "another project on the SAME account must not receive it, got: {busymail_env:?}",
+            !airmail_env.contains_key("AIRMAIL_TOKEN"),
+            "another project on the SAME account must not receive it, got: {airmail_env:?}",
         );
         assert_eq!(
-            busymail_env, account.env,
+            airmail_env, account.env,
             "a project declaring no env gets exactly the account env, nothing borrowed",
         );
     }
@@ -1035,7 +1035,7 @@ BUSYMAIL_TOKEN = "forge-only-secret"
             r#"
 [[orgs]]
 name = "Personal"
-accounts = ["Codex", "Granite"]
+accounts = ["Codex", "Gateway"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
@@ -1044,16 +1044,16 @@ display_name = "Codex"
 config_dir = "~/.claude-codex"
 experimental = true
 [[accounts]]
-display_name = "Granite"
+display_name = "Gateway"
 config_dir = "~/.claude"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
         let codex = config.accounts.iter().find(|a| a.display_name == "Codex").expect("Codex");
-        let granite =
-            config.accounts.iter().find(|a| a.display_name == "Granite").expect("Granite");
+        let gateway =
+            config.accounts.iter().find(|a| a.display_name == "Gateway").expect("Gateway");
         assert!(codex.experimental, "experimental = true parsed");
-        assert!(!granite.experimental, "account without the field defaults to false");
+        assert!(!gateway.experimental, "account without the field defaults to false");
     }
 
     #[test]
@@ -1104,7 +1104,7 @@ config_dir = "~/.claude"
         assert_eq!(config.projects.len(), 1);
         assert_eq!(config.default_project().name, "forge");
         assert_eq!(config.default_project().org, "Personal");
-        assert_eq!(config.default_project().accounts, vec!["Subspace"]);
+        assert_eq!(config.default_project().accounts, vec!["Stargate"]);
         assert!(config.default_project().auto_start);
     }
 
@@ -1138,8 +1138,8 @@ config_dir = "~/.claude"
             dir.path(),
             r#"
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("missing orgs should error");
@@ -1154,11 +1154,11 @@ config_dir = "~/.claude-subspace"
             r#"
 [[orgs]]
 name = "Empty"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("org without projects should error");
@@ -1180,8 +1180,8 @@ name = "forge"
 path = "~/Projects/forge"
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("empty accounts should error");
@@ -1196,15 +1196,15 @@ config_dir = "~/.claude-subspace"
             r#"
 [[orgs]]
 name = "Personal"
-accounts = ["Subspace", "Bogus"]
+accounts = ["Stargate", "Bogus"]
 
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("unknown account should error");
@@ -1256,7 +1256,7 @@ experimental = true
             r#"
 [[orgs]]
 name = "Personal"
-accounts = ["Codex", "Granite"]
+accounts = ["Codex", "Gateway"]
 
 [[orgs.projects]]
 name = "forge"
@@ -1268,14 +1268,14 @@ config_dir = "~/.claude-codex"
 experimental = true
 
 [[accounts]]
-display_name = "Granite"
+display_name = "Gateway"
 config_dir = "~/.claude"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("org with a non-experimental account loads");
         assert_eq!(
             config.default_project().accounts,
-            vec!["Codex".to_owned(), "Granite".to_owned()]
+            vec!["Codex".to_owned(), "Gateway".to_owned()]
         );
     }
 
@@ -1287,21 +1287,21 @@ config_dir = "~/.claude"
             r#"
 [[orgs]]
 name = "Personal"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
 
 [[orgs]]
 name = "Personal"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 [[orgs.projects]]
 name = "aware"
 path = "~/Projects/aware"
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("duplicate org should error");
@@ -1315,22 +1315,22 @@ config_dir = "~/.claude-subspace"
             dir.path(),
             r#"
 [[orgs]]
-name = "Subspace"
-accounts = ["Subspace"]
+name = "Stargate"
+accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
-path = "~/Projects/subspace-forge"
+path = "~/Projects/stargate-forge"
 
 [[orgs]]
 name = "Personal"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("duplicate project should error");
@@ -1345,7 +1345,7 @@ config_dir = "~/.claude-subspace"
             r#"
 [[orgs]]
 name = "Personal"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 [[orgs.projects]]
 name = "zebra"
 path = "~/Projects/zebra"
@@ -1358,8 +1358,8 @@ auto_start = true
 name = "middle"
 path = "~/Projects/middle"
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
@@ -1375,7 +1375,7 @@ config_dir = "~/.claude-subspace"
             r#"
 [[orgs]]
 name = "Personal"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 [[orgs.projects]]
 name = "zebra"
 path = "~/Projects/zebra"
@@ -1383,8 +1383,8 @@ path = "~/Projects/zebra"
 name = "alpha"
 path = "~/Projects/alpha"
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
@@ -1399,7 +1399,7 @@ config_dir = "~/.claude-subspace"
             r#"
 [[orgs]]
 name = "Personal"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 [[orgs.projects]]
 name = "alpha"
 path = "~/Projects/alpha"
@@ -1412,8 +1412,8 @@ name = "gamma"
 path = "~/Projects/gamma"
 auto_start = true
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
@@ -1429,7 +1429,7 @@ config_dir = "~/.claude-subspace"
             r#"
 [[orgs]]
 name = "Personal"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
@@ -1447,21 +1447,21 @@ path = "~/Projects/forge"
             r#"
 [[orgs]]
 name = "Personal"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 [[accounts]]
-display_name = "Subspace"
+display_name = "Stargate"
 config_dir = "~/.claude-other"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("duplicate account should error");
-        assert!(matches!(err, WorkspaceError::DuplicateAccount { name, .. } if name == "Subspace"));
+        assert!(matches!(err, WorkspaceError::DuplicateAccount { name, .. } if name == "Stargate"));
     }
 
     #[test]

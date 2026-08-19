@@ -400,13 +400,13 @@ mod tests {
         let w = wrapper(
             WrappedKind::Reply,
             AskChannel::Peers,
-            "granite-backend",
-            "Granite",
+            "gateway-backend",
+            "Gateway",
             "We use pgtemp for postgres fixtures.",
         );
         let prose = w.to_prose();
         assert!(prose.starts_with(
-            "[Reply id=q-7f3a92e0 from agent 'granite-backend' (org 'Granite') to your earlier ask]",
+            "[Reply id=q-7f3a92e0 from agent 'gateway-backend' (org 'Gateway') to your earlier ask]",
         ));
     }
 
@@ -415,13 +415,13 @@ mod tests {
         let w = wrapper(
             WrappedKind::DeliveryFailureNotice,
             AskChannel::Peers,
-            "granite-liq-bot",
-            "Granite",
+            "gateway-liq-bot",
+            "Gateway",
             "target session connection lost",
         );
         let prose = w.to_prose();
         assert!(prose.starts_with(
-            "[Ask id=q-7f3a92e0 to agent 'granite-liq-bot' (org 'Granite') failed to deliver: target session connection lost",
+            "[Ask id=q-7f3a92e0 to agent 'gateway-liq-bot' (org 'Gateway') failed to deliver: target session connection lost",
         ));
     }
 

@@ -170,26 +170,26 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let db = Db::open(&dir.path().join("db.redb")).expect("open db");
 
-        replace_account_usage(&db, &usage_map(&[("Granite", 42.0), ("Subspace", 10.0)]))
+        replace_account_usage(&db, &usage_map(&[("Gateway", 42.0), ("Stargate", 10.0)]))
             .expect("first write");
         let loaded = account_usage(&db).expect("read");
         assert_eq!(loaded.len(), 2);
         assert_eq!(
             loaded
-                .get("Granite")
+                .get("Gateway")
                 .and_then(|e| e.snapshot.five_hour.as_ref())
                 .map(|w| w.utilization),
             Some(42.0),
         );
 
         // A second write drops the account no longer present.
-        replace_account_usage(&db, &usage_map(&[("Granite", 99.0)])).expect("second write");
+        replace_account_usage(&db, &usage_map(&[("Gateway", 99.0)])).expect("second write");
         let loaded = account_usage(&db).expect("read again");
         assert_eq!(loaded.len(), 1, "replace mirrors exactly the new map");
-        assert!(!loaded.contains_key("Subspace"), "the dropped account is gone");
+        assert!(!loaded.contains_key("Stargate"), "the dropped account is gone");
         assert_eq!(
             loaded
-                .get("Granite")
+                .get("Gateway")
                 .and_then(|e| e.snapshot.five_hour.as_ref())
                 .map(|w| w.utilization),
             Some(99.0),
@@ -202,7 +202,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let db = Db::open(&dir.path().join("db.redb")).expect("open db");
 
-        replace_account_usage(&db, &usage_map(&[("Granite", 42.0)])).expect("write good");
+        replace_account_usage(&db, &usage_map(&[("Gateway", 42.0)])).expect("write good");
 
         // A blob that isn't a valid entry must not poison the load.
         let txn = db.database().begin_write().expect("begin");
@@ -214,7 +214,7 @@ mod tests {
 
         let loaded = account_usage(&db).expect("read tolerates the corrupt blob");
         assert_eq!(loaded.len(), 1, "the good record survives a corrupt sibling");
-        assert!(loaded.contains_key("Granite"));
+        assert!(loaded.contains_key("Gateway"));
     }
 
     #[test]
@@ -244,7 +244,7 @@ mod tests {
         {
             let db = Db::open(&path).expect("open db");
             set_spinner(&db, Some(SpinnerStyle::Star)).expect("set spinner");
-            replace_account_usage(&db, &usage_map(&[("Granite", 42.0)])).expect("write usage");
+            replace_account_usage(&db, &usage_map(&[("Gateway", 42.0)])).expect("write usage");
         }
         let db = Db::open(&path).expect("reopen db");
         assert_eq!(
@@ -253,7 +253,7 @@ mod tests {
             "spinner survives restart"
         );
         assert!(
-            account_usage(&db).expect("read").contains_key("Granite"),
+            account_usage(&db).expect("read").contains_key("Gateway"),
             "the usage cache survives restart",
         );
     }
@@ -267,8 +267,8 @@ mod tests {
             set_spinner(&db, Some(SpinnerStyle::Ember)).expect("set spinner");
             // A full usage-cache cycle. Two tables mean this never rewrites
             // the spinner row - the whole reason the lock could go.
-            replace_account_usage(&db, &usage_map(&[("Granite", 42.0)])).expect("write usage");
-            replace_account_usage(&db, &usage_map(&[("Subspace", 10.0)])).expect("churn usage");
+            replace_account_usage(&db, &usage_map(&[("Gateway", 42.0)])).expect("write usage");
+            replace_account_usage(&db, &usage_map(&[("Stargate", 10.0)])).expect("churn usage");
             assert_eq!(
                 spinner(&db).expect("read"),
                 Some(SpinnerStyle::Ember),

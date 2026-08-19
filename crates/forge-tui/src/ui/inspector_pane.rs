@@ -4526,7 +4526,7 @@ mod tests {
 
     #[test]
     fn attention_band_renders_header_and_row_when_a_session_waits() {
-        let app = app_with_waiting_session("granite-backend");
+        let app = app_with_waiting_session("gateway-backend");
         // Width 60 so the full name renders alongside the whole detail
         // (at the 40-col Wide pane the name legitimately truncates to
         // keep the kind/tool/wait detail whole - see the fit test).
@@ -4534,7 +4534,7 @@ mod tests {
         assert!(!lines.is_empty(), "a waiting session produces a band");
         let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(text.contains("NEEDS ATTENTION"), "header present: {text}");
-        assert!(text.contains("granite-backend"), "session name in a row: {text}");
+        assert!(text.contains("gateway-backend"), "session name in a row: {text}");
         assert!(text.contains("permission"), "permission kind rendered: {text}");
         assert!(text.contains("Bash"), "tool name for a permission prompt: {text}");
     }
@@ -4545,7 +4545,7 @@ mod tests {
         let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
         let perm = AttentionEntry {
             session_key: forge_workspace::SessionKey::from_session_id("p"),
-            name: "granite-backend".to_owned(),
+            name: "gateway-backend".to_owned(),
             role: None,
             kind: AttentionKind::Permission { tool: "Bash".to_owned() },
             enqueued_at: base,
@@ -4579,7 +4579,7 @@ mod tests {
         let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
         let entry = AttentionEntry {
             session_key: forge_workspace::SessionKey::from_session_id("f"),
-            name: "granite-backend".to_owned(),
+            name: "gateway-backend".to_owned(),
             role: None,
             kind: AttentionKind::Failed {
                 error: forge_primitives::ApiRetryError::ServerError,
@@ -4612,7 +4612,7 @@ mod tests {
     fn attention_row_renders_failure_in_red_cross() {
         let entry = AttentionEntry {
             session_key: forge_workspace::SessionKey::from_session_id("f"),
-            name: "granite-backend".to_owned(),
+            name: "gateway-backend".to_owned(),
             role: None,
             kind: AttentionKind::Failed {
                 error: forge_primitives::ApiRetryError::ServerError,
@@ -4658,7 +4658,7 @@ mod tests {
 
         // Present: the band takes the top rows; the body shifts down and
         // shrinks so GIT (drawn into the returned rect) is pushed down.
-        let mut app = app_with_waiting_session("granite-backend");
+        let mut app = app_with_waiting_session("gateway-backend");
         let mut term = Terminal::new(TestBackend::new(40, 24)).expect("terminal");
         let mut body = Rect::default();
         term.draw(|f| body = render_attention_band(f, area, &mut app)).expect("draw");
@@ -4700,8 +4700,8 @@ mod tests {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
-        let mut app = app_with_waiting_session("granite-backend");
-        let bg = forge_workspace::SessionKey::from_session_id("granite-backend");
+        let mut app = app_with_waiting_session("gateway-backend");
+        let bg = forge_workspace::SessionKey::from_session_id("gateway-backend");
         assert_ne!(
             app.active_session_key.as_ref(),
             Some(&bg),
@@ -4809,8 +4809,8 @@ mod tests {
         // active session's inspector body must not move the attention
         // row's hit target. Locks the invariant against a future
         // "fold the band into the scroll body" refactor.
-        let mut app = app_with_waiting_session("granite-backend");
-        let bg = forge_workspace::SessionKey::from_session_id("granite-backend");
+        let mut app = app_with_waiting_session("gateway-backend");
+        let bg = forge_workspace::SessionKey::from_session_id("gateway-backend");
         let area = Rect { x: 0, y: 0, width: 40, height: 24 };
 
         let row_y_at = |app: &mut App, offset: u16| -> u16 {
