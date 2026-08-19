@@ -6,12 +6,18 @@
 //!   <input-session.jsonl> <output-baseline.jsonl>
 //! ```
 //!
-//! Transforms persistence format → stream-json wire shape, scrubs
-//! PII (paths, uuids, message text, tool inputs + results) and
-//! writes deterministic, safe-to-commit output. The resulting file
-//! replays cleanly through `forge-conformance`'s
-//! `all_baselines_decode_cleanly` when placed under
-//! `baselines/<PINNED_CLI_VERSION>/`.
+//! Transforms persistence format → stream-json wire shape and applies
+//! the redaction rules listed in
+//! [`session_redact`](forge_test_harness::sdk_wire::session_redact) -
+//! read what those do and do not cover before committing the output,
+//! since prose content in a captured tool result is not among them.
+//! Output is deterministic, and replays cleanly through
+//! `forge-conformance`'s `all_baselines_decode_cleanly` when placed
+//! under `baselines/<PINNED_CLI_VERSION>/`.
+//!
+//! This writes its own `{"dir","line"}` envelope rather than going
+//! through `TraceLog::to_jsonl`, so the wire-trace redaction does not
+//! apply here.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 

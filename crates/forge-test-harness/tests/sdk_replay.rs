@@ -145,6 +145,13 @@ fn all_baselines_decode_cleanly() {
     for scenario in &scenarios {
         let log = load_baseline(scenario);
         let report = decode_all_inbound(&log);
+        // An empty baseline decodes to an empty report, and an empty
+        // report is clean - so without a floor, a corpus that got
+        // truncated or emptied passes this test while asserting nothing.
+        // Collected rather than asserted here, so a decoder regression
+        // still gets its per-scenario drift report printed below.
+        let decoded =
+            report.messages + report.controls + report.control_cancels + report.control_responses;
         summary.push((
             scenario.clone(),
             report.messages,
@@ -152,7 +159,9 @@ fn all_baselines_decode_cleanly() {
             report.control_cancels,
             report.control_responses,
         ));
-        if !report.is_clean() {
+        if decoded == 0 {
+            failures.push((scenario.clone(), "decoded no inbound lines at all".to_string()));
+        } else if !report.is_clean() {
             failures.push((scenario.clone(), format!("{report:#?}")));
         }
     }
@@ -167,13 +176,14 @@ fn all_baselines_decode_cleanly() {
     }
 
     if !failures.is_empty() {
-        eprintln!("\n{} scenario(s) failed decode-completeness:", failures.len());
+        eprintln!("\n{} scenario(s) failed the replay gate:", failures.len());
         for (scen, rpt) in &failures {
             eprintln!("--- {scen} ---\n{rpt}\n");
         }
         panic!(
-            "decode completeness regressions detected - either forge-sdk's decoder drifted \
-             or the CLI's wire shape changed and we need to recapture baselines."
+            "replay regressions detected - either forge-sdk's decoder drifted, the CLI's \
+             wire shape changed and we need to recapture baselines, or a baseline lost \
+             its contents."
         );
     }
 }
