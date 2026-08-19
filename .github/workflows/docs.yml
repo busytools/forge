@@ -1,0 +1,56 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Only the deploy job needs more than read access.
+permissions:
+  contents: read
+
+# Serialise deploys without cancelling one mid-publish; a cancelled
+# deploy can leave the Pages site half-updated.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: mdbook build
+    # A pull request from a fork cannot deploy and has nothing to gain
+    # from running here, so it is skipped outright.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: self-hosted-linux
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook@0.5.4
+
+      - run: mdbook build docs/book
+
+      - uses: actions/configure-pages@v5
+        if: github.event_name != 'pull_request'
+
+      - uses: actions/upload-pages-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          path: target/book
+
+  deploy:
+    name: deploy to pages
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: self-hosted-linux
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
