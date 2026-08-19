@@ -33,12 +33,15 @@ tokens, so it is not part of any automated run.
 
 ```bash
 just conformance                                  # replay everything, offline
-just conformance-capture-sdk wire_capture_trivial_prompt   # one live scenario
+just conformance-capture-sdk wire_capture_trivial_prompt   # one live capture
 ```
 
-The capture recipe rejects an empty scenario name rather than passing
-it through, because with no filter left it would capture every scenario
-against the real API.
+The argument is a nextest test name, not a baseline name, and the two
+namespaces do not always match. It is matched as a substring, so a
+loose argument selects several live captures and bills for all of them.
+An empty argument is rejected outright rather than passed through,
+because with no filter left it would capture everything against the
+real API.
 
 ## Baselines
 

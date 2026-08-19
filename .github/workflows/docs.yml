@@ -6,7 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Only the deploy job needs more than read access.
+# Default for any job that does not set its own; both jobs below
+# widen it, the build job to read Pages config and the deploy job to
+# publish.
 permissions:
   contents: read
 
@@ -39,6 +41,11 @@ jobs:
 
       - run: mdbook build docs/book
 
+      # Reads the repo's Pages config, so it fails until Pages is
+      # enabled by hand: Settings, Pages, Source = GitHub Actions.
+      # That cannot be done from inside the repo and needs it public.
+      # Skipped on pull requests, so nothing here is exercised until
+      # the first push to main.
       - uses: actions/configure-pages@v6
         if: github.event_name != 'pull_request'
 

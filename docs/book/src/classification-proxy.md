@@ -22,7 +22,8 @@ no reachable failure path in practice, because a trust store it cannot
 extend degrades to the built-in roots with a warning rather than an
 error.
 
-There is no degraded mode and no best-effort fallback. The error reads:
+Where it does start, it starts fully: there is no degraded mode in
+which sessions spawn without a proxy attached. The error reads:
 
 ```
 wire-classification rewriter proxy failed to start: <reason>. forge
@@ -86,8 +87,8 @@ The certificate identifies itself. Its common name is
 `forge wire-classification rewriter` and its organisation is
 `forge-tui`. It is a CA certificate with unconstrained basic
 constraints, valid from one hour before generation until 3650 days
-after it, so a little over ten years. The backdating absorbs clock skew
-on first run.
+after it, which is a couple of days short of ten calendar years. The
+backdating absorbs clock skew on first run.
 
 Generating the CA does not install it anywhere. Nothing trusts it by
 default except the `claude` subprocess, which is pointed at it
@@ -135,9 +136,9 @@ to third-party MCP servers.
 - the bootstrap endpoint's query string is rewritten,
 - the `/v1/messages` body is rewritten, including a classification
   substring the CLI bakes into the system prompt,
-- event-logging and Statsig bodies are rewritten, and whole entries
-  whose event name carries the SDK-internal `tengu_sdk_` marker are
-  dropped rather than normalised,
+- event-logging and Statsig bodies are rewritten, and in the
+  event-logging case whole entries whose event name carries the
+  SDK-internal `tengu_sdk_` marker are dropped rather than normalised,
 - any other Anthropic endpoint gets a catch-all pass of the same
   normaliser, so a new classification surface is covered without a
   code change.
@@ -156,10 +157,14 @@ parsed JSON body, which anywhere at any depth:
 Non-string values under `entrypoint` and `client_type` are left alone
 rather than overwritten.
 
-Then a byte-level pass over the serialised body catches any remaining
-`sdk-` substring the structural walk could not reach, such as one
-embedded inside a larger string value. It short-circuits when the body
-contains no `sdk-` at all.
+Then a byte-level pass over the serialised body, which short-circuits
+unless the body contains `sdk-` somewhere. It is a fixed substring
+replacement, not a general sweep: in practice it rewrites escaped
+`\"entrypoint\":\"sdk-*\"` and `\"client_type\":\"sdk-*\"` for the four
+known SDK labels, which is the form those fields take when they are
+nested inside an already-serialised JSON string. Anything else carrying
+`sdk-`, including an unescaped occurrence in a body that failed to
+parse as JSON, is not covered by this pass.
 
 The net effect is that forge sessions report themselves to Anthropic
 and to Datadog as interactive CLI sessions.

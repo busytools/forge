@@ -21,8 +21,9 @@ That is `cargo fmt --check`, the Unicode punctuation gate,
 `cargo clippy --all-targets --workspace -- -D warnings`,
 `cargo nextest run --workspace --all-features`, and
 `cargo doc --workspace --no-deps --all-features`, all with
-`RUSTFLAGS=-D warnings`. It is the same set CI runs. Get it green
-before you open a pull request.
+`RUSTFLAGS=-D warnings` on the clippy, test and doc steps. Get it
+green before you open a pull request. It is CI's set minus one job:
+CI also runs `cargo check --release`.
 
 The toolchain comes from `rust-toolchain.toml`; rustup applies it
 automatically. Tests run through `cargo nextest`, not `cargo test`.
@@ -32,17 +33,18 @@ automatically. Tests run through `cargo nextest`, not `cargo test`.
 **Lints.** Clippy runs at `pedantic`, denied. On top of that,
 `unwrap`, `expect`, `panic`, `exit`, `todo` and `unimplemented` are
 denied, and `unsafe_code` is forbidden workspace-wide. `clippy.toml`
-relaxes `unwrap`, `expect` and `panic` in tests, along with printing,
-`dbg!` and indexing; `exit`, `todo` and `unimplemented` stay denied
-everywhere. Reach for `Result` rather than an `#[allow(...)]`; an allow
-on production code is treated as debt rather than a fix.
+relaxes `unwrap`, `expect` and `panic` in tests; `exit`, `todo` and
+`unimplemented` stay denied everywhere. Reach for `Result` rather than
+an `#[allow(...)]`; an allow on production code is treated as debt
+rather than a fix.
 
 **No `mod.rs`.** A module file sits next to its directory:
 `foo.rs` alongside `foo/`.
 
 **Unicode punctuation is gated in CI.** Em-dashes, en-dashes,
-horizontal bars and curly quotes are rejected in `.rs`, `.toml`, `.md`
-and `.html` files. Use a spaced hyphen, a comma, or two sentences.
+horizontal bars and curly quotes are rejected across the source and
+docs file types; `scripts/check_no_unicode_punctuation.py` carries the
+current list. Use a spaced hyphen, a comma, or two sentences.
 Ellipsis is allowed, because the TUI needs it as a truncation glyph.
 When a banned codepoint is genuinely required, write the escape form
 (`"\u{2014}"`) rather than the literal character. Run

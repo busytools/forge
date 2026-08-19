@@ -113,9 +113,11 @@ CLI's own MCP transport. Its tools are grouped by submodule and render
 to the model as `mcp__forge__<group>__<tool>`, with five groups today:
 `peers`, `workers`, `review`, `cron` and `gotify`.
 
-Which tools a session sees depends on its kind. Lead sessions get both
-`peers__*` and `workers__*`; worker sessions get `workers__*` only, so
-cross-project traffic stays the lead's job.
+`review`, `cron` and `gotify` are registered for every session. The
+peers-versus-workers split is the part that varies by session kind:
+lead sessions get both `peers__*` and `workers__*`, workers get
+`workers__*` but not `peers__*`, so cross-project traffic stays the
+lead's job.
 
 ## Single instance per config directory
 

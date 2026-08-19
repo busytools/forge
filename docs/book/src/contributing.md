@@ -13,16 +13,18 @@ just check
 
 `cargo fmt --check`, the Unicode punctuation gate, clippy with warnings
 denied, `cargo nextest run --workspace --all-features`, and
-`cargo doc`. Same set as CI. Green before you open a pull request.
+`cargo doc`. CI's set minus its `cargo check --release` job. Green
+before you open a pull request.
 
 ## The rules that bite first
 
 - **Clippy runs at `pedantic`, denied.** `unwrap`, `expect`, `panic`,
-  `exit`, `todo` and `unimplemented` are denied outside tests, and
-  `unsafe_code` is forbidden workspace-wide.
+  `exit`, `todo` and `unimplemented` are denied, and `unsafe_code` is
+  forbidden workspace-wide. `clippy.toml` relaxes `unwrap`, `expect`
+  and `panic` in tests; the other three stay denied everywhere.
 - **No `mod.rs`.** `foo.rs` sits next to `foo/`.
-- **No em-dashes, en-dashes, horizontal bars or curly quotes** in
-  `.rs`, `.toml`, `.md` or `.html` files. CI rejects them. Ellipsis is
+- **No em-dashes, en-dashes, horizontal bars or curly quotes** across
+  the scanned source and docs file types. CI rejects them. Ellipsis is
   allowed. `just unicode-punct-check` shows what would be flagged.
 - **New wire surface ships with a captured baseline.** See
   [the wire contract](./wire-contract.md).
