@@ -2,7 +2,7 @@
 //!
 //! The overlay is the floor of the `/diff` flow: a snapshot of
 //! file-level hunks fetched via
-//! [`forge_workspace::Workspace::scan_git_diff_hunks`] rendered as a
+//! [`forge_workspace::env::git_diff::hunks::scan`] rendered as a
 //! single continuous scroll of every changed file with a FILES jump
 //! rail. See [`crate::ui::diff_overlay`] for the renderer; this module
 //! owns the transient state and the key / mouse dispatch.

@@ -2,8 +2,10 @@
 //! produce a [`GitDiffSnapshot`] describing the project's current
 //! changeset.
 //!
-//! Polled (not watched): callers (`forge_workspace::Workspace::scan_git_diff`)
-//! invoke [`scan`] from the TUI's `app::git_diff` ticker - a 1 s
+//! Polled (not watched): the TUI reaches [`scan`] as
+//! `forge_workspace::env::git_diff::scan`, a wildcard re-export of this
+//! module through the workspace facade, and drives it from its
+//! `app::git_diff` ticker - a 1 s
 //! poke runs the "snapshot is `None` OR age ≥ 10 s → fetch" rule
 //! against the active session. The snapshot carries branch info
 //! alongside diff stats, so this module replaces both the previous
