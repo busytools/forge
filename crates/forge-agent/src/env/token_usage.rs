@@ -484,10 +484,10 @@ mod tests {
 
     #[test]
     fn calendar_day_uses_the_injected_timezone() {
-        let kolkata = timezones::get_by_name("Asia/Kolkata").expect("kolkata zone");
+        let plus_530 = timezones::get_by_name("Asia/Colombo").expect("+5:30 zone");
         // 2026-07-19T20:00Z is still 07-19 in UTC but 07-20 at +5:30 (01:30 local).
         assert_eq!(calendar_day("2026-07-19T20:00:00Z", utc()).as_deref(), Some("2026-07-19"));
-        assert_eq!(calendar_day("2026-07-19T20:00:00Z", kolkata).as_deref(), Some("2026-07-20"));
+        assert_eq!(calendar_day("2026-07-19T20:00:00Z", plus_530).as_deref(), Some("2026-07-20"));
         assert_eq!(calendar_day("not-a-timestamp", utc()), None);
     }
 
