@@ -23,6 +23,13 @@ jobs:
     # from running here, so it is skipped outright.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: self-hosted-linux
+    # `configure-pages` reads the Pages config over the API, which the
+    # workflow-level `contents: read` alone would deny. A job-level
+    # block replaces the workflow default outright, so checkout's
+    # `contents: read` has to be restated here.
+    permissions:
+      contents: read
+      pages: read
     steps:
       - uses: actions/checkout@v5
 
