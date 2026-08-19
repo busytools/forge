@@ -825,7 +825,7 @@ impl Tool for Ask {
 ///
 /// Arguments:
 /// - `label` (string, required) - the role label, may contain `/` for
-///   namespace subdirectories (e.g. `backend/researcher`). Validated
+///   namespace subdirectories (e.g. `<project>/researcher`). Validated
 ///   against `..` / `.` / empty segments to prevent path traversal.
 /// - `charter` (string, required) - markdown body of the charter. The
 ///   spawned worker's LLM sees this as a system-prompt addendum.
@@ -881,8 +881,8 @@ impl Tool for CreateRole {
          present, the file re-orients the worker on session resume \
          instead of using the fresh-spawn kick). Lead-only. The label \
          may contain `/` for namespace subdirectories (e.g. \
-         `backend/researcher` writes to \
-         `~/.claude/forge-team/backend/researcher/charter.md`). \
+         `<project>/researcher` writes to \
+         `~/.claude/forge-team/<project>/researcher/charter.md`). \
          After creation, add the label to `forge.toml`'s \
          `static_workers = [...]` and restart forge to spawn workers with \
          this charter. Refuses by default if any target file already \
@@ -901,7 +901,7 @@ impl Tool for CreateRole {
             "properties": {
                 "label": {
                     "type": "string",
-                    "description": "Role label. May contain `/` for namespace subdirectories (e.g. `backend/researcher`). Non-empty after trim. Rejected if it contains `..` / `.` segments or starts with `/`.",
+                    "description": "Role label. May contain `/` for namespace subdirectories (e.g. `<project>/researcher`). Non-empty after trim. Rejected if it contains `..` / `.` segments or starts with `/`.",
                 },
                 "charter": {
                     "type": "string",
