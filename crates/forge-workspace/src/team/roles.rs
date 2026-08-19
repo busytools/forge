@@ -1,7 +1,7 @@
 //! File-driven engineering-team role definitions. Each role's charter
 //! and initial kick live in `~/.claude/forge-team/<label>/charter.md`
 //! and `~/.claude/forge-team/<label>/kick.md`. Labels may contain `/`
-//! for namespace subdirectories (e.g. `data-modules/researcher`).
+//! for namespace subdirectories (e.g. `backend/researcher`).
 //!
 //! A role may also carry `resume-kick.md`, read by [`load_resume_kick`]
 //! when a worker resumes rather than starts fresh.
@@ -360,7 +360,7 @@ mod tests {
 
     #[test]
     fn validate_label_accepts_namespaced_labels() {
-        assert!(validate_label("data-modules/researcher").is_ok());
+        assert!(validate_label("backend/researcher").is_ok());
         assert!(validate_label("team/sub-team/role").is_ok());
     }
 
@@ -389,8 +389,8 @@ mod tests {
         };
         let dir = role_dir("planner").expect("simple label resolves");
         assert_eq!(dir, root.join("planner"));
-        let nested = role_dir("data-modules/researcher").expect("namespaced label resolves");
-        assert_eq!(nested, root.join("data-modules").join("researcher"));
+        let nested = role_dir("backend/researcher").expect("namespaced label resolves");
+        assert_eq!(nested, root.join("backend").join("researcher"));
     }
 
     #[test]

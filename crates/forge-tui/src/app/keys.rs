@@ -701,6 +701,8 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
     true
 }
 
+// `app` is only read on the `cfg(not(test))` branch below, and a
+// parameter cannot be renamed per-cfg without duplicating the signature.
 fn handle_clipboard_paste_key(#[allow(unused_variables)] app: &mut App, key: KeyEvent) -> bool {
     if !is_clipboard_paste_shortcut(key) {
         return false;

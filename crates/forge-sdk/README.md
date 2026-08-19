@@ -93,10 +93,6 @@ Full gate (tests + clippy + fmt + docs) via:
 just check
 ```
 
-The Monday upstream-watch ritual lives in
-[`../../CLAUDE.md`](../../CLAUDE.md) - scan Python `claude-agent-sdk`
-for new ideas worth pulling in (forge-native, not 1:1 parity).
-
 ## Licence
 
 MIT.

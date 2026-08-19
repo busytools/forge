@@ -1325,6 +1325,7 @@ pub(crate) fn clamp_percentage_to_u8(p: f64) -> u8 {
     if p.is_nan() {
         return 0;
     }
+    // Clamped to 0..=100 first, so neither truncation nor sign loss can fire.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let n = p.clamp(0.0, 100.0).round() as u8;
     n

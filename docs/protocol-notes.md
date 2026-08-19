@@ -1,11 +1,10 @@
 # Protocol notes - observed Python SDK behaviour
 
-> Committed to the forge repo under `docs/`. **Not** the user-level planning docs.
-
-Source of truth: `claude-agent-sdk` Python v0.1.64 (`_internal/query.py`,
-`_internal/transport/subprocess_cli.py`, `types.py`). Findings consolidated
-from the two parallel plan-reviews captured in
-`~/.claude-stargate/plans/2026-04-21-forge-sdk-corrections.md`.
+Wire behaviour forge-sdk was built against, read out of Anthropic's Python
+`claude-agent-sdk` v0.1.64 (`_internal/query.py`,
+`_internal/transport/subprocess_cli.py`, `types.py`). The two SDKs share a
+wire contract with the `claude` binary and nothing else, so this is a
+record of what the binary expects, not a parity checklist.
 
 ---
 
@@ -339,7 +338,10 @@ initialize - `"all"` injects bare `"Skill"` in allowedTools only.
 
 ## References
 
-- Python SDK source (v0.1.64): `~/.venv/lib/python3.14/site-packages/claude_agent_sdk/`
-- Plan corrections consolidation: `~/.claude-stargate/plans/2026-04-21-forge-sdk-corrections.md`
-- Live observations: deferred (SDK captures above drawn from review
-  pass, not from re-running Python live in this session).
+- Python SDK source, v0.1.64: `claude_agent_sdk/` in the installed
+  `claude-agent-sdk` package, or
+  [the upstream repo](https://github.com/anthropics/claude-agent-sdk-python).
+- Everything above was read out of that source rather than observed live.
+  Where forge needs a wire fact confirmed against the real binary, the
+  authority is a live capture under
+  `crates/forge-test-harness/baselines/sdk/`, not this file.

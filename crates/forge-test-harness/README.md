@@ -71,13 +71,25 @@ changes nothing. Two ways to satisfy it:
   a `capture-*` file promoted per the step above is already clean.
 - **Reference captures** under
   `.claude/skills/claude-cli-upgrade/reference-captures/` are a raw
-  shell redirect of `claude --print`, so nothing redacts them. There is
-  no committed tool for this yet: regenerate them via the
-  `claude-cli-upgrade` skill, then pass each line through
-  `WireRedactor::for_trace` / `redact_line` before committing, and check
-  the gate. Read `session_redact`'s "what it does not cover" first -
-  prose in a captured tool result is not redacted, and the gate cannot
-  see that.
+  shell redirect of `claude --print`, so nothing redacts them on the way
+  in. Regenerate them via the `claude-cli-upgrade` skill, then run them
+  through the redactor before committing:
+
+  ```bash
+  cargo run -p forge-test-harness --example sdk_reredact_capture -- \
+    .claude/skills/claude-cli-upgrade/reference-captures
+  ```
+
+The same command brings an existing capture up to a redaction rule added
+after it was captured, which is the case the gate cannot fix for you: it
+reports disagreement between corpus and rules without saying which side
+is stale. Pass `--check` to see what would change without writing.
+
+A fixed-point gate can only ever check that a capture agrees with the
+rules in `session_redact`, so its reach is exactly theirs. Read that
+module's own account of what its spelling rules do not cover before
+committing a fresh capture, and prefer a rule that replaces a whole
+field over one that recognises a spelling.
 
 ## Running
 
@@ -153,10 +165,11 @@ a persistence-format superset of stream-json; the
 into wire shape + scrubs PII, then the probe feeds everything through
 the decoder.
 
-Run it against all of the developer's recorded sessions:
+Run it against your own recorded sessions, pointing at whichever
+config dir holds them (`$CLAUDE_CONFIG_DIR`, else `~/.claude`):
 
 ```bash
-FORGE_REAL_SESSIONS=$HOME/.claude-stargate/projects \
+FORGE_REAL_SESSIONS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" \
   cargo nextest run -p forge-test-harness --no-capture \
   real_session_decode_probe
 ```
@@ -169,8 +182,8 @@ To produce a redacted, **committed** baseline from a specific
 session:
 
 ```bash
-cargo run -p forge-test-harness --example redact_session -- \
-  $HOME/.claude-stargate/projects/<slug>/<session>.jsonl \
+cargo run -p forge-test-harness --example sdk_redact_session -- \
+  "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/<slug>/<session>.jsonl" \
   crates/forge-test-harness/baselines/sdk/2.1.220/real_session_<name>.jsonl
 ```
 

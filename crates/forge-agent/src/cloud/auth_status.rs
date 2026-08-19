@@ -144,7 +144,7 @@ mod tests {
             "authMethod": "claude.ai",
             "apiProvider": "firstParty",
             "email": "dev@example.com",
-            "orgId": "f0a43d2e-a197-4a9f-94af-7ab882844c4d",
+            "orgId": "00000000-0000-4000-8000-000000000000",
             "orgName": "Example Org",
             "subscriptionType": "team"
         }"#;

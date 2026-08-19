@@ -22,7 +22,7 @@ The goal state: zero `FAIL` findings, zero unaccepted `WARN` findings. Iterate u
 Forge is wire-equivalent to native if, with the same project and equivalent user workflow:
 
 1. **All six classification channels match exactly** between native and forge (entrypoint=cli, is_interactive=true, etc.)
-2. **Forge's endpoint set is a subset of native's**, except for the accepted-divergences listed in `accepted-divergences.json` (currently: `/api/oauth/usage`, `registry.npmjs.org/@anthropic-ai/claude-code/latest`, `status.claude.com/api/v2/summary.json` - all explicitly accepted by the forge team)
+2. **Forge's endpoint set is a subset of native's**, except for the accepted-divergences listed in `accepted-divergences.json` (currently: `/api/oauth/usage`, `registry.npmjs.org/@anthropic-ai/claude-code/latest`, `status.claude.com/api/v2/summary.json` - all explicitly accepted)
 3. **No `sdk-*` string appears anywhere** in any request body, header, ddtag, or URL - at any nesting level, including stringified JSON
 4. **`agent_sdk_version` field is absent** in every telemetry event on both sides
 5. **Headers, query parameters, and request-body JSON-key paths match** between same-endpoint requests on both sides (modulo expected per-request volatility like timestamps and request IDs)
@@ -38,14 +38,14 @@ This is not a one-shot test. The skill is designed for repeated runs as forge fi
 ```
 [run]  → capture native + forge in two panes → analyze → see N FAIL + M WARN
    ↓
-[fix]  → forge team patches highest-priority FAIL
+[fix]  → patch the highest-priority FAIL
    ↓
 [run]  → capture again → analyze → see "fixed since last run: +0/-N1; new: +0/-0"
    ↓
 [iterate until]  zero FAIL, zero unaccepted WARN
 ```
 
-The analyzer writes a timestamped audit JSON per run to `~/Projects/forge/audits/wire-equivalence/audit-YYYY-MM-DD-HHMMSS.json`. Consecutive runs auto-compare and report delta (e.g., "FAIL -1, WARN -3"). The cycle is meant to converge.
+The analyzer writes a timestamped audit JSON per run to `audits/wire-equivalence/audit-YYYY-MM-DD-HHMMSS.json` under the repo root. Consecutive runs auto-compare and report delta (e.g., "FAIL -1, WARN -3"). The cycle is meant to converge.
 
 ## Step-by-step workflow
 
@@ -75,7 +75,7 @@ python3 -c 'from mitmproxy import io' 2>/dev/null || pip3 install --break-system
 ### Step 2 - boot both mitmproxies (agent runs)
 
 ```bash
-bash ~/Projects/forge/.claude/skills/wire-equivalence-check/scripts/setup-proxies.sh
+bash .claude/skills/wire-equivalence-check/scripts/setup-proxies.sh
 ```
 
 The helper boots two mitmproxies, native on 9001 and forge on 9002, both writing to `/tmp/forge-wire-check/`. Logs go to the same directory.
@@ -129,10 +129,10 @@ Both files should be present and >100KB. If either is 0 bytes, jump to "Failure 
 ### Step 5 - run the exhaustive analyzer (agent runs)
 
 ```bash
-python3 ~/Projects/forge/.claude/skills/wire-equivalence-check/scripts/analyze.py \
+python3 .claude/skills/wire-equivalence-check/scripts/analyze.py \
     --native /tmp/forge-wire-check/flows-native.mitm \
     --alt    /tmp/forge-wire-check/flows-alt.mitm \
-    --accepted ~/Projects/forge/.claude/skills/wire-equivalence-check/accepted-divergences.json \
+    --accepted .claude/skills/wire-equivalence-check/accepted-divergences.json \
     --verbose
 ```
 
@@ -155,7 +155,7 @@ Use this priority order for `FAIL` items:
 
 For each, point at the fix location: `crates/forge-sdk/src/transport/proxy.rs` for body / header rewriting; `crates/forge-agent/src/http_trust.rs` if a new reqwest client needs TLS cert loading; `crates/forge-agent/{cloud,env}/*.rs` if a new outbound endpoint was added.
 
-Reference fix patterns are in `~/.claude/memory/brief_claude_cli_rewriter_implementation_2026_05_20.md` (architecture context) and `~/.claude/memory/reference_claude_cli_integration_modes.md` (empirical evidence and the 6 channels).
+`proxy.rs`'s own module docs describe the six channels and the recursive normaliser that handles them; read those before adding a per-channel special case.
 
 ## What `WARN` items mean (not always failures)
 
@@ -195,7 +195,7 @@ If something goes wrong during capture (not analysis):
 - User killed the session too quickly (Ctrl-C instead of `/exit`). Telemetry batches flush periodically and at clean exit. Ask for a clean `/exit`.
 
 **Suspect "the binary doesn't have the fix" based on `strings | grep`:**
-- Symbol-hunting via `strings` can mislead. LLVM's link-time string-fragment optimization may eliminate constant string literals from the final binary even when the function that references them is alive. The forge binary in Round 5/6 showed zero hits for expected literal strings (`claude-code-20250219`, `effort-2025-11-24`) via `strings` even though the `rewrite_anthropic_beta` function symbol was present in `nm` output and the log messages from that function were in the binary. The function WAS in fact live at runtime.
+- Symbol-hunting via `strings` can mislead. LLVM's link-time string-fragment optimization may eliminate constant string literals from the final binary even when the function that references them is alive. This has happened here: `strings` showed zero hits for the beta-header literals `rewrite_anthropic_beta` compares against, while `nm` had the function symbol and its own log messages were in the binary. The function was live at runtime.
 - **Diagnostic protocol when investigating "is the fix in the binary?":**
   1. `nm ~/.cargo/bin/forge | grep <function_name>` - if the function symbol is present, the fix is in. Trust this signal.
   2. `strings ~/.cargo/bin/forge | grep <log_message_literal>` - if the diagnostic log message text from the fix function is in the binary, the function is also live.
@@ -203,7 +203,7 @@ If something goes wrong during capture (not analysis):
   4. Only if `nm` shows no function symbol at all AND log messages are missing is the fix genuinely not in the binary. In that case, rebuild.
 
 **Reinstall protocol after a forge-side fix:**
-- `cargo install --path crates/forge-tui --force` is required after every forge fix. `cargo build` updates rlibs in `target/release/` but does NOT re-link the binary at `~/.cargo/bin/forge`. Missing this step caused Round 5 to test a stale binary.
+- `cargo install --path crates/forge-tui --force` is required after every forge fix. `cargo build` updates rlibs in `target/release/` but does NOT re-link the binary at `~/.cargo/bin/forge`, so skipping it silently tests a stale binary.
 - After install, verify the binary mtime is later than the commit time of the latest fix. Confirms ordering but not content (see symbol-hunting note above).
 - When forge-sdk changes specifically: both `cargo build --release -p forge-sdk` (rebuild rlib) AND `cargo install --path crates/forge-tui --force` (re-link binary) are needed in that order.
 
@@ -220,16 +220,15 @@ If something goes wrong during capture (not analysis):
 
 `accepted-divergences.json` in this directory lists endpoints forge intentionally hits that native doesn't. The analyzer reads it and downgrades those from FAIL to ACCEPTED. To add or remove entries, edit the JSON directly.
 
-Each entry should have a `reason` explaining why the divergence is acceptable, who accepted it (forge-team or wire-equivalence-skill), and a `review_after` date to revisit. Default review cadence: quarterly.
+Each entry should have a `reason` explaining why the divergence is acceptable, who accepted it, and a `review_after` date to revisit. Default review cadence: quarterly.
 
 ## Audit trail
 
-Each invocation writes `~/Projects/forge/audits/wire-equivalence/audit-<timestamp>.json`. The analyzer reads the most recent prior audit and prints a delta line (FAIL +/-N, WARN +/-M) so you can see progress across runs. Keep these audits committed to git for long-term tracking of forge's wire-equivalence drift over time.
+Each invocation writes `audits/wire-equivalence/audit-<timestamp>.json`. The analyzer reads the most recent prior audit and prints a delta line (FAIL +/-N, WARN +/-M) so you can see progress across runs. Keep these audits committed to git for long-term tracking of forge's wire-equivalence drift over time.
 
-## Reference materials (full background context)
+## Reference materials
 
-- **Empirical evidence** for the 6 classification channels + capture methodology: `~/.claude/memory/reference_claude_cli_integration_modes.md`
-- **Original implementation brief** for the forge wire-rewriter: `~/.claude/memory/brief_claude_cli_rewriter_implementation_2026_05_20.md`
-- **Past round results** (what each fix-round addressed): `/tmp/forge-wire-equivalence-handoff-2026-05-20.md` and `/tmp/forge-round2-results-2026-05-20.md`, if still present in `/tmp`
-- **The forge proxy implementation itself**: `crates/forge-sdk/src/transport/proxy.rs`, `crates/forge-agent/src/http_trust.rs`
-- **The CLI binary classification logic** (for understanding why these signals exist): the `H9q()` function in the claude binary, see `~/.claude/memory/reference_claude_cli_integration_modes.md` § "binary reverse-engineering"
+- **The rewriter itself**, and the six classification channels it covers: `crates/forge-sdk/src/transport/proxy.rs`. Its module docs are the authority on what gets normalised and why the recursive walker is the place to extend.
+- **TLS trust for forge's own outbound clients**: `crates/forge-agent/src/http_trust.rs`.
+- **The invariants any change here must preserve**: the wire-classification rule in `CLAUDE.md`.
+- **Paired skill**, run on a CLI version bump: `.claude/skills/claude-cli-upgrade/SKILL.md`.

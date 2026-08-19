@@ -7,13 +7,26 @@
 //! [`transform_persistence_line`] converts one such line to wire shape;
 //! both it and [`WireRedactor`] then redact.
 //!
-//! Redaction is a set of SPELLING rules - home paths, `.claude-<profile>`
+//! Most rules are SPELLING rules - home paths, `.claude-<profile>`
 //! directories (`.claude-plugin` excepted, it is a plugin manifest),
-//! `-Users-<name>-` project slugs, non-categorical strings under
-//! `account`, and the home-directory owner as a bare word. Nothing here
-//! identifies personal data by meaning, so **prose in a captured tool
-//! result is not redacted** and a check written from this list can only
-//! confirm the list ran. Read a new capture before committing it.
+//! `-Users-<name>-` project slugs, and the home-directory owner as a bare
+//! word. Those recognise nothing by meaning, so a check written from them
+//! can only confirm they ran, and **prose in a captured tool result is
+//! not redacted at all**. Read a new capture before committing it.
+//!
+//! Three rules are instead value-blind, replacing a field wholesale
+//! rather than rewriting spellings inside it: everything non-categorical
+//! under `account`, the body of a `hook_response` frame, and the
+//! command / skill inventory. Each is a field where no spelling rule
+//! could ever be enough - a hook is an arbitrary local program, and its
+//! output on this repo's own captures was the author's entire
+//! cross-project memory index, in prose, which every spelling rule
+//! passed through untouched.
+//!
+//! Prefer that shape when adding a rule. A fixed-point gate over this
+//! module can only ever check that a capture agrees with these rules, so
+//! its reach is bounded by them: it is strengthened by a rule that
+//! recognises nothing, never by a longer list of things to recognise.
 //!
 //! Two rules are entry-point specific: the owner rule needs a whole
 //! trace to discover the name, so only [`WireRedactor`] has it; message
@@ -158,6 +171,155 @@ fn redact_account_field(v: &mut Value, key: &str) {
     }
 }
 
+/// Body fields of a `hook_response` frame. A hook is an arbitrary local
+/// program, so these carry whatever the capture machine happened to
+/// print, which on this repo's own captures was the author's entire
+/// cross-project memory index.
+const HOOK_BODY_KEYS: &[&str] = &["output", "stdout", "stderr"];
+
+/// What replaces a hook body. Non-empty, so a capture cannot pass the
+/// fixed-point gate by having merely been emptied by hand.
+const HOOK_BODY_PLACEHOLDER: &str = "<redacted-hook-body>";
+
+/// Stub the body of every `hook_response` frame, keeping the keys and
+/// every other field so the fixture still records the CLI's shape.
+///
+/// Value-blind by construction: the spelling rules elsewhere in this file
+/// are a no-op on prose, so no amount of pattern-matching makes a hook
+/// body safe to commit. The frame is scoped by its own `type` + `subtype`
+/// rather than by key name, because `stdout` is also how a Bash tool
+/// result reports itself and that one is wire surface worth keeping.
+///
+/// An empty body is left alone: it cannot carry anything, and a quiet
+/// hook is a wire fact the fixture should still record.
+fn redact_hook_body_recursive(v: &mut Value) {
+    match v {
+        Value::Array(a) => a.iter_mut().for_each(redact_hook_body_recursive),
+        Value::Object(o) => {
+            if o.get("type").and_then(Value::as_str) == Some("system")
+                && o.get("subtype").and_then(Value::as_str) == Some("hook_response")
+            {
+                for key in HOOK_BODY_KEYS {
+                    if let Some(Value::String(body)) = o.get_mut(*key)
+                        && !body.is_empty()
+                        && body != HOOK_BODY_PLACEHOLDER
+                    {
+                        HOOK_BODY_PLACEHOLDER.clone_into(body);
+                    }
+                }
+            }
+            for val in o.values_mut() {
+                redact_hook_body_recursive(val);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Per-entry fields of a command inventory entry. `argumentHint` is only
+/// stubbed when already present and non-empty: the TUI collapses an empty
+/// hint to `None`, so inventing one would record a wire fact that never
+/// happened.
+const COMMAND_ENTRY_KEYS: &[&str] = &["description", "argumentHint"];
+
+/// Stub the command / skill inventory the CLI reports for whatever is
+/// installed on the capture machine: `slash_commands` and `skills` on
+/// `system/init`, `commands` on `system/commands_changed`, and the
+/// `commands` reply carried by a `control_response`.
+///
+/// Both halves go, not just the descriptions. A description is local
+/// prose; a name is a local project's name, and this repo's own captures
+/// carried a work project in both. Nothing in forge matches on a specific
+/// command name - the TUI's parser takes any non-empty string and its
+/// lookup compares against what the user typed - so a placeholder keeps
+/// every wire fact the fixture records.
+///
+/// Placeholders are index-suffixed to keep the list's length and the
+/// entries distinct, which a single shared placeholder would collapse.
+fn redact_command_inventory_recursive(v: &mut Value) {
+    match v {
+        Value::Array(a) => a.iter_mut().for_each(redact_command_inventory_recursive),
+        Value::Object(o) => {
+            let is_system = o.get("type").and_then(Value::as_str) == Some("system");
+            let is_init = is_system && o.get("subtype").and_then(Value::as_str) == Some("init");
+            let is_changed =
+                is_system && o.get("subtype").and_then(Value::as_str) == Some("commands_changed");
+            let is_control = o.get("type").and_then(Value::as_str) == Some("control_response");
+            if is_init {
+                for (key, kind) in [("slash_commands", "command"), ("skills", "skill")] {
+                    if let Some(val) = o.get_mut(key) {
+                        stub_inventory(val, kind);
+                    }
+                }
+            }
+            if is_changed && let Some(val) = o.get_mut("commands") {
+                stub_inventory(val, "command");
+            }
+            if is_control {
+                for val in o.values_mut() {
+                    stub_nested_commands(val);
+                }
+                return;
+            }
+            for val in o.values_mut() {
+                redact_command_inventory_recursive(val);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Inventory arrays a `control_response` can carry, and what each holds:
+/// `commands` from the command-list reply, `skillFrontmatter` from the
+/// context-usage reply. Both are keyed inside that frame rather than
+/// globally, which is what keeps a same-named field elsewhere on the wire
+/// out of scope.
+const CONTROL_INVENTORY_KEYS: &[(&str, &str)] =
+    &[("commands", "command"), ("skillFrontmatter", "skill")];
+
+/// Find every inventory array under a `control_response` and stub it.
+/// Scoped to that frame by the caller.
+fn stub_nested_commands(v: &mut Value) {
+    match v {
+        Value::Array(a) => a.iter_mut().for_each(stub_nested_commands),
+        Value::Object(o) => {
+            for (key, val) in o.iter_mut() {
+                match CONTROL_INVENTORY_KEYS.iter().find(|(k, _)| *k == key.as_str()) {
+                    Some((_, kind)) => stub_inventory(val, kind),
+                    None => stub_nested_commands(val),
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Replace each entry of one inventory array, whichever of the two shapes
+/// it uses: a bare name string, or an object carrying a name plus local
+/// prose about it. A non-array is left alone.
+fn stub_inventory(arr: &mut Value, kind: &str) {
+    let Value::Array(entries) = arr else { return };
+    for (i, entry) in entries.iter_mut().enumerate() {
+        let name = format!("<redacted-{kind}-{i}>");
+        match entry {
+            Value::String(s) => *s = name,
+            Value::Object(o) => {
+                if let Some(Value::String(s)) = o.get_mut("name") {
+                    *s = name;
+                }
+                for key in COMMAND_ENTRY_KEYS {
+                    if let Some(Value::String(s)) = o.get_mut(*key)
+                        && !s.is_empty()
+                    {
+                        *s = format!("<redacted-{kind}-{key}>");
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Replace each discovered owner name with `<redacted-user>` in string
 /// VALUES only. Keys are left alone: an owner name is never a wire key,
 /// and rewriting one would change the shape rather than a value.
@@ -276,11 +438,12 @@ impl WireRedactor {
     ///
     /// # Errors
     ///
-    /// Serialisation failure, and account fields on a line that will not
-    /// round-trip, which nothing but the structural rule reaches. That
-    /// arm is LIVE in this build: a `Value` round trip is lossy on floats
-    /// without `arbitrary_precision`, which would retire it. The message
-    /// names the frame's `type`, never the body it refused to write.
+    /// Serialisation failure, and account or hook-body fields on a line
+    /// that will not round-trip, which nothing but the structural rule
+    /// reaches. That arm is LIVE in this build: a `Value` round trip is
+    /// lossy on floats without `arbitrary_precision`, which would retire
+    /// it. The message names the frame's `type`, never the body it
+    /// refused to write.
     pub fn redact_line(&self, line: &str) -> Result<String, String> {
         let Ok(parsed) = serde_json::from_str::<Value>(line) else {
             return Ok(self.scrub_raw(line));
@@ -289,17 +452,21 @@ impl WireRedactor {
         if reencoded != line {
             let mut probe = parsed.clone();
             redact_account_recursive(&mut probe);
+            redact_hook_body_recursive(&mut probe);
+            redact_command_inventory_recursive(&mut probe);
             if probe != parsed {
                 let ty = parsed.get("type").and_then(Value::as_str).unwrap_or("<no type>");
                 return Err(format!(
-                    "a {ty} frame carries account fields but does not survive a re-encode, \
-                     so they cannot be redacted structurally"
+                    "a {ty} frame carries account, hook-body or command-inventory fields but \
+                     does not survive a re-encode, so they cannot be redacted structurally"
                 ));
             }
             return Ok(self.scrub_raw(line));
         }
         let mut v = parsed;
         redact_account_recursive(&mut v);
+        redact_hook_body_recursive(&mut v);
+        redact_command_inventory_recursive(&mut v);
         scrub_paths_recursive(&mut v);
         scrub_owner_tokens_recursive(&mut v, &self.owners);
         serde_json::to_string(&v).map_err(|e| format!("serialise: {e}"))

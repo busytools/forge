@@ -89,13 +89,11 @@ struct SpawnArgs {
 
 #[async_trait::async_trait]
 impl Tool for Spawn {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "workers__spawn"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Spawn a new worker session inside YOUR project (lead-only). \
          The worker is a full forge session - its own claude subprocess, \
          own chat view, own permissions - addressable from your session \
@@ -242,13 +240,11 @@ struct DespawnArgs {
 
 #[async_trait::async_trait]
 impl Tool for Despawn {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "workers__despawn"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Despawn (close + clean up) a worker in YOUR project by label \
          (lead-only). Kills the worker's claude subprocess, removes it \
          from workers__list, expires any inflight asks addressed to it, \
@@ -377,13 +373,11 @@ pub(crate) struct List {
 
 #[async_trait::async_trait]
 impl Tool for List {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "workers__list"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "List every worker currently live in YOUR project. Returns a \
          JSON array of worker snapshots (label, full charter, status, \
          session_id, spawned_at, spawned_by_session_id). These workers \
@@ -442,13 +436,11 @@ struct TellArgs {
 
 #[async_trait::async_trait]
 impl Tool for Tell {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "workers__tell"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Send a message to a worker in YOUR project by label. Two \
          shapes: (1) UNSOLICITED - omit `in_reply_to` to send standalone \
          prose; the message lands as a new user turn in the target's \
@@ -693,13 +685,11 @@ struct AskArgs {
 
 #[async_trait::async_trait]
 impl Tool for Ask {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "workers__ask"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Ask a worker in YOUR project a question and receive their \
          reply asynchronously. Returns IMMEDIATELY with a \
          correlation_id (e.g. q-7f3a92e0); this tool does NOT wait \
@@ -835,7 +825,7 @@ impl Tool for Ask {
 ///
 /// Arguments:
 /// - `label` (string, required) - the role label, may contain `/` for
-///   namespace subdirectories (e.g. `data-modules/researcher`). Validated
+///   namespace subdirectories (e.g. `backend/researcher`). Validated
 ///   against `..` / `.` / empty segments to prevent path traversal.
 /// - `charter` (string, required) - markdown body of the charter. The
 ///   spawned worker's LLM sees this as a system-prompt addendum.
@@ -879,13 +869,11 @@ struct CreateRoleArgs {
 
 #[async_trait::async_trait]
 impl Tool for CreateRole {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "workers__create_role"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Create a new engineering-team role by writing its charter and \
          initial-kick files under `~/.claude/forge-team/<label>/`. \
          Optionally writes a `resume-kick.md` companion when \
@@ -893,8 +881,8 @@ impl Tool for CreateRole {
          present, the file re-orients the worker on session resume \
          instead of using the fresh-spawn kick). Lead-only. The label \
          may contain `/` for namespace subdirectories (e.g. \
-         `data-modules/researcher` writes to \
-         `~/.claude/forge-team/data-modules/researcher/charter.md`). \
+         `backend/researcher` writes to \
+         `~/.claude/forge-team/backend/researcher/charter.md`). \
          After creation, add the label to `forge.toml`'s \
          `static_workers = [...]` and restart forge to spawn workers with \
          this charter. Refuses by default if any target file already \
@@ -913,7 +901,7 @@ impl Tool for CreateRole {
             "properties": {
                 "label": {
                     "type": "string",
-                    "description": "Role label. May contain `/` for namespace subdirectories (e.g. `data-modules/researcher`). Non-empty after trim. Rejected if it contains `..` / `.` segments or starts with `/`.",
+                    "description": "Role label. May contain `/` for namespace subdirectories (e.g. `backend/researcher`). Non-empty after trim. Rejected if it contains `..` / `.` segments or starts with `/`.",
                 },
                 "charter": {
                     "type": "string",

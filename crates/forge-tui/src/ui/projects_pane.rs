@@ -183,6 +183,7 @@ fn render_projects_scroll_thumb(
     let thumb_top_usize = if max_offset == 0 || track == 0 {
         0
     } else {
+        // Thumb position in cells, re-clamped to `track` on the next line.
         #[allow(
             clippy::cast_precision_loss,
             clippy::cast_possible_truncation,
@@ -1152,6 +1153,7 @@ fn stamp_session_copy_hit_target(app: &mut App, panel_area: Rect) {
 /// a glyph swap.
 fn bar_spans(pct: f64, cells: usize) -> Vec<Span<'static>> {
     let pct = pct.clamp(0.0, 100.0);
+    // A clamped percentage of a cell count, re-clamped to `cells` below.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
     let filled = ((pct / 100.0) * cells as f64).round() as usize;
     let filled = filled.min(cells);
@@ -1468,6 +1470,7 @@ fn push_usage_window_lines(
 ) {
     let bar_cells = bar_cells_for(width);
     let pct_value = window.map_or(0.0, |w| w.utilization);
+    // A 0..=100 utilisation rounded for a 3-cell display field.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let pct_text = window.map_or_else(
         || "  \u{2014}%".to_owned(),
@@ -1688,6 +1691,7 @@ fn format_token_count(tokens: u64) -> String {
         if remainder == 0 {
             format!("{whole}M")
         } else {
+            // Losing precision is the point: this renders one decimal place.
             #[allow(clippy::cast_precision_loss)]
             let scaled = tokens as f64 / MILLION as f64;
             format!("{scaled:.1}M")
@@ -1698,6 +1702,7 @@ fn format_token_count(tokens: u64) -> String {
         if remainder == 0 {
             format!("{whole}K")
         } else {
+            // Losing precision is the point: this renders one decimal place.
             #[allow(clippy::cast_precision_loss)]
             let scaled = tokens as f64 / THOUSAND as f64;
             format!("{scaled:.1}K")

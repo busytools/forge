@@ -111,13 +111,11 @@ struct SubscribeArgs {
 
 #[async_trait::async_trait]
 impl Tool for Subscribe {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "gotify__subscribe"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Subscribe YOUR session to the configured Gotify server. When a matching notification \
          arrives it is delivered to you as a user turn (spawning your session if it's asleep). \
          Optionally filter by `applications` (a set of Gotify app NAMEs; a notification matches \
@@ -176,13 +174,11 @@ struct List {
 
 #[async_trait::async_trait]
 impl Tool for List {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "gotify__list"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "List YOUR OWN active Gotify subscriptions (a lead sees the lead's, a worker its own). \
          Returns a JSON array of {id, project, applications, min_priority}. Use an id with \
          gotify__unsubscribe. An empty array means no subscriptions. Takes no arguments. Any \
@@ -223,13 +219,11 @@ struct UnsubscribeArgs {
 
 #[async_trait::async_trait]
 impl Tool for Unsubscribe {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "gotify__unsubscribe"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Remove one of YOUR OWN Gotify subscriptions by id (from gotify__list / \
          gotify__subscribe), scoped to what you subscribed - a caller manages only what it \
          created. Any session in the project may call this."
@@ -272,13 +266,11 @@ struct Apps {
 
 #[async_trait::async_trait]
 impl Tool for Apps {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "gotify__apps"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "List the application NAMEs on the configured Gotify server. Use these names to filter \
          gotify__subscribe / gotify__recent by app. Returns a JSON array of strings. Takes no \
          arguments. Errors if no [gotify] server is configured."
@@ -319,13 +311,11 @@ struct RecentArgs {
 
 #[async_trait::async_trait]
 impl Tool for Recent {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "gotify__recent"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Fetch the most recent notifications from the configured Gotify server, newest first - a \
          catch-up for a session that was asleep or just woke. Optionally filter by `applications` \
          (a set of Gotify app NAMEs, from gotify__apps) and/or `min_priority` (at or above), and \
