@@ -31,10 +31,11 @@ automatically. Tests run through `cargo nextest`, not `cargo test`.
 
 **Lints.** Clippy runs at `pedantic`, denied. On top of that,
 `unwrap`, `expect`, `panic`, `exit`, `todo` and `unimplemented` are
-denied outside tests, and `unsafe_code` is forbidden workspace-wide.
-Tests may use `unwrap` and friends freely. Reach for `Result` rather
-than an `#[allow(...)]`; an allow on production code is treated as debt
-rather than a fix.
+denied, and `unsafe_code` is forbidden workspace-wide. `clippy.toml`
+relaxes `unwrap`, `expect` and `panic` in tests, along with printing,
+`dbg!` and indexing; `exit`, `todo` and `unimplemented` stay denied
+everywhere. Reach for `Result` rather than an `#[allow(...)]`; an allow
+on production code is treated as debt rather than a fix.
 
 **No `mod.rs`.** A module file sits next to its directory:
 `foo.rs` alongside `foo/`.

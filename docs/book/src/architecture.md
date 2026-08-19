@@ -16,7 +16,7 @@ forge-test-harness->  primitives + sdk
 | `forge-primitives` | Every type that crosses a crate boundary: message envelopes, content blocks, hook and permission payloads, IDs, render-side view structs. No logic, no I/O, no async. |
 | `forge-sdk` | The `claude` subprocess. Stream-json codec, transport, control dispatch, the in-process MCP host, the options builder, and the wire-classification proxy. |
 | `forge-agent` | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. Owns user-data reads, cloud calls, environment probes, event translation and tooling. Async, may shell out. |
-| `forge-workspace` | The multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml` loading, `DomainSession`, per-session actors, the machine-local state store, and the peer and worker MCP servers. |
+| `forge-workspace` | The multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml` loading, `DomainSession`, per-session actors, the machine-local state store, and the in-process MCP server forge exposes to every spawned session. |
 | `forge-tui` | The view layer. Rendering, key and mouse handling, per-session presentation state. Ships the `forge` binary. |
 | `forge-test-harness` | The wire-conformance harness. Replay tests plus opt-in live capture. |
 
@@ -75,23 +75,27 @@ forge-tui  <-  SessionUpdate via subscribe()  --  forge-workspace
 ```
 
 That is the whole contract. There is no second channel in the design,
-no callback hooks, and no shared mutable state. The TUI holds no handle
-into the agent layer. Query-style refreshes such as the status
-snapshot, context usage and the MCP snapshot are plain `Workspace`
-methods rather than command variants, because they are reads rather
-than user actions.
+no callback hooks, and no shared mutable state. Nothing under
+`forge-tui/src` holds a handle into the agent layer, though that crate's
+own integration tests do build one directly. Query-style refreshes such
+as the status snapshot, context usage and the MCP snapshot are plain
+`Workspace` methods rather than command variants, because they are
+reads rather than user actions.
 
-`DomainSession`, on the workspace side, keeps only routing metadata.
-The operational state the TUI renders lives on `UiSession`.
+`DomainSession`, on the workspace side, keeps only workspace-internal
+routing metadata, plus the pending-interaction and turn-state
+bookkeeping the session actors need. The operational state the TUI
+renders lives on `UiSession`.
 
 Two things about this boundary surprise people, and both are worth
 knowing before you change it:
 
-**The update channel doubles as a TUI-internal event bus.** A few
-`forge-tui` modules take `Workspace::update_sender()` and emit their
-own `SessionUpdate`s rather than making a command round-trip. That is
-an implicit second contract, and a non-TUI frontend would have to
-replicate it. It is tracked in
+**The update channel doubles as a TUI-internal event bus.** `App`
+grabs `Workspace::update_sender()` once at construction and keeps it as
+`App.update_tx`; a few `forge-tui` modules then emit their own
+`SessionUpdate`s through that field rather than making a command
+round-trip. That is an implicit second contract, and a non-TUI frontend
+would have to replicate it. It is tracked in
 [issue 105](https://github.com/busytools/forge/issues/105) rather than
 treated as settled design.
 
@@ -101,16 +105,37 @@ workspace wildcard-re-exports whole `forge-agent` submodules, so the
 TUI sees the agent's surface verbatim under a different name. Do not
 read "the TUI cannot touch the agent" into it.
 
+## The in-process MCP server
+
+forge exposes one MCP server, named `forge`, to every spawned session.
+It is not a subprocess: it is hosted inside forge and reached over the
+CLI's own MCP transport. Its tools are grouped by submodule and render
+to the model as `mcp__forge__<group>__<tool>`, with five groups today:
+`peers`, `workers`, `review`, `cron` and `gotify`.
+
+Which tools a session sees depends on its kind. Lead sessions get both
+`peers__*` and `workers__*`; worker sessions get `workers__*` only, so
+cross-project traffic stays the lead's job.
+
 ## Single instance per config directory
 
 One forge process owns one config directory and runs many sessions
-inside it. A second is refused at boot and reports the holder's PID.
+inside it. When the guard is in force, a second instance is refused at
+boot, naming the holder's PID when it can read one from the lockfile.
 
-The lock is a non-blocking exclusive `flock` on a dedicated file that
-is only ever opened and locked, never rewritten in place. It lives
-under forge's machine-local application-support directory at
-`locks/<hash>.lock`, not in the config directory, because `flock` binds
-to the inode rather than the path: a sync tool that replaces the file
+The guard is best-effort rather than absolute. If the application-support
+directory will not resolve, the `locks/` directory cannot be created,
+the lockfile will not open, or `flock` fails for any reason other than
+the contended one, forge logs a warning and boots without the
+guarantee.
+
+The lock is a non-blocking exclusive `flock` on a dedicated file. The
+holder truncates and rewrites its PID into that same file through the
+locked descriptor, which is safe; what must never happen is the file
+being *replaced*, because `flock` binds to the inode rather than the
+path. That is why it lives under forge's machine-local
+application-support directory at `locks/<hash>.lock` and not in the
+config directory: a sync tool that replaces the file
 by rename would swap the lock out from under a running process on
 another machine.
 

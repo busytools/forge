@@ -36,7 +36,7 @@ forge-test-harness->  primitives + sdk
 | [`forge-primitives`](crates/forge-primitives) | Every type that crosses a crate boundary: message envelopes, content blocks, hook and permission payloads, IDs, render-side views. Pure data. |
 | [`forge-sdk`](crates/forge-sdk) | The `claude` subprocess. Stream-json codec, transport, control dispatch, in-process MCP host, options builder, wire-classification proxy. |
 | [`forge-agent`](crates/forge-agent) | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. User-data reads, cloud calls, environment probes, event translation, tooling. |
-| [`forge-workspace`](crates/forge-workspace) | Multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml`, per-session actors, the machine-local state store, and the peer and worker MCP servers. |
+| [`forge-workspace`](crates/forge-workspace) | Multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml`, per-session actors, the machine-local state store, and the in-process MCP server forge exposes to every spawned session. |
 | [`forge-tui`](crates/forge-tui) | The view layer, and the `forge` binary. Rendering, input handling, per-session presentation state. No direct `forge-agent` dependency. |
 | [`forge-test-harness`](crates/forge-test-harness) | Wire-conformance harness: replay-based offline tests plus opt-in live capture. |
 
@@ -62,15 +62,18 @@ documents every key and has a complete example.
 ## Two things to know before running it
 
 forge starts a local man-in-the-middle HTTPS proxy at boot, generates a
-local certificate authority, points every spawned `claude` child at it,
-and normalises the CLI's classification fields on the way out. If the
-proxy cannot start, forge refuses to boot. The
+local certificate authority, and points every spawned `claude` child at
+it. That proxy terminates TLS for every host the child reaches, not
+only Anthropic, and anything the child itself spawns inherits it. It
+normalises the CLI's classification fields on the way out, and if it
+cannot start, forge refuses to boot. The
 [proxy page](https://busytools.github.io/forge/classification-proxy.html)
 describes the mechanism and its consequences in full.
 
-forge takes an exclusive lock on a config directory. A second forge on
-the same config directory is refused at boot and reports the holder's
-PID.
+forge takes an exclusive lock on a config directory, so a second forge
+on the same config directory is normally refused at boot, naming the
+holder's PID. The guard is best-effort and warns rather than failing if
+it cannot be established.
 
 ## Scope
 

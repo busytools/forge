@@ -44,11 +44,15 @@ for arbitrary deployments.
 
 Two behaviours are worth knowing before you run it:
 
-- forge starts a local HTTPS proxy and routes every `claude` child
-  through it, and it refuses to boot if that proxy cannot start. See
+- forge starts a local man-in-the-middle HTTPS proxy and routes every
+  `claude` child through it. It terminates TLS for every host the child
+  reaches, not only Anthropic, and anything the child spawns inherits
+  it. forge refuses to boot if that proxy cannot start. See
   [the proxy page](./classification-proxy.md).
-- forge takes an exclusive lock on a config directory. A second forge
-  on the same config directory is refused at boot.
+- forge takes an exclusive lock on a config directory, so a second
+  forge on the same config directory is normally refused at boot. The
+  guard is best-effort and warns rather than failing if it cannot be
+  established.
 
 ## Where to go next
 

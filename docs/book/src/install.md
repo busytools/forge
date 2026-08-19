@@ -56,10 +56,13 @@ just check
 That runs, in order: `cargo fmt --check`, the Unicode punctuation gate,
 `cargo clippy --all-targets --workspace -- -D warnings`,
 `cargo nextest run --workspace --all-features`, and
-`cargo doc --workspace --no-deps --all-features`. Every step runs with
-`RUSTFLAGS=-D warnings` so a warning that CI would reject fails
-locally too. This is the same set CI runs, and it is what to run before
-opening a pull request.
+`cargo doc --workspace --no-deps --all-features`. The clippy, test and
+doc steps each set `RUSTFLAGS=-D warnings` so a warning CI would reject
+fails locally too; CI sets it once at workflow level instead.
+
+Run it before opening a pull request. It is CI's set minus one job: CI
+also runs `cargo check --release`, which `just check` deliberately
+leaves out.
 
 Individual pieces, if you want a faster loop:
 
@@ -87,8 +90,10 @@ This builds `forge-tui` from the current working tree and installs the
 `forge` binary into cargo's install root, which is `~/.cargo/bin/forge`
 unless you have overridden `CARGO_INSTALL_ROOT` or `CARGO_HOME`. It
 builds whatever branch is checked out; it does not clone, fetch or
-reset. The `perf` feature is on by default, and
-`just install-no-perf` turns it off.
+reset. It passes `--features perf` unless you use
+`just install-no-perf`. That default lives in the install script, not
+in `Cargo.toml`, so a plain `cargo build` or `cargo install` does not
+enable `perf`.
 
 Two side effects worth knowing about:
 

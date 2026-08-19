@@ -13,9 +13,16 @@ At startup, before any session can spawn, `Workspace::new`:
    already exist on disk, and loads it.
 2. Binds an HTTP proxy listener on a random port on `127.0.0.1`.
 3. Builds the TLS context the proxy uses to reach upstream.
+4. If it is chaining through an upstream proxy, builds that connector.
 
-If any of those three fail, forge does not start. There is no
-degraded mode and no best-effort fallback. The error reads:
+Steps 1, 2 and 4 can fail, and any of them stops forge starting: the CA
+directory not being writable, key generation or self-signing failing,
+the port not binding, or an unparseable upstream proxy URL. Step 3 has
+no reachable failure path in practice, because a trust store it cannot
+extend degrades to the built-in roots with a warning rather than an
+error.
+
+There is no degraded mode and no best-effort fallback. The error reads:
 
 ```
 wire-classification rewriter proxy failed to start: <reason>. forge
@@ -35,6 +42,32 @@ HTTP_PROXY=http://127.0.0.1:<port>
 NODE_EXTRA_CA_CERTS=<app-support>/ca/ca-cert.pem
 ```
 
+## It decrypts every host, not just Anthropic
+
+This is the part to be clear about. The proxy does not filter which
+CONNECT requests it intercepts, so it terminates TLS for **every**
+HTTPS host the subprocess reaches, decrypts the traffic, and
+re-encrypts it upstream. The host checks described further down decide
+what gets *rewritten*; they do not decide what gets decrypted.
+
+Two consequences follow from that plus the fact that `HTTPS_PROXY` and
+`HTTP_PROXY` are ordinary environment variables:
+
+- Anything the `claude` subprocess spawns inherits them. When the CLI
+  runs `gh`, `curl`, `npm` or anything else through its Bash tool, that
+  process goes through forge's proxy too, and its TLS is terminated the
+  same way.
+- Every request body is read fully into memory before being forwarded,
+  on every request to every host, including something like a `curl`
+  file upload started from the Bash tool. Responses are the exception:
+  they are streamed through untouched and never buffered, because
+  `/v1/messages` is a server-sent-event stream and buffering it would
+  stall the turn. `Content-Length` is recomputed on every forwarded
+  request.
+
+If you do not want a given account's traffic going through any of this,
+set `proxy = false` on it; see [Turning it off](#turning-it-off).
+
 ## The certificate authority
 
 The CA is generated on first launch and reused afterwards, so the path
@@ -52,7 +85,9 @@ chmod 0600, best-effort.
 The certificate identifies itself. Its common name is
 `forge wire-classification rewriter` and its organisation is
 `forge-tui`. It is a CA certificate with unconstrained basic
-constraints, valid for ten years from one hour before generation.
+constraints, valid from one hour before generation until 3650 days
+after it, so a little over ten years. The backdating absorbs clock skew
+on first run.
 
 Generating the CA does not install it anywhere. Nothing trusts it by
 default except the `claude` subprocess, which is pointed at it
@@ -82,51 +117,66 @@ the private key for that CA is a file in your home directory.
 
 ## What it rewrites
 
-The proxy inspects requests and forwards them. Responses are passed
-through untouched and are never buffered, because `/v1/messages` is a
-server-sent-event stream and buffering it would stall the turn.
+Decryption is universal, as above. Rewriting is not: what follows is
+what changes in the bytes.
 
 **On every outbound request, regardless of host**, the `User-Agent`
-header is rewritten. That includes requests to third-party MCP servers,
-not just to Anthropic.
+header is considered. It is only rewritten when the value carries a
+parenthesised segment, which is the shape the CLI and forge's own MCP
+client use; a plain agent string like `curl/8.4.0` passes through
+untouched. That check is host-independent, so it also covers requests
+to third-party MCP servers.
 
 **On `anthropic.com` hosts**, additionally:
 
-- the `anthropic-beta` header is adjusted,
+- one `anthropic-beta` flag is injected on exactly `/v1/messages`. The
+  list of forge-only flags to strip is currently empty, so injection is
+  the only change this makes,
 - the bootstrap endpoint's query string is rewritten,
 - the `/v1/messages` body is rewritten, including a classification
   substring the CLI bakes into the system prompt,
-- event-logging and Statsig bodies are rewritten,
+- event-logging and Statsig bodies are rewritten, and whole entries
+  whose event name carries the SDK-internal `tengu_sdk_` marker are
+  dropped rather than normalised,
 - any other Anthropic endpoint gets a catch-all pass of the same
   normaliser, so a new classification surface is covered without a
   code change.
 
 **On `datadoghq.com` hosts**, the logs endpoint's body and tags are
-rewritten.
+rewritten, with the same `tengu_sdk_` entries dropped.
 
-The normalisation itself is a recursive walk over the parsed JSON body.
-Anywhere in the structure, at any depth:
+Normalisation runs in two passes. First a recursive walk over the
+parsed JSON body, which anywhere at any depth:
 
-- `entrypoint` and `client_type` string values that are not already
-  `cli` become `cli`,
-- `is_interactive` becomes `true` if it is anything else,
-- `agent_sdk_version` keys are removed.
+- turns `entrypoint` and `client_type` string values that are not
+  already `cli` into `cli`,
+- turns `is_interactive` into `true` if it is anything else,
+- removes `agent_sdk_version` keys.
 
 Non-string values under `entrypoint` and `client_type` are left alone
 rather than overwritten.
+
+Then a byte-level pass over the serialised body catches any remaining
+`sdk-` substring the structural walk could not reach, such as one
+embedded inside a larger string value. It short-circuits when the body
+contains no `sdk-` at all.
 
 The net effect is that forge sessions report themselves to Anthropic
 and to Datadog as interactive CLI sessions.
 
 ### Requests answered locally
 
-Two Anthropic endpoints are not forwarded at all. The proxy answers
-them with a synthetic 200 response:
+Two Anthropic paths are not forwarded at all. The proxy answers them
+with a synthetic 200 response:
 
-| Endpoint | Response |
+| Path contains | Response |
 |---|---|
-| `POST /v1/messages/count_tokens` | `{"input_tokens":0}` |
-| `GET /api/claude_code/organizations/metrics_enabled` | `{"enabled":false}` |
+| `/v1/messages/count_tokens` | `{"input_tokens":0}` |
+| `/claude_code/organizations/metrics_enabled` | `{"enabled":false}` |
+
+The match is on the host ending in `anthropic.com` and the path
+containing that substring. There is no method check, so a `GET` to
+`/v1/messages/count_tokens` is stubbed just as a `POST` would be.
 
 ### When a rewrite fails
 
@@ -148,10 +198,16 @@ that would silently disable both the rewrite and the scan.
 
 If `HTTPS_PROXY` or `https_proxy` is set in the environment when forge
 launches, the rewriter routes its own outbound HTTPS through that
-upstream proxy, and extends its trust store from `NODE_EXTRA_CA_CERTS`
-if that is set too. So the same environment variables that let you
-capture traffic from a bare `claude` invocation also capture forge's
-output.
+upstream proxy. An unparseable value there is one of the failures that
+stops forge starting.
+
+Independently of chaining, the rewriter always extends its outbound
+trust store from `NODE_EXTRA_CA_CERTS`, falling back to `SSL_CERT_FILE`
+if that is unset. A bundle it cannot read leaves it on the built-in
+roots with a warning.
+
+Between them, the same environment variables that let you capture
+traffic from a bare `claude` invocation also capture forge's output.
 
 ## Turning it off
 

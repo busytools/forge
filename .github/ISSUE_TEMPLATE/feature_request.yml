@@ -34,7 +34,7 @@ body:
         - Sessions and orchestration
         - forge.toml configuration
         - SDK and wire protocol
-        - MCP servers (peers, workers, cron, review)
+        - The in-process MCP server (peers, workers, review, cron, gotify)
         - Build, tooling or docs
         - Not sure
     validations:

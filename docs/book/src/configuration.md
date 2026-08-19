@@ -219,10 +219,12 @@ forge is persisted separately and wins over it.
 
 Optional. Absent means the Gotify integration stays dormant.
 
-| Key | Type | Notes |
-|---|---|---|
-| `url` | string | Gotify server URL. |
-| `client_token` | string | Token for the receive stream and the application lookup. |
+| Key | Type | Required | Notes |
+|---|---|---|---|
+| `url` | string | yes | Gotify server URL. |
+| `client_token` | string | yes | Token for the receive stream and the application lookup. |
+
+Both are mandatory once the section is present; neither has a default.
 
 ## Unknown keys
 
@@ -300,10 +302,13 @@ client_token = "CxxxxxxxxxxxxxxxA"
 `forge <PROJECT>` opens the named project. The name must match a
 project's `name` exactly.
 
-With no argument, every project carrying `auto_start = true` spawns its
-lead session, and the first of them in `forge.toml` declaration order
-becomes the focused tab. If no project sets `auto_start`, forge falls
-back to a single default: the alphabetically-first project overall.
+With no argument, forge opens the launchpad picker instead of a chat
+tab. Every project carrying `auto_start = true` still spawns its lead
+session in the background, but none of them is focused: you pick one
+from the launchpad to enter chat.
+
+`auto_start` therefore controls what is warm when you arrive, not what
+you land on.
 
 ## Config versus state
 
@@ -330,5 +335,8 @@ a sync tool that replaces the file by rename would swap the lock out
 from under a running forge on another machine, and a second instance
 could then start against the same config directory.
 
-One forge process owns one config directory. A second is refused at
-boot, reporting the holder's PID.
+One forge process owns one config directory. A second is normally
+refused at boot, naming the holder's PID when it can read one. The
+guard is best-effort: if the lockfile cannot be created or locked,
+forge warns and starts anyway. See
+[Single instance per config directory](./architecture.md#single-instance-per-config-directory).
