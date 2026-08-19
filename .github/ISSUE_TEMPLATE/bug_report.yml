@@ -1,0 +1,49 @@
+name: Bug report
+description: Something forge does that it should not, or does not do that it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: forge version
+      description: The version line from the launchpad or the status panel. It carries the short commit SHA.
+      placeholder: 0.22.62 abc1234
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: OS and terminal
+      placeholder: macOS 15.5, Ghostty
+    validations:
+      required: true
+
+  - type: input
+    id: cli-version
+    attributes:
+      label: claude CLI version
+      description: Output of `claude --version`.
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: >
+        Run with `--log-file <path>` and a preset, for example
+        `forge --diagnostics-preset session --log-file /tmp/forge.log`.
+        Redact anything you do not want public: logs can contain paths
+        and prompt text.
+      render: text
+    validations:
+      required: false
