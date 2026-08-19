@@ -3,7 +3,7 @@
 
 Walks two mitmproxy flow captures (native + forge) and diffs everything
 observable on the wire. Produces a structured verdict listing every
-finding — known classification leaks, header-set differences, query-
+finding - known classification leaks, header-set differences, query-
 param differences, JSON-key-path differences in request bodies,
 response status divergences, telemetry event-type differences, and a
 defensive scan for any string pattern that smells like a leak.
@@ -126,7 +126,7 @@ def survey(path):
             if url.path == '/v1/messages':
                 s['msgs'] += 1
 
-            # Request body — size, path inventory, classification scan
+            # Request body - size, path inventory, classification scan
             if req.content:
                 s['request_body_sizes_per_endpoint'][ep].append(len(req.content))
                 ct = req.headers.get('content-type', '')
@@ -187,7 +187,7 @@ def survey(path):
                         # paths that contain user-typed or model-output text
                         # (conversation history can legitimately reference any
                         # string, including 'sdk-cli' or 'agent_sdk_version' if
-                        # the user is discussing those terms — that's content,
+                        # the user is discussing those terms - that's content,
                         # not classification metadata).
                         scan_for_suspicious_strings(body, ep, s['suspicious_strings'])
 
@@ -207,7 +207,7 @@ SUSPICIOUS_PATTERNS = [
     (re.compile(r'sdk-(cli|py|ts|rs)'),       'sdk-* identifier (hyphen variant)'),
     # `_sdk_` substring with a negative lookahead for `mcp_sdk_*`. The
     # MCP SDK protocol library emits `mcp_sdk_connect` / `mcp_sdk_*`
-    # event names from native CLI on MCP server connect — that's
+    # event names from native CLI on MCP server connect - that's
     # Anthropic's own SDK protocol library, NOT forge's SDK shape, and
     # not a classification leak. Verified 2026-05-28 via #262's
     # debugger root-cause (zero grep hits for `feature_name` in forge
@@ -237,19 +237,19 @@ def walk_paths(obj, prefix=''):
             for i, item in enumerate(obj):
                 yield from walk_paths(item, f'{prefix}[N]' if i == 0 else f'{prefix}[N]')
     else:
-        # leaf — record path + python type
+        # leaf - record path + python type
         yield f'{prefix}:{type(obj).__name__}'
 
 
 USER_CONTENT_PATH_FRAGMENTS = (
-    # /v1/messages — these paths carry user-typed text or model output, which
+    # /v1/messages - these paths carry user-typed text or model output, which
     # can legitimately reference any string. Skip them in the suspicious scan
     # to avoid false positives when the user chats about the rewriter itself.
     'messages[N].content',     # any user/assistant message blocks
     'messages[N].content[N]',  # any block under messages content
     # tool_result content is also user-driven (tool outputs flow back as text)
     # but it's nested inside messages so already covered by 'messages[N].content'
-    # NOTE: .system[N].text is NOT excluded — that's claude-constructed and
+    # NOTE: .system[N].text is NOT excluded - that's claude-constructed and
     # carries cc_entrypoint legitimately. The dedicated cc_entrypoint check
     # handles it separately, but the defensive scan should also catch any
     # other leak in the system prompt.
@@ -309,7 +309,7 @@ def matches_accepted(endpoint, accepted_list):
 
 
 # ────────────────────────────────────────────────────────────────────
-# Diff dimensions — each returns list of (severity, message, detail)
+# Diff dimensions - each returns list of (severity, message, detail)
 # ────────────────────────────────────────────────────────────────────
 
 def diff_bootstrap(n, a):
@@ -349,7 +349,7 @@ def diff_telemetry_classification(n, a):
       - The OTHER side doesn't also produce the same value (mutual baseline is OK), AND
       - It's not the known parser-artifact 'claude/...' stray on datadog
     Events with `?/?/?` (no classification fields at all) appear naturally
-    in both native and forge — they're event types that don't carry classification
+    in both native and forge - they're event types that don't carry classification
     fields. Only FAIL if one side has them and the other doesn't.
     """
     out = []
@@ -387,7 +387,7 @@ def diff_suspicious_strings(n, a):
     for hit, count in a['suspicious_strings'].most_common():
         out.append(('FAIL', 'forge suspicious string', f"{count}x {hit}"))
     for hit, count in n['suspicious_strings'].most_common():
-        # Anything native shows is a baseline observation — surface as INFO not FAIL
+        # Anything native shows is a baseline observation - surface as INFO not FAIL
         out.append(('INFO', 'native suspicious string (baseline)', f"{count}x {hit}"))
     return out
 
@@ -416,7 +416,7 @@ def diff_endpoint_coverage(n, a, accepted):
             out.append(('INFO', 'native-only endpoint (acceptable)', f"{ep} ({n['endpoints'][ep]}x)"))
         else:
             out.append(('WARN', 'native-only endpoint (unaccounted)',
-                       f"{ep} ({n['endpoints'][ep]}x) — usually MCP-config noise, not a hard failure"))
+                       f"{ep} ({n['endpoints'][ep]}x) - usually MCP-config noise, not a hard failure"))
     return out
 
 def diff_b1_b3_regressions(n, a):
@@ -559,7 +559,7 @@ def main():
     accepted = load_accepted(args.accepted)
 
     print("=" * 78)
-    print("WIRE-EQUIVALENCE — EXHAUSTIVE DIFF")
+    print("WIRE-EQUIVALENCE - EXHAUSTIVE DIFF")
     print("=" * 78)
     print(f"  Native: {n['flows']} flows, {n['msgs']} /v1/messages, {len(n['sessions'])} session(s), {len(n['endpoints'])} distinct endpoints")
     print(f"  Forge : {a['flows']} flows, {a['msgs']} /v1/messages, {len(a['sessions'])} session(s), {len(a['endpoints'])} distinct endpoints")
@@ -623,14 +623,14 @@ def main():
     print()
     print("=" * 78)
     if n_fail == 0:
-        print(f"VERDICT: ✓ PASS — zero classification failures.")
+        print(f"VERDICT: ✓ PASS - zero classification failures.")
         if n_warn > 0:
             print(f"         {n_warn} non-classification difference(s) flagged as WARN (header/body/event-name diffs)")
             print(f"         These are normal cross-binary variation; review individually if you want to chase them.")
         if n_accepted > 0:
             print(f"         {n_accepted} accepted-divergence endpoint(s) confirmed in forge per accepted-divergences.json")
     else:
-        print(f"VERDICT: ✗ FAIL — {n_fail} classification regression(s)")
+        print(f"VERDICT: ✗ FAIL - {n_fail} classification regression(s)")
         print(f"         Fix the FAIL items, then re-run this skill to verify.")
     print("=" * 78)
 
