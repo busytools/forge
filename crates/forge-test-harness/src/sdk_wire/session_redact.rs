@@ -1,52 +1,314 @@
 //! Session-persistence → stream-json transformer + PII redactor.
 //!
 //! Claude Code persists each session as JSONL under
-//! `$CLAUDE_CONFIG_DIR/projects/<slug>/<session-id>.jsonl`. The
-//! records overlap with the stream-json wire protocol in broad shape
-//! (same `type: assistant|user|system|result` discriminant, same
-//! `message.content` envelope) but add persistence-only fields in
-//! camelCase (`sessionId`, `parentUuid`, `cwd`, `gitBranch`,
-//! `timestamp`, `version`, …) and drop wire-only frames
-//! (`rate_limit_event`, `control_*`).
+//! `$CLAUDE_CONFIG_DIR/projects/<slug>/<session-id>.jsonl`, overlapping
+//! the wire protocol in broad shape but adding camelCase
+//! persistence-only fields and dropping wire-only frames.
+//! [`transform_persistence_line`] converts one such line to wire shape;
+//! both it and [`WireRedactor`] then redact.
 //!
-//! This module handles two jobs:
+//! Redaction is a set of SPELLING rules - home paths, `.claude-<profile>`
+//! directories (`.claude-plugin` excepted, it is a plugin manifest),
+//! `-Users-<name>-` project slugs, non-categorical strings under
+//! `account`, and the home-directory owner as a bare word. Nothing here
+//! identifies personal data by meaning, so **prose in a captured tool
+//! result is not redacted** and a check written from this list can only
+//! confirm the list ran. Read a new capture before committing it.
 //!
-//! 1. **Transform** a persistence line into a stream-json-shaped line
-//!    the [`decode_dispatch`](forge_sdk::transport::codec::decode_dispatch)
-//!    decoder accepts: rename `sessionId` → `session_id`, drop
-//!    persistence fields, map `parentUuid` → `parent_tool_use_id`
-//!    where appropriate.
-//! 2. **Redact** PII so the redactor's output is safe to commit as a
-//!    fixture: replace assistant / user message text with `<redacted
-//!    N bytes>` stubs, replace `tool_use` inputs and `tool_result`
-//!    bodies with placeholders, replace large `data` blobs in
-//!    `document` / `image` content blocks with size-tagged stubs,
-//!    map session / uuid / `request_id` values to stable opaque
-//!    tokens, and rewrite any `/Users/<name>`, `/home/<name>`,
-//!    `/Volumes/<name>` segment that survives in arbitrary string
-//!    fields (defence-in-depth on top of structural redaction) to
-//!    `<redacted-home>`.
+//! Two rules are entry-point specific: the owner rule needs a whole
+//! trace to discover the name, so only [`WireRedactor`] has it; message
+//! bodies, tool inputs and results are stubbed only by
+//! [`transform_persistence_line`], which also drops the
+//! persistence-only fields rather than tokenising them.
 //!
-//! The redactor is deterministic: a given input line produces the same
-//! output line, so fixtures regenerate cleanly under version control.
+//! Deterministic: one input line always gives the same output line.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use serde_json::Value;
 
-/// Regex matching `/Users/<name>`, `/home/<name>`, and `/Volumes/<name>`
-/// path prefixes so any string field that survives the structural
-/// redaction (e.g. inside `Unknown` blocks, MCP tool names,
-/// server-injected error messages) gets scrubbed. Compiled once;
-/// substitutes opaque `<redacted-home>` markers, preserving whatever
-/// path tail follows the home segment.
+/// Home-path prefixes, replaced by `<redacted-home>` with the path tail
+/// kept. The classes must exclude `"`: these patterns also run over raw
+/// line text, where a class that swallows the delimiter eats the field
+/// that follows. That is also what keeps the `,` they DO match harmless -
+/// drop the `"` again and the comma inclusion becomes a field-eater.
 fn path_regex() -> &'static regex::Regex {
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        regex::Regex::new(r"(/Users/[^/\s\\]+|/home/[^/\s\\]+|/Volumes/[^/\s\\]+)")
+        regex::Regex::new(r#"(/Users/[^/\s\\"]+|/home/[^/\s\\"]+|/Volumes/[^/\s\\"]+)"#)
             .expect("redactor path regex must compile")
     })
+}
+
+/// A `claude` profile directory name, which [`path_regex`] cannot reach:
+/// it replaces only the home prefix, and `~/.claude-profile4` has no prefix at
+/// all. Bare `.claude` is the default config dir, so it is not matched.
+fn profile_regex() -> &'static regex::Regex {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(r"\.claude-[A-Za-z0-9._-]+").expect("redactor profile regex must compile")
+    })
+}
+
+/// The project-slug spelling of a home path, which Claude Code mints by
+/// turning `/` into `-` (`-Users-<name>-Projects-forge`). Captures the
+/// name so discovery can harvest it as well as redact it.
+fn slug_regex() -> &'static regex::Regex {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(r#"-Users-([^-/\s\\"]+)-"#).expect("redactor slug regex must compile")
+    })
+}
+
+/// A plugin manifest directory, not a profile - [`profile_regex`] would
+/// otherwise take it for one.
+const PLUGIN_MANIFEST_DIR: &str = ".claude-plugin";
+
+/// Shortest owner name scrubbed as a bare token; a shorter one is an
+/// error, not a skip. This does not make token scrubbing safe -
+/// `assistant` and `permission` clear it - but a collision above the
+/// floor fails loudly on replay, and below it would not.
+const MIN_OWNER_LEN: usize = 8;
+
+/// True when any string-level rule would rewrite `s`.
+fn needs_scrub(s: &str) -> bool {
+    path_regex().is_match(s) || profile_regex().is_match(s) || slug_regex().is_match(s)
+}
+
+/// Apply every string-level rule to `s`. Ordered widest-first so an
+/// absolute path loses its home prefix before its profile segment.
+fn scrub_text(s: &str) -> String {
+    let out = path_regex().replace_all(s, "<redacted-home>");
+    // The regex crate has no lookahead, so the plugin dir is excluded
+    // by the replacement rather than by the pattern.
+    let out = profile_regex().replace_all(&out, |caps: &regex::Captures| {
+        if &caps[0] == PLUGIN_MANIFEST_DIR {
+            PLUGIN_MANIFEST_DIR.to_string()
+        } else {
+            "<redacted-profile>".to_string()
+        }
+    });
+    slug_regex().replace_all(&out, "<redacted-home>-").into_owned()
+}
+
+/// Captures the home-directory OWNER name out of an absolute home path.
+/// Narrower than [`path_regex`] in two ways: no `/Volumes/` arm, because
+/// a volume name is not a user name, and a user-name character class,
+/// because stderr puts `:` or a quote straight after the path and a
+/// captured fragment then matches nothing.
+fn owner_regex() -> &'static regex::Regex {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(r"/(?:Users|home)/([A-Za-z0-9._-]+)")
+            .expect("redactor owner regex must compile")
+    })
+}
+
+/// Account keys whose value is a categorical CLI label, not personal
+/// data: the corpus records two distinct `subscriptionType` labels and
+/// collapsing them would delete a wire fact the fixture exists to
+/// record. Only keys observed nested under an account object belong
+/// here - an exemption that never fires just risks leaving a real value.
+const ACCOUNT_CATEGORICAL_KEYS: &[&str] = &["apiProvider", "subscriptionType"];
+
+/// Placeholder every non-categorical string under `account` /
+/// `accounts`, keeping the keys so the fixture still records the CLI's
+/// shape. Structural rather than value-matching, so a field the CLI adds
+/// later is redacted before anyone notices it leaked.
+fn redact_account_recursive(v: &mut Value) {
+    match v {
+        Value::Array(a) => a.iter_mut().for_each(redact_account_recursive),
+        Value::Object(o) => {
+            for (key, val) in o.iter_mut() {
+                if key == "account" || key == "accounts" {
+                    redact_account_field(val, key);
+                } else {
+                    redact_account_recursive(val);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Redact one value under an account field. `key` names whatever it hung
+/// off, so a bare `"account": "…"` and a nested
+/// `"account": {"profile": {"email": …}}` both get a naming placeholder.
+fn redact_account_field(v: &mut Value, key: &str) {
+    match v {
+        Value::String(s) if !ACCOUNT_CATEGORICAL_KEYS.contains(&key) => {
+            let placeholder = format!("<redacted-{key}>");
+            if *s != placeholder {
+                // `tool_use.input` is not stubbed on the wire path, so an
+                // MCP tool taking an `account` argument has that argument
+                // collapsed and the fixture then records a wire fact that
+                // never happened. Log so a fixture-regen review sees it.
+                eprintln!("redact_account_field: collapsed a value under key={key:?}");
+                *s = placeholder;
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(|e| redact_account_field(e, key)),
+        Value::Object(o) => {
+            for (k, val) in o.iter_mut() {
+                redact_account_field(val, k);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Replace each discovered owner name with `<redacted-user>` in string
+/// VALUES only. Keys are left alone: an owner name is never a wire key,
+/// and rewriting one would change the shape rather than a value.
+fn scrub_owner_tokens_recursive(v: &mut Value, owners: &[regex::Regex]) {
+    match v {
+        Value::String(s) => *s = replace_owners(s, owners),
+        Value::Array(a) => a.iter_mut().for_each(|e| scrub_owner_tokens_recursive(e, owners)),
+        Value::Object(o) => {
+            for val in o.values_mut() {
+                scrub_owner_tokens_recursive(val, owners);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Apply every owner pattern to `s`.
+fn replace_owners(s: &str, owners: &[regex::Regex]) -> String {
+    owners
+        .iter()
+        .fold(s.to_string(), |acc, owner| owner.replace_all(&acc, "<redacted-user>").into_owned())
+}
+
+/// Collect owner names from both spellings of a home path in `s`: the
+/// path and the project slug.
+///
+/// # Errors
+///
+/// A name shorter than `MIN_OWNER_LEN`.
+fn collect_owners(s: &str, out: &mut Vec<String>) -> Result<(), String> {
+    let from_paths = owner_regex().captures_iter(s);
+    let from_slugs = slug_regex().captures_iter(s);
+    for caps in from_paths.chain(from_slugs) {
+        let name = caps[1].to_string();
+        if name.len() < MIN_OWNER_LEN {
+            return Err(format!(
+                "discovered a {}-character home-directory owner, below this \
+                 redactor's {MIN_OWNER_LEN}-character floor",
+                name.len()
+            ));
+        }
+        if !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    Ok(())
+}
+
+/// Collect owner names from every string a parsed line holds. Reading
+/// parsed values rather than raw text matters: over raw text
+/// `{"cwd":"/Users/ada","type":"system"}` captures a name running to
+/// end-of-line, which then matches nothing.
+///
+/// # Errors
+///
+/// As `collect_owners`.
+fn collect_owners_recursive(v: &Value, out: &mut Vec<String>) -> Result<(), String> {
+    match v {
+        Value::String(s) => collect_owners(s, out)?,
+        Value::Array(a) => {
+            for e in a {
+                collect_owners_recursive(e, out)?;
+            }
+        }
+        Value::Object(o) => {
+            for (k, val) in o {
+                collect_owners(k, out)?;
+                collect_owners_recursive(val, out)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Redacts one captured wire trace. Whole-trace rather than per-line
+/// because the identity also leaks as a bare name in prose, which is
+/// only recognisable once a home path elsewhere in the file supplies it -
+/// from the trace, so the same file redacts identically on any machine.
+pub struct WireRedactor {
+    owners: Vec<regex::Regex>,
+}
+
+impl WireRedactor {
+    /// Discover the home-directory owner(s) named anywhere in `lines`. A
+    /// trace naming no home path discovers none, so a bare name in its
+    /// prose survives.
+    ///
+    /// # Errors
+    ///
+    /// A discovered name below `MIN_OWNER_LEN`.
+    pub fn for_trace<'a>(lines: impl IntoIterator<Item = &'a str>) -> Result<Self, String> {
+        let mut names: Vec<String> = Vec::new();
+        for line in lines {
+            match serde_json::from_str::<Value>(line) {
+                Ok(v) => collect_owners_recursive(&v, &mut names)?,
+                Err(_) => collect_owners(line, &mut names)?,
+            }
+        }
+        // Longest first: the word-boundary anchors stop a short name
+        // matching inside a longer one only while the extension is a word
+        // character, and `first.last` home dirs are the case where it is
+        // not. `sort_by` is stable, so ties keep discovery order.
+        names.sort_by_key(|n| std::cmp::Reverse(n.len()));
+        let owners = names
+            .iter()
+            .filter_map(|n| regex::Regex::new(&format!(r"\b{}\b", regex::escape(n))).ok())
+            .collect();
+        Ok(Self { owners })
+    }
+
+    /// Redact one line, structurally where a no-op round trip is
+    /// byte-exact and by the text rules otherwise - serde_json parses
+    /// some 17-digit floats to a neighbouring f64, and a non-JSON line
+    /// has no structure to walk.
+    ///
+    /// # Errors
+    ///
+    /// Serialisation failure, and account fields on a line that will not
+    /// round-trip, which nothing but the structural rule reaches. That
+    /// arm is LIVE in this build: a `Value` round trip is lossy on floats
+    /// without `arbitrary_precision`, which would retire it. The message
+    /// names the frame's `type`, never the body it refused to write.
+    pub fn redact_line(&self, line: &str) -> Result<String, String> {
+        let Ok(parsed) = serde_json::from_str::<Value>(line) else {
+            return Ok(self.scrub_raw(line));
+        };
+        let reencoded = serde_json::to_string(&parsed).map_err(|e| format!("serialise: {e}"))?;
+        if reencoded != line {
+            let mut probe = parsed.clone();
+            redact_account_recursive(&mut probe);
+            if probe != parsed {
+                let ty = parsed.get("type").and_then(Value::as_str).unwrap_or("<no type>");
+                return Err(format!(
+                    "a {ty} frame carries account fields but does not survive a re-encode, \
+                     so they cannot be redacted structurally"
+                ));
+            }
+            return Ok(self.scrub_raw(line));
+        }
+        let mut v = parsed;
+        redact_account_recursive(&mut v);
+        scrub_paths_recursive(&mut v);
+        scrub_owner_tokens_recursive(&mut v, &self.owners);
+        serde_json::to_string(&v).map_err(|e| format!("serialise: {e}"))
+    }
+
+    /// The text rules alone, for a line that must not be re-encoded.
+    fn scrub_raw(&self, s: &str) -> String {
+        replace_owners(&scrub_text(s), &self.owners)
+    }
 }
 
 /// Recursively walk a JSON value and rewrite every absolute home path
@@ -56,8 +318,8 @@ fn path_regex() -> &'static regex::Regex {
 /// less-common fields.
 fn scrub_paths_recursive(v: &mut Value) {
     match v {
-        Value::String(s) if path_regex().is_match(s) => {
-            *s = path_regex().replace_all(s, "<redacted-home>").into_owned();
+        Value::String(s) if needs_scrub(s) => {
+            *s = scrub_text(s);
         }
         Value::Array(a) => a.iter_mut().for_each(scrub_paths_recursive),
         Value::Object(o) => {
@@ -70,15 +332,10 @@ fn scrub_paths_recursive(v: &mut Value) {
             // dumps, file-history snapshots, future Anthropic API
             // shapes that key by absolute path). Build a replacement
             // map only when at least one key changes.
-            let needs_rewrite = o.keys().any(|k| path_regex().is_match(k));
+            let needs_rewrite = o.keys().any(|k| needs_scrub(k));
             if needs_rewrite {
-                let entries: Vec<(String, Value)> = o
-                    .iter_mut()
-                    .map(|(k, v)| {
-                        let new_key = path_regex().replace_all(k, "<redacted-home>").into_owned();
-                        (new_key, v.take())
-                    })
-                    .collect();
+                let entries: Vec<(String, Value)> =
+                    o.iter_mut().map(|(k, v)| (scrub_text(k), v.take())).collect();
                 o.clear();
                 for (k, v) in entries {
                     if o.contains_key(&k) {
@@ -220,10 +477,12 @@ pub fn transform_persistence_line(
         }
     }
 
-    // Defence-in-depth: scrub home paths from any string anywhere in the
-    // transformed tree before serialising. Catches leaks in fields the
-    // structural redactor doesn't enumerate (Unknown blocks' arbitrary
-    // string fields, MCP tool names, server error messages, etc.).
+    // Defence-in-depth: scrub account fields and home paths from any
+    // string anywhere in the transformed tree before serialising.
+    // Catches leaks in fields the structural redactor doesn't enumerate
+    // (Unknown blocks' arbitrary string fields, MCP tool names, server
+    // error messages, etc.).
+    redact_account_recursive(&mut v);
     scrub_paths_recursive(&mut v);
 
     let out = serde_json::to_string(&v).map_err(|e| format!("json serialise: {e}"))?;
@@ -424,6 +683,243 @@ mod tests {
         assert_eq!(arr[0], json!("<redacted-home>/x"));
         assert_eq!(arr[1], json!("ok"));
         assert_eq!(arr[2], json!({"k": "<redacted-home>"}));
+    }
+
+    /// Every key in the tree, at every depth.
+    fn key_count(v: &Value) -> usize {
+        match v {
+            Value::Object(o) => o.len() + o.values().map(key_count).sum::<usize>(),
+            Value::Array(a) => a.iter().map(key_count).sum(),
+            _ => 0,
+        }
+    }
+
+    /// One line standing in for a whole trace. Every caller's fixture
+    /// round-trips, so this only exercises the structural path; the
+    /// raw-text path is covered by the lossy-float test below. The key
+    /// count guards against dropping a field, which no
+    /// what-was-removed assertion can see.
+    fn redact_one(line: &str) -> Value {
+        let out =
+            WireRedactor::for_trace([line]).expect("discovers").redact_line(line).expect("redacts");
+        let after: Value = serde_json::from_str(&out).expect("redacted line stays valid JSON");
+        let before: Value = serde_json::from_str(line).expect("fixture is valid JSON");
+        assert_eq!(
+            key_count(&before),
+            key_count(&after),
+            "redaction changed the key count\n  in:  {line}\n  out: {out}"
+        );
+        after
+    }
+
+    #[test]
+    fn account_fields_are_placeholdered_and_keys_kept() {
+        let v = redact_one(
+            &json!({"response": {"response": {"account": {
+                "email": "someone@example.com",
+                "organization": "Some Org",
+                "subscriptionType": "max",
+                "apiProvider": "anthropic",
+            }}}})
+            .to_string(),
+        );
+        assert_eq!(
+            v["response"]["response"]["account"],
+            json!({
+                "email": "<redacted-email>",
+                "organization": "<redacted-organization>",
+                "subscriptionType": "max",
+                "apiProvider": "anthropic",
+            })
+        );
+    }
+
+    /// The shapes an `account` field turns up in besides a flat object.
+    #[test]
+    fn account_redaction_reaches_bare_nested_and_listed_forms() {
+        let v = redact_one(
+            &json!({
+                "bare": {"account": "someone@example.com"},
+                "nested": {"account": {"profile": {"email": "someone@example.com"}}},
+                "listed": {"accounts": [{"email": "someone@example.com"}]},
+            })
+            .to_string(),
+        );
+        assert_eq!(v["bare"]["account"], json!("<redacted-account>"));
+        assert_eq!(v["nested"]["account"]["profile"]["email"], json!("<redacted-email>"));
+        assert_eq!(v["listed"]["accounts"][0]["email"], json!("<redacted-email>"));
+    }
+
+    #[test]
+    fn profile_dir_is_redacted_home_relative_and_absolute() {
+        let v = redact_one(
+            &json!({"text": "see ~/.claude-profile4/CLAUDE.md and /Users/alexandra/.claude-gateway1/x"})
+                .to_string(),
+        );
+        assert_eq!(
+            v["text"],
+            json!("see ~/<redacted-profile>/CLAUDE.md and <redacted-home>/<redacted-profile>/x")
+        );
+    }
+
+    #[test]
+    fn project_slug_form_of_a_home_path_is_redacted() {
+        let v = redact_one(
+            &json!({"text": "projects/-Users-alexandra-Projects-forge/memory"}).to_string(),
+        );
+        assert_eq!(v["text"], json!("projects/<redacted-home>-Projects-forge/memory"));
+    }
+
+    /// The prose spellings a path regex cannot see, keyed off the home
+    /// path on a different line of the same trace.
+    #[test]
+    fn owner_name_in_prose_is_redacted_from_a_home_path_elsewhere_in_the_trace() {
+        let path_line = json!({"cwd": "/Users/alexandra/Projects/forge"}).to_string();
+        let prose_line =
+            json!({"text": "bundle id `dev.alexandra.app`, repo `alexandra/proxy`"}).to_string();
+        let redactor =
+            WireRedactor::for_trace([path_line.as_str(), prose_line.as_str()]).expect("discovers");
+        let v: Value = serde_json::from_str(&redactor.redact_line(&prose_line).expect("redacts"))
+            .expect("valid JSON");
+        assert_eq!(
+            v["text"],
+            json!("bundle id `dev.<redacted-user>.app`, repo `<redacted-user>/proxy`")
+        );
+    }
+
+    /// Over raw text this line captures a name running to end-of-line,
+    /// which then matches nothing.
+    #[test]
+    fn owner_is_discovered_when_the_home_path_ends_the_json_string() {
+        let line = json!({"cwd": "/Users/alexandra", "note": "ping alexandra"}).to_string();
+        assert_eq!(redact_one(&line)["note"], json!("ping <redacted-user>"));
+    }
+
+    /// Stderr is what the non-JSON branch exists for, and it puts `:`
+    /// straight after the path - a captured fragment matches nothing.
+    #[test]
+    fn an_owner_is_discovered_from_a_stderr_line_not_a_fragment_of_it() {
+        let stderr = "EACCES: /Users/alexandra: permission denied";
+        let prose = json!({"note": "owned by alexandra"}).to_string();
+        let r = WireRedactor::for_trace([stderr, prose.as_str()]).expect("discovers");
+        let v: Value = serde_json::from_str(&r.redact_line(&prose).expect("redacts")).unwrap();
+        assert_eq!(v["note"], json!("owned by <redacted-user>"));
+    }
+
+    /// The slug has to be a discovery source, not only a redaction
+    /// target.
+    #[test]
+    fn an_owner_is_discovered_from_the_slug_spelling_too() {
+        let slug = json!({"p": "projects/-Users-alexandra-Projects-forge/x"}).to_string();
+        let prose = json!({"note": "ping alexandra"}).to_string();
+        let r = WireRedactor::for_trace([slug.as_str(), prose.as_str()]).expect("discovers");
+        let v: Value = serde_json::from_str(&r.redact_line(&prose).expect("redacts")).unwrap();
+        assert_eq!(v["note"], json!("ping <redacted-user>"));
+    }
+
+    /// Refused rather than skipped, reporting the length and never the
+    /// name.
+    #[test]
+    fn an_owner_below_the_length_floor_is_refused() {
+        let line = json!({"cwd": "/home/node"}).to_string();
+        let err = WireRedactor::for_trace([line.as_str()]).err().expect("must refuse");
+        assert!(err.contains("4-character"), "{err}");
+        assert!(!err.contains("node"), "error names the owner: {err}");
+    }
+
+    /// Only a standalone occurrence is a name; inside a longer word it
+    /// is a coincidence.
+    #[test]
+    fn an_owner_inside_a_longer_word_is_left_alone() {
+        let line = json!({"cwd": "/Users/alexandra", "note": "alexandras alexandra"}).to_string();
+        assert_eq!(redact_one(&line)["note"], json!("alexandras <redacted-user>"));
+    }
+
+    /// `first.last` home dirs: the word-boundary anchors do NOT cover
+    /// this, since `\balexandra\b` matches inside `alexandra.bell`, so
+    /// the longer name must be applied first.
+    #[test]
+    fn a_name_that_prefixes_another_does_not_strand_its_tail() {
+        let short = json!({"cwd": "/Users/alexandra"}).to_string();
+        let long = json!({"cwd": "/Users/alexandra.bell"}).to_string();
+        let prose = json!({"note": "alexandra.bell"}).to_string();
+        let r = WireRedactor::for_trace([short.as_str(), long.as_str(), prose.as_str()])
+            .expect("discovers");
+        let v: Value = serde_json::from_str(&r.redact_line(&prose).expect("redacts")).unwrap();
+        assert_eq!(v["note"], json!("<redacted-user>"));
+    }
+
+    /// Claude Code's plugin-manifest dir is not a profile, and a fixture
+    /// carrying a plugin path has no PII to lose.
+    #[test]
+    fn the_plugin_manifest_dir_is_not_taken_for_a_profile() {
+        let line = json!({"p": "/tmp/x/.claude-plugin/marketplace.json"}).to_string();
+        assert_eq!(redact_one(&line)["p"], json!("/tmp/x/.claude-plugin/marketplace.json"));
+    }
+
+    /// Keys go through the same rules as values, not the path rule alone.
+    #[test]
+    fn object_keys_get_every_rule_not_just_the_path_one() {
+        let mut v = json!({"~/.claude-profile4/settings.json": 1});
+        scrub_paths_recursive(&mut v);
+        assert!(v.as_object().unwrap().contains_key("~/<redacted-profile>/settings.json"));
+    }
+
+    /// The inbound tee records non-JSON stdout too, which no structural
+    /// rule can reach.
+    #[test]
+    fn a_line_that_is_not_json_still_gets_the_text_rules() {
+        let line = "node:internal/fs: ENOENT /Users/alexandra/.claude-profile4/settings.json";
+        assert_eq!(
+            WireRedactor::for_trace([line]).expect("discovers").redact_line(line).as_deref(),
+            Ok("node:internal/fs: ENOENT <redacted-home>/<redacted-profile>/settings.json")
+        );
+    }
+
+    /// The raw-text path: the float survives while the path is still
+    /// scrubbed. No `/…` tail on purpose - the path runs into the closing
+    /// quote, where a class not excluding `"` eats the next field.
+    #[test]
+    fn a_redacted_line_that_cannot_round_trip_keeps_its_numbers_and_fields() {
+        let line = r#"{"total_cost_usd":1.3382134999999997,"cwd":"/Users/alexandra","uuid":"a/b"}"#;
+        let out =
+            WireRedactor::for_trace([line]).expect("discovers").redact_line(line).expect("redacts");
+
+        assert!(out.contains("1.3382134999999997"), "float was re-encoded: {out}");
+        assert!(!out.contains("/Users/"), "path survived: {out}");
+        let after: Value = serde_json::from_str(&out).expect("stays valid JSON");
+        let before: Value = serde_json::from_str(line).expect("fixture is valid JSON");
+        assert_eq!(key_count(&before), key_count(&after), "a field was dropped: {out}");
+        assert_eq!(after["uuid"], json!("a/b"), "the field after the path was eaten: {out}");
+    }
+
+    /// Account fields are only reachable structurally, so a line that
+    /// cannot be re-encoded must fail rather than half-redact.
+    #[test]
+    fn account_fields_on_a_non_round_tripping_line_fail_closed() {
+        let line = r#"{"total_cost_usd":1.3382134999999997,"account":{"email":"a@b.co"}}"#;
+        let err = WireRedactor::for_trace([line])
+            .expect("discovers")
+            .redact_line(line)
+            .expect_err("must fail closed");
+        assert!(err.contains("account"), "{err}");
+        assert!(!err.contains("a@b.co"), "the error prints the value it refused to write: {err}");
+    }
+
+    /// A volume name is not a user name.
+    #[test]
+    fn volume_name_is_not_discovered_as_an_owner() {
+        let line = json!({"a": "/Volumes/data/x", "b": "data set"}).to_string();
+        assert_eq!(redact_one(&line)["b"], json!("data set"));
+    }
+
+    /// Re-encoding is lossy on some 17-digit floats, so a line with
+    /// nothing to redact must come back untouched.
+    #[test]
+    fn a_line_with_nothing_to_redact_is_returned_verbatim() {
+        let line = r#"{"type":"result","total_cost_usd":1.3382134999999997}"#;
+        let r = WireRedactor::for_trace([line]).expect("discovers");
+        assert_eq!(r.redact_line(line).as_deref(), Ok(line));
     }
 
     #[test]

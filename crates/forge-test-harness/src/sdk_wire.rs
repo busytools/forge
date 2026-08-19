@@ -44,16 +44,56 @@ pub struct TraceLog {
 }
 
 impl TraceLog {
-    /// Serialise as JSONL: one `{"dir":"in"|"out","line":"..."}` per line.
+    /// Serialise as JSONL: one `{"dir":"in"|"out","line":"..."}` per line,
+    /// redacting on the way out.
+    ///
+    /// This is the redaction point for both live-capture write sites and
+    /// for baseline promotion, which copies the file this produces. Two
+    /// committed artifacts bypass it: the `real_session_*` baselines,
+    /// redacted harder by [`session_redact::redact_session_path`], and
+    /// the reference captures under `.claude/skills/claude-cli-upgrade/`,
+    /// redacted by nothing.
     ///
     /// # Errors
     ///
-    /// Returns a `serde_json::Error` if any entry fails to serialise.
-    pub fn to_jsonl(&self) -> Result<String, serde_json::Error> {
+    /// If any entry fails to serialise or cannot be redacted safely.
+    pub fn to_jsonl(&self) -> Result<String, String> {
+        let redactor = session_redact::WireRedactor::for_trace(
+            self.entries.iter().map(|(_, line)| line.as_str()),
+        )?;
+        self.encode(|line| redactor.redact_line(line))
+    }
+
+    /// Serialise without redacting, for a diagnostic dump that is never
+    /// promoted - a spawn failure is diagnosed from the real cwd.
+    ///
+    /// # Errors
+    ///
+    /// If any entry fails to serialise.
+    fn to_jsonl_verbatim(&self) -> Result<String, String> {
+        self.encode(|line| Ok(line.to_string()))
+    }
+
+    /// Serialise for `kind`.
+    ///
+    /// # Errors
+    ///
+    /// As the chosen serialisation.
+    fn to_jsonl_for(&self, kind: DumpKind) -> Result<String, String> {
+        match kind {
+            DumpKind::Promotable => self.to_jsonl(),
+            DumpKind::Diagnostic => self.to_jsonl_verbatim(),
+        }
+    }
+
+    fn encode(
+        &self,
+        mut per_line: impl FnMut(&str) -> Result<String, String>,
+    ) -> Result<String, String> {
         let mut body = String::new();
         for (dir, line) in &self.entries {
-            let obj = serde_json::json!({ "dir": dir, "line": line });
-            body.push_str(&serde_json::to_string(&obj)?);
+            let obj = serde_json::json!({ "dir": dir, "line": per_line(line)? });
+            body.push_str(&serde_json::to_string(&obj).map_err(|e| format!("serialise: {e}"))?);
             body.push('\n');
         }
         Ok(body)
@@ -67,6 +107,27 @@ impl TraceLog {
     /// Slice of outbound lines (SDK → CLI).
     pub fn outbound(&self) -> Vec<&str> {
         self.entries.iter().filter(|(d, _)| *d == "out").map(|(_, l)| l.as_str()).collect()
+    }
+}
+
+/// What a dump is for, deciding its filename prefix AND whether it is
+/// redacted together, so the two cannot disagree: `README.md` promotes
+/// with `cp target/wire-traces/capture-*.jsonl`, so anything that glob
+/// reaches must be redacted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DumpKind {
+    /// Inside the promotion glob, so redacted.
+    Promotable,
+    /// Outside it, so it keeps the paths a failed run is diagnosed from.
+    Diagnostic,
+}
+
+impl DumpKind {
+    fn prefix(self) -> &'static str {
+        match self {
+            Self::Promotable => "capture",
+            Self::Diagnostic => "diag",
+        }
     }
 }
 
@@ -281,23 +342,23 @@ where
         opts
     };
 
-    // Scope-local helper to dump the trace regardless of how the test ends.
-    let dump = |log: &TraceLog, tag: &str| -> std::path::PathBuf {
+    // Dump the trace regardless of how the test ends.
+    let dump = |log: &TraceLog, tag: &str, kind: DumpKind| -> std::path::PathBuf {
         let target =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/wire-traces");
         std::fs::create_dir_all(&target).expect("create wire-traces dir");
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        let path = target.join(format!("capture-{tag}-{ts}.jsonl"));
-        let body = log.to_jsonl().expect("jsonl serialise");
+        let path = target.join(format!("{}-{tag}-{ts}.jsonl", kind.prefix()));
+        let body = log.to_jsonl_for(kind).expect("redact + serialise trace");
         std::fs::write(&path, body).expect("write trace");
         path
     };
 
     let (client, events) = forge_sdk::Client::spawn(options).await.inspect_err(|_e| {
         let log = log_arc.lock();
-        let path = dump(&log, &format!("{scenario}-spawn-failed"));
+        let path = dump(&log, &format!("{scenario}-spawn-failed"), DumpKind::Diagnostic);
         eprintln!(
             "{scenario}: Client::spawn failed, trace at {} [in={} out={}]",
             path.display(),
@@ -311,7 +372,7 @@ where
         Ok(pair) => pair,
         Err(e) => {
             let log = log_arc.lock();
-            let path = dump(&log, &format!("{scenario}-drive-failed"));
+            let path = dump(&log, &format!("{scenario}-drive-failed"), DumpKind::Diagnostic);
             eprintln!(
                 "{scenario}: drive failed, trace at {} [in={} out={}]",
                 path.display(),
@@ -354,7 +415,7 @@ where
             Ok(None) => break,
             Ok(Some(Err(e))) => {
                 let log = log_arc.lock();
-                let path = dump(&log, &format!("{scenario}-drain-failed"));
+                let path = dump(&log, &format!("{scenario}-drain-failed"), DumpKind::Diagnostic);
                 eprintln!(
                     "{scenario}: drain failed, trace at {} [in={} out={}]",
                     path.display(),
@@ -420,7 +481,7 @@ where
     // Successful (or at least drained) run - dump the trace, verify every
     // inbound line decodes. Failure here is a hard panic.
     let log = log_arc.lock();
-    let trace_path = dump(&log, scenario);
+    let trace_path = dump(&log, scenario, DumpKind::Promotable);
     let report = decode_all_inbound(&log);
     assert!(
         report.is_clean(),
@@ -563,6 +624,55 @@ pub fn decode_all_inbound(log: &TraceLog) -> DecodeReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serialisation is the chokepoint both trace-write sites go
+    /// through, so neither can put an unredacted line on disk. The
+    /// owner name in the second entry is only reachable because the
+    /// first entry named a home path.
+    #[test]
+    fn to_jsonl_redacts_every_entry() {
+        let mut log = TraceLog::default();
+        log.entries.push((
+            "in",
+            r#"{"type":"system","cwd":"/Users/alexandra/Projects/forge"}"#.to_string(),
+        ));
+        log.entries.push((
+            "in",
+            concat!(
+                r#"{"type":"control_response","response":{"response":{"#,
+                r#""account":{"email":"a@b.co"},"#,
+                r#""note":"see ~/.claude-profile4 and `alexandra/proxy`"}}}"#
+            )
+            .to_string(),
+        ));
+
+        let body = log.to_jsonl().expect("jsonl serialise");
+
+        for leak in ["alexandra", "a@b.co", ".claude-profile4"] {
+            assert!(!body.contains(leak), "to_jsonl leaked {leak}:\n{body}");
+        }
+    }
+
+    /// Both halves together: what the promotion glob reaches is
+    /// redacted, and what keeps its paths sits outside it. Asserted
+    /// apart, either could drift alone.
+    #[test]
+    fn only_the_dump_outside_the_promotion_glob_keeps_its_paths() {
+        let mut log = TraceLog::default();
+        log.entries.push((
+            "in",
+            r#"{"type":"system","cwd":"/Users/alexandra/Projects/forge"}"#.to_string(),
+        ));
+        let cwd = "/Users/alexandra/Projects/forge";
+
+        let promotable = log.to_jsonl_for(DumpKind::Promotable).expect("jsonl serialise");
+        let diagnostic = log.to_jsonl_for(DumpKind::Diagnostic).expect("jsonl serialise");
+
+        assert_eq!(DumpKind::Promotable.prefix(), "capture");
+        assert!(!promotable.contains(cwd), "a promotable dump kept the path: {promotable}");
+        assert_ne!(DumpKind::Diagnostic.prefix(), "capture");
+        assert!(diagnostic.contains(cwd), "a diagnostic dump lost the path: {diagnostic}");
+    }
 
     fn report_for(line: &str) -> DecodeReport {
         let mut log = TraceLog::default();
