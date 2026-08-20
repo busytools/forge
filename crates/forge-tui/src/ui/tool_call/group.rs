@@ -582,6 +582,13 @@ mod tests {
                     "{label} at budget {budget}: {clipped:?} paints {} cells",
                     cells(&clipped)
                 );
+                // A per-char walk also stops mid-cluster. A joiner left
+                // dangling at the cut has nothing to join to.
+                let kept = clipped.strip_suffix("...").unwrap_or(&clipped);
+                assert!(
+                    !kept.ends_with('\u{200D}'),
+                    "{label} at budget {budget}: cut mid-cluster, kept {kept:?}",
+                );
             }
         }
     }
