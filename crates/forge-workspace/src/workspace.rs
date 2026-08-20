@@ -1420,6 +1420,10 @@ impl Workspace {
     ///   `(project_key, label)` is the answer. This is the path
     ///   `handle_spawn_worker` -> `get_agent_handle_with_spawn_key`
     ///   takes after inserting the WorkerEntry as `Spawning`.
+    /// - Resumed workers (`Session(<uuid>)` under a
+    ///   `__resume_<id>__` spawn key the registry doesn't hold): the
+    ///   worker's own key, which `migrate_session_task` stamped onto
+    ///   its `WorkerEntry` at Connected.
     /// - Lead spawns (no spawn_key or a non-worker synth key):
     ///   `label = "lead"`; `project_key` derives from the target.
     /// - Session-id targets where the resumed session has no
@@ -1430,30 +1434,26 @@ impl Workspace {
         target: &SessionTarget,
         spawn_key: Option<&SessionKey>,
     ) -> Option<(ProjectKey, String)> {
-        if let Some(key) = spawn_key
-            && let Some(pair) = self.worker_label_for_spawn_key(key)
+        let worker_keys = |key: &SessionKey| {
+            self.worker_lookup_for_session(key).map(|(project_key, label, _)| (project_key, label))
+        };
+        if let Some(pair) = spawn_key.and_then(worker_keys) {
+            return Some(pair);
+        }
+        // Resumed workers reach here with a spawn key the registry
+        // never saw. Resolving them by target instead is what keeps
+        // the label right: falling through to "lead" below would look
+        // up the lead's plan row and hand the worker the lead's
+        // account. The catalog cannot answer this either - a worker's
+        // row is absent on a fresh spawn and untagged on a resume, so
+        // it never identifies one.
+        if let SessionTarget::Session(key) = target
+            && let Some(pair) = worker_keys(key)
         {
             return Some(pair);
         }
         let project_key = self.target_to_project_key(target)?;
         Some((project_key, "lead".to_owned()))
-    }
-
-    /// Walk `live_workers` looking for an entry whose `session_key`
-    /// matches `spawn_key`. The map has bounded size in practice
-    /// (per-project worker counts are small), so an O(N*M) walk is
-    /// fine - the alternative would be a second index keyed by
-    /// session_key, which adds maintenance burden for marginal gain.
-    fn worker_label_for_spawn_key(&self, spawn_key: &SessionKey) -> Option<(ProjectKey, String)> {
-        let workers = self.live_workers.lock();
-        for (project_key, entries) in workers.iter() {
-            for entry in entries {
-                if &entry.session_key == spawn_key {
-                    return Some((project_key.clone(), entry.label.clone()));
-                }
-            }
-        }
-        None
     }
 
     /// Resolve a `SessionTarget` to its on-disk-sanitised project
@@ -1475,10 +1475,12 @@ impl Workspace {
             SessionTarget::Session(key) => {
                 let cwd = self.session_cwd_for(key)?;
                 let cwd_path = std::path::PathBuf::from(&cwd);
-                // A worktree cwd misses this exact match and yields None,
-                // degrading account selection to the worktree-aware
-                // project_accounts_for fallback. Routing resumed worktree
-                // workers through the plan here is a separate follow-up.
+                // Leads only by the time we get here: `plan_lookup_keys`
+                // answers workers from the registry above, which is the
+                // only source that can - the catalog holds no worker
+                // rows. A lead whose cwd is a subdir of its project
+                // still misses this exact match and degrades to the
+                // prefix-matching `project_accounts_for` fallback.
                 self.config
                     .projects
                     .iter()
@@ -2084,15 +2086,21 @@ impl Workspace {
     /// Resolve a target's project-level account pin (the
     /// `[[orgs]].accounts = [...]` list inherited from the project's
     /// org in `forge.toml`). Project-rooted targets read directly off
-    /// the matching `LoadedProject`; session-id targets walk the
-    /// catalog for the session's original cwd and resolve it to the
+    /// the matching `LoadedProject`; session-id targets resolve the
+    /// session's cwd through [`Self::cwd_for_session`] and map it to the
     /// owning project by longest-ancestor-prefix so a resumed session
     /// (including one in a worktree subdir) inherits the originating
     /// project's pin.
     ///
+    /// `cwd_for_session` rather than [`Self::session_cwd_for`]: a
+    /// worker's catalog row is absent on a fresh spawn and untagged on a
+    /// resume, so the bare catalog read cannot identify one and hands it
+    /// the default project's pin - another project's accounts whenever
+    /// the worker isn't in the default one.
+    ///
     /// Config-load guarantees every `LoadedProject.accounts` is
-    /// non-empty. The session-id branch can still miss (catalog has
-    /// no record, or cwd doesn't match any project) - those fall
+    /// non-empty. The session-id branch can still miss (neither source
+    /// knows the session, or its cwd is under no project) - those fall
     /// back to the default project's pin so the picker always has
     /// a non-empty list. This mirrors the "use what we know" intent
     /// rather than a global account fallback.
@@ -2104,7 +2112,7 @@ impl Workspace {
                 |p| p.accounts.clone(),
             ),
             SessionTarget::Session(key) => {
-                let matched = self.session_cwd_for(key).and_then(|cwd| {
+                let matched = self.cwd_for_session(key).and_then(|cwd| {
                     // A worktree cwd is a subdir of its project root, so
                     // resolve by ancestor-prefix (project_name_for_path)
                     // instead of exact equality before reading the pin.
@@ -7238,6 +7246,53 @@ SOLO_TOKEN = "solo-secret"
         );
     }
 
+    /// A worker's catalog row cannot identify it: the boot scan hides
+    /// worker-tagged sessions, and the Connected mirror either skips the
+    /// insert (fresh spawn) or writes an UNTAGGED row (resume, where the
+    /// guard looks up the synth spawn key while the registry holds the
+    /// real session id). Either way `session_cwd_for` cannot answer, and
+    /// the pin fell through to the DEFAULT project's accounts - another
+    /// project's list whenever the worker isn't in the default project,
+    /// which is the usual case.
+    ///
+    /// The fixture models the no-row case; do not read it as proof that
+    /// a row never exists.
+    #[test]
+    fn project_accounts_for_resolves_a_worker_through_the_registry() {
+        let (ws, _dir) = stub_with_account_pin_fixture();
+        let session_key = SessionKey::from_session_id("worker-uuid-pin");
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                "/tmp/wt-acct-stargate",
+            )));
+        ws.insert_live_worker(
+            &project_key,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "implementer".to_owned(),
+                charter: "test charter".to_owned(),
+                session_key: session_key.clone(),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead-uuid".to_owned(),
+                needs_tag: false,
+                is_git_repo_at_spawn: true,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        assert!(
+            ws.session_cwd_for(&session_key).is_none(),
+            "fixture precondition: no catalog row for this worker",
+        );
+
+        let target = SessionTarget::Session(session_key);
+        assert_eq!(
+            ws.project_accounts_for(&target),
+            vec!["Stargate".to_owned()],
+            "a worker inherits its own project's pin, not the default project's",
+        );
+    }
+
     #[test]
     fn project_accounts_for_falls_back_to_default_for_unknown_cwd() {
         // A cwd under no configured project degrades to the default
@@ -12177,9 +12232,6 @@ mod git_scan_cwd_tests {
         );
     }
 
-    /// A worker has no catalog row, so `project_accounts_for`'s
-    /// `session_cwd_for` resolution misses it and falls back to the
-    /// default project. Env must not inherit that fallback: a worker
     #[test]
     fn cwd_for_session_is_none_when_the_workers_project_is_not_loaded() {
         // The contradiction the WARN names: the registry knows the
@@ -12318,6 +12370,99 @@ config_dir = "~/.claude-beta"
         )
         .expect("write forge.toml");
         dir
+    }
+
+    /// Two accounts and one static worker, so the plan binds the lead
+    /// and the worker to DIFFERENT accounts (lead is session_n=0,
+    /// static_workers[0] is session_n=1). That separation is what makes
+    /// a wrong label observable rather than accidentally right.
+    fn make_workspace_dir_lead_and_worker() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Alpha", "Beta"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+static_workers = ["implementer"]
+
+[[accounts]]
+display_name = "Alpha"
+config_dir = "~/.claude-alpha"
+
+[[accounts]]
+display_name = "Beta"
+config_dir = "~/.claude-beta"
+"#,
+        )
+        .expect("write forge.toml");
+        dir
+    }
+
+    /// Resuming a worker from the Projects-pane drilldown dispatches
+    /// `SessionTarget::Session(<worker uuid>)` under a `__resume_<id>__`
+    /// spawn key the registry has never seen, so the spawn-key lookup
+    /// misses. The worker's own key does resolve - `migrate_session_task`
+    /// stamped it onto the `WorkerEntry` at Connected - and that is the
+    /// only source that can: the sessions catalog holds no worker rows.
+    /// Falling through to the catalog left the label at "lead" and drew
+    /// the LEAD's assigned account.
+    #[tokio::test]
+    async fn plan_assignment_resolves_a_resumed_worker_to_its_own_account() {
+        let dir = make_workspace_dir_lead_and_worker();
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            accounts.set_usage(&AccountKey("Alpha".to_owned()), usage_at(10.0));
+            accounts.set_usage(&AccountKey("Beta".to_owned()), usage_at(10.0));
+        }
+        workspace.recompute_plan_if_ready();
+
+        let project_path = workspace.config.projects[0].path.to_string_lossy().into_owned();
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&project_path)),
+        );
+        let lead_account = workspace
+            .plan_assignment(&SessionTarget::Named("forge".to_owned()), None)
+            .expect("the lead resolves through the plan")
+            .0;
+
+        let worker_key = SessionKey::from_session_id("resumed-worker-uuid");
+        workspace.insert_live_worker(
+            &project_key,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "implementer".to_owned(),
+                charter: "test charter".to_owned(),
+                session_key: worker_key.clone(),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead-uuid".to_owned(),
+                needs_tag: false,
+                is_git_repo_at_spawn: true,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        let resume_spawn_key =
+            SessionKey::from_session_id("__resume_resumed-worker-uuid__".to_owned());
+
+        let assigned = workspace
+            .plan_assignment(&SessionTarget::Session(worker_key), Some(&resume_spawn_key))
+            .expect("a resumed worker resolves through the registry")
+            .0;
+
+        assert_eq!(
+            assigned,
+            AccountKey("Beta".to_owned()),
+            "the worker draws its own plan row, not the lead's",
+        );
+        assert_ne!(assigned, lead_account, "lead and worker are on different accounts here");
     }
 
     /// An experimental account defined FIRST (Exp), a regular account
