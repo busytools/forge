@@ -1598,7 +1598,7 @@ mod tests {
     fn mcp_snapshot_repolls_while_a_server_is_still_pending() {
         let (mut app, mut rx, stamped) =
             app_after_connect_with_servers(vec![mcp_server_with_status(
-                "busymail",
+                "airmail",
                 forge_primitives::McpServerConnectionStatus::Pending,
             )]);
 
@@ -2145,16 +2145,16 @@ mod tests {
             &mut app,
             forge_workspace::SessionUpdate::ForgeAccountIdentity {
                 key: session_key,
-                display_name: "Subspace".into(),
+                display_name: "Stargate".into(),
             },
         );
 
         // App state stores the name (Status panel needs it).
-        assert_eq!(app.active_account_display_name().as_deref(), Some("Subspace"));
+        assert_eq!(app.active_account_display_name().as_deref(), Some("Stargate"));
 
         // Welcome row shows the "Account: …" skeleton because the
-        // tier hasn't arrived yet - committing "Account: Subspace"
-        // now would flicker into "Account: Subspace · team" once
+        // tier hasn't arrived yet - committing "Account: Stargate"
+        // now would flicker into "Account: Stargate · team" once
         // the status snapshot lands.
         let Some(MessageBlock::Welcome(welcome)) = app.messages()[0].blocks.first() else {
             panic!("expected welcome block");
@@ -2186,7 +2186,7 @@ mod tests {
                     api_key_source: None,
                     api_provider: None,
                 },
-                forge_account: Some(forge_primitives::ForgeAccountIdentity::new("Subspace".into())),
+                forge_account: Some(forge_primitives::ForgeAccountIdentity::new("Stargate".into())),
             },
         );
 
@@ -2194,7 +2194,7 @@ mod tests {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.account_label, "Account");
-        assert_eq!(welcome.subscription, "Subspace · team");
+        assert_eq!(welcome.subscription, "Stargate · team");
     }
 
     #[test]

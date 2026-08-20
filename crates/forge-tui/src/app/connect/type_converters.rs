@@ -354,7 +354,7 @@ mod tests {
                 new_path: "src/main.rs".to_owned(),
                 old: "old".to_owned(),
                 new: "new".to_owned(),
-                repository: Some("acme/project".to_owned()),
+                repository: Some("stargate/project".to_owned()),
             }],
             raw_input: None,
             raw_output: None,
@@ -369,7 +369,7 @@ mod tests {
             vec![model::ToolCallContent::Diff(
                 model::Diff::new("src/main.rs", "new")
                     .old_text(Some("old"))
-                    .repository(Some("acme/project".to_owned())),
+                    .repository(Some("stargate/project".to_owned())),
             )]
         );
     }

@@ -279,35 +279,35 @@ mod tests {
         // Spec §3 worked example: 4 ready accounts; 2 projects.
         // forge (idx 0, team = planner/implementer/reviewer/debugger/tester):
         //   pool size 4, offset 0
-        //   lead -> pool[0] = granite
-        //   planner -> pool[1] = granite1
+        //   lead -> pool[0] = gateway
+        //   planner -> pool[1] = gateway1
         //   implementer -> pool[2] = personal
-        //   reviewer -> pool[3] = subspace
-        //   debugger -> pool[4 % 4 = 0] = granite (wraps)
-        //   tester -> pool[5 % 4 = 1] = granite1
-        // hub-modules (idx 1, team = babysitter/librarian):
+        //   reviewer -> pool[3] = stargate
+        //   debugger -> pool[4 % 4 = 0] = gateway (wraps)
+        //   tester -> pool[5 % 4 = 1] = gateway1
+        // data-modules (idx 1, team = babysitter/librarian):
         //   pool size 4, offset 1
-        //   lead -> pool[(1 + 0) % 4 = 1] = granite1
+        //   lead -> pool[(1 + 0) % 4 = 1] = gateway1
         //   babysitter -> pool[(1 + 1) % 4 = 2] = personal
-        //   librarian -> pool[(1 + 2) % 4 = 3] = subspace
-        let accounts = vec![ak("granite"), ak("granite1"), ak("personal"), ak("subspace")];
-        let names: Vec<&str> = vec!["granite", "granite1", "personal", "subspace"];
+        //   librarian -> pool[(1 + 2) % 4 = 3] = stargate
+        let accounts = vec![ak("gateway"), ak("gateway1"), ak("personal"), ak("stargate")];
+        let names: Vec<&str> = vec!["gateway", "gateway1", "personal", "stargate"];
         let projects = vec![
             project("forge", &names, &["planner", "implementer", "reviewer", "debugger", "tester"]),
-            project("hub-modules", &names, &["babysitter", "librarian"]),
+            project("data-modules", &names, &["babysitter", "librarian"]),
         ];
         let plan = compute_plan(&accounts, &[], &projects);
 
-        assert_eq!(plan.lookup(&pk("forge"), &"lead".into()), Some(&ak("granite")));
-        assert_eq!(plan.lookup(&pk("forge"), &"planner".into()), Some(&ak("granite1")));
+        assert_eq!(plan.lookup(&pk("forge"), &"lead".into()), Some(&ak("gateway")));
+        assert_eq!(plan.lookup(&pk("forge"), &"planner".into()), Some(&ak("gateway1")));
         assert_eq!(plan.lookup(&pk("forge"), &"implementer".into()), Some(&ak("personal")));
-        assert_eq!(plan.lookup(&pk("forge"), &"reviewer".into()), Some(&ak("subspace")));
-        assert_eq!(plan.lookup(&pk("forge"), &"debugger".into()), Some(&ak("granite")));
-        assert_eq!(plan.lookup(&pk("forge"), &"tester".into()), Some(&ak("granite1")));
+        assert_eq!(plan.lookup(&pk("forge"), &"reviewer".into()), Some(&ak("stargate")));
+        assert_eq!(plan.lookup(&pk("forge"), &"debugger".into()), Some(&ak("gateway")));
+        assert_eq!(plan.lookup(&pk("forge"), &"tester".into()), Some(&ak("gateway1")));
 
-        assert_eq!(plan.lookup(&pk("hub-modules"), &"lead".into()), Some(&ak("granite1")));
-        assert_eq!(plan.lookup(&pk("hub-modules"), &"babysitter".into()), Some(&ak("personal")));
-        assert_eq!(plan.lookup(&pk("hub-modules"), &"librarian".into()), Some(&ak("subspace")));
+        assert_eq!(plan.lookup(&pk("data-modules"), &"lead".into()), Some(&ak("gateway1")));
+        assert_eq!(plan.lookup(&pk("data-modules"), &"babysitter".into()), Some(&ak("personal")));
+        assert_eq!(plan.lookup(&pk("data-modules"), &"librarian".into()), Some(&ak("stargate")));
     }
 
     #[test]
@@ -315,13 +315,13 @@ mod tests {
         // Project allow-list contains a name that doesn't appear in
         // the ready set; the algorithm silently filters it out
         // rather than panicking or assigning a nonexistent account.
-        let accounts = vec![ak("granite"), ak("personal")];
+        let accounts = vec![ak("gateway"), ak("personal")];
         let projects =
-            vec![project("forge", &["granite", "typo-account", "personal"], &["worker1"])];
+            vec![project("forge", &["gateway", "typo-account", "personal"], &["worker1"])];
         let plan = compute_plan(&accounts, &[], &projects);
 
-        // Pool reduces to [granite, personal]; offset 0; size 2.
-        assert_eq!(plan.lookup(&pk("forge"), &"lead".into()), Some(&ak("granite")));
+        // Pool reduces to [gateway, personal]; offset 0; size 2.
+        assert_eq!(plan.lookup(&pk("forge"), &"lead".into()), Some(&ak("gateway")));
         assert_eq!(plan.lookup(&pk("forge"), &"worker1".into()), Some(&ak("personal")));
     }
 
@@ -331,7 +331,7 @@ mod tests {
         // ready (e.g., all Bailed). The project records a slot but
         // produces zero assignments; `project_has_no_assignments`
         // reports true.
-        let accounts = vec![ak("granite")];
+        let accounts = vec![ak("gateway")];
         let projects = vec![project("forge", &["bailed-account"], &["worker1"])];
         let plan = compute_plan(&accounts, &[], &projects);
 
@@ -344,11 +344,11 @@ mod tests {
     fn compute_plan_missing_accounts_defaults_to_all_ready() {
         // Project with empty allow-list -> defaults to every ready
         // account. Common case for solo-account setups.
-        let accounts = vec![ak("granite"), ak("personal")];
+        let accounts = vec![ak("gateway"), ak("personal")];
         let projects = vec![project("forge", &[], &["w1"])];
         let plan = compute_plan(&accounts, &[], &projects);
 
-        assert_eq!(plan.lookup(&pk("forge"), &"lead".into()), Some(&ak("granite")));
+        assert_eq!(plan.lookup(&pk("forge"), &"lead".into()), Some(&ak("gateway")));
         assert_eq!(plan.lookup(&pk("forge"), &"w1".into()), Some(&ak("personal")));
     }
 
@@ -368,14 +368,14 @@ mod tests {
 
     #[test]
     fn compute_plan_prefers_non_saturated_accounts() {
-        // Org allows [granite, granite1, personal]; granite + granite1
+        // Org allows [gateway, gateway1, personal]; gateway + gateway1
         // are at the usage cap. Every session must land on personal -
         // the saturated accounts drop out of the pool.
-        let accounts = vec![ak("granite"), ak("granite1"), ak("personal")];
-        let saturated = vec![ak("granite"), ak("granite1")];
+        let accounts = vec![ak("gateway"), ak("gateway1"), ak("personal")];
+        let saturated = vec![ak("gateway"), ak("gateway1")];
         let projects = vec![project(
             "forge",
-            &["granite", "granite1", "personal"],
+            &["gateway", "gateway1", "personal"],
             &["planner", "implementer"],
         )];
         let plan = compute_plan(&accounts, &saturated, &projects);
@@ -391,21 +391,21 @@ mod tests {
 
     #[test]
     fn compute_plan_falls_back_when_all_candidates_saturated() {
-        // Org allows only [granite, granite1] and both are capped - no
+        // Org allows only [gateway, gateway1] and both are capped - no
         // alternative. The pool must still include them so the project
         // gets assigned rather than going dark.
-        let accounts = vec![ak("granite"), ak("granite1")];
-        let saturated = vec![ak("granite"), ak("granite1")];
-        let projects = vec![project("granite-backend", &["granite", "granite1"], &["worker1"])];
+        let accounts = vec![ak("gateway"), ak("gateway1")];
+        let saturated = vec![ak("gateway"), ak("gateway1")];
+        let projects = vec![project("gateway-backend", &["gateway", "gateway1"], &["worker1"])];
         let plan = compute_plan(&accounts, &saturated, &projects);
 
         assert!(
-            !plan.project_has_no_assignments(&pk("granite-backend")),
+            !plan.project_has_no_assignments(&pk("gateway-backend")),
             "all-saturated org must still get assignments, not go dark",
         );
-        // offset 0, pool [granite, granite1]: lead -> granite, worker1 -> granite1.
-        assert_eq!(plan.lookup(&pk("granite-backend"), &"lead".into()), Some(&ak("granite")));
-        assert_eq!(plan.lookup(&pk("granite-backend"), &"worker1".into()), Some(&ak("granite1")));
+        // offset 0, pool [gateway, gateway1]: lead -> gateway, worker1 -> gateway1.
+        assert_eq!(plan.lookup(&pk("gateway-backend"), &"lead".into()), Some(&ak("gateway")));
+        assert_eq!(plan.lookup(&pk("gateway-backend"), &"worker1".into()), Some(&ak("gateway1")));
     }
 
     #[test]

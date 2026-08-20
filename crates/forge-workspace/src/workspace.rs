@@ -7013,39 +7013,39 @@ mod tests {
         );
     }
 
-    // forge.toml for the account-pin resolution tests: a `subspace`
-    // project pinned to ["Subspace"] plus an alphabetically-earlier
-    // auto_start default ("busymail") on the Granite org, so a miss
-    // surfaces as the Granite pin rather than an empty list / panic.
+    // forge.toml for the account-pin resolution tests: a `stargate`
+    // project pinned to ["Stargate"] plus an alphabetically-earlier
+    // auto_start default ("airmail") on the Gateway org, so a miss
+    // surfaces as the Gateway pin rather than an empty list / panic.
     const ACCOUNT_PIN_FIXTURE: &str = r#"
 [[orgs]]
-name = "Granite"
-accounts = ["Granite", "Granite1", "Personal"]
+name = "Gateway"
+accounts = ["Gateway", "Gateway1", "Personal"]
 [[orgs.projects]]
-name = "busymail"
-path = "/tmp/wt-acct-busymail"
+name = "airmail"
+path = "/tmp/wt-acct-airmail"
 auto_start = true
 
 [[orgs]]
-name = "Subspace"
-accounts = ["Subspace"]
+name = "Stargate"
+accounts = ["Stargate"]
 [[orgs.projects]]
-name = "subspace"
-path = "/tmp/wt-acct-subspace"
+name = "stargate"
+path = "/tmp/wt-acct-stargate"
 auto_start = true
 
 [[accounts]]
-display_name = "Granite"
-config_dir = "/tmp/wt-acct-cfg/granite"
+display_name = "Gateway"
+config_dir = "/tmp/wt-acct-cfg/gateway"
 [[accounts]]
-display_name = "Granite1"
-config_dir = "/tmp/wt-acct-cfg/granite1"
+display_name = "Gateway1"
+config_dir = "/tmp/wt-acct-cfg/gateway1"
 [[accounts]]
 display_name = "Personal"
 config_dir = "/tmp/wt-acct-cfg/personal"
 [[accounts]]
-display_name = "Subspace"
-config_dir = "/tmp/wt-acct-cfg/subspace"
+display_name = "Stargate"
+config_dir = "/tmp/wt-acct-cfg/stargate"
 "#;
 
     // Stub whose config is `ACCOUNT_PIN_FIXTURE`. The returned `TempDir`
@@ -7099,12 +7099,12 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
                 r#"
 [[orgs]]
 name = "Personal"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 [[orgs.projects]]
 name = "solo"
 path = "{root}"
 [[accounts]]
-display_name = "Subspace"
+display_name = "Stargate"
 config_dir = "/tmp/applied-record-cfg"
 
 [projects.solo.env]
@@ -7150,7 +7150,7 @@ SOLO_TOKEN = "value-must-never-be-logged"
                 r#"
 [[orgs]]
 name = "Personal"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 [[orgs.projects]]
 name = "twin-a"
 path = "{shared}"
@@ -7162,7 +7162,7 @@ name = "solo"
 path = "{solo}"
 
 [[accounts]]
-display_name = "Subspace"
+display_name = "Stargate"
 config_dir = "/tmp/ambig-cfg"
 
 [projects.twin-a.env]
@@ -7207,18 +7207,18 @@ SOLO_TOKEN = "solo-secret"
 
     #[test]
     fn project_accounts_for_resolves_worktree_session_to_parent_project() {
-        // A session whose cwd is a worktree under the subspace root must
-        // inherit ["Subspace"], not the alpha-first Granite default.
+        // A session whose cwd is a worktree under the stargate root must
+        // inherit ["Stargate"], not the alpha-first Gateway default.
         let (ws, _dir) = stub_with_account_pin_fixture();
         ws.record_connected_session(
-            "/tmp/wt-acct-subspace/.claude/worktrees/reviewer",
+            "/tmp/wt-acct-stargate/.claude/worktrees/reviewer",
             "sess-worktree",
             None,
         );
         let target = SessionTarget::Session(SessionKey::from_session_id("sess-worktree"));
         assert_eq!(
             ws.project_accounts_for(&target),
-            vec!["Subspace".to_owned()],
+            vec!["Stargate".to_owned()],
             "a worktree session inherits its parent project's account pin, not the default's",
         );
     }
@@ -7229,11 +7229,11 @@ SOLO_TOKEN = "solo-secret"
         // rooted exactly at a project resolves to that project's own pin,
         // not the default.
         let (ws, _dir) = stub_with_account_pin_fixture();
-        ws.record_connected_session("/tmp/wt-acct-subspace", "sess-root", None);
+        ws.record_connected_session("/tmp/wt-acct-stargate", "sess-root", None);
         let target = SessionTarget::Session(SessionKey::from_session_id("sess-root"));
         assert_eq!(
             ws.project_accounts_for(&target),
-            vec!["Subspace".to_owned()],
+            vec!["Stargate".to_owned()],
             "a project-root session resolves to its own pin",
         );
     }
@@ -7241,14 +7241,14 @@ SOLO_TOKEN = "solo-secret"
     #[test]
     fn project_accounts_for_falls_back_to_default_for_unknown_cwd() {
         // A cwd under no configured project degrades to the default
-        // project's pin (the alpha-first Granite auto_start default) so
+        // project's pin (the alpha-first Gateway auto_start default) so
         // the picker always has a non-empty allow-list.
         let (ws, _dir) = stub_with_account_pin_fixture();
         ws.record_connected_session("/tmp/unrelated-elsewhere", "sess-unknown", None);
         let target = SessionTarget::Session(SessionKey::from_session_id("sess-unknown"));
         assert_eq!(
             ws.project_accounts_for(&target),
-            vec!["Granite".to_owned(), "Granite1".to_owned(), "Personal".to_owned()],
+            vec!["Gateway".to_owned(), "Gateway1".to_owned(), "Personal".to_owned()],
             "an unknown cwd falls back to the default project's accounts",
         );
     }
@@ -8678,7 +8678,7 @@ SOLO_TOKEN = "solo-secret"
             r#"
 [[orgs]]
 name = "Default"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 
 [[orgs.projects]]
 name = "forge"
@@ -8686,8 +8686,8 @@ path = "~/Projects/forge"
 auto_start = true
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 "#,
         )
         .expect("write forge.toml");
@@ -8777,7 +8777,7 @@ config_dir = "~/.claude-subspace"
             r#"
 [[orgs]]
 name = "Default"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 
 [[orgs.projects]]
 name = "forge"
@@ -8789,8 +8789,8 @@ name = "dotfiles"
 path = "~/Projects/dotfiles"
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 "#,
         )
         .expect("write forge.toml");
@@ -8817,7 +8817,7 @@ config_dir = "~/.claude-subspace"
             r#"
 [[orgs]]
 name = "Default"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 
 [[orgs.projects]]
 name = "forge"
@@ -8825,8 +8825,8 @@ path = "~/Projects/forge"
 auto_start = true
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 "#,
         )
         .expect("write forge.toml");
@@ -8852,7 +8852,7 @@ config_dir = "~/.claude-subspace"
             r#"
 [[orgs]]
 name = "Default"
-accounts = ["Subspace", "Granite"]
+accounts = ["Stargate", "Gateway"]
 
 [[orgs.projects]]
 name = "forge"
@@ -8860,12 +8860,12 @@ path = "~/Projects/forge"
 auto_start = true
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 
 [[accounts]]
-display_name = "Granite"
-config_dir = "~/.claude-granite"
+display_name = "Gateway"
+config_dir = "~/.claude-gateway"
 "#,
         )
         .expect("write forge.toml");
@@ -8883,16 +8883,16 @@ config_dir = "~/.claude-granite"
         let bound = workspace.pool.lock().values().map(|p| p.account.0.clone()).collect::<Vec<_>>();
         assert_eq!(bound.len(), 1);
         // Cold cache → unknown-first tie-break is the project's
-        // `accounts = ["Subspace", "Granite"]` order. Subspace wins.
-        assert_eq!(bound[0], "Subspace");
+        // `accounts = ["Stargate", "Gateway"]` order. Stargate wins.
+        assert_eq!(bound[0], "Stargate");
     }
 
     #[tokio::test]
     async fn cold_cache_spawns_rotate_across_allow_list() {
         // Two healthy accounts in the allow-list, two spawns. Round-
         // robin cursor advances per pick, so the first spawn lands
-        // on the first allow-list entry (Subspace) and the second
-        // rotates to Granite. Cursor is shared across the workspace
+        // on the first allow-list entry (Stargate) and the second
+        // rotates to Gateway. Cursor is shared across the workspace
         // so even cold-cache spawns spread load rather than always
         // hammering the first account.
         let dir = make_workspace_dir_with_two_accounts();
@@ -8913,7 +8913,7 @@ config_dir = "~/.claude-granite"
         bound.sort();
         assert_eq!(
             bound,
-            vec!["Granite".to_owned(), "Subspace".to_owned()],
+            vec!["Gateway".to_owned(), "Stargate".to_owned()],
             "two spawns must split across the two healthy accounts (round-robin)",
         );
     }
@@ -8921,8 +8921,8 @@ config_dir = "~/.claude-granite"
     #[tokio::test]
     async fn project_account_pin_excludes_unpinned_account() {
         // Three accounts globally; default org pins only
-        // {Subspace, Granite}. Spawn under the default project picks
-        // one of the pinned pair (Granite via alpha tie-break) and
+        // {Stargate, Gateway}. Spawn under the default project picks
+        // one of the pinned pair (Gateway via alpha tie-break) and
         // must never touch Personal. Multi-spawn rotation within the
         // subset is exercised by the unit tests in `account.rs`
         // (`lru_restricted_pool_lru_within_subset`,
@@ -8933,7 +8933,7 @@ config_dir = "~/.claude-granite"
             r#"
 [[orgs]]
 name = "Default"
-accounts = ["Subspace", "Granite"]
+accounts = ["Stargate", "Gateway"]
 
 [[orgs.projects]]
 name = "forge"
@@ -8941,16 +8941,16 @@ path = "~/Projects/forge"
 auto_start = true
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 
 [[accounts]]
-display_name = "Granite"
-config_dir = "~/.claude-granite"
+display_name = "Gateway"
+config_dir = "~/.claude-gateway"
 
 [[accounts]]
 display_name = "Personal"
-config_dir = "~/.claude-personal"
+config_dir = "~/.claude-second"
 "#,
         )
         .expect("write forge.toml");
@@ -8964,7 +8964,7 @@ config_dir = "~/.claude-personal"
         let bound = workspace.pool.lock().values().map(|p| p.account.0.clone()).collect::<Vec<_>>();
         assert_eq!(bound.len(), 1);
         assert!(
-            bound[0] == "Subspace" || bound[0] == "Granite",
+            bound[0] == "Stargate" || bound[0] == "Gateway",
             "spawn must land on a pinned account, got {bound:?}",
         );
         assert_ne!(bound[0], "Personal", "Personal must be excluded by the pin");
@@ -9254,7 +9254,7 @@ config_dir = "~/.claude-personal"
                     correlation_id: as_caller.clone(),
                     channel: crate::mcp::peers::types::AskChannel::Peers,
                     caller: from.clone(),
-                    target_project: "granite-backend".to_owned(),
+                    target_project: "gateway-backend".to_owned(),
                     target_session: None,
                 },
             );
@@ -9380,7 +9380,7 @@ config_dir = "~/.claude-personal"
             r#"
 [[orgs]]
 name = "Default"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 
 [[orgs.projects]]
 name = "forge"
@@ -9388,13 +9388,13 @@ path = "~/Projects/forge"
 auto_start = true
 
 [[orgs.projects]]
-name = "granite-backend"
-path = "~/Projects/granite-backend"
+name = "gateway-backend"
+path = "~/Projects/gateway-backend"
 auto_start = false
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 "#,
         )
         .expect("write forge.toml");
@@ -9420,7 +9420,7 @@ config_dir = "~/.claude-subspace"
                 correlation_id: id.clone(),
                 channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: caller.clone(),
-                target_project: "granite-backend".to_owned(),
+                target_project: "gateway-backend".to_owned(),
                 target_session: None,
             },
         );
@@ -9455,7 +9455,7 @@ config_dir = "~/.claude-subspace"
                 correlation_id: id.clone(),
                 channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: caller.clone(),
-                target_project: "granite-backend".to_owned(),
+                target_project: "gateway-backend".to_owned(),
                 target_session: None,
             },
         );
@@ -9494,7 +9494,7 @@ config_dir = "~/.claude-subspace"
                 correlation_id: id.clone(),
                 channel: AskChannel::Peers,
                 caller: caller.clone(),
-                target_project: "granite-backend".to_owned(),
+                target_project: "gateway-backend".to_owned(),
                 target_session: None,
             },
         );
@@ -9560,7 +9560,7 @@ config_dir = "~/.claude-subspace"
         };
         let (workspace, _rx) = Workspace::testing_stub();
 
-        let synth_key = SessionKey::from_session_id("__spawn_granite-backend__");
+        let synth_key = SessionKey::from_session_id("__spawn_gateway-backend__");
         let id = CorrelationId::new_ask();
         let wrapped = WrappedPrompt {
             correlation_id: id.clone(),
@@ -9579,7 +9579,7 @@ config_dir = "~/.claude-subspace"
                 correlation_id: id.clone(),
                 channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: SessionKey::from_str_for_test("asker"),
-                target_project: "granite-backend".to_owned(),
+                target_project: "gateway-backend".to_owned(),
                 target_session: None,
             },
         );
@@ -9624,7 +9624,7 @@ config_dir = "~/.claude-subspace"
                 correlation_id: id.clone(),
                 channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: caller.clone(),
-                target_project: "granite-backend".to_owned(),
+                target_project: "gateway-backend".to_owned(),
                 target_session: Some(target.clone()),
             },
         );
@@ -9666,7 +9666,7 @@ config_dir = "~/.claude-subspace"
                 correlation_id: id.clone(),
                 channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: SessionKey::from_str_for_test("asker"),
-                target_project: "granite-backend".to_owned(),
+                target_project: "gateway-backend".to_owned(),
                 target_session: None,
             },
         );
@@ -9704,7 +9704,7 @@ config_dir = "~/.claude-subspace"
         // is the one that rejects. Smoke: dispatch returns Ok.
         let result = workspace.dispatch(crate::protocol::Command::DeliverPeerPrompt {
             caller,
-            target_project: "granite-backend".to_owned(),
+            target_project: "gateway-backend".to_owned(),
             wrapped,
         });
         assert!(result.is_ok(), "dispatch routed cleanly: {result:?}");
@@ -9838,13 +9838,13 @@ config_dir = "~/.claude-subspace"
         let (workspace, _dir) = peer_mcp_workspace_fixture().await;
 
         // Seed catalog so list_projects() sees a session under
-        // "granite-backend". The session_id is what we'll feed to
+        // "gateway-backend". The session_id is what we'll feed to
         // expire_target_inflight as the closing key.
-        let granite_cwd = project_expanded_path(&workspace, "granite-backend");
+        let gateway_cwd = project_expanded_path(&workspace, "gateway-backend");
         let target_session_id = "target-session-uuid";
-        workspace.record_connected_session(&granite_cwd, target_session_id, None);
+        workspace.record_connected_session(&gateway_cwd, target_session_id, None);
 
-        // Three inflight asks: two targeting granite-backend (must
+        // Three inflight asks: two targeting gateway-backend (must
         // expire), one targeting forge (must survive).
         let caller_a = SessionKey::from_str_for_test("caller-a");
         let caller_b = SessionKey::from_str_for_test("caller-b");
@@ -9860,7 +9860,7 @@ config_dir = "~/.claude-subspace"
                     correlation_id: id_a.clone(),
                     channel: crate::mcp::peers::types::AskChannel::Peers,
                     caller: caller_a.clone(),
-                    target_project: "granite-backend".to_owned(),
+                    target_project: "gateway-backend".to_owned(),
                     target_session: None,
                 },
             );
@@ -9870,7 +9870,7 @@ config_dir = "~/.claude-subspace"
                     correlation_id: id_b.clone(),
                     channel: crate::mcp::peers::types::AskChannel::Peers,
                     caller: caller_b.clone(),
-                    target_project: "granite-backend".to_owned(),
+                    target_project: "gateway-backend".to_owned(),
                     target_session: None,
                 },
             );
@@ -9895,8 +9895,8 @@ config_dir = "~/.claude-subspace"
 
         // Targeted asks are gone; the orthogonally-targeted ask survives.
         let asks = workspace.inflight_asks.lock();
-        assert!(!asks.contains_key(&id_a), "ask targeting granite-backend removed");
-        assert!(!asks.contains_key(&id_b), "ask targeting granite-backend removed");
+        assert!(!asks.contains_key(&id_a), "ask targeting gateway-backend removed");
+        assert!(!asks.contains_key(&id_b), "ask targeting gateway-backend removed");
         assert!(
             asks.contains_key(&id_c),
             "ask targeting forge survives, only the closing project's asks expire"
@@ -9923,7 +9923,7 @@ config_dir = "~/.claude-subspace"
         expected_callers.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         assert_eq!(
             notice_callers, expected_callers,
-            "DeliveryFailureNotice fired for exactly the two granite-backend-targeted callers"
+            "DeliveryFailureNotice fired for exactly the two gateway-backend-targeted callers"
         );
     }
 }
@@ -10092,7 +10092,7 @@ mod release_session_cascade_tests {
             r#"
 [[orgs]]
 name = "Default"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 
 [[orgs.projects]]
 name = "forge"
@@ -10100,8 +10100,8 @@ path = "~/Projects/forge"
 auto_start = true
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 "#,
         )
         .expect("write forge.toml");
@@ -10858,9 +10858,9 @@ mod team_spawn_tests {
 
     #[test]
     fn team_spawn_resolves_bare_label_to_project_charter() {
-        // Fixture: a project-scoped hub-modules/steward charter only.
+        // Fixture: a project-scoped data-modules/steward charter only.
         let tmp = tempfile::tempdir().expect("tmp");
-        let steward = tmp.path().join("hub-modules").join("steward");
+        let steward = tmp.path().join("data-modules").join("steward");
         std::fs::create_dir_all(&steward).expect("mkdir");
         std::fs::write(steward.join("charter.md"), "description: Hub steward\n").expect("charter");
         std::fs::write(steward.join("kick.md"), "go\n").expect("kick");
@@ -10872,9 +10872,9 @@ mod team_spawn_tests {
         // load_team_roles inline, so the bare label resolves here.
         workspace.spawn_team_for_lead_with_catalog_scan(
             "lead-uuid".to_owned(),
-            ProjectKey::new("hub-modules"),
-            std::path::PathBuf::from("/tmp/hub-modules"),
-            "hub-modules".to_owned(),
+            ProjectKey::new("data-modules"),
+            std::path::PathBuf::from("/tmp/data-modules"),
+            "data-modules".to_owned(),
             vec!["steward".to_owned()],
             false,
         );
@@ -10884,7 +10884,7 @@ mod team_spawn_tests {
             dispatched.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).collect();
         assert_eq!(spawns.len(), 1, "bare team label resolves + spawns one worker");
         if let Command::SpawnWorker { label, charter, .. } = spawns[0] {
-            assert_eq!(label, "steward", "worker label stays BARE, not hub-modules/steward");
+            assert_eq!(label, "steward", "worker label stays BARE, not data-modules/steward");
             assert!(charter.contains("Hub steward"), "charter loaded from the project-scoped dir");
         }
     }
@@ -10896,7 +10896,7 @@ mod team_spawn_tests {
         // resume mechanic itself is covered by
         // spawn_team_for_lead_with_resume_all_resume.)
         let tmp = tempfile::tempdir().expect("tmp");
-        let steward = tmp.path().join("hub-modules").join("steward");
+        let steward = tmp.path().join("data-modules").join("steward");
         std::fs::create_dir_all(&steward).expect("mkdir");
         std::fs::write(steward.join("charter.md"), "description: Hub steward\n").expect("charter");
         std::fs::write(steward.join("kick.md"), "go\n").expect("kick");
@@ -10906,9 +10906,9 @@ mod team_spawn_tests {
         workspace.enable_test_dispatch_intercept();
         workspace.spawn_team_for_lead_with_catalog_scan(
             "lead-uuid".to_owned(),
-            ProjectKey::new("hub-modules"),
-            std::path::PathBuf::from("/tmp/hub-modules"),
-            "hub-modules".to_owned(),
+            ProjectKey::new("data-modules"),
+            std::path::PathBuf::from("/tmp/data-modules"),
+            "data-modules".to_owned(),
             vec!["steward".to_owned()],
             true, // force_new: skip the resume scan
         );
@@ -11109,9 +11109,9 @@ mod team_spawn_tests {
         workspace.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        let project_key = ProjectKey::new("hub-modules");
+        let project_key = ProjectKey::new("data-modules");
         let _ = workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
-            project_key: "hub-modules".to_owned(),
+            project_key: "data-modules".to_owned(),
             label: "scratch".to_owned(),
             charter: "resume the scratch task".to_owned(),
             kick: Some("go".to_owned()),
@@ -11123,8 +11123,8 @@ mod team_spawn_tests {
         workspace.spawn_team_for_lead_with_catalog_scan(
             "lead-uuid".to_owned(),
             project_key,
-            std::path::PathBuf::from("/tmp/hub-modules"),
-            "hub-modules".to_owned(),
+            std::path::PathBuf::from("/tmp/data-modules"),
+            "data-modules".to_owned(),
             Vec::new(),
             false,
         );
@@ -11148,9 +11148,9 @@ mod team_spawn_tests {
         workspace.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        let project_key = ProjectKey::new("hub-modules");
+        let project_key = ProjectKey::new("data-modules");
         let _ = workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
-            project_key: "hub-modules".to_owned(),
+            project_key: "data-modules".to_owned(),
             label: "scratch".to_owned(),
             charter: "c".to_owned(),
             kick: None,
@@ -11161,8 +11161,8 @@ mod team_spawn_tests {
         workspace.spawn_team_for_lead_with_catalog_scan(
             "lead-uuid".to_owned(),
             project_key,
-            std::path::PathBuf::from("/tmp/hub-modules"),
-            "hub-modules".to_owned(),
+            std::path::PathBuf::from("/tmp/data-modules"),
+            "data-modules".to_owned(),
             Vec::new(),
             false,
         );
@@ -11245,7 +11245,7 @@ mod build_resume_map_tests {
             ),
             mk_info(
                 "theirs",
-                Some("/Users/me/Projects/granite/.claude/worktrees/planner"),
+                Some("/Users/me/Projects/gateway/.claude/worktrees/planner"),
                 Some("forge:worker:planner"),
             ),
         ];
@@ -11411,14 +11411,14 @@ mod build_resume_map_tests {
     /// and wgpu-pr have only their worktree session.
     #[test]
     fn build_resume_map_working_workers_pick_worktree_over_newer_root() {
-        let project_dir = std::path::Path::new("/Users/me/Projects/granite");
-        let wt = |label: &str| format!("/Users/me/Projects/granite/.claude/worktrees/{label}");
+        let project_dir = std::path::Path::new("/Users/me/Projects/gateway");
+        let wt = |label: &str| format!("/Users/me/Projects/gateway/.claude/worktrees/{label}");
         let mut steward_wt =
             mk_info("steward-wt", Some(&wt("steward")), Some("forge:worker:steward"));
         steward_wt.last_modified = 300;
         let mut steward_root = mk_info(
             "steward-root",
-            Some("/Users/me/Projects/granite"),
+            Some("/Users/me/Projects/gateway"),
             Some("forge:worker:steward"),
         );
         steward_root.last_modified = 400;
@@ -12102,7 +12102,7 @@ mod git_scan_cwd_tests {
 
     #[test]
     fn resume_cwd_for_session_returns_worktree_for_git_worker_with_no_catalog_cwd() {
-        // Git-repo worker (the hub-modules babysitter / librarian
+        // Git-repo worker (the data-modules babysitter / librarian
         // case from #245). Layer B composes the worker's worktree
         // path so claude resolves the JSONL on the first try -
         // passing just the project root would make claude look under
@@ -12111,8 +12111,8 @@ mod git_scan_cwd_tests {
         let (ws, _rx) = Workspace::testing_stub();
         let (project_root, session_key) = seed_project_and_worker(
             &ws,
-            "hub-modules",
-            "/tmp/test-hub-modules",
+            "data-modules",
+            "/tmp/test-data-modules",
             "babysitter",
             "worker-uuid-hub",
             true,
@@ -12165,8 +12165,8 @@ mod git_scan_cwd_tests {
         let (ws, _rx) = Workspace::testing_stub();
         let (project_root, session_key) = seed_project_and_worker(
             &ws,
-            "granite-backend",
-            "/tmp/test-granite-cwd",
+            "gateway-backend",
+            "/tmp/test-gateway-cwd",
             "pyth-review-fixes",
             "worker-uuid-cwd",
             true,
@@ -12260,7 +12260,7 @@ mod git_scan_cwd_tests {
     // ---------------------------------------------------------------
     // #246: recompute_plan_if_ready + extend_plan_for_adhoc_worker +
     // session_chip_for. Build a real workspace from the local
-    // `make_workspace_dir_246` helper (single account "Subspace",
+    // `make_workspace_dir_246` helper (single account "Stargate",
     // single project "forge") + manually drive the loading state via
     // account_states().lock().set_*().
     // ---------------------------------------------------------------
@@ -12272,7 +12272,7 @@ mod git_scan_cwd_tests {
             r#"
 [[orgs]]
 name = "Default"
-accounts = ["Subspace"]
+accounts = ["Stargate"]
 
 [[orgs.projects]]
 name = "forge"
@@ -12280,8 +12280,8 @@ path = "~/Projects/forge"
 auto_start = true
 
 [[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
 "#,
         )
         .expect("write forge.toml");
@@ -12478,7 +12478,7 @@ config_dir = "~/.claude-alpha"
                 seven_day_sonnet: None,
                 extra_usage: None,
             };
-            accounts.set_usage(&AccountKey("Subspace".to_owned()), snapshot);
+            accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
 
         workspace.recompute_plan_if_ready();
@@ -12510,7 +12510,7 @@ config_dir = "~/.claude-alpha"
                 seven_day_sonnet: None,
                 extra_usage: None,
             };
-            accounts.set_usage(&AccountKey("Subspace".to_owned()), snapshot);
+            accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
 
         workspace.recompute_plan_if_ready();
@@ -12573,7 +12573,7 @@ config_dir = "~/.claude-alpha"
                 seven_day_sonnet: None,
                 extra_usage: None,
             };
-            accounts.set_usage(&AccountKey("Subspace".to_owned()), snapshot);
+            accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
         workspace.recompute_plan_if_ready();
         let project_key =
@@ -12624,7 +12624,7 @@ config_dir = "~/.claude-alpha"
         workspace
             .account_states()
             .lock()
-            .set_usage(&AccountKey("Subspace".to_owned()), usage_at(100.0));
+            .set_usage(&AccountKey("Stargate".to_owned()), usage_at(100.0));
         workspace.recompute_plan_if_ready();
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
@@ -12633,7 +12633,7 @@ config_dir = "~/.claude-alpha"
         let assigned = workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
         assert_eq!(
             assigned,
-            Some(AccountKey("Subspace".to_owned())),
+            Some(AccountKey("Stargate".to_owned())),
             "all-saturated pool surfaces the assigned rate-limited account",
         );
     }
@@ -12764,7 +12764,7 @@ config_dir = "~/.claude-alpha"
                 seven_day_sonnet: None,
                 extra_usage: None,
             };
-            accounts.set_usage(&AccountKey("Subspace".to_owned()), snapshot);
+            accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
         workspace.recompute_plan_if_ready();
         let project_key =
@@ -12773,7 +12773,7 @@ config_dir = "~/.claude-alpha"
             )));
         let chip = workspace.session_chip_for(&project_key, "lead").expect("chip");
         assert_eq!(chip.state, SessionChipState::Normal);
-        assert_eq!(chip.account_name, "Subspace");
+        assert_eq!(chip.account_name, "Stargate");
     }
 
     #[tokio::test]
@@ -12799,7 +12799,7 @@ config_dir = "~/.claude-alpha"
                 seven_day_sonnet: None,
                 extra_usage: None,
             };
-            accounts.set_usage(&AccountKey("Subspace".to_owned()), snapshot);
+            accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
         workspace.recompute_plan_if_ready();
         let project_key =
@@ -12834,7 +12834,7 @@ config_dir = "~/.claude-alpha"
                 seven_day_sonnet: None,
                 extra_usage: None,
             };
-            accounts.set_usage(&AccountKey("Subspace".to_owned()), snapshot);
+            accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
         workspace.recompute_plan_if_ready();
         let project_key =
@@ -12864,14 +12864,14 @@ config_dir = "~/.claude-alpha"
                 seven_day_sonnet: None,
                 extra_usage: None,
             };
-            accounts.set_usage(&AccountKey("Subspace".to_owned()), snapshot);
+            accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
         workspace.recompute_plan_if_ready();
         // Now flip to Bailed.
         workspace
             .account_states()
             .lock()
-            .set_loading(&AccountKey("Subspace".to_owned()), crate::account::LoadingState::Bailed);
+            .set_loading(&AccountKey("Stargate".to_owned()), crate::account::LoadingState::Bailed);
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),

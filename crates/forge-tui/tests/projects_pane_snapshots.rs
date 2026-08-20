@@ -155,9 +155,9 @@ fn medium_tier_truncates_long_project_labels() {
     let mut app = App::test_default();
 
     let long_session = session_view("really-long-session-id", "really-long-feature-branch");
-    // Project name ("subspace-chain-pulse" = 20 chars) overflows the
+    // Project name ("stargate-chain-pulse" = 20 chars) overflows the
     // 18-char Medium project budget (20 - 2 indent = 18).
-    let projects = vec![project_view("subspace-chain-pulse", vec![long_session.clone()])];
+    let projects = vec![project_view("stargate-chain-pulse", vec![long_session.clone()])];
 
     let lead_key = SessionKey::from_str_for_test("really-long-session-id");
     app.sessions.insert(lead_key.clone(), UiSession::new(lead_key.clone()));
@@ -169,9 +169,9 @@ fn medium_tier_truncates_long_project_labels() {
     // Project header truncated. Org-grouped row chrome is 13 chars
     // (`<2 pad><3 connector><1 glyph><1 sp><name><1 sp><3 button>
     // <2 gutter>`), so at width 24 the name budget is 11. 10-char
-    // prefix + ellipsis = "subspace-c…". The longest substring of
-    // the original we expect to still see is "subspace".
-    let any_truncated_project = lines.iter().any(|l| l.contains('…') && l.contains("subspace"));
+    // prefix + ellipsis = "stargate-c…". The longest substring of
+    // the original we expect to still see is "stargate".
+    let any_truncated_project = lines.iter().any(|l| l.contains('…') && l.contains("stargate"));
     assert!(
         any_truncated_project,
         "expected truncated project label in pane output, got: {lines:?}"
@@ -182,7 +182,7 @@ fn medium_tier_truncates_long_project_labels() {
     // column), so we expect 7 chars + `…` = "really-…".
     // Hit-target stamps must still carry the un-truncated project key.
     let project_target_full = app.pane_hit_targets.iter().any(|t| match t {
-        PaneHitTarget::ProjectHeader { project_name, .. } => project_name == "subspace-chain-pulse",
+        PaneHitTarget::ProjectHeader { project_name, .. } => project_name == "stargate-chain-pulse",
         _ => false,
     });
     assert!(
@@ -433,12 +433,12 @@ fn wide_tier_background_session_with_pending_prompt_renders_yellow_glyph() {
     let mut app = App::test_default();
 
     // Two projects: active session on `forge`, background session on
-    // `subspace`. A PermissionRequest lands on the background session;
+    // `stargate`. A PermissionRequest lands on the background session;
     // the projects pane must surface the yellow △ on the background
     // row so the user notices it without switching focus.
     let projects = vec![
         project_view("forge", vec![session_view("session-a", "lead-a")]),
-        project_view("subspace", vec![session_view("session-b", "lead-b")]),
+        project_view("stargate", vec![session_view("session-b", "lead-b")]),
     ];
 
     let key_a = SessionKey::from_str_for_test("session-a");
@@ -480,7 +480,7 @@ fn wide_tier_background_session_with_failed_turn_renders_red_cross() {
 
     let projects = vec![
         project_view("forge", vec![session_view("session-a", "lead-a")]),
-        project_view("subspace", vec![session_view("session-b", "lead-b")]),
+        project_view("stargate", vec![session_view("session-b", "lead-b")]),
     ];
 
     let key_a = SessionKey::from_str_for_test("session-a");

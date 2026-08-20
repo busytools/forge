@@ -2933,7 +2933,7 @@ impl App {
     /// frame in workspace mode - `Account: ...` shows immediately,
     /// then the value fills in once data lands. Avoids the
     /// alternative options (line pops in late, or flickers
-    /// `Granite` → `Granite · team`) that surface as stale UI.
+    /// `Gateway` → `Gateway · team`) that surface as stale UI.
     ///
     /// Resolution table:
     /// - Workspace mode + both pieces → `"Account: name · tier"`.
@@ -4236,9 +4236,9 @@ mod tests {
         );
     }
 
-    /// FIX (4th attempt): the reported bug state is an active trader-cc
+    /// FIX (4th attempt): the reported bug state is an active web-api
     /// tab where GIT / PROCESSES render and the projects pane + top bar
-    /// highlight trader-cc, yet SCHEDULES is blank - because the
+    /// highlight web-api, yet SCHEDULES is blank - because the
     /// per-bucket project STAMP is `None`. The fix resolves the active
     /// project through the SAME `resolve_active_project_view` the pane +
     /// top bar use (a catalog match on the real session UUID), so
@@ -4251,8 +4251,8 @@ mod tests {
 
         let mut app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
-        let path = "/Users/me/Projects/trader-cc";
-        ws.seed_test_project_with_static_workers("trader-cc", path, &[]);
+        let path = "/Users/me/Projects/web-api";
+        ws.seed_test_project_with_static_workers("web-api", path, &[]);
         // Mirror production: record_connected_session stamps the on-disk
         // catalog at Connect, which is exactly what resolve_active_project_view
         // reads to highlight the active project in the pane + top bar.
@@ -4260,7 +4260,7 @@ mod tests {
         ws.record_connected_session(path, uuid, None);
         let cron = CronEntry {
             id: CronId::from("c1"),
-            project_name: "trader-cc".to_owned(),
+            project_name: "web-api".to_owned(),
             kind: CronKind::Recurring("18 9 * * 1-5".to_owned()),
             prompt: "market open".to_owned(),
             created_at: std::time::SystemTime::UNIX_EPOCH,
@@ -4271,7 +4271,7 @@ mod tests {
         };
         ws.seed_test_cron(cron.clone());
 
-        // Active tab is the real trader-cc session, but the stamp is None
+        // Active tab is the real web-api session, but the stamp is None
         // AND cwd_raw is blank - only the catalog resolver can succeed.
         let key = forge_workspace::SessionKey::from_session_id(uuid);
         let mut bucket = crate::app::session::UiSession::new(key.clone());
@@ -4283,7 +4283,7 @@ mod tests {
         app.refresh_forge_crons();
         assert_eq!(
             app.active_project_name().as_deref(),
-            Some("trader-cc"),
+            Some("web-api"),
             "resolves via the pane/top-bar resolver despite a None stamp + blank cwd",
         );
         assert_eq!(app.forge_crons, vec![cron], "SCHEDULES populates via the robust chain");
@@ -4295,13 +4295,13 @@ mod tests {
 
         let mut app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
-        let path = "/Users/me/Projects/trader-cc";
-        ws.seed_test_project_with_static_workers("trader-cc", path, &[]);
+        let path = "/Users/me/Projects/web-api";
+        ws.seed_test_project_with_static_workers("web-api", path, &[]);
         let uuid = "acbd8a76-448b-4dda-bb01-dd930cdd261a";
         ws.record_connected_session(path, uuid, None);
         ws.seed_test_cron(CronEntry {
             id: CronId::from("c1"),
-            project_name: "trader-cc".to_owned(),
+            project_name: "web-api".to_owned(),
             kind: CronKind::Recurring("0 9 * * *".to_owned()),
             prompt: "market open".to_owned(),
             description: Some("Morning digest".to_owned()),
@@ -4312,7 +4312,7 @@ mod tests {
         });
         let key = forge_workspace::SessionKey::from_session_id(uuid);
         let mut bucket = crate::app::session::UiSession::new(key.clone());
-        bucket.project = Some("trader-cc".to_owned());
+        bucket.project = Some("web-api".to_owned());
         app.sessions.insert(key.clone(), bucket);
         app.active_session_key = Some(key);
 
@@ -4343,11 +4343,11 @@ mod tests {
 
         let mut app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
-        let path = "/Users/me/Projects/trader-cc";
-        ws.seed_test_project_with_static_workers("trader-cc", path, &[]);
+        let path = "/Users/me/Projects/web-api";
+        ws.seed_test_project_with_static_workers("web-api", path, &[]);
         let cron = CronEntry {
             id: CronId::from("c1"),
-            project_name: "trader-cc".to_owned(),
+            project_name: "web-api".to_owned(),
             kind: CronKind::Recurring("18 9 * * 1-5".to_owned()),
             prompt: "market open".to_owned(),
             created_at: std::time::SystemTime::UNIX_EPOCH,
@@ -4367,7 +4367,7 @@ mod tests {
         app.active_session_key = Some(key);
 
         app.refresh_forge_crons();
-        assert_eq!(app.active_project_name().as_deref(), Some("trader-cc"));
+        assert_eq!(app.active_project_name().as_deref(), Some("web-api"));
         assert_eq!(app.forge_crons, vec![cron], "SCHEDULES resolves via the cwd fallback");
     }
 
@@ -4378,7 +4378,7 @@ mod tests {
     /// the project's stored (expanded) path still surfaces the project's
     /// crons. The pre-fix cwd-prefix match returned empty for exactly
     /// this mismatch (here a tilde form vs the expanded project path) -
-    /// the class of failure that kept trader-cc's SCHEDULES blank.
+    /// the class of failure that kept web-api's SCHEDULES blank.
     #[test]
     fn refresh_forge_crons_scopes_by_stamped_project_name_not_cwd() {
         use forge_primitives::cron::{CronEntry, CronId, CronKind};
@@ -4388,10 +4388,10 @@ mod tests {
 
         // Project path is stored expanded; the bucket cwd is a tilde
         // form that cannot prefix-match it.
-        ws.seed_test_project_with_static_workers("trader-cc", "/Users/me/Projects/trader-cc", &[]);
+        ws.seed_test_project_with_static_workers("web-api", "/Users/me/Projects/web-api", &[]);
         let cron = CronEntry {
             id: CronId::from("c1"),
-            project_name: "trader-cc".to_owned(),
+            project_name: "web-api".to_owned(),
             kind: CronKind::Recurring("18 9 * * 1-5".to_owned()),
             prompt: "market open".to_owned(),
             created_at: std::time::SystemTime::UNIX_EPOCH,
@@ -4402,10 +4402,10 @@ mod tests {
         };
         ws.seed_test_cron(cron.clone());
 
-        let key = forge_workspace::SessionKey::from_session_id("__spawn_trader-cc__");
+        let key = forge_workspace::SessionKey::from_session_id("__spawn_web-api__");
         let mut bucket = crate::app::session::UiSession::new(key.clone());
-        bucket.project = Some("trader-cc".to_owned());
-        bucket.cwd_raw = "~/Projects/trader-cc".to_owned();
+        bucket.project = Some("web-api".to_owned());
+        bucket.cwd_raw = "~/Projects/web-api".to_owned();
         app.sessions.insert(key.clone(), bucket);
         app.active_session_key = Some(key);
 
@@ -5319,7 +5319,7 @@ mod tests {
     #[test]
     fn find_running_bucket_for_path_returns_matching_real_bucket() {
         let mut app = App::test_default();
-        let project_path = "/Users/vedhavyas/Projects/forge";
+        let project_path = "/Users/developer/Projects/forge";
         let real_key =
             forge_workspace::SessionKey::from_str_for_test("11111111-2222-3333-4444-555555555555");
         let mut real_bucket = crate::app::session::UiSession::new(real_key.clone());
@@ -5335,7 +5335,7 @@ mod tests {
     #[test]
     fn find_running_bucket_for_path_returns_none_when_no_match() {
         let app = App::test_default();
-        assert!(app.find_running_bucket_for_path("/Users/vedhavyas/Projects/forge").is_none());
+        assert!(app.find_running_bucket_for_path("/Users/developer/Projects/forge").is_none());
     }
 
     /// Regression for commit 23f46b8: when a worker session shares
@@ -5351,7 +5351,7 @@ mod tests {
         use forge_workspace::{ProjectKey, SessionKey};
 
         let mut app = App::test_default();
-        let project_path = "/Users/vedhavyas/Projects/forge";
+        let project_path = "/Users/developer/Projects/forge";
 
         let lead_key = SessionKey::from_str_for_test("aaaaaaaa-1111-2222-3333-444444444444");
         let worker_key = SessionKey::from_str_for_test("bbbbbbbb-1111-2222-3333-444444444444");
@@ -5367,7 +5367,7 @@ mod tests {
         // Inject the worker into the workspace's live_workers map so
         // the filter inside find_running_bucket_for_path sees it.
         let workspace = app.workspace.as_ref().expect("test_default wires a workspace");
-        let project_key = ProjectKey::new_for_test("-Users-vedhavyas-Projects-forge");
+        let project_key = ProjectKey::new_for_test("-Users-developer-Projects-forge");
         workspace.insert_live_worker(
             &project_key,
             WorkerEntry {

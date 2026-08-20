@@ -95,7 +95,7 @@ mod tests {
     fn gotify_types_round_trip() {
         let sub = GotifySubscription {
             id: uuid::Uuid::from_u128(0x1234_5678_9abc_def0_1234_5678_9abc_def0),
-            project: "trader-cc".to_owned(),
+            project: "web-api".to_owned(),
             team_role: Some("analyst".to_owned()),
             applications: vec!["alerts".to_owned()],
             min_priority: Some(5),

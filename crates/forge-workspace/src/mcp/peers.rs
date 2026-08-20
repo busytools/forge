@@ -251,7 +251,7 @@ impl Tool for TellAgent {
          \
          Use this (instead of mutating another project's files directly) \
          whenever the user asks you to notify or hand off work to another \
-         forge project - e.g. \"let granite-backend know the rewriter \
+         forge project - e.g. \"let gateway-backend know the rewriter \
          cleanup landed\", \"tell forge to pick this up next session\". \
          The target's own agent will integrate the news inside its own \
          chat context. Reading the target's files for your own context is \
@@ -706,9 +706,9 @@ mod tests {
         let mock = MockWorkspaceFacade::new();
         mock.peers.lock().push(fake_peer("forge"));
         mock.peers.lock().push(PeerStatus {
-            name: "granite-backend".to_owned(),
-            org: "Granite".to_owned(),
-            path: std::path::PathBuf::from("/tmp/granite-backend"),
+            name: "gateway-backend".to_owned(),
+            org: "Gateway".to_owned(),
+            path: std::path::PathBuf::from("/tmp/gateway-backend"),
             status: PeerLiveness::Sleeping,
             in_flight_incoming: 0,
             in_flight_outgoing: 0,
@@ -724,7 +724,7 @@ mod tests {
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0]["name"], "forge");
         assert_eq!(arr[0]["status"], "running");
-        assert_eq!(arr[1]["name"], "granite-backend");
+        assert_eq!(arr[1]["name"], "gateway-backend");
         assert_eq!(arr[1]["status"], "sleeping");
     }
 
@@ -770,14 +770,14 @@ mod tests {
     async fn tell_agent_unsolicited_returns_correlation_id() {
         let mock = MockWorkspaceFacade::new();
         mock.peers.lock().push(fake_peer("forge")); // caller
-        mock.peers.lock().push(fake_peer("granite-backend")); // target
+        mock.peers.lock().push(fake_peer("gateway-backend")); // target
         let facade = mock.into_arc();
         let tool =
             TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
-                    "target": "granite-backend",
+                    "target": "gateway-backend",
                     "message": "FYI just pushed something.",
                 }),
             })
@@ -835,17 +835,17 @@ mod tests {
 
     #[tokio::test]
     async fn tell_agent_reply_with_matching_in_reply_to_uses_reply_kind() {
-        // Setup: granite-backend had asked forge earlier (the ask sits
-        // in inflight_asks with caller_project = granite-backend,
+        // Setup: gateway-backend had asked forge earlier (the ask sits
+        // in inflight_asks with caller_project = gateway-backend,
         // target_project = forge). Now forge is replying via tell.
         let mock = MockWorkspaceFacade::new();
         mock.peers.lock().push(fake_peer("forge"));
-        mock.peers.lock().push(fake_peer("granite-backend"));
+        mock.peers.lock().push(fake_peer("gateway-backend"));
         mock.inflight.lock().insert(
             CorrelationId("q-7f3a92e0".to_owned()),
             fake_inflight(
                 "q-7f3a92e0",
-                "granite-backend", // original caller's session key
+                "gateway-backend", // original caller's session key
                 "forge",           // target the original ask went to (now the replying agent)
             ),
         );
@@ -857,7 +857,7 @@ mod tests {
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
-                    "target": "granite-backend",
+                    "target": "gateway-backend",
                     "message": "We use pgtemp.",
                     "in_reply_to": "q-7f3a92e0",
                 }),
@@ -884,7 +884,7 @@ mod tests {
     async fn tell_agent_in_reply_to_unknown_correlation_degrades_to_message() {
         let mock = MockWorkspaceFacade::new();
         mock.peers.lock().push(fake_peer("forge"));
-        mock.peers.lock().push(fake_peer("granite-backend"));
+        mock.peers.lock().push(fake_peer("gateway-backend"));
         let facade = mock.into_arc();
         let tool =
             TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
@@ -896,7 +896,7 @@ mod tests {
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
-                    "target": "granite-backend",
+                    "target": "gateway-backend",
                     "message": "Hi.",
                     "in_reply_to": "q-00000000",
                 }),
@@ -923,14 +923,14 @@ mod tests {
         // reply degrades to a Message - hiding the LLM's bug.
         let mock = MockWorkspaceFacade::new();
         mock.peers.lock().push(fake_peer("forge"));
-        mock.peers.lock().push(fake_peer("granite-backend"));
+        mock.peers.lock().push(fake_peer("gateway-backend"));
         let facade = mock.into_arc();
         let tool =
             TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
-                    "target": "granite-backend",
+                    "target": "gateway-backend",
                     "message": "Hi.",
                     "in_reply_to": "q-DEADBEEF",
                 }),
@@ -1087,14 +1087,14 @@ mod tests {
     async fn ask_agent_returns_q_correlation_id() {
         let mock = MockWorkspaceFacade::new();
         mock.peers.lock().push(fake_peer("forge"));
-        mock.peers.lock().push(fake_peer("granite-backend"));
+        mock.peers.lock().push(fake_peer("gateway-backend"));
         let facade = mock.into_arc();
         let tool =
             AskAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
-                    "target": "granite-backend",
+                    "target": "gateway-backend",
                     "prompt": "Which Rust toolchain do you use?",
                 }),
             })
@@ -1113,14 +1113,14 @@ mod tests {
         // downcast cleanly).
         let mock = Arc::new(MockWorkspaceFacade::new());
         mock.peers.lock().push(fake_peer("forge"));
-        mock.peers.lock().push(fake_peer("granite-backend"));
+        mock.peers.lock().push(fake_peer("gateway-backend"));
         let facade: Arc<dyn WorkspaceFacade> = mock.clone();
         let tool =
             AskAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
         let _ = tool
             .call(ToolInput {
                 value: serde_json::json!({
-                    "target": "granite-backend",
+                    "target": "gateway-backend",
                     "prompt": "hi",
                 }),
             })
@@ -1129,7 +1129,7 @@ mod tests {
         assert_eq!(mock.register_calls.lock().len(), 1, "inflight ask should be registered");
         let registered = &mock.register_calls.lock()[0];
         assert!(registered.correlation_id.as_str().starts_with("q-"));
-        assert_eq!(registered.target_project, "granite-backend");
+        assert_eq!(registered.target_project, "gateway-backend");
 
         let bumps = mock.bump_calls.lock();
         assert_eq!(bumps.len(), 1, "exactly one stats bump per ask");
@@ -1181,7 +1181,7 @@ mod tests {
             .call(ToolInput {
                 value: serde_json::json!({
                     // missing required 'prompt'
-                    "target": "granite-backend",
+                    "target": "gateway-backend",
                 }),
             })
             .await;

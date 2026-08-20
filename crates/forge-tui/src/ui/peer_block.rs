@@ -700,12 +700,12 @@ mod tests {
 
     #[test]
     fn detect_message_inbound() {
-        let text = "[Message id=t-c45a8f12 from agent 'granite-backend' (org 'Granite')]\n\nFYI rewriter cleanup just landed.";
+        let text = "[Message id=t-c45a8f12 from agent 'gateway-backend' (org 'Gateway')]\n\nFYI rewriter cleanup just landed.";
         let kind = detect_inbound(text).expect("message");
         match kind {
             PeerInboundKind::Message { from, org, body } => {
-                assert_eq!(from, "granite-backend");
-                assert_eq!(org, "Granite");
+                assert_eq!(from, "gateway-backend");
+                assert_eq!(org, "Gateway");
                 assert_eq!(body, "FYI rewriter cleanup just landed.");
             }
             other => panic!("expected Message, got {other:?}"),
@@ -714,12 +714,12 @@ mod tests {
 
     #[test]
     fn detect_reply_inbound() {
-        let text = "[Reply id=q-7f3a92e0 from agent 'granite-backend' (org 'Granite') to your earlier ask]\n\nWe use pgtemp for ephemeral postgres in CI.";
+        let text = "[Reply id=q-7f3a92e0 from agent 'gateway-backend' (org 'Gateway') to your earlier ask]\n\nWe use pgtemp for ephemeral postgres in CI.";
         let kind = detect_inbound(text).expect("reply");
         match kind {
             PeerInboundKind::Reply { from, org, body } => {
-                assert_eq!(from, "granite-backend");
-                assert_eq!(org, "Granite");
+                assert_eq!(from, "gateway-backend");
+                assert_eq!(org, "Gateway");
                 assert_eq!(body, "We use pgtemp for ephemeral postgres in CI.");
             }
             other => panic!("expected Reply, got {other:?}"),
@@ -728,12 +728,12 @@ mod tests {
 
     #[test]
     fn detect_delivery_failure_inbound() {
-        let text = "[Ask id=q-d31fa8a3 to agent 'granite-liq-bot' (org 'Granite') failed to deliver: target spawn failed: all pinned accounts are rate-limited]\n\n";
+        let text = "[Ask id=q-d31fa8a3 to agent 'gateway-liq-bot' (org 'Gateway') failed to deliver: target spawn failed: all pinned accounts are rate-limited]\n\n";
         let kind = detect_inbound(text).expect("delivery failure");
         match kind {
             PeerInboundKind::DeliveryFailure { target, org, reason } => {
-                assert_eq!(target, "granite-liq-bot");
-                assert_eq!(org, "Granite");
+                assert_eq!(target, "gateway-liq-bot");
+                assert_eq!(org, "Gateway");
                 assert!(reason.contains("rate-limited"), "reason carries failure detail: {reason}");
             }
             other => panic!("expected DeliveryFailure, got {other:?}"),
@@ -1174,11 +1174,11 @@ mod tests {
     fn detect_outbound_recognises_peers_ask_with_target_arg() {
         let tc = make_tc(
             "mcp__forge__peers__ask_agent",
-            serde_json::json!({ "target": "granite-backend", "prompt": "?" }),
+            serde_json::json!({ "target": "gateway-backend", "prompt": "?" }),
         );
         match detect_outbound(&tc) {
             Some(PeerOutboundKind::Ask { target, body }) => {
-                assert_eq!(target, "granite-backend");
+                assert_eq!(target, "gateway-backend");
                 assert_eq!(body, "?");
             }
             other => panic!("expected Ask, got {other:?}"),

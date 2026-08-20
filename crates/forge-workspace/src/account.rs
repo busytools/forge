@@ -905,71 +905,71 @@ mod tests {
 
     #[test]
     fn priority_order_picks_first_in_pin_when_both_available() {
-        // Subspace: 5h=80%
-        // Granite:  5h=10%
+        // Stargate: 5h=80%
+        // Gateway:  5h=10%
         // Both under 100% on both windows → tier 2. Priority-order
         // policy: first in pin order wins regardless of utilisation
         // (the user's pin expresses intent; the picker respects it).
-        let mut map = AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
-        map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(80.0), Some(60.0)));
-        map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(10.0), Some(20.0)));
-        let (picked, _) = map.pick_for_project(&["Subspace".to_owned(), "Granite".to_owned()]);
-        assert_eq!(picked.0, "Subspace", "first pin entry wins when both are healthy");
+        let mut map = AccountStateMap::new(&[make_account("Stargate"), make_account("Gateway")]);
+        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(80.0), Some(60.0)));
+        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(10.0), Some(20.0)));
+        let (picked, _) = map.pick_for_project(&["Stargate".to_owned(), "Gateway".to_owned()]);
+        assert_eq!(picked.0, "Stargate", "first pin entry wins when both are healthy");
     }
 
     #[test]
     fn priority_order_respects_pin_order_when_first_pin_has_higher_seven_day() {
-        // Subspace: 5h=10%, 7d=90% - high 7d but still under 100%
-        // Granite:  5h=50%, 7d=50%
+        // Stargate: 5h=10%, 7d=90% - high 7d but still under 100%
+        // Gateway:  5h=50%, 7d=50%
         // Both tier 2. Priority-order: first in pin wins.
-        let mut map = AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
-        map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(10.0), Some(90.0)));
-        map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(50.0), Some(50.0)));
-        let (picked, _) = map.pick_for_project(&["Subspace".to_owned(), "Granite".to_owned()]);
-        assert_eq!(picked.0, "Subspace", "pin order over utilisation");
+        let mut map = AccountStateMap::new(&[make_account("Stargate"), make_account("Gateway")]);
+        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(10.0), Some(90.0)));
+        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(50.0), Some(50.0)));
+        let (picked, _) = map.pick_for_project(&["Stargate".to_owned(), "Gateway".to_owned()]);
+        assert_eq!(picked.0, "Stargate", "pin order over utilisation");
     }
 
     #[test]
     fn rate_limited_account_excluded_in_favour_of_available_one() {
-        // Granite: 5h=0%, 7d=100% - RATE LIMITED on 7d.
-        // Subspace: 5h=80%, 7d=80% - heavily used but neither at 100%.
-        // Picker must exclude Granite even though its 5h is lower.
-        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Subspace")]);
-        map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(0.0), Some(100.0)));
-        map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(80.0), Some(80.0)));
-        let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Subspace".to_owned()]);
-        assert_eq!(picked.0, "Subspace");
+        // Gateway: 5h=0%, 7d=100% - RATE LIMITED on 7d.
+        // Stargate: 5h=80%, 7d=80% - heavily used but neither at 100%.
+        // Picker must exclude Gateway even though its 5h is lower.
+        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Stargate")]);
+        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(0.0), Some(100.0)));
+        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(80.0), Some(80.0)));
+        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Stargate".to_owned()]);
+        assert_eq!(picked.0, "Stargate");
     }
 
     #[test]
     fn rate_limited_account_excluded_on_five_hour_too() {
-        // Granite: 5h=100%, 7d=0% - rate limited on 5h.
-        // Subspace: 5h=80%, 7d=80% - available.
-        // Must pick Subspace.
-        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Subspace")]);
-        map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(100.0), Some(0.0)));
-        map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(80.0), Some(80.0)));
-        let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Subspace".to_owned()]);
-        assert_eq!(picked.0, "Subspace");
+        // Gateway: 5h=100%, 7d=0% - rate limited on 5h.
+        // Stargate: 5h=80%, 7d=80% - available.
+        // Must pick Stargate.
+        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Stargate")]);
+        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(100.0), Some(0.0)));
+        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(80.0), Some(80.0)));
+        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Stargate".to_owned()]);
+        assert_eq!(picked.0, "Stargate");
     }
 
     #[test]
     fn unknown_usage_sorts_first_in_definition_order() {
-        // Subspace has data; Granite + Personal don't.
-        // Picker picks Granite (first unknown in definition order)
-        // to warm the cache, even when Subspace looks healthy.
+        // Stargate has data; Gateway + Personal don't.
+        // Picker picks Gateway (first unknown in definition order)
+        // to warm the cache, even when Stargate looks healthy.
         let mut map = AccountStateMap::new(&[
-            make_account("Granite"),
-            make_account("Subspace"),
+            make_account("Gateway"),
+            make_account("Stargate"),
             make_account("Personal"),
         ]);
-        map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(10.0), Some(20.0)));
+        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(10.0), Some(20.0)));
         let (picked, _) = map.pick_for_project(&[
-            "Granite".to_owned(),
-            "Subspace".to_owned(),
+            "Gateway".to_owned(),
+            "Stargate".to_owned(),
             "Personal".to_owned(),
         ]);
-        assert_eq!(picked.0, "Granite");
+        assert_eq!(picked.0, "Gateway");
     }
 
     #[test]
@@ -977,22 +977,22 @@ mod tests {
         // Every pinned account hit at least one limit. Picker still
         // returns something (the spawn must not fail) - definition
         // order picks the first one.
-        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Subspace")]);
-        map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(100.0), Some(100.0)));
-        map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(100.0), Some(100.0)));
-        let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Subspace".to_owned()]);
-        assert_eq!(picked.0, "Granite");
+        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Stargate")]);
+        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(100.0), Some(100.0)));
+        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(100.0), Some(100.0)));
+        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Stargate".to_owned()]);
+        assert_eq!(picked.0, "Gateway");
     }
 
     #[test]
     fn available_wins_over_rate_limited_regardless_of_pin_order() {
-        // Granite is first in the pin AND rate-limited; Subspace is
-        // second AND available. Tier sort must lift Subspace ahead.
-        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Subspace")]);
-        map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(50.0), Some(100.0)));
-        map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(99.9), Some(99.9)));
-        let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Subspace".to_owned()]);
-        assert_eq!(picked.0, "Subspace");
+        // Gateway is first in the pin AND rate-limited; Stargate is
+        // second AND available. Tier sort must lift Stargate ahead.
+        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Stargate")]);
+        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(50.0), Some(100.0)));
+        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(99.9), Some(99.9)));
+        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Stargate".to_owned()]);
+        assert_eq!(picked.0, "Stargate");
     }
 
     #[test]
@@ -1001,15 +1001,15 @@ mod tests {
         // most remaining (100%) but it's NOT in the pin - must be
         // excluded.
         let mut map = AccountStateMap::new(&[
-            make_account("Subspace"),
-            make_account("Granite"),
+            make_account("Stargate"),
+            make_account("Gateway"),
             make_account("Personal"),
         ]);
-        map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(50.0), Some(50.0)));
-        map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(70.0), Some(70.0)));
+        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(50.0), Some(50.0)));
+        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(70.0), Some(70.0)));
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(0.0), Some(0.0)));
-        let (picked, _) = map.pick_for_project(&["Subspace".to_owned(), "Granite".to_owned()]);
-        assert_eq!(picked.0, "Subspace");
+        let (picked, _) = map.pick_for_project(&["Stargate".to_owned(), "Gateway".to_owned()]);
+        assert_eq!(picked.0, "Stargate");
         assert_ne!(picked.0, "Personal");
     }
 
@@ -1017,78 +1017,78 @@ mod tests {
     fn priority_order_ignores_seven_day_difference_when_both_available() {
         // Both at 5h=50, different 7d. Old policy used 7d as a
         // tiebreaker; the priority-order policy respects pin order
-        // - Subspace first → Subspace wins even with worse 7d.
-        let mut map = AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
-        map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(50.0), Some(70.0)));
-        map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(50.0), Some(30.0)));
-        let (picked, _) = map.pick_for_project(&["Subspace".to_owned(), "Granite".to_owned()]);
-        assert_eq!(picked.0, "Subspace", "pin order over 7d util");
+        // - Stargate first → Stargate wins even with worse 7d.
+        let mut map = AccountStateMap::new(&[make_account("Stargate"), make_account("Gateway")]);
+        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(50.0), Some(70.0)));
+        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(50.0), Some(30.0)));
+        let (picked, _) = map.pick_for_project(&["Stargate".to_owned(), "Gateway".to_owned()]);
+        assert_eq!(picked.0, "Stargate", "pin order over 7d util");
     }
 
     #[test]
     fn definition_order_final_tiebreak() {
-        // Identical 5h + 7d → definition order. Subspace first in
+        // Identical 5h + 7d → definition order. Stargate first in
         // the allow list wins.
-        let mut map = AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
-        map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(50.0), Some(50.0)));
-        map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(50.0), Some(50.0)));
-        let (picked, _) = map.pick_for_project(&["Subspace".to_owned(), "Granite".to_owned()]);
-        assert_eq!(picked.0, "Subspace");
+        let mut map = AccountStateMap::new(&[make_account("Stargate"), make_account("Gateway")]);
+        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(50.0), Some(50.0)));
+        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(50.0), Some(50.0)));
+        let (picked, _) = map.pick_for_project(&["Stargate".to_owned(), "Gateway".to_owned()]);
+        assert_eq!(picked.0, "Stargate");
     }
 
     #[test]
     fn known_available_account_beats_probe_failed_account() {
-        // Granite has a fresh successful probe (tier 1, 30% used);
+        // Gateway has a fresh successful probe (tier 1, 30% used);
         // Personal's probe keeps returning 429 (last_error =
         // RateLimited, usage still None → tier 3, probe rate-limited).
-        // Granite wins.
-        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
-        map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(30.0), Some(30.0)));
+        // Gateway wins.
+        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
+        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(30.0), Some(30.0)));
         map.set_last_error(&AccountKey("Personal".to_owned()), UsageFetchStatus::RateLimited, None);
-        let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Personal".to_owned()]);
-        assert_eq!(picked.0, "Granite", "available account must beat probe-rate-limited one");
+        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()]);
+        assert_eq!(picked.0, "Gateway", "available account must beat probe-rate-limited one");
     }
 
     #[test]
     fn expired_creds_and_saturated_both_unusable_pin_order_decides() {
-        // Both accounts are unusable in different ways: Granite1's
+        // Both accounts are unusable in different ways: Gateway1's
         // OAuth has expired, Personal is fully rate-limited. Under
         // the two-tier model both fall into tier 1 (Unusable) so
-        // pin order decides - Granite1 wins as first in pin.
-        let mut map = AccountStateMap::new(&[make_account("Granite1"), make_account("Personal")]);
-        map.set_last_error(&AccountKey("Granite1".to_owned()), UsageFetchStatus::Expired, None);
+        // pin order decides - Gateway1 wins as first in pin.
+        let mut map = AccountStateMap::new(&[make_account("Gateway1"), make_account("Personal")]);
+        map.set_last_error(&AccountKey("Gateway1".to_owned()), UsageFetchStatus::Expired, None);
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(100.0), Some(100.0)));
-        let (picked, _) = map.pick_for_project(&["Granite1".to_owned(), "Personal".to_owned()]);
-        assert_eq!(picked.0, "Granite1", "all-unusable falls back to pin order");
+        let (picked, _) = map.pick_for_project(&["Gateway1".to_owned(), "Personal".to_owned()]);
+        assert_eq!(picked.0, "Gateway1", "all-unusable falls back to pin order");
     }
 
     #[test]
     fn unknown_and_available_both_usable_pin_order_decides() {
         // Both accounts are in tier 0 (Usable) under the two-tier
-        // model - Granite is unprobed (unknown), Personal has known
-        // healthy usage. Pin order decides → Granite wins.
-        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
+        // model - Gateway is unprobed (unknown), Personal has known
+        // healthy usage. Pin order decides → Gateway wins.
+        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(30.0), Some(30.0)));
-        let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Personal".to_owned()]);
-        assert_eq!(picked.0, "Granite", "both usable → pin order");
+        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()]);
+        assert_eq!(picked.0, "Gateway", "both usable → pin order");
     }
 
     #[test]
     fn network_failure_treated_as_usable_pin_order_decides() {
-        // Granite's probe failed transiently (network error) - we
+        // Gateway's probe failed transiently (network error) - we
         // don't actually know it's saturated, so the two-tier model
         // keeps it in tier 0 (Usable). Personal has a healthy probe
-        // also in tier 0. Both usable → pin order wins → Granite
+        // also in tier 0. Both usable → pin order wins → Gateway
         // (first in pin).
-        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
+        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
         map.set_last_error(
-            &AccountKey("Granite".to_owned()),
+            &AccountKey("Gateway".to_owned()),
             UsageFetchStatus::NetworkFailed,
             None,
         );
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(50.0), Some(50.0)));
-        let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Personal".to_owned()]);
-        assert_eq!(picked.0, "Granite", "transient network error doesn't demote - pin order wins");
+        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()]);
+        assert_eq!(picked.0, "Gateway", "transient network error doesn't demote - pin order wins");
     }
 
     #[test]
@@ -1098,19 +1098,19 @@ mod tests {
         // second usable, third (cursor=2) → third usable, fourth
         // wraps back to first (cursor=3, 3 % 3 = 0).
         let map = AccountStateMap::new(&[
-            make_account("Granite"),
-            make_account("Granite1"),
+            make_account("Gateway"),
+            make_account("Gateway1"),
             make_account("Personal"),
         ]);
-        let allow = ["Granite".to_owned(), "Granite1".to_owned(), "Personal".to_owned()];
+        let allow = ["Gateway".to_owned(), "Gateway1".to_owned(), "Personal".to_owned()];
         let picks: Vec<String> = (0..4).map(|_| map.pick_for_project(&allow).0.0).collect();
         assert_eq!(
             picks,
             vec![
-                "Granite".to_owned(),
-                "Granite1".to_owned(),
+                "Gateway".to_owned(),
+                "Gateway1".to_owned(),
                 "Personal".to_owned(),
-                "Granite".to_owned(),
+                "Gateway".to_owned(),
             ],
             "round-robin must rotate through the usable subset and wrap",
         );
@@ -1118,29 +1118,29 @@ mod tests {
 
     #[test]
     fn round_robin_skips_unusable_in_rotation() {
-        // Granite is rate-limited (tier 1); Granite1 + Personal are
+        // Gateway is rate-limited (tier 1); Gateway1 + Personal are
         // tier 0. Rotation must alternate between the TWO usable
-        // entries and never land on Granite even though it's first
+        // entries and never land on Gateway even though it's first
         // in the allow-list.
         let mut map = AccountStateMap::new(&[
-            make_account("Granite"),
-            make_account("Granite1"),
+            make_account("Gateway"),
+            make_account("Gateway1"),
             make_account("Personal"),
         ]);
-        map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(100.0), Some(100.0)));
-        map.set_usage(&AccountKey("Granite1".to_owned()), snapshot(Some(20.0), Some(20.0)));
+        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(100.0), Some(100.0)));
+        map.set_usage(&AccountKey("Gateway1".to_owned()), snapshot(Some(20.0), Some(20.0)));
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(30.0), Some(30.0)));
-        let allow = ["Granite".to_owned(), "Granite1".to_owned(), "Personal".to_owned()];
+        let allow = ["Gateway".to_owned(), "Gateway1".to_owned(), "Personal".to_owned()];
         let picks: Vec<String> = (0..4).map(|_| map.pick_for_project(&allow).0.0).collect();
         assert_eq!(
             picks,
             vec![
-                "Granite1".to_owned(),
+                "Gateway1".to_owned(),
                 "Personal".to_owned(),
-                "Granite1".to_owned(),
+                "Gateway1".to_owned(),
                 "Personal".to_owned(),
             ],
-            "round-robin must skip Granite (tier 1) and alternate between the two usable accounts",
+            "round-robin must skip Gateway (tier 1) and alternate between the two usable accounts",
         );
     }
 
@@ -1151,11 +1151,11 @@ mod tests {
         // picks from project A and project B share the cursor, so
         // each pick advances the shared cursor regardless of which
         // project asked.
-        let map = AccountStateMap::new(&[make_account("Granite"), make_account("Granite1")]);
-        let project_a = ["Granite".to_owned(), "Granite1".to_owned()];
-        let project_b = ["Granite".to_owned(), "Granite1".to_owned()];
-        // Pick: A (cursor=0 → Granite), B (cursor=1 → Granite1),
-        //       A (cursor=2 → Granite), B (cursor=3 → Granite1).
+        let map = AccountStateMap::new(&[make_account("Gateway"), make_account("Gateway1")]);
+        let project_a = ["Gateway".to_owned(), "Gateway1".to_owned()];
+        let project_b = ["Gateway".to_owned(), "Gateway1".to_owned()];
+        // Pick: A (cursor=0 → Gateway), B (cursor=1 → Gateway1),
+        //       A (cursor=2 → Gateway), B (cursor=3 → Gateway1).
         let picks = vec![
             map.pick_for_project(&project_a).0.0,
             map.pick_for_project(&project_b).0.0,
@@ -1165,10 +1165,10 @@ mod tests {
         assert_eq!(
             picks,
             vec![
-                "Granite".to_owned(),
-                "Granite1".to_owned(),
-                "Granite".to_owned(),
-                "Granite1".to_owned(),
+                "Gateway".to_owned(),
+                "Gateway1".to_owned(),
+                "Gateway".to_owned(),
+                "Gateway1".to_owned(),
             ],
             "cursor must be shared across projects, not reset per project",
         );
@@ -1176,21 +1176,21 @@ mod tests {
 
     #[test]
     fn round_robin_with_single_usable_account_always_picks_it() {
-        // Only Granite is usable; the other two are saturated. Every
-        // pick lands on Granite - `cursor % 1 == 0` collapses the
+        // Only Gateway is usable; the other two are saturated. Every
+        // pick lands on Gateway - `cursor % 1 == 0` collapses the
         // rotation to a single account.
         let mut map = AccountStateMap::new(&[
-            make_account("Granite"),
-            make_account("Granite1"),
+            make_account("Gateway"),
+            make_account("Gateway1"),
             make_account("Personal"),
         ]);
-        map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(10.0), Some(10.0)));
-        map.set_usage(&AccountKey("Granite1".to_owned()), snapshot(Some(100.0), Some(100.0)));
+        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(10.0), Some(10.0)));
+        map.set_usage(&AccountKey("Gateway1".to_owned()), snapshot(Some(100.0), Some(100.0)));
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(100.0), Some(100.0)));
-        let allow = ["Granite".to_owned(), "Granite1".to_owned(), "Personal".to_owned()];
+        let allow = ["Gateway".to_owned(), "Gateway1".to_owned(), "Personal".to_owned()];
         for _ in 0..5 {
             let (picked, _) = map.pick_for_project(&allow);
-            assert_eq!(picked.0, "Granite");
+            assert_eq!(picked.0, "Gateway");
         }
     }
 
@@ -1208,14 +1208,14 @@ mod tests {
 
     #[test]
     fn should_probe_now_true_for_cold_cache() {
-        let map = AccountStateMap::new(&[make_account("Granite")]);
-        assert!(map.should_probe_now(&AccountKey("Granite".to_owned())));
+        let map = AccountStateMap::new(&[make_account("Gateway")]);
+        assert!(map.should_probe_now(&AccountKey("Gateway".to_owned())));
     }
 
     #[test]
     fn set_last_error_schedules_next_probe_in_future() {
-        let mut map = AccountStateMap::new(&[make_account("Granite")]);
-        let key = AccountKey("Granite".to_owned());
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let key = AccountKey("Gateway".to_owned());
         map.set_last_error(&key, UsageFetchStatus::RateLimited, None);
         assert!(!map.should_probe_now(&key), "first failure puts account in backoff");
     }
@@ -1228,8 +1228,8 @@ mod tests {
         // actual reset and re-trip the limit. The server-provided
         // retry_after must win.
         use std::time::Duration;
-        let mut map = AccountStateMap::new(&[make_account("Granite1")]);
-        let key = AccountKey("Granite1".to_owned());
+        let mut map = AccountStateMap::new(&[make_account("Gateway1")]);
+        let key = AccountKey("Gateway1".to_owned());
         let t0 = std::time::Instant::now();
         map.set_last_error(&key, UsageFetchStatus::RateLimited, Some(Duration::from_secs(3048)));
         let next = map.by_key.get(&key).and_then(|s| s.next_probe_at).expect("scheduled");
@@ -1242,8 +1242,8 @@ mod tests {
 
     #[test]
     fn set_usage_clears_backoff_so_account_probes_again() {
-        let mut map = AccountStateMap::new(&[make_account("Granite")]);
-        let key = AccountKey("Granite".to_owned());
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let key = AccountKey("Gateway".to_owned());
         map.set_last_error(&key, UsageFetchStatus::RateLimited, None);
         assert!(!map.should_probe_now(&key));
         map.set_usage(&key, snapshot(Some(10.0), Some(10.0)));
@@ -1252,10 +1252,10 @@ mod tests {
 
     #[test]
     fn config_dir_lookup_returns_path() {
-        let mut map = AccountStateMap::new(&[make_account("Subspace")]);
-        map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(0.0), Some(0.0)));
-        let dir = map.config_dir(&AccountKey("Subspace".to_owned()));
-        assert_eq!(dir, Some(&PathBuf::from("/fake/Subspace")));
+        let mut map = AccountStateMap::new(&[make_account("Stargate")]);
+        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(0.0), Some(0.0)));
+        let dir = map.config_dir(&AccountKey("Stargate".to_owned()));
+        assert_eq!(dir, Some(&PathBuf::from("/fake/Stargate")));
     }
 
     #[test]
@@ -1423,8 +1423,8 @@ mod tests {
         // the stale bar.
         let past = SystemTime::now() - std::time::Duration::from_secs(60);
         let stale = snapshot_with_resets(Some((100.0, Some(past))), Some((30.0, Some(past))));
-        let mut map = AccountStateMap::new(&[make_account("Granite")]);
-        let k = AccountKey("Granite".to_owned());
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = AccountKey("Gateway".to_owned());
         map.set_usage(&k, stale);
         assert!(map.has_just_cleared_cap_window(&k));
     }
@@ -1435,8 +1435,8 @@ mod tests {
         // `should_probe_now` gate covers normal cadence).
         let future = SystemTime::now() + std::time::Duration::from_secs(60);
         let live = snapshot_with_resets(Some((100.0, Some(future))), Some((30.0, Some(future))));
-        let mut map = AccountStateMap::new(&[make_account("Granite")]);
-        let k = AccountKey("Granite".to_owned());
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = AccountKey("Gateway".to_owned());
         map.set_usage(&k, live);
         assert!(!map.has_just_cleared_cap_window(&k));
     }
@@ -1446,8 +1446,8 @@ mod tests {
         // Cold cache - nothing to compare against. Hook returns false;
         // the normal cold-cache `should_probe_now == true` already
         // schedules the first probe.
-        let map = AccountStateMap::new(&[make_account("Granite")]);
-        assert!(!map.has_just_cleared_cap_window(&AccountKey("Granite".to_owned())));
+        let map = AccountStateMap::new(&[make_account("Gateway")]);
+        assert!(!map.has_just_cleared_cap_window(&AccountKey("Gateway".to_owned())));
     }
 
     #[test]
@@ -1457,8 +1457,8 @@ mod tests {
         // hook only cares about the at-cap transition.
         let past = SystemTime::now() - std::time::Duration::from_secs(60);
         let snap = snapshot_with_resets(Some((50.0, Some(past))), Some((30.0, Some(past))));
-        let mut map = AccountStateMap::new(&[make_account("Granite")]);
-        let k = AccountKey("Granite".to_owned());
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = AccountKey("Gateway".to_owned());
         map.set_usage(&k, snap);
         assert!(!map.has_just_cleared_cap_window(&k));
     }
@@ -1472,8 +1472,8 @@ mod tests {
         // and hammer Anthropic through the entire backoff window.
         let past = SystemTime::now() - std::time::Duration::from_secs(60);
         let stale = snapshot_with_resets(Some((100.0, Some(past))), None);
-        let mut map = AccountStateMap::new(&[make_account("Granite")]);
-        let k = AccountKey("Granite".to_owned());
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = AccountKey("Gateway".to_owned());
         map.set_usage(&k, stale);
         // Push next_probe_at into the future so should_probe_now is
         // false: this is the "in backoff" state the scheduler hook is
@@ -1506,8 +1506,8 @@ mod tests {
         // boundaries can still trigger their one-shot override.
         let past = SystemTime::now() - std::time::Duration::from_secs(60);
         let stale = snapshot_with_resets(Some((100.0, Some(past))), None);
-        let mut map = AccountStateMap::new(&[make_account("Granite")]);
-        let k = AccountKey("Granite".to_owned());
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = AccountKey("Gateway".to_owned());
         map.set_usage(&k, stale.clone());
         map.disarm_override(&k);
         assert!(!map.has_just_cleared_cap_window(&k), "disarmed");
@@ -1525,8 +1525,8 @@ mod tests {
         // must NOT fire the hook even if some hypothetical stale
         // snapshot were planted manually. Cold accounts are picked up
         // via cold-cache `should_probe_now == true`, not the override.
-        let map = AccountStateMap::new(&[make_account("Granite")]);
-        let k = AccountKey("Granite".to_owned());
+        let map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = AccountKey("Gateway".to_owned());
         assert!(!map.has_just_cleared_cap_window(&k), "no arm = no override");
     }
 
@@ -1543,8 +1543,8 @@ mod tests {
         // `should_probe_now` returns true (next_probe_at is None);
         // the hook returns false (no snapshot to override against).
         // OR result: true.
-        let map = AccountStateMap::new(&[make_account("Granite")]);
-        let k = AccountKey("Granite".to_owned());
+        let map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = AccountKey("Gateway".to_owned());
         assert!(map.should_probe_now(&k));
         assert!(!map.has_just_cleared_cap_window(&k));
         assert!(map.scheduler_should_probe(&k), "OR true via should_probe_now");
@@ -1561,8 +1561,8 @@ mod tests {
         // - scheduler_should_probe == true (OR fires)
         let past = SystemTime::now() - std::time::Duration::from_secs(60);
         let stale = snapshot_with_resets(Some((100.0, Some(past))), None);
-        let mut map = AccountStateMap::new(&[make_account("Granite")]);
-        let k = AccountKey("Granite".to_owned());
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = AccountKey("Gateway".to_owned());
         map.set_usage(&k, stale);
         map.set_last_error(
             &k,
@@ -1583,8 +1583,8 @@ mod tests {
         // timer to elapse.
         let future = SystemTime::now() + std::time::Duration::from_secs(60);
         let live = snapshot_with_resets(Some((100.0, Some(future))), None);
-        let mut map = AccountStateMap::new(&[make_account("Granite")]);
-        let k = AccountKey("Granite".to_owned());
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = AccountKey("Gateway".to_owned());
         map.set_usage(&k, live);
         map.set_last_error(
             &k,
@@ -1605,13 +1605,13 @@ mod tests {
         // hold it out indefinitely.
         let past = SystemTime::now() - std::time::Duration::from_secs(60);
         let stale_snap = snapshot_with_resets(Some((100.0, Some(past))), Some((100.0, Some(past))));
-        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Subspace")]);
-        map.set_usage(&AccountKey("Granite".to_owned()), stale_snap);
-        // Subspace stays healthy (snapshot helper sets resets_at in
-        // the future so 100% IS still limited for Subspace).
-        map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(100.0), Some(100.0)));
-        let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Subspace".to_owned()]);
-        assert_eq!(picked.0, "Granite", "stale-reset Granite usable; live-capped Subspace not");
+        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Stargate")]);
+        map.set_usage(&AccountKey("Gateway".to_owned()), stale_snap);
+        // Stargate stays healthy (snapshot helper sets resets_at in
+        // the future so 100% IS still limited for Stargate).
+        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(100.0), Some(100.0)));
+        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Stargate".to_owned()]);
+        assert_eq!(picked.0, "Gateway", "stale-reset Gateway usable; live-capped Stargate not");
     }
 
     // ---------------------------------------------------------------
@@ -1636,8 +1636,8 @@ mod tests {
         // Brand-new account state has no probe result yet; the launchpad
         // dims its row + footer glyph until the loading task lands a
         // terminal verdict (Ready or Bailed).
-        let map = AccountStateMap::new(&[make_account("Granite")]);
-        assert_eq!(map.loading_state(&key("Granite")), LoadingState::Loading);
+        let map = AccountStateMap::new(&[make_account("Gateway")]);
+        assert_eq!(map.loading_state(&key("Gateway")), LoadingState::Loading);
     }
 
     #[test]
@@ -1645,14 +1645,14 @@ mod tests {
         // Defensive: the launchpad render path may briefly hold a key
         // that hasn't been registered yet; treat unknown keys as
         // Loading rather than panicking.
-        let map = AccountStateMap::new(&[make_account("Granite")]);
+        let map = AccountStateMap::new(&[make_account("Gateway")]);
         assert_eq!(map.loading_state(&key("NotRegistered")), LoadingState::Loading);
     }
 
     #[test]
     fn set_usage_transitions_loading_to_ready() {
-        let mut map = AccountStateMap::new(&[make_account("Granite")]);
-        let k = key("Granite");
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = key("Gateway");
         assert_eq!(map.loading_state(&k), LoadingState::Loading);
         map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
         assert_eq!(map.loading_state(&k), LoadingState::Ready);
@@ -1697,8 +1697,8 @@ mod tests {
         // loading state must NOT transition to Bailed. The cached
         // usage is also preserved so the bottom panel can keep showing
         // the last known-good bars while the probe backs off.
-        let mut map = AccountStateMap::new(&[make_account("Granite")]);
-        let k = key("Granite");
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = key("Gateway");
         map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
         assert_eq!(map.loading_state(&k), LoadingState::Ready);
 
@@ -1712,8 +1712,8 @@ mod tests {
     fn set_last_error_network_failed_leaves_loading_unchanged() {
         // Network errors are transient and unknown - the loading state
         // stays at whatever it was, and the cache is preserved.
-        let mut map = AccountStateMap::new(&[make_account("Granite")]);
-        let k = key("Granite");
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = key("Gateway");
         map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
 
         map.set_last_error(&k, UsageFetchStatus::NetworkFailed, None);
@@ -1727,8 +1727,8 @@ mod tests {
         // Driven by the loading task to clear stale snapshots when
         // transitioning to Bailed; mirrors the side-effect that
         // set_last_error performs for the auth-error case.
-        let mut map = AccountStateMap::new(&[make_account("Granite")]);
-        let k = key("Granite");
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = key("Gateway");
         map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
 
         map.set_loading(&k, LoadingState::Bailed);
@@ -1744,8 +1744,8 @@ mod tests {
         // that might've been re-primed since the bail. (In practice
         // the cache is already None on a Bailed account, but the
         // contract should be explicit.)
-        let mut map = AccountStateMap::new(&[make_account("Granite")]);
-        let k = key("Granite");
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = key("Gateway");
         map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
 
         map.set_loading(&k, LoadingState::Loading);
@@ -1779,14 +1779,14 @@ mod tests {
 
     #[test]
     fn all_loaded_false_when_any_loading() {
-        let map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
+        let map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
         assert!(!map.all_loaded(), "fresh accounts start in Loading; gate must stay closed");
     }
 
     #[test]
     fn all_loaded_false_when_any_refreshing() {
-        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
-        map.set_loading(&key("Granite"), LoadingState::Refreshing);
+        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
+        map.set_loading(&key("Gateway"), LoadingState::Refreshing);
         map.set_usage(&key("Personal"), snapshot(Some(10.0), Some(20.0)));
         assert!(!map.all_loaded(), "Refreshing is mid-flight, not terminal");
     }
@@ -1799,16 +1799,16 @@ mod tests {
         // would classify it as tier 0 (usable=true) because both
         // usage and last_error are None. The picker must NOT return
         // it; the Ready account must win.
-        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
-        // Granite: ready
-        map.set_usage(&key("Granite"), snapshot(Some(20.0), Some(20.0)));
+        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
+        // Gateway: ready
+        map.set_usage(&key("Gateway"), snapshot(Some(20.0), Some(20.0)));
         // Personal: bailed via direct set_loading (mirrors recovery
         // poll's auth_status=logged_out -> Bailed path, which has
         // no associated last_error).
         map.set_loading(&key("Personal"), LoadingState::Bailed);
-        let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Personal".to_owned()]);
+        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()]);
         assert_eq!(
-            picked.0, "Granite",
+            picked.0, "Gateway",
             "pick_for_project must skip Bailed even without a recent last_error",
         );
     }
@@ -1819,11 +1819,11 @@ mod tests {
         // returns the first allow-list entry so spawn proceeds and
         // the user sees the spawned subprocess's own error rather
         // than forge silently refusing.
-        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
-        map.set_loading(&key("Granite"), LoadingState::Bailed);
+        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
+        map.set_loading(&key("Gateway"), LoadingState::Bailed);
         map.set_loading(&key("Personal"), LoadingState::Bailed);
-        let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Personal".to_owned()]);
-        assert_eq!(picked.0, "Granite");
+        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()]);
+        assert_eq!(picked.0, "Gateway");
     }
 
     #[test]
@@ -1863,10 +1863,10 @@ mod tests {
 
     #[test]
     fn all_loaded_true_when_mix_of_ready_and_bailed() {
-        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
-        map.set_usage(&key("Granite"), snapshot(Some(10.0), Some(20.0)));
+        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
+        map.set_usage(&key("Gateway"), snapshot(Some(10.0), Some(20.0)));
         map.set_last_error(&key("Personal"), UsageFetchStatus::Unauthorized, None);
-        assert_eq!(map.loading_state(&key("Granite")), LoadingState::Ready);
+        assert_eq!(map.loading_state(&key("Gateway")), LoadingState::Ready);
         assert_eq!(map.loading_state(&key("Personal")), LoadingState::Bailed);
         assert!(map.all_loaded(), "Ready + Bailed are both terminal states");
     }
