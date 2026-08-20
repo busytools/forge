@@ -1,8 +1,8 @@
 //! Control-protocol messages exchanged over the main stream-json stdio channel.
 //!
 //! These carry out-of-band requests that the SDK must answer synchronously,
-//! such as permission checks (`can_use_tool`). See `docs/protocol-notes.md`
-//! for the observed the CLI wire shapes we mirror here.
+//! such as permission checks (`can_use_tool`). The shapes here mirror what
+//! the CLI emits on that channel, observed rather than specified.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

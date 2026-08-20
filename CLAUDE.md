@@ -164,8 +164,10 @@ contract with that binary, nothing more.
   stream-json; we never re-implement the agentic loop or hit the
   Anthropic API directly.
 
-`docs/protocol-notes.md` records the wire behaviour forge-sdk was built
-against.
+The wire behaviour forge-sdk was built against is recorded in the
+wire-conformance baselines under
+`crates/forge-test-harness/baselines/sdk/`, which are live captures
+rather than prose and cannot go stale without failing replay.
 
 ## Hard rules
 
