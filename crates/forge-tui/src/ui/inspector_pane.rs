@@ -2566,7 +2566,7 @@ mod tests {
         let entry = cron_entry(
             true,
             "stand-up",
-            Some("Morning hub summary"),
+            Some("Morning summary"),
             "daily at 09:00",
             Some(now + Duration::from_secs(300)),
         );
@@ -2575,7 +2575,7 @@ mod tests {
         assert_eq!(lines.len(), 2, "a described cron renders two lines");
         let head = line_text(&lines[0]);
         let sub = line_text(&lines[1]);
-        assert!(head.contains("Morning hub summary"), "line 1 is the description headline: {head}");
+        assert!(head.contains("Morning summary"), "line 1 is the description headline: {head}");
         assert!(sub.contains("daily at 09:00"), "line 2 shows the humanized schedule: {sub}");
         assert!(
             sub.contains("recurring"),

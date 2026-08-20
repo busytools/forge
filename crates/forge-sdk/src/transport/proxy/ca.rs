@@ -6,8 +6,10 @@
 //! launches so the spawned child can pin `NODE_EXTRA_CA_CERTS=...` to
 //! a stable path.
 //!
-//! The key file is chmod 0600 on Unix (best-effort; the proxy is a
-//! personal-use tool, not a multi-user secret).
+//! The key file is chmod 0600 on Unix, best-effort. It is not protected
+//! beyond that: this is a CA whose cert forge asks the user to trust
+//! system-wide, so anyone who can read the file can sign for any host
+//! that machine trusts. See the scope section in `CLAUDE.md`.
 
 use std::path::{Path, PathBuf};
 

@@ -159,10 +159,9 @@ fn resolve_log_path(cli: &Cli) -> anyhow::Result<Option<ResolvedLogPath>> {
     if let Some(path) = cli.log_file.clone() {
         return Ok(Some(ResolvedLogPath { path, source: LogPathSource::Explicit }));
     }
-    // Logging on by default. Forge is personal-use and the rolling
-    // writer caps disk at ~50MB (5 × 10MB), so we can afford
-    // always-on diagnostics. Users who want forge silent can set
-    // `RUST_LOG=off`.
+    // Logging on by default: the rolling writer caps disk at ~50MB
+    // (5 x 10MB), which is cheap enough that diagnostics need no opt-in.
+    // `RUST_LOG=off` silences it.
     let path = default_log_path()?;
     Ok(Some(ResolvedLogPath { path, source: LogPathSource::Default }))
 }

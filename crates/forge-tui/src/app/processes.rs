@@ -1130,7 +1130,7 @@ mod tests {
                     pid: 200,
                     parent_pid: 1,
                     name: "npm".to_owned(),
-                    command: "npm exec @playwright/mcp@latest --cdp-endpoint http://192.0.2.5:9222"
+                    command: "npm exec @playwright/mcp@latest --cdp-endpoint http://192.0.2.10:9222"
                         .to_owned(),
                     memory_bytes: 40 * 1024 * 1024,
                 },
@@ -1138,7 +1138,7 @@ mod tests {
                     pid: 201,
                     parent_pid: 200,
                     name: "node".to_owned(),
-                    command: "node /Users/x/.npm/_npx/abc/.bin/playwright-mcp --cdp-endpoint http://192.0.2.5:9222"
+                    command: "node /Users/x/.npm/_npx/abc/.bin/playwright-mcp --cdp-endpoint http://192.0.2.10:9222"
                         .to_owned(),
                     memory_bytes: 40 * 1024 * 1024,
                 },
@@ -1169,7 +1169,7 @@ mod tests {
             status(
                 "playwright",
                 "npx",
-                &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://192.0.2.5:9222"],
+                &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://192.0.2.10:9222"],
                 None,
             ),
             status(
@@ -1716,7 +1716,7 @@ mod tests {
                 fake_entry(
                     12801,
                     "npm",
-                    "npm exec @playwright/mcp@latest --cdp-endpoint http://192.0.2.5:9222",
+                    "npm exec @playwright/mcp@latest --cdp-endpoint http://192.0.2.10:9222",
                     219 * 1024 * 1024,
                 ),
                 fake_entry(13320, "npm", "npm exec @upstash/context7-mcp", 196 * 1024 * 1024),
@@ -1734,7 +1734,7 @@ mod tests {
             status(
                 "playwright",
                 "npx",
-                &["@playwright/mcp@latest", "--cdp-endpoint", "http://192.0.2.5:9222"],
+                &["@playwright/mcp@latest", "--cdp-endpoint", "http://192.0.2.10:9222"],
                 None,
             ),
             status("context7", "npx", &["@upstash/context7-mcp"], None),

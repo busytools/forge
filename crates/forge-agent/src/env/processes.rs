@@ -18,11 +18,9 @@
 //! - Anything that detaches from claude's tool registry but stays
 //!   in the process tree.
 //!
-//! Architect's `processes.py` solved the same surface for Python
-//! via `psutil`; we mirror it in Rust with `sysinfo`. macOS + Linux
-//! are first-class; Windows falls back to an empty snapshot because
-//! shell-process names (`cmd.exe` / `powershell.exe`) require a
-//! different recogniser the personal-use scope doesn't need today.
+//! macOS and Linux are first-class, via `sysinfo`. Windows falls back
+//! to an empty snapshot: shell-process names (`cmd.exe` /
+//! `powershell.exe`) need a recogniser nobody has asked for yet.
 //!
 //! The snapshot is consumed by `forge-workspace::scan_processes`
 //! (thin mediator) and the TUI's per-active-session ticker in
@@ -115,7 +113,7 @@ pub fn scan(claude_pid: u32, extra_commands: &[String]) -> ProcessSnapshot {
 
 /// Build a `ProcessEntry` for every live, interesting process in the
 /// table, dropping the scanner's own pid, zombies/dead, and the one-shot
-/// `ps` / `sysinfo` self-probes (mirrors architect's filter pattern).
+/// `ps` / `sysinfo` self-probes.
 fn live_candidates(system: &System, self_pid: Option<Pid>) -> Vec<ProcessEntry> {
     let mut out = Vec::new();
     for (pid, proc) in system.processes() {
@@ -728,8 +726,8 @@ mod tests {
         // Defensive: "cargo" alone shouldn't match a row that just
         // happens to contain "cargo" - but our substring rule says
         // it does. Documented here as a known limitation; the
-        // alternative (token-level match) is more code for a
-        // marginal win on personal-use scope.
+        // alternative, a token-level match, is a lot more code for a
+        // narrow gain.
         assert!(process_cmdline_matches_tool_input("/usr/bin/cargo build", "cargo"));
     }
 
@@ -868,7 +866,7 @@ mod tests {
             configured(
                 "playwright",
                 "npx",
-                &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://192.0.2.5:9222"],
+                &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://192.0.2.10:9222"],
             ),
             configured(
                 "playwright-local",
@@ -887,7 +885,7 @@ mod tests {
             Some(serde_json::json!({
                 "type": "stdio",
                 "command": "npx",
-                "args": ["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://192.0.2.5:9222"],
+                "args": ["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://192.0.2.10:9222"],
                 "env": {},
             })),
         )];
@@ -896,7 +894,7 @@ mod tests {
             vec![configured(
                 "playwright",
                 "npx",
-                &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://192.0.2.5:9222"],
+                &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://192.0.2.10:9222"],
             )]
         );
     }
@@ -918,9 +916,9 @@ mod tests {
         // only by --cdp-endpoint. Package-only naming collapses both to
         // "playwright"; the configured match keeps them distinct.
         let servers = playwright_pair();
-        let hub = "npm exec @playwright/mcp@latest --cdp-endpoint http://192.0.2.5:9222";
+        let remote = "npm exec @playwright/mcp@latest --cdp-endpoint http://192.0.2.10:9222";
         let local = "npm exec @playwright/mcp@latest --cdp-endpoint http://127.0.0.1:9222";
-        assert_eq!(resolve_infra_label(hub, &servers).expect("hub").name, "playwright");
+        assert_eq!(resolve_infra_label(remote, &servers).expect("remote").name, "playwright");
         assert_eq!(resolve_infra_label(local, &servers).expect("local").name, "playwright-local");
     }
 
@@ -942,7 +940,7 @@ mod tests {
             configured("pw-b", "npx", &["@playwright/mcp@latest"]),
         ];
         let label = resolve_infra_label(
-            "npm exec @playwright/mcp@latest --cdp-endpoint http://192.0.2.5:9222",
+            "npm exec @playwright/mcp@latest --cdp-endpoint http://192.0.2.10:9222",
             &servers,
         )
         .expect("playwright");
@@ -971,7 +969,7 @@ mod tests {
         // No configured servers -> identical to classify_known_infra.
         assert_eq!(
             resolve_infra_label(
-                "npm exec @playwright/mcp@latest --cdp-endpoint http://192.0.2.5:9222",
+                "npm exec @playwright/mcp@latest --cdp-endpoint http://192.0.2.10:9222",
                 &[],
             )
             .expect("playwright")
@@ -1125,11 +1123,11 @@ mod tests {
         // A single configured server on the right package but a DIFFERENT
         // --cdp-endpoint than the process: the endpoint token is absent, so
         // the every-token match fails and the package name wins. An
-        // any-token match would wrongly pick "pw-hub".
+        // any-token match would wrongly pick "pw-remote".
         let servers = vec![configured(
-            "pw-hub",
+            "pw-remote",
             "npx",
-            &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://192.0.2.5:9222"],
+            &["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://192.0.2.10:9222"],
         )];
         let label = resolve_infra_label(
             "npm exec @playwright/mcp@latest --cdp-endpoint http://127.0.0.1:9222",

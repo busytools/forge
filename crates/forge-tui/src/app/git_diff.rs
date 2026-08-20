@@ -1,14 +1,17 @@
 //! TUI-side consumer of [`forge_agent::env::git_diff::scan`].
 //!
 //! Owns the refresh cadence (10s periodic timer + event-driven
-//! triggers). Spawned local tasks `await` the workspace's
-//! `scan_git_diff` mediator and ship the result back through a std
-//! mpsc channel; [`drain_events`] applies the result to the
-//! addressed [`UiSession`].
+//! triggers). Spawned local tasks `await`
+//! `forge_workspace::env::git_diff::scan` and ship the result back
+//! through a std mpsc channel; [`drain_events`] applies the result to
+//! the addressed [`UiSession`].
 //!
-//! Mirrors the existing OAuth-usage refresh pattern (TUI spawns,
-//! workspace mediates, agent does the actual work) - see the
-//! "Crate placement guide" in `CLAUDE.md`.
+//! This is how the TUI keeps a `git` subprocess out of forge-tui without
+//! a Command round-trip: the scanner lives in forge-agent and arrives
+//! here through workspace's wildcard re-export, which is the "thin
+//! facade, not strong isolation" boundary described in `CLAUDE.md`.
+//! There is no mediating `Workspace` method - the spawned task calls the
+//! re-exported function directly.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -72,8 +75,8 @@ impl Drop for ScanInFlightGuard {
 }
 
 /// Spawn a tokio local task that awaits
-/// `workspace.scan_git_diff(cwd, prev)` and sends a `SnapshotReady`
-/// on completion.
+/// `forge_workspace::env::git_diff::scan(cwd, prev)` and sends a
+/// `SnapshotReady` on completion.
 ///
 /// `prev_snapshot` carries the session's most-recent
 /// `GitDiffSnapshot`, cloned by the caller (the spawn moves

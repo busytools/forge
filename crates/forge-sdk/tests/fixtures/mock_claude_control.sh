@@ -4,7 +4,7 @@
 # control_response. Used exclusively by the control-subtype
 # integration tests - never emits user-message or result frames.
 #
-# Round 3 - M8. When `FORGED_MOCK_ECHO_SUBTYPE` is set, every
+# When `FORGED_MOCK_ECHO_SUBTYPE` is set, every
 # observed control_request's subtype is appended (one per line) to
 # the file at `$FORGED_MOCK_ECHO_SUBTYPE`. M3 dispatch tests can read
 # the file post-call to discriminate "the right Client::* method

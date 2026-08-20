@@ -14,10 +14,10 @@
 # same bytes), do nothing - no sudo, no Touch ID, no work. If they
 # differ (missing, multiple copies, drifted), drop any existing
 # copies and add the fresh one. Touch ID only fires on a genuine
-# refresh - i.e. first install or after a CA rotation. The macOS 26
-# TIL at ~/.claude/memory/til/2026-05-21-macos-26-trust-settings-admin-write-locked.md
-# documents why the prompt is unavoidable when an actual refresh is
-# needed; we minimise the surface by gating on fingerprint compare.
+# refresh, i.e. first install or after a CA rotation. macOS 26 locks
+# trust-settings writes behind an admin authorisation, so the prompt is
+# unavoidable when a refresh is genuinely needed; gating on the
+# fingerprint compare is what keeps it rare.
 #
 # Usage:
 #   scripts/install-cert.sh             # install / refresh (default)
@@ -58,8 +58,6 @@ FORGE_CA_PATH="${FORGE_CA_PATH:-$HOME/Library/Application Support/forge-tui/ca/c
 # so the lookup MUST use the CN. Matching by O silently returns
 # nothing - the script then thinks the cert is missing and triggers
 # a fresh `security add-trusted-cert` (Touch ID prompt) on every run.
-# See ~/.claude/memory/til/2026-05-21-macos-26-trust-settings-admin-write-locked.md
-# for the empirical proof.
 FORGE_CA_CN="forge wire-classification rewriter"
 KEYCHAIN="/Library/Keychains/System.keychain"
 

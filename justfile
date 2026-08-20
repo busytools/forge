@@ -164,7 +164,7 @@ ci-watch run_id="":
 # Build forge-tui from the current checkout and install the `forge`
 # binary into ~/.cargo/bin/forge. Defaults to release+perf. Wraps up
 # by refreshing the wire-rewriter CA in the System keychain (best-
-# effort — repeat installs are no-ops via SHA-256 fingerprint compare).
+# effort - repeat installs are no-ops via SHA-256 fingerprint compare).
 install:
     ./scripts/install.sh
 
@@ -174,7 +174,7 @@ install-no-perf:
     ./scripts/install.sh --no-perf
 
 # Install / refresh forge's wire-rewriter CA in the System keychain
-# without rebuilding the binary. Content-idempotent — a Touch ID
+# without rebuilding the binary. Content-idempotent - a Touch ID
 # prompt fires only on first install or after a CA rotation.
 install-cert:
     ./scripts/install-cert.sh
@@ -188,7 +188,7 @@ install-cert-uninstall:
     ./scripts/install-cert.sh --uninstall
 
 # Cut a release: bump the workspace version, commit, tag.
-# Does NOT push — that's gated per CLAUDE.md and stays explicit.
+# Does NOT push - that's gated per CLAUDE.md and stays explicit.
 # Requires cargo-edit (`cargo install cargo-edit`) for `cargo set-version`.
 # Gates on check-release because the ordering is what turns a caught
 # error into a public one: `cargo install` builds release, and it runs
@@ -196,15 +196,15 @@ install-cert-uninstall:
 # Usage: `just release 0.17.0`
 release version: check-release
     @if ! cargo set-version --help >/dev/null 2>&1; then \
-        echo "[ERROR] cargo set-version not available — run: cargo install cargo-edit" >&2; \
+        echo "[ERROR] cargo set-version not available - run: cargo install cargo-edit" >&2; \
         exit 1; \
     fi
     @if [ -n "$(git status --porcelain)" ]; then \
-        echo "[ERROR] working tree dirty — commit / stash before releasing" >&2; \
+        echo "[ERROR] working tree dirty - commit / stash before releasing" >&2; \
         exit 1; \
     fi
     @if [ "$(git rev-parse --abbrev-ref HEAD)" != "main" ]; then \
-        echo "[ERROR] not on main — release tags should be cut from main" >&2; \
+        echo "[ERROR] not on main - release tags should be cut from main" >&2; \
         exit 1; \
     fi
     @if git rev-parse "v{{version}}" >/dev/null 2>&1; then \

@@ -13,7 +13,7 @@ every `cargo nextest run`. Live capture is opt-in via
 ## The model
 
 forge-sdk is **pinned to a specific `claude` CLI version at any time**
-(see `PINNED_CLI_VERSION` in `src/lib.rs`). The harness is the contract
+(see `PINNED_CLI_VERSION` in `src/sdk_wire.rs`). The harness is the contract
 between forge-sdk and that CLI version. When Anthropic ships a new CLI
 version, we run the upgrade ritual:
 
@@ -29,7 +29,7 @@ Every scenario has two halves:
 ### Replay mode (default, runs on every `cargo test` / `just check`)
 
 Loads the committed baseline trace for the scenario from
-`baselines/<pinned-version>/<scenario>.jsonl`, feeds every inbound line
+`baselines/sdk/<pinned-version>/<scenario>.jsonl`, feeds every inbound line
 through `forge_sdk::transport::codec::decode_dispatch`, asserts:
 
 - Every line decodes.
@@ -109,51 +109,51 @@ FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
 
 ## Adding a new scenario
 
-1. Write a live-capture test in `tests/<scenario>.rs` following the
-   pattern in `tests/wire_conformance.rs`:
+1. Write a live-capture test in `tests/sdk_scenarios_<name>.rs`
+   following the pattern in `tests/sdk_wire_conformance.rs`:
    - `#[tokio::test] #[ignore]`, gated on `FORGE_WIRE_CAPTURE`.
    - Use `RecordingTransport::new(Subprocess::spawn(...)...)` +
      `Client::spawn_with_transport`.
    - Drive the scenario. Capture the trace to `target/wire-traces/`.
 2. Run it with `FORGE_WIRE_CAPTURE=1` - this produces the capture.
-3. Copy the capture into `baselines/<version>/<scenario>.jsonl`.
-4. The always-on `replay.rs::all_baselines_decode_cleanly` test picks up
-   the new baseline automatically.
+3. Copy the capture into `baselines/sdk/<version>/<scenario>.jsonl`.
+4. The always-on `sdk_replay.rs::all_baselines_decode_cleanly` test
+   picks up the new baseline automatically.
 5. Commit the test + baseline.
 
 ## Directory layout
+
+Every file carries an `sdk_` prefix, marking the one wire scope the
+harness currently covers.
 
 ```
 crates/forge-test-harness/
 ├── Cargo.toml                          # workspace member, not published
 ├── README.md                           # this file
 ├── src/
-│   └── lib.rs                          # TraceLog, RecordingTransport, run_live_scenario,
-│                                       # decode_all_inbound, baseline loader,
-│                                       # PINNED_CLI_VERSION
+│   ├── lib.rs                          # re-exports
+│   ├── sdk_wire.rs                     # TraceLog, RecordingTransport,
+│   │                                   # run_live_scenario, decode_all_inbound,
+│   │                                   # baseline loader, PINNED_CLI_VERSION
+│   └── sdk_wire/
+│       └── session_redact.rs           # persistence -> wire transform + redaction
+├── examples/
+│   ├── sdk_redact_session.rs           # session .jsonl -> committed baseline
+│   └── sdk_reredact_capture.rs         # re-redact a committed capture in place
 ├── baselines/
-│   └── 2.1.220/                        # pinned CLI version at capture time
-│       └── <scenario>.jsonl × 45       # one baseline per scenario (see table below)
+│   └── sdk/2.1.220/                    # pinned CLI version at capture time
+│       └── <scenario>.jsonl            # 45 of them, one per scenario
 └── tests/
-    ├── replay.rs                       # always-on decode test across every baseline
-    ├── wire_conformance.rs             # trivial smoke
-    ├── scenarios_bash_tool.rs
-    ├── scenarios_multi_turn.rs
-    ├── scenarios_pretooluse_hook.rs
-    ├── scenarios_mcp_status.rs
-    ├── scenarios_in_process_mcp.rs
-    ├── scenarios_context_usage.rs
-    ├── scenarios_permission_mode.rs
-    ├── scenarios_subagent.rs           # Task tool + task_* lifecycle frames
-    ├── scenarios_hook_events.rs        # user_prompt_submit, post_tool_use,
-    │                                   # post_tool_use_failure, stop,
-    │                                   # subagent_stop, notification
-    ├── scenarios_outbound_controls.rs  # set_model, mcp_reconnect, mcp_toggle,
-    │                                   # stop_task, interrupt
-    ├── scenarios_compact.rs            # /compact slash command + PreCompact hook
-    ├── scenarios_stream_event.rs       # include_partial_messages → stream_event
-    └── debug_smoke.rs                  # raw-wire diagnostic (FORGE_WIRE_DEBUG=1)
+    ├── sdk_replay.rs                   # always-on decode test across every baseline
+    ├── sdk_capture_hygiene.rs          # committed captures are a redactor fixed point
+    ├── sdk_wire_conformance.rs         # trivial smoke
+    ├── sdk_real_session_probe.rs       # opt-in decode probe over on-disk sessions
+    ├── sdk_debug_smoke.rs              # raw-wire diagnostic (FORGE_WIRE_DEBUG=1)
+    └── sdk_scenarios_*.rs              # one file per live-capture scenario
 ```
+
+`ls crates/forge-test-harness/tests/` is the current scenario list; it
+moves too often to enumerate here.
 
 ## Real-session probe
 
@@ -187,7 +187,7 @@ cargo run -p forge-test-harness --example sdk_redact_session -- \
   crates/forge-test-harness/baselines/sdk/2.1.220/real_session_<name>.jsonl
 ```
 
-One sample lives at `baselines/2.1.220/real_session_sample.jsonl`
+One sample lives at `baselines/sdk/2.1.220/real_session_sample.jsonl`
  -  352 messages covering real multi-turn tool-use flows, all
 redaction-scrubbed.
 
@@ -234,7 +234,7 @@ redaction-scrubbed.
 
 ## Upgrade ritual (when claude CLI bumps)
 
-1. Update `PINNED_CLI_VERSION` in `src/lib.rs`.
+1. Update `PINNED_CLI_VERSION` in `src/sdk_wire.rs`.
 2. Create `baselines/<new-version>/`.
 3. Run every live-capture test once with `FORGE_WIRE_CAPTURE=1`.
 4. For each scenario, diff the new capture against the old baseline.

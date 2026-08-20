@@ -26,11 +26,11 @@ const HELP_TAB_NEXT_KEY: KeyCode = KeyCode::Right;
 // REPORT_ALTERNATE_KEYS at startup so this is the case in our stack.
 //
 // Cmd-prefixed shortcut detection on macOS accepts BOTH SUPER and
-// CONTROL - Termux/SSH sessions to the desktop cannot send SUPER
-// (Android sends Ctrl), so requiring SUPER would lock SSH'd users
-// out of Cmd+C / Cmd+V / Cmd+Z. Treating Ctrl as an equivalent Cmd
-// for these app shortcuts costs nothing local (Cmd still works) and
-// makes the remote case work too. See `is_cmd_shortcut`.
+// CONTROL. A terminal that cannot send SUPER at all - an SSH session
+// from a client whose keyboard maps Cmd to Ctrl, for instance - would
+// otherwise lose Cmd+C / Cmd+V / Cmd+Z entirely. Accepting Ctrl as an
+// equivalent costs nothing locally, where Cmd still works, and makes
+// the remote case work. See `is_cmd_shortcut`.
 #[cfg(target_os = "macos")]
 pub(crate) const CMD_MOD: KeyModifiers = KeyModifiers::SUPER;
 #[cfg(not(target_os = "macos"))]

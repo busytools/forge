@@ -154,7 +154,7 @@ impl Tool for Create {
                 "description": {
                     "type": "string",
                     "description": "Optional short human summary of what this job does and why \
-                                    (e.g. \"Morning hub summary\"). Shown as the schedule's \
+                                    (e.g. \"Morning summary\"). Shown as the schedule's \
                                     headline in the UI; falls back to the prompt's first line \
                                     when omitted.",
                 },
@@ -357,13 +357,13 @@ mod tests {
             .call(input(serde_json::json!({
                 "schedule": "0 9 * * *",
                 "prompt": "stand-up",
-                "description": "  Morning hub summary  "
+                "description": "  Morning summary  "
             })))
             .await;
         assert!(!out.is_error, "create with description succeeds: {}", out.blocks[0].text);
         assert_eq!(
             mock.create_calls.lock()[0].3.as_deref(),
-            Some("Morning hub summary"),
+            Some("Morning summary"),
             "the description is trimmed and threaded to the facade",
         );
 

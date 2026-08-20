@@ -206,10 +206,12 @@ mod tests {
 
     #[test]
     fn humanize_once_shifts_to_the_local_zone() {
-        // 20:00 UTC on the 20th is 01:30 on the 21st in Kolkata (UTC+5:30),
-        // so a same-instant "now" makes it read as today in that zone.
-        let kolkata = timezones::get_by_name("UTC").expect("kolkata zone");
+        // 20:00 UTC on the 20th is 01:30 on the 21st at +5:30, so a
+        // same-instant "now" makes it read as today in that zone. The
+        // half-hour offset is the point: a whole-hour zone hides
+        // minute-field bugs.
+        let plus_530 = timezones::get_by_name("Asia/Colombo").expect("+5:30 zone");
         let instant = utc(2026, Month::July, 20, 20, 0);
-        assert_eq!(humanize_once(instant, instant, kolkata), "today 01:30");
+        assert_eq!(humanize_once(instant, instant, plus_530), "today 01:30");
     }
 }

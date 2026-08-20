@@ -3,8 +3,8 @@
 //! Each function takes bytes from a recognised request and returns
 //! bytes with the classification fields normalised to `cli` /
 //! `is_interactive=true` / no-agent-sdk-version. These are the
-//! mechanics of the 6 signal channels documented in
-//! `~/.claude/memory/reference_claude_cli_integration_modes.md`:
+//! mechanics of the 6 signal channels enumerated in the parent
+//! module:
 //!
 //! 1. bootstrap query string (`rewrite_bootstrap_query`)
 //! 2. `User-Agent` on `/v1/messages` (`rewrite_user_agent`)

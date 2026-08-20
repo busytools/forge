@@ -14,14 +14,14 @@
 //! can only confirm they ran, and **prose in a captured tool result is
 //! not redacted at all**. Read a new capture before committing it.
 //!
-//! Three rules are instead value-blind, replacing a field wholesale
+//! Four rules are instead value-blind, replacing a field wholesale
 //! rather than rewriting spellings inside it: everything non-categorical
-//! under `account`, the body of a `hook_response` frame, and the
-//! command / skill inventory. Each is a field where no spelling rule
-//! could ever be enough - a hook is an arbitrary local program, and its
-//! output on this repo's own captures was the author's entire
-//! cross-project memory index, in prose, which every spelling rule
-//! passed through untouched.
+//! under `account`, the body of a `hook_response` frame, the command /
+//! skill inventory, and an `mcpServers[].config` blob. Each is a field
+//! where no spelling rule could ever be enough - a hook is an arbitrary
+//! local program, and its output on this repo's own captures was the
+//! author's entire cross-project memory index, in prose, which every
+//! spelling rule passed through untouched.
 //!
 //! Prefer that shape when adding a rule. A fixed-point gate over this
 //! module can only ever check that a capture agrees with these rules, so
@@ -320,6 +320,67 @@ fn stub_inventory(arr: &mut Value, kind: &str) {
     }
 }
 
+/// Keys inside an `mcpServers[].config` blob whose value is a CLI label
+/// rather than local configuration. `type` is the transport discriminant
+/// (`stdio` / `http` / `sse` / `claudeai-proxy`), which the fixture exists
+/// to record.
+const MCP_CONFIG_CATEGORICAL_KEYS: &[&str] = &["type"];
+
+/// What replaces a value inside an `mcpServers[].config` blob.
+const MCP_CONFIG_PLACEHOLDER: &str = "<redacted-mcp-config>";
+
+/// Stub the `config` blob on every `mcpServers[]` entry, keeping the keys
+/// and every sibling field.
+///
+/// `McpServerStatus::config` is decoded as an opaque `serde_json::Value`
+/// and nothing in forge reads inside it, so the only wire fact here is
+/// the shape. What it actually holds is the capture machine's own MCP
+/// configuration: on this repo's captures, a LAN address, an API-key
+/// environment variable, and a server id issued by Anthropic's MCP proxy.
+/// `name`, `status`, `scope`, `error` and `tools` are untouched - those
+/// are what the CLI reports and what forge renders.
+fn redact_mcp_config_recursive(v: &mut Value) {
+    match v {
+        Value::Array(a) => a.iter_mut().for_each(redact_mcp_config_recursive),
+        Value::Object(o) => {
+            if let Some(Value::Array(servers)) = o.get_mut("mcpServers") {
+                for server in servers.iter_mut() {
+                    if let Value::Object(fields) = server
+                        && let Some(config) = fields.get_mut("config")
+                    {
+                        stub_mcp_config(config);
+                    }
+                }
+            }
+            for val in o.values_mut() {
+                redact_mcp_config_recursive(val);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Replace every non-categorical string inside one config blob, at any
+/// depth, keeping array lengths and object keys.
+fn stub_mcp_config(v: &mut Value) {
+    match v {
+        Value::String(s) => {
+            if s != MCP_CONFIG_PLACEHOLDER {
+                MCP_CONFIG_PLACEHOLDER.clone_into(s);
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(stub_mcp_config),
+        Value::Object(o) => {
+            for (key, val) in o.iter_mut() {
+                if !MCP_CONFIG_CATEGORICAL_KEYS.contains(&key.as_str()) {
+                    stub_mcp_config(val);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Replace each discovered owner name with `<redacted-user>` in string
 /// VALUES only. Keys are left alone: an owner name is never a wire key,
 /// and rewriting one would change the shape rather than a value.
@@ -454,11 +515,12 @@ impl WireRedactor {
             redact_account_recursive(&mut probe);
             redact_hook_body_recursive(&mut probe);
             redact_command_inventory_recursive(&mut probe);
+            redact_mcp_config_recursive(&mut probe);
             if probe != parsed {
                 let ty = parsed.get("type").and_then(Value::as_str).unwrap_or("<no type>");
                 return Err(format!(
-                    "a {ty} frame carries account, hook-body or command-inventory fields but \
-                     does not survive a re-encode, so they cannot be redacted structurally"
+                    "a {ty} frame carries account, hook-body, command-inventory or \
+                     mcp-config fields but does not survive a re-encode, so they cannot be redacted structurally"
                 ));
             }
             return Ok(self.scrub_raw(line));
@@ -467,6 +529,7 @@ impl WireRedactor {
         redact_account_recursive(&mut v);
         redact_hook_body_recursive(&mut v);
         redact_command_inventory_recursive(&mut v);
+        redact_mcp_config_recursive(&mut v);
         scrub_paths_recursive(&mut v);
         scrub_owner_tokens_recursive(&mut v, &self.owners);
         serde_json::to_string(&v).map_err(|e| format!("serialise: {e}"))
