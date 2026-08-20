@@ -142,7 +142,7 @@ pub enum SessionMessageKind {
 
 /// Possible connection statuses for an MCP server. Wire shape:
 /// `McpServerConnectionStatus`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum McpServerConnectionStatus {
     /// Server is up and healthy.
@@ -151,7 +151,10 @@ pub enum McpServerConnectionStatus {
     Failed,
     /// Server requires authentication before it can be used.
     NeedsAuth,
-    /// Connect attempt hasn't finished yet.
+    /// Connect attempt hasn't finished yet. The default: it is what
+    /// `mcp_status` reports for every server at connect, and it is the
+    /// one variant that asserts nothing a caller has not established.
+    #[default]
     Pending,
     /// Server is registered but explicitly disabled.
     Disabled,
@@ -197,7 +200,7 @@ pub struct McpServerInfo {
 /// Per-server status entry inside [`McpStatusResponse`]. Wire shape:
 /// `McpServerStatus`. Wire shape matches the CLI's
 /// JSON response.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerStatus {
     /// Server name as configured.
@@ -432,5 +435,29 @@ mod forge_account_identity_tests {
         let c = ForgeAccountIdentity { display_name: "Gateway".into() };
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+}
+
+#[cfg(test)]
+mod mcp_server_status_tests {
+    use super::{McpServerConnectionStatus, McpServerStatus};
+
+    /// The default has to describe a server nothing is yet known about.
+    /// `Pending` is what the CLI reports for every server at connect, and
+    /// every other variant would assert a state the caller has not
+    /// established - `Connected` most damagingly, since consumers gate on it.
+    #[test]
+    fn default_status_claims_nothing_about_the_server() {
+        let status = McpServerStatus { name: "context7".into(), ..Default::default() };
+
+        assert_eq!(status.name, "context7");
+        assert_eq!(status.status, McpServerConnectionStatus::Pending);
+        assert_eq!(status.server_info, None);
+        assert_eq!(status.error, None);
+        assert_eq!(status.config, None);
+        assert_eq!(status.scope, None);
+        assert_eq!(status.tools, None);
+        assert_eq!(status.sampling_configured, None);
+        assert_eq!(status.sampling_required, None);
     }
 }
