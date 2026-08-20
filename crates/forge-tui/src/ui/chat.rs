@@ -2118,6 +2118,60 @@ mod tests {
         }
     }
 
+    /// `chat::render_scrolled_start` is the only index the perf log now
+    /// carries, so it has to mean what its name says: the first message
+    /// with a row on screen. Stated against the height model rather than
+    /// against `find_first_visible`, which is what computes it - the
+    /// scroll offset must land inside `render_start`'s own span, so
+    /// neither the message above it nor the message itself can be
+    /// entirely off-screen.
+    #[test]
+    fn scrolled_render_start_is_the_first_message_on_screen() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        let history: Vec<ChatMessage> = (0..120)
+            .map(|i| assistant_text_message(&format!("msg {i}\nsecond line for height")))
+            .collect();
+        *app.active_messages_mut() = history;
+
+        let spinner = idle_spinner();
+        let area = Rect::new(0, 0, 80, 24);
+        for _ in 0..64 {
+            let content_height = sync_chat_layout(&mut app, area, &spinner);
+            let _ = build_scrolled_render_data(&mut app, &spinner, 80, content_height, 24);
+            if !app.active_viewport_mut().resize_remeasure_active() {
+                break;
+            }
+        }
+
+        for scroll in [1_usize, 17, 80, 200] {
+            {
+                let vp = app.active_viewport_mut();
+                vp.auto_scroll = false;
+                vp.scroll_target = scroll;
+                vp.scroll_pos = scroll as f32;
+                vp.scroll_offset = scroll;
+            }
+            let content_height = sync_chat_layout(&mut app, area, &spinner);
+            let data = build_scrolled_render_data(&mut app, &spinner, 80, content_height, 24);
+            let start = data.stats.render_start;
+            let offset = data.scroll_offset;
+            let above = app.active_viewport_mut().cumulative_height_before(start);
+            let own = app.active_viewport_mut().message_height(start);
+            assert!(
+                above <= offset,
+                "at scroll {scroll}: message {start} starts at row {above}, below the \
+                 viewport top at {offset} - something above it is still on screen",
+            );
+            assert!(
+                offset < above + own,
+                "at scroll {scroll}: message {start} spans rows {above}..{} and the \
+                 viewport top is {offset}, so it is entirely off-screen",
+                above + own,
+            );
+        }
+    }
+
     /// B1: a fresh open seeds a height estimate into the off-screen messages
     /// so `total_message_height` is usable on frame one, while those messages
     /// stay stale so the background loop still re-measures them to exact.
