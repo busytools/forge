@@ -18,7 +18,8 @@ just check
 ```
 
 That is `cargo fmt --check`, the Unicode punctuation gate,
-`cargo clippy --all-targets --workspace -- -D warnings`,
+`cargo clippy --all-targets --workspace -- -D warnings` once per feature
+set (with and without `--all-features`),
 `cargo nextest run --workspace --all-features`, and
 `cargo doc --workspace --no-deps --all-features`, all with
 `RUSTFLAGS=-D warnings` on the clippy, test and doc steps. Get it
