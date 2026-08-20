@@ -490,8 +490,11 @@ impl Subprocess {
                     warn!(error = %e, "Subprocess::close: kill() failed");
                 }
             }
-            // Join before building the error: the tail is only complete
-            // once the pipe hits EOF, which the exit above forces.
+            // Release the child before joining, so `kill_on_drop` still
+            // fires on the wait-failed path.
+            drop(child);
+            // Join before building the error rather than reading a shared
+            // buffer at construction, which would race the last line.
             let stderr = self.join_stderr_tail().await;
             match waited {
                 Ok(Ok(status)) if status.success() => Ok(()),
