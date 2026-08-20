@@ -711,12 +711,15 @@ struct StderrTail {
 
 impl StderrTail {
     fn push(&mut self, line: &str) {
-        let mut end = line.len().min(STDERR_TAIL_CAP);
-        while !line.is_char_boundary(end) {
-            end -= 1;
+        // Keep the end of an over-cap line, for the same reason we evict
+        // oldest-first.
+        let mut start = line.len().saturating_sub(STDERR_TAIL_CAP);
+        while !line.is_char_boundary(start) {
+            start += 1;
         }
-        self.bytes += end + 1;
-        self.lines.push_back(line[..end].to_owned());
+        let kept = &line[start..];
+        self.bytes += kept.len() + 1;
+        self.lines.push_back(kept.to_owned());
         // Never evict the newest line: on a one-line overflow it is the
         // whole message.
         while self.bytes > STDERR_TAIL_CAP && self.lines.len() > 1 {
@@ -1027,10 +1030,11 @@ mod tests {
         assert!(!out.contains("line 0\n"), "tail kept the oldest line");
 
         let mut tail = StderrTail::default();
-        tail.push(&"x".repeat(STDERR_TAIL_CAP * 2));
+        tail.push(&format!("{}REASON_AT_END", "x".repeat(STDERR_TAIL_CAP * 2)));
         let out = tail.into_string();
         assert!(out.len() <= STDERR_TAIL_CAP, "tail grew to {} bytes", out.len());
         assert!(!out.is_empty(), "an oversized sole line was evicted to nothing");
+        assert!(out.ends_with("REASON_AT_END"), "kept the head of an over-cap line, not the end");
     }
 
     #[tokio::test]
