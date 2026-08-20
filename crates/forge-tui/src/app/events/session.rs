@@ -479,8 +479,14 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, session_key: &Sess
     *app.resuming_session_id_mut() = None;
 }
 
-pub(super) fn handle_session_replaced_event(
+/// Foreground arm: the replaced session is the one on screen, so the
+/// full App-level apply chain runs. `previous_key` is the outgoing
+/// bucket (equal to `app.active_session_key` on this path); `session_key`
+/// is the replacement.
+fn handle_session_replaced_event(
     app: &mut App,
+    session_key: &SessionKey,
+    previous_key: &SessionKey,
     session_id: model::SessionId,
     cwd: String,
     current_model: model::CurrentModel,
@@ -489,23 +495,16 @@ pub(super) fn handle_session_replaced_event(
     history_messages: &[forge_primitives::Message],
 ) {
     let session_id_for_log = session_id.to_string();
-    let session_key = SessionKey::from_session_id(session_id.to_string());
     let history_message_count = history_messages.len();
     let available_model_count = available_models.len();
     super::clear_compaction_state(app, false);
     app.set_pending_cancel(false);
 
-    // Capture the outgoing bucket's key BEFORE `reset_for_new_session`
-    // runs - that call goes through `set_session_id`, which inserts a
-    // fresh bucket under the new session_id and flips
-    // `active_session_key` to it. The outgoing bucket is then orphaned
-    // in `app.sessions` and needs to be removed; without the capture
-    // we'd lose track of which key to drop.
-    let prev_active_key = app.active_session_key.clone();
-    // The replacement bucket is minted blank, so grab the outgoing tab's
-    // project name to carry across the swap (same project, new UUID).
-    let carried_project =
-        prev_active_key.as_ref().and_then(|k| app.sessions.get(k)).and_then(|b| b.project.clone());
+    // The replacement bucket is minted blank by `reset_for_new_session`
+    // (via `set_session_id`), so grab the outgoing tab's project name to
+    // carry across the swap (same project, new UUID). Read it before
+    // that call orphans the outgoing bucket.
+    let carried_project = app.sessions.get(previous_key).and_then(|b| b.project.clone());
 
     *app.available_models_mut() = available_models;
     reset_for_new_session(app, session_id, current_model, mode, false);
@@ -526,11 +525,11 @@ pub(super) fn handle_session_replaced_event(
     // resolve from the new bucket's cwd.
     match carried_project {
         Some(name) => {
-            if let Some(bucket) = app.sessions.get_mut(&session_key) {
+            if let Some(bucket) = app.sessions.get_mut(session_key) {
                 bucket.project = Some(name);
             }
         }
-        None => stamp_bucket_project_from_cwd(app, &session_key, true),
+        None => stamp_bucket_project_from_cwd(app, session_key, true),
     }
     app.sync_welcome_snapshot();
     if !history_messages.is_empty() {
@@ -548,10 +547,8 @@ pub(super) fn handle_session_replaced_event(
     // anywhere in the UI. Leaving it behind would have the Projects
     // pane resolve "click forge" through the orphan instead of the
     // new bucket.
-    if let Some(prev) = prev_active_key
-        && prev != session_key
-    {
-        app.sessions.remove(&prev);
+    if previous_key != session_key {
+        app.sessions.remove(previous_key);
     }
 
     // Reset lifecycle_state to Idle - the replacement session
@@ -561,7 +558,7 @@ pub(super) fn handle_session_replaced_event(
     // stale until the next lifecycle event.
     super::set_bucket_lifecycle_state(
         app,
-        &session_key,
+        session_key,
         crate::app::session::SessionLifecycleState::Idle,
     );
 
@@ -806,7 +803,8 @@ fn is_synthetic_key(key: &SessionKey) -> bool {
 
 pub(super) fn apply_session_update_session_replaced(
     app: &mut App,
-    _key: &SessionKey,
+    key: &SessionKey,
+    previous_key: &SessionKey,
     session_id: forge_primitives::SessionId,
     cwd: String,
     current_model: forge_primitives::CurrentModel,
@@ -815,15 +813,58 @@ pub(super) fn apply_session_update_session_replaced(
     history: &[forge_primitives::Message],
 ) {
     use super::super::connect::type_converters::map_available_models;
-    handle_session_replaced_event(
+    let session_id = model::SessionId::new(session_id.into_string());
+    let available_models = map_available_models(available_models);
+    if app.active_session_key.as_ref() == Some(previous_key) {
+        handle_session_replaced_event(
+            app,
+            key,
+            previous_key,
+            session_id,
+            cwd,
+            current_model,
+            available_models,
+            mode,
+            history,
+        );
+        return;
+    }
+    // The replaced session is not the one on screen. Migrate its bucket
+    // onto the replacement key and re-seed it through the same
+    // background chain `Connected` uses, leaving every App-global
+    // surface (focus, input, status, terminals, overlays) untouched.
+    super::client::apply_session_update_key_renamed(app, previous_key, key.clone());
+    tracing::info!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "session_replaced",
+        message = "replacement session applied to a background bucket",
+        outcome = "success",
+        session_id = %session_id,
+        previous_session_key = %previous_key.as_str(),
+        history_message_count = history.len(),
+        available_model_count = available_models.len(),
+    );
+    apply_connected_presentation(
         app,
-        model::SessionId::new(session_id.into_string()),
+        key,
+        session_id,
         cwd,
         current_model,
-        map_available_models(available_models),
+        available_models,
         mode,
         history,
+        false,
     );
+    // The foreground arm clears these through the active-bucket
+    // accessors (`clear_compaction_state`, `set_pending_cancel`), which
+    // the background arm cannot reach and `apply_connected_presentation`
+    // does not cover. Left set, they surface on the next switch to this
+    // tab as a stale cancel hint and a stale compacting indicator.
+    if let Some(bucket) = app.sessions.get_mut(key) {
+        bucket.pending_cancel = false;
+        bucket.is_compacting = false;
+        bucket.pending_compact_clear = false;
+    }
 }
 
 pub(super) fn apply_session_update_sessions_listed(

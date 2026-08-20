@@ -123,6 +123,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         }
         SessionUpdate::SessionReplaced {
             key,
+            previous_key,
             session_id,
             cwd,
             current_model,
@@ -133,6 +134,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             session::apply_session_update_session_replaced(
                 app,
                 &key,
+                &previous_key,
                 session_id,
                 cwd,
                 current_model,
@@ -1134,7 +1136,7 @@ fn rekey_pending_bucket_to(app: &mut App, real_key: &SessionKey) -> bool {
 /// secondary failure mode), or route subsequent wire frames to a
 /// "" key that never matches the real session_id (the primary
 /// failure mode).
-fn apply_session_update_key_renamed(app: &mut App, from: &SessionKey, to: SessionKey) {
+pub(super) fn apply_session_update_key_renamed(app: &mut App, from: &SessionKey, to: SessionKey) {
     let to = if to.as_str().is_empty() {
         SessionKey::from_session_id(format!("__pending_{}__", from.as_str()))
     } else {
@@ -1264,6 +1266,96 @@ mod tests {
         // Active session is A; redraw flag must NOT flip for an event
         // routed to a background bucket.
         assert!(!app.needs_redraw, "needs_redraw must stay false for background-session events");
+    }
+
+    fn session_replaced_for(
+        previous_key: &SessionKey,
+        session_id: &str,
+        cwd: &str,
+    ) -> SessionUpdate {
+        SessionUpdate::SessionReplaced {
+            key: SessionKey::from_session_id(session_id.to_owned()),
+            previous_key: previous_key.clone(),
+            session_id: forge_primitives::SessionId::new(session_id),
+            cwd: cwd.to_owned(),
+            current_model: test_current_model(),
+            available_models: Vec::new(),
+            mode: None,
+            history: Vec::new(),
+        }
+    }
+
+    /// A `SessionReplaced` naming background session B must land on B.
+    /// Before the envelope carried `previous_key` the reducer read
+    /// `active_session_key` instead, so B's event rewrote A - the tab
+    /// the user is looking at - and then dropped A's bucket outright.
+    #[test]
+    fn session_replaced_for_background_session_leaves_the_active_tab_alone() {
+        let mut app = App::test_default();
+        let (key_a, key_b) = seed_two_sessions(&mut app);
+        if let Some(bucket) = app.sessions.get_mut(&key_a) {
+            bucket.cwd_raw = "/proj-a".to_owned();
+            bucket.cwd = "/proj-a".to_owned();
+        }
+
+        apply_session_update(&mut app, session_replaced_for(&key_b, "b-replacement", "/proj-b"));
+
+        let replacement = SessionKey::from_session_id("b-replacement".to_owned());
+        assert_eq!(app.active_session_key.as_ref(), Some(&key_a), "focus stays on A");
+        assert!(app.sessions.contains_key(&key_a), "A's bucket survives B's replacement");
+        assert_eq!(
+            app.session_id().map(|id| id.to_string()).as_deref(),
+            Some(key_a.as_str()),
+            "A keeps its own session id",
+        );
+        assert_eq!(app.cwd_raw(), "/proj-a", "A keeps its own cwd");
+        assert!(!app.sessions.contains_key(&key_b), "B's outgoing bucket is gone");
+        let bucket_b = app.sessions.get(&replacement).expect("B migrated onto the replacement key");
+        assert_eq!(bucket_b.cwd_raw, "/proj-b");
+        assert_eq!(
+            bucket_b.session_id.as_ref().map(ToString::to_string).as_deref(),
+            Some("b-replacement"),
+        );
+    }
+
+    /// The foreground arm clears per-bucket cancel + compaction state
+    /// through the active-bucket accessors. The background arm has to
+    /// reach the same fields directly or they surface on the next switch
+    /// to that tab as a stale "press Esc again" hint and a stale
+    /// compacting indicator.
+    #[test]
+    fn session_replaced_for_background_session_clears_its_per_bucket_turn_state() {
+        let mut app = App::test_default();
+        let (_key_a, key_b) = seed_two_sessions(&mut app);
+        if let Some(bucket) = app.sessions.get_mut(&key_b) {
+            bucket.pending_cancel = true;
+            bucket.is_compacting = true;
+            bucket.pending_compact_clear = true;
+        }
+
+        apply_session_update(&mut app, session_replaced_for(&key_b, "b-replacement", "/proj-b"));
+
+        let replacement = SessionKey::from_session_id("b-replacement".to_owned());
+        let bucket = app.sessions.get(&replacement).expect("B migrated");
+        assert!(!bucket.pending_cancel, "a replaced session has no cancel in flight");
+        assert!(!bucket.is_compacting);
+        assert!(!bucket.pending_compact_clear);
+    }
+
+    /// Foreground twin: replacing the session the user is watching still
+    /// moves focus onto the replacement and drops the outgoing bucket.
+    #[test]
+    fn session_replaced_for_the_active_session_moves_focus_onto_the_replacement() {
+        let mut app = App::test_default();
+        let (key_a, key_b) = seed_two_sessions(&mut app);
+
+        apply_session_update(&mut app, session_replaced_for(&key_a, "a-replacement", "/proj-a"));
+
+        let replacement = SessionKey::from_session_id("a-replacement".to_owned());
+        assert_eq!(app.active_session_key.as_ref(), Some(&replacement), "focus follows A");
+        assert!(!app.sessions.contains_key(&key_a), "A's outgoing bucket is dropped");
+        assert!(app.sessions.contains_key(&key_b), "background B is untouched");
+        assert_eq!(app.cwd_raw(), "/proj-a");
     }
 
     #[test]
@@ -2132,7 +2224,8 @@ mod tests {
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::SessionReplaced {
-                key: pending_key,
+                key: SessionKey::from_session_id("session-2".to_owned()),
+                previous_key: pending_key,
                 session_id: forge_primitives::SessionId::new("session-2"),
                 cwd: replaced_cwd.clone(),
                 current_model: test_current_model(),

@@ -250,9 +250,11 @@ impl SessionTask {
                             crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                         );
                     }
+                    let previous_key = self.key.clone();
                     self.rekey_to(&real_key);
                     self.emit(SessionUpdate::SessionReplaced {
                         key: real_key.clone(),
+                        previous_key,
                         session_id: SessionId::new(session_id),
                         cwd,
                         current_model,

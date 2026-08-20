@@ -2011,10 +2011,12 @@ mod tests {
             sampling_required: None,
         });
 
+        let previous_key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
                 key: forge_workspace::SessionKey::from_session_id("replacement".to_owned()),
+                previous_key,
                 session_id: forge_primitives::SessionId::new("replacement"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
@@ -2058,10 +2060,12 @@ mod tests {
             sampling_required: None,
         });
 
+        let previous_key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
                 key: forge_workspace::SessionKey::from_session_id("replacement".to_owned()),
+                previous_key,
                 session_id: forge_primitives::SessionId::new("replacement"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
@@ -2493,10 +2497,12 @@ mod tests {
         let mut app = make_test_app();
         *app.resuming_session_id_mut() = Some("requested-123".into());
 
+        let previous_key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
                 key: forge_workspace::SessionKey::from_session_id("active-456".to_owned()),
+                previous_key,
                 session_id: forge_primitives::SessionId::new("active-456"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
@@ -2518,10 +2524,12 @@ mod tests {
         let history_updates =
             vec![user_text_message("first user line"), assistant_text_message("assistant reply")];
 
+        let previous_key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
                 key: forge_workspace::SessionKey::from_session_id("active-456".to_owned()),
+                previous_key,
                 session_id: forge_primitives::SessionId::new("active-456"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
@@ -2555,10 +2563,12 @@ mod tests {
             assistant_text_message("the switch re-spawns under the new account"),
         ];
 
+        let previous_key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
                 key: forge_workspace::SessionKey::from_session_id("switch-visible".to_owned()),
+                previous_key,
                 session_id: forge_primitives::SessionId::new("switch-visible"),
                 cwd: "/proj".into(),
                 current_model: test_current_model_primitives("model"),
@@ -2588,10 +2598,12 @@ mod tests {
             assistant_text_message("second assistant"),
         ];
 
+        let previous_key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
                 key: forge_workspace::SessionKey::from_session_id("active-457".to_owned()),
+                previous_key,
                 session_id: forge_primitives::SessionId::new("active-457"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
@@ -2635,10 +2647,12 @@ mod tests {
             serde_json::json!({"command": "Execute command"}),
         );
 
+        let previous_key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
                 key: forge_workspace::SessionKey::from_session_id("active-789".to_owned()),
+                previous_key,
                 session_id: forge_primitives::SessionId::new("active-789"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
@@ -2663,10 +2677,12 @@ mod tests {
     fn resume_history_clears_active_turn_owner_after_replay() {
         let mut app = make_test_app();
 
+        let previous_key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
                 key: forge_workspace::SessionKey::from_session_id("active-790".to_owned()),
+                previous_key,
                 session_id: forge_primitives::SessionId::new("active-790"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
@@ -2690,10 +2706,12 @@ mod tests {
             serde_json::json!({"description": "Run subagent"}),
         );
 
+        let previous_key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
                 key: forge_workspace::SessionKey::from_session_id("active-791".to_owned()),
+                previous_key,
                 session_id: forge_primitives::SessionId::new("active-791"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
@@ -3494,10 +3512,12 @@ mod tests {
         // notice-clearing assertion targets SessionReplaced on the
         // active key.
         let active_key = active_session_key(&app);
+        let previous_key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
                 key: active_key,
+                previous_key,
                 session_id: forge_primitives::SessionId::new("new-session"),
                 cwd: "/test".into(),
                 current_model: test_current_model_primitives("claude"),
