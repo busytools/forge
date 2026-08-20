@@ -692,12 +692,6 @@ impl ChatViewport {
         }
     }
 
-    /// Return the preserved scroll anchor that should be restored while remeasure
-    /// remains in flight.
-    pub fn scroll_anchor_to_restore(&self) -> Option<(usize, usize)> {
-        self.preserved_scroll_anchor.map(|anchor| (anchor.index, anchor.offset))
-    }
-
     /// Take the preserved scroll anchor once rows above it are exact.
     ///
     /// One-shot: an off-screen `MessageChanged` leaves its target stale
@@ -710,14 +704,6 @@ impl ChatViewport {
         }
         self.preserved_scroll_anchor = None;
         Some((anchor.index, anchor.offset))
-    }
-
-    /// Return the preserved pre-width-resize scroll anchor.
-    pub fn resize_scroll_anchor(&self) -> Option<(usize, usize)> {
-        self.preserved_scroll_anchor.and_then(|anchor| {
-            (anchor.reason == LayoutRemeasureReason::Resize)
-                .then_some((anchor.index, anchor.offset))
-        })
     }
 
     /// Derive the priority window from the preserved scroll anchor using current estimates.
