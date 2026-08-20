@@ -59,37 +59,22 @@ fn lock_path(config_dir: &Path, app_support: &Path) -> PathBuf {
     app_support.join(LOCK_DIR_NAME).join(format!("{}.lock", forge_sdk::config_dir_hash(config_dir)))
 }
 
-/// Acquire the per-config-dir single-instance lock.
+/// Acquire the per-config-dir single-instance lock under `app_support`.
 ///
-/// The lock is machine-local - resolved under [`forge_sdk::app_support_dir`]
-/// so it is never Syncthing-synced (see the module docs). On success the
-/// returned `File` MUST be held for the process lifetime; dropping it (or
-/// process exit / crash) releases the flock, so there is no stale-lock
-/// cleanup. `Ok(None)` is the degraded path: the app-support dir couldn't
-/// be resolved / created, the lockfile couldn't be opened, or the
+/// The caller resolves the base, so a test can pass a tempdir and never
+/// write to the real app-support directory. In production that base is
+/// [`forge_sdk::app_support_dir`], which keeps the lock out of the
+/// Syncthing-synced config dir (see the module docs).
+///
+/// On success the returned `File` MUST be held for the process lifetime;
+/// dropping it (or process exit / crash) releases the flock, so there is
+/// no stale-lock cleanup. `Ok(None)` is the degraded path: the lock dir
+/// couldn't be created, the lockfile couldn't be opened, or the
 /// filesystem rejected `flock`, so forge boots without the guarantee
 /// rather than refusing over an exotic FS (the local APFS/ext4 the user
 /// runs always supports flock). `Err` means another forge instance
 /// already owns this config dir.
-pub(crate) fn acquire(config_dir: &Path) -> Result<Option<File>, AcquireError> {
-    let app_support = match forge_sdk::app_support_dir() {
-        Ok(dir) => dir,
-        Err(e) => {
-            tracing::warn!(
-                target: "forge_workspace::single_instance",
-                error = %e,
-                "app-support dir unresolved; single-instance guard skipped",
-            );
-            return Ok(None);
-        }
-    };
-    acquire_in(config_dir, &app_support)
-}
-
-/// [`acquire`] against an explicit app-support base. Split out as a test
-/// seam so tests inject a tempdir and never write to the real
-/// app-support directory.
-fn acquire_in(config_dir: &Path, app_support: &Path) -> Result<Option<File>, AcquireError> {
+pub(crate) fn acquire(config_dir: &Path, app_support: &Path) -> Result<Option<File>, AcquireError> {
     let path = lock_path(config_dir, app_support);
     if let Some(parent) = path.parent()
         && let Err(e) = std::fs::create_dir_all(parent)
@@ -171,8 +156,7 @@ mod tests {
     fn lock_lives_under_locks_subdir_of_the_base() {
         let cfg = tempdir().expect("cfg");
         let base = base();
-        let _lock =
-            acquire_in(cfg.path(), base.path()).expect("acquire ok").expect("holds the lock");
+        let _lock = acquire(cfg.path(), base.path()).expect("acquire ok").expect("holds the lock");
         let path = lock_path(cfg.path(), base.path());
         assert!(path.is_file(), "lock is a real file");
         assert_eq!(
@@ -187,8 +171,8 @@ mod tests {
         let base = base();
         let cfg_a = tempdir().expect("cfg a");
         let cfg_b = tempdir().expect("cfg b");
-        let a = acquire_in(cfg_a.path(), base.path()).expect("a ok").expect("a holds");
-        let b = acquire_in(cfg_b.path(), base.path()).expect("b ok").expect("b holds");
+        let a = acquire(cfg_a.path(), base.path()).expect("a ok").expect("a holds");
+        let b = acquire(cfg_b.path(), base.path()).expect("b ok").expect("b holds");
         assert_ne!(
             lock_path(cfg_a.path(), base.path()),
             lock_path(cfg_b.path(), base.path()),
@@ -203,7 +187,7 @@ mod tests {
     fn acquire_succeeds_on_fresh_dir_and_records_pid() {
         let cfg = tempdir().expect("cfg");
         let base = base();
-        let lock = acquire_in(cfg.path(), base.path()).expect("acquire ok");
+        let lock = acquire(cfg.path(), base.path()).expect("acquire ok");
         assert!(lock.is_some(), "a fresh config dir acquires the lock");
 
         let contents =
@@ -219,9 +203,9 @@ mod tests {
     fn second_acquire_reports_already_running_with_pid() {
         let cfg = tempdir().expect("cfg");
         let base = base();
-        let _first = acquire_in(cfg.path(), base.path()).expect("first ok").expect("first holds");
+        let _first = acquire(cfg.path(), base.path()).expect("first ok").expect("first holds");
 
-        match acquire_in(cfg.path(), base.path()) {
+        match acquire(cfg.path(), base.path()) {
             Err(AcquireError::AlreadyRunning { pid }) => {
                 assert_eq!(pid, Some(std::process::id()), "refusal names the holder's PID");
             }
@@ -236,10 +220,9 @@ mod tests {
         let cfg = tempdir().expect("cfg");
         let base = base();
         {
-            let _first =
-                acquire_in(cfg.path(), base.path()).expect("first ok").expect("first holds");
+            let _first = acquire(cfg.path(), base.path()).expect("first ok").expect("first holds");
         }
-        let second = acquire_in(cfg.path(), base.path()).expect("second ok");
+        let second = acquire(cfg.path(), base.path()).expect("second ok");
         assert!(second.is_some(), "the lock is reacquirable after the holder drops it");
     }
 }

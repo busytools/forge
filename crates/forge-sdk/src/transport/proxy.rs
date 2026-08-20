@@ -36,7 +36,7 @@ pub use rewrite::{
 pub use scan::scan_and_warn;
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -110,13 +110,21 @@ impl ProxyHandle {
 ///
 /// # Errors
 ///
-/// Returns [`Error::Connection`] for any setup failure: CA dir not
-/// writable, port-bind failure, TLS provider init failure, or
-/// invalid `HTTPS_PROXY` URL. Forge's policy is hard-fail (no
+/// Returns [`Error::Connection`] for any setup failure: app-support dir
+/// unresolved, CA dir not writable, port-bind failure, TLS provider init
+/// failure, or invalid `HTTPS_PROXY` URL. Forge's policy is hard-fail (no
 /// session starts without a healthy proxy), so callers should
 /// propagate this error directly.
-pub async fn start() -> Result<ProxyHandle, Error> {
-    let (cert_path, key_path) = ensure_ca()?;
+///
+/// `app_support` overrides the base the CA is persisted under; `None`
+/// resolves the real machine dir. Tests pass a tempdir so a run never
+/// regenerates the CA the live forge's proxy trusts.
+pub async fn start(app_support: Option<&Path>) -> Result<ProxyHandle, Error> {
+    let base = match app_support {
+        Some(dir) => dir.to_path_buf(),
+        None => crate::paths::app_support_dir()?,
+    };
+    let (cert_path, key_path) = ensure_ca(&base)?;
     let authority = load_authority(&cert_path, &key_path)?;
 
     // Bind to ephemeral port; OS picks a free one.

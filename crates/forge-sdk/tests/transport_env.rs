@@ -143,8 +143,12 @@ async fn spawn_does_not_set_proxy_env_when_proxy_absent() {
 async fn spawn_sets_https_proxy_and_ca_when_proxy_attached() {
     // Boot a real (but unused) rewriter proxy and pass its handle.
     // The mock child doesn't actually make HTTPS calls - we just want
-    // the env vars stamped on it.
-    let handle = forge_sdk::transport::proxy::start().await.expect("start rewriter proxy");
+    // the env vars stamped on it. The CA goes under a tempdir so the
+    // run never touches the real app-support dir.
+    let ca_base = tempfile::tempdir().expect("tempdir");
+    let handle = forge_sdk::transport::proxy::start(Some(ca_base.path()))
+        .await
+        .expect("start rewriter proxy");
     let env = spawn_and_capture_env({
         let h = handle.clone();
         |b| b.proxy(h)

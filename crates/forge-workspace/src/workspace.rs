@@ -550,18 +550,22 @@ impl Workspace {
         Self::new_impl(config_dir, None).await
     }
 
-    /// Like [`Workspace::new`] but opens the redb store under a tempdir
-    /// inside `config_dir` rather than the real machine `app_support_dir`,
-    /// so tests never touch the user's durable store (#392).
+    /// Like [`Workspace::new`] but puts forge's whole app-support base -
+    /// the redb store, the single-instance lock and the proxy CA - under
+    /// a tempdir inside `config_dir` rather than the real machine
+    /// `app_support_dir`, so tests never touch the user's durable store,
+    /// contend for their live lock, or regenerate the CA their running
+    /// proxy trusts.
     #[cfg(any(test, feature = "testing"))]
     pub async fn new_for_test(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
         let app_support = config_dir.join("app-support");
         Self::new_impl(config_dir, Some(app_support)).await
     }
 
-    /// Shared constructor body. `app_support` supplies the redb base dir;
-    /// `None` resolves the real machine `app_support_dir` and degrades to
-    /// no durable store on failure (hard rule #15: no cwd fallback).
+    /// Shared constructor body. `app_support` supplies the app-support
+    /// base dir; `None` resolves the real machine `app_support_dir` and
+    /// degrades to no lock and no durable store on failure (hard rule
+    /// #15: no cwd fallback).
     async fn new_impl(
         config_dir: PathBuf,
         app_support: Option<PathBuf>,
@@ -580,17 +584,41 @@ impl Workspace {
             }
         })?;
 
+        // forge's machine-local app-support base, resolved once: the
+        // single-instance lock, the redb store and the proxy CA all sit
+        // under it. `Some` comes from the test constructor, which points
+        // the whole base at a tempdir. `None` degrades to no lock
+        // and no durable store rather than falling back to cwd (hard
+        // rule #15); the proxy hard-fails on it below, as it already did.
+        let app_support = match app_support {
+            Some(dir) => Some(dir),
+            None => match forge_sdk::app_support_dir() {
+                Ok(dir) => Some(dir),
+                Err(error) => {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        %error,
+                        "app-support dir unresolved; the single-instance guard is skipped and Gotify subscriptions will not persist",
+                    );
+                    None
+                }
+            },
+        };
+
         // Single-instance guard: forge runs one process per config dir.
         // Take it BEFORE the proxy boot so a doomed second instance
         // refuses without binding proxy ports. The held File is stored
         // on `Self` for the process lifetime; flock auto-releases on
         // exit/crash. A second forge on the same config dir hard-fails
         // here exactly like ProxyUnavailable does below.
-        let single_instance_lock = match crate::single_instance::acquire(&config_dir) {
-            Ok(lock) => lock,
-            Err(crate::single_instance::AcquireError::AlreadyRunning { pid }) => {
-                return Err(WorkspaceError::AlreadyRunning { pid });
-            }
+        let single_instance_lock = match app_support.as_deref() {
+            Some(base) => match crate::single_instance::acquire(&config_dir, base) {
+                Ok(lock) => lock,
+                Err(crate::single_instance::AcquireError::AlreadyRunning { pid }) => {
+                    return Err(WorkspaceError::AlreadyRunning { pid });
+                }
+            },
+            None => None,
         };
         // The guard fell open (lockfile unopenable or flock unsupported).
         // forge still boots, but the cron store's single-writer assumption
@@ -608,20 +636,7 @@ impl Workspace {
         // subscriptions both live in it. A failure to resolve the app-
         // support dir or open the DB degrades to no durable state this run
         // (non-fatal, like the state cache) - no cwd fallback (hard rule #15).
-        let db = match app_support {
-            Some(dir) => open_db(&dir),
-            None => match forge_sdk::app_support_dir() {
-                Ok(dir) => open_db(&dir),
-                Err(error) => {
-                    tracing::warn!(
-                        target: "forge_workspace::workspace",
-                        %error,
-                        "app-support dir unresolved; Gotify subscriptions will not persist",
-                    );
-                    None
-                }
-            },
-        };
+        let db = app_support.as_deref().and_then(open_db);
 
         // Load durable forge crons into the in-memory working set. Boot
         // catch-up for entries that came due while forge was down runs after
@@ -656,7 +671,7 @@ impl Workspace {
         // is correctness-critical (Anthropic tier classification), so
         // there is no "best-effort" fallback that lets sessions land
         // on metered tier silently.
-        let proxy = forge_agent::proxy::start()
+        let proxy = forge_agent::proxy::start(app_support.as_deref())
             .await
             .map_err(|e| WorkspaceError::ProxyUnavailable { reason: e.to_string() })?;
 
@@ -8703,6 +8718,25 @@ config_dir = "~/.claude-stargate"
         // tempdir, so no test ever opens the real machine store (#392).
         let redirected = dir.path().join("app-support").join("db.redb");
         assert!(redirected.exists(), "new_for_test opens redb under the tempdir app-support base");
+    }
+
+    #[tokio::test]
+    async fn new_for_test_writes_the_lock_and_ca_under_the_tempdir() {
+        let dir = make_workspace_dir();
+        let _workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        // Everything under the app-support base follows the same
+        // redirect as redb, so a test run leaves the real directory
+        // untouched.
+        let base = dir.path().join("app-support");
+        assert!(
+            base.join("locks").is_dir(),
+            "new_for_test takes the single-instance lock under the tempdir base",
+        );
+        assert!(
+            base.join("ca").join("ca-cert.pem").is_file(),
+            "new_for_test generates the proxy CA under the tempdir base",
+        );
     }
 
     #[tokio::test]
