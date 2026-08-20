@@ -94,9 +94,8 @@ That root comes from the home directory, not from `<config_dir>`, so it
 stays at `~/.claude/forge-team/` even when `$CLAUDE_CONFIG_DIR` points
 somewhere else.
 
-Starting content for some roles ships in the repo under
-`docs/forge-team-defaults/<label>/`; copy what you want into
-`~/.claude/forge-team/`. The `lead` role is the exception: when
+You author these files yourself; forge ships no starting content and
+does no bootstrap. The `lead` role is the exception: when
 `~/.claude/forge-team/lead/charter.md` is absent, forge falls back to a
 charter compiled into the binary, so a lead is always charter-backed.
 

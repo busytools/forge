@@ -7,14 +7,12 @@
 //! A role may also carry `resume-kick.md`, read by [`load_resume_kick`]
 //! when a worker resumes rather than starts fresh.
 //!
-//! Starting content for some roles ships in the repo under
-//! `docs/forge-team-defaults/<label>/` (currently `implementer`, with
-//! `resume-kick.md`, and `lead`). Users copy from there on first setup
-//! and author the rest. No runtime bootstrap: a label whose files are
-//! missing is skipped with a warning, `lead` included when it is named
-//! in `static_workers`. The one fallback is on the lead-spawn path,
-//! where an absent lead CHARTER resolves to [`DEFAULT_LEAD_CHARTER`];
-//! nothing supplies a missing `kick.md`.
+//! Users author these files themselves. There is no runtime bootstrap:
+//! a label whose files are missing is skipped with a warning, `lead`
+//! included when it is named in `static_workers`. The one fallback is on
+//! the lead-spawn path, where an absent lead CHARTER resolves to
+//! [`DEFAULT_LEAD_CHARTER`], compiled in from `lead_charter.md` beside
+//! this file; nothing supplies a missing `kick.md`.
 
 use std::io;
 use std::path::PathBuf;
@@ -80,8 +78,7 @@ pub const LEAD_LABEL: &str = "lead";
 
 /// Bundled lead charter, compiled in as the fallback when
 /// `~/.claude/forge-team/lead/charter.md` is absent.
-pub const DEFAULT_LEAD_CHARTER: &str =
-    include_str!("../../../../docs/forge-team-defaults/lead/charter.md");
+pub const DEFAULT_LEAD_CHARTER: &str = include_str!("lead_charter.md");
 
 /// Errors loading a role's charter or kick file from disk.
 #[derive(Debug)]

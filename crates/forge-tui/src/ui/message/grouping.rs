@@ -1,7 +1,5 @@
 //! Render-time grouping of consecutive collapsed-by-default tool
 //! calls into a single summary block with a 3-level expand cycle.
-//!
-//! See `docs/superpowers/specs/2026-06-01-chat-tool-grouping.md`.
 
 use std::ops::Range;
 

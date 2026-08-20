@@ -1,10 +1,9 @@
 //! In-process MCP server hosting.
 //!
 //! Exposes Rust functions as MCP tools that the `claude` binary can call
-//! during agentic work. SDK's `create_sdk_mcp_server`
-//! + `@tool` decorator model.
-//!
-//! See `docs/protocol-notes.md` for observed wire details.
+//! during agentic work, following the SDK's `create_sdk_mcp_server` and
+//! `@tool` decorator model. The wire details were observed from the CLI
+//! rather than specified.
 
 #[macro_use]
 pub mod macros;

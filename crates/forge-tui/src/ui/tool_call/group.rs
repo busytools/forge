@@ -17,9 +17,6 @@
 //! The L1 (title rows) and L0 (full bodies) levels are produced by the
 //! standard per-tool render path threaded with a `force_collapsed`
 //! flag from the caller.
-//!
-//! See `docs/superpowers/specs/2026-06-01-chat-tool-grouping-v2.md`
-//! decision 6.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};

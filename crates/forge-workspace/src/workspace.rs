@@ -2753,7 +2753,7 @@ impl Workspace {
                         project = %project_key.as_str(),
                         label = %label,
                         error = %err,
-                        "no charter/kick for worker label (project-first then global); spawn skipped. Populate ~/.claude/forge-team/<project>/<label>/ or ~/.claude/forge-team/<label>/ (copy from docs/forge-team-defaults/) or use workers__create_role."
+                        "no charter/kick for worker label (project-first then global); spawn skipped. Populate ~/.claude/forge-team/<project>/<label>/ or ~/.claude/forge-team/<label>/, or use workers__create_role."
                     );
                 }
             }
