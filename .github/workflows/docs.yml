@@ -24,7 +24,7 @@ jobs:
     # A pull request from a fork cannot deploy and has nothing to gain
     # from running here, so it is skipped outright.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: self-hosted-linux
+    runs-on: ubuntu-latest
     # `configure-pages` reads the Pages config over the API, which the
     # workflow-level `contents: read` alone would deny. A job-level
     # block replaces the workflow default outright, so checkout's
@@ -58,7 +58,7 @@ jobs:
     name: deploy to pages
     needs: build
     if: github.event_name != 'pull_request'
-    runs-on: self-hosted-linux
+    runs-on: ubuntu-latest
     permissions:
       pages: write
       id-token: write
