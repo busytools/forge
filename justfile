@@ -106,6 +106,12 @@ check: fmt-check unicode-punct-check clippy test-all doc
 # AND truncates the log, losing both signals to one pipe - the failure
 # this exists to prevent, which has bitten twice.
 #
+# The verdict line also lands in `target/ci-watch-verdict`, which is the
+# path a scripted caller should read. stdout is not a channel this recipe
+# controls: a caller piping it through `tail -N` cuts the verdict off the
+# end, and across ten audited invocations that lost the verdict three
+# times, more often than a swallowed exit code did.
+#
 # The verdict comes from `gh run view`, not from the watch's exit code.
 # That code is not known to be wrong: measured against a finished run it
 # is 1 for cancelled and 0 for success. Reading the run's own status is
@@ -127,6 +133,14 @@ ci-watch run_id="":
     #!/usr/bin/env bash
     set -euo pipefail
 
+    # Truncated up front, and written on every exit path below, so the
+    # file always answers for this invocation rather than handing back
+    # the previous one's verdict.
+    verdict_file="target/ci-watch-verdict"
+    mkdir -p target
+    : > "$verdict_file"
+    record() { printf '%s\n' "$1" > "$verdict_file"; }
+
     branch=$(git rev-parse --abbrev-ref HEAD)
     want_sha=$(git rev-parse HEAD)
 
@@ -136,7 +150,8 @@ ci-watch run_id="":
             --json databaseId --jq '.[0].databaseId // empty')
     fi
     if [ -z "$run_id" ]; then
-        echo "[ERROR] no CI run found for branch $branch" >&2
+        line="[ERROR] no CI run found for branch $branch"
+        record "$line"; echo "$line" >&2
         exit 1
     fi
 
@@ -146,7 +161,8 @@ ci-watch run_id="":
     # above is already the superseded one.
     head_sha=$(gh run view "$run_id" --json headSha --jq '.headSha')
     if [ "$head_sha" != "$want_sha" ]; then
-        echo "[ERROR] run $run_id built $head_sha, not local HEAD $want_sha" >&2
+        line="[ERROR] run $run_id built $head_sha, not local HEAD $want_sha"
+        record "$line"; echo "$line" >&2
         exit 1
     fi
 
@@ -159,13 +175,15 @@ ci-watch run_id="":
     read -r status conclusion <<< "$verdict"
 
     if [ "$status" != "completed" ] || [ "$conclusion" != "success" ]; then
-        echo "[ERROR] run $run_id: status=$status conclusion=$conclusion" >&2
+        line="[ERROR] run $run_id: status=$status conclusion=$conclusion"
+        record "$line"; echo "$line" >&2
         tail -30 "$log" >&2
         exit 1
     fi
 
     rm -f "$log"
-    echo "[OK] run $run_id: success at $head_sha"
+    line="[OK] run $run_id: success at $head_sha"
+    record "$line"; echo "$line"
 
 # Build forge-tui from the current checkout and install the `forge`
 # binary into ~/.cargo/bin/forge. Defaults to release+perf. Wraps up
