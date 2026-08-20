@@ -495,7 +495,7 @@ impl Subprocess {
             drop(child);
             // Join before building the error rather than reading a shared
             // buffer at construction, which would race the last line.
-            let stderr = self.join_stderr_tail().await;
+            let stderr = label_stderr_tail(&self.join_stderr_tail().await);
             match waited {
                 Ok(Ok(status)) if status.success() => Ok(()),
                 Ok(Ok(status)) => Err(Error::Process { exit_code: status.code(), stderr }),
@@ -695,6 +695,14 @@ fn spawn_writer_task(
         }
         .instrument(span),
     )
+}
+
+/// Prefix the retained tail so it reads as the last thing the CLI
+/// wrote rather than as the cause. Nothing here can tell whether it is
+/// causal: a session whose only stderr was a startup warning attaches
+/// that warning to an exit hours later.
+fn label_stderr_tail(tail: &str) -> String {
+    if tail.is_empty() { String::new() } else { format!("last stderr from the CLI: {tail}") }
 }
 
 /// Upper bound on the drained stderr retained for [`Error::Process`].
@@ -1051,6 +1059,10 @@ mod tests {
                 assert!(
                     stderr.contains("boom: unknown flag --nope"),
                     "expected drained stderr in the error, got: {stderr:?}"
+                );
+                assert!(
+                    stderr.starts_with("last stderr from the CLI:"),
+                    "tail must be labelled, not presented as the cause: {stderr:?}"
                 );
             }
             other => panic!("expected Process error, got {other:?}"),
