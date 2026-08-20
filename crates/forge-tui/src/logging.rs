@@ -54,9 +54,9 @@ impl LoggingRuntime {
         let filter = tracing_subscriber::EnvFilter::try_new(directives.as_str())
             .map_err(|e| anyhow::anyhow!("invalid tracing filter `{directives}`: {e}"))?;
         // Always append so a restart immediately after a bug
-        // doesn't overwrite the events that produced it. Rotation
-        // capped at 10 MB × 5 files (~50 MB total) bounds the
-        // on-disk cost.
+        // doesn't overwrite the events that produced it. The window
+        // keeps the active file plus `.1` through `.5`, so rotation
+        // is capped at 10 MB × 6 slots (~60 MB total).
         let writer = RollingFileWriter::new(
             &log_path.path,
             true,
@@ -159,8 +159,8 @@ fn resolve_log_path(cli: &Cli) -> anyhow::Result<Option<ResolvedLogPath>> {
     if let Some(path) = cli.log_file.clone() {
         return Ok(Some(ResolvedLogPath { path, source: LogPathSource::Explicit }));
     }
-    // Logging on by default: the rolling writer caps disk at ~50MB
-    // (5 x 10MB), which is cheap enough that diagnostics need no opt-in.
+    // Logging on by default: the rolling writer caps disk at ~60MB
+    // (6 x 10MB), which is cheap enough that diagnostics need no opt-in.
     // `RUST_LOG=off` silences it.
     let path = default_log_path()?;
     Ok(Some(ResolvedLogPath { path, source: LogPathSource::Default }))
