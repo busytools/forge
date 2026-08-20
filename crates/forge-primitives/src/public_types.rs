@@ -151,9 +151,7 @@ pub enum McpServerConnectionStatus {
     Failed,
     /// Server requires authentication before it can be used.
     NeedsAuth,
-    /// Connect attempt hasn't finished yet. The default: it is what
-    /// `mcp_status` reports for every server at connect, and it is the
-    /// one variant that asserts nothing a caller has not established.
+    /// Connect attempt hasn't finished yet.
     #[default]
     Pending,
     /// Server is registered but explicitly disabled.
@@ -442,10 +440,9 @@ mod forge_account_identity_tests {
 mod mcp_server_status_tests {
     use super::{McpServerConnectionStatus, McpServerStatus};
 
-    /// The default has to describe a server nothing is yet known about.
-    /// `Pending` is what the CLI reports for every server at connect, and
-    /// every other variant would assert a state the caller has not
-    /// established - `Connected` most damagingly, since consumers gate on it.
+    /// The default is whichever variant is cheapest to be wrong about: a
+    /// wrong `Pending` costs one fast re-poll that the next snapshot
+    /// corrects, while a wrong `Connected` counts a dead server as healthy.
     #[test]
     fn default_status_claims_nothing_about_the_server() {
         let status = McpServerStatus { name: "context7".into(), ..Default::default() };
