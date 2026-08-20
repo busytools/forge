@@ -69,7 +69,6 @@ impl RemeasureBudget {
 #[derive(Clone, Copy, Default)]
 struct CulledRenderStats {
     local_scroll: usize,
-    first_visible: usize,
     render_start: usize,
     rendered_msgs: usize,
     last_rendered_idx: Option<usize>,
@@ -591,7 +590,6 @@ fn build_scrolled_render_data(
     };
     crate::perf::mark_with("chat::render_scrolled_lines", "lines", all_lines.len());
     crate::perf::mark_with("chat::render_scrolled_msgs", "msgs", stats.rendered_msgs);
-    crate::perf::mark_with("chat::render_scrolled_first_visible", "idx", stats.first_visible);
     crate::perf::mark_with("chat::render_scrolled_start", "idx", stats.render_start);
 
     let paragraph = {
@@ -833,8 +831,7 @@ fn render_culled_messages(
     out: &mut Vec<Line<'static>>,
 ) -> CulledRenderStats {
     // O(log n) binary search via prefix sums to find first visible message.
-    let first_visible = app.active_viewport_mut().find_first_visible(scroll);
-    let render_start = first_visible;
+    let render_start = app.active_viewport_mut().find_first_visible(scroll);
     let height_before_start = app.active_viewport_mut().cumulative_height_before(render_start);
     let structural_skip = scroll.saturating_sub(height_before_start);
     render_message_range(
@@ -843,7 +840,6 @@ fn render_culled_messages(
         width,
         viewport_height,
         RenderWindow {
-            first_visible,
             render_start,
             structural_skip,
             overscan: CULLING_OVERSCAN_ROWS,
@@ -887,13 +883,7 @@ fn render_tail_anchored(
         base,
         width,
         viewport_height,
-        RenderWindow {
-            first_visible: render_start,
-            render_start,
-            structural_skip,
-            overscan: 0,
-            cap_messages: false,
-        },
+        RenderWindow { render_start, structural_skip, overscan: 0, cap_messages: false },
         out,
     )
 }
@@ -902,7 +892,6 @@ fn render_tail_anchored(
 /// at the top of the first message, and the overscan margin below the viewport.
 #[derive(Clone, Copy)]
 struct RenderWindow {
-    first_visible: usize,
     render_start: usize,
     structural_skip: usize,
     overscan: usize,
@@ -926,7 +915,6 @@ fn render_message_range(
     out: &mut Vec<Line<'static>>,
 ) -> CulledRenderStats {
     let RenderWindow {
-        first_visible,
         render_start,
         structural_skip: initial_structural_skip,
         overscan,
@@ -1003,7 +991,6 @@ fn render_message_range(
 
     CulledRenderStats {
         local_scroll,
-        first_visible,
         render_start,
         rendered_msgs,
         last_rendered_idx,
@@ -1082,7 +1069,6 @@ fn emit_render_summary(
         scroll_target: app.viewport().scroll_target,
         scroll_offset: render_data.scroll_offset,
         max_scroll: render_data.max_scroll,
-        first_visible: render_data.stats.first_visible,
         render_start: render_data.stats.render_start,
         local_scroll: render_data.stats.local_scroll,
         rendered_msgs: render_data.stats.rendered_msgs,
@@ -1109,7 +1095,6 @@ fn emit_render_summary(
         scroll_pos = app.viewport().scroll_pos,
         scroll_offset = trace_state.scroll_offset,
         max_scroll = trace_state.max_scroll,
-        first_visible = trace_state.first_visible,
         render_start = trace_state.render_start,
         local_scroll = trace_state.local_scroll,
         rendered_msgs = trace_state.rendered_msgs,
@@ -1834,7 +1819,6 @@ mod tests {
             width,
             usize::from(viewport_height),
             RenderWindow {
-                first_visible: 0,
                 render_start: 0,
                 structural_skip: 0,
                 overscan: 1_000_000,
@@ -2377,7 +2361,6 @@ mod tests {
             width,
             usize::from(height),
             RenderWindow {
-                first_visible: 0,
                 render_start: 0,
                 structural_skip: 0,
                 overscan: 1_000_000,
@@ -2836,7 +2819,6 @@ mod tests {
             scroll_target: 96,
             scroll_offset: 96,
             max_scroll: 96,
-            first_visible: 3,
             render_start: 3,
             local_scroll: 0,
             rendered_msgs: 2,
