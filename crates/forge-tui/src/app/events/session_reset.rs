@@ -224,6 +224,103 @@ fn is_suppressed_user_scaffolding(text: &str) -> bool {
         || t.starts_with("<command-message>")
 }
 
+/// The content blocks a replayed envelope carries, empty for the
+/// variants that carry none.
+fn message_content_blocks(msg: &forge_primitives::Message) -> &[forge_primitives::ContentBlock] {
+    match msg {
+        forge_primitives::Message::Assistant { message, .. } => &message.content,
+        forge_primitives::Message::User { message, .. } => &message.content,
+        _ => &[],
+    }
+}
+
+/// The tool call a result block reports on, in every shape a result
+/// arrives in on the wire. Deliberately looser than the walkers: a
+/// result the walker happens to drop still means the result arrived,
+/// and reading it as absent would name a healthy call as unfinished.
+fn tool_result_target(block: &forge_primitives::ContentBlock) -> Option<&str> {
+    use forge_primitives::ContentBlock;
+
+    let id = match block {
+        ContentBlock::ToolResult { tool_use_id, .. }
+        | ContentBlock::ServerToolResult { tool_use_id, .. } => tool_use_id.as_str(),
+        ContentBlock::Unknown { type_str, raw }
+            if forge_workspace::tooling::is_tool_result_block_type(type_str) =>
+        {
+            raw.as_object()?.get("tool_use_id")?.as_str()?
+        }
+        _ => return None,
+    };
+    (!id.is_empty()).then_some(id)
+}
+
+/// Tool calls in `history` whose result never arrived, in first-seen
+/// order and deduplicated by id so a re-stated `tool_use` counts once.
+///
+/// Read off the replayed envelopes, NOT off the post-walk sweep. The
+/// sweep force-fails every call still in progress, which includes calls
+/// that completed and were then re-stated (#558), so a count taken from
+/// it fires on healthy resumes.
+fn unterminated_tool_calls(history: &[forge_primitives::Message]) -> Vec<(String, String)> {
+    use forge_primitives::{ContentBlock, Message};
+
+    let mut resolved: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for msg in history {
+        // A sub-agent result is keyed by the message-level parent id
+        // with its payload alongside, not by a content block.
+        if let Message::User { parent_tool_use_id: Some(parent), tool_use_result: Some(_), .. } =
+            msg
+            && !parent.is_empty()
+        {
+            resolved.insert(parent.as_str());
+        }
+        for block in message_content_blocks(msg) {
+            if let Some(id) = tool_result_target(block) {
+                resolved.insert(id);
+            }
+        }
+    }
+
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut unterminated = Vec::new();
+    for msg in history {
+        for block in message_content_blocks(msg) {
+            let (ContentBlock::ToolUse { id, name, .. }
+            | ContentBlock::ServerToolUse { id, name, .. }) = block
+            else {
+                continue;
+            };
+            if !id.is_empty() && !resolved.contains(id.as_str()) && seen.insert(id.as_str()) {
+                unterminated.push((id.clone(), name.clone()));
+            }
+        }
+    }
+    unterminated
+}
+
+/// Name every call the replayed history left without a result. #554
+/// silenced the per-call replay records because during a normal replay
+/// they describe a repaint; an unterminated call is the one case where
+/// the replay is reporting an event, so it keeps a record.
+fn report_unterminated_tool_calls(app: &App, history: &[forge_primitives::Message]) {
+    let unterminated = unterminated_tool_calls(history);
+    if unterminated.is_empty() {
+        return;
+    }
+    let session_id = super::tool_calls::current_session_id(app);
+    for (tool_call_id, tool_name) in unterminated {
+        tracing::warn!(
+            target: crate::logging::targets::APP_TOOL,
+            event_name = "resume_tool_call_unterminated",
+            message = "resumed a tool call whose result never arrived",
+            outcome = "failure",
+            session_id = %session_id,
+            tool_call_id = %tool_call_id,
+            tool_name = %tool_name,
+        );
+    }
+}
+
 pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primitives::Message]) {
     let preserved_tip_seed = app.current_welcome_tip_seed();
     app.clear_messages_tracked();
@@ -343,6 +440,7 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
     app.clear_monitors_if_all_terminal();
     app.clear_workflows_if_all_terminal();
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
+    report_unterminated_tool_calls(app, history_messages);
     app.clear_active_turn_assistant();
     app.enforce_history_retention_tracked();
     *app.active_viewport_mut() = super::super::ChatViewport::new();
@@ -428,29 +526,116 @@ mod tests {
         }
     }
 
-    /// One `(level, event_name)` per emitted record.
+    fn historical_server_tool_use(id: &str, name: &str) -> Message {
+        Message::Assistant {
+            message: AssistantEnvelope {
+                id: "msg_history".to_owned(),
+                role: "assistant".to_owned(),
+                model: "claude-test".to_owned(),
+                content: vec![ContentBlock::ServerToolUse {
+                    id: id.to_owned(),
+                    name: name.to_owned(),
+                    input: Value::Null,
+                }],
+                stop_reason: None,
+                stop_sequence: None,
+                usage: None,
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            error: None,
+            uuid: None,
+        }
+    }
+
+    fn user_with_content(content: Vec<ContentBlock>, tool_use_result: Option<Value>) -> Message {
+        Message::User {
+            message: UserEnvelope { role: "user".to_owned(), content },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            uuid: None,
+            tool_use_result,
+        }
+    }
+
+    fn historical_server_tool_result(id: &str) -> Message {
+        user_with_content(
+            vec![ContentBlock::ServerToolResult {
+                tool_use_id: id.to_owned(),
+                content: Value::String("ok".to_owned()),
+            }],
+            None,
+        )
+    }
+
+    /// A wire tool-result variant the typed enum does not enumerate, so
+    /// it lands as `Unknown` and is recognised by its `type_str`.
+    fn historical_raw_tool_result(id: &str, type_str: &str) -> Message {
+        user_with_content(
+            vec![ContentBlock::Unknown {
+                type_str: type_str.to_owned(),
+                raw: serde_json::json!({
+                    "type": type_str,
+                    "tool_use_id": id,
+                    "content": "ok",
+                }),
+            }],
+            None,
+        )
+    }
+
+    /// A sub-agent result: keyed by the message-level `parent_tool_use_id`
+    /// with the payload on `tool_use_result`, not by a content block.
+    fn historical_parent_tool_use_result(id: &str) -> Message {
+        Message::User {
+            message: UserEnvelope { role: "user".to_owned(), content: Vec::new() },
+            session_id: String::new(),
+            parent_tool_use_id: Some(id.to_owned()),
+            uuid: None,
+            tool_use_result: Some(serde_json::json!({"content": "ok"})),
+        }
+    }
+
+    /// One entry per emitted record, with every field it carried, so a
+    /// test can pin values and emission count rather than existence.
+    #[derive(Clone)]
+    struct CapturedEvent {
+        level: tracing::Level,
+        name: String,
+        fields: Vec<(String, String)>,
+    }
+
+    impl CapturedEvent {
+        fn field(&self, name: &str) -> Option<&str> {
+            self.fields.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str())
+        }
+    }
+
     #[derive(Clone, Default)]
-    struct EventCapture(std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String)>>>);
+    struct EventCapture(std::sync::Arc<std::sync::Mutex<Vec<CapturedEvent>>>);
 
     impl EventCapture {
         fn names_at(&self, level: tracing::Level) -> Vec<String> {
             let seen = self.0.lock().expect("capture");
-            seen.iter()
-                .filter(|(seen_level, _)| *seen_level == level)
-                .map(|(_, name)| name.clone())
-                .collect()
+            seen.iter().filter(|e| e.level == level).map(|e| e.name.clone()).collect()
+        }
+
+        /// Every emission of `event_name`, in order.
+        fn records_named(&self, event_name: &str) -> Vec<CapturedEvent> {
+            let seen = self.0.lock().expect("capture");
+            seen.iter().filter(|e| e.name == event_name).cloned().collect()
         }
     }
 
-    struct EventNameVisitor(Option<String>);
+    #[derive(Default)]
+    struct EventFieldVisitor(Vec<(String, String)>);
 
-    impl tracing::field::Visit for EventNameVisitor {
-        // Every `event_name` arrives here - plain, `%` and `?` alike -
-        // because `record_str` forwards to this arm.
+    impl tracing::field::Visit for EventFieldVisitor {
+        // Every field arrives here - plain, `%` and `?` alike - because
+        // the typed `record_*` arms forward to this one.
         fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-            if field.name() == "event_name" {
-                self.0 = Some(format!("{value:?}").trim_matches('"').to_owned());
-            }
+            self.0
+                .push((field.name().to_owned(), format!("{value:?}").trim_matches('"').to_owned()));
         }
     }
 
@@ -460,10 +645,18 @@ mod tests {
             event: &tracing::Event<'_>,
             _ctx: tracing_subscriber::layer::Context<'_, S>,
         ) {
-            let mut visitor = EventNameVisitor(None);
+            let mut visitor = EventFieldVisitor::default();
             event.record(&mut visitor);
-            let name = visitor.0.unwrap_or_else(|| event.metadata().name().to_owned());
-            self.0.lock().expect("capture").push((*event.metadata().level(), name));
+            let fields = visitor.0;
+            let name = fields
+                .iter()
+                .find(|(key, _)| key == "event_name")
+                .map_or_else(|| event.metadata().name().to_owned(), |(_, value)| value.clone());
+            self.0.lock().expect("capture").push(CapturedEvent {
+                level: *event.metadata().level(),
+                name,
+                fields,
+            });
         }
     }
 
@@ -478,11 +671,23 @@ mod tests {
     /// Returns the capture AND the walked `App`, so liveness can be
     /// asserted from state rather than from records.
     fn capture_replay_of(history: &[Message]) -> (EventCapture, App) {
+        capture_replay_of_session(None, history)
+    }
+
+    /// [`capture_replay_of`] with the session id set, so a record's
+    /// `session_id` can be asserted as populated rather than present.
+    fn capture_replay_of_session(
+        session_id: Option<&str>,
+        history: &[Message],
+    ) -> (EventCapture, App) {
         use tracing_subscriber::layer::SubscriberExt;
 
         let capture = EventCapture::default();
         let subscriber = tracing_subscriber::registry().with(capture.clone());
         let mut app = App::test_default();
+        if let Some(id) = session_id {
+            app.set_session_id(Some(crate::agent::model::SessionId::new(id.to_owned())));
+        }
         tracing::subscriber::with_default(subscriber, || {
             load_resume_history(&mut app, history);
         });
@@ -678,6 +883,98 @@ mod tests {
         assert!(
             debug.iter().any(|name| name == "resume_user_text_rendered"),
             "the replay path's own debug trail is deliberately kept, saw {debug:?}",
+        );
+    }
+
+    const UNTERMINATED: &str = "resume_tool_call_unterminated";
+
+    /// Resuming the session you would open to diagnose a mid-tool death
+    /// has to leave a record naming what was running. One per call that
+    /// never saw a result, carrying the session and the call, because a
+    /// log ring multiplexes every session and "died mid-tool" is only
+    /// half the question - the other half is "doing what".
+    #[test]
+    fn replay_names_each_tool_call_that_never_saw_a_result() {
+        let history = vec![
+            historical_user_text("run something"),
+            historical_tool_use("toolu_done"),
+            historical_tool_result("toolu_done", false),
+            historical_tool_use_named(
+                "toolu_dead",
+                "Bash",
+                serde_json::json!({"command": "sleep 900"}),
+            ),
+            historical_tool_use_named(
+                "toolu_dead_two",
+                "Read",
+                serde_json::json!({"file_path": "/tmp/x"}),
+            ),
+        ];
+        let (capture, _app) = capture_replay_of_session(Some("sess-resume-1"), &history);
+
+        let records = capture.records_named(UNTERMINATED);
+        let ids: Vec<Option<&str>> = records.iter().map(|r| r.field("tool_call_id")).collect();
+        assert_eq!(
+            records.len(),
+            2,
+            "one record per unterminated call, no more and no fewer: {ids:?}",
+        );
+        assert_eq!(
+            ids,
+            vec![Some("toolu_dead"), Some("toolu_dead_two")],
+            "each record names its own call, in the order the walk met them",
+        );
+        assert_eq!(
+            records.iter().map(|r| r.field("tool_name")).collect::<Vec<_>>(),
+            vec![Some("Bash"), Some("Read")],
+            "the record answers `doing what`, not only `how many`",
+        );
+        for record in &records {
+            assert_eq!(record.level, tracing::Level::WARN, "an unfinished call is not a success");
+            assert_eq!(record.field("outcome"), Some("failure"));
+            assert_eq!(
+                record.field("session_id"),
+                Some("sess-resume-1"),
+                "unattributable in a multiplexed ring without this",
+            );
+        }
+    }
+
+    /// The count has to come from calls that genuinely never saw a
+    /// result, not from the post-walk sweep - which also force-fails
+    /// calls that completed and were then re-stated (#558). A resume
+    /// whose results all arrived emits nothing, in every wire shape a
+    /// result arrives in.
+    #[test]
+    fn replay_names_nothing_when_every_result_arrived() {
+        let (capture, _app) = capture_replay_of(&replay_fixture());
+        assert!(
+            capture.records_named(UNTERMINATED).is_empty(),
+            "the standard fixture terminates every call, including a re-stated one",
+        );
+
+        let exotic = vec![
+            historical_user_text("run something"),
+            historical_tool_use_named("toolu_mcp", "mcp__x__y", serde_json::json!({})),
+            historical_raw_tool_result("toolu_mcp", "mcp_tool_result"),
+            historical_server_tool_use("toolu_srv", "web_search"),
+            historical_server_tool_result("toolu_srv"),
+            historical_tool_use_named("toolu_sub", "Task", serde_json::json!({})),
+            historical_parent_tool_use_result("toolu_sub"),
+        ];
+        let (capture, app) = capture_replay_of(&exotic);
+        assert!(
+            app.lookup_tool_call("toolu_mcp").is_some(),
+            "the fixture has to reach the walk for its silence to mean anything",
+        );
+        assert!(
+            capture.records_named(UNTERMINATED).is_empty(),
+            "a result counts however it is shaped on the wire, saw {:?}",
+            capture
+                .records_named(UNTERMINATED)
+                .iter()
+                .map(|r| r.field("tool_call_id"))
+                .collect::<Vec<_>>(),
         );
     }
 
