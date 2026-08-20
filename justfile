@@ -133,9 +133,9 @@ ci-watch run_id="":
     #!/usr/bin/env bash
     set -euo pipefail
 
-    # Truncated up front, and written on every exit path below, so the
-    # file always answers for this invocation rather than handing back
-    # the previous one's verdict.
+    # Truncated up front, so the file never hands back a previous
+    # invocation's verdict, and written on the paths that reach a
+    # verdict. An abort before one exists leaves it empty, not stale.
     verdict_file="target/ci-watch-verdict"
     mkdir -p target
     : > "$verdict_file"
