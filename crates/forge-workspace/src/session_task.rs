@@ -1067,7 +1067,7 @@ fn maybe_kick_worker_on_connected(
                 target: "forge_workspace::team",
                 label = %label,
                 error = %err,
-                "no initial-kick file found for worker label; worker spawn proceeds without a kick prompt (worker stays idle until lead dispatches). Populate ~/.claude/forge-team/<label>/kick.md (copy from docs/forge-team-defaults/<label>/) or use the workers__create_role MCP tool."
+                "no initial-kick file found for worker label; worker spawn proceeds without a kick prompt (worker stays idle until lead dispatches). Populate ~/.claude/forge-team/<label>/kick.md or use the workers__create_role MCP tool."
             );
             return;
         }
@@ -2304,7 +2304,7 @@ mod team_hook_tests {
         SessionKey::from_session_id(format!("__spawn_{project_name}__"))
     }
 
-    /// Seed the canonical shipped default charters (implementer + lead)
+    /// Seed an `implementer` and a `lead` role
     /// into a process-persistent tempdir (written once) and return a
     /// guard that points `forge_team_root()` at it under the shared
     /// team-root lock. Every test here binds the returned guard (`let
@@ -2315,19 +2315,20 @@ mod team_hook_tests {
         let dir = ROOT.get_or_init(|| {
             let tmp = tempfile::tempdir().expect("tempdir");
             let root = tmp.path();
-            // Seed using the shipped defaults under docs/forge-team-defaults/.
-            // `include_str!` paths are relative to THIS source file.
+            // Fixture text rather than shipped content. The implementer
+            // kick carries the two properties `worker_connected_for_role_
+            // label_dispatches_kick_prompt` asserts on - activation framing,
+            // and no instruction to self-poll issues - so the fixture states
+            // what that test needs instead of inheriting it from a file.
+            // `lead` keeps the real constant: two spawn tests compare
+            // against it by identity.
             for (label, charter, kick) in [
                 (
                     "implementer",
-                    include_str!("../../../docs/forge-team-defaults/implementer/charter.md"),
-                    include_str!("../../../docs/forge-team-defaults/implementer/kick.md"),
+                    "test implementer charter",
+                    "You are now active as the implementer, idle and awaiting a plan from the lead.",
                 ),
-                (
-                    "lead",
-                    DEFAULT_LEAD_CHARTER,
-                    include_str!("../../../docs/forge-team-defaults/lead/kick.md"),
-                ),
+                ("lead", DEFAULT_LEAD_CHARTER, "You are now active as the lead."),
             ] {
                 let dir = root.join(label);
                 std::fs::create_dir_all(&dir).expect("create role dir");
