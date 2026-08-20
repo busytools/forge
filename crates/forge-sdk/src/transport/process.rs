@@ -742,11 +742,14 @@ async fn drain_stderr(
     callback: Option<Arc<dyn Fn(String) + Send + Sync>>,
 ) -> String {
     let mut reader = BufReader::new(stderr);
-    let mut buf = String::new();
+    let mut raw = Vec::new();
     let mut tail = StderrTail::default();
     loop {
-        buf.clear();
-        let n = match reader.read_line(&mut buf).await {
+        raw.clear();
+        // Bytes, not `read_line`: that returns InvalidData on non-UTF-8
+        // and would end the drain at the first bad byte, losing every
+        // line after it.
+        let n = match reader.read_until(b'\n', &mut raw).await {
             Ok(n) => n,
             Err(e) => {
                 debug!(?e, "stderr read failed");
@@ -756,16 +759,17 @@ async fn drain_stderr(
         if n == 0 {
             break;
         }
-        while matches!(buf.chars().last(), Some('\n' | '\r')) {
-            buf.pop();
+        let mut line = String::from_utf8_lossy(&raw).into_owned();
+        while matches!(line.chars().last(), Some('\n' | '\r')) {
+            line.pop();
         }
-        tail.push(&buf);
+        tail.push(&line);
         if let Some(cb) = callback.as_ref() {
-            cb(buf.clone());
-        } else if buf.starts_with("ERROR") || buf.starts_with("Error") {
-            tracing::warn!(target: "forge_sdk::stderr", line = %buf, "claude stderr");
+            cb(line.clone());
+        } else if line.starts_with("ERROR") || line.starts_with("Error") {
+            tracing::warn!(target: "forge_sdk::stderr", line = %line, "claude stderr");
         } else {
-            tracing::info!(target: "forge_sdk::stderr", line = %buf, "claude stderr");
+            tracing::info!(target: "forge_sdk::stderr", line = %line, "claude stderr");
         }
     }
     tail.into_string()
@@ -1040,6 +1044,35 @@ mod tests {
                 assert!(
                     stderr.contains("boom: unknown flag --nope"),
                     "expected drained stderr in the error, got: {stderr:?}"
+                );
+            }
+            other => panic!("expected Process error, got {other:?}"),
+        }
+    }
+
+    /// stderr is inherited by everything `claude` spawns, so a stray
+    /// non-UTF-8 byte is realistic. It must not cost the drain the rest
+    /// of the stream - the reason arrives last, after the bad byte.
+    #[tokio::test]
+    async fn close_reports_stderr_past_invalid_utf8() {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c").arg(
+            "printf 'early-line\\n\\377\\376bad\\n' >&2; \
+             printf 'after-bad\\n' >&2; \
+             printf 'THE REAL REASON' >&2; \
+             exit 9",
+        );
+
+        match spawn_test_subprocess(cmd).close().await {
+            Err(Error::Process { exit_code, stderr }) => {
+                assert_eq!(exit_code, Some(9));
+                assert!(
+                    stderr.contains("after-bad"),
+                    "drain died at the invalid byte, losing the rest: {stderr:?}"
+                );
+                assert!(
+                    stderr.contains("THE REAL REASON"),
+                    "final line without a trailing newline was dropped: {stderr:?}"
                 );
             }
             other => panic!("expected Process error, got {other:?}"),
