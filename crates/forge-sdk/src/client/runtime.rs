@@ -241,7 +241,10 @@ async fn handle_line(
 
 async fn close_subprocess(subprocess: &mut Subprocess) {
     if let Err(e) = subprocess.close().await {
-        tracing::debug!(
+        // warn, not debug: `sdk.reader` is not raised to debug by the
+        // default directives or any diagnostics preset, so a debug event
+        // here is dropped at the filter on every shipped configuration.
+        tracing::warn!(
             target: crate::logging::targets::SDK_READER,
             error = %e,
             "reader task: subprocess close error",
