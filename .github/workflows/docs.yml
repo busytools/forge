@@ -12,10 +12,14 @@ on:
 permissions:
   contents: read
 
-# Serialise deploys without cancelling one mid-publish; a cancelled
-# deploy can leave the Pages site half-updated.
+# Keyed on the ref so runs only ever contend with other runs on the same
+# branch. An unkeyed group put every branch in one queue, where only one
+# run may sit pending: a third arrival cancels the second, so unrelated
+# pull requests cancelled each other, and one wedged run held docs for
+# the whole repo. Only the deploy needs a shared queue, and it takes one
+# of its own below.
 concurrency:
-  group: pages
+  group: docs-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -59,6 +63,13 @@ jobs:
     needs: build
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    # The one thing that genuinely cannot run twice at once: there is a
+    # single Pages site. Held at job level so waiting for it never holds
+    # up a build. Not cancelled in progress either, because a cancelled
+    # deploy can leave the site half-updated.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     permissions:
       pages: write
       id-token: write
