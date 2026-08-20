@@ -116,6 +116,12 @@ check: fmt-check unicode-punct-check clippy test-all doc
 # headSha is checked before watching, so a superseded run fails in under
 # a second instead of after a full test suite.
 #
+# The run is resolved by workflow, not by recency. A push fires both CI
+# and docs, `--limit 1` returns whichever of the two the API happens to
+# list first, and because both built the same sha the headSha check
+# below waves the wrong one through - a real verdict for the wrong
+# workflow.
+#
 # Watch CI to completion and report the real verdict; optional run id.
 ci-watch run_id="":
     #!/usr/bin/env bash
@@ -126,7 +132,7 @@ ci-watch run_id="":
 
     run_id="{{run_id}}"
     if [ -z "$run_id" ]; then
-        run_id=$(gh run list --branch "$branch" --limit 1 \
+        run_id=$(gh run list --branch "$branch" --workflow ci.yml --limit 1 \
             --json databaseId --jq '.[0].databaseId // empty')
     fi
     if [ -z "$run_id" ]; then
