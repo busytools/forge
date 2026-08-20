@@ -650,14 +650,14 @@ mod tests {
             concat!(
                 r#"{"type":"control_response","response":{"response":{"#,
                 r#""account":{"email":"a@b.co"},"#,
-                r#""note":"see ~/.claude-profile4 and `alexandra/proxy`"}}}"#
+                r#""note":"see ~/.claude-alt and `alexandra/proxy`"}}}"#
             )
             .to_string(),
         ));
 
         let body = log.to_jsonl().expect("jsonl serialise");
 
-        for leak in ["alexandra", "a@b.co", ".claude-profile4"] {
+        for leak in ["alexandra", "a@b.co", ".claude-alt"] {
             assert!(!body.contains(leak), "to_jsonl leaked {leak}:\n{body}");
         }
     }

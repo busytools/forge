@@ -8950,7 +8950,7 @@ config_dir = "~/.claude-gateway"
 
 [[accounts]]
 display_name = "Personal"
-config_dir = "~/.claude-profile3"
+config_dir = "~/.claude-second"
 "#,
         )
         .expect("write forge.toml");

@@ -955,8 +955,8 @@ mod tests {
         // `classify_known_infra` can't name it. The configured match must be
         // tried FIRST or the row degrades to a raw-invocation generic process.
         let servers = vec![configured("airmail", "node", &["/Users/x/airmail/dist/server.js"])];
-        let label = resolve_infra_label("node /Users/x/airmail/dist/server.js", &servers)
-            .expect("airmail");
+        let label =
+            resolve_infra_label("node /Users/x/airmail/dist/server.js", &servers).expect("airmail");
         assert_eq!(label.name, "airmail");
     }
 

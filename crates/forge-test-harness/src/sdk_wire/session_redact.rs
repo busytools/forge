@@ -55,7 +55,7 @@ fn path_regex() -> &'static regex::Regex {
 }
 
 /// A `claude` profile directory name, which [`path_regex`] cannot reach:
-/// it replaces only the home prefix, and `~/.claude-profile4` has no prefix at
+/// it replaces only the home prefix, and `~/.claude-alt` has no prefix at
 /// all. Bare `.claude` is the default config dir, so it is not matched.
 fn profile_regex() -> &'static regex::Regex {
     static RE: OnceLock<regex::Regex> = OnceLock::new();
@@ -920,7 +920,7 @@ mod tests {
     #[test]
     fn profile_dir_is_redacted_home_relative_and_absolute() {
         let v = redact_one(
-            &json!({"text": "see ~/.claude-profile4/CLAUDE.md and /Users/alexandra/.claude-gateway1/x"})
+            &json!({"text": "see ~/.claude-alt/CLAUDE.md and /Users/alexandra/.claude-gateway1/x"})
                 .to_string(),
         );
         assert_eq!(
@@ -1027,7 +1027,7 @@ mod tests {
     /// Keys go through the same rules as values, not the path rule alone.
     #[test]
     fn object_keys_get_every_rule_not_just_the_path_one() {
-        let mut v = json!({"~/.claude-profile4/settings.json": 1});
+        let mut v = json!({"~/.claude-alt/settings.json": 1});
         scrub_paths_recursive(&mut v);
         assert!(v.as_object().unwrap().contains_key("~/<redacted-profile>/settings.json"));
     }
@@ -1036,7 +1036,7 @@ mod tests {
     /// rule can reach.
     #[test]
     fn a_line_that_is_not_json_still_gets_the_text_rules() {
-        let line = "node:internal/fs: ENOENT /Users/alexandra/.claude-profile4/settings.json";
+        let line = "node:internal/fs: ENOENT /Users/alexandra/.claude-alt/settings.json";
         assert_eq!(
             WireRedactor::for_trace([line]).expect("discovers").redact_line(line).as_deref(),
             Ok("node:internal/fs: ENOENT <redacted-home>/<redacted-profile>/settings.json")

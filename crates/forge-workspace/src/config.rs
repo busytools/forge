@@ -793,14 +793,14 @@ env_file = "{file}"
     #[test]
     fn env_file_entries_join_the_project_env() {
         let dir = config_with_env_file(
-            "# a comment\n\nBUSYMAIL_TOKEN = tok-from-file\nQUOTED = \"in-quotes\"\n\
+            "# a comment\n\nAIRMAIL_TOKEN = tok-from-file\nQUOTED = \"in-quotes\"\n\
              SINGLE = 'in-singles'\nUNMATCHED = \"dangling\n",
             "",
         );
         let config = load_from_dir(dir.path()).expect("happy path");
         let env = &config.projects[0].env;
         assert_eq!(
-            env.get("BUSYMAIL_TOKEN").map(String::as_str),
+            env.get("AIRMAIL_TOKEN").map(String::as_str),
             Some("tok-from-file"),
             "comments and blank lines skipped, the key lands",
         );
@@ -880,13 +880,13 @@ display_name = "Stargate"
 config_dir = "~/.claude-stargate"
 
 [projects.forge.env]
-BUSYMAIL_MCP_URL = "https://mail.example/mcp"
+AIRMAIL_MCP_URL = "https://mail.example/mcp"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
         let project = &config.projects[0];
         assert_eq!(
-            project.env.get("BUSYMAIL_MCP_URL").map(String::as_str),
+            project.env.get("AIRMAIL_MCP_URL").map(String::as_str),
             Some("https://mail.example/mcp"),
             "[projects.<name>.env] lands on the named project",
         );
@@ -933,7 +933,7 @@ display_name = "Stargate"
 config_dir = "~/.claude-stargate"
 
 [projects.gamma.env]
-BUSYMAIL_TOKEN = "typo-in-the-project-name"
+AIRMAIL_TOKEN = "typo-in-the-project-name"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("undeclared project name must not load");
@@ -1003,7 +1003,7 @@ config_dir = "~/.claude-codex"
 ANTHROPIC_BASE_URL = "http://localhost:18765"
 
 [projects.forge.env]
-BUSYMAIL_TOKEN = "forge-only-secret"
+AIRMAIL_TOKEN = "forge-only-secret"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
@@ -1011,14 +1011,14 @@ BUSYMAIL_TOKEN = "forge-only-secret"
 
         let forge_env = session_env(named(&config, "forge"), &account.env);
         assert_eq!(
-            forge_env.get("BUSYMAIL_TOKEN").map(String::as_str),
+            forge_env.get("AIRMAIL_TOKEN").map(String::as_str),
             Some("forge-only-secret"),
             "the declaring project gets its own key",
         );
 
         let airmail_env = session_env(named(&config, "airmail"), &account.env);
         assert!(
-            !airmail_env.contains_key("BUSYMAIL_TOKEN"),
+            !airmail_env.contains_key("AIRMAIL_TOKEN"),
             "another project on the SAME account must not receive it, got: {airmail_env:?}",
         );
         assert_eq!(
@@ -1579,7 +1579,7 @@ accounts = ["acct-a"]
 [[orgs.projects]]
 name = "p1"
 path = "/tmp/p1"
-static_workers = ["planner", "researcher", "backend/custom"]
+static_workers = ["planner", "researcher", "p1/custom"]
 
 [[accounts]]
 display_name = "acct-a"
@@ -1590,7 +1590,7 @@ config_dir = "/tmp/acct-a"
         let p = cfg.projects.iter().find(|p| p.name == "p1").expect("p1 present");
         assert_eq!(
             p.static_workers,
-            vec!["planner".to_owned(), "researcher".to_owned(), "backend/custom".to_owned(),]
+            vec!["planner".to_owned(), "researcher".to_owned(), "p1/custom".to_owned(),]
         );
     }
 

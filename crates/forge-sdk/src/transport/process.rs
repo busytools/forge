@@ -770,7 +770,7 @@ mod tests {
             ))
             .settings("sentinel-settings-must-never-be-logged")
             .env("ANTHROPIC_AUTH_TOKEN", "sentinel-auth-must-never-be-logged")
-            .env("BUSYMAIL_TOKEN", "sentinel-airmail-must-never-be-logged")
+            .env("AIRMAIL_TOKEN", "sentinel-airmail-must-never-be-logged")
             .extra_arg("some-flag", Some("sentinel-extra-arg-must-never-be-logged".to_owned()))
             // A value shaped like a flag. Anything keying on a `--`
             // prefix rather than on a known name renders this one.

@@ -167,7 +167,7 @@ config_dir = "/tmp/forge-test-env-stargate"
 ACCOUNT_KEY = "account-value"
 
 [projects.forge.env]
-BUSYMAIL_TOKEN = "forge-value"
+AIRMAIL_TOKEN = "forge-value"
 "#,
     )
     .expect("write forge.toml");
@@ -182,7 +182,7 @@ BUSYMAIL_TOKEN = "forge-value"
         .expect("spawn forge");
     let env = handle.env();
     assert_eq!(
-        env.get("BUSYMAIL_TOKEN").map(String::as_str),
+        env.get("AIRMAIL_TOKEN").map(String::as_str),
         Some("forge-value"),
         "the project's declared env has to reach the handle, not just the helper",
     );
@@ -205,7 +205,7 @@ BUSYMAIL_TOKEN = "forge-value"
         .expect("spawn airmail");
     let other_env = other.env();
     assert!(
-        !other_env.contains_key("BUSYMAIL_TOKEN"),
+        !other_env.contains_key("AIRMAIL_TOKEN"),
         "a second project on the same account must not receive it: {other_env:?}",
     );
     assert_eq!(

@@ -5319,7 +5319,7 @@ mod tests {
     #[test]
     fn find_running_bucket_for_path_returns_matching_real_bucket() {
         let mut app = App::test_default();
-        let project_path = "/Users/dev/Projects/forge";
+        let project_path = "/Users/developer/Projects/forge";
         let real_key =
             forge_workspace::SessionKey::from_str_for_test("11111111-2222-3333-4444-555555555555");
         let mut real_bucket = crate::app::session::UiSession::new(real_key.clone());
@@ -5335,7 +5335,7 @@ mod tests {
     #[test]
     fn find_running_bucket_for_path_returns_none_when_no_match() {
         let app = App::test_default();
-        assert!(app.find_running_bucket_for_path("/Users/dev/Projects/forge").is_none());
+        assert!(app.find_running_bucket_for_path("/Users/developer/Projects/forge").is_none());
     }
 
     /// Regression for commit 23f46b8: when a worker session shares
@@ -5351,7 +5351,7 @@ mod tests {
         use forge_workspace::{ProjectKey, SessionKey};
 
         let mut app = App::test_default();
-        let project_path = "/Users/dev/Projects/forge";
+        let project_path = "/Users/developer/Projects/forge";
 
         let lead_key = SessionKey::from_str_for_test("aaaaaaaa-1111-2222-3333-444444444444");
         let worker_key = SessionKey::from_str_for_test("bbbbbbbb-1111-2222-3333-444444444444");
@@ -5367,7 +5367,7 @@ mod tests {
         // Inject the worker into the workspace's live_workers map so
         // the filter inside find_running_bucket_for_path sees it.
         let workspace = app.workspace.as_ref().expect("test_default wires a workspace");
-        let project_key = ProjectKey::new_for_test("-Users-dev-Projects-forge");
+        let project_key = ProjectKey::new_for_test("-Users-developer-Projects-forge");
         workspace.insert_live_worker(
             &project_key,
             WorkerEntry {

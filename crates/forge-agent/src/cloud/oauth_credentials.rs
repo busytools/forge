@@ -271,9 +271,9 @@ pub async fn refresh_via_cli_spawn(config_dir: &Path) -> Result<OauthCredentials
 /// under. Encoded as `Claude Code-credentials-<sha256-prefix>` where
 /// `<sha256-prefix>` is the first 8 lowercase hex characters of the
 /// SHA-256 hash of the `<config_dir>` path *as a string*. Same scheme
-/// the official `claude` CLI uses (verified empirically against
-/// 2.1.117 - `~/.claude-{nf,gateway,stargate}` on the dev box all
-/// hashed correctly).
+/// the official `claude` CLI uses: verified against the entries CLI
+/// 2.1.117 had actually written, for several `~/.claude-<profile>`
+/// dirs at once.
 #[cfg(target_os = "macos")]
 fn keychain_service_name(config_dir: &Path) -> String {
     use sha2::{Digest, Sha256};
@@ -483,25 +483,25 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn keychain_service_name_uses_sha256_prefix_of_config_dir_string() {
-        // Verified empirically against `claude` 2.1.117 keychain
-        // entries on the development host: each `~/.claude-<flavour>`
-        // produces a service-name whose suffix is the first 8 hex
-        // chars of SHA-256(<absolute-path>).
+        // The scheme itself was confirmed against real CLI 2.1.117
+        // keychain entries; these pins are recomputed for paths that are
+        // safe to commit, so they hold the derivation still rather than
+        // re-proving the match.
         assert_eq!(
-            keychain_service_name(Path::new("/Users/dev/.claude-profile4")),
-            "Claude Code-credentials-7a8e7f2e"
+            keychain_service_name(Path::new("/Users/developer/.claude-one")),
+            "Claude Code-credentials-4a7e8760"
         );
         assert_eq!(
-            keychain_service_name(Path::new("/Users/dev/.claude-gateway")),
-            "Claude Code-credentials-0ed1d9d0"
+            keychain_service_name(Path::new("/Users/developer/.claude-two")),
+            "Claude Code-credentials-2edc62e9"
         );
         assert_eq!(
-            keychain_service_name(Path::new("/Users/dev/.claude-stargate")),
-            "Claude Code-credentials-afc8bc35"
+            keychain_service_name(Path::new("/Users/developer/.claude-three")),
+            "Claude Code-credentials-c465c265"
         );
         assert_eq!(
-            keychain_service_name(Path::new("/Users/dev/.claude")),
-            "Claude Code-credentials-e531d3a4"
+            keychain_service_name(Path::new("/Users/developer/.claude")),
+            "Claude Code-credentials-6f5e8f91"
         );
     }
 
@@ -513,10 +513,10 @@ mod tests {
     #[test]
     fn account_id_for_tmp_matches_keychain_service_name_suffix() {
         let dirs = [
-            "/Users/dev/.claude-profile4",
-            "/Users/dev/.claude-gateway",
-            "/Users/dev/.claude-stargate",
-            "/Users/dev/.claude",
+            "/Users/developer/.claude-one",
+            "/Users/developer/.claude-two",
+            "/Users/developer/.claude-three",
+            "/Users/developer/.claude",
         ];
         for dir in dirs {
             let path = Path::new(dir);

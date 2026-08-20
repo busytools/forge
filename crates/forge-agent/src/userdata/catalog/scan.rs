@@ -764,8 +764,8 @@ mod tests {
     #[test]
     fn sanitize_replaces_non_alphanum_with_hyphens() {
         assert_eq!(
-            sanitize_path("/Users/dev/projects/forge"),
-            "-Users-dev-projects-forge"
+            sanitize_path("/Users/developer/projects/forge"),
+            "-Users-developer-projects-forge"
         );
     }
 

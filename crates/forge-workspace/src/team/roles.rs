@@ -1,7 +1,8 @@
 //! File-driven engineering-team role definitions. Each role's charter
 //! and initial kick live in `~/.claude/forge-team/<label>/charter.md`
 //! and `~/.claude/forge-team/<label>/kick.md`. Labels may contain `/`
-//! for namespace subdirectories (e.g. `backend/researcher`).
+//! for namespace subdirectories (e.g. `<project>/researcher`), where the
+//! first segment is the forge.toml project name the role is scoped to.
 //!
 //! A role may also carry `resume-kick.md`, read by [`load_resume_kick`]
 //! when a worker resumes rather than starts fresh.
@@ -360,7 +361,7 @@ mod tests {
 
     #[test]
     fn validate_label_accepts_namespaced_labels() {
-        assert!(validate_label("backend/researcher").is_ok());
+        assert!(validate_label("data-modules/researcher").is_ok());
         assert!(validate_label("team/sub-team/role").is_ok());
     }
 
@@ -389,8 +390,8 @@ mod tests {
         };
         let dir = role_dir("planner").expect("simple label resolves");
         assert_eq!(dir, root.join("planner"));
-        let nested = role_dir("backend/researcher").expect("namespaced label resolves");
-        assert_eq!(nested, root.join("backend").join("researcher"));
+        let nested = role_dir("data-modules/researcher").expect("namespaced label resolves");
+        assert_eq!(nested, root.join("data-modules").join("researcher"));
     }
 
     #[test]
@@ -429,7 +430,10 @@ mod tests {
         let _guard = override_forge_team_root_for_test(root.to_path_buf());
 
         // bare project role resolves to <ns>/<label> from its own project
-        assert_eq!(resolve_role("steward", "data-modules").as_deref(), Some("data-modules/steward"));
+        assert_eq!(
+            resolve_role("steward", "data-modules").as_deref(),
+            Some("data-modules/steward")
+        );
         // from another project, the project role does NOT resolve (scope)
         assert_eq!(resolve_role("steward", "forge"), None);
         // global resolves anywhere when no project role shadows it

@@ -1033,7 +1033,10 @@ mod mock_tests {
         std::fs::write(steward.join("charter.md"), "description: Hub steward\n").expect("charter");
         let _guard = override_forge_team_root_for_test(tmp.path().to_path_buf());
 
-        assert_eq!(resolve_role("steward", "data-modules").as_deref(), Some("data-modules/steward"));
+        assert_eq!(
+            resolve_role("steward", "data-modules").as_deref(),
+            Some("data-modules/steward")
+        );
         assert_eq!(resolve_role("steward", "forge"), None);
     }
 
