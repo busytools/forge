@@ -457,6 +457,7 @@ async fn reader_loop(
             Ok(msg) => {
                 let session_id_for_sdk_msg =
                     frame_session_id(msg.session_id(), &client.session_id(), &spawn_session_id);
+                log_failed_mcp_servers(&msg, &session_id_for_sdk_msg);
                 if event_tx
                     .send(AgentEvent::SdkMessage { session_id: session_id_for_sdk_msg, msg })
                     .is_err()
@@ -478,6 +479,39 @@ async fn reader_loop(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
         "forge_sdk reader: events stream closed",
     );
+}
+
+/// Record any MCP server the init handshake reports as `failed`.
+///
+/// The handshake is the only place this surfaces: no status-change
+/// event follows on the wire, so a server that failed to bind is
+/// otherwise just absent, with nothing written anywhere. Reads the wire
+/// strings rather than the typed status enum, so a status the enum does
+/// not know yet cannot cost the whole list.
+fn log_failed_mcp_servers(msg: &forge_primitives::Message, session_id: &str) {
+    let forge_primitives::Message::System { subtype, data, .. } = msg else {
+        return;
+    };
+    if subtype != "init" {
+        return;
+    }
+    let failed = data
+        .get("mcp_servers")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|server| server.get("status").and_then(serde_json::Value::as_str) == Some("failed"))
+        .filter_map(|server| server.get("name").and_then(serde_json::Value::as_str));
+    for name in failed {
+        tracing::warn!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            event_name = "mcp_server_failed",
+            message = "MCP server failed to connect; it is absent from this session",
+            outcome = "failed",
+            session_id = %session_id,
+            server = %name,
+        );
+    }
 }
 
 pub(crate) async fn send_prompt(
@@ -1335,8 +1369,86 @@ pub(crate) fn clamp_percentage_to_u8(p: f64) -> u8 {
 mod tests {
     use super::{
         PendingQuestions, PendingResponses, build_forge_system_prompt, deliver_permission_response,
-        deliver_question_response, frame_session_id, synth_permission_request,
+        deliver_question_response, frame_session_id, log_failed_mcp_servers,
+        synth_permission_request,
     };
+
+    /// Buffer tracing output so an emitted record can be read back.
+    #[derive(Clone, Default)]
+    struct LogCapture(std::sync::Arc<parking_lot::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogCapture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture_logs(f: impl FnOnce()) -> String {
+        let capture = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt().with_writer(capture.clone()).finish();
+        tracing::subscriber::with_default(subscriber, f);
+        let bytes = capture.0.lock().clone();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    /// The frame is decoded into the real `Message` the reader forwards,
+    /// not hand-built: an init payload that stopped carrying
+    /// `mcp_servers` through `data` would leave the warn silent, which
+    /// is the failure a test of the extractor alone cannot see.
+    fn init_frame_with_a_failed_server() -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "init",
+            "session_id": "sess-1",
+            "model": "claude-opus-5[1m]",
+            "mcp_servers": [
+                {"name": "playwright", "status": "pending"},
+                {"name": "jetbrains", "status": "failed"},
+                {"name": "context7", "status": "connected"},
+                {"name": "notion", "status": "needs-auth"},
+            ],
+        }))
+        .expect("init frame decodes into Message")
+    }
+
+    #[test]
+    fn a_failed_mcp_server_in_the_init_frame_is_logged_with_its_name() {
+        let log = capture_logs(|| log_failed_mcp_servers(&init_frame_with_a_failed_server(), "s1"));
+        assert!(log.contains("jetbrains"), "the record names the failed server: {log}");
+        assert!(log.contains("s1"), "the record carries the resolved session id: {log}");
+    }
+
+    #[test]
+    fn servers_that_did_not_fail_are_not_logged() {
+        let log = capture_logs(|| log_failed_mcp_servers(&init_frame_with_a_failed_server(), "s1"));
+        for healthy in ["playwright", "context7", "notion"] {
+            assert!(!log.contains(healthy), "{healthy} did not fail, so it is not logged: {log}");
+        }
+    }
+
+    #[test]
+    fn a_non_init_system_frame_logs_nothing() {
+        let msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "info",
+            "session_id": "sess-1",
+            "mcp_servers": [{"name": "jetbrains", "status": "failed"}],
+        }))
+        .expect("info frame decodes");
+        let log = capture_logs(|| log_failed_mcp_servers(&msg, "s1"));
+        assert!(log.is_empty(), "only the init handshake is scanned: {log}");
+    }
 
     #[test]
     fn frame_session_id_prefers_own_then_live_then_spawn() {
