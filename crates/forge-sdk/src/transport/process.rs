@@ -192,8 +192,9 @@ pub struct Subprocess {
     /// see EOF on stdin until then.
     writer_task: Option<JoinHandle<()>>,
     /// Stderr drain task - best-effort logged or forwarded to the
-    /// caller's callback. Joined during [`close`](Self::close).
-    stderr_task: Option<JoinHandle<()>>,
+    /// caller's callback. Joined during [`close`](Self::close), which
+    /// takes its returned tail for [`Error::Process`].
+    stderr_task: Option<JoinHandle<String>>,
     /// The child handle. [`close`](Self::close) waits on it (with
     /// timeout) and SIGKILLs on hang.
     child: Option<Child>,
@@ -481,37 +482,51 @@ impl Subprocess {
 
         // Wait for child exit, with a SIGKILL timeout so a stuck CLI
         // doesn't pin the disconnect path forever.
-        let child_result = if let Some(mut child) = self.child.take() {
-            match tokio::time::timeout(CLOSE_WAIT_TIMEOUT, child.wait()).await {
-                Ok(Ok(status)) if status.success() => Ok(()),
-                Ok(Ok(status)) => {
-                    Err(Error::Process { exit_code: status.code(), stderr: String::new() })
+        if let Some(mut child) = self.child.take() {
+            let waited = tokio::time::timeout(CLOSE_WAIT_TIMEOUT, child.wait()).await;
+            if waited.is_err() {
+                warn!("Subprocess::close timed out waiting for child; sending SIGKILL");
+                if let Err(e) = child.kill().await {
+                    warn!(error = %e, "Subprocess::close: kill() failed");
                 }
+            }
+            // Release the child before joining, so `kill_on_drop` still
+            // fires on the wait-failed path.
+            drop(child);
+            // Join before building the error rather than reading a shared
+            // buffer at construction, which would race the last line.
+            let stderr = label_stderr_tail(&self.join_stderr_tail().await);
+            match waited {
+                Ok(Ok(status)) if status.success() => Ok(()),
+                Ok(Ok(status)) => Err(Error::Process { exit_code: status.code(), stderr }),
                 Ok(Err(e)) => Err(Error::Io(e)),
                 Err(_elapsed) => {
-                    warn!("Subprocess::close timed out waiting for child; sending SIGKILL");
-                    if let Err(e) = child.kill().await {
-                        warn!(error = %e, "Subprocess::close: kill() failed");
+                    let mut reason = String::from("close timeout - child killed");
+                    if !stderr.is_empty() {
+                        reason.push('\n');
+                        reason.push_str(&stderr);
                     }
-                    Err(Error::Process {
-                        exit_code: None,
-                        stderr: String::from("close timeout - child killed"),
-                    })
+                    Err(Error::Process { exit_code: None, stderr: reason })
                 }
             }
         } else {
+            self.join_stderr_tail().await;
             Ok(())
-        };
-
-        // Best-effort drain of the stderr task. We don't surface its
-        // status - it's a logging sink.
-        if let Some(task) = self.stderr_task.take()
-            && let Err(e) = task.await
-        {
-            debug!(error = %e, "stderr drain task ended abnormally");
         }
+    }
 
-        child_result
+    /// Join the stderr drain task and take its retained tail. Errors
+    /// are best-effort - it's a logging sink, so a dead task costs the
+    /// tail rather than the close.
+    async fn join_stderr_tail(&mut self) -> String {
+        let Some(task) = self.stderr_task.take() else { return String::new() };
+        match task.await {
+            Ok(tail) => tail,
+            Err(e) => {
+                debug!(error = %e, "stderr drain task ended abnormally");
+                String::new()
+            }
+        }
     }
 }
 
@@ -682,36 +697,96 @@ fn spawn_writer_task(
     )
 }
 
+/// Prefix the retained tail so it reads as the last thing the CLI
+/// wrote rather than as the cause. Nothing here can tell whether it is
+/// causal: a session whose only stderr was a startup warning attaches
+/// that warning to an exit hours later.
+fn label_stderr_tail(tail: &str) -> String {
+    if tail.is_empty() { String::new() } else { format!("last stderr from the CLI: {tail}") }
+}
+
+/// Upper bound on the drained stderr retained for [`Error::Process`].
+/// Large enough for a CLI failure message and its context, small
+/// enough that a chatty child can't pin unbounded memory for the life
+/// of the process.
+const STDERR_TAIL_CAP: usize = 8 * 1024;
+
+/// The most recent drained stderr lines, capped at [`STDERR_TAIL_CAP`]
+/// bytes. Oldest lines are dropped first: a failing CLI puts its
+/// reason last.
+#[derive(Default)]
+struct StderrTail {
+    lines: std::collections::VecDeque<String>,
+    bytes: usize,
+}
+
+impl StderrTail {
+    fn push(&mut self, line: &str) {
+        // Keep the end of an over-cap line, for the same reason we evict
+        // oldest-first.
+        let mut start = line.len().saturating_sub(STDERR_TAIL_CAP);
+        while !line.is_char_boundary(start) {
+            start += 1;
+        }
+        let kept = &line[start..];
+        self.bytes += kept.len() + 1;
+        self.lines.push_back(kept.to_owned());
+        // Never evict the newest line: on a one-line overflow it is the
+        // whole message.
+        while self.bytes > STDERR_TAIL_CAP && self.lines.len() > 1 {
+            let Some(dropped) = self.lines.pop_front() else { break };
+            self.bytes -= dropped.len() + 1;
+        }
+    }
+
+    fn into_string(self) -> String {
+        Vec::from(self.lines).join("\n")
+    }
+}
+
 /// Background drain for the subprocess stderr pipe. Reads lines as UTF-8
 /// (lossy on invalid bytes) and forwards each to the caller-supplied
 /// callback when set. Silently consumes lines otherwise so the pipe
 /// never blocks.
-async fn drain_stderr(stderr: ChildStderr, callback: Option<Arc<dyn Fn(String) + Send + Sync>>) {
+///
+/// Returns the tail of what it drained, which [`Subprocess::close`]
+/// attaches to [`Error::Process`] on a non-zero exit.
+async fn drain_stderr(
+    stderr: ChildStderr,
+    callback: Option<Arc<dyn Fn(String) + Send + Sync>>,
+) -> String {
     let mut reader = BufReader::new(stderr);
-    let mut buf = String::new();
+    let mut raw = Vec::new();
+    let mut tail = StderrTail::default();
     loop {
-        buf.clear();
-        let n = match reader.read_line(&mut buf).await {
+        raw.clear();
+        // Bytes, not `read_line`: that returns InvalidData on non-UTF-8
+        // and would end the drain at the first bad byte, losing every
+        // line after it.
+        let n = match reader.read_until(b'\n', &mut raw).await {
             Ok(n) => n,
             Err(e) => {
                 debug!(?e, "stderr read failed");
-                return;
+                break;
             }
         };
         if n == 0 {
-            return;
+            break;
         }
-        while matches!(buf.chars().last(), Some('\n' | '\r')) {
-            buf.pop();
+        let mut line = String::from_utf8_lossy(&raw).into_owned();
+        while matches!(line.chars().last(), Some('\n' | '\r')) {
+            line.pop();
         }
+        tail.push(&line);
         if let Some(cb) = callback.as_ref() {
-            cb(buf.clone());
-        } else if buf.starts_with("ERROR") || buf.starts_with("Error") {
-            tracing::warn!(target: "forge_sdk::stderr", line = %buf, "claude stderr");
+            cb(line.clone());
+        } else if line.starts_with("ERROR") || line.starts_with("Error") {
+            tracing::warn!(target: "forge_sdk::stderr", line = %line, "claude stderr");
         } else {
-            tracing::info!(target: "forge_sdk::stderr", line = %buf, "claude stderr");
+            tracing::info!(target: "forge_sdk::stderr", line = %line, "claude stderr");
         }
     }
+    tail.into_string()
 }
 
 #[cfg(test)]
@@ -897,9 +972,13 @@ mod tests {
     fn spawn_sleep_subprocess(secs: u64) -> Subprocess {
         let mut cmd = Command::new("/bin/sleep");
         cmd.arg(secs.to_string());
+        spawn_test_subprocess(cmd)
+    }
+
+    fn spawn_test_subprocess(mut cmd: Command) -> Subprocess {
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.kill_on_drop(true);
-        let mut child = cmd.spawn().expect("spawn /bin/sleep");
+        let mut child = cmd.spawn().expect("spawn test child");
         let stdin = child.stdin.take().expect("stdin");
         let stdout = child.stdout.take().expect("stdout");
         let stderr = child.stderr.take().expect("stderr");
@@ -947,6 +1026,75 @@ mod tests {
                 );
             }
             other => panic!("expected Process error from kill, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stderr_tail_keeps_the_last_lines_within_cap() {
+        let mut tail = StderrTail::default();
+        for i in 0..20_000 {
+            tail.push(&format!("line {i}"));
+        }
+        let out = tail.into_string();
+        assert!(out.len() <= STDERR_TAIL_CAP, "tail grew to {} bytes", out.len());
+        assert!(out.contains("line 19999"), "tail dropped the newest line");
+        assert!(!out.contains("line 0\n"), "tail kept the oldest line");
+
+        let mut tail = StderrTail::default();
+        tail.push(&format!("{}REASON_AT_END", "x".repeat(STDERR_TAIL_CAP * 2)));
+        let out = tail.into_string();
+        assert!(out.len() <= STDERR_TAIL_CAP, "tail grew to {} bytes", out.len());
+        assert!(!out.is_empty(), "an oversized sole line was evicted to nothing");
+        assert!(out.ends_with("REASON_AT_END"), "kept the head of an over-cap line, not the end");
+    }
+
+    #[tokio::test]
+    async fn close_reports_drained_stderr_on_nonzero_exit() {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c").arg("echo 'boom: unknown flag --nope' >&2; exit 3");
+
+        match spawn_test_subprocess(cmd).close().await {
+            Err(Error::Process { exit_code, stderr }) => {
+                assert_eq!(exit_code, Some(3));
+                assert!(
+                    stderr.contains("boom: unknown flag --nope"),
+                    "expected drained stderr in the error, got: {stderr:?}"
+                );
+                assert!(
+                    stderr.starts_with("last stderr from the CLI:"),
+                    "tail must be labelled, not presented as the cause: {stderr:?}"
+                );
+            }
+            other => panic!("expected Process error, got {other:?}"),
+        }
+    }
+
+    /// stderr is inherited by everything `claude` spawns, so a stray
+    /// non-UTF-8 byte is realistic. It must not cost the drain the rest
+    /// of the stream - the reason arrives last, after the bad byte.
+    #[tokio::test]
+    async fn close_reports_stderr_past_invalid_utf8() {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c").arg(
+            "printf 'early-line\\n\\377\\376bad\\n' >&2; \
+             printf 'after-bad\\n' >&2; \
+             printf 'THE REAL REASON' >&2; \
+             exit 9",
+        );
+
+        match spawn_test_subprocess(cmd).close().await {
+            Err(Error::Process { exit_code, stderr }) => {
+                assert_eq!(exit_code, Some(9));
+                assert!(
+                    stderr.contains("after-bad"),
+                    "drain died at the invalid byte, losing the rest: {stderr:?}"
+                );
+                assert!(
+                    stderr.contains("THE REAL REASON"),
+                    "final line without a trailing newline was dropped: {stderr:?}"
+                );
+            }
+            other => panic!("expected Process error, got {other:?}"),
         }
     }
 }
