@@ -400,7 +400,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             app.needs_redraw = false;
             last_render = Instant::now();
         }
-        crate::perf::record_iteration(crate::perf::IterationCost {
+        crate::perf::record_iteration(&crate::perf::IterationCost {
             drain_ms,
             input_ms,
             updates_ms,

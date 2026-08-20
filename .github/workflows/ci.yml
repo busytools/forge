@@ -44,6 +44,7 @@ jobs:
           shared-key: cargo-${{ runner.os }}
           key: clippy
       - run: cargo clippy --all-targets --workspace -- -D warnings
+      - run: cargo clippy --all-targets --workspace --all-features -- -D warnings
 
   test:
     name: cargo nextest

@@ -22,13 +22,20 @@ fmt:
     cargo fmt
 
 # Lint everything (lib, tests, examples, bins) with warnings as errors.
-# Mirrors CI's `cargo clippy --all-targets --workspace -- -D warnings`.
-# `RUSTFLAGS=-D warnings` matches CI's workflow-level env (#257); the
-# `-- -D warnings` after the dash-dash applies to clippy's own lints
-# and the env covers everything else cargo invokes (rustc compile
-# warnings on test/example/bin targets that clippy might let through).
+# Mirrors CI's two clippy invocations. `RUSTFLAGS=-D warnings` matches
+# CI's workflow-level env (#257); the `-- -D warnings` after the
+# dash-dash applies to clippy's own lints and the env covers everything
+# else cargo invokes (rustc compile warnings on test/example/bin targets
+# that clippy might let through).
+#
+# Both feature sets run because neither covers the other: without
+# `--all-features` nothing compiles the perf-gated module, and with it
+# nothing compiles the `cfg(not(feature = ...))` branches. Every other
+# job in CI is already on the flag, so the bare invocation is the only
+# thing keeping the default build linted at all.
 clippy:
     RUSTFLAGS="-D warnings" cargo clippy --all-targets --workspace -- -D warnings
+    RUSTFLAGS="-D warnings" cargo clippy --all-targets --workspace --all-features -- -D warnings
 
 # Run the forge-sdk test suite via nextest.
 # `RUSTFLAGS=-D warnings` mirrors CI; without it the test-target

@@ -404,7 +404,7 @@ mod enabled {
     /// Fold one pass of the app loop into the open window. Called on
     /// every iteration, including the ones that never render, so it
     /// touches nothing but fixed-size state.
-    pub(crate) fn record_iteration(cost: super::IterationCost) {
+    pub(crate) fn record_iteration(cost: &super::IterationCost) {
         let logging_enabled = LOG_FILE.with(|f| f.borrow().is_some());
         if !logging_enabled {
             return;
@@ -824,10 +824,10 @@ mod enabled {
             let _logger = PerfLogger::open(tmp.path()).expect("perf log opens");
 
             for _ in 0..6 {
-                record_iteration(cost(0.3, 0.05, 0.1, None, false));
+                record_iteration(&cost(0.3, 0.05, 0.1, None, false));
             }
             for _ in 0..4 {
-                record_iteration(cost(0.3, 0.05, 0.1, Some(6.0), true));
+                record_iteration(&cost(0.3, 0.05, 0.1, Some(6.0), true));
             }
             flush_frame_summary();
 
@@ -860,12 +860,12 @@ mod enabled {
             let _logger = PerfLogger::open(tmp.path()).expect("perf log opens");
 
             for _ in 0..90 {
-                record_iteration(cost(0.0, 0.0, 0.0, Some(2.0), true));
+                record_iteration(&cost(0.0, 0.0, 0.0, Some(2.0), true));
             }
             for _ in 0..9 {
-                record_iteration(cost(0.0, 0.0, 0.0, Some(12.0), true));
+                record_iteration(&cost(0.0, 0.0, 0.0, Some(12.0), true));
             }
-            record_iteration(cost(0.0, 0.0, 0.0, Some(80.0), true));
+            record_iteration(&cost(0.0, 0.0, 0.0, Some(80.0), true));
             flush_frame_summary();
 
             close_log_file();
@@ -887,7 +887,7 @@ mod enabled {
             let _logger = PerfLogger::open(tmp.path()).expect("perf log opens");
 
             for _ in 0..5000 {
-                record_iteration(cost(0.3, 0.05, 0.1, Some(1.0), true));
+                record_iteration(&cost(0.3, 0.05, 0.1, Some(1.0), true));
             }
             FRAME_BUFFER.with(|b| assert!(b.borrow().is_empty()));
             assert_eq!(read_log_lines(tmp.path()).len(), 1, "only the run_started header so far");
@@ -1167,13 +1167,13 @@ pub struct IterationCost {
 /// Fold one app-loop iteration into the rolling frame-cost window.
 #[cfg(feature = "perf")]
 #[inline]
-pub fn record_iteration(cost: IterationCost) {
+pub fn record_iteration(cost: &IterationCost) {
     enabled::record_iteration(cost);
 }
 
 #[cfg(not(feature = "perf"))]
 #[inline]
-pub fn record_iteration(_cost: IterationCost) {}
+pub fn record_iteration(_cost: &IterationCost) {}
 
 #[cfg(feature = "perf")]
 pub use enabled::{PerfLogger, Timer};
