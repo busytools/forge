@@ -20,25 +20,17 @@ use hudsucker::rcgen::{
 
 use crate::Error;
 
-/// Resolve the directory where the CA cert + key live, under forge's
-/// machine-local app-support base (`forge-tui/ca/`).
-///
-/// # Errors
-///
-/// Propagates [`crate::paths::app_support_dir`]'s error when no
-/// data/cache/home dir resolves.
-pub fn ca_dir() -> Result<PathBuf, Error> {
-    Ok(crate::paths::app_support_dir()?.join("ca"))
+/// The directory where the CA cert + key live, under the app-support
+/// base `app_support` (`forge-tui/ca/` in production). The caller
+/// supplies the base so a test can pass a tempdir.
+pub fn ca_dir(app_support: &Path) -> PathBuf {
+    app_support.join("ca")
 }
 
-/// Resolve the cert + key paths inside [`ca_dir`].
-///
-/// # Errors
-///
-/// Propagates [`ca_dir`]'s error.
-pub fn ca_paths() -> Result<(PathBuf, PathBuf), Error> {
-    let dir = ca_dir()?;
-    Ok((dir.join("ca-cert.pem"), dir.join("ca-key.pem")))
+/// The cert + key paths inside [`ca_dir`].
+pub fn ca_paths(app_support: &Path) -> (PathBuf, PathBuf) {
+    let dir = ca_dir(app_support);
+    (dir.join("ca-cert.pem"), dir.join("ca-key.pem"))
 }
 
 /// Generate a new CA if one doesn't already exist on disk; return
@@ -53,8 +45,8 @@ pub fn ca_paths() -> Result<(PathBuf, PathBuf), Error> {
 ///
 /// [`Error::Connection`] for I/O errors creating the dir, generating
 /// the key, writing the files, or setting Unix permissions.
-pub fn ensure_ca() -> Result<(PathBuf, PathBuf), Error> {
-    let (cert_path, key_path) = ca_paths()?;
+pub fn ensure_ca(app_support: &Path) -> Result<(PathBuf, PathBuf), Error> {
+    let (cert_path, key_path) = ca_paths(app_support);
     if cert_path.exists() && key_path.exists() {
         return Ok((cert_path, key_path));
     }
@@ -140,13 +132,13 @@ mod tests {
 
     #[test]
     fn ca_dir_returns_a_path_with_ca_leaf() {
-        let dir = ca_dir().expect("ca_dir should resolve on a normal dev machine");
+        let dir = ca_dir(Path::new("/tmp/forge-ca-fixture"));
         assert_eq!(dir.file_name().and_then(|s| s.to_str()), Some("ca"));
     }
 
     #[test]
     fn ca_paths_share_parent() {
-        let (cert, key) = ca_paths().expect("ca_paths");
+        let (cert, key) = ca_paths(Path::new("/tmp/forge-ca-fixture"));
         assert_eq!(cert.parent(), key.parent());
         assert_eq!(cert.file_name().and_then(|s| s.to_str()), Some("ca-cert.pem"));
         assert_eq!(key.file_name().and_then(|s| s.to_str()), Some("ca-key.pem"));
