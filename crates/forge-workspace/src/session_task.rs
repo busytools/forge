@@ -2316,12 +2316,13 @@ mod team_hook_tests {
             let tmp = tempfile::tempdir().expect("tempdir");
             let root = tmp.path();
             // Fixture text rather than shipped content. The implementer
-            // kick carries the two properties `worker_connected_for_role_
-            // label_dispatches_kick_prompt` asserts on - activation framing,
-            // and no instruction to self-poll issues - so the fixture states
-            // what that test needs instead of inheriting it from a file.
-            // `lead` keeps the real constant: two spawn tests compare
-            // against it by identity.
+            // kick carries all three properties
+            // `worker_connected_for_role_label_dispatches_kick_prompt`
+            // asserts on: activation framing, an await-a-plan line, and no
+            // instruction to self-poll issues. Stated here rather than
+            // inherited from a file, so a reader can see what the test
+            // needs without opening another one. `lead` keeps the real
+            // constant: two spawn tests compare against it by identity.
             for (label, charter, kick) in [
                 (
                     "implementer",
