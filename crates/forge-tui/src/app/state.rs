@@ -7775,6 +7775,44 @@ mod tests {
         );
     }
 
+    /// A live anchor blocks a fresh one: the position captured at the first
+    /// arm wins until it is consumed, so a later invalidation must not
+    /// re-capture wherever the reader has scrolled to since.
+    #[test]
+    fn viewport_first_arm_wins_while_the_preserved_anchor_is_live() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        for idx in 0..4 {
+            vp.set_message_height(idx, 5);
+        }
+        vp.mark_heights_valid();
+        vp.rebuild_prefix_sums();
+
+        // Heights are [5, 5, 5, 5], so row 7 sits 2 rows into message 1.
+        vp.auto_scroll = false;
+        vp.scroll_offset = 7;
+        vp.scroll_target = 7;
+        vp.scroll_pos = 7.0;
+
+        vp.invalidate_message(0);
+        let first_arm =
+            vp.scroll_anchor_to_restore().expect("a manual-scroll invalidation arms an anchor");
+        assert_eq!(first_arm, (1, 2), "the first arm captures where the reader was");
+
+        // The reader moves on to message 3 (row 17) with that anchor still live.
+        vp.scroll_offset = 17;
+        vp.scroll_target = 17;
+        vp.scroll_pos = 17.0;
+        vp.invalidate_message(2);
+
+        assert_eq!(
+            vp.scroll_anchor_to_restore(),
+            Some(first_arm),
+            "a second arm must not overwrite a preserved anchor that is still unconsumed",
+        );
+    }
+
     #[test]
     fn viewport_prioritizes_rows_above_preserved_anchor_until_restore_is_exact() {
         let mut vp = ChatViewport::new();
