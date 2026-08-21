@@ -457,6 +457,11 @@ pub struct UiSession {
     /// `/diff`.
     pub review_replies_waiting: Option<crate::app::ReviewRepliesWaiting>,
 
+    /// Whether the `app::review_waiting` boot recompute has run for this
+    /// session. Set before the spawn, so a session whose branch or store
+    /// read comes back empty is not re-queried on every tick.
+    pub review_waiting_hydrated: bool,
+
     /// Classification of the most recent `api_retry` on the in-flight
     /// turn, so a turn error that follows exhausted retries can name
     /// what actually killed it. Cleared when a turn starts.
@@ -636,6 +641,7 @@ impl Default for UiSession {
             input_draft_snapshot: Option::default(),
             failed_turn: Option::default(),
             review_replies_waiting: Option::default(),
+            review_waiting_hydrated: false,
             last_api_retry: Option::default(),
             auto_continue_due_at: Option::default(),
             auto_continue_attempts: 0,

@@ -229,6 +229,13 @@ fn apply_timer_tick(app: &mut App) {
     // project's subscriptions + stream connection status).
     app.refresh_gotify();
 
+    // Restore each session's review-replies-waiting count from the store
+    // once. Rides this tick because it needs the same
+    // `git_scan_cwd_for_session` derivation the scan below does, but it
+    // runs over EVERY session rather than the active one, so it must
+    // stay ahead of the early returns.
+    crate::app::review_waiting::hydrate_pending(app);
+
     let Some(active_key) = app.active_session_key.clone() else {
         return;
     };

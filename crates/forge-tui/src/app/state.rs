@@ -354,6 +354,11 @@ pub struct App {
     /// Mirrors the file_index channel pattern.
     pub git_diff_event_tx: std_mpsc::Sender<crate::app::git_diff::GitDiffEvent>,
     pub git_diff_event_rx: std_mpsc::Receiver<crate::app::git_diff::GitDiffEvent>,
+    /// Send / receive ends of the channel the one-shot
+    /// `crate::app::review_waiting` recompute tasks hand their result
+    /// back on. Same shape as `git_diff_event_*`.
+    pub review_waiting_event_tx: std_mpsc::Sender<crate::app::review_waiting::ReviewWaitingEvent>,
+    pub review_waiting_event_rx: std_mpsc::Receiver<crate::app::review_waiting::ReviewWaitingEvent>,
     /// Send / receive ends of the channel for the
     /// `crate::app::process_scanner` OS-walk scanner. Same shape
     /// as `git_diff_event_*` but carries `ProcessScanEvent`.
@@ -3328,6 +3333,7 @@ impl App {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<forge_workspace::SessionUpdate>();
         let (file_index_tx, file_index_rx) = std_mpsc::channel();
         let (git_diff_tx, git_diff_rx) = std_mpsc::channel();
+        let (review_waiting_tx, review_waiting_rx) = std_mpsc::channel();
         let (process_scan_tx, process_scan_rx) = std_mpsc::channel();
         let (cli_version_tx, cli_version_rx) = std_mpsc::channel();
         let (diff_overlay_tx, diff_overlay_rx) = std_mpsc::channel();
@@ -3385,6 +3391,8 @@ impl App {
             file_index_event_rx: file_index_rx,
             git_diff_event_tx: git_diff_tx,
             git_diff_event_rx: git_diff_rx,
+            review_waiting_event_tx: review_waiting_tx,
+            review_waiting_event_rx: review_waiting_rx,
             process_scan_event_tx: process_scan_tx,
             process_scan_event_rx: process_scan_rx,
             cli_version_event_tx: cli_version_tx,
