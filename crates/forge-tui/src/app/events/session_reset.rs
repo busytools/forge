@@ -428,28 +428,60 @@ mod tests {
         }
     }
 
-    /// One `(level, event_name)` per emitted record.
+    /// A record's `event_name` plus the attribution a reader needs to
+    /// act on it. An absent field reads as empty, which is exactly what
+    /// a stripped one reads as.
+    #[derive(Debug, Clone, Default)]
+    struct CapturedEvent {
+        name: String,
+        session_id: String,
+        tool_call_id: String,
+        task_id: String,
+    }
+
+    /// One `(level, record)` per emitted record.
     #[derive(Clone, Default)]
-    struct EventCapture(std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String)>>>);
+    struct EventCapture(std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, CapturedEvent)>>>);
 
     impl EventCapture {
         fn names_at(&self, level: tracing::Level) -> Vec<String> {
             let seen = self.0.lock().expect("capture");
             seen.iter()
                 .filter(|(seen_level, _)| *seen_level == level)
-                .map(|(_, name)| name.clone())
+                .map(|(_, record)| record.name.clone())
                 .collect()
+        }
+
+        /// The first record emitted with this name at this level.
+        fn record_at(&self, level: tracing::Level, name: &str) -> Option<CapturedEvent> {
+            let seen = self.0.lock().expect("capture");
+            seen.iter()
+                .find(|(seen_level, record)| *seen_level == level && record.name == name)
+                .map(|(_, record)| record.clone())
         }
     }
 
-    struct EventNameVisitor(Option<String>);
+    /// `name` stays an `Option` so a record is only credited with the
+    /// metadata name when it recorded no `event_name` at all.
+    #[derive(Default)]
+    struct EventFieldVisitor {
+        name: Option<String>,
+        session_id: String,
+        tool_call_id: String,
+        task_id: String,
+    }
 
-    impl tracing::field::Visit for EventNameVisitor {
-        // Every `event_name` arrives here - plain, `%` and `?` alike -
-        // because `record_str` forwards to this arm.
+    impl tracing::field::Visit for EventFieldVisitor {
+        // Every field arrives here - plain, `%` and `?` alike - because
+        // `record_str` forwards to this arm.
         fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-            if field.name() == "event_name" {
-                self.0 = Some(format!("{value:?}").trim_matches('"').to_owned());
+            let text = || format!("{value:?}").trim_matches('"').to_owned();
+            match field.name() {
+                "event_name" => self.name = Some(text()),
+                "session_id" => self.session_id = text(),
+                "tool_call_id" => self.tool_call_id = text(),
+                "task_id" => self.task_id = text(),
+                _ => {}
             }
         }
     }
@@ -460,10 +492,15 @@ mod tests {
             event: &tracing::Event<'_>,
             _ctx: tracing_subscriber::layer::Context<'_, S>,
         ) {
-            let mut visitor = EventNameVisitor(None);
+            let mut visitor = EventFieldVisitor::default();
             event.record(&mut visitor);
-            let name = visitor.0.unwrap_or_else(|| event.metadata().name().to_owned());
-            self.0.lock().expect("capture").push((*event.metadata().level(), name));
+            let record = CapturedEvent {
+                name: visitor.name.unwrap_or_else(|| event.metadata().name().to_owned()),
+                session_id: visitor.session_id,
+                tool_call_id: visitor.tool_call_id,
+                task_id: visitor.task_id,
+            };
+            self.0.lock().expect("capture").push((*event.metadata().level(), record));
         }
     }
 
@@ -478,15 +515,20 @@ mod tests {
     /// Returns the capture AND the walked `App`, so liveness can be
     /// asserted from state rather than from records.
     fn capture_replay_of(history: &[Message]) -> (EventCapture, App) {
+        let mut app = App::test_default();
+        let capture = capture_replay_into(&mut app, history);
+        (capture, app)
+    }
+
+    fn capture_replay_into(app: &mut App, history: &[Message]) -> EventCapture {
         use tracing_subscriber::layer::SubscriberExt;
 
         let capture = EventCapture::default();
         let subscriber = tracing_subscriber::registry().with(capture.clone());
-        let mut app = App::test_default();
         tracing::subscriber::with_default(subscriber, || {
-            load_resume_history(&mut app, history);
+            load_resume_history(app, history);
         });
-        (capture, app)
+        capture
     }
 
     /// The replayed shapes a tool call can reach: completed, failed,
@@ -660,16 +702,32 @@ mod tests {
             "tool_call_timeout",
             "task_update_unknown_status",
         ] {
+            let record = capture
+                .record_at(tracing::Level::WARN, expected)
+                .unwrap_or_else(|| panic!("replay lost `{expected}`, saw {warnings:?}"));
+            // A failure record names the call it happened on or there is
+            // nothing to chase it with.
             assert!(
-                warnings.iter().any(|name| name == expected),
-                "replay lost `{expected}`, saw {warnings:?}",
+                !record.tool_call_id.is_empty(),
+                "`{expected}` arrived without a tool call to attribute it to: {record:?}",
             );
         }
-        let info = capture.names_at(tracing::Level::INFO);
-        assert!(
-            info.iter().any(|name| name == "tool_call_refused"),
-            "a refusal is a failure wearing an INFO level - it must survive, saw {info:?}",
+        let unknown_status = capture
+            .record_at(tracing::Level::WARN, "task_update_unknown_status")
+            .expect("asserted above");
+        assert_eq!(
+            (unknown_status.tool_call_id.as_str(), unknown_status.task_id.as_str()),
+            ("toolu_task2_odd", "8"),
+            "the unrecognised status must name the call and the task it arrived on",
         );
+        let info = capture.names_at(tracing::Level::INFO);
+        let refusal =
+            capture.record_at(tracing::Level::INFO, "tool_call_refused").unwrap_or_else(|| {
+                panic!(
+                    "a refusal is a failure wearing an INFO level - it must survive, saw {info:?}"
+                )
+            });
+        assert_eq!(refusal.tool_call_id, "toolu_refused");
         let debug = capture.names_at(tracing::Level::DEBUG);
         assert!(
             debug.iter().any(|name| name == "tool_call_updated"),
@@ -679,6 +737,37 @@ mod tests {
             debug.iter().any(|name| name == "resume_user_text_rendered"),
             "the replay path's own debug trail is deliberately kept, saw {debug:?}",
         );
+    }
+
+    /// A TaskUpdate addressing an id the inspector never had is the one
+    /// warning with nothing else to identify it: it applies no state, so
+    /// its session and call ids are the whole record. It gets its own
+    /// history because `replay_fixture` has no unknown-id row, and its
+    /// own session id because `App::test_default` leaves that unset.
+    #[test]
+    fn replay_warning_for_an_unknown_task_id_names_its_session_and_call() {
+        let mut app = App::test_default();
+        app.set_session_id(Some(crate::agent::model::SessionId::new(
+            "sess-unknown-task".to_owned(),
+        )));
+        let capture = capture_replay_into(
+            &mut app,
+            &[
+                historical_tool_use_named(
+                    "toolu_orphan",
+                    "TaskUpdate",
+                    serde_json::json!({"taskId": "404", "status": "completed"}),
+                ),
+                historical_tool_result_text("toolu_orphan", false, "Task #404 updated"),
+            ],
+        );
+
+        let record = capture
+            .record_at(tracing::Level::WARN, "task_update_unknown_id")
+            .expect("a TaskUpdate against an absent id must warn");
+        assert_eq!(record.session_id, "sess-unknown-task");
+        assert_eq!(record.tool_call_id, "toolu_orphan");
+        assert_eq!(record.task_id, "404");
     }
 
     /// The gate decides which records are written. It must never decide
