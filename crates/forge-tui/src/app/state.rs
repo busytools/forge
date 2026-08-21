@@ -5233,36 +5233,20 @@ mod tests {
     /// 5h+7d) so the bottom panel's bars populate on the destination
     /// session, not just on connect.
     ///
-    fn measure_spinner() -> crate::ui::SpinnerState {
-        crate::ui::SpinnerState {
-            glyph: '\u{280B}',
-            is_active_turn_assistant: false,
-            show_empty_thinking: false,
-            show_thinking: false,
-            show_compacting: false,
-            thinking_tokens: None,
-            running_subagents: None,
-        }
-    }
-
-    fn tool_message_with_body(id: &str) -> ChatMessage {
-        let mut msg = assistant_tool_message(id, model::ToolCallStatus::Completed);
+    /// An Edit-family name breaks a tool-call run, so this renders as
+    /// `RenderUnit::Individual` and is handed `app.tools_collapsed`
+    /// directly instead of a group-derived level; grouped tools get
+    /// that flag overwritten and never reach the measure call. Plain
+    /// text content rather than a `Diff` keeps it out of the carve-out.
+    fn ungrouped_tool_message(id: &str) -> ChatMessage {
+        let mut msg = assistant_tool_message(id, model::ToolCallStatus::Failed);
         if let MessageBlock::ToolCall(tc) = &mut msg.blocks[0] {
-            tc.content = vec![model::ToolCallContent::from("alpha\nbeta\ngamma\ndelta".to_owned())];
+            tc.sdk_tool_name = "Edit".to_owned();
+            tc.title = format!("Edit {id}");
+            tc.content =
+                vec![model::ToolCallContent::from("alpha\nbeta\ngamma\ndelta\nepsilon".to_owned())];
         }
         msg
-    }
-
-    fn measure_head(msg: &mut ChatMessage, generation: u64, tools_collapsed: bool) -> usize {
-        crate::ui::message::measure_message_height_cached_with_tools_collapsed_and_separator(
-            msg,
-            &measure_spinner(),
-            40,
-            generation,
-            tools_collapsed,
-            true,
-        )
-        .0
     }
 
     fn head_tool(app: &App) -> &ToolCallInfo {
@@ -5272,82 +5256,86 @@ mod tests {
         }
     }
 
-    fn tool_layout_epoch(app: &App) -> u64 {
-        head_tool(app).layout_epoch
+    /// Draw a real chat frame, so the tool goes through the same
+    /// grouping and measurement the running app puts it through.
+    fn render_chat_frame(app: &mut App, width: u16, height: u16) {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                crate::ui::chat::render(
+                    frame,
+                    ratatui::layout::Rect::new(0, 0, width, height),
+                    app,
+                    &[],
+                );
+            })
+            .expect("draw");
     }
 
-    fn tool_measured_width(app: &App) -> u16 {
-        head_tool(app).last_measured_width
-    }
-
-    fn tool_measured_collapsed(app: &App) -> bool {
-        head_tool(app).last_measured_tools_collapsed
-    }
-
-    /// Measure the active session's first message exactly as a render
-    /// would: its own viewport generation, the App-wide preference.
-    fn measure_active_head(app: &mut App) -> usize {
-        let generation = app.viewport().layout_generation;
-        let tools_collapsed = app.tools_collapsed;
-        measure_head(&mut app.active_messages_mut()[0], generation, tools_collapsed)
-    }
-
-    /// Why the collapse preference has to be in the per-tool
-    /// measurement key: ctrl+x flips it App-wide, but
+    /// ctrl+x flips the collapse preference App-wide, but
     /// `invalidate_layout`'s `Global` arm bumps only the ACTIVE
     /// session's viewport and clears overrides only on that session's
     /// blocks, and switching sessions invalidates nothing. So an
-    /// unfocused session reaches its next render with every other input
-    /// to that key unmoved - no click and no resize involved.
-    ///
-    /// This pins the reachability, not the cache behaviour: the drift
-    /// itself is covered by `flipping_tools_collapsed_alone_remeasures`,
-    /// which is the one that goes red if the key loses the flag.
+    /// unfocused session reaches its next render with width, layout
+    /// epoch and generation all unmoved: without the preference in the
+    /// key nothing forces a remeasure, and the tool keeps a height
+    /// taken under the old preference. Mouse hit-testing sizes the
+    /// click box from that height.
     #[test]
-    fn collapse_toggle_leaves_an_unfocused_sessions_measure_inputs_unmoved() {
+    fn cross_session_collapse_flip_remeasures_ungrouped_tool() {
+        const W: u16 = 80;
+        const H: u16 = 40;
+
         let mut app = make_test_app();
-        app.tools_collapsed = false;
+        app.tools_collapsed = true;
         let a_key = app.active_session_key.clone().expect("an active session");
 
         let b_key = forge_workspace::SessionKey::from_str_for_test("collapse-cross-session");
         let mut b_bucket = crate::app::session::UiSession::new(b_key.clone());
-        b_bucket.messages = vec![tool_message_with_body("cross-session")];
+        b_bucket.messages = vec![ungrouped_tool_message("cross-session")];
         app.sessions.insert(b_key.clone(), b_bucket);
 
-        // B is rendered once, expanded, which stamps its measure inputs.
+        // B renders once collapsed, stamping its per-tool key.
         app.switch_active_session(b_key.clone());
-        let _ = measure_active_head(&mut app);
+        render_chat_frame(&mut app, W, H);
+        let collapsed_height = head_tool(&app).last_measured_height;
+        let epoch_before = head_tool(&app).layout_epoch;
+        let width_before = head_tool(&app).last_measured_width;
         let generation_before = app.viewport().layout_generation;
-        let epoch_before = tool_layout_epoch(&app);
-        let width_before = tool_measured_width(&app);
 
         // The flip happens while A is focused.
         app.switch_active_session(a_key);
         crate::app::keys::toggle_all_tool_calls(&mut app);
-        assert!(app.tools_collapsed, "ctrl+x flipped the shared preference");
+        assert!(!app.tools_collapsed, "ctrl+x expanded the shared preference");
 
+        // Back to B at the same size, no resize and no click.
         app.switch_active_session(b_key);
+        render_chat_frame(&mut app, W, H);
         assert_eq!(
             generation_before,
             app.viewport().layout_generation,
-            "the flip bumps only the focused session's generation",
+            "no resize, so B's generation must not move",
         );
-        assert_eq!(
-            epoch_before,
-            tool_layout_epoch(&app),
-            "and clears overrides only on the focused session's blocks",
-        );
-        assert_eq!(
-            width_before,
-            tool_measured_width(&app),
-            "and no resize happened, so the measured width is unmoved too",
-        );
+        assert_eq!(epoch_before, head_tool(&app).layout_epoch, "and its layout epoch must not");
+        assert_eq!(width_before, head_tool(&app).last_measured_width, "nor its measured width");
+        let after_flip = head_tool(&app).last_measured_height;
 
-        // The stamped flag is the old one, so it is the only input that
-        // has moved against what B is about to render with.
-        assert!(
-            !tool_measured_collapsed(&app),
-            "B still carries the preference it was measured under",
+        // What the same tool measures from cold under the new preference.
+        let mut cold = make_test_app();
+        cold.tools_collapsed = false;
+        *cold.active_messages_mut() = vec![ungrouped_tool_message("cross-session")];
+        render_chat_frame(&mut cold, W, H);
+        let correct_height = head_tool(&cold).last_measured_height;
+
+        assert_ne!(
+            collapsed_height, correct_height,
+            "the preference has to move this tool's height, or the assertion below is free",
+        );
+        assert_eq!(
+            after_flip, correct_height,
+            "B's tool kept a height measured under the old preference \
+             (collapsed={collapsed_height}, correct={correct_height}, got={after_flip})",
         );
     }
 
