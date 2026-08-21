@@ -7620,9 +7620,9 @@ mod tests {
         vp.set_message_height(3, 6);
         vp.prefix_sums_width = 0;
         vp.rebuild_prefix_sums();
-        assert_eq!(
+        assert_ne!(
             vp.find_first_visible(vp.scroll_offset),
-            0,
+            1,
             "fixture must re-wrap enough that the raw offset drifts off message 1",
         );
 
@@ -7671,6 +7671,12 @@ mod tests {
         vp.mark_message_height_measured(1);
         vp.rebuild_prefix_sums();
 
+        assert_ne!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "fixture must re-wrap enough that the raw offset drifts off message 1",
+        );
+
         let anchor =
             vp.take_ready_scroll_anchor().expect("the resize anchor survives the follow-up");
         vp.restore_scroll_anchor(anchor.0, anchor.1);
@@ -7704,6 +7710,12 @@ mod tests {
         vp.set_message_height(0, 12);
         vp.mark_message_height_measured(0);
         vp.rebuild_prefix_sums();
+
+        assert_ne!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "fixture must grow the message above enough that the raw offset drifts",
+        );
 
         let anchor = vp
             .take_ready_scroll_anchor()
@@ -7756,6 +7768,12 @@ mod tests {
         vp.mark_message_height_measured(1);
         vp.rebuild_prefix_sums();
 
+        assert_ne!(
+            vp.find_first_visible(vp.scroll_offset),
+            2,
+            "fixture must grow the rows above enough that the raw offset drifts",
+        );
+
         let anchor = vp
             .take_ready_scroll_anchor()
             .expect("the anchor is ready once every row above it is exact");
@@ -7793,6 +7811,11 @@ mod tests {
         vp.rebuild_prefix_sums();
 
         assert!(!vp.remeasure_active(), "teardown must actually clear the plan");
+        assert_ne!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "fixture must grow the message above enough that the raw offset drifts",
+        );
 
         let anchor = vp
             .take_ready_scroll_anchor()
@@ -7835,7 +7858,11 @@ mod tests {
         // is there by spending it, then re-arm the same way.
         let anchor = vp.take_ready_scroll_anchor().expect("an anchor outlived the teardown");
         vp.restore_scroll_anchor(anchor.0, anchor.1);
-        assert_eq!(vp.find_first_visible(vp.scroll_offset), 1);
+        assert_eq!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "setup: the anchor that survived the teardown must still describe message 1",
+        );
         vp.invalidate_message(0);
         vp.mark_message_height_measured(0);
         vp.finalize_remeasure_if_clean();
@@ -7861,6 +7888,10 @@ mod tests {
             2,
             "returning to the bottom must retire the stale anchor so the next arm wins; \
              an un-retired one would drag the reader back to message 1",
+        );
+        assert_eq!(
+            vp.scroll_offset, 18,
+            "the fresh arm captured the exact row, not just the row's message"
         );
     }
 
