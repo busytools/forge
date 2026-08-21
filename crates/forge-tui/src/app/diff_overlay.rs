@@ -4681,10 +4681,70 @@ mod tests {
 
         assert!(app.diff_overlay.is_none(), "the overlay closes (no dead-end hold)");
         assert!(rx.try_recv().is_err(), "no branch to file under, so nothing is dispatched");
+        let notice = system_notice_text(&app).expect("a system message warns about the loss");
         assert!(
-            app.messages().iter().any(|m| matches!(m.role, crate::app::MessageRole::System(None))),
-            "a system message warns the review couldn't be filed on a detached HEAD",
+            notice.contains("branch name"),
+            "the notice names the step that came up empty: {notice}",
         );
+    }
+
+    /// Every text block of the last System message, for asserting on a
+    /// notice's wording rather than only its existence.
+    fn system_notice_text(app: &App) -> Option<String> {
+        app.messages()
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, crate::app::MessageRole::System(None)))
+            .map(|m| {
+                m.blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        crate::app::MessageBlock::Text(t) => Some(t.text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+    }
+
+    /// The three ways the submit scope comes up empty need three
+    /// different fixes, and only the middle one is about HEAD. All three
+    /// used to say "no branch - detached HEAD?", the same guess the read
+    /// side dropped.
+    #[test]
+    fn an_unresolved_submit_scope_names_the_step_that_failed_not_head() {
+        let (mut app, mut rx, _dir) = review_app_with_agent();
+        // Project unset: the session is not under a forge project at all,
+        // which has nothing to do with the checkout's HEAD.
+        if let Some(key) = app.active_session_key.clone()
+            && let Some(session) = app.sessions.get_mut(&key)
+        {
+            session.project = None;
+        }
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), Vec::new());
+        overlay.branch = Some("feat".to_owned());
+        overlay.finish_review = Some(FinishReviewState { editor: InputState::new() });
+        let mut thread = stock_thread();
+        thread.id = "fresh".to_owned();
+        overlay.comments.push(HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "src/x.rs".into(),
+            line: 1,
+            comment_text: "note".into(),
+            commit: None,
+            thread,
+            authored_this_session: true,
+            persisted: true,
+        });
+        app.diff_overlay = Some(overlay);
+
+        submit_finish_review(&mut app);
+
+        assert!(rx.try_recv().is_err(), "nothing to file under, so nothing is dispatched");
+        let notice = system_notice_text(&app).expect("a system message warns about the loss");
+        assert!(notice.contains("forge project"), "the notice names the project step: {notice}");
+        assert!(!notice.contains("detached"), "a missing project is not a detached HEAD: {notice}");
     }
 
     #[test]
