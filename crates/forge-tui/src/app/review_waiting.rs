@@ -16,12 +16,22 @@
 //!
 //! Same shape as [`crate::app::git_diff`]: a spawned local task runs the
 //! `git` call and hands the result back over a std mpsc channel, keeping
-//! the subprocess off the render thread.
+//! the subprocess off the render thread. The in-flight guard is that
+//! module's too, and for the same reason - a task that dies without
+//! sending must not strand the session.
+//!
+//! One deliberate difference from the notice writer, which routes to the
+//! submit-origin session alone and drops rather than mis-route: this
+//! addresses every session whose checkout is on the branch. At boot there
+//! is no origin to route by - the map died with the process - so there is
+//! no principled single target, and two sessions sharing a checkout are
+//! both genuinely on the branch the count is about. It parks the same
+//! value on both rather than picking one arbitrarily.
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
-use std::time::SystemTime;
 
 use forge_workspace::SessionKey;
 
@@ -31,20 +41,49 @@ use crate::app::App;
 /// sibling drains use.
 const EVENT_DRAIN_BUDGET: usize = 64;
 
-/// A completed recompute. Only ever sent for a non-zero count: a
-/// session with nothing waiting has nothing to park, and staying silent
-/// keeps the common case off the redraw path.
+/// Consecutive failed reads after which a session stops being retried.
+///
+/// A read that fails is not an answer, but it is not always transient
+/// either, and the two are not distinguishable at the call: a plain
+/// non-git project exits 128 and lands in `ScannerFailed` next to a real
+/// timeout (`GitOutput::Empty` needs exit ZERO with empty stdout, which
+/// `rev-parse --abbrev-ref HEAD` never produces, so `NotARepo` is
+/// unreachable from here). Without a bound, every non-git project and
+/// every missing worktree path would spawn one `git` per second for the
+/// life of the process - and each one logs, so it would also evict the
+/// diagnostic log the self-serve rule depends on. Three lets a transient
+/// timeout retry twice and stops anything permanent.
+const MAX_FAILED_READS: u8 = 3;
+
+/// A finished recompute.
 #[derive(Debug)]
 pub struct ReviewWaitingEvent {
     pub key: SessionKey,
-    pub branch: String,
-    pub count: usize,
-    pub since: SystemTime,
+    pub outcome: ReviewWaitingOutcome,
 }
 
-/// Kick the recompute for every connected session that has not had one,
-/// marking each as done before it spawns so the ~1s ticker can't queue a
-/// second `git` call for the same session.
+#[derive(Debug)]
+pub enum ReviewWaitingOutcome {
+    /// The recompute reached an answer. `None` means nothing is owed -
+    /// still an answer, and still what retires the session.
+    Answered(Option<crate::app::ReviewRepliesWaiting>),
+    /// git could not be read for this checkout.
+    Unreadable,
+}
+
+/// Clears the in-flight flag when the task ends, however it ends. Mirrors
+/// `git_diff::ScanInFlightGuard`: without it a panic or a runtime abort
+/// mid-`git` leaves the flag set and the session never retries.
+struct InFlightGuard(Arc<AtomicBool>);
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+/// Kick the recompute for every connected session that has not settled
+/// one and has none in flight.
 ///
 /// Gated on a resolved `session_id` because the worker registry is
 /// written before `Connected` fires; running earlier could resolve a
@@ -54,21 +93,28 @@ pub fn hydrate_pending(app: &mut App) {
     let Some(workspace) = app.workspace.clone() else {
         return;
     };
-    let pending: Vec<(SessionKey, String, PathBuf)> = app
+    let pending: Vec<(SessionKey, String, PathBuf, Arc<AtomicBool>)> = app
         .sessions
         .iter()
         .filter(|(_, session)| {
-            !session.review_waiting_hydrated
+            !session.review_waiting_settled
+                && !session.review_waiting_in_flight.load(Ordering::Acquire)
                 && session.session_id.is_some()
                 && !session.cwd_raw.is_empty()
         })
         .filter_map(|(key, session)| {
-            Some((key.clone(), session.project.clone()?, PathBuf::from(&session.cwd_raw)))
+            Some((
+                key.clone(),
+                session.project.clone()?,
+                PathBuf::from(&session.cwd_raw),
+                Arc::clone(&session.review_waiting_in_flight),
+            ))
         })
         .collect();
-    for (key, project, cwd_raw) in pending {
-        if let Some(session) = app.sessions.get_mut(&key) {
-            session.review_waiting_hydrated = true;
+    for (key, project, cwd_raw, in_flight) in pending {
+        // Compare-and-swap so two callers in one tick can't both win.
+        if in_flight.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            continue;
         }
         let cwd = workspace.git_scan_cwd_for_session(&key, &cwd_raw);
         request_refresh(
@@ -77,35 +123,44 @@ pub fn hydrate_pending(app: &mut App) {
             project,
             cwd,
             Arc::clone(&workspace),
+            in_flight,
         );
     }
 }
 
-/// Resolve `cwd`'s branch and recompute that `(project, branch)`'s
-/// waiting count, posting it back when something is waiting. Every
-/// failure path is silent: a detached HEAD, a non-repo cwd and an
-/// unreadable row all mean "no signal to restore", and `current_branch`
-/// logs git's own error where it happens.
+/// Resolve `cwd`'s branch, recompute that `(project, branch)`'s waiting
+/// count, and post the outcome back. A detached HEAD answers "no branch
+/// to key by", which is a fact rather than a failure; anything git could
+/// not read is [`ReviewWaitingOutcome::Unreadable`] and leaves the retry
+/// decision to the drain, which counts them.
 fn request_refresh(
     tx: std_mpsc::Sender<ReviewWaitingEvent>,
     key: SessionKey,
     project: String,
     cwd: PathBuf,
     workspace: Arc<forge_workspace::Workspace>,
+    in_flight: Arc<AtomicBool>,
 ) {
+    let guard = InFlightGuard(in_flight);
     tokio::task::spawn_local(async move {
-        let Ok(Some(branch)) = forge_workspace::env::git_diff::current_branch(&cwd).await else {
+        // Moved in so its lifetime brackets the await.
+        let _guard = guard;
+        let Ok(branch) = forge_workspace::env::git_diff::current_branch(&cwd).await else {
+            let _ = tx.send(ReviewWaitingEvent { key, outcome: ReviewWaitingOutcome::Unreadable });
             return;
         };
-        let Some((count, since)) = workspace.review_replies_waiting(&project, &branch) else {
-            return;
-        };
-        let _ = tx.send(ReviewWaitingEvent { key, branch, count, since });
+        let waiting = branch.and_then(|branch| {
+            workspace
+                .review_replies_waiting(&project, &branch)
+                .map(|(count, since)| crate::app::ReviewRepliesWaiting { branch, count, since })
+        });
+        let _ =
+            tx.send(ReviewWaitingEvent { key, outcome: ReviewWaitingOutcome::Answered(waiting) });
     });
 }
 
-/// Drain completed recomputes onto their session buckets. Called from
-/// the main loop alongside the other drain pumps.
+/// Drain finished recomputes onto their session buckets. Called from the
+/// main loop alongside the other drain pumps.
 pub fn drain_events(app: &mut App) {
     for _ in 0..EVENT_DRAIN_BUDGET {
         let Ok(event) = app.review_waiting_event_rx.try_recv() else {
@@ -114,17 +169,41 @@ pub fn drain_events(app: &mut App) {
         let Some(session) = app.sessions.get_mut(&event.key) else {
             continue;
         };
+        let waiting = match event.outcome {
+            ReviewWaitingOutcome::Answered(waiting) => {
+                session.review_waiting_settled = true;
+                waiting
+            }
+            ReviewWaitingOutcome::Unreadable => {
+                session.review_waiting_failed_reads =
+                    session.review_waiting_failed_reads.saturating_add(1);
+                if session.review_waiting_failed_reads >= MAX_FAILED_READS {
+                    // Retried enough. Whatever this checkout is, it is not
+                    // going to answer, and each attempt costs a `git` and
+                    // a log line.
+                    session.review_waiting_settled = true;
+                    tracing::debug!(
+                        target: crate::logging::targets::APP_SESSION,
+                        event_name = "review_waiting_gave_up",
+                        message = "git could not be read for this checkout; giving up on restoring its review-replies count",
+                        outcome = "skipped",
+                        key = %event.key.as_str(),
+                        attempts = session.review_waiting_failed_reads,
+                    );
+                }
+                continue;
+            }
+        };
+        let Some(waiting) = waiting else {
+            continue;
+        };
         // A signal already on the bucket outranks this one: both live
         // writers compute the same tally from the same rows, and either
         // landed after this recompute was kicked off.
         if session.review_replies_waiting.is_some() {
             continue;
         }
-        session.review_replies_waiting = Some(crate::app::ReviewRepliesWaiting {
-            branch: event.branch,
-            count: event.count,
-            since: event.since,
-        });
+        session.review_replies_waiting = Some(waiting);
         app.needs_redraw = true;
     }
 }
@@ -189,9 +268,9 @@ mod tests {
         }
     }
 
-    /// A booted App holding one connected session rooted at `repo`,
-    /// with the review store open. Mirrors the state a restart leaves:
-    /// the bucket is there, nothing has opened `/diff` on it.
+    /// A booted App holding one connected session rooted at `repo`, with
+    /// the review store open. Mirrors the state a restart leaves: the
+    /// bucket is there, nothing has opened `/diff` on it.
     fn booted_app(repo: &Path, db_dir: &Path) -> (App, SessionKey) {
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("test workspace");
@@ -208,15 +287,36 @@ mod tests {
         (app, key)
     }
 
-    /// Drive the spawned recompute to completion and apply it.
-    async fn settle(app: &mut App) {
-        for _ in 0..300 {
+    /// Drive the spawned recompute to completion and apply it. Loops on
+    /// the state it is waiting for, with the count only as a cap - the
+    /// spawned `git` runs against a 10s timeout, so any fixed budget
+    /// would be asserting on how loaded the runner is.
+    async fn settle(app: &mut App, key: &SessionKey) {
+        for _ in 0..1500 {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             drain_events(app);
-            if app.sessions.values().any(|s| s.review_replies_waiting.is_some()) {
-                break;
+            if app.sessions.get(key).is_some_and(|s| s.review_waiting_settled) {
+                return;
             }
         }
+        panic!("recompute did not settle");
+    }
+
+    /// Same, for a pass that ends without settling: wait until the slot
+    /// is released and the event is drained.
+    async fn drain_until_idle(app: &mut App, key: &SessionKey) {
+        for _ in 0..1500 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            drain_events(app);
+            let idle = app
+                .sessions
+                .get(key)
+                .is_some_and(|s| !s.review_waiting_in_flight.load(Ordering::Acquire));
+            if idle {
+                return;
+            }
+        }
+        panic!("recompute never released its slot");
     }
 
     fn waiting(app: &App, key: &SessionKey) -> Option<crate::app::ReviewRepliesWaiting> {
@@ -239,7 +339,7 @@ mod tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 hydrate_pending(&mut app);
-                settle(&mut app).await;
+                settle(&mut app, &key).await;
             })
             .await;
 
@@ -269,7 +369,7 @@ mod tests {
                 hydrate_pending(&mut app);
                 app.sessions.get_mut(&key).expect("session").review_replies_waiting =
                     crate::app::ReviewRepliesWaiting::merge(None, "feat/worker", 1);
-                settle(&mut app).await;
+                settle(&mut app, &key).await;
             })
             .await;
 
@@ -280,32 +380,106 @@ mod tests {
         );
     }
 
-    /// One shot per session. The ~1s ticker calls this on every pass, so
-    /// without the marker each session would spawn a fresh `git` call a
-    /// second, forever.
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_session_is_only_ever_queued_once() {
+    /// One in flight at a time, and spawning is not settling. The ~1s
+    /// ticker calls this on every pass, so without the flag each session
+    /// would spawn a fresh `git` call a second while the first still ran.
+    /// Asserted on the flags, which move synchronously - a wall-clock
+    /// budget for the subprocess would just be a slow way to fail on a
+    /// loaded runner.
+    #[test]
+    fn a_session_with_a_recompute_in_flight_is_not_queued_again() {
         let repo = tempfile::tempdir().expect("tempdir");
         let db = tempfile::tempdir().expect("tempdir");
         init_repo(repo.path(), "feat/worker");
-        let (mut app, _key) = booted_app(repo.path(), db.path());
-        let ws = app.workspace.clone().expect("ws");
-        ws.save_review_threads("forge", "feat/worker", &[answered_thread("a")]);
+        let (mut app, key) = booted_app(repo.path(), db.path());
 
-        let mut events = 0;
+        let runtime =
+            tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+        runtime.block_on(tokio::task::LocalSet::new().run_until(async {
+            hydrate_pending(&mut app);
+            let in_flight =
+                Arc::clone(&app.sessions.get(&key).expect("session").review_waiting_in_flight);
+            assert!(in_flight.load(Ordering::Acquire), "the first pass claims the slot");
+            assert!(
+                !app.sessions.get(&key).expect("session").review_waiting_settled,
+                "spawning is not settling - only an answer retires the session",
+            );
+            // Release the slot as the guard would, then confirm a settled
+            // session is not re-queued either.
+            in_flight.store(false, Ordering::Release);
+            app.sessions.get_mut(&key).expect("session").review_waiting_settled = true;
+            hydrate_pending(&mut app);
+            assert!(!in_flight.load(Ordering::Acquire), "a settled session is never queued again");
+        }));
+    }
+
+    /// A read that failed is not an answer, but it is not always
+    /// transient either, and `current_branch` cannot tell them apart: a
+    /// plain non-git project exits 128 and lands in `ScannerFailed`
+    /// beside a real timeout. So retries are counted and bounded - an
+    /// unreadable checkout must not spawn one `git` per second, per
+    /// session, for the life of the process.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_unreadable_checkout_retries_a_bounded_number_of_times() {
+        let db = tempfile::tempdir().expect("tempdir");
+        let gone = db.path().join("not-on-disk");
+        let (mut app, key) = booted_app(&gone, db.path());
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                for attempt in 1..=u32::from(MAX_FAILED_READS) {
+                    hydrate_pending(&mut app);
+                    drain_until_idle(&mut app, &key).await;
+                    let session = app.sessions.get(&key).expect("session");
+                    assert_eq!(
+                        u32::from(session.review_waiting_failed_reads),
+                        attempt,
+                        "each pass counts one failed read",
+                    );
+                }
+                // The cap is reached, so the session retires and further
+                // passes queue nothing at all.
+                assert!(
+                    app.sessions.get(&key).expect("session").review_waiting_settled,
+                    "a checkout that will not answer stops being retried",
+                );
+                hydrate_pending(&mut app);
+                assert!(
+                    !app.sessions
+                        .get(&key)
+                        .expect("session")
+                        .review_waiting_in_flight
+                        .load(Ordering::Acquire),
+                    "nothing is queued once the session has given up",
+                );
+                assert_eq!(
+                    app.sessions.get(&key).expect("session").review_waiting_failed_reads,
+                    MAX_FAILED_READS,
+                    "and the count stops climbing",
+                );
+            })
+            .await;
+    }
+
+    /// The opposite case, and why a bare "did it send" flag would not do:
+    /// a session with nothing waiting has reached a real answer and must
+    /// retire, or the ticker re-runs `git` for it every second forever.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_session_with_nothing_waiting_still_settles() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let db = tempfile::tempdir().expect("tempdir");
+        init_repo(repo.path(), "feat/worker");
+        let (mut app, key) = booted_app(repo.path(), db.path());
+
         tokio::task::LocalSet::new()
             .run_until(async {
                 hydrate_pending(&mut app);
-                hydrate_pending(&mut app);
-                for _ in 0..60 {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                    while app.review_waiting_event_rx.try_recv().is_ok() {
-                        events += 1;
-                    }
-                }
+                settle(&mut app, &key).await;
             })
             .await;
 
-        assert_eq!(events, 1, "the second pass finds the session already done and spawns nothing");
+        let session = app.sessions.get(&key).expect("session");
+        assert!(session.review_waiting_settled, "an empty store is an answer");
+        assert!(session.review_replies_waiting.is_none(), "and nothing is parked");
     }
 }
