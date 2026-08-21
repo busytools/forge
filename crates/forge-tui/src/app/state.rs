@@ -5233,6 +5233,124 @@ mod tests {
     /// 5h+7d) so the bottom panel's bars populate on the destination
     /// session, not just on connect.
     ///
+    fn measure_spinner() -> crate::ui::SpinnerState {
+        crate::ui::SpinnerState {
+            glyph: '\u{280B}',
+            is_active_turn_assistant: false,
+            show_empty_thinking: false,
+            show_thinking: false,
+            show_compacting: false,
+            thinking_tokens: None,
+            running_subagents: None,
+        }
+    }
+
+    fn tool_message_with_body(id: &str) -> ChatMessage {
+        let mut msg = assistant_tool_message(id, model::ToolCallStatus::Completed);
+        if let MessageBlock::ToolCall(tc) = &mut msg.blocks[0] {
+            tc.content = vec![model::ToolCallContent::from("alpha\nbeta\ngamma\ndelta".to_owned())];
+        }
+        msg
+    }
+
+    fn measure_head(msg: &mut ChatMessage, generation: u64, tools_collapsed: bool) -> usize {
+        crate::ui::message::measure_message_height_cached_with_tools_collapsed_and_separator(
+            msg,
+            &measure_spinner(),
+            40,
+            generation,
+            tools_collapsed,
+            true,
+        )
+        .0
+    }
+
+    fn head_tool(app: &App) -> &ToolCallInfo {
+        match &app.messages()[0].blocks[0] {
+            MessageBlock::ToolCall(tc) => tc,
+            _ => panic!("expected a tool call"),
+        }
+    }
+
+    fn tool_layout_epoch(app: &App) -> u64 {
+        head_tool(app).layout_epoch
+    }
+
+    fn tool_measured_width(app: &App) -> u16 {
+        head_tool(app).last_measured_width
+    }
+
+    fn tool_measured_collapsed(app: &App) -> bool {
+        head_tool(app).last_measured_tools_collapsed
+    }
+
+    /// Measure the active session's first message exactly as a render
+    /// would: its own viewport generation, the App-wide preference.
+    fn measure_active_head(app: &mut App) -> usize {
+        let generation = app.viewport().layout_generation;
+        let tools_collapsed = app.tools_collapsed;
+        measure_head(&mut app.active_messages_mut()[0], generation, tools_collapsed)
+    }
+
+    /// Why the collapse preference has to be in the per-tool
+    /// measurement key: ctrl+x flips it App-wide, but
+    /// `invalidate_layout`'s `Global` arm bumps only the ACTIVE
+    /// session's viewport and clears overrides only on that session's
+    /// blocks, and switching sessions invalidates nothing. So an
+    /// unfocused session reaches its next render with every other input
+    /// to that key unmoved - no click and no resize involved.
+    ///
+    /// This pins the reachability, not the cache behaviour: the drift
+    /// itself is covered by `flipping_tools_collapsed_alone_remeasures`,
+    /// which is the one that goes red if the key loses the flag.
+    #[test]
+    fn collapse_toggle_leaves_an_unfocused_sessions_measure_inputs_unmoved() {
+        let mut app = make_test_app();
+        app.tools_collapsed = false;
+        let a_key = app.active_session_key.clone().expect("an active session");
+
+        let b_key = forge_workspace::SessionKey::from_str_for_test("collapse-cross-session");
+        let mut b_bucket = crate::app::session::UiSession::new(b_key.clone());
+        b_bucket.messages = vec![tool_message_with_body("cross-session")];
+        app.sessions.insert(b_key.clone(), b_bucket);
+
+        // B is rendered once, expanded, which stamps its measure inputs.
+        app.switch_active_session(b_key.clone());
+        let _ = measure_active_head(&mut app);
+        let generation_before = app.viewport().layout_generation;
+        let epoch_before = tool_layout_epoch(&app);
+        let width_before = tool_measured_width(&app);
+
+        // The flip happens while A is focused.
+        app.switch_active_session(a_key);
+        crate::app::keys::toggle_all_tool_calls(&mut app);
+        assert!(app.tools_collapsed, "ctrl+x flipped the shared preference");
+
+        app.switch_active_session(b_key);
+        assert_eq!(
+            generation_before,
+            app.viewport().layout_generation,
+            "the flip bumps only the focused session's generation",
+        );
+        assert_eq!(
+            epoch_before,
+            tool_layout_epoch(&app),
+            "and clears overrides only on the focused session's blocks",
+        );
+        assert_eq!(
+            width_before,
+            tool_measured_width(&app),
+            "and no resize happened, so the measured width is unmoved too",
+        );
+
+        // The stamped flag is the old one, so it is the only input that
+        // has moved against what B is about to render with.
+        assert!(
+            !tool_measured_collapsed(&app),
+            "B still carries the preference it was measured under",
+        );
+    }
+
     /// `request_context_usage_refresh` flips
     /// `session_usage.context_usage_in_flight = true` when it
     /// successfully proceeds (it needs workspace + active key +

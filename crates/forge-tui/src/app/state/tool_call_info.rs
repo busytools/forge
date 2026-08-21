@@ -65,8 +65,7 @@ pub struct ToolCallInfo {
     /// Global layout generation used for the last measured height.
     pub last_measured_layout_generation: u64,
     /// Session collapse preference the last measured height was taken
-    /// under. The measured height depends on it, so a flip has to miss
-    /// the cache; nothing else in the key moves when only it changes.
+    /// under; the height depends on it, so a flip must miss the cache.
     pub last_measured_tools_collapsed: bool,
     /// Per-block render cache for this tool call.
     pub cache: BlockCache,
