@@ -6736,7 +6736,10 @@ mod tests {
     ///
     /// An in-progress tool call is protected whatever the app status,
     /// so completing one out of band leaves `protected` counting bytes
-    /// that are now evictable while the total stays put.
+    /// that are now evictable while the total stays put. The repair
+    /// keys on block counts, not on protection, so the uncached append
+    /// is what fires the rebuild; the completion only creates the
+    /// discrepancy the rebuild then corrects.
     #[test]
     fn budget_enforcement_repairs_protected_drift_before_reading_totals() {
         let mut app = app_with_cached_messages(2);
@@ -6753,8 +6756,9 @@ mod tests {
             "the fixture has to protect real bytes, or the subtraction under test is zero",
         );
 
-        // Out of band, so nothing re-derives: the tool stops being
-        // protected and one row's block count changes.
+        // Out of band, so nothing re-derives. The completion is what
+        // makes `protected` wrong; the append is what the repair
+        // notices, since it compares block counts.
         if let MessageBlock::ToolCall(tc) = &mut app.active_messages_mut()[2].blocks[0] {
             tc.status = model::ToolCallStatus::Completed;
         }
