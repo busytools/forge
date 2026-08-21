@@ -6817,6 +6817,29 @@ mod tests {
     }
 
     #[test]
+    fn enforce_history_retention_drops_tool_index_entries_for_dropped_messages() {
+        let mut app = make_test_app();
+        *app.active_messages_mut() = vec![
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
+            assistant_tool_message("tool-dropped", model::ToolCallStatus::Completed),
+            assistant_tool_message("tool-kept", model::ToolCallStatus::InProgress),
+        ];
+        app.index_tool_call("tool-dropped".to_owned(), 1, 0);
+        app.index_tool_call("tool-kept".to_owned(), 2, 0);
+        app.history_retention_mut().max_bytes = 1;
+
+        let stats = app.enforce_history_retention();
+
+        assert_eq!(stats.dropped_messages, 1);
+        assert_eq!(
+            app.lookup_tool_call("tool-dropped"),
+            None,
+            "a tool call whose message was trimmed leaves no index entry behind",
+        );
+        assert_eq!(app.lookup_tool_call("tool-kept"), Some((2, 0)));
+    }
+
+    #[test]
     fn enforce_history_retention_prunes_subagent_attribution_for_dropped_tool_calls() {
         let mut app = make_test_app();
         *app.active_messages_mut() = vec![
