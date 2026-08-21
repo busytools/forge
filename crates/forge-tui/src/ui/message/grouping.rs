@@ -540,7 +540,7 @@ fn is_hidden_tool_call(block: &MessageBlock) -> bool {
 /// becomes `RenderUnit::Individual`.
 pub fn partition_blocks_into_render_units(blocks: &[MessageBlock]) -> Vec<RenderUnit> {
     let tool_call_units = partition_tool_call_groups(blocks);
-    merge_messaging_groups(blocks, &tool_call_units)
+    merge_messaging_groups(blocks, tool_call_units)
 }
 
 /// True when `block` is a within-message messaging-class block:
@@ -563,9 +563,15 @@ fn is_messaging_block(block: &MessageBlock) -> bool {
 /// Individual units pointing to messaging-class blocks with a single
 /// `RenderUnit::MessagingGroup` covering one within-message segment.
 /// Hidden tool calls between messaging blocks pass through.
-fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) -> Vec<RenderUnit> {
+///
+/// Locates the runs first and splices second, so a message with no
+/// messaging run - nearly all of them - hands `tool_units` straight
+/// back rather than copying every unit into a fresh vector.
+fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: Vec<RenderUnit>) -> Vec<RenderUnit> {
     use crate::ui::peer_block::{self, PeerInboundKind, PeerOutboundKind};
-    let mut output: Vec<RenderUnit> = Vec::with_capacity(tool_units.len());
+    // Unit ranges that fold, ascending and non-overlapping, each with
+    // the MessagingGroup replacing it.
+    let mut merged: Vec<(Range<usize>, RenderUnit)> = Vec::new();
     let mut i = 0;
     while i < tool_units.len() {
         // Only Individual units that index a messaging-class block
@@ -574,8 +580,7 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) ->
         // the block range derivable without an unreachable arm.
         let first_block_idx = match &tool_units[i] {
             RenderUnit::Individual(idx) if is_messaging_block(&blocks[*idx]) => *idx,
-            other => {
-                output.push(other.clone());
+            _ => {
                 i += 1;
                 continue;
             }
@@ -664,14 +669,11 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) ->
             }
         }
         // Threshold-2: a lone messaging block doesn't form an @
-        // group. Push back the original Individual units so the
-        // single block renders as the plain peer block via
-        // `append_assistant_tool_block`'s peer-block arm. Hidden
-        // pass-throughs in the run survive as Individuals too.
+        // group. Leaving the run unfolded keeps its original Individual
+        // units, so the single block renders as the plain peer block
+        // via `append_assistant_tool_block`'s peer-block arm, and
+        // hidden pass-throughs in the run survive as Individuals too.
         if summary.total() < 2 {
-            for unit in &tool_units[run_start_pos..run_end_pos] {
-                output.push(unit.clone());
-            }
             i = run_end_pos;
             continue;
         }
@@ -679,9 +681,25 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) ->
             .unwrap_or_else(|| GroupId::from_leader_id(format!("block-{first_block_idx}")));
         let aggregate_status = any_status.unwrap_or(crate::agent::model::ToolCallStatus::Completed);
         let segment = MessagingGroupSegment { block_range, summary, aggregate_status };
-        output.push(RenderUnit::MessagingGroup { segment, group_leader_id: leader_id });
+        merged.push((
+            run_start_pos..run_end_pos,
+            RenderUnit::MessagingGroup { segment, group_leader_id: leader_id },
+        ));
         i = run_end_pos;
     }
+    if merged.is_empty() {
+        return tool_units;
+    }
+    let mut output: Vec<RenderUnit> = Vec::with_capacity(tool_units.len());
+    let mut units = tool_units.into_iter();
+    let mut pos = 0;
+    for (range, group) in merged {
+        output.extend(units.by_ref().take(range.start - pos));
+        units.by_ref().take(range.len()).for_each(drop);
+        output.push(group);
+        pos = range.end;
+    }
+    output.extend(units);
     output
 }
 
