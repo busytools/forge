@@ -43,16 +43,14 @@ const EVENT_DRAIN_BUDGET: usize = 64;
 
 /// Consecutive failed reads after which a session stops being retried.
 ///
-/// A read that fails is not an answer, but it is not always transient
-/// either, and the two are not distinguishable at the call: a plain
-/// non-git project exits 128 and lands in `ScannerFailed` next to a real
-/// timeout (`GitOutput::Empty` needs exit ZERO with empty stdout, which
-/// `rev-parse --abbrev-ref HEAD` never produces, so `NotARepo` is
-/// unreachable from here). Without a bound, every non-git project and
-/// every missing worktree path would spawn one `git` per second for the
-/// life of the process - and each one logs, so it would also evict the
-/// diagnostic log the self-serve rule depends on. Three lets a transient
-/// timeout retry twice and stops anything permanent.
+/// A read that fails is not an answer, and it is not always transient:
+/// a non-git project resolves to `NotARepo`, while a timeout, a
+/// checkout git refuses and an unrunnable git all resolve to
+/// `ScannerFailed`. Every one of them is an `Err`, so without a bound
+/// each would spawn one `git` per second for the life of the process -
+/// and each one logs, so it would also evict the diagnostic log the
+/// self-serve rule depends on. Three lets a transient timeout retry
+/// twice and stops anything permanent.
 const MAX_FAILED_READS: u8 = 3;
 
 /// A finished recompute.
@@ -413,12 +411,11 @@ mod tests {
         }));
     }
 
-    /// A read that failed is not an answer, but it is not always
-    /// transient either, and `current_branch` cannot tell them apart: a
-    /// plain non-git project exits 128 and lands in `ScannerFailed`
-    /// beside a real timeout. So retries are counted and bounded - an
-    /// unreadable checkout must not spawn one `git` per second, per
-    /// session, for the life of the process.
+    /// A read that failed is not an answer, and it is not always
+    /// transient: a path that is not on disk resolves to `NotARepo` and
+    /// a real timeout to `ScannerFailed`, both of them `Err`. So retries
+    /// are counted and bounded - an unreadable checkout must not spawn
+    /// one `git` per second, per session, for the life of the process.
     #[tokio::test(flavor = "current_thread")]
     async fn an_unreadable_checkout_retries_a_bounded_number_of_times() {
         let db = tempfile::tempdir().expect("tempdir");

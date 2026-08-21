@@ -51,11 +51,14 @@ impl<T> LayerState<T> {
 pub enum RepoGate {
     /// `git rev-parse` confirmed the cwd is inside a work tree.
     InRepo,
-    /// `git rev-parse` reported the cwd is not a repo (empty output).
+    /// The cwd is not inside a work tree, and the scanner's
+    /// repo-existence probe found no `.git` to contradict that.
     NotARepo,
-    /// The scan subprocess failed / timed out / exceeded the stdout cap
-    /// at the rev-parse gate. The renderer surfaces a "scanner
-    /// unhealthy" banner distinct from a legitimate non-repo cwd.
+    /// The rev-parse gate yielded no branch and the repo-existence probe
+    /// did not rule a repo out: a timeout or oversize read, a checkout
+    /// git refuses, or a git that would not run. The renderer surfaces a
+    /// "scanner unhealthy" banner distinct from a legitimate non-repo
+    /// cwd.
     ScannerFailed,
 }
 

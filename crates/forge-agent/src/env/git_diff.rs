@@ -70,16 +70,93 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 /// neighbours on tall trees.
 const TOP_FILE_COUNT: usize = 7;
 
+/// Whether a git repository is reachable from a scan cwd, and whether
+/// git could answer the question at all. The third variant matters:
+/// "git told me there is no repo" and "git would not run" must not
+/// collapse together, or a missing git binary reads as a non-repo and
+/// silently suppresses the GIT section instead of reporting itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepoPresence {
+    /// A repo exists here, even if it has no commits yet.
+    Present,
+    /// git ran, reported no repository, and there is no `.git` on disk
+    /// to contradict it.
+    Absent,
+    /// git could not be run, or it refused a checkout that does have a
+    /// `.git`. Either way the question went unanswered, so the caller
+    /// must report rather than suppress.
+    Unusable,
+}
+
+/// Ask whether `cwd` sits inside a git repo with `rev-parse --git-dir`,
+/// whose exit status answers repo-existence alone: zero inside any work
+/// tree including one with no commits, non-zero outside one and for a
+/// path that does not exist. Matching git's `fatal:` prose would not
+/// work here even setting version drift aside - a deleted `.git/HEAD`
+/// and a plain non-repo emit the same line.
+///
+/// A non-zero exit is then refined by whether `.git` is on disk: a
+/// pruned worktree entry, a deleted `HEAD` and a corrupt gitfile all
+/// exit 128 with `.git` still present, and each is a fault to report
+/// rather than an absent repo. Undeterminable biases to `Unusable`, so
+/// a broken checkout is never silently suppressed.
+///
+/// Not routed through [`run_git`]: a non-zero exit is the answer here
+/// rather than a fault, so it must neither be logged as a failure nor
+/// collapsed with "git would not run", which the caller has already
+/// logged with git's stderr.
+async fn repo_presence(cwd: &Path) -> RepoPresence {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(cwd).args(["rev-parse", "--git-dir"]).kill_on_drop(true);
+    match timeout(COMMAND_TIMEOUT, command.output()).await {
+        Ok(Ok(output)) if output.status.success() => RepoPresence::Present,
+        Ok(Ok(_)) if dot_git_present(cwd) => RepoPresence::Unusable,
+        Ok(Ok(_)) => RepoPresence::Absent,
+        Ok(Err(_)) | Err(_) => RepoPresence::Unusable,
+    }
+}
+
+/// Whether `.git` is on disk, without following symlinks - a dangling
+/// `.git` symlink is a broken checkout rather than an absent repo, and
+/// `Path::try_exists` reports it as missing because it stats the target.
+/// Anything but a definite "not found" counts as present, so an
+/// unreadable parent biases to [`RepoPresence::Unusable`] as well.
+fn dot_git_present(cwd: &Path) -> bool {
+    !matches!(
+        cwd.join(".git").symlink_metadata(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
 /// Classify `git rev-parse --abbrev-ref HEAD` output into either the
 /// branch string to proceed with, or the terminal `repo_gate`. Empty
 /// stdout is a clean "not a repo" signal (git ran and reported it);
-/// Failed / Oversize mean the scan subprocess itself crashed.
-fn classify_rev_parse(output: GitOutput) -> Result<String, RepoGate> {
+/// Oversize means the scan subprocess itself misbehaved.
+///
+/// `presence` resolves the non-zero-exit case, which is ambiguous on
+/// its own: git exits 128 both outside a repo and when it fails inside
+/// one, so only the narrower repo-existence question separates a
+/// legitimate non-repo from a sick scanner.
+fn classify_rev_parse(output: GitOutput, presence: RepoPresence) -> Result<String, RepoGate> {
     match output {
         GitOutput::Ok(s) => Ok(s.trim().to_owned()),
         GitOutput::Empty => Err(RepoGate::NotARepo),
+        GitOutput::Failed if presence == RepoPresence::Absent => Err(RepoGate::NotARepo),
         GitOutput::Failed | GitOutput::Oversize => Err(RepoGate::ScannerFailed),
     }
+}
+
+/// Resolve the rev-parse gate for `cwd`: the raw branch string, or the
+/// terminal `repo_gate`. The repo-existence probe runs only on a
+/// non-zero exit, so the healthy path still costs a single subprocess.
+async fn rev_parse_gate(cwd: &Path) -> Result<String, RepoGate> {
+    let output = run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await;
+    let presence = if matches!(output, GitOutput::Failed) {
+        repo_presence(cwd).await
+    } else {
+        RepoPresence::Present
+    };
+    classify_rev_parse(output, presence)
 }
 
 /// Minimum gap between background `git fetch` kicks for one repo. The
@@ -187,30 +264,29 @@ fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>) {
 /// branch)` review scope to the same key the `/diff` overlay persists
 /// under - and name the step that failed when it can't.
 pub async fn current_branch(cwd: &Path) -> Result<Option<String>, RepoGate> {
-    let name = classify_rev_parse(run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await)?;
+    let name = rev_parse_gate(cwd).await?;
     Ok((name != "HEAD" && !name.is_empty()).then_some(name))
 }
 
 pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot {
-    let raw_branch =
-        match classify_rev_parse(run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await) {
-            Ok(branch) => branch,
-            // Both the not-a-repo and scanner-crash cases collapse to the
-            // same all-Clean snapshot, differing only by `repo_gate` so the
-            // renderer can tell "not a git repository" from "scanner
-            // unhealthy."
-            Err(repo_gate) => {
-                return GitDiffSnapshot {
-                    branch: GitBranch::NoRepo,
-                    default_branch: None,
-                    repo_gate,
-                    worktree: LayerState::Clean,
-                    branch_ahead: LayerState::Clean,
-                    pr: None,
-                    closes: Vec::new(),
-                };
-            }
-        };
+    let raw_branch = match rev_parse_gate(cwd).await {
+        Ok(branch) => branch,
+        // Both the not-a-repo and scanner-crash cases collapse to the
+        // same all-Clean snapshot, differing only by `repo_gate` so the
+        // renderer can tell "not a git repository" from "scanner
+        // unhealthy."
+        Err(repo_gate) => {
+            return GitDiffSnapshot {
+                branch: GitBranch::NoRepo,
+                default_branch: None,
+                repo_gate,
+                worktree: LayerState::Clean,
+                branch_ahead: LayerState::Clean,
+                pr: None,
+                closes: Vec::new(),
+            };
+        }
+    };
     let detached = raw_branch == "HEAD";
     let branch = if detached {
         GitBranch::Detached
@@ -843,17 +919,16 @@ mod tests {
         assert_eq!(parsed[0].path, "src/weird\tpath.rs");
     }
 
-    /// `tempfile::tempdir()` produces a dir with no `.git/`, so
-    /// `git rev-parse` reports the cwd isn't a repo. `repo_gate` is
-    /// then NotARepo (or ScannerFailed if git itself errored); either
-    /// way it isn't InRepo. The distinction matters for the renderer:
-    /// a healthy non-repo gets a clean hidden GIT section, while a sick
-    /// scanner surfaces the unhealthy banner.
+    /// `tempfile::tempdir()` produces a dir with no `.git/`, so the
+    /// repo-existence probe finds nothing and `repo_gate` is NotARepo.
+    /// The distinction matters for the renderer: a healthy non-repo
+    /// gets a clean hidden GIT section, while a sick scanner surfaces
+    /// the unhealthy banner.
     #[tokio::test(flavor = "current_thread")]
     async fn scan_no_repo_collapses_to_not_in_repo() {
         let dir = tempfile::tempdir().expect("tempdir");
         let snap = scan(dir.path(), None).await;
-        assert_ne!(snap.repo_gate, RepoGate::InRepo);
+        assert_eq!(snap.repo_gate, RepoGate::NotARepo);
         assert!(matches!(snap.worktree, LayerState::Clean));
         assert!(matches!(snap.branch_ahead, LayerState::Clean));
         assert!(snap.default_branch.is_none());
@@ -888,14 +963,39 @@ mod tests {
         );
     }
 
-    /// `git rev-parse` exits 128 (not 0-with-empty-stdout) outside a
-    /// work tree, so a plain non-repo dir reaches the same gate a broken
-    /// git call does. Callers can't tell the two apart from the return
-    /// value alone; the `run_git` WARN carries git's stderr.
+    /// `git rev-parse --abbrev-ref HEAD` exits 128 both outside a work
+    /// tree and when it fails inside one, so the exit code alone can't
+    /// separate them. The repo-existence probe does: a plain directory
+    /// has no repo, so it is a clean NotARepo rather than a scanner
+    /// failure, and the renderer suppresses the GIT section.
     #[tokio::test(flavor = "current_thread")]
-    async fn current_branch_errs_outside_a_repo() {
+    async fn current_branch_reports_not_a_repo_outside_a_repo() {
         let dir = tempfile::tempdir().expect("tempdir");
-        assert_eq!(current_branch(dir.path()).await, Err(RepoGate::ScannerFailed));
+        assert_eq!(current_branch(dir.path()).await, Err(RepoGate::NotARepo));
+    }
+
+    /// A path that does not exist has no repo either - git can't even
+    /// chdir to it - so it lands on the same gate rather than claiming
+    /// the scanner is sick. `run_git`'s WARN still carries git's stderr
+    /// for triage.
+    #[tokio::test(flavor = "current_thread")]
+    async fn current_branch_reports_not_a_repo_for_a_missing_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(current_branch(&dir.path().join("gone")).await, Err(RepoGate::NotARepo));
+    }
+
+    /// An unborn HEAD (`git init` with no commits) is the case the exit
+    /// code cannot be trusted for: `rev-parse --abbrev-ref HEAD` fails
+    /// because HEAD resolves to nothing, while `--git-dir` succeeds.
+    #[tokio::test(flavor = "current_thread")]
+    async fn current_branch_on_an_unborn_head_is_not_reported_as_a_non_repo() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "main");
+        assert_eq!(
+            current_branch(dir.path()).await,
+            Err(RepoGate::ScannerFailed),
+            "a repo with no commits is still a repo, so it must not be suppressed as NotARepo",
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1217,12 +1317,90 @@ mod tests {
     #[test]
     fn classify_rev_parse_maps_output_to_repo_gate() {
         // Ok(stdout) trims to the branch; Empty is a clean non-repo
-        // signal; Failed / Oversize are scanner crashes that route to
-        // the ScannerFailed gate (distinct from NotARepo).
-        assert_eq!(classify_rev_parse(GitOutput::Ok("  main\n".to_owned())), Ok("main".to_owned()));
-        assert_eq!(classify_rev_parse(GitOutput::Empty), Err(RepoGate::NotARepo));
-        assert_eq!(classify_rev_parse(GitOutput::Failed), Err(RepoGate::ScannerFailed));
-        assert_eq!(classify_rev_parse(GitOutput::Oversize), Err(RepoGate::ScannerFailed));
+        // signal; Oversize is always a scanner fault.
+        assert_eq!(
+            classify_rev_parse(GitOutput::Ok("  main\n".to_owned()), RepoPresence::Present),
+            Ok("main".to_owned())
+        );
+        assert_eq!(
+            classify_rev_parse(GitOutput::Empty, RepoPresence::Absent),
+            Err(RepoGate::NotARepo)
+        );
+        assert_eq!(
+            classify_rev_parse(GitOutput::Oversize, RepoPresence::Present),
+            Err(RepoGate::ScannerFailed)
+        );
+    }
+
+    /// A non-zero exit is the ambiguous case, and the probe is what
+    /// resolves it. `Unusable` must stay on the scanner gate: a git
+    /// that would not run is a fault to report, not a licence to
+    /// suppress the section as though there were no repo.
+    #[test]
+    fn a_non_zero_exit_is_resolved_by_the_repo_presence_probe() {
+        assert_eq!(
+            classify_rev_parse(GitOutput::Failed, RepoPresence::Absent),
+            Err(RepoGate::NotARepo)
+        );
+        assert_eq!(
+            classify_rev_parse(GitOutput::Failed, RepoPresence::Present),
+            Err(RepoGate::ScannerFailed)
+        );
+        assert_eq!(
+            classify_rev_parse(GitOutput::Failed, RepoPresence::Unusable),
+            Err(RepoGate::ScannerFailed)
+        );
+    }
+
+    /// The probe's own contract against real git: a plain directory has
+    /// no repo, a fresh `git init` with no commits does. That second
+    /// case is the one the branch rev-parse gets wrong on its own.
+    #[tokio::test(flavor = "current_thread")]
+    async fn repo_presence_separates_a_bare_directory_from_an_unborn_repo() {
+        let plain = tempfile::tempdir().expect("tempdir");
+        assert_eq!(repo_presence(plain.path()).await, RepoPresence::Absent);
+        assert_eq!(repo_presence(&plain.path().join("gone")).await, RepoPresence::Absent);
+
+        let repo = tempfile::tempdir().expect("tempdir");
+        init_repo(&repo, "main");
+        assert_eq!(repo_presence(repo.path()).await, RepoPresence::Present);
+    }
+
+    /// A checkout git refuses is not an absent repo. Deleting `.git/HEAD`
+    /// leaves `.git` on disk while `rev-parse` exits 128 with the *same*
+    /// `fatal:` line a plain non-repo gives, so the on-disk check is the
+    /// only thing separating them - and reading it as absent would
+    /// suppress the GIT section for a broken checkout instead of
+    /// reporting it. The pruned-worktree case forge produces routinely
+    /// has this shape.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_checkout_git_refuses_is_unusable_not_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "main");
+        std::fs::remove_file(dir.path().join(".git").join("HEAD")).expect("remove HEAD");
+
+        assert_eq!(repo_presence(dir.path()).await, RepoPresence::Unusable);
+        assert_eq!(
+            current_branch(dir.path()).await,
+            Err(RepoGate::ScannerFailed),
+            "a checkout git refuses must surface the scanner banner, not read as a non-repo",
+        );
+        assert_eq!(scan(dir.path(), None).await.repo_gate, RepoGate::ScannerFailed);
+    }
+
+    /// The one shape where following symlinks reads a broken checkout as
+    /// an absent one: git gives the same "not a git repository" line a
+    /// plain non-repo gives, and `try_exists` says missing because it
+    /// stats the vanished target rather than the link.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_dangling_dot_git_symlink_is_unusable_not_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::os::unix::fs::symlink(dir.path().join("gone-target"), dir.path().join(".git"))
+            .expect("symlink");
+
+        assert_eq!(repo_presence(dir.path()).await, RepoPresence::Unusable);
+        assert_eq!(scan(dir.path(), None).await.repo_gate, RepoGate::ScannerFailed);
     }
 
     /// A worker branch is cut from origin/main while local `main` lags
