@@ -2228,28 +2228,53 @@ mod tests {
     fn tail_render_start_is_the_minimal_window_cover() {
         let viewport_height = 24_usize;
         let area = Rect::new(0, 0, 80, 24);
-        let cases: [(&str, Vec<ChatMessage>); 3] = [
+        // The flag is the whole point of the third case: without it that
+        // case is indistinguishable from the second, both leaving via
+        // the `|| start == 0` escape, and swapping its placeholder for a
+        // normal message leaves the test green.
+        let cases: [(&str, Vec<ChatMessage>, bool); 3] = [
             (
                 "longer than the viewport",
                 (0..120)
                     .map(|i| assistant_text_message(&format!("msg {i}\nsecond line for height")))
                     .collect(),
+                false,
             ),
             (
                 "shorter than the viewport",
                 (0..3).map(|i| assistant_text_message(&format!("msg {i}"))).collect(),
+                false,
             ),
-            ("zero-height message 0", {
-                let mut msgs = vec![empty_placeholder_message()];
-                msgs.extend((0..5).map(|i| assistant_text_message(&format!("msg {i}\nsecond"))));
-                msgs
-            }),
+            (
+                "zero-height message 0",
+                {
+                    let mut msgs = vec![empty_placeholder_message()];
+                    msgs.extend(
+                        (0..5).map(|i| assistant_text_message(&format!("msg {i}\nsecond"))),
+                    );
+                    msgs
+                },
+                true,
+            ),
         ];
 
-        for (label, history) in cases {
+        for (label, history, diverges_from_first_visible) in cases {
             let mut app = app_with(history);
             let (data, msg_count) = tail_render(&mut app, area, viewport_height);
             let start = data.stats.render_start;
+            if diverges_from_first_visible {
+                assert_eq!(
+                    app.active_viewport_mut().message_height(0),
+                    0,
+                    "{label}: the case needs message 0 to render no rows",
+                );
+                assert_ne!(
+                    app.active_viewport_mut().find_first_visible(data.scroll_offset),
+                    start,
+                    "{label}: the tail path must report a message the binary search does not, \
+                     or this case pins nothing the second one does not",
+                );
+            }
             let tail_from = |from: usize, app: &mut App| -> usize {
                 (from..msg_count).map(|i| app.active_viewport_mut().message_height(i)).sum()
             };

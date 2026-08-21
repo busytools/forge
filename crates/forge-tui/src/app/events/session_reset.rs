@@ -260,11 +260,21 @@ struct UnterminatedCall {
     id: String,
     name: String,
     /// Whether a user turn appears later in the history. Most of these
-    /// calls are a user pressing Esc and carrying on, not a session
-    /// dying: across 2285 local transcripts only 3 of 35 had no user
-    /// turn after them. Named for what it measures rather than for the
-    /// conclusion, so it cannot outlive the reasoning.
+    /// calls are a user pressing Esc and carrying on rather than a
+    /// session dying, and this separates the two. Named for what it
+    /// measures rather than for the conclusion, so it cannot outlive the
+    /// reasoning.
     user_turn_followed: bool,
+}
+
+/// Whether `msg` is the user taking a turn, as opposed to the wire
+/// carrying tool output back. Both are `Message::User`, so a plain
+/// variant match counts a sibling call's result as the conversation
+/// continuing and reads `user_turn_followed` as true on a session that
+/// died mid-batch.
+fn is_user_prompt_turn(msg: &forge_primitives::Message) -> bool {
+    matches!(msg, forge_primitives::Message::User { .. })
+        && message_content_blocks(msg).iter().any(|b| tool_result_target(b).is_none())
 }
 
 /// Tool calls in `history` whose result never arrived, in first-seen
@@ -278,7 +288,7 @@ struct UnterminatedCall {
 /// both orders: a call whose result arrived and was then re-stated is
 /// excluded by its original result.
 fn unterminated_tool_calls(history: &[forge_primitives::Message]) -> Vec<UnterminatedCall> {
-    use forge_primitives::{ContentBlock, Message};
+    use forge_primitives::ContentBlock;
 
     let mut resolved: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for msg in history {
@@ -288,8 +298,7 @@ fn unterminated_tool_calls(history: &[forge_primitives::Message]) -> Vec<Untermi
             }
         }
     }
-    let last_user_idx =
-        history.iter().rposition(|msg| matches!(msg, Message::User { .. })).unwrap_or(0);
+    let last_user_idx = history.iter().rposition(is_user_prompt_turn).unwrap_or(0);
 
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut unterminated = Vec::new();
@@ -997,6 +1006,58 @@ mod tests {
                 .iter()
                 .map(|r| r.field("tool_call_id"))
                 .collect::<Vec<_>>(),
+        );
+    }
+
+    /// A tool result is a `Message::User` too, so "did a user turn
+    /// follow" cannot be answered by matching that variant: a sibling
+    /// call's result arriving would read as the conversation continuing.
+    /// This is the shape that separates them - a batch of two where one
+    /// result lands and the other never does, and nothing after it. The
+    /// session died mid-batch, so neither call was interrupted.
+    #[test]
+    fn a_sibling_result_is_not_the_user_taking_a_turn() {
+        let batch = Message::Assistant {
+            message: AssistantEnvelope {
+                id: "msg_history".to_owned(),
+                role: "assistant".to_owned(),
+                model: "claude-test".to_owned(),
+                content: vec![
+                    ContentBlock::ToolUse {
+                        id: "toolu_landed".to_owned(),
+                        name: "Bash".to_owned(),
+                        input: serde_json::json!({"command": "echo a"}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "toolu_lost".to_owned(),
+                        name: "Bash".to_owned(),
+                        input: serde_json::json!({"command": "echo b"}),
+                    },
+                ],
+                stop_reason: None,
+                stop_sequence: None,
+                usage: None,
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            error: None,
+            uuid: None,
+        };
+        let history = vec![
+            historical_user_text("run both"),
+            batch,
+            historical_tool_result("toolu_landed", false),
+        ];
+        let (capture, _app) = capture_replay_of(&history);
+
+        let records = capture.records_named(UNTERMINATED);
+        assert_eq!(
+            records
+                .iter()
+                .map(|r| (r.field("tool_call_id"), r.field("user_turn_followed")))
+                .collect::<Vec<_>>(),
+            vec![(Some("toolu_lost"), Some("false"))],
+            "the surviving sibling's result is not the user carrying on",
         );
     }
 
