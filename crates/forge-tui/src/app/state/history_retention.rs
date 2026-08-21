@@ -14,9 +14,11 @@ use super::types::HistoryRetentionStats;
 
 const HISTORY_HIDDEN_MARKER_PREFIX: &str = "Older messages hidden to keep memory bounded";
 
-/// Not a reachable message index, so it marks the tool-index entries a
-/// rebuild walk did not reach.
-const UNVISITED_MSG_IDX: usize = usize::MAX;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct HistoryDropCandidate {
+    pub(super) msg_idx: usize,
+    pub(super) bytes: usize,
+}
 
 impl super::App {
     fn remap_anchor_for_insert(
@@ -338,30 +340,19 @@ impl super::App {
     }
 
     pub(super) fn rebuild_tool_indices_and_terminal_refs(&mut self) {
+        self.active_tool_call_index_mut().clear();
         self.clear_terminal_tool_call_tracking();
         self.active_task_ids_mut().clear();
 
         let mut terminal_tool_call_membership = HashSet::new();
         let mut terminal_tool_calls = Vec::new();
-        // Reuse the index's key allocations rather than clearing it: a
-        // session at its retention budget runs this per appended message,
-        // and clear-then-reinsert frees and re-allocates every tool-call
-        // id each time. Positions are still taken from the walk, so a
-        // drifted entry is repaired exactly as a from-scratch rebuild
-        // repaired it.
-        let mut tool_call_index = std::mem::take(self.active_tool_call_index_mut());
-        for slot in tool_call_index.values_mut() {
-            slot.0 = UNVISITED_MSG_IDX;
-        }
+        let mut new_tool_call_index: std::collections::HashMap<String, (usize, usize)> =
+            std::collections::HashMap::new();
         for (msg_idx, msg) in self.active_messages_mut().iter_mut().enumerate() {
             for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
                 if let MessageBlock::ToolCall(tc) = block {
                     let tc = tc.as_mut();
-                    if let Some(slot) = tool_call_index.get_mut(&tc.id) {
-                        *slot = (msg_idx, block_idx);
-                    } else {
-                        tool_call_index.insert(tc.id.clone(), (msg_idx, block_idx));
-                    }
+                    new_tool_call_index.insert(tc.id.clone(), (msg_idx, block_idx));
                     if let Some(terminal_id) = Self::tracked_terminal_id_for_tool(tc) {
                         let entry =
                             super::TerminalToolCallRef::new(terminal_id, msg_idx, block_idx);
@@ -372,12 +363,12 @@ impl super::App {
                 }
             }
         }
-        tool_call_index.retain(|_, slot| slot.0 != UNVISITED_MSG_IDX);
+        *self.active_tool_call_index_mut() = new_tool_call_index;
         *self.terminal_tool_calls_mut() = terminal_tool_calls;
         *self.terminal_tool_call_membership_mut() = terminal_tool_call_membership;
-        self.tool_call_scopes_mut().retain(|id, _| tool_call_index.contains_key(id));
-        self.subagent_attribution_mut().retain(|id, _| tool_call_index.contains_key(id));
-        *self.active_tool_call_index_mut() = tool_call_index;
+        let live_ids: HashSet<String> = self.tool_call_index().keys().cloned().collect();
+        self.tool_call_scopes_mut().retain(|id, _| live_ids.contains(id));
+        self.subagent_attribution_mut().retain(|id, _| live_ids.contains(id));
         let scopes_snapshot: std::collections::HashMap<String, super::ToolCallScope> =
             self.tool_call_scopes().clone();
         let mut new_active_task_ids: Vec<String> = Vec::new();
@@ -484,12 +475,8 @@ impl super::App {
         stats.total_after_bytes = stats.total_before_bytes;
 
         if stats.total_before_bytes > max_bytes {
-            // The tail of a full scan was never consumed.
-            let mut drop_indices = Vec::new();
+            let mut candidates = Vec::new();
             for (msg_idx, msg) in self.messages().iter().enumerate() {
-                if stats.total_after_bytes <= max_bytes {
-                    break;
-                }
                 if Self::is_history_hidden_marker_message(msg)
                     || Self::is_history_protected_message(msg)
                     || active_turn_owner == Some(msg_idx)
@@ -500,15 +487,23 @@ impl super::App {
                 if bytes == 0 {
                     continue;
                 }
-                stats.total_after_bytes = stats.total_after_bytes.saturating_sub(bytes);
-                stats.dropped_bytes = stats.dropped_bytes.saturating_add(bytes);
-                stats.dropped_messages = stats.dropped_messages.saturating_add(1);
-                drop_indices.push(msg_idx);
+                candidates.push(HistoryDropCandidate { msg_idx, bytes });
             }
 
-            if !drop_indices.is_empty() {
+            let mut drop_candidates = Vec::new();
+            for candidate in candidates {
+                if stats.total_after_bytes <= max_bytes {
+                    break;
+                }
+                stats.total_after_bytes = stats.total_after_bytes.saturating_sub(candidate.bytes);
+                stats.dropped_bytes = stats.dropped_bytes.saturating_add(candidate.bytes);
+                stats.dropped_messages = stats.dropped_messages.saturating_add(1);
+                drop_candidates.push(candidate);
+            }
+
+            if !drop_candidates.is_empty() {
                 preserved_anchor = self.apply_history_retention_drop(
-                    &drop_indices,
+                    &drop_candidates,
                     active_turn_owner,
                     preserved_anchor,
                 );
@@ -573,39 +568,32 @@ impl super::App {
         stats
     }
 
-    /// `drop_indices` must be ordered ascending, which is how the retention
-    /// scan builds it; the walk below advances through it in step with the
-    /// messages instead of hashing every index.
     fn apply_history_retention_drop(
         &mut self,
-        drop_indices: &[usize],
+        drop_candidates: &[HistoryDropCandidate],
         active_turn_owner: Option<usize>,
         preserved_anchor: Option<(usize, usize)>,
     ) -> Option<(usize, usize)> {
-        debug_assert!(
-            drop_indices.is_sorted_by(|left, right| left < right),
-            "drop_indices must be strictly ascending or the cursor walk keeps the wrong messages",
-        );
-        let mut retained =
-            Vec::with_capacity(self.messages().len().saturating_sub(drop_indices.len()));
+        let drop_set: HashSet<usize> =
+            drop_candidates.iter().map(|candidate| candidate.msg_idx).collect();
+
+        let mut retained = Vec::with_capacity(self.messages().len().saturating_sub(drop_set.len()));
         let mut retained_bytes = Vec::with_capacity(retained.capacity());
         let old_messages = std::mem::take(self.active_messages_mut());
         let old_bytes = std::mem::take(self.message_retained_bytes_mut());
         let mut old_to_new = vec![None; old_messages.len()];
         let mut remapped_active_turn_owner = None;
         let mut total_bytes: usize = 0;
-        let mut next_drop = drop_indices.iter().peekable();
         for (msg_idx, (msg, bytes)) in old_messages.into_iter().zip(old_bytes).enumerate() {
-            if next_drop.next_if(|&&dropped| dropped == msg_idx).is_some() {
-                continue;
+            if !drop_set.contains(&msg_idx) {
+                if active_turn_owner == Some(msg_idx) {
+                    remapped_active_turn_owner = Some(retained.len());
+                }
+                old_to_new[msg_idx] = Some(retained.len());
+                total_bytes = total_bytes.saturating_add(bytes);
+                retained.push(msg);
+                retained_bytes.push(bytes);
             }
-            if active_turn_owner == Some(msg_idx) {
-                remapped_active_turn_owner = Some(retained.len());
-            }
-            old_to_new[msg_idx] = Some(retained.len());
-            total_bytes = total_bytes.saturating_add(bytes);
-            retained.push(msg);
-            retained_bytes.push(bytes);
         }
         *self.active_messages_mut() = retained;
         *self.message_retained_bytes_mut() = retained_bytes;

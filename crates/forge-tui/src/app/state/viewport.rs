@@ -98,6 +98,7 @@ pub fn compute_scrollbar_geometry(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PreservedScrollAnchor {
+    reason: LayoutRemeasureReason,
     index: usize,
     offset: usize,
 }
@@ -578,8 +579,11 @@ impl ChatViewport {
                 self.preserved_scroll_anchor = None;
             }
         } else if self.preserved_scroll_anchor.is_none() {
-            self.preserved_scroll_anchor =
-                Some(PreservedScrollAnchor { index: anchor_index, offset: anchor_offset });
+            self.preserved_scroll_anchor = Some(PreservedScrollAnchor {
+                reason: effective_reason,
+                index: anchor_index,
+                offset: anchor_offset,
+            });
         }
         self.remeasure_plan = Some(LayoutRemeasurePlan::from_scroll_anchor(
             effective_reason,
@@ -609,6 +613,7 @@ impl ChatViewport {
         }
 
         let anchor = PreservedScrollAnchor {
+            reason,
             index: anchor_index.min(self.message_heights.len().saturating_sub(1)),
             offset: anchor_offset,
         };
@@ -687,6 +692,12 @@ impl ChatViewport {
         }
     }
 
+    /// Return the preserved scroll anchor that should be restored while remeasure
+    /// remains in flight.
+    pub fn scroll_anchor_to_restore(&self) -> Option<(usize, usize)> {
+        self.preserved_scroll_anchor.map(|anchor| (anchor.index, anchor.offset))
+    }
+
     /// Take the preserved scroll anchor once rows above it are exact.
     ///
     /// One-shot: an off-screen `MessageChanged` leaves its target stale
@@ -699,6 +710,14 @@ impl ChatViewport {
         }
         self.preserved_scroll_anchor = None;
         Some((anchor.index, anchor.offset))
+    }
+
+    /// Return the preserved pre-width-resize scroll anchor.
+    pub fn resize_scroll_anchor(&self) -> Option<(usize, usize)> {
+        self.preserved_scroll_anchor.and_then(|anchor| {
+            (anchor.reason == LayoutRemeasureReason::Resize)
+                .then_some((anchor.index, anchor.offset))
+        })
     }
 
     /// Derive the priority window from the preserved scroll anchor using current estimates.
