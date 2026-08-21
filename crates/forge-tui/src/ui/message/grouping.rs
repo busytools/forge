@@ -540,7 +540,7 @@ fn is_hidden_tool_call(block: &MessageBlock) -> bool {
 /// becomes `RenderUnit::Individual`.
 pub fn partition_blocks_into_render_units(blocks: &[MessageBlock]) -> Vec<RenderUnit> {
     let tool_call_units = partition_tool_call_groups(blocks);
-    merge_messaging_groups(blocks, &tool_call_units)
+    merge_messaging_groups(blocks, tool_call_units)
 }
 
 /// True when `block` is a within-message messaging-class block:
@@ -563,9 +563,15 @@ fn is_messaging_block(block: &MessageBlock) -> bool {
 /// Individual units pointing to messaging-class blocks with a single
 /// `RenderUnit::MessagingGroup` covering one within-message segment.
 /// Hidden tool calls between messaging blocks pass through.
-fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) -> Vec<RenderUnit> {
+///
+/// Locates the runs first and splices second, so a message with no
+/// messaging run - nearly all of them - hands `tool_units` straight
+/// back rather than copying every unit into a fresh vector.
+fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: Vec<RenderUnit>) -> Vec<RenderUnit> {
     use crate::ui::peer_block::{self, PeerInboundKind, PeerOutboundKind};
-    let mut output: Vec<RenderUnit> = Vec::with_capacity(tool_units.len());
+    // Unit ranges that fold, ascending and non-overlapping, each with
+    // the MessagingGroup replacing it.
+    let mut merged: Vec<(Range<usize>, RenderUnit)> = Vec::new();
     let mut i = 0;
     while i < tool_units.len() {
         // Only Individual units that index a messaging-class block
@@ -574,8 +580,7 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) ->
         // the block range derivable without an unreachable arm.
         let first_block_idx = match &tool_units[i] {
             RenderUnit::Individual(idx) if is_messaging_block(&blocks[*idx]) => *idx,
-            other => {
-                output.push(other.clone());
+            _ => {
                 i += 1;
                 continue;
             }
@@ -664,14 +669,11 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) ->
             }
         }
         // Threshold-2: a lone messaging block doesn't form an @
-        // group. Push back the original Individual units so the
-        // single block renders as the plain peer block via
-        // `append_assistant_tool_block`'s peer-block arm. Hidden
-        // pass-throughs in the run survive as Individuals too.
+        // group. Leaving the run unfolded keeps its original Individual
+        // units, so the single block renders as the plain peer block
+        // via `append_assistant_tool_block`'s peer-block arm, and
+        // hidden pass-throughs in the run survive as Individuals too.
         if summary.total() < 2 {
-            for unit in &tool_units[run_start_pos..run_end_pos] {
-                output.push(unit.clone());
-            }
             i = run_end_pos;
             continue;
         }
@@ -679,9 +681,25 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) ->
             .unwrap_or_else(|| GroupId::from_leader_id(format!("block-{first_block_idx}")));
         let aggregate_status = any_status.unwrap_or(crate::agent::model::ToolCallStatus::Completed);
         let segment = MessagingGroupSegment { block_range, summary, aggregate_status };
-        output.push(RenderUnit::MessagingGroup { segment, group_leader_id: leader_id });
+        merged.push((
+            run_start_pos..run_end_pos,
+            RenderUnit::MessagingGroup { segment, group_leader_id: leader_id },
+        ));
         i = run_end_pos;
     }
+    if merged.is_empty() {
+        return tool_units;
+    }
+    let mut output: Vec<RenderUnit> = Vec::with_capacity(tool_units.len());
+    let mut units = tool_units.into_iter();
+    let mut pos = 0;
+    for (range, group) in merged {
+        output.extend(units.by_ref().take(range.start - pos));
+        units.by_ref().take(range.len()).for_each(drop);
+        output.push(group);
+        pos = range.end;
+    }
+    output.extend(units);
     output
 }
 
@@ -2130,6 +2148,51 @@ mod tests {
         assert_ne!(
             leaders[0], leaders[1],
             "the two runs are independent groups and must not share a collapse key",
+        );
+    }
+
+    /// A folded run replaces exactly its own units: everything before,
+    /// between and after keeps its unit and its position. The other
+    /// messaging tests all count MessagingGroups, so none of them
+    /// notices a neighbour being dropped or reordered.
+    ///
+    /// Two non-adjacent runs, because the bookkeeping that carries the
+    /// output position across a fold only runs between one fold and the
+    /// next - a single-run fixture never exercises it.
+    #[test]
+    fn folding_a_messaging_run_leaves_its_neighbours_in_place() {
+        let blocks = vec![
+            text_block("before"),
+            outbound_peer_block("planner", "Tell"),
+            outbound_peer_block("debugger", "Ask"),
+            text_block("middle"),
+            outbound_peer_block("reviewer", "Tell"),
+            outbound_peer_block("tester", "Ask"),
+            text_block("after"),
+            tool_call_block("r1", "Read"),
+            tool_call_block("r2", "Read"),
+        ];
+        let shapes: Vec<String> = partition_blocks_into_render_units(&blocks)
+            .iter()
+            .map(|u| match u {
+                RenderUnit::Individual(i) => format!("individual {i}"),
+                RenderUnit::Group { range, .. } => format!("group {range:?}"),
+                RenderUnit::MessagingGroup { segment, .. } => {
+                    format!("messaging {:?}", segment.block_range)
+                }
+            })
+            .collect();
+        assert_eq!(
+            shapes,
+            vec![
+                "individual 0",
+                "messaging 1..3",
+                "individual 3",
+                "messaging 4..6",
+                "individual 6",
+                "group 7..9",
+            ],
+            "each run folds in place and takes nothing else with it",
         );
     }
 }
