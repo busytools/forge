@@ -462,9 +462,11 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
     // through to the per-tool toggle below.
     if let Some(hit) = group_hit_match(app, msg_idx, block_idx) {
         let level = app.group_collapse_level(&hit.leader_id);
-        // Load-bearing, not cosmetic: cycling from L1 to L0 would return
-        // a height eight rows short of what paints, because the per-tool
-        // measure key omits `tools_collapsed` (issue #479).
+        // Cycling is the summary row's job; from L1 / L0 a click means
+        // the tool under the cursor. The stale-height hazard this used
+        // to guard against is gone now that the collapse preference is
+        // part of the per-tool measure key, but the routing it encodes
+        // is a separate question from that fix.
         if matches!(level, crate::ui::message::grouping::GroupCollapseLevel::L2Summary) {
             if !hit.is_leader {
                 trace_click_on_hidden_block(msg_idx, block_idx, hit.leader_id.as_str());
@@ -1357,6 +1359,7 @@ mod tests {
             last_measured_width: 80,
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
+            last_measured_tools_collapsed: false,
             cache: BlockCache::default(),
             collapsed_override: None,
         };
@@ -1666,6 +1669,7 @@ mod tests {
                 last_measured_width: 80,
                 last_measured_layout_epoch: 0,
                 last_measured_layout_generation: 0,
+                last_measured_tools_collapsed: false,
                 cache: BlockCache::default(),
                 collapsed_override: None,
             }))
@@ -1768,6 +1772,7 @@ mod tests {
             last_measured_width: 80,
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
+            last_measured_tools_collapsed: false,
             cache: BlockCache::default(),
             collapsed_override: None,
         };
@@ -1839,6 +1844,7 @@ mod tests {
             last_measured_width: 80,
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
+            last_measured_tools_collapsed: false,
             cache: BlockCache::default(),
             collapsed_override: None,
         };
@@ -2022,6 +2028,7 @@ mod tests {
             last_measured_width: 80,
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
+            last_measured_tools_collapsed: false,
             cache: BlockCache::default(),
             collapsed_override: None,
         };
@@ -2149,6 +2156,7 @@ mod tests {
             last_measured_width: 80,
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
+            last_measured_tools_collapsed: false,
             cache: BlockCache::default(),
             collapsed_override: None,
         };
