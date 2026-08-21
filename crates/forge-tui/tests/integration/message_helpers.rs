@@ -88,7 +88,6 @@ pub fn result_success_message() -> forge_primitives::Message {
         errors: None,
         uuid: None,
         terminal_reason: None,
-        fast_mode_state: None,
     }
 }
 

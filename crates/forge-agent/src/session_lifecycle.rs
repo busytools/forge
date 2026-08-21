@@ -285,7 +285,6 @@ pub fn resolve_current_model_from_inputs(
         supports_effort: catalog.is_some_and(|m| m.supports_effort),
         supported_effort_levels: catalog
             .map_or_else(Vec::new, |m| m.supported_effort_levels.clone()),
-        supports_fast_mode: catalog.and_then(|m| m.supports_fast_mode),
         supports_auto_mode: catalog.and_then(|m| m.supports_auto_mode),
         supports_adaptive_thinking: catalog.and_then(|m| m.supports_adaptive_thinking),
         is_authoritative: current_model_is_authoritative(&resolved_id, requested_id),
@@ -336,7 +335,6 @@ pub fn map_available_models(models: Option<&Value>) -> Vec<AvailableModel> {
                 supports_adaptive_thinking: r
                     .get("supportsAdaptiveThinking")
                     .and_then(Value::as_bool),
-                supports_fast_mode: r.get("supportsFastMode").and_then(Value::as_bool),
                 supports_auto_mode: r.get("supportsAutoMode").and_then(Value::as_bool),
             })
         })
@@ -421,7 +419,6 @@ mod tests {
             supports_effort: false,
             supported_effort_levels: vec![],
             supports_adaptive_thinking: None,
-            supports_fast_mode: None,
             supports_auto_mode: None,
         }];
         let cm =
@@ -441,7 +438,6 @@ mod tests {
             supports_effort: false,
             supported_effort_levels: vec![],
             supports_adaptive_thinking: None,
-            supports_fast_mode: None,
             supports_auto_mode: None,
         }];
         let cm =
@@ -458,7 +454,6 @@ mod tests {
             supports_effort: true,
             supported_effort_levels: vec![EffortLevel::Medium, EffortLevel::High],
             supports_adaptive_thinking: Some(true),
-            supports_fast_mode: Some(false),
             supports_auto_mode: Some(true),
         }];
         let cm = resolve_current_model_from_inputs("claude-sonnet-4-6", None, None, &catalog);

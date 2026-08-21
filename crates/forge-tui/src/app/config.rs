@@ -244,10 +244,6 @@ impl Default for ConfigState {
 }
 
 impl ConfigState {
-    pub fn fast_mode_effective(&self) -> bool {
-        store::fast_mode(&self.committed_settings_document).unwrap_or(false)
-    }
-
     pub fn always_thinking_effective(&self) -> bool {
         store::always_thinking_enabled(&self.committed_settings_document).unwrap_or(false)
     }
@@ -379,9 +375,8 @@ pub fn initialize_shared_state(app: &mut App) -> Result<(), String> {
 }
 
 /// Open the standalone Plugins view. Loads settings docs (the
-/// plugins state still reads from `~/.claude/settings.json` for
-/// fast-mode flags etc.), sets the active view, and triggers the
-/// inventory refresh.
+/// plugins state still reads from `~/.claude/settings.json`), sets the
+/// active view, and triggers the inventory refresh.
 pub fn open_plugins(app: &mut App) -> Result<(), String> {
     let pr = project_root(app);
     let loaded = store::load(

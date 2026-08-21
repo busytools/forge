@@ -1,11 +1,11 @@
-//! Stream-message state parsers: rate-limit / api-retry / fast-mode /
+//! Stream-message state parsers: rate-limit / api-retry /
 //! runtime-session / settings-parse-error. Mirrors upstream's
 //! `agent-sdk/src/bridge/state_parsing.ts`.
 
 use serde_json::{Map, Value};
 
 use forge_primitives::{
-    ApiRetryError, FastModeState, RateLimitStatus, RuntimeSessionState, SettingsParseErrorUpdate,
+    ApiRetryError, RateLimitStatus, RuntimeSessionState, SettingsParseErrorUpdate,
 };
 
 // JSON walking helpers.
@@ -32,10 +32,6 @@ fn number_field(record: &Map<String, Value>, keys: &[&str]) -> Option<f64> {
 /// so this is just the typed wrapper.
 fn parse_enum<T: serde::de::DeserializeOwned>(value: Option<&Value>) -> Option<T> {
     serde_json::from_value(value?.clone()).ok()
-}
-
-pub fn parse_fast_mode_state(value: Option<&Value>) -> Option<FastModeState> {
-    parse_enum(value)
 }
 
 fn parse_rate_limit_status(value: Option<&Value>) -> Option<RateLimitStatus> {
@@ -185,17 +181,6 @@ pub fn normalize_settings_parse_errors(value: &Value) -> Vec<SettingsParseErrorU
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn fast_mode_state_parses_known_values() {
-        assert_eq!(parse_fast_mode_state(Some(&json!("on"))), Some(FastModeState::On));
-        assert_eq!(parse_fast_mode_state(Some(&json!("off"))), Some(FastModeState::Off));
-        assert_eq!(parse_fast_mode_state(Some(&json!("cooldown"))), Some(FastModeState::Cooldown));
-        // Unknown wire string degrades to Unknown via serde(other); only
-        // an absent value yields None.
-        assert_eq!(parse_fast_mode_state(Some(&json!("nope"))), Some(FastModeState::Unknown));
-        assert_eq!(parse_fast_mode_state(None), None);
-    }
 
     #[test]
     fn rate_limit_status_parses_known_values() {

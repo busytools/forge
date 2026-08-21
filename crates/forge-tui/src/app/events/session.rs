@@ -199,7 +199,6 @@ pub(super) fn handle_auth_required_event(
         session.account_info = None;
         session.current_model = None;
         session.mode = None;
-        session.fast_mode_state = model::FastModeState::Off;
         session.session_usage = crate::app::state::SessionUsageState::default();
         session.last_rate_limit_update = None;
         session.cancelled_turn_pending_hint = false;
@@ -298,7 +297,6 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         session.account_info = None;
         session.current_model = None;
         session.mode = None;
-        session.fast_mode_state = model::FastModeState::Off;
         session.session_usage = crate::app::state::SessionUsageState::default();
         session.cancelled_turn_pending_hint = false;
         session.pending_cancel = false;

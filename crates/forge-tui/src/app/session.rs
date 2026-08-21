@@ -172,8 +172,6 @@ pub struct UiSession {
     /// envelope. Higher-fidelity than `current_model.resolved_id` for
     /// per-turn model verification.
     pub observed_assistant_model: Option<String>,
-    /// Fast mode state telemetry from the SDK.
-    pub fast_mode_state: model::FastModeState,
     /// Latest config options observed from bridge `config_option_update` events.
     pub config_options: BTreeMap<String, serde_json::Value>,
     /// Session-wide usage and cost telemetry from the bridge.
@@ -592,7 +590,6 @@ impl Default for UiSession {
             observed_permission_mode: Option::default(),
             observed_effort: Option::default(),
             observed_assistant_model: Option::default(),
-            fast_mode_state: model::FastModeState::default(),
             config_options: BTreeMap::default(),
             session_usage: SessionUsageState::default(),
             oauth_credentials: Option::default(),

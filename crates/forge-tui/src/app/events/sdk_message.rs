@@ -119,39 +119,6 @@ fn handle_stop_hook_summary(
     }));
 }
 
-/// Apply a typed `forge_primitives::FastModeState` to App state.
-/// Idempotent - same state in re-applies as a no-op.
-///
-/// Converts the wire-side `forge_primitives::FastModeState` to the
-/// App-side `model::FastModeState`; an unrecognised wire state
-/// collapses to `Off` (no fast-mode badge).
-fn apply_fast_mode_state(app: &mut App, wire_state: forge_primitives::FastModeState) {
-    use crate::agent::model::FastModeState as Model;
-    use forge_primitives::FastModeState as Wire;
-    let model_state = match wire_state {
-        Wire::Off | Wire::Unknown => Model::Off,
-        Wire::Cooldown => Model::Cooldown,
-        Wire::On => Model::On,
-    };
-    if app.fast_mode_state() == model_state {
-        return;
-    }
-    app.set_fast_mode_state(model_state);
-}
-
-/// `apply_fast_mode_state` adapter for the System("status") path,
-/// which still reads from a `Value` payload (the `data` field on the
-/// generic system envelope). Drops silently when the field is absent
-/// or doesn't deserialize to a known variant.
-fn apply_fast_mode_state_from_value(app: &mut App, data: &Value) {
-    let Some(wire_state) = forge_workspace::translate::state_parsing::parse_fast_mode_state(
-        data.get("fast_mode_state"),
-    ) else {
-        return;
-    };
-    apply_fast_mode_state(app, wire_state);
-}
-
 // Per-variant handlers. Each takes ownership of the full `Message`
 // so it can destructure ownership-tracked fields freely.
 
@@ -861,7 +828,6 @@ fn handle_system(app: &mut App, msg: Message) {
     let Message::System { subtype, data, .. } = msg else { return };
     match subtype.as_str() {
         "status" => {
-            apply_fast_mode_state_from_value(app, &data);
             // permissionMode → CurrentModeUpdate + typed turn_state.mode
             // mirror + supported_mode_ids recompute. The App-side
             // `apply_current_mode_update` only touches the display
@@ -1088,7 +1054,6 @@ fn apply_current_model_from_init(app: &mut App, data: &Value) {
                 })
                 .collect(),
             supports_adaptive_thinking: m.supports_adaptive_thinking,
-            supports_fast_mode: m.supports_fast_mode,
             supports_auto_mode: m.supports_auto_mode,
         })
         .collect();
@@ -1663,15 +1628,7 @@ fn handle_rate_limit_event(app: &mut App, msg: Message) {
 }
 
 fn handle_result(app: &mut App, msg: Message) {
-    let Message::Result {
-        duration_ms,
-        is_error,
-        subtype,
-        errors,
-        terminal_reason,
-        fast_mode_state,
-        ..
-    } = msg
+    let Message::Result { duration_ms, is_error, subtype, errors, terminal_reason, .. } = msg
     else {
         return;
     };
@@ -1682,9 +1639,6 @@ fn handle_result(app: &mut App, msg: Message) {
     // turn). `stop_hook_summary` is left intact: it belongs to the
     // just-completed turn's end-of-turn surface.
     app.set_latest_thinking_tokens(None);
-    if let Some(state) = fast_mode_state {
-        apply_fast_mode_state(app, state);
-    }
     apply_result_finalize(app, is_error, &subtype, errors.unwrap_or_default(), terminal_reason);
 }
 

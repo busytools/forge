@@ -230,7 +230,6 @@ mod tests {
                     types::EffortLevel::High,
                 ],
                 supports_adaptive_thinking: Some(true),
-                supports_fast_mode: Some(true),
                 supports_auto_mode: Some(false),
             },
             types::AvailableModel {
@@ -240,7 +239,6 @@ mod tests {
                 supports_effort: false,
                 supported_effort_levels: Vec::new(),
                 supports_adaptive_thinking: None,
-                supports_fast_mode: None,
                 supports_auto_mode: None,
             },
         ]);
@@ -257,11 +255,9 @@ mod tests {
                         model::EffortLevel::High,
                     ])
                     .supports_adaptive_thinking(Some(true))
-                    .supports_fast_mode(Some(true))
                     .supports_auto_mode(Some(false)),
                 model::AvailableModel::new("haiku", "Claude Haiku")
                     .supports_adaptive_thinking(None)
-                    .supports_fast_mode(None)
                     .supports_auto_mode(None),
             ]
         );

@@ -122,8 +122,8 @@ pub use review::{
 };
 pub use runtime::{
     ApiRetryError, ApiRetryUpdate, AvailableAgent, AvailableCommand, AvailableModel,
-    CompactionTrigger, CurrentModel, EffortLevel, FastModeState, ModeInfo, ModeState,
-    RateLimitUpdate, RuntimeSessionState, SessionLifecycleState, SessionStatus, SessionTurnState,
+    CompactionTrigger, CurrentModel, EffortLevel, ModeInfo, ModeState, RateLimitUpdate,
+    RuntimeSessionState, SessionLifecycleState, SessionStatus, SessionTurnState,
     SettingsParseErrorUpdate, TerminalReason,
 };
 pub use session_key::SessionKey;
