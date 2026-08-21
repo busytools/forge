@@ -6940,14 +6940,27 @@ mod tests {
             })
             .expect("the anchored message survives the drop");
 
-        let n = app.messages().len();
+        // Measure the marker taller than the message it replaced, so the rows
+        // above the reader move. Sized identically, the anchor reproduces the
+        // raw offset and the restore has nothing to do.
+        let heights: Vec<usize> = app
+            .messages()
+            .iter()
+            .map(|msg| if App::is_history_hidden_marker_message(msg) { 6 } else { 4 })
+            .collect();
         let vp = app.active_viewport_mut();
-        vp.sync_message_count(n);
-        for idx in 0..n {
-            vp.set_message_height(idx, 4);
+        vp.sync_message_count(heights.len());
+        for (idx, &height) in heights.iter().enumerate() {
+            vp.set_message_height(idx, height);
             vp.mark_message_height_measured(idx);
         }
         vp.rebuild_prefix_sums();
+        assert_ne!(
+            vp.find_first_visible(vp.scroll_offset),
+            anchored,
+            "fixture must move the rows above the reader so the raw offset drifts",
+        );
+
         let anchor =
             vp.take_ready_scroll_anchor().expect("retention must not discard the reader's anchor");
         vp.restore_scroll_anchor(anchor.0, anchor.1);
