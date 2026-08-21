@@ -29,8 +29,11 @@ mod tests {
         assert!(s.contains(".claude/worktrees/reviewer/"), "{s:?}");
     }
 
+    /// `Absent` covers both a non-git worker and one whose spawn failed
+    /// before it had a worktree, so the toast must stay silent about
+    /// worktrees rather than name a path.
     #[test]
-    fn close_toast_for_non_git_repo_worker_keeps_plain_text() {
+    fn close_toast_for_an_absent_worktree_keeps_plain_text() {
         let s = format_close_toast("notes", WorktreeDisposition::Absent);
         assert_eq!(s, "Worker notes closed.");
         assert!(!s.contains("worktree"), "{s:?}");

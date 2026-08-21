@@ -127,11 +127,17 @@ pub enum WorkerStatusAction {
 
 /// What has happened to a worker's git worktree as of the
 /// `SessionUpdate::WorkerStatusChanged` event carrying it. Only the
-/// `workers__despawn` path ever removes one, so every other emitter
-/// reports [`Self::untouched`].
+/// `workers__despawn` path ever removes one. Among the spawn
+/// rollbacks, the dividing line is `Connected`: one that fires before
+/// the subprocess connected reports [`Self::Absent`], because claude
+/// never ran to create a worktree, while a rollback after `Connected`
+/// (a failed tag-write) reports [`Self::untouched`], because by then
+/// the worktree is on disk. Every other emitter reports
+/// [`Self::untouched`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorktreeDisposition {
-    /// The worker was spawned outside a git repo, so it never had one.
+    /// Nothing to report on: either the worker was spawned outside a
+    /// git repo, or its spawn failed before it had a worktree.
     Absent,
     /// On disk and untouched.
     Intact,

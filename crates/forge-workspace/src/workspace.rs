@@ -4802,9 +4802,10 @@ impl Workspace {
                 project_key,
                 action: crate::protocol::WorkerStatusAction::Removed,
                 status: entry.to_status(),
-                worktree: crate::protocol::WorktreeDisposition::untouched(
-                    entry.is_git_repo_at_spawn,
-                ),
+                // Creating the worktree is what failed, and nothing
+                // cleans up a partial one, so Absent is the only claim
+                // that holds either way.
+                worktree: crate::protocol::WorktreeDisposition::Absent,
             });
         } else {
             // Non-worktree failure (resume not found, generic
@@ -11956,6 +11957,51 @@ mod async_worker_spawn_failure_tests {
         assert!(
             persisted_labels(&workspace, "proj-x").is_empty(),
             "worktree-failure hard removal deletes the persisted row",
+        );
+    }
+
+    /// A worktree-creation failure never got a worktree, so the
+    /// `Removed` event the close toast is built from must not report one
+    /// intact - `Intact` is the arm that names a path, and there is
+    /// nothing at that path to preserve. The worker is a GIT worker,
+    /// the only case that could report `Intact` at all.
+    #[tokio::test]
+    async fn worktree_creation_failure_reports_no_worktree_to_preserve() {
+        let (workspace, mut update_rx) = Workspace::testing_stub();
+
+        let project_key = ProjectKey::new("proj-x");
+        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let lead_id = "lead-uuid";
+        workspace
+            .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, lead_id, true));
+        install_lead_in_pool(&workspace, lead_id);
+
+        let session_key = SessionKey::from_session_id(synth_key);
+        let worktree_msg = "Error creating worktree: failed to resolve base branch";
+        // The call below returns true on either classifier outcome, so
+        // only this pins which path ran: the other transitions to
+        // Failed and emits no Removed event at all.
+        assert!(
+            matches!(
+                crate::mcp::workers::facade::classify_worker_spawn_failure(worktree_msg, true),
+                crate::mcp::workers::facade::WorkerSpawnError::WorktreeCreationFailed { .. },
+            ),
+            "the fixture must drive a real worktree-creation failure",
+        );
+        assert!(workspace.handle_async_worker_spawn_failure(&session_key, worktree_msg));
+
+        let mut dispositions = Vec::new();
+        while let Ok(update) = update_rx.try_recv() {
+            if let SessionUpdate::WorkerStatusChanged { action, worktree, .. } = update
+                && action == crate::protocol::WorkerStatusAction::Removed
+            {
+                dispositions.push(worktree);
+            }
+        }
+        assert_eq!(
+            dispositions,
+            vec![crate::protocol::WorktreeDisposition::Absent],
+            "a worktree that failed to be created must not be reported preserved",
         );
     }
 

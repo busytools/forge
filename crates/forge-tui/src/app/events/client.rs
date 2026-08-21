@@ -2381,7 +2381,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_removed_event_pushes_plain_toast_for_non_git_worker() {
+    fn worker_removed_event_pushes_plain_toast_for_an_absent_worktree() {
         let mut app = App::test_default();
         let lead_key = SessionKey::from_session_id("lead-uuid");
         app.sessions
