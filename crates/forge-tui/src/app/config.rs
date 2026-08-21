@@ -244,10 +244,6 @@ impl Default for ConfigState {
 }
 
 impl ConfigState {
-    pub fn fast_mode_effective(&self) -> bool {
-        store::fast_mode(&self.committed_settings_document).unwrap_or(false)
-    }
-
     pub fn always_thinking_effective(&self) -> bool {
         store::always_thinking_enabled(&self.committed_settings_document).unwrap_or(false)
     }

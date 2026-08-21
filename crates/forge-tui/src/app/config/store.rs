@@ -165,10 +165,6 @@ fn write_missing(document: &mut Value, path: &[&str]) {
     remove_json_path(document, path);
 }
 
-pub fn fast_mode(document: &Value) -> Result<bool, ()> {
-    Ok(read_bool(document, &["fastMode"])?.unwrap_or(false))
-}
-
 pub fn always_thinking_enabled(document: &Value) -> Result<bool, ()> {
     Ok(read_bool(document, &["alwaysThinkingEnabled"])?.unwrap_or(false))
 }
@@ -245,11 +241,6 @@ pub fn set_language(document: &mut Value, value: Option<&str>) {
 #[cfg(test)]
 pub fn set_always_thinking_enabled(document: &mut Value, enabled: bool) {
     write_bool(document, &["alwaysThinkingEnabled"], enabled);
-}
-
-#[cfg(test)]
-pub fn set_fast_mode(document: &mut Value, enabled: bool) {
-    write_bool(document, &["fastMode"], enabled);
 }
 
 #[cfg(test)]
@@ -518,12 +509,13 @@ mod tests {
         let preferences_path = dir.path().join(".claude.json");
         std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
             .expect("create settings dir");
-        std::fs::write(&settings_path, r#"{"fastMode":true}"#).expect("write settings");
+        std::fs::write(&settings_path, r#"{"alwaysThinkingEnabled":true}"#)
+            .expect("write settings");
         std::fs::write(&preferences_path, "{ not-json").expect("write malformed");
 
         let loaded = load(Some(dir.path()), dir.path(), None).expect("load");
 
-        assert_eq!(fast_mode(&loaded.settings_document), Ok(true));
+        assert_eq!(always_thinking_enabled(&loaded.settings_document), Ok(true));
         assert_eq!(loaded.preferences_document, Value::Object(Map::new()));
     }
 

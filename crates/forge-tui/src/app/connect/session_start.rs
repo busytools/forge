@@ -65,7 +65,6 @@ fn build_session_settings_object(app: &App) -> Value {
             "defaultMode": app.config.default_permission_mode_effective().as_stored()
         }),
     );
-    settings.insert("fastMode".to_owned(), Value::Bool(app.config.fast_mode_effective()));
     settings.insert(
         "effortLevel".to_owned(),
         Value::String(app.config.thinking_effort_effective().as_stored().to_owned()),
@@ -205,7 +204,6 @@ mod tests {
         assert_setting_value(&launch_settings, "alwaysThinkingEnabled", &Value::Bool(true));
         assert_setting_value(&launch_settings, "model", &Value::String("haiku".to_owned()));
         assert_permission_mode(&launch_settings, "plan");
-        assert_setting_value(&launch_settings, "fastMode", &Value::Bool(false));
         assert_setting_value(&launch_settings, "effortLevel", &Value::String("high".to_owned()));
         assert_setting_value(&launch_settings, "outputStyle", &Value::String("Default".to_owned()));
         assert_setting_value(&launch_settings, "spinnerTipsEnabled", &Value::Bool(true));
@@ -294,7 +292,6 @@ mod tests {
         // Forge defaults to `auto` permission mode when the user has
         // not stored an explicit value (mirrors `effortLevel = "max"`).
         assert_permission_mode(&launch_settings, "auto");
-        assert_setting_value(&launch_settings, "fastMode", &Value::Bool(false));
         assert_setting_value(&launch_settings, "effortLevel", &Value::String("max".to_owned()));
         assert_setting_value(&launch_settings, "outputStyle", &Value::String("Default".to_owned()));
         assert_setting_value(&launch_settings, "spinnerTipsEnabled", &Value::Bool(true));
@@ -310,7 +307,6 @@ mod tests {
             &mut app.config.committed_settings_document,
             EffortLevel::High,
         );
-        store::set_fast_mode(&mut app.config.committed_settings_document, true);
         store::set_output_style(
             &mut app.config.committed_local_settings_document,
             crate::app::config::OutputStyle::Learning,
@@ -328,7 +324,6 @@ mod tests {
         assert_setting_value(&launch_settings, "alwaysThinkingEnabled", &Value::Bool(true));
         // Forge defaults to `auto` permission mode when unset.
         assert_permission_mode(&launch_settings, "auto");
-        assert_setting_value(&launch_settings, "fastMode", &Value::Bool(true));
         assert_setting_value(&launch_settings, "effortLevel", &Value::String("high".to_owned()));
         assert_setting_value(
             &launch_settings,
