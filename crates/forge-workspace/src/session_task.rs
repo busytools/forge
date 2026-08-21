@@ -250,9 +250,17 @@ impl SessionTask {
                             crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                         );
                     }
+                    // Same reason, same ordering: the replaced identity
+                    // never produces a Result, and once `rekey_to` moves
+                    // `DomainSession.key` no later drain can name the
+                    // buffer this turn's review actions sit in.
+                    let caller = self.domain.lock().key.clone();
+                    self.drain_review_activity_for(&caller);
+                    let previous_key = self.key.clone();
                     self.rekey_to(&real_key);
                     self.emit(SessionUpdate::SessionReplaced {
                         key: real_key.clone(),
+                        previous_key,
                         session_id: SessionId::new(session_id),
                         cwd,
                         current_model,
@@ -333,6 +341,11 @@ impl SessionTask {
             }
             AgentEvent::ConnectionFailed { message } => {
                 let key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
+                // A `/new` or `/resume` that fails to respawn ends the
+                // live turn without a Result, so flush the same way the
+                // peer-ask expiry below does.
+                let caller = self.domain.lock().key.clone();
+                self.drain_review_activity_for(&caller);
                 // Expire any inflight peer asks targeting THIS session
                 // before emitting the user-visible ConnectionFailed.
                 // Each ask gets the dual-path failure notification to
@@ -500,8 +513,15 @@ impl SessionTask {
                 // Clear the turn-commit marker on the turn boundary so
                 // the `/account` backstop stops refusing once the turn
                 // ends. `Message::Result` is the SDK's signal that the
-                // assistant turn has fully completed.
-                if matches!(msg, forge_primitives::Message::Result { .. }) {
+                // assistant turn has fully completed - including a
+                // cancelled one, which lands as `error_during_execution`.
+                // `Message::Error` is the CLI's last-gasp transport
+                // failure, after which no Result follows.
+                if matches!(
+                    msg,
+                    forge_primitives::Message::Result { .. }
+                        | forge_primitives::Message::Error { .. }
+                ) {
                     let caller = {
                         let mut guard = self.domain.lock();
                         guard.turn_pending = false;
@@ -510,11 +530,7 @@ impl SessionTask {
                     // Turn end: flush this session's accumulated review
                     // actions into one batched notice per review, routed to
                     // each review's submit origin.
-                    if let Some(ws) = self.workspace.upgrade() {
-                        for update in ws.drain_review_activity(&caller) {
-                            self.emit(update);
-                        }
-                    }
+                    self.drain_review_activity_for(&caller);
                 }
                 self.note_rate_limit_from_message(&msg);
                 self.emit(SessionUpdate::ChatAppended { session_id, msg });
@@ -690,6 +706,22 @@ impl SessionTask {
         }
     }
 
+    /// Flush `caller`'s buffered review activity into its batched
+    /// notices. Every path a turn can end on calls this, so it has to be
+    /// idempotent: `drain_review_activity` removes the buffer, and a
+    /// caller with nothing buffered yields no notices. A turn that ended
+    /// normally therefore leaves the teardown drains with nothing to do.
+    ///
+    /// `caller` is explicit because the replacement path drains a key
+    /// that `DomainSession.key` is about to move off, and the buffer
+    /// entry becomes unreachable once it has.
+    fn drain_review_activity_for(&self, caller: &SessionKey) {
+        let Some(workspace) = self.workspace.upgrade() else { return };
+        for update in workspace.drain_review_activity(caller) {
+            self.emit(update);
+        }
+    }
+
     /// Migrate this task's workspace-side registrations from the
     /// current `self.key` to `real_key` (and update `self.key`).
     /// No-op when `self.key == real_key` or the workspace has been
@@ -848,6 +880,22 @@ impl SessionTask {
 /// before the task drops doesn't double-fire or panic.
 impl Drop for SessionTask {
     fn drop(&mut self) {
+        // Teardown backstop for the routes out of `run` that produce no
+        // terminal envelope: the command channel closing on a release or
+        // despawn, and the runtime dropping the task.
+        //
+        // NOT subprocess death. `self.handle` owns an `Arc` chain down to
+        // `BridgeInner.event_tx`, so a sender outlives this task and
+        // `event_rx.recv()` never yields `None`; `reader_loop` returns
+        // silently on stream close and on error without emitting an
+        // `AgentEvent`, and nothing watches for child exit. A `claude`
+        // killed mid-turn therefore reaches none of these paths and its
+        // review activity still strands. Tracked separately - closing it
+        // needs either a terminal event on child exit or dropping
+        // `event_tx` when `reader_loop` ends, and the first is
+        // user-visible.
+        let caller = self.domain.lock().key.clone();
+        self.drain_review_activity_for(&caller);
         if let Some(workspace) = self.workspace.upgrade() {
             workspace.expire_target_inflight(
                 &self.key,
@@ -1508,12 +1556,12 @@ mod tests {
         }
     }
 
-    /// Turn-end wiring: a `Message::Result` on a worker session drains its
-    /// accumulated review activity into one `ReviewActivityNotice` routed to
-    /// the submit origin. Guards the seam - a wrong `Message::Result` arm
-    /// kills the whole notification with every unit test still green.
-    #[tokio::test]
-    async fn turn_end_result_drains_review_activity_to_a_notice() {
+    /// A workspace holding one submitted review plus one un-drained
+    /// reply from `worker`, i.e. a turn that has touched a review and
+    /// not yet ended. Returns the tempdir (kept alive for the db), the
+    /// workspace, the review's submit origin, and the replying session.
+    fn workspace_with_pending_review_activity()
+    -> (tempfile::TempDir, Arc<crate::Workspace>, SessionKey, SessionKey) {
         use forge_primitives::review::{
             ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
         };
@@ -1554,52 +1602,188 @@ mod tests {
         workspace
             .review_reply(&worker, "forge", "feat", "a", "implementer", "fixed", "t")
             .expect("reply recorded as this turn's activity");
+        (dir, workspace, reviewer, worker)
+    }
 
-        // A SessionTask for the worker session, capturing its emitted updates.
+    /// A `SessionTask` bound to `key`, plus the receiver for what it emits.
+    fn review_task_for(
+        workspace: &Arc<crate::Workspace>,
+        key: &SessionKey,
+    ) -> (SessionTask, mpsc::UnboundedReceiver<SessionUpdate>) {
         let (handle, _cmds) = Agent::testing_stub();
         let handle = Arc::new(handle);
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
-        let (update_tx, mut update_rx) = mpsc::unbounded_channel();
-        let domain = Arc::new(Mutex::new(DomainSession::new(worker.clone(), Some(handle.clone()))));
-        let mut task = SessionTask {
-            key: worker.clone(),
+        let (update_tx, update_rx) = mpsc::unbounded_channel();
+        let domain = Arc::new(Mutex::new(DomainSession::new(key.clone(), Some(handle.clone()))));
+        let task = SessionTask {
+            key: key.clone(),
             handle,
             command_rx,
             domain,
             update_tx,
             spawn_key: None,
             connected_once: false,
-            workspace: Arc::downgrade(&workspace),
+            workspace: Arc::downgrade(workspace),
         };
+        (task, update_rx)
+    }
 
-        let result_msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({
-            "type": "result",
-            "subtype": "success",
-            "duration_ms": 1,
-            "duration_api_ms": 1,
-            "is_error": false,
-            "num_turns": 1,
-            "session_id": "worker"
-        }))
-        .expect("parse result message");
-        task.translate_event(AgentEvent::SdkMessage {
-            session_id: "worker".to_owned(),
-            msg: result_msg,
-        });
-
+    /// The review-activity notice a task emitted, if any.
+    fn drained_notice(
+        update_rx: &mut mpsc::UnboundedReceiver<SessionUpdate>,
+    ) -> Option<(SessionKey, String, usize, String)> {
         let mut notice = None;
         while let Ok(update) = update_rx.try_recv() {
             if let SessionUpdate::ReviewActivityNotice { key, branch, waiting, message } = update {
                 notice = Some((key, branch, waiting, message));
             }
         }
-        let (key, branch, waiting, message) =
-            notice.expect("a ReviewActivityNotice emits on the turn's Result");
+        notice
+    }
+
+    fn result_message(subtype: &str, is_error: bool) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "result",
+            "subtype": subtype,
+            "duration_ms": 1,
+            "duration_api_ms": 1,
+            "is_error": is_error,
+            "num_turns": 1,
+            "session_id": "worker"
+        }))
+        .expect("parse result message")
+    }
+
+    /// Turn-end wiring: a `Message::Result` on a worker session drains its
+    /// accumulated review activity into one `ReviewActivityNotice` routed to
+    /// the submit origin. Guards the seam - a wrong `Message::Result` arm
+    /// kills the whole notification with every unit test still green.
+    #[tokio::test]
+    async fn turn_end_result_drains_review_activity_to_a_notice() {
+        let (_dir, workspace, reviewer, worker) = workspace_with_pending_review_activity();
+        let (mut task, mut update_rx) = review_task_for(&workspace, &worker);
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "worker".to_owned(),
+            msg: result_message("success", false),
+        });
+
+        let (key, branch, waiting, message) = drained_notice(&mut update_rx)
+            .expect("a ReviewActivityNotice emits on the turn's Result");
         assert_eq!(key, reviewer, "the notice routes to the submit origin, not the worker");
         assert_eq!(branch, "feat", "the notice names the branch it is about");
         assert_eq!(waiting, 1, "the replied-to thread now awaits the reviewer");
         assert!(message.contains("review #1"), "the notice names the review: {message}");
         assert!(message.contains("1 replied"), "the tally counts the reply: {message}");
+    }
+
+    /// A cancelled turn reaches the same `Message::Result` arm - the CLI
+    /// reports the interrupt as `error_during_execution`, not as a
+    /// separate terminal envelope.
+    #[tokio::test]
+    async fn cancelled_turn_result_drains_review_activity() {
+        let (_dir, workspace, reviewer, worker) = workspace_with_pending_review_activity();
+        let (mut task, mut update_rx) = review_task_for(&workspace, &worker);
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "worker".to_owned(),
+            msg: result_message("error_during_execution", true),
+        });
+
+        let (key, ..) = drained_notice(&mut update_rx).expect("a cancelled turn still notifies");
+        assert_eq!(key, reviewer);
+    }
+
+    /// `Message::Error` is the CLI's last-gasp transport failure; no
+    /// Result follows it, so it has to drain on its own.
+    #[tokio::test]
+    async fn transport_error_drains_review_activity() {
+        let (_dir, workspace, reviewer, worker) = workspace_with_pending_review_activity();
+        let (mut task, mut update_rx) = review_task_for(&workspace, &worker);
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "worker".to_owned(),
+            msg: forge_primitives::Message::Error { error: "stream closed".to_owned() },
+        });
+
+        let (key, ..) =
+            drained_notice(&mut update_rx).expect("a transport error still notifies the reviewer");
+        assert_eq!(key, reviewer);
+    }
+
+    /// The session being replaced mid-turn (`/new`, `/clear`, an account
+    /// switch) never produces a Result, and `rekey_to` moves the key the
+    /// buffer is filed under - so the drain has to happen here or the
+    /// activity is unreachable for the rest of the process's life.
+    #[tokio::test]
+    async fn session_replacement_drains_review_activity_before_the_rekey() {
+        let (_dir, workspace, reviewer, worker) = workspace_with_pending_review_activity();
+        let (mut task, mut update_rx) = review_task_for(&workspace, &worker);
+        task.connected_once = true;
+
+        task.translate_event(connected_event("worker-replacement", "/tmp/proj"));
+
+        let (key, ..) = drained_notice(&mut update_rx)
+            .expect("the replaced identity flushes what its turn touched");
+        assert_eq!(key, reviewer);
+        assert!(
+            workspace.drain_review_activity(&worker).is_empty(),
+            "nothing strands under the pre-rekey key",
+        );
+    }
+
+    /// Teardown backstop: the subprocess dying or a despawn closing the
+    /// command channel drops the task without any terminal envelope.
+    #[tokio::test]
+    async fn task_teardown_drains_review_activity() {
+        let (_dir, workspace, reviewer, worker) = workspace_with_pending_review_activity();
+        let (task, mut update_rx) = review_task_for(&workspace, &worker);
+
+        drop(task);
+
+        let (key, ..) =
+            drained_notice(&mut update_rx).expect("teardown flushes the stranded activity");
+        assert_eq!(key, reviewer);
+    }
+
+    /// `run` exiting its select loop reaches the drain, rather than only
+    /// a hand-dropped task doing so.
+    ///
+    /// This does NOT model subprocess death. `Agent::testing_stub`
+    /// substitutes an event channel whose sender is already dropped,
+    /// which production never does - `SessionTask.handle` keeps an `Arc`
+    /// chain to `BridgeInner.event_tx` alive for the task's whole life,
+    /// so the event arm's `break` is unreachable there. The fixture also
+    /// closes the command channel, so this test cannot say which arm
+    /// broke; what it establishes is that leaving `run` drains.
+    #[tokio::test]
+    async fn run_exiting_on_a_closed_channel_drains_review_activity() {
+        let (_dir, workspace, reviewer, worker) = workspace_with_pending_review_activity();
+        let (task, mut update_rx) = review_task_for(&workspace, &worker);
+
+        task.run().await;
+
+        let (key, ..) =
+            drained_notice(&mut update_rx).expect("the run loop's exit flushes the activity");
+        assert_eq!(key, reviewer);
+    }
+
+    /// The teardown drain must not double-notify a turn that already
+    /// ended cleanly - every site shares one idempotent drain.
+    #[tokio::test]
+    async fn teardown_after_a_normal_turn_end_emits_nothing_further() {
+        let (_dir, workspace, _reviewer, worker) = workspace_with_pending_review_activity();
+        let (mut task, mut update_rx) = review_task_for(&workspace, &worker);
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "worker".to_owned(),
+            msg: result_message("success", false),
+        });
+        assert!(drained_notice(&mut update_rx).is_some(), "the turn's own notice fired");
+
+        drop(task);
+
+        assert!(drained_notice(&mut update_rx).is_none(), "teardown adds no second notice");
     }
 
     /// End-to-end glue: a 429 on a session whose `config_dir` IS a

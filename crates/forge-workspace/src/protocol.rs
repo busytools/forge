@@ -546,8 +546,14 @@ pub enum SessionUpdate {
         mode: Option<ModeState>,
         history: Vec<Message>,
     },
+    /// `key` is the replacement session; `previous_key` is the bucket
+    /// it supersedes (the task's key before `rekey_to`). The two differ
+    /// whenever the CLI issues a fresh session UUID, and the reducer
+    /// needs `previous_key` to find the outgoing bucket - it is not
+    /// derivable from anything else on the envelope.
     SessionReplaced {
         key: SessionKey,
+        previous_key: SessionKey,
         session_id: SessionId,
         cwd: String,
         current_model: CurrentModel,
@@ -806,9 +812,11 @@ impl std::fmt::Debug for SessionUpdate {
             Self::Connected { key, .. } => {
                 f.debug_struct("Connected").field("key", key).finish_non_exhaustive()
             }
-            Self::SessionReplaced { key, .. } => {
-                f.debug_struct("SessionReplaced").field("key", key).finish_non_exhaustive()
-            }
+            Self::SessionReplaced { key, previous_key, .. } => f
+                .debug_struct("SessionReplaced")
+                .field("key", key)
+                .field("previous_key", previous_key)
+                .finish_non_exhaustive(),
             Self::ConnectionFailed { key, .. } => {
                 f.debug_struct("ConnectionFailed").field("key", key).finish_non_exhaustive()
             }
