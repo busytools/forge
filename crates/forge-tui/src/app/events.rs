@@ -909,7 +909,6 @@ mod tests {
             catalog_id: None,
             supports_effort: false,
             supported_effort_levels: Vec::new(),
-            supports_fast_mode: None,
             supports_auto_mode: None,
             supports_adaptive_thinking: None,
             is_authoritative: true,

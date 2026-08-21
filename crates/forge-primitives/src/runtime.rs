@@ -123,7 +123,6 @@ pub struct AvailableModel {
     #[serde(default)]
     pub supported_effort_levels: Vec<EffortLevel>,
     pub supports_adaptive_thinking: Option<bool>,
-    pub supports_fast_mode: Option<bool>,
     pub supports_auto_mode: Option<bool>,
 }
 
@@ -136,7 +135,6 @@ impl AvailableModel {
             supports_effort: false,
             supported_effort_levels: Vec::new(),
             supports_adaptive_thinking: None,
-            supports_fast_mode: None,
             supports_auto_mode: None,
         }
     }
@@ -161,11 +159,6 @@ impl AvailableModel {
         self
     }
 
-    pub fn supports_fast_mode(mut self, supports_fast_mode: Option<bool>) -> Self {
-        self.supports_fast_mode = supports_fast_mode;
-        self
-    }
-
     pub fn supports_auto_mode(mut self, supports_auto_mode: Option<bool>) -> Self {
         self.supports_auto_mode = supports_auto_mode;
         self
@@ -182,7 +175,6 @@ pub struct CurrentModel {
     pub supports_effort: bool,
     #[serde(default)]
     pub supported_effort_levels: Vec<EffortLevel>,
-    pub supports_fast_mode: Option<bool>,
     pub supports_auto_mode: Option<bool>,
     pub supports_adaptive_thinking: Option<bool>,
     pub is_authoritative: bool,
@@ -202,7 +194,6 @@ impl CurrentModel {
             catalog_id: None,
             supports_effort: false,
             supported_effort_levels: Vec::new(),
-            supports_fast_mode: None,
             supports_auto_mode: None,
             supports_adaptive_thinking: None,
             is_authoritative: false,
@@ -231,11 +222,6 @@ impl CurrentModel {
 
     pub fn supports_adaptive_thinking(mut self, supports_adaptive_thinking: Option<bool>) -> Self {
         self.supports_adaptive_thinking = supports_adaptive_thinking;
-        self
-    }
-
-    pub fn supports_fast_mode(mut self, supports_fast_mode: Option<bool>) -> Self {
-        self.supports_fast_mode = supports_fast_mode;
         self
     }
 

@@ -1054,7 +1054,6 @@ fn apply_current_model_from_init(app: &mut App, data: &Value) {
                 })
                 .collect(),
             supports_adaptive_thinking: m.supports_adaptive_thinking,
-            supports_fast_mode: m.supports_fast_mode,
             supports_auto_mode: m.supports_auto_mode,
         })
         .collect();
