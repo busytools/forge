@@ -53,9 +53,10 @@ pub enum ScopeError {
     ScanDirMissing { scan_cwd: PathBuf },
     /// The dir is there but git reported no branch for it. `git
     /// rev-parse` exits 128 both for a non-work-tree and for its own
-    /// failures, so the two are not separable here - `run_git` logs
-    /// git's stderr at the same instant, and `gate` carries which side
-    /// of that split git landed on.
+    /// failures; the scanner separates them with a repo-existence
+    /// probe, so `gate` distinguishes a genuine non-repo
+    /// (`NotARepo`) from a sick scanner (`ScannerFailed`) rather than
+    /// just recording that git said nothing usable.
     NoBranchFromGit { scan_cwd: PathBuf, gate: RepoGate },
     /// The inspected checkout is a repo, on a detached HEAD.
     DetachedHead { scan_cwd: PathBuf },
