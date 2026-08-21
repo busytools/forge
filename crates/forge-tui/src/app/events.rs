@@ -3104,7 +3104,6 @@ mod tests {
                 description: None,
             }],
         }));
-        app.set_fast_mode_state(model::FastModeState::On);
         app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
             tool_call("task-1", model::ToolCallStatus::InProgress),
         ))]));
@@ -3131,7 +3130,6 @@ mod tests {
         assert!(app.session_id().is_none());
         assert!(app.current_model().is_none());
         assert!(app.mode().is_none());
-        assert_eq!(app.fast_mode_state(), model::FastModeState::Off);
     }
 
     #[test]
@@ -3247,22 +3245,6 @@ mod tests {
             Some(model::CompactionTrigger::Auto)
         );
         assert_eq!(app.session_usage().last_compaction_pre_tokens, Some(234_567));
-    }
-
-    #[test]
-    fn fast_mode_update_sets_state() {
-        let mut app = make_test_app();
-        assert_eq!(app.fast_mode_state(), model::FastModeState::Off);
-
-        // Wire path: FastMode arrives via the `fast_mode_state` field
-        // on a System("status") data record, parsed by
-        // events::sdk_message::apply_fast_mode_update.
-        send_msg(
-            &mut app,
-            system_message("status", serde_json::json!({"fast_mode_state": "cooldown"})),
-        );
-
-        assert_eq!(app.fast_mode_state(), model::FastModeState::Cooldown);
     }
 
     #[test]

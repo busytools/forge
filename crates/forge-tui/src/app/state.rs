@@ -1412,16 +1412,6 @@ impl App {
         self.active_bucket_mut().runtime_session_state = value;
     }
 
-    /// Active session's fast-mode state.
-    pub fn fast_mode_state(&self) -> model::FastModeState {
-        self.active_session().map_or(model::FastModeState::Off, |s| s.fast_mode_state)
-    }
-
-    /// Set the active session's fast-mode state.
-    pub fn set_fast_mode_state(&mut self, value: model::FastModeState) {
-        self.active_bucket_mut().fast_mode_state = value;
-    }
-
     /// Borrow the active session's config-options map.
     pub fn config_options(&self) -> &BTreeMap<String, serde_json::Value> {
         static FALLBACK: std::sync::OnceLock<BTreeMap<String, serde_json::Value>> =
@@ -3585,7 +3575,6 @@ impl App {
         self.set_session_id(None);
         self.set_current_model(None);
         self.set_mode(None);
-        self.set_fast_mode_state(model::FastModeState::Off);
         *self.session_usage_mut() = SessionUsageState::default();
     }
 

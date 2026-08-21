@@ -41,7 +41,6 @@ fn reset_session_identity_state(
     *app.login_hint_mut() = None;
     super::clear_compaction_state(app, false);
     *app.session_usage_mut() = super::super::SessionUsageState::default();
-    app.set_fast_mode_state(model::FastModeState::Off);
     app.set_runtime_session_state(None);
     app.set_prompt_suggestion(None);
     app.set_last_rate_limit_update(None);

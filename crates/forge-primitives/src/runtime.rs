@@ -250,17 +250,6 @@ impl CurrentModel {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FastModeState {
-    #[default]
-    Off,
-    Cooldown,
-    On,
-    #[serde(other)]
-    Unknown,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApiRetryError {

@@ -370,8 +370,6 @@ impl CurrentModeUpdate {
     }
 }
 
-pub use forge_primitives::runtime::FastModeState;
-
 pub use forge_primitives::RateLimitStatus;
 
 pub use forge_primitives::runtime::ApiRetryError;
