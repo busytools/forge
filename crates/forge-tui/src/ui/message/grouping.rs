@@ -2132,4 +2132,49 @@ mod tests {
             "the two runs are independent groups and must not share a collapse key",
         );
     }
+
+    /// A folded run replaces exactly its own units: everything before,
+    /// between and after keeps its unit and its position. The other
+    /// messaging tests all count MessagingGroups, so none of them
+    /// notices a neighbour being dropped or reordered.
+    ///
+    /// Two non-adjacent runs, because the bookkeeping that carries the
+    /// output position across a fold only runs between one fold and the
+    /// next - a single-run fixture never exercises it.
+    #[test]
+    fn folding_a_messaging_run_leaves_its_neighbours_in_place() {
+        let blocks = vec![
+            text_block("before"),
+            outbound_peer_block("planner", "Tell"),
+            outbound_peer_block("debugger", "Ask"),
+            text_block("middle"),
+            outbound_peer_block("reviewer", "Tell"),
+            outbound_peer_block("tester", "Ask"),
+            text_block("after"),
+            tool_call_block("r1", "Read"),
+            tool_call_block("r2", "Read"),
+        ];
+        let shapes: Vec<String> = partition_blocks_into_render_units(&blocks)
+            .iter()
+            .map(|u| match u {
+                RenderUnit::Individual(i) => format!("individual {i}"),
+                RenderUnit::Group { range, .. } => format!("group {range:?}"),
+                RenderUnit::MessagingGroup { segment, .. } => {
+                    format!("messaging {:?}", segment.block_range)
+                }
+            })
+            .collect();
+        assert_eq!(
+            shapes,
+            vec![
+                "individual 0",
+                "messaging 1..3",
+                "individual 3",
+                "messaging 4..6",
+                "individual 6",
+                "group 7..9",
+            ],
+            "each run folds in place and takes nothing else with it",
+        );
+    }
 }
