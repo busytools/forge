@@ -3853,6 +3853,7 @@ mod tests {
             last_measured_height: 0,
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
+            last_measured_tools_collapsed: false,
             cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
@@ -3929,6 +3930,7 @@ mod tests {
             last_measured_height: 0,
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
+            last_measured_tools_collapsed: false,
             cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
@@ -4006,6 +4008,7 @@ mod tests {
             last_measured_height: 0,
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
+            last_measured_tools_collapsed: false,
             cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
@@ -4080,6 +4083,7 @@ mod tests {
             last_measured_height: 0,
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
+            last_measured_tools_collapsed: false,
             cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
@@ -5236,6 +5240,112 @@ mod tests {
     /// 5h+7d) so the bottom panel's bars populate on the destination
     /// session, not just on connect.
     ///
+    /// An Edit-family name breaks a tool-call run, so this renders as
+    /// `RenderUnit::Individual` and is handed `app.tools_collapsed`
+    /// directly instead of a group-derived level; grouped tools get
+    /// that flag overwritten and never reach the measure call. Plain
+    /// text content rather than a `Diff` keeps it out of the carve-out.
+    fn ungrouped_tool_message(id: &str) -> ChatMessage {
+        let mut msg = assistant_tool_message(id, model::ToolCallStatus::Failed);
+        if let MessageBlock::ToolCall(tc) = &mut msg.blocks[0] {
+            tc.sdk_tool_name = "Edit".to_owned();
+            tc.title = format!("Edit {id}");
+            tc.content =
+                vec![model::ToolCallContent::from("alpha\nbeta\ngamma\ndelta\nepsilon".to_owned())];
+        }
+        msg
+    }
+
+    fn head_tool(app: &App) -> &ToolCallInfo {
+        match &app.messages()[0].blocks[0] {
+            MessageBlock::ToolCall(tc) => tc,
+            _ => panic!("expected a tool call"),
+        }
+    }
+
+    /// Draw a real chat frame, so the tool goes through the same
+    /// grouping and measurement the running app puts it through.
+    fn render_chat_frame(app: &mut App, width: u16, height: u16) {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                crate::ui::chat::render(
+                    frame,
+                    ratatui::layout::Rect::new(0, 0, width, height),
+                    app,
+                    &[],
+                );
+            })
+            .expect("draw");
+    }
+
+    /// ctrl+x flips the collapse preference App-wide, but
+    /// `invalidate_layout`'s `Global` arm bumps only the ACTIVE
+    /// session's viewport and clears overrides only on that session's
+    /// blocks, and switching sessions invalidates nothing. So an
+    /// unfocused session reaches its next render with width, layout
+    /// epoch and generation all unmoved: without the preference in the
+    /// key nothing forces a remeasure, and the tool keeps a height
+    /// taken under the old preference. Mouse hit-testing sizes the
+    /// click box from that height.
+    #[test]
+    fn cross_session_collapse_flip_remeasures_ungrouped_tool() {
+        const W: u16 = 80;
+        const H: u16 = 40;
+
+        let mut app = make_test_app();
+        app.tools_collapsed = true;
+        let a_key = app.active_session_key.clone().expect("an active session");
+
+        let b_key = forge_workspace::SessionKey::from_str_for_test("collapse-cross-session");
+        let mut b_bucket = crate::app::session::UiSession::new(b_key.clone());
+        b_bucket.messages = vec![ungrouped_tool_message("cross-session")];
+        app.sessions.insert(b_key.clone(), b_bucket);
+
+        // B renders once collapsed, stamping its per-tool key.
+        app.switch_active_session(b_key.clone());
+        render_chat_frame(&mut app, W, H);
+        let collapsed_height = head_tool(&app).last_measured_height;
+        let epoch_before = head_tool(&app).layout_epoch;
+        let width_before = head_tool(&app).last_measured_width;
+        let generation_before = app.viewport().layout_generation;
+
+        // The flip happens while A is focused.
+        app.switch_active_session(a_key);
+        crate::app::keys::toggle_all_tool_calls(&mut app);
+        assert!(!app.tools_collapsed, "ctrl+x expanded the shared preference");
+
+        // Back to B at the same size, no resize and no click.
+        app.switch_active_session(b_key);
+        render_chat_frame(&mut app, W, H);
+        assert_eq!(
+            generation_before,
+            app.viewport().layout_generation,
+            "no resize, so B's generation must not move",
+        );
+        assert_eq!(epoch_before, head_tool(&app).layout_epoch, "and its layout epoch must not");
+        assert_eq!(width_before, head_tool(&app).last_measured_width, "nor its measured width");
+        let after_flip = head_tool(&app).last_measured_height;
+
+        // What the same tool measures from cold under the new preference.
+        let mut cold = make_test_app();
+        cold.tools_collapsed = false;
+        *cold.active_messages_mut() = vec![ungrouped_tool_message("cross-session")];
+        render_chat_frame(&mut cold, W, H);
+        let correct_height = head_tool(&cold).last_measured_height;
+
+        assert_ne!(
+            collapsed_height, correct_height,
+            "the preference has to move this tool's height, or the assertion below is free",
+        );
+        assert_eq!(
+            after_flip, correct_height,
+            "B's tool kept a height measured under the old preference \
+             (collapsed={collapsed_height}, correct={correct_height}, got={after_flip})",
+        );
+    }
+
     /// `request_context_usage_refresh` flips
     /// `session_usage.context_usage_in_flight = true` when it
     /// successfully proceeds (it needs workspace + active key +
@@ -5732,6 +5842,7 @@ mod tests {
                 last_measured_height: 0,
                 last_measured_layout_epoch: 0,
                 last_measured_layout_generation: 0,
+                last_measured_tools_collapsed: false,
                 cache: BlockCache::default(),
                 collapsed_override: None,
                 last_measured_y_in_msg: 0,
@@ -5772,6 +5883,7 @@ mod tests {
                 last_measured_height: 0,
                 last_measured_layout_epoch: 0,
                 last_measured_layout_generation: 0,
+                last_measured_tools_collapsed: false,
                 cache: BlockCache::default(),
                 collapsed_override: None,
                 last_measured_y_in_msg: 0,
@@ -8694,6 +8806,7 @@ mod tests {
                     last_measured_width: 0,
                     last_measured_layout_epoch: 0,
                     last_measured_layout_generation: 0,
+                    last_measured_tools_collapsed: false,
                     cache: BlockCache::default(),
                     collapsed_override: Some(override_val),
                 }))],
@@ -8870,6 +8983,7 @@ mod tests {
                 last_measured_width: 0,
                 last_measured_layout_epoch: 0,
                 last_measured_layout_generation: 0,
+                last_measured_tools_collapsed: false,
                 cache: BlockCache::default(),
                 collapsed_override: Some(true),
             }))],
@@ -8940,6 +9054,7 @@ mod tests {
             last_measured_height: 0,
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
+            last_measured_tools_collapsed: false,
             cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
@@ -8973,6 +9088,7 @@ mod tests {
             last_measured_height: 0,
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
+            last_measured_tools_collapsed: false,
             cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,

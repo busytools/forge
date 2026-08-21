@@ -64,6 +64,9 @@ pub struct ToolCallInfo {
     pub last_measured_layout_epoch: u64,
     /// Global layout generation used for the last measured height.
     pub last_measured_layout_generation: u64,
+    /// Session collapse preference the last measured height was taken
+    /// under; the height depends on it, so a flip must miss the cache.
+    pub last_measured_tools_collapsed: bool,
     /// Per-block render cache for this tool call.
     pub cache: BlockCache,
     /// Per-tool collapse override set by clicking the tool-call row.
@@ -170,17 +173,30 @@ impl ToolCallInfo {
         self.last_measured_y_in_msg = 0;
     }
 
-    pub fn cache_measurement_key_matches(&self, width: u16, layout_generation: u64) -> bool {
+    pub fn cache_measurement_key_matches(
+        &self,
+        width: u16,
+        layout_generation: u64,
+        tools_collapsed: bool,
+    ) -> bool {
         self.last_measured_width == width
             && self.last_measured_layout_epoch == self.layout_epoch
             && self.last_measured_layout_generation == layout_generation
+            && self.last_measured_tools_collapsed == tools_collapsed
     }
 
-    pub fn record_measured_height(&mut self, width: u16, height: usize, layout_generation: u64) {
+    pub fn record_measured_height(
+        &mut self,
+        width: u16,
+        height: usize,
+        layout_generation: u64,
+        tools_collapsed: bool,
+    ) {
         self.last_measured_width = width;
         self.last_measured_height = height;
         self.last_measured_layout_epoch = self.layout_epoch;
         self.last_measured_layout_generation = layout_generation;
+        self.last_measured_tools_collapsed = tools_collapsed;
     }
 
     pub fn set_raw_input(&mut self, raw_input: Option<serde_json::Value>) -> bool {

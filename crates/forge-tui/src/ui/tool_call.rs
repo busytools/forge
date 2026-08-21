@@ -149,7 +149,7 @@ pub fn measure_tool_call_height_cached_with_tools_collapsed(
     layout_generation: u64,
     tools_collapsed: bool,
 ) -> (usize, usize) {
-    if tc.cache_measurement_key_matches(width, layout_generation) {
+    if tc.cache_measurement_key_matches(width, layout_generation, tools_collapsed) {
         crate::perf::mark("tc_measure_fast_path_hits");
         return (tc.last_measured_height, 0);
     }
@@ -163,7 +163,7 @@ pub fn measure_tool_call_height_cached_with_tools_collapsed(
     let has_body = !tc.content.is_empty() || has_execute_body;
 
     if !has_body {
-        tc.record_measured_height(width, title_h, layout_generation);
+        tc.record_measured_height(width, title_h, layout_generation, tools_collapsed);
         return (title_h, 1);
     }
 
@@ -174,7 +174,7 @@ pub fn measure_tool_call_height_cached_with_tools_collapsed(
             .wrap(Wrap { trim: false })
             .line_count(width);
         let total = title_h + summary_h;
-        tc.record_measured_height(width, total, layout_generation);
+        tc.record_measured_height(width, total, layout_generation, tools_collapsed);
         return (total, 1 + summary.len());
     }
 
@@ -184,12 +184,12 @@ pub fn measure_tool_call_height_cached_with_tools_collapsed(
     if cached_body.is_some() {
         if let Some(body_h) = tc.cache.height_at(width) {
             let total = title_h + body_h;
-            tc.record_measured_height(width, total, layout_generation);
+            tc.record_measured_height(width, total, layout_generation, tools_collapsed);
             return (total, 1);
         }
         if let Some(body_h) = tc.cache.measure_and_set_height(width) {
             let total = title_h + body_h;
-            tc.record_measured_height(width, total, layout_generation);
+            tc.record_measured_height(width, total, layout_generation, tools_collapsed);
             let cached_len = if body_depends_on_width {
                 tc.cache.get_for_width(width).map_or(1, |body| body.len() + 1)
             } else {
@@ -209,7 +209,7 @@ pub fn measure_tool_call_height_cached_with_tools_collapsed(
     }
     tc.cache.set_height(body_h, width);
     let total = title_h + body_h;
-    tc.record_measured_height(width, total, layout_generation);
+    tc.record_measured_height(width, total, layout_generation, tools_collapsed);
     let cached_len = if body_depends_on_width {
         tc.cache.get_for_width(width).map_or(1, |body| body.len() + 1)
     } else {
@@ -304,6 +304,7 @@ mod tests {
             last_measured_height: 0,
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
+            last_measured_tools_collapsed: false,
             cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
@@ -761,6 +762,57 @@ mod tests {
         assert!(collapsed_h < expanded_h);
     }
 
+    /// `layout_generation` is held fixed so the collapse flag is the
+    /// only thing that moves. The test above varies the generation as
+    /// well, which misses the measurement cache for a reason that is
+    /// not the flag, and so cannot see the flag missing from the key.
+    #[test]
+    fn flipping_tools_collapsed_alone_remeasures() {
+        let body = "alpha\nbeta\ngamma\ndelta".to_owned();
+
+        // What an expanded measurement costs from cold.
+        let mut cold = test_tool_call("tc-key-cold", "Read", model::ToolCallStatus::Completed);
+        cold.content = vec![model::ToolCallContent::from(body.clone())];
+        let (expanded_from_cold, _) = measure_tool_call_height_cached_with_tools_collapsed(
+            &mut cold,
+            ToolCallRenderContext::default(),
+            24,
+            '\u{280B}',
+            7,
+            false,
+        );
+
+        // The same tool measured collapsed first, then expanded with
+        // nothing else changed.
+        let mut tc = test_tool_call("tc-key-reused", "Read", model::ToolCallStatus::Completed);
+        tc.content = vec![model::ToolCallContent::from(body)];
+        let (collapsed, _) = measure_tool_call_height_cached_with_tools_collapsed(
+            &mut tc,
+            ToolCallRenderContext::default(),
+            24,
+            '\u{280B}',
+            7,
+            true,
+        );
+        let (expanded_after_flip, _) = measure_tool_call_height_cached_with_tools_collapsed(
+            &mut tc,
+            ToolCallRenderContext::default(),
+            24,
+            '\u{280B}',
+            7,
+            false,
+        );
+
+        assert_ne!(
+            collapsed, expanded_from_cold,
+            "the body has to change the height with the flag, or the assertion below is free",
+        );
+        assert_eq!(
+            expanded_after_flip, expanded_from_cold,
+            "the flag belongs to the measurement key, so flipping it re-measures",
+        );
+    }
+
     #[test]
     fn diff_tool_stays_expanded_when_session_prefers_collapsed() {
         let mut tc = test_tool_call("tc-diff", "Write", model::ToolCallStatus::Completed);
@@ -988,6 +1040,7 @@ mod tests {
             last_measured_height: 0,
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
+            last_measured_tools_collapsed: false,
             cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
@@ -1023,6 +1076,7 @@ mod tests {
             last_measured_height: 0,
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
+            last_measured_tools_collapsed: false,
             cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
@@ -1060,6 +1114,7 @@ mod tests {
             last_measured_height: 0,
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
+            last_measured_tools_collapsed: false,
             cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
@@ -1111,6 +1166,7 @@ mod tests {
             last_measured_height: 0,
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
+            last_measured_tools_collapsed: false,
             cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
