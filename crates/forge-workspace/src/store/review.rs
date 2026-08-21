@@ -264,6 +264,32 @@ pub fn review_branches(db: &Db, project: &str) -> anyhow::Result<Vec<String>> {
     Ok(branches)
 }
 
+/// Every branch under `project` holding review state of either kind,
+/// deduped, in key order. Same per-project seek as [`review_branches`],
+/// run over both tables: a branch can carry drafted threads and no
+/// submitted review, so a sweep consulting only the reviews table would
+/// leave its threads row behind.
+pub fn stored_branches(db: &Db, project: &str) -> anyhow::Result<Vec<String>> {
+    let txn = db.database().begin_read()?;
+    let mut branches = std::collections::BTreeSet::new();
+    for definition in [REVIEW_THREADS, REVIEWS] {
+        let table = match txn.open_table(definition) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => continue,
+            Err(e) => return Err(e.into()),
+        };
+        for row in table.range((project, "")..)? {
+            let (key, _) = row?;
+            let (row_project, branch) = key.value();
+            if row_project != project {
+                break;
+            }
+            branches.insert(branch.to_owned());
+        }
+    }
+    Ok(branches.into_iter().collect())
+}
+
 /// Drop both of `(project, branch)`'s rows in one write transaction.
 ///
 /// One transaction because the two are halves of one fact. Deleting them
@@ -300,13 +326,6 @@ pub fn save_reviews(
     }
     txn.commit()?;
     Ok(())
-}
-
-/// Delete the whole review set for `(project, branch)` on branch/worktree
-/// teardown, so a reused branch doesn't inherit phantom reviews. Routes
-/// through [`save_reviews`] with an empty slice (which drops the row).
-pub fn delete_reviews(db: &Db, project: &str, branch: &str) -> anyhow::Result<()> {
-    save_reviews(db, project, branch, &[])
 }
 
 /// Seal a new review for `(project, branch)`: mint its number (existing
@@ -783,6 +802,32 @@ mod tests {
         assert_eq!(load_reviews(&db, "forge", "other").expect("load").len(), 1);
         // A branch with no rows at all is not an error.
         delete_branch_state(&db, "forge", "absent").expect("absent branch deletes cleanly");
+    }
+
+    /// This feeds a delete, so a key that bleeds past its project takes a
+    /// neighbour's rows with it. Also covers the branch each table holds
+    /// alone: threads with no submitted review, and the reverse.
+    #[test]
+    fn stored_branches_unions_both_tables_without_bleeding_across_projects() {
+        let (_dir, db) = open_db();
+        save(&db, "aaa", "drafts-only", &[thread("a", 10)]).expect("save threads");
+        save_reviews(&db, "aaa", "both", &[review(1, None)]).expect("save reviews");
+        save(&db, "aaa", "both", &[thread("b", 20)]).expect("save threads");
+        save_reviews(&db, "aaa", "reviews-only", &[review(1, None)]).expect("save reviews");
+        // Neighbours on either side of "aaa" in key order.
+        save(&db, "aaa-suffix", "theirs", &[thread("c", 30)]).expect("save suffix");
+        save_reviews(&db, "bbb", "theirs", &[review(1, None)]).expect("save bbb");
+
+        assert_eq!(
+            stored_branches(&db, "aaa").expect("branches"),
+            vec!["both".to_owned(), "drafts-only".to_owned(), "reviews-only".to_owned()],
+            "every branch this project holds state on, from either table, once",
+        );
+        assert_eq!(
+            stored_branches(&db, "aaa-suffix").expect("branches"),
+            vec!["theirs".to_owned()],
+        );
+        assert!(stored_branches(&db, "nosuch").expect("branches").is_empty());
     }
 
     #[test]

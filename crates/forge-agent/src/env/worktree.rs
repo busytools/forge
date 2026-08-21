@@ -30,15 +30,7 @@ pub fn is_git_repo(path: &Path) -> bool {
 /// clean up under the same `(project, branch)` key the overlay saved
 /// them with.
 pub fn worktree_branch(path: &Path) -> Option<String> {
-    let out = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(path)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let branch = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    let branch = git_in_repo(path, &["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_owned();
     if branch.is_empty() || branch == "HEAD" { None } else { Some(branch) }
 }
 
@@ -218,23 +210,141 @@ pub fn reap_worktree_branch(repo: &Path, branch: &str) -> BranchReapOutcome {
 /// caller cleaning up on absence never discards state it failed to
 /// inspect.
 ///
+/// Membership in [`repo_branch_names`] rather than a targeted
+/// `for-each-ref` pattern, so both callers share one parser. A pattern
+/// cannot answer this safely on a delete path: `refs/remotes/*/<branch>`
+/// has a `*` that does not cross `/`, so a remote named `gh/upstream`
+/// puts its refs where the pattern cannot see them, and `a[b`, a leading
+/// `-` or a space match nothing. Every one of those exits 0 with empty
+/// stdout, and empty is what triggers the delete.
+///
 /// Remote-tracking refs count because [`reap_worktree_branch`] deletes a
 /// local head whose commits are reachable from one, and a branch that
 /// survives on a remote is still open for review.
 pub fn branch_ref_exists(repo: &Path, branch: &str) -> bool {
-    match Command::new("git")
-        .args([
-            "for-each-ref",
-            "--format=%(refname)",
-            &format!("refs/heads/{branch}"),
-            &format!("refs/remotes/*/{branch}"),
-        ])
-        .current_dir(repo)
-        .output()
-    {
-        Ok(out) if out.status.success() => !String::from_utf8_lossy(&out.stdout).trim().is_empty(),
-        _ => true,
+    repo_branch_names(repo).is_none_or(|repo| repo.names.contains(branch))
+}
+
+/// Run `git -C repo <args>` with the ambient repo-location env scrubbed,
+/// returning stdout on exit 0.
+///
+/// `GIT_DIR` / `GIT_WORK_TREE` / `GIT_COMMON_DIR` override `-C` outright,
+/// so without the scrub a forge launched from a git hook, a `git rebase
+/// --exec`, or any shell that exported them answers every question about
+/// every repo from one foreign repo - at exit 0, with nothing in the
+/// output to say so.
+fn git_in_repo(repo: &Path, args: &[&str]) -> Option<String> {
+    let out = scrubbed_git(repo, args).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The command [`git_in_repo`] runs, built separately so a test can
+/// assert the scrub is on it. Removing any of the three `env_remove`
+/// calls leaves every other test in the crate passing.
+fn scrubbed_git(repo: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR");
+    command
+}
+
+/// What a repo knows about its branches, in two quantities that must not
+/// be confused for each other.
+///
+/// [`Self::names`] deliberately over-includes and [`Self::ref_count`] is
+/// exact. A caller sparing on membership wants the first; a caller
+/// judging whether the repo can be trusted to answer wants the second.
+/// They were one value once, and the over-inclusion silently inflated
+/// the population: each slash in a branch name adds a phantom suffix, so
+/// `release/2.0/rc1` reads as three names against two refs and a shallow
+/// clone looks well-stocked. One slash does not show it - two names, two
+/// refs.
+pub struct RepoBranches {
+    /// Every name a stored branch might legitimately match. Includes
+    /// every `/`-suffix of a remote-tracking ref's tail, so it can only
+    /// spare a branch, never condemn one - which is why nothing is
+    /// dropped from it on a name test. NOT a population.
+    pub names: std::collections::HashSet<String>,
+    /// Branch refs the repo actually holds - local heads plus
+    /// remote-tracking refs, excluding symrefs, which point at another
+    /// ref in the same listing rather than being branches of their own.
+    /// Independent of how any branch is named, which is the whole point:
+    /// a count derived from names moves when a branch is renamed.
+    pub ref_count: usize,
+}
+
+/// Every branch name the repo rooted exactly at `repo` knows, plus how
+/// many branch refs it actually holds. `None` when `repo` is not itself
+/// a work-tree root or git could not be asked.
+///
+/// One listing, then exact string membership. That is the difference
+/// between this and asking [`branch_ref_exists`] per branch: a
+/// `for-each-ref` *pattern* matches path prefixes, so a stored `fix`
+/// matches `fix/anything`, an empty name matches every head, and a name
+/// carrying `[`, a leading `-` or a space matches nothing and exits 0 -
+/// indistinguishable from a branch that is genuinely gone. A caller that
+/// deletes on absence cannot tell those apart; a set cannot produce them.
+///
+/// A remote-tracking ref is `refs/remotes/<remote>/<branch>`, and
+/// `<remote>` may itself contain slashes - `git remote add gh/upstream`
+/// is accepted - so where one segment ends and the other begins is not
+/// recoverable from the refname. Every `/`-suffix of the tail joins
+/// `names` rather than guessing: `gh/upstream/feat/pushed` contributes
+/// `upstream/feat/pushed`, `feat/pushed` and `pushed`. That can only add
+/// names, so its failure is to spare a branch whose name happens to be a
+/// suffix of another ref's path - never to delete a live one, which
+/// splitting once does. `ref_count` counts refs and is untouched by it.
+///
+/// The `--show-toplevel` equality check is what keeps discovery from
+/// walking up: git answers happily from an ancestor repo when `repo` is
+/// merely nested inside one. It is only meaningful because the helper
+/// above scrubs the env first - with `GIT_DIR` set, `--show-toplevel`
+/// reports the working directory and the check passes while the refs
+/// come from elsewhere.
+pub fn repo_branch_names(repo: &Path) -> Option<RepoBranches> {
+    let toplevel = git_in_repo(repo, &["rev-parse", "--show-toplevel"])?;
+    let toplevel = std::fs::canonicalize(toplevel.trim()).ok()?;
+    if toplevel != std::fs::canonicalize(repo).ok()? {
+        return None;
     }
+    let listing = git_in_repo(
+        repo,
+        &["for-each-ref", "--format=%(refname) %(symref)", "refs/heads", "refs/remotes"],
+    )?;
+    let mut names = std::collections::HashSet::new();
+    let mut ref_count = 0;
+    for line in listing.lines() {
+        // A ref name cannot contain a space, so the first one separates
+        // it from `%(symref)`, which is empty for everything but a symref.
+        let (refname, symref) = line.split_once(' ').unwrap_or((line, ""));
+        // `origin/HEAD` points at another ref in this same listing, so
+        // counting it would make every clone look one branch richer and
+        // its target's name is already here. Tested by symref rather than
+        // by the name: `release/HEAD` is a legal branch, and skipping it
+        // on the name would drop a real branch out of `names` - which
+        // deletes it.
+        if !symref.trim().is_empty() {
+            continue;
+        }
+        if let Some(head) = refname.strip_prefix("refs/heads/") {
+            ref_count += 1;
+            names.insert(head.to_owned());
+        } else if let Some(tail) = refname.strip_prefix("refs/remotes/") {
+            ref_count += 1;
+            let mut rest = tail;
+            while let Some((_, suffix)) = rest.split_once('/') {
+                names.insert(suffix.to_owned());
+                rest = suffix;
+            }
+        }
+    }
+    names.remove("");
+    Some(RepoBranches { names, ref_count })
 }
 
 /// git's stderr, or its exit status when it said nothing.
@@ -313,6 +423,198 @@ mod tests {
         let wt = dir.path().join("wt");
         run_git(dir.path(), &["worktree", "add", "-q", wt.to_str().expect("utf8 path")]);
         (dir, wt)
+    }
+
+    #[test]
+    fn repo_branch_names_lists_local_heads_and_remote_tracking_refs() {
+        let dir = init_repo_with_commit();
+        run_git(dir.path(), &["branch", "feat/live"]);
+        run_git(dir.path(), &["update-ref", "refs/remotes/origin/feat/pushed", "HEAD"]);
+        // A remote whose own name carries no slash, and one branch under a
+        // nested path, so the two-segment split is exercised both ways.
+        run_git(dir.path(), &["update-ref", "refs/remotes/upstream/main", "HEAD"]);
+
+        let names = repo_branch_names(dir.path()).expect("a repo root answers").names;
+        assert!(names.contains("feat/live"), "local heads are listed: {names:?}");
+        assert!(names.contains("feat/pushed"), "remote-tracking refs count: {names:?}");
+        assert!(names.contains("main") || names.contains("master"), "{names:?}");
+        assert!(
+            !names.iter().any(|n| n.starts_with("refs/")),
+            "names are branch names, not refnames: {names:?}",
+        );
+    }
+
+    /// The branch this returns is what the despawn delete is keyed on,
+    /// so an unscrubbed read hands the wrong name to a correctly-scrubbed
+    /// check: absent in the real repo, and its review state deleted. A
+    /// scrubbed check beside an unscrubbed read is the asymmetry that
+    /// produced the original defect.
+    #[test]
+    fn worktree_branch_is_scrubbed_like_every_other_repo_question() {
+        let foreign = init_repo_with_commit();
+        run_git(foreign.path(), &["checkout", "-q", "-b", "only-in-foreign"]);
+        let host = init_repo_with_commit();
+        run_git(host.path(), &["checkout", "-q", "-b", "the-real-branch"]);
+
+        let command = scrubbed_git(host.path(), &["rev-parse", "--abbrev-ref", "HEAD"]);
+        let removed: Vec<&str> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .filter_map(|(key, _)| key.to_str())
+            .collect();
+        assert!(removed.contains(&"GIT_DIR"), "the read goes through the scrub: {removed:?}");
+        assert_eq!(worktree_branch(host.path()).as_deref(), Some("the-real-branch"));
+        let _ = foreign;
+    }
+
+    /// `release/HEAD` is a legal branch name - `git branch release/HEAD`
+    /// succeeds - so excluding `origin/HEAD` by its last segment drops a
+    /// real branch out of the alive set, and absent is what deletes. The
+    /// symref is what distinguishes them: a clone's `origin/HEAD` carries
+    /// one, a branch never does.
+    #[test]
+    fn a_branch_legally_named_head_is_not_mistaken_for_the_symref() {
+        let dir = init_repo_with_commit();
+        run_git(dir.path(), &["update-ref", "refs/remotes/origin/release/HEAD", "HEAD"]);
+        run_git(dir.path(), &["update-ref", "refs/remotes/origin/feat/a", "HEAD"]);
+        // What a clone leaves: a real symref, not a plain ref.
+        run_git(
+            dir.path(),
+            &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/feat/a"],
+        );
+
+        let repo = repo_branch_names(dir.path()).expect("a repo root answers");
+        assert!(
+            repo.names.contains("release/HEAD"),
+            "a branch that happens to end in HEAD is still a branch: {:?}",
+            repo.names,
+        );
+        assert!(branch_ref_exists(dir.path(), "release/HEAD"), "and the delete gate agrees");
+        // The symref itself is excluded from the population, its target
+        // having been counted already.
+        assert_eq!(repo.ref_count, 3, "local head + two remote branches: {:?}", repo.names);
+    }
+
+    /// A remote name may contain slashes - `git remote add gh/upstream`
+    /// is accepted - so splitting the tail once leaves the remote's own
+    /// tail on the front of the branch, and the live branch reads as
+    /// absent. That is the only hazard in this area that points at
+    /// DELETING state for a branch that still exists; every other one
+    /// spares wrongly.
+    #[test]
+    fn a_slash_bearing_remote_still_yields_the_real_branch_name() {
+        let dir = init_repo_with_commit();
+        run_git(dir.path(), &["update-ref", "refs/remotes/gh/upstream/feat/pushed", "HEAD"]);
+        run_git(dir.path(), &["update-ref", "refs/remotes/origin/feat/plain", "HEAD"]);
+
+        let names = repo_branch_names(dir.path()).expect("a repo root answers").names;
+        assert!(
+            names.contains("feat/pushed"),
+            "the branch behind a slash-bearing remote must not read as gone: {names:?}",
+        );
+        assert!(names.contains("feat/plain"), "the ordinary case still works: {names:?}");
+        // Over-sparing is the deliberate direction: intermediate suffixes
+        // join the alive set, which can only spare, never delete.
+        assert!(names.contains("upstream/feat/pushed"), "{names:?}");
+        assert!(names.contains("pushed"), "{names:?}");
+    }
+
+    /// Discovery walks up. Asking about a directory that merely sits
+    /// inside a repo gets the ancestor's refs at exit 0, which for a
+    /// caller deleting on absence means judging one project's rows
+    /// against another repo's branches.
+    #[test]
+    fn repo_branch_names_refuses_a_directory_nested_inside_a_repo() {
+        let dir = init_repo_with_commit();
+        let nested = dir.path().join("crates");
+        fs::create_dir_all(&nested).expect("mkdir");
+        assert!(
+            repo_branch_names(&nested).is_none(),
+            "only the work-tree root answers for its own refs",
+        );
+        assert!(repo_branch_names(dir.path()).is_some(), "the root itself still answers");
+    }
+
+    #[test]
+    fn repo_branch_names_is_none_outside_a_repo() {
+        let dir = tempdir().expect("tempdir");
+        assert!(repo_branch_names(dir.path()).is_none());
+    }
+
+    /// Pins the DEFENCE rather than only the hazard. The inherited case
+    /// cannot be exercised in-process - the crate forbids `unsafe_code`,
+    /// so a test cannot set `GIT_DIR` on itself - but `env_remove` beating
+    /// an explicit `env` on the same `Command` is the same precedence that
+    /// defeats inheritance, and it is what `git_in_repo` relies on.
+    #[test]
+    fn env_remove_beats_a_git_dir_set_on_the_same_command() {
+        let host = init_repo_with_commit();
+        run_git(host.path(), &["branch", "only-in-host"]);
+        let foreign = init_repo_with_commit();
+        run_git(foreign.path(), &["branch", "only-in-foreign"]);
+
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(host.path())
+            .args(["for-each-ref", "--format=%(refname)", "refs/heads"])
+            .env("GIT_DIR", foreign.path().join(".git"))
+            .env_remove("GIT_DIR")
+            .output()
+            .expect("git runs");
+        let listing = String::from_utf8_lossy(&out.stdout);
+
+        assert!(out.status.success());
+        assert!(
+            listing.contains("only-in-host"),
+            "the scrubbed command reads its -C repo: {listing:?}"
+        );
+        assert!(
+            !listing.contains("only-in-foreign"),
+            "and not the one GIT_DIR pointed at: {listing:?}",
+        );
+    }
+
+    /// Pins the scrub at its CALL SITE. The precedence test above covers
+    /// `env_remove` winning; this covers `git_in_repo` actually applying
+    /// it, which nothing else does - all three calls can be deleted with
+    /// the rest of the suite green.
+    #[test]
+    fn the_git_helper_scrubs_every_repo_location_variable() {
+        let dir = tempdir().expect("tempdir");
+        let command = scrubbed_git(dir.path(), &["rev-parse", "--show-toplevel"]);
+        let removed: Vec<&str> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .filter_map(|(key, _)| key.to_str())
+            .collect();
+        for key in ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"] {
+            assert!(removed.contains(&key), "{key} is not scrubbed: {removed:?}");
+        }
+    }
+
+    /// The hazard the scrub exists for: `-C` does not win against an
+    /// inherited `GIT_DIR`, so an unscrubbed call answers about whatever
+    /// repo the environment names.
+    #[test]
+    fn an_inherited_git_dir_beats_dash_c() {
+        let foreign = init_repo_with_commit();
+        run_git(foreign.path(), &["branch", "only-in-foreign"]);
+        let elsewhere = tempdir().expect("tempdir");
+
+        let out = Command::new("git")
+            .env("GIT_DIR", foreign.path().join(".git"))
+            .arg("-C")
+            .arg(elsewhere.path())
+            .args(["for-each-ref", "--format=%(refname)", "refs/heads"])
+            .output()
+            .expect("git runs");
+        let listing = String::from_utf8_lossy(&out.stdout);
+
+        assert!(out.status.success(), "the wrong answer arrives as a success");
+        assert!(
+            listing.contains("only-in-foreign"),
+            "GIT_DIR overrides -C, so this reports the foreign repo's refs: {listing:?}",
+        );
     }
 
     #[test]
@@ -621,6 +923,33 @@ mod tests {
 
         assert!(branch_ref_exists(dir.path(), "fix/deep/name"));
         assert!(!branch_ref_exists(dir.path(), "fix/deep"));
+    }
+
+    /// The existing coverage slashes the BRANCH name; this slashes the
+    /// REMOTE, which is what the old `refs/remotes/*/<branch>` pattern
+    /// could not see - `*` does not cross `/`. Empty stdout, exit 0, and
+    /// on the despawn path empty is what deletes.
+    #[test]
+    fn branch_ref_exists_sees_a_branch_behind_a_slash_bearing_remote() {
+        let dir = init_repo_with_commit();
+        run_git(dir.path(), &["update-ref", "refs/remotes/gh/upstream/feat/pushed", "HEAD"]);
+        assert!(
+            branch_ref_exists(dir.path(), "feat/pushed"),
+            "a branch surviving only on a slash-named remote is still present",
+        );
+        assert!(!branch_ref_exists(dir.path(), "feat/never-existed"));
+    }
+
+    /// A project path nested inside a repo cannot be judged, so it reads
+    /// as present. Sharing the parser brings the work-tree-root check
+    /// with it: previously this answered from the ancestor's refs and
+    /// could delete on them.
+    #[test]
+    fn branch_ref_exists_reads_a_nested_path_as_present() {
+        let dir = init_repo_with_commit();
+        let nested = dir.path().join("crates");
+        fs::create_dir_all(&nested).expect("mkdir");
+        assert!(branch_ref_exists(&nested, "anything-at-all"));
     }
 
     #[test]

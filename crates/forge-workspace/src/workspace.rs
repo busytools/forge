@@ -3576,6 +3576,142 @@ impl Workspace {
         }
     }
 
+    /// Branch refs a repo must hold before a majority-dead sweep of it is
+    /// trusted.
+    ///
+    /// Measured against real clones, counting branch refs rather than
+    /// names: a `--depth 1` or `--single-branch` clone holds two, its
+    /// local head and the one remote-tracking ref it fetched, whatever
+    /// those branches are called. A full clone of a four-branch repo
+    /// holds five. Three sits in that gap.
+    ///
+    /// It has to be refs and not names. The name set over-includes on
+    /// purpose, one phantom per slash, so `release/2.0/rc1` adds `2.0/rc1`
+    /// and `rc1` beside itself and pushes a two-ref clone to three names -
+    /// over the bound, guard silent. One slash is not enough to show it:
+    /// `release/2.0` gives two names against two refs, which is why a
+    /// test built on it passes whichever quantity the guard reads.
+    ///
+    /// Three is not a tuning knob, it is the only position where the
+    /// guard exists. A solo repo - one `main`, no remote - knows ONE
+    /// name, which is BELOW the shallow clone's two. So any value that
+    /// spares the solo repo also spares the shallow clone, and lowering
+    /// to two sweeps the shallow clone anyway. There is no threshold that
+    /// separates them; a solo repo with most of its review branches
+    /// merged is refused, and that is the cost of the guard rather than
+    /// something to calibrate away.
+    const MIN_POPULATED_REFS: usize = 3;
+
+    /// Drop the review threads and reviews of every branch that no longer
+    /// exists in the repo they were filed against, and report how many
+    /// branches were cleared.
+    ///
+    /// Every branch is judged by exact membership in one listing per
+    /// project - see [`forge_agent::env::worktree::repo_branch_names`] for
+    /// why a per-branch ref pattern cannot answer this. A project whose
+    /// root does not answer as a work-tree root is skipped whole, as is
+    /// one absent from `forge.toml`: there is nothing to check against.
+    pub fn sweep_dead_review_branches(&self) -> usize {
+        let mut cleared = 0;
+        for view in self.list_projects() {
+            let Some(repo) = forge_agent::env::worktree::repo_branch_names(&view.path) else {
+                continue;
+            };
+            let stored = {
+                let guard = self.db.lock();
+                // Workspace-wide, so a closed store ends the sweep rather
+                // than skipping one project - every project after this
+                // would fork two git processes to reach the same answer.
+                let Some(db) = guard.as_ref() else {
+                    return cleared;
+                };
+                match crate::store::review::stored_branches(db, &view.name) {
+                    Ok(stored) => stored,
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "forge_workspace::workspace",
+                            %error,
+                            project = %view.name,
+                            "review-branch sweep skipped: listing stored branches failed",
+                        );
+                        continue;
+                    }
+                }
+            };
+            // Claude puts a worker's worktree on `worktree-<label>`, which
+            // does not exist until the worktree is created. Snapshotted
+            // here, so it covers workers registered up to this point and
+            // not the window from here to the delete. It is not a boot
+            // race either: `live_workers` is still empty this early, the
+            // only production insert being downstream of this call.
+            let spawning: std::collections::HashSet<String> = self
+                .list_live_workers(&view.key)
+                .into_iter()
+                .map(|worker| format!("worktree-{}", worker.label))
+                .collect();
+            let dead: Vec<&String> = stored
+                .iter()
+                .filter(|branch| !repo.names.contains(*branch) && !spawning.contains(*branch))
+                .collect();
+            if dead.is_empty() {
+                continue;
+            }
+            if dead.len() * 2 > stored.len() && repo.ref_count < Self::MIN_POPULATED_REFS {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    project = %view.name,
+                    dead = dead.len(),
+                    stored = stored.len(),
+                    refs_seen = repo.ref_count,
+                    "review-branch sweep refused: most of this project's stored branches read as dead against a repo that knows almost no branches, which is what a shallow or single-branch clone looks like; nothing deleted",
+                );
+                continue;
+            }
+            for branch in dead {
+                let guard = self.db.lock();
+                let Some(db) = guard.as_ref() else {
+                    return cleared;
+                };
+                match crate::store::review::delete_branch_state(db, &view.name, branch) {
+                    Ok(()) => {
+                        tracing::info!(
+                            target: "forge_workspace::workspace",
+                            project = %view.name,
+                            branch = %branch,
+                            "dropped review state for a branch that no longer exists",
+                        );
+                        cleared += 1;
+                    }
+                    Err(error) => tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        %error,
+                        project = %view.name,
+                        branch = %branch,
+                        "dropping review state failed",
+                    ),
+                }
+            }
+        }
+        cleared
+    }
+
+    /// Run [`Self::sweep_dead_review_branches`] off the startup path. Two
+    /// `git` calls per project, both blocking, so it goes on the blocking
+    /// pool rather than holding boot up.
+    pub fn start_review_branch_sweep(self: &Arc<Self>) {
+        let workspace = Arc::clone(self);
+        tokio::task::spawn_blocking(move || {
+            let cleared = workspace.sweep_dead_review_branches();
+            if cleared > 0 {
+                tracing::info!(
+                    target: "forge_workspace::workspace",
+                    cleared,
+                    "review-branch sweep cleared orphaned branches",
+                );
+            }
+        });
+    }
+
     /// Load the submitted reviews for `(project, branch)`, oldest first.
     /// `Ok` with an empty vec when the store isn't open or the branch has
     /// no row; `Err` with a display string when an existing row fails to
@@ -6508,6 +6644,309 @@ mod tests {
             ws.review_replies_waiting("forge", "other").is_none(),
             "the tally is scoped to its own branch",
         );
+    }
+
+    fn sweep_git(dir: &std::path::Path, args: &[&str]) {
+        let out =
+            std::process::Command::new("git").arg("-C").arg(dir).args(args).output().expect("git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// A repo at `dir` on `branch`, with one commit so HEAD resolves.
+    /// `git init -b` needs git 2.28; CI runs 2.25, hence `symbolic-ref`.
+    fn sweep_init_repo(dir: &std::path::Path, branch: &str) {
+        sweep_git(dir, &["init", "-q"]);
+        sweep_git(dir, &["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")]);
+        sweep_git(dir, &["config", "user.email", "test@example.com"]);
+        sweep_git(dir, &["config", "user.name", "Test"]);
+        sweep_git(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("README.md"), "hi\n").expect("write");
+        sweep_git(dir, &["add", "."]);
+        sweep_git(dir, &["commit", "-q", "-m", "init"]);
+    }
+
+    /// `origin/HEAD` as a clone leaves it: a symref, not a plain ref.
+    /// The distinction is what the population count turns on.
+    fn sweep_symref_head(root: &std::path::Path, target: &str) {
+        sweep_git(root, &["update-ref", &format!("refs/remotes/origin/{target}"), "HEAD"]);
+        sweep_git(
+            root,
+            &["symbolic-ref", "refs/remotes/origin/HEAD", &format!("refs/remotes/origin/{target}")],
+        );
+    }
+
+    fn sweep_thread(id: &str) -> forge_primitives::review::ReviewThread {
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+        };
+        ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 1,
+                content_hash: 1,
+                context: vec!["ctx".to_owned()],
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: "look".to_owned(),
+                at: "2026-07-19T10:00:00Z".to_owned(),
+                review_id: None,
+            }],
+            status: ReviewStatus::Open,
+            created_at: "2026-07-19T10:00:00Z".to_owned(),
+            updated_at: "2026-07-19T10:00:00Z".to_owned(),
+            commit: None,
+        }
+    }
+
+    /// A workspace with the store open and one project rooted at `root`.
+    fn sweep_ws(
+        dir: &std::path::Path,
+        name: &str,
+        root: &std::path::Path,
+    ) -> (Arc<Workspace>, tokio::sync::mpsc::UnboundedReceiver<crate::SessionUpdate>) {
+        let (ws, rx) = Workspace::testing_stub_with_config_dir(dir.to_owned());
+        ws.install_db_for_test(crate::store::Db::open(&dir.join("db.redb")).expect("open db"));
+        ws.seed_test_project_with_static_workers(name, &root.to_string_lossy(), &[]);
+        (ws, rx)
+    }
+
+    fn sweep_has_state(ws: &Arc<Workspace>, project: &str, branch: &str) -> bool {
+        !ws.load_review_threads(project, branch).expect("load").is_empty()
+            || !ws.load_reviews(project, branch).expect("load").is_empty()
+    }
+
+    /// Rows outlive the worker that wrote them on purpose, so the only
+    /// thing that may clear them is the branch itself being gone. A
+    /// remote-tracking ref counts as present - the local head is routinely
+    /// deleted after a push while the PR is still open. And judgement is
+    /// exact membership, not a ref pattern: `fix` and `fix/renamed` cannot
+    /// coexist in git, so a stored `fix` beside a live `fix/renamed` means
+    /// `fix` was deleted, where a pattern lookup would have matched its
+    /// replacement and spared it forever.
+    #[test]
+    fn the_sweep_clears_dead_branches_and_spares_every_live_one() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("myproj");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        sweep_init_repo(&root, "main");
+        for branch in ["feat/live", "feat/second", "feat/third", "fix/renamed"] {
+            sweep_git(&root, &["branch", branch]);
+        }
+        sweep_git(&root, &["update-ref", "refs/remotes/origin/feat/pushed", "HEAD"]);
+
+        let (ws, _rx) = sweep_ws(dir.path(), "myproj", &root);
+        let reviewer = SessionKey::from_session_id("lead-uuid");
+        // Four live to three dead, so the pass stays under the refusal
+        // bound - a sweep is meant to be a trickle, and the ratio that
+        // trips the bound is asserted separately.
+        for branch in
+            ["feat/live", "feat/second", "feat/third", "feat/pushed", "feat/merged", "fix"]
+        {
+            ws.save_review_threads("myproj", branch, &[sweep_thread("a")]);
+            ws.submit_review("myproj", branch, None, &["a".to_owned()], reviewer.clone())
+                .expect("submit");
+        }
+        // Threads drafted but never submitted: no reviews row at all.
+        ws.save_review_threads("myproj", "feat/drafts", &[sweep_thread("d")]);
+
+        assert_eq!(ws.sweep_dead_review_branches(), 3, "feat/merged, fix and feat/drafts");
+
+        assert!(sweep_has_state(&ws, "myproj", "feat/live"), "a local head survives");
+        assert!(sweep_has_state(&ws, "myproj", "feat/second"), "so do the other live ones");
+        assert!(sweep_has_state(&ws, "myproj", "feat/third"), "so do the other live ones");
+        assert!(sweep_has_state(&ws, "myproj", "feat/pushed"), "a remote-tracking ref survives");
+        assert!(!sweep_has_state(&ws, "myproj", "feat/merged"), "no ref anywhere, cleared");
+        assert!(!sweep_has_state(&ws, "myproj", "fix"), "fix/renamed is not fix");
+        assert!(!sweep_has_state(&ws, "myproj", "feat/drafts"), "drafts go with their branch");
+    }
+
+    /// A store the sweep cannot check against is left alone. With no repo
+    /// there is nothing to be absent from, and reading that as absence
+    /// would clear every row the project has.
+    #[test]
+    fn the_sweep_spares_a_project_it_cannot_check() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("plainproj");
+        std::fs::create_dir_all(&root).expect("mkdir");
+
+        let (ws, _rx) = sweep_ws(dir.path(), "plainproj", &root);
+        ws.save_review_threads("plainproj", "feat/x", &[sweep_thread("a")]);
+
+        assert_eq!(ws.sweep_dead_review_branches(), 0, "nothing to verify, nothing to clear");
+        assert!(sweep_has_state(&ws, "plainproj", "feat/x"));
+    }
+
+    /// The case no per-branch check can catch: git succeeds, the path is
+    /// right, and the branches really are absent from the ref set it can
+    /// see. A shallow or `--single-branch` clone knows two names - its own
+    /// branch, and `HEAD` via `origin/HEAD` - so the ref count is what
+    /// tells it apart from a large but genuine cleanup.
+    #[test]
+    fn the_sweep_refuses_a_repo_that_knows_almost_no_branches() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("recloned");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        sweep_init_repo(&root, "main");
+        sweep_symref_head(&root, "main");
+
+        let (ws, _rx) = sweep_ws(dir.path(), "recloned", &root);
+        for branch in ["feat/a", "feat/b", "feat/c"] {
+            ws.save_review_threads("recloned", branch, &[sweep_thread("a")]);
+        }
+
+        assert_eq!(ws.sweep_dead_review_branches(), 0, "refused, not swept");
+        for branch in ["feat/a", "feat/b", "feat/c"] {
+            assert!(sweep_has_state(&ws, "recloned", branch), "{branch} kept");
+        }
+    }
+
+    /// The accumulation #598 exists to clear IS the dead set, so a bound
+    /// keyed on the ratio alone would refuse hardest on the store it was
+    /// written for. A repo full of refs is a real cleanup however lopsided
+    /// the ratio.
+    #[test]
+    fn the_sweep_clears_a_long_backlog_when_the_repo_is_well_populated() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("busy");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        sweep_init_repo(&root, "main");
+        for branch in ["feat/live", "feat/second", "feat/third"] {
+            sweep_git(&root, &["branch", branch]);
+        }
+
+        let (ws, _rx) = sweep_ws(dir.path(), "busy", &root);
+        // Eight long-merged branches against one live one: the ratio is
+        // lopsided, the repo is not.
+        for n in 0..8 {
+            ws.save_review_threads("busy", &format!("feat/merged-{n}"), &[sweep_thread("a")]);
+        }
+        ws.save_review_threads("busy", "feat/live", &[sweep_thread("b")]);
+
+        assert_eq!(ws.sweep_dead_review_branches(), 8, "the backlog is what this is for");
+        assert!(sweep_has_state(&ws, "busy", "feat/live"));
+    }
+
+    /// Both halves are required. A repo that knows few branches is only
+    /// refused when most of the store reads dead against it - one merged
+    /// branch beside a live one is an ordinary tidy-up, and a small local
+    /// repo is still allowed to have it swept.
+    #[test]
+    fn a_sparse_repo_still_sweeps_when_only_a_minority_reads_dead() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("small");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        sweep_init_repo(&root, "main");
+        sweep_symref_head(&root, "main");
+
+        let (ws, _rx) = sweep_ws(dir.path(), "small", &root);
+        ws.save_review_threads("small", "main", &[sweep_thread("a")]);
+        ws.save_review_threads("small", "feat/merged", &[sweep_thread("b")]);
+
+        assert_eq!(ws.sweep_dead_review_branches(), 1, "one of two dead is not a majority");
+        assert!(sweep_has_state(&ws, "small", "main"), "the live branch keeps its state");
+        assert!(!sweep_has_state(&ws, "small", "feat/merged"));
+    }
+
+    /// Where the threshold sits, and that a symref is not counted toward
+    /// it. Both poles use local heads only, so `names` and `ref_count`
+    /// coincide here - this pins the position, NOT which of the two the
+    /// guard reads; the slash test below is the only thing that does
+    /// that.
+    #[test]
+    fn the_refusal_threshold_sits_between_two_and_three_branch_refs() {
+        let scenario = |name: &str, extra_branches: usize| {
+            let dir = tempdir().expect("tempdir");
+            let root = dir.path().join(name);
+            std::fs::create_dir_all(&root).expect("mkdir");
+            sweep_init_repo(&root, "main");
+            sweep_symref_head(&root, "main");
+            for n in 0..extra_branches {
+                sweep_git(&root, &["branch", &format!("feat/keep-{n}")]);
+            }
+            let (ws, _rx) = sweep_ws(dir.path(), name, &root);
+            for branch in ["feat/a", "feat/b"] {
+                ws.save_review_threads(name, branch, &[sweep_thread("a")]);
+            }
+            (dir, ws.sweep_dead_review_branches())
+        };
+        // The clone shape alone is two refs - the local head and the one
+        // remote-tracking branch its symref points at. Under the bound.
+        let (_d1, under) = scenario("bare", 0);
+        assert_eq!(under, 0, "two branch refs is not enough to trust a majority-dead pass");
+        // One more local head makes three, and the same ratio goes through.
+        let (_d2, over) = scenario("populated", 1);
+        assert_eq!(over, 2, "at three branch refs the same ratio sweeps");
+    }
+
+    /// The guard has to survive a rename. Each slash in a branch name
+    /// adds a phantom suffix to the over-including name set, so
+    /// `release/2.0/rc1` contributes `2.0/rc1` and `rc1` on top of
+    /// itself: a guard reading that set as a population sees three where
+    /// the clone holds two refs, stops firing, and deletes. The count is
+    /// of refs and does not move when a branch is renamed.
+    ///
+    /// Two slash levels, not one - at one the name set and the ref count
+    /// are both two, and the test passes whichever quantity the guard
+    /// reads.
+    #[test]
+    fn a_slash_in_a_branch_name_does_not_switch_the_refusal_off() {
+        let shallow_clone_shaped = |name: &str, default: &str| {
+            let dir = tempdir().expect("tempdir");
+            let root = dir.path().join(name);
+            std::fs::create_dir_all(&root).expect("mkdir");
+            sweep_init_repo(&root, default);
+            // What `git clone --depth 1` leaves: the local head, one
+            // remote-tracking ref, and origin/HEAD.
+            sweep_git(&root, &["update-ref", &format!("refs/remotes/origin/{default}"), "HEAD"]);
+            sweep_symref_head(&root, default);
+            let (ws, _rx) = sweep_ws(dir.path(), name, &root);
+            for branch in ["feat/a", "feat/b"] {
+                ws.save_review_threads(name, branch, &[sweep_thread("a")]);
+            }
+            (dir, ws.sweep_dead_review_branches())
+        };
+        let (_d1, plain) = shallow_clone_shaped("plain", "main");
+        assert_eq!(plain, 0, "the shallow clone is refused");
+        let (_d2, slashed) = shallow_clone_shaped("slashed", "release/2.0/rc1");
+        assert_eq!(slashed, 0, "and renaming its default branch does not turn the guard off");
+    }
+
+    /// Auto-start and the kick dispatcher are creating worker worktrees at
+    /// the moment the sweep runs, so a registered worker's branch being
+    /// absent right now is routine rather than evidence it is gone.
+    #[test]
+    fn the_sweep_spares_a_branch_a_live_worker_has_yet_to_create() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("myproj");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        sweep_init_repo(&root, "main");
+
+        let (ws, _rx) = sweep_ws(dir.path(), "myproj", &root);
+        let project_key =
+            ws.list_projects().into_iter().find(|v| v.name == "myproj").expect("project").key;
+        ws.insert_live_worker(
+            &project_key,
+            crate::WorkerEntry {
+                label: "reviewer".to_owned(),
+                charter: "review".to_owned(),
+                session_key: SessionKey::from_session_id("worker-uuid"),
+                status: forge_primitives::WorkerLiveness::Spawning,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".to_owned(),
+                needs_tag: false,
+                is_git_repo_at_spawn: true,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        ws.save_review_threads("myproj", "worktree-reviewer", &[sweep_thread("a")]);
+
+        assert_eq!(ws.sweep_dead_review_branches(), 0, "its worktree is still being created");
+        assert!(sweep_has_state(&ws, "myproj", "worktree-reviewer"));
     }
 
     #[test]
