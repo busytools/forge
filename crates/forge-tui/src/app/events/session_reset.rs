@@ -697,6 +697,33 @@ mod tests {
         (capture, app)
     }
 
+    /// A `TaskUpdate` naming an id the replay never saw warns, and the
+    /// warning has to carry the session, the tool call and the task:
+    /// without those it names a failure nobody can trace back.
+    #[test]
+    fn replay_warning_for_an_unknown_task_id_names_its_session_and_call() {
+        let (capture, _app) = capture_replay_of_session(
+            Some("sess-unknown-task"),
+            &[
+                historical_tool_use_named(
+                    "toolu_orphan",
+                    "TaskUpdate",
+                    serde_json::json!({"taskId": "404", "status": "completed"}),
+                ),
+                historical_tool_result_text("toolu_orphan", false, "Task #404 updated"),
+            ],
+        );
+
+        let record = capture
+            .records_named("task_update_unknown_id")
+            .into_iter()
+            .find(|record| record.level == tracing::Level::WARN)
+            .expect("a TaskUpdate against an absent id must warn");
+        assert_eq!(record.field("session_id"), Some("sess-unknown-task"));
+        assert_eq!(record.field("tool_call_id"), Some("toolu_orphan"));
+        assert_eq!(record.field("task_id"), Some("404"));
+    }
+
     /// The replayed shapes a tool call can reach: completed, failed,
     /// refused, plus the `TaskCreate` / `TaskUpdate` pair.
     /// `Killed` is absent because the JSONL parser admits only user,
