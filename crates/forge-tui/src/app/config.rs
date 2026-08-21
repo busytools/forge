@@ -375,9 +375,8 @@ pub fn initialize_shared_state(app: &mut App) -> Result<(), String> {
 }
 
 /// Open the standalone Plugins view. Loads settings docs (the
-/// plugins state still reads from `~/.claude/settings.json` for
-/// fast-mode flags etc.), sets the active view, and triggers the
-/// inventory refresh.
+/// plugins state still reads from `~/.claude/settings.json`), sets the
+/// active view, and triggers the inventory refresh.
 pub fn open_plugins(app: &mut App) -> Result<(), String> {
     let pr = project_root(app);
     let loaded = store::load(
