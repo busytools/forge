@@ -98,7 +98,6 @@ pub fn compute_scrollbar_geometry(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PreservedScrollAnchor {
-    reason: LayoutRemeasureReason,
     index: usize,
     offset: usize,
 }
@@ -579,11 +578,8 @@ impl ChatViewport {
                 self.preserved_scroll_anchor = None;
             }
         } else if self.preserved_scroll_anchor.is_none() {
-            self.preserved_scroll_anchor = Some(PreservedScrollAnchor {
-                reason: effective_reason,
-                index: anchor_index,
-                offset: anchor_offset,
-            });
+            self.preserved_scroll_anchor =
+                Some(PreservedScrollAnchor { index: anchor_index, offset: anchor_offset });
         }
         self.remeasure_plan = Some(LayoutRemeasurePlan::from_scroll_anchor(
             effective_reason,
@@ -613,7 +609,6 @@ impl ChatViewport {
         }
 
         let anchor = PreservedScrollAnchor {
-            reason,
             index: anchor_index.min(self.message_heights.len().saturating_sub(1)),
             offset: anchor_offset,
         };
