@@ -3616,6 +3616,38 @@ impl Workspace {
         })
     }
 
+    /// Worker answers on `(project, branch)` still owed a reviewer turn,
+    /// paired with when the oldest of them landed. `None` when nothing
+    /// waits or the row can't be read.
+    ///
+    /// The tally is the same `awaits_reviewer` count that
+    /// `drain_review_activity` puts on a notice and that the `/diff`
+    /// hydrate parks, over the same rows - so recomputing here
+    /// reproduces what those two would have written rather than
+    /// inventing a second number. `since` comes off the waiting
+    /// threads' own `updated_at`, which for a thread awaiting the
+    /// reviewer is when the agent replied, so a recompute dates the
+    /// wait from the answer rather than from the recompute.
+    pub fn review_replies_waiting(
+        &self,
+        project: &str,
+        branch: &str,
+    ) -> Option<(usize, std::time::SystemTime)> {
+        use time::format_description::well_known::Rfc3339;
+
+        let threads = self.load_review_threads(project, branch).ok()?;
+        let waiting: Vec<_> = threads.iter().filter(|t| t.awaits_reviewer()).collect();
+        if waiting.is_empty() {
+            return None;
+        }
+        let since = waiting
+            .iter()
+            .filter_map(|t| time::OffsetDateTime::parse(&t.updated_at, &Rfc3339).ok())
+            .min()
+            .map_or_else(std::time::SystemTime::now, std::time::SystemTime::from);
+        Some((waiting.len(), since))
+    }
+
     /// The branches under `project` that hold submitted reviews. `Ok`
     /// with an empty vec when the store isn't open; `Err` on a read
     /// failure. `review__list` asks this only after its own branch came
@@ -6412,6 +6444,83 @@ mod tests {
             ws.load_review_threads("forge", "other").expect("load").len(),
             1,
             "delete is scoped"
+        );
+    }
+
+    /// The recompute must land on the number the two live writers would
+    /// have written - the `awaits_reviewer` tally over the branch's
+    /// rows - and date the wait from the answer that has been sitting
+    /// longest, not from the moment it was recomputed.
+    #[test]
+    fn review_replies_waiting_tallies_answers_and_dates_them_from_the_oldest() {
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+        };
+        let thread = |id: &str, status: ReviewStatus, answered_at: Option<&str>| {
+            let mut comments = vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: "look at this".to_owned(),
+                at: "2026-07-19T10:00:00Z".to_owned(),
+                review_id: None,
+            }];
+            if let Some(at) = answered_at {
+                comments.push(ReviewComment {
+                    author: ReviewAuthor::Agent { label: "impl".to_owned() },
+                    text: "done".to_owned(),
+                    at: at.to_owned(),
+                    review_id: None,
+                });
+            }
+            ReviewThread {
+                id: id.to_owned(),
+                anchor: ReviewAnchor {
+                    path: "src/x.rs".to_owned(),
+                    side: ReviewSide::New,
+                    line: 1,
+                    content_hash: 1,
+                    context: vec!["ctx".to_owned()],
+                    base_ref: "main".to_owned(),
+                },
+                comments,
+                status,
+                created_at: "2026-07-19T10:00:00Z".to_owned(),
+                updated_at: answered_at.unwrap_or("2026-07-19T10:00:00Z").to_owned(),
+                commit: None,
+            }
+        };
+
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        assert!(ws.review_replies_waiting("forge", "feat").is_none(), "no rows, no signal");
+
+        ws.save_review_threads(
+            "forge",
+            "feat",
+            &[
+                thread("answered-late", ReviewStatus::Addressed, Some("2026-07-20T12:00:00Z")),
+                thread("answered-early", ReviewStatus::Addressed, Some("2026-07-19T11:00:00Z")),
+                thread("unanswered", ReviewStatus::Open, None),
+                thread("resolved", ReviewStatus::Resolved, Some("2026-07-20T09:00:00Z")),
+            ],
+        );
+
+        let (count, since) = ws.review_replies_waiting("forge", "feat").expect("answers waiting");
+        assert_eq!(count, 2, "only the answered-and-unread threads are owed a turn");
+        let expected = std::time::SystemTime::from(
+            time::OffsetDateTime::parse(
+                "2026-07-19T11:00:00Z",
+                &time::format_description::well_known::Rfc3339,
+            )
+            .expect("parse"),
+        );
+        assert_eq!(since, expected, "the wait is dated from the answer that has sat longest");
+
+        assert!(
+            ws.review_replies_waiting("forge", "other").is_none(),
+            "the tally is scoped to its own branch",
         );
     }
 

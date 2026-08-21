@@ -26,6 +26,7 @@ pub(crate) mod processes;
 pub(crate) mod prompt;
 #[cfg(test)]
 pub(crate) mod replay;
+pub(crate) mod review_waiting;
 mod selection;
 mod service_status_check;
 pub mod session;
@@ -272,6 +273,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         cli_version::drain_events(app);
         process_scanner::drain_events(app);
         diff_overlay::drain_events(app);
+        review_waiting::drain_events(app);
         usage_overlay::drain_events(app);
 
         // If a prior turn ended in Error state because of a rate-limit

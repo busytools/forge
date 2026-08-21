@@ -457,6 +457,22 @@ pub struct UiSession {
     /// `/diff`.
     pub review_replies_waiting: Option<crate::app::ReviewRepliesWaiting>,
 
+    /// Whether the `app::review_waiting` boot recompute has reached an
+    /// ANSWER for this session - including "nothing waiting". A read git
+    /// could not complete never sets it, so a timed-out `rev-parse` at
+    /// boot leaves the session queued rather than dark for the run.
+    pub review_waiting_settled: bool,
+
+    /// Whether that recompute is running right now, so the ~1s ticker
+    /// doesn't stack a second `git` call on top of the first. Cleared by
+    /// an RAII guard on task exit, so a panic mid-call cannot strand it.
+    pub review_waiting_in_flight: std::sync::Arc<std::sync::atomic::AtomicBool>,
+
+    /// How many reads have failed for this session. Bounds the retries a
+    /// checkout git cannot read gets, since a plain non-git project is
+    /// indistinguishable from a timeout at that call.
+    pub review_waiting_failed_reads: u8,
+
     /// Classification of the most recent `api_retry` on the in-flight
     /// turn, so a turn error that follows exhausted retries can name
     /// what actually killed it. Cleared when a turn starts.
@@ -636,6 +652,9 @@ impl Default for UiSession {
             input_draft_snapshot: Option::default(),
             failed_turn: Option::default(),
             review_replies_waiting: Option::default(),
+            review_waiting_settled: false,
+            review_waiting_in_flight: std::sync::Arc::default(),
+            review_waiting_failed_reads: 0,
             last_api_retry: Option::default(),
             auto_continue_due_at: Option::default(),
             auto_continue_attempts: 0,

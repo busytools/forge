@@ -18,7 +18,8 @@
 //!
 //! Mouse handling: see [`handle_mouse`].
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 
 use super::input::{InputState, TypedChar};
@@ -524,22 +525,56 @@ fn resolve_initial_commit(
     }
 }
 
+/// The branch the overlay reviews under, read live from the checkout
+/// being diffed. Same `git rev-parse` against the same
+/// `git_scan_cwd_for_session`-resolved path the review MCP's
+/// `resolve_scope` queries, so a review filed here is keyed exactly
+/// where its reader looks. `None` on a detached HEAD or a failed read.
+async fn review_branch(cwd: &Path) -> Option<String> {
+    match forge_workspace::env::git_diff::current_branch(cwd).await {
+        Ok(branch) => branch,
+        Err(gate) => {
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "diff_overlay_branch_unresolved",
+                message = "git reported no branch for the diff checkout; a review filed here cannot be keyed or read back",
+                outcome = "degraded",
+                cwd = %cwd.display(),
+                gate = ?gate,
+            );
+            None
+        }
+    }
+}
+
 /// Spawn the initial `/diff` scan and post a [`DiffOverlayEvent`] when
 /// it completes. Best-effort send - receiver going away (app shutdown)
-/// just drops the result. Scans the commit list first, then resolves
-/// `initial` against it: a commit scope scans that commit's diff upfront
+/// just drops the result. Resolves the review branch off `cwd`, then
+/// scans the commit list and picks the landing scope from that branch's
+/// persisted threads: a commit scope scans that commit's diff upfront
 /// (the rest lazily on navigation) and opens on it; otherwise it scans
-/// the whole diff and opens whole-diff mode. `branch` names the branch
-/// under review for the stepper.
+/// the whole diff and opens whole-diff mode.
 pub fn spawn_fetch(
     cwd: PathBuf,
     target: String,
-    branch: Option<String>,
-    initial: InitialScope,
+    project: Option<String>,
+    workspace: Option<Arc<forge_workspace::Workspace>>,
     seq: u64,
     tx: std_mpsc::Sender<DiffOverlayEvent>,
 ) {
     tokio::task::spawn_local(async move {
+        let branch = review_branch(&cwd).await;
+        // Open on the scope that holds the branch's persisted review
+        // threads, so a reopen lands where the user's comments are
+        // instead of the first commit. A load failure just falls back to
+        // the default scope; the post-open `hydrate_threads` hits the
+        // same error and surfaces the notice against the open overlay.
+        let initial = match (&project, &branch, &workspace) {
+            (Some(project), Some(branch), Some(workspace)) => workspace
+                .load_review_threads(project, branch)
+                .map_or(InitialScope::Default, |threads| initial_scope_from_threads(&threads)),
+            _ => InitialScope::Default,
+        };
         let commits = forge_workspace::env::git_diff::hunks::scan_commits(&cwd, &target).await;
         // Resolve the initial scope against the freshly-scanned commits:
         // `Some((idx, sha))` opens on that commit (its diff scanned
@@ -708,39 +743,15 @@ pub fn open_with_target(app: &mut App, target: String) {
         return;
     }
     let cwd = resolve_active_diff_cwd(app, &cwd_raw);
-    // Branch under review for the stepper header, from the Inspector
-    // snapshot (best-effort; `None` on detached HEAD / no snapshot).
-    let branch =
-        app.active_session().and_then(|s| s.git_diff_snapshot.as_ref()).and_then(
-            |snap| match &snap.branch {
-                forge_primitives::git::GitBranch::Named(name) => Some(name.clone()),
-                _ => None,
-            },
-        );
-    // Open on the scope that holds the branch's persisted review threads,
-    // so a reopen lands where the user's comments are instead of the first
-    // commit.
-    let initial = if let (Some(project), Some(branch), Some(workspace)) = (
-        app.active_session().and_then(|s| s.project.clone()),
-        branch.clone(),
-        app.workspace.clone(),
-    ) {
-        // A load failure here just falls back to the default scope; the
-        // post-open `hydrate_threads` hits the same error and surfaces the
-        // notice against the now-open overlay.
-        workspace
-            .load_review_threads(&project, &branch)
-            .map_or(InitialScope::Default, |threads| initial_scope_from_threads(&threads))
-    } else {
-        InitialScope::Default
-    };
+    let project = app.active_session().and_then(|s| s.project.clone());
+    let workspace = app.workspace.clone();
     // Bump the seq before spawning so the new scan's events
     // outrank anything still in flight from an earlier /diff call.
     // Old events arriving on the channel after this bump will be
     // dropped by drain_events as superseded.
     app.diff_scan_seq = app.diff_scan_seq.wrapping_add(1);
     let seq = app.diff_scan_seq;
-    spawn_fetch(cwd, target, branch, initial, seq, app.diff_overlay_event_tx.clone());
+    spawn_fetch(cwd, target, project, workspace, seq, app.diff_overlay_event_tx.clone());
 }
 
 /// Resolve the cwd a diff scan should run against for the active
@@ -3418,21 +3429,14 @@ fn finalize_review_close(app: &mut App, overview: Option<&str>, seal_ids: &[Stri
         .active_session_key
         .clone()
         .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(String::new()));
-    let scope = (
-        app.active_session().and_then(|s| s.project.clone()),
-        app.diff_overlay.as_ref().and_then(|o| o.branch.clone()),
-        app.workspace.clone(),
-    );
+    let project = app.active_session().and_then(|s| s.project.clone());
+    let branch = app.diff_overlay.as_ref().and_then(|o| o.branch.clone());
+    let workspace = app.workspace.clone();
     let review_number = if seal_ids.is_empty() {
         None
-    } else if let (Some(project), Some(branch), Some(workspace)) = scope {
-        let review = workspace.submit_review(
-            &project,
-            &branch,
-            overview.map(str::to_owned),
-            seal_ids,
-            origin,
-        );
+    } else if let (Some(project), Some(branch), Some(workspace)) = (&project, &branch, &workspace) {
+        let review =
+            workspace.submit_review(project, branch, overview.map(str::to_owned), seal_ids, origin);
         if review.is_none() {
             // The store write failed. Comments are already persisted unfiled
             // at save-time; only the local reviews-list record and the agent
@@ -3451,19 +3455,32 @@ fn finalize_review_close(app: &mut App, overview: Option<&str>, seal_ids: &[Stri
         review.map(|r| r.number)
     } else {
         // There are comments to file but no (project, branch, workspace) to
-        // file them under - e.g. a detached HEAD (`branch == None`). They
-        // can't persist or reach the agent, so warn like the store-fail path
-        // rather than dropping them silently (the pre-nudge bundle dispatched
-        // regardless of branch).
+        // file them under. They can't persist or reach the agent, so warn
+        // like the store-fail path rather than dropping them silently (the
+        // pre-nudge bundle dispatched regardless of branch). Name the step
+        // that came up empty: the three collapse to very different fixes,
+        // and only the middle one is about HEAD.
+        let missing = if project.is_none() {
+            "this session is not under a forge project"
+        } else if branch.is_none() {
+            "the checkout has no branch name - a detached HEAD, or git could not read it (the log carries which)"
+        } else {
+            "forge is shutting down"
+        };
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "diff_overlay_review_scope_unresolved",
-            message = "diff review not sealed: no project / branch / workspace",
+            message = "diff review not sealed: incomplete scope",
             outcome = "dropped",
+            has_project = project.is_some(),
+            has_branch = branch.is_some(),
+            has_workspace = workspace.is_some(),
         );
         crate::app::slash::push_system_message(
             app,
-            "Can't file a review here (no branch - detached HEAD?) - comments won't persist or reach the agent.",
+            format!(
+                "Can't file a review here: {missing} - comments won't persist or reach the agent."
+            ),
         );
         None
     };
@@ -4664,10 +4681,70 @@ mod tests {
 
         assert!(app.diff_overlay.is_none(), "the overlay closes (no dead-end hold)");
         assert!(rx.try_recv().is_err(), "no branch to file under, so nothing is dispatched");
+        let notice = system_notice_text(&app).expect("a system message warns about the loss");
         assert!(
-            app.messages().iter().any(|m| matches!(m.role, crate::app::MessageRole::System(None))),
-            "a system message warns the review couldn't be filed on a detached HEAD",
+            notice.contains("branch name"),
+            "the notice names the step that came up empty: {notice}",
         );
+    }
+
+    /// Every text block of the last System message, for asserting on a
+    /// notice's wording rather than only its existence.
+    fn system_notice_text(app: &App) -> Option<String> {
+        app.messages()
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, crate::app::MessageRole::System(None)))
+            .map(|m| {
+                m.blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        crate::app::MessageBlock::Text(t) => Some(t.text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+    }
+
+    /// The three ways the submit scope comes up empty need three
+    /// different fixes, and only the middle one is about HEAD. All three
+    /// used to say "no branch - detached HEAD?", the same guess the read
+    /// side dropped.
+    #[test]
+    fn an_unresolved_submit_scope_names_the_step_that_failed_not_head() {
+        let (mut app, mut rx, _dir) = review_app_with_agent();
+        // Project unset: the session is not under a forge project at all,
+        // which has nothing to do with the checkout's HEAD.
+        if let Some(key) = app.active_session_key.clone()
+            && let Some(session) = app.sessions.get_mut(&key)
+        {
+            session.project = None;
+        }
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), Vec::new());
+        overlay.branch = Some("feat".to_owned());
+        overlay.finish_review = Some(FinishReviewState { editor: InputState::new() });
+        let mut thread = stock_thread();
+        thread.id = "fresh".to_owned();
+        overlay.comments.push(HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "src/x.rs".into(),
+            line: 1,
+            comment_text: "note".into(),
+            commit: None,
+            thread,
+            authored_this_session: true,
+            persisted: true,
+        });
+        app.diff_overlay = Some(overlay);
+
+        submit_finish_review(&mut app);
+
+        assert!(rx.try_recv().is_err(), "nothing to file under, so nothing is dispatched");
+        let notice = system_notice_text(&app).expect("a system message warns about the loss");
+        assert!(notice.contains("forge project"), "the notice names the project step: {notice}");
+        assert!(!notice.contains("detached"), "a missing project is not a detached HEAD: {notice}");
     }
 
     #[test]
@@ -5795,6 +5872,77 @@ mod tests {
         app.sessions.insert(key.clone(), session);
         app.active_session_key = Some(key);
         (app, dir)
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out =
+            std::process::Command::new("git").arg("-C").arg(dir).args(args).output().expect("git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// A repo at `dir` on `branch`, with one commit so HEAD resolves.
+    /// `git init -b` needs git 2.28; CI runs 2.25, hence `symbolic-ref`.
+    fn init_repo(dir: &Path, branch: &str) {
+        git(dir, &["init", "-q"]);
+        git(dir, &["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")]);
+        git(dir, &["config", "user.email", "test@example.com"]);
+        git(dir, &["config", "user.name", "Test"]);
+        git(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("README.md"), "hi\n").expect("write");
+        git(dir, &["add", "."]);
+        git(dir, &["commit", "-q", "-m", "init"]);
+    }
+
+    /// The review store key comes from the checkout being diffed, never
+    /// from the session's cached git snapshot. The two diverge whenever
+    /// the snapshot is stale or belongs to a session that is no longer
+    /// the one under review, and the reader (`ProdReviewFacade::
+    /// resolve_scope`) queries git live - so a review filed under the
+    /// cached name is written where nothing looks for it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_review_branch_comes_from_the_checkout_not_the_cached_snapshot() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        init_repo(repo.path(), "feat/live");
+        let (mut app, _dir) = review_app();
+        let key = app.active_session_key.clone().expect("active key");
+        let session = app.sessions.get_mut(&key).expect("session");
+        session.cwd_raw = repo.path().to_string_lossy().into_owned();
+        session.git_diff_snapshot = Some(forge_primitives::git_diff::GitDiffSnapshot {
+            branch: forge_primitives::git::GitBranch::Named("stale-cache".to_owned()),
+            default_branch: Some("main".to_owned()),
+            repo_gate: RepoGate::InRepo,
+            worktree: forge_primitives::git_diff::LayerState::Clean,
+            branch_ahead: forge_primitives::git_diff::LayerState::Clean,
+            pr: None,
+            closes: Vec::new(),
+        });
+        set_active_view(&mut app, ActiveView::Chat);
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                open_with_target(&mut app, "HEAD".to_owned());
+                // Loop on the state, count as a cap only: the spawn
+                // behind this runs five git subprocesses, each against a
+                // 10s timeout, so any budget short of that is asserting
+                // on how loaded the runner is.
+                let mut opened = false;
+                for _ in 0..1500 {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    drain_events(&mut app);
+                    if app.diff_overlay.is_some() {
+                        opened = true;
+                        break;
+                    }
+                }
+                assert!(opened, "the diff scan never landed");
+            })
+            .await;
+
+        assert_eq!(
+            overlay(&app).branch.as_deref(),
+            Some("feat/live"),
+            "the overlay keys on the live checkout, not the snapshot's stale name",
+        );
     }
 
     fn with_editor(overlay: &mut DiffOverlayState, key: LineKey, text: &str) {

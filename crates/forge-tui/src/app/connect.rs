@@ -82,6 +82,7 @@ fn create_app_impl(
 
     let (file_index_event_tx, file_index_event_rx) = std::sync::mpsc::channel();
     let (git_diff_event_tx, git_diff_event_rx) = std::sync::mpsc::channel();
+    let (review_waiting_event_tx, review_waiting_event_rx) = std::sync::mpsc::channel();
     let (cli_version_event_tx, cli_version_event_rx) = std::sync::mpsc::channel();
     let (diff_overlay_event_tx, diff_overlay_event_rx) = std::sync::mpsc::channel();
     let (usage_overlay_event_tx, usage_overlay_event_rx) = std::sync::mpsc::channel();
@@ -216,6 +217,8 @@ fn create_app_impl(
         file_index_event_rx,
         git_diff_event_tx,
         git_diff_event_rx,
+        review_waiting_event_tx,
+        review_waiting_event_rx,
         cli_version_event_tx,
         cli_version_event_rx,
         diff_overlay_event_tx,

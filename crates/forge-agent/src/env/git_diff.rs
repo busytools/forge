@@ -188,7 +188,7 @@ fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>) {
 /// under - and name the step that failed when it can't.
 pub async fn current_branch(cwd: &Path) -> Result<Option<String>, RepoGate> {
     let name = classify_rev_parse(run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await)?;
-    Ok((name != "HEAD").then_some(name))
+    Ok((name != "HEAD" && !name.is_empty()).then_some(name))
 }
 
 pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot {
