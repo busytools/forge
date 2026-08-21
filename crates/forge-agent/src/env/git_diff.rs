@@ -110,10 +110,22 @@ async fn repo_presence(cwd: &Path) -> RepoPresence {
     command.arg("-C").arg(cwd).args(["rev-parse", "--git-dir"]).kill_on_drop(true);
     match timeout(COMMAND_TIMEOUT, command.output()).await {
         Ok(Ok(output)) if output.status.success() => RepoPresence::Present,
-        Ok(Ok(_)) if cwd.join(".git").try_exists().unwrap_or(true) => RepoPresence::Unusable,
+        Ok(Ok(_)) if dot_git_present(cwd) => RepoPresence::Unusable,
         Ok(Ok(_)) => RepoPresence::Absent,
         Ok(Err(_)) | Err(_) => RepoPresence::Unusable,
     }
+}
+
+/// Whether `.git` is on disk, without following symlinks - a dangling
+/// `.git` symlink is a broken checkout rather than an absent repo, and
+/// `Path::try_exists` reports it as missing because it stats the target.
+/// Anything but a definite "not found" counts as present, so an
+/// unreadable parent biases to [`RepoPresence::Unusable`] as well.
+fn dot_git_present(cwd: &Path) -> bool {
+    !matches!(
+        cwd.join(".git").symlink_metadata(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound
+    )
 }
 
 /// Classify `git rev-parse --abbrev-ref HEAD` output into either the
@@ -1373,6 +1385,21 @@ mod tests {
             Err(RepoGate::ScannerFailed),
             "a checkout git refuses must surface the scanner banner, not read as a non-repo",
         );
+        assert_eq!(scan(dir.path(), None).await.repo_gate, RepoGate::ScannerFailed);
+    }
+
+    /// The one shape where following symlinks reads a broken checkout as
+    /// an absent one: git gives the same "not a git repository" line a
+    /// plain non-repo gives, and `try_exists` says missing because it
+    /// stats the vanished target rather than the link.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_dangling_dot_git_symlink_is_unusable_not_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::os::unix::fs::symlink(dir.path().join("gone-target"), dir.path().join(".git"))
+            .expect("symlink");
+
+        assert_eq!(repo_presence(dir.path()).await, RepoPresence::Unusable);
         assert_eq!(scan(dir.path(), None).await.repo_gate, RepoGate::ScannerFailed);
     }
 
