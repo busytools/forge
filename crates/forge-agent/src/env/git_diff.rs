@@ -79,17 +79,27 @@ const TOP_FILE_COUNT: usize = 7;
 enum RepoPresence {
     /// A repo exists here, even if it has no commits yet.
     Present,
-    /// git ran and reported no repository.
+    /// git ran, reported no repository, and there is no `.git` on disk
+    /// to contradict it.
     Absent,
-    /// git could not be run, so the question is unanswered.
+    /// git could not be run, or it refused a checkout that does have a
+    /// `.git`. Either way the question went unanswered, so the caller
+    /// must report rather than suppress.
     Unusable,
 }
 
 /// Ask whether `cwd` sits inside a git repo with `rev-parse --git-dir`,
 /// whose exit status answers repo-existence alone: zero inside any work
 /// tree including one with no commits, non-zero outside one and for a
-/// path that does not exist. Keying on it avoids matching git's
-/// `fatal:` prose, which is not stable across versions.
+/// path that does not exist. Matching git's `fatal:` prose would not
+/// work here even setting version drift aside - a deleted `.git/HEAD`
+/// and a plain non-repo emit the same line.
+///
+/// A non-zero exit is then refined by whether `.git` is on disk: a
+/// pruned worktree entry, a deleted `HEAD` and a corrupt gitfile all
+/// exit 128 with `.git` still present, and each is a fault to report
+/// rather than an absent repo. Undeterminable biases to `Unusable`, so
+/// a broken checkout is never silently suppressed.
 ///
 /// Not routed through [`run_git`]: a non-zero exit is the answer here
 /// rather than a fault, so it must neither be logged as a failure nor
@@ -100,6 +110,7 @@ async fn repo_presence(cwd: &Path) -> RepoPresence {
     command.arg("-C").arg(cwd).args(["rev-parse", "--git-dir"]).kill_on_drop(true);
     match timeout(COMMAND_TIMEOUT, command.output()).await {
         Ok(Ok(output)) if output.status.success() => RepoPresence::Present,
+        Ok(Ok(_)) if cwd.join(".git").try_exists().unwrap_or(true) => RepoPresence::Unusable,
         Ok(Ok(_)) => RepoPresence::Absent,
         Ok(Err(_)) | Err(_) => RepoPresence::Unusable,
     }
@@ -1341,6 +1352,28 @@ mod tests {
         let repo = tempfile::tempdir().expect("tempdir");
         init_repo(&repo, "main");
         assert_eq!(repo_presence(repo.path()).await, RepoPresence::Present);
+    }
+
+    /// A checkout git refuses is not an absent repo. Deleting `.git/HEAD`
+    /// leaves `.git` on disk while `rev-parse` exits 128 with the *same*
+    /// `fatal:` line a plain non-repo gives, so the on-disk check is the
+    /// only thing separating them - and reading it as absent would
+    /// suppress the GIT section for a broken checkout instead of
+    /// reporting it. The pruned-worktree case forge produces routinely
+    /// has this shape.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_checkout_git_refuses_is_unusable_not_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "main");
+        std::fs::remove_file(dir.path().join(".git").join("HEAD")).expect("remove HEAD");
+
+        assert_eq!(repo_presence(dir.path()).await, RepoPresence::Unusable);
+        assert_eq!(
+            current_branch(dir.path()).await,
+            Err(RepoGate::ScannerFailed),
+            "a checkout git refuses must surface the scanner banner, not read as a non-repo",
+        );
+        assert_eq!(scan(dir.path(), None).await.repo_gate, RepoGate::ScannerFailed);
     }
 
     /// A worker branch is cut from origin/main while local `main` lags
