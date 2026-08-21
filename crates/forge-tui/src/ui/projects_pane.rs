@@ -1018,7 +1018,6 @@ fn peer_badge_spans(
 //     Mode     Auto
 //     Model    Opus 1M
 //     Effort   Max
-//     Fast     off
 //
 //     Ctx   ▓▓▓▓▓░░░░░░░  39%
 //
