@@ -264,6 +264,22 @@ pub fn review_branches(db: &Db, project: &str) -> anyhow::Result<Vec<String>> {
     Ok(branches)
 }
 
+/// Drop both of `(project, branch)`'s rows in one write transaction.
+///
+/// One transaction because the two are halves of one fact. Deleting them
+/// separately leaves a window where a crash strands a reviews row whose
+/// threads are gone - `review__get` would then resolve a review whose
+/// comments no longer exist.
+pub fn delete_branch_state(db: &Db, project: &str, branch: &str) -> anyhow::Result<()> {
+    let txn = db.database().begin_write()?;
+    {
+        txn.open_table(REVIEW_THREADS)?.remove((project, branch))?;
+        txn.open_table(REVIEWS)?.remove((project, branch))?;
+    }
+    txn.commit()?;
+    Ok(())
+}
+
 /// Overwrite the whole review set for `(project, branch)`. An empty slice
 /// removes the row rather than storing an empty blob.
 pub fn save_reviews(
@@ -745,6 +761,28 @@ mod tests {
             review_branches(&db, "aaa-suffix").expect("branches"),
             vec!["feat/y".to_owned()]
         );
+    }
+
+    /// Both rows are halves of one fact. Deleting them separately
+    /// leaves a window where a crash strands a reviews row whose threads
+    /// are gone, and `review__get` would resolve a review whose comments
+    /// no longer exist.
+    #[test]
+    fn delete_branch_state_clears_both_tables_and_spares_other_branches() {
+        let (_dir, db) = open_db();
+        save(&db, "forge", "feat", &[thread("a", 10)]).expect("save threads");
+        save_reviews(&db, "forge", "feat", &[review(1, None)]).expect("save reviews");
+        save(&db, "forge", "other", &[thread("b", 20)]).expect("save other threads");
+        save_reviews(&db, "forge", "other", &[review(1, None)]).expect("save other reviews");
+
+        delete_branch_state(&db, "forge", "feat").expect("delete");
+
+        assert!(load(&db, "forge", "feat").expect("load").is_empty(), "threads gone");
+        assert!(load_reviews(&db, "forge", "feat").expect("load").is_empty(), "reviews gone too");
+        assert_eq!(load(&db, "forge", "other").expect("load").len(), 1, "scoped to its branch");
+        assert_eq!(load_reviews(&db, "forge", "other").expect("load").len(), 1);
+        // A branch with no rows at all is not an error.
+        delete_branch_state(&db, "forge", "absent").expect("absent branch deletes cleanly");
     }
 
     #[test]

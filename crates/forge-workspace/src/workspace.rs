@@ -3557,36 +3557,21 @@ impl Workspace {
         }
     }
 
-    /// Delete the whole review-thread set for `(project, branch)`. Called
-    /// on worktree teardown once the branch itself is gone, so orphaned
-    /// threads don't linger.
-    pub fn delete_review_threads(&self, project: &str, branch: &str) {
+    /// Delete all of `(project, branch)`'s review state - threads and
+    /// reviews together, in one transaction. Called on worktree teardown
+    /// once the branch itself is gone, and by the boot sweep for a branch
+    /// deleted since, so orphaned rows don't linger and a later branch
+    /// reusing the name inherits nothing.
+    pub fn delete_branch_review_state(&self, project: &str, branch: &str) {
         if let Some(db) = self.db.lock().as_ref()
-            && let Err(error) = crate::store::review::delete(db, project, branch)
+            && let Err(error) = crate::store::review::delete_branch_state(db, project, branch)
         {
             tracing::warn!(
                 target: "forge_workspace::workspace",
                 %error,
                 project = %project,
                 branch = %branch,
-                "deleting review threads failed",
-            );
-        }
-    }
-
-    /// Delete the whole review set for `(project, branch)`. Called beside
-    /// [`Self::delete_review_threads`] so a later branch reusing a dead
-    /// one's name doesn't inherit phantom reviews.
-    pub fn delete_reviews(&self, project: &str, branch: &str) {
-        if let Some(db) = self.db.lock().as_ref()
-            && let Err(error) = crate::store::review::delete_reviews(db, project, branch)
-        {
-            tracing::warn!(
-                target: "forge_workspace::workspace",
-                %error,
-                project = %project,
-                branch = %branch,
-                "deleting reviews failed",
+                "deleting review state failed",
             );
         }
     }
@@ -6436,7 +6421,7 @@ mod tests {
         );
         assert_eq!(ws.load_review_threads("forge", "other").expect("load").len(), 1);
 
-        ws.delete_review_threads("forge", "feat");
+        ws.delete_branch_review_state("forge", "feat");
         assert!(
             ws.load_review_threads("forge", "feat").expect("load").is_empty(),
             "teardown clears the branch"
