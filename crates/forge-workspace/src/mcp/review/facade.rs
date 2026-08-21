@@ -567,9 +567,9 @@ mod resolve_scope_tests {
         );
     }
 
-    /// `git rev-parse` exits 128 outside a work tree, so this lands on
-    /// the same `ScannerFailed` gate a broken git call does - hence one
-    /// variant whose message claims neither.
+    /// `git rev-parse` exits 128 outside a work tree, which the
+    /// scanner's repo-existence probe resolves to `NotARepo`. The
+    /// variant still covers both gates, so its message claims neither.
     #[tokio::test]
     async fn non_git_scan_dir_is_its_own_reason() {
         let dir = tempfile::tempdir().expect("tempdir");
