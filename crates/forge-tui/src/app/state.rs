@@ -6646,6 +6646,15 @@ mod tests {
         app.active_messages_mut()[msg_idx].blocks.push(extra);
     }
 
+    /// The same unannounced block-count change, carrying no bytes, so
+    /// the row drift lands without moving the total. Lets a test move
+    /// `protected` on its own.
+    fn append_uncached_block_out_of_band(app: &mut App, msg_idx: usize) {
+        app.active_messages_mut()[msg_idx]
+            .blocks
+            .push(assistant_text_block("appended out of band"));
+    }
+
     /// The shared guard only compares list lengths, so the per-message
     /// slot-count check has to live at each sync entry point.
     /// `sync_render_cache_slot` is the one with external callers
@@ -6716,6 +6725,65 @@ mod tests {
             after,
             app.render_cache_total_bytes(),
             "the totals enforcement acted on match a full rebuild",
+        );
+    }
+
+    /// The other half of the same repair. The budget compares
+    /// `total - protected`, so a stale-high `protected` drops the
+    /// comparison under the limit and skips an eviction that was due -
+    /// the failure the total-side drift cannot express, because a
+    /// drifted total moves both sides of that subtraction together.
+    ///
+    /// An in-progress tool call is protected whatever the app status,
+    /// so completing one out of band leaves `protected` counting bytes
+    /// that are now evictable while the total stays put. The repair
+    /// keys on block counts, not on protection, so the uncached append
+    /// is what fires the rebuild; the completion only creates the
+    /// discrepancy the rebuild then corrects.
+    #[test]
+    fn budget_enforcement_repairs_protected_drift_before_reading_totals() {
+        let mut app = app_with_cached_messages(2);
+        let mut tool = assistant_tool_message("drifting", model::ToolCallStatus::InProgress);
+        if let MessageBlock::ToolCall(tc) = &mut tool.blocks[0] {
+            tc.cache.store(vec![Line::from("t".repeat(8192))]);
+        }
+        app.push_message_tracked(tool);
+        app.rebuild_render_cache_accounting();
+
+        let protected_recorded = app.render_cache_protected_bytes();
+        assert!(
+            protected_recorded > 0,
+            "the fixture has to protect real bytes, or the subtraction under test is zero",
+        );
+
+        // Out of band, so nothing re-derives. The completion is what
+        // makes `protected` wrong; the append is what the repair
+        // notices, since it compares block counts.
+        if let MessageBlock::ToolCall(tc) = &mut app.active_messages_mut()[2].blocks[0] {
+            tc.status = model::ToolCallStatus::Completed;
+        }
+        append_uncached_block_out_of_band(&mut app, 0);
+
+        // Sits between the drifted reading and the true one, so the two
+        // disagree about whether anything needs evicting.
+        let drifted_budgeted =
+            app.render_cache_total_bytes().saturating_sub(app.render_cache_protected_bytes());
+        app.render_cache_budget.max_bytes = drifted_budgeted + 1;
+
+        let stats = app.enforce_render_cache_budget();
+
+        assert_eq!(
+            stats.protected_bytes, 0,
+            "the completed tool's bytes stop counting as protected once the drift is repaired",
+        );
+        assert!(
+            stats.total_before_bytes.saturating_sub(stats.protected_bytes)
+                > app.render_cache_budget.max_bytes,
+            "the repaired reading is over the limit, where the drifted one was under it",
+        );
+        assert!(
+            stats.evicted_blocks >= 1,
+            "eviction runs, which the drifted protected figure would have skipped",
         );
     }
 
