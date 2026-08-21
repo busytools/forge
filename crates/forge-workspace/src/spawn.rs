@@ -1049,7 +1049,10 @@ pub(crate) fn handle_spawn_worker(
                         project_key,
                         action: WorkerStatusAction::Removed,
                         status: rolled.to_status(),
-                        worktree: WorktreeDisposition::untouched(rolled.is_git_repo_at_spawn),
+                        // The rollback beat the subprocess, so
+                        // `--worktree <label>` never reached one and
+                        // there is no worktree to point the user at.
+                        worktree: WorktreeDisposition::Absent,
                     },
                 );
             }
@@ -2227,6 +2230,63 @@ config_dir = "~/.claude-stargate"
             "git still reports its own failure to the caller: {result:?}"
         );
         assert_eq!(drain_removed_dispositions(&mut rx), vec![WorktreeDisposition::Removed]);
+    }
+
+    /// The sync spawn rollback runs before claude was ever launched, so
+    /// `--worktree <label>` never reached a process and there is no
+    /// worktree for the toast to point at. The `ghost` project is
+    /// advertised by the `list_projects` overlay but absent from
+    /// `config.projects`, which is what fails the agent-handle lookup
+    /// without spawning a subprocess.
+    #[tokio::test]
+    async fn spawn_rollback_reports_no_worktree_to_preserve() {
+        let config = tempdir().expect("config tempdir");
+        write_forge_toml(config.path());
+        let workspace = Arc::new(
+            Workspace::new_for_test(config.path().to_owned()).await.expect("workspace new"),
+        );
+
+        let repo = tempdir().expect("repo tempdir");
+        run_git(repo.path(), &["init", "-q"]);
+        workspace.seed_test_project_with_static_workers(
+            "ghost",
+            &repo.path().to_string_lossy(),
+            &[],
+        );
+        let project = workspace
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "ghost")
+            .expect("seeded project present")
+            .key;
+        let mut rx = workspace.subscribe().expect("subscribe");
+
+        let (tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &workspace,
+            project.clone(),
+            "reviewer",
+            "charter".to_owned(),
+            "lead-uuid".to_owned(),
+            None,
+            None,
+            tx,
+        );
+        let err = resp_rx.await.expect("reply channel").expect_err("the agent spawn fails");
+        // Failing earlier - at the project guard, before any insert -
+        // would satisfy the emptiness check below without the rollback
+        // ever running.
+        assert!(
+            err.contains("agent spawn failed"),
+            "the rollback path must be the one taken: {err}"
+        );
+
+        assert!(workspace.list_live_workers(&project).is_empty(), "the entry rolled back");
+        assert_eq!(
+            drain_removed_dispositions(&mut rx),
+            vec![WorktreeDisposition::Absent],
+            "nothing was created, so the toast must not name a worktree",
+        );
     }
 
     /// The despawn keeps a `worktree-<label>` branch the worker committed
