@@ -1259,8 +1259,7 @@ pub(crate) fn handle_despawn_worker(
                     && let Some(view) = project_view.as_ref()
                     && !forge_agent::env::worktree::branch_ref_exists(&view.path, branch)
                 {
-                    workspace.delete_review_threads(project, branch);
-                    workspace.delete_reviews(project, branch);
+                    workspace.delete_branch_review_state(project, branch);
                 }
                 None
             }

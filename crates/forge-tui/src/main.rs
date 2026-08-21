@@ -113,6 +113,11 @@ fn run() -> anyhow::Result<()> {
         // durable subscription loaded at boot; no-op otherwise.
         workspace.start_gotify_subsystem();
 
+        // Drop review state left behind by branches deleted since the
+        // last run. Worker teardown only catches a branch already gone at
+        // that moment, and a branch usually outlives its worker.
+        workspace.start_review_branch_sweep();
+
         // Create the app (instant, no I/O). The TUI holds an
         // `Arc<Workspace>` clone; main keeps the original so it
         // can drain the pool after the event loop returns.
