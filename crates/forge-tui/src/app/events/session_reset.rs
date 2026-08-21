@@ -224,6 +224,124 @@ fn is_suppressed_user_scaffolding(text: &str) -> bool {
         || t.starts_with("<command-message>")
 }
 
+/// The content blocks a replayed envelope carries, empty for the
+/// variants that carry none.
+fn message_content_blocks(msg: &forge_primitives::Message) -> &[forge_primitives::ContentBlock] {
+    match msg {
+        forge_primitives::Message::Assistant { message, .. } => &message.content,
+        forge_primitives::Message::User { message, .. } => &message.content,
+        _ => &[],
+    }
+}
+
+/// The tool call a result block reports on. Deliberately looser than
+/// the walkers: a result the walker happens to drop still means the
+/// result arrived, and reading it as absent would name a healthy call
+/// as unfinished. The two shapes past `ToolResult` are absent from the
+/// local corpus but reachable, so they are covered forward.
+fn tool_result_target(block: &forge_primitives::ContentBlock) -> Option<&str> {
+    use forge_primitives::ContentBlock;
+
+    let id = match block {
+        ContentBlock::ToolResult { tool_use_id, .. }
+        | ContentBlock::ServerToolResult { tool_use_id, .. } => tool_use_id.as_str(),
+        ContentBlock::Unknown { type_str, raw }
+            if forge_workspace::tooling::is_tool_result_block_type(type_str) =>
+        {
+            raw.as_object()?.get("tool_use_id")?.as_str()?
+        }
+        _ => return None,
+    };
+    (!id.is_empty()).then_some(id)
+}
+
+/// A replayed `tool_use` whose result never arrived.
+struct UnterminatedCall {
+    id: String,
+    name: String,
+    /// Whether a user turn appears later in the history. Most of these
+    /// calls are a user pressing Esc and carrying on rather than a
+    /// session dying, and this separates the two. Named for what it
+    /// measures rather than for the conclusion, so it cannot outlive the
+    /// reasoning.
+    user_turn_followed: bool,
+}
+
+/// Whether `msg` is the user taking a turn, as opposed to the wire
+/// carrying tool output back. Both are `Message::User`, so a plain
+/// variant match counts a sibling call's result as the conversation
+/// continuing and reads `user_turn_followed` as true on a session that
+/// died mid-batch.
+fn is_user_prompt_turn(msg: &forge_primitives::Message) -> bool {
+    matches!(msg, forge_primitives::Message::User { .. })
+        && message_content_blocks(msg).iter().any(|b| tool_result_target(b).is_none())
+}
+
+/// Tool calls in `history` whose result never arrived, in first-seen
+/// order and deduplicated by id so a re-stated `tool_use` counts once.
+///
+/// Read off the replayed envelopes, NOT off the post-walk sweep. The
+/// sweep force-fails every call still in progress, which includes calls
+/// that completed and were then re-stated (#558), so a count taken from
+/// it fires on healthy resumes. Building `resolved` over the whole
+/// history before looking at any `tool_use` is what makes that hold in
+/// both orders: a call whose result arrived and was then re-stated is
+/// excluded by its original result.
+fn unterminated_tool_calls(history: &[forge_primitives::Message]) -> Vec<UnterminatedCall> {
+    use forge_primitives::ContentBlock;
+
+    let mut resolved: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for msg in history {
+        for block in message_content_blocks(msg) {
+            if let Some(id) = tool_result_target(block) {
+                resolved.insert(id);
+            }
+        }
+    }
+    let last_user_idx = history.iter().rposition(is_user_prompt_turn).unwrap_or(0);
+
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut unterminated = Vec::new();
+    for (idx, msg) in history.iter().enumerate() {
+        for block in message_content_blocks(msg) {
+            let (ContentBlock::ToolUse { id, name, .. }
+            | ContentBlock::ServerToolUse { id, name, .. }) = block
+            else {
+                continue;
+            };
+            if !id.is_empty() && !resolved.contains(id.as_str()) && seen.insert(id.as_str()) {
+                unterminated.push(UnterminatedCall {
+                    id: id.clone(),
+                    name: name.clone(),
+                    user_turn_followed: idx < last_user_idx,
+                });
+            }
+        }
+    }
+    unterminated
+}
+
+/// Name every call the replayed history left without a result.
+fn report_unterminated_tool_calls(app: &App, history: &[forge_primitives::Message]) {
+    let unterminated = unterminated_tool_calls(history);
+    if unterminated.is_empty() {
+        return;
+    }
+    let session_id = super::tool_calls::current_session_id(app);
+    for call in unterminated {
+        tracing::warn!(
+            target: crate::logging::targets::APP_TOOL,
+            event_name = "resume_tool_call_unterminated",
+            message = "resumed a tool call whose result never arrived",
+            outcome = "failure",
+            session_id = %session_id,
+            tool_call_id = %call.id,
+            tool_name = %call.name,
+            user_turn_followed = call.user_turn_followed,
+        );
+    }
+}
+
 pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primitives::Message]) {
     let preserved_tip_seed = app.current_welcome_tip_seed();
     app.clear_messages_tracked();
@@ -343,6 +461,7 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
     app.clear_monitors_if_all_terminal();
     app.clear_workflows_if_all_terminal();
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
+    report_unterminated_tool_calls(app, history_messages);
     app.clear_active_turn_assistant();
     app.enforce_history_retention_tracked();
     *app.active_viewport_mut() = super::super::ChatViewport::new();
@@ -428,29 +547,98 @@ mod tests {
         }
     }
 
-    /// One `(level, event_name)` per emitted record.
+    fn historical_server_tool_use(id: &str, name: &str) -> Message {
+        Message::Assistant {
+            message: AssistantEnvelope {
+                id: "msg_history".to_owned(),
+                role: "assistant".to_owned(),
+                model: "claude-test".to_owned(),
+                content: vec![ContentBlock::ServerToolUse {
+                    id: id.to_owned(),
+                    name: name.to_owned(),
+                    input: Value::Null,
+                }],
+                stop_reason: None,
+                stop_sequence: None,
+                usage: None,
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            error: None,
+            uuid: None,
+        }
+    }
+
+    fn user_with_content(content: Vec<ContentBlock>) -> Message {
+        Message::User {
+            message: UserEnvelope { role: "user".to_owned(), content },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            uuid: None,
+            tool_use_result: None,
+        }
+    }
+
+    fn historical_server_tool_result(id: &str) -> Message {
+        user_with_content(vec![ContentBlock::ServerToolResult {
+            tool_use_id: id.to_owned(),
+            content: Value::String("ok".to_owned()),
+        }])
+    }
+
+    /// A wire tool-result variant the typed enum does not enumerate, so
+    /// it lands as `Unknown` and is recognised by its `type_str`.
+    fn historical_raw_tool_result(id: &str, type_str: &str) -> Message {
+        user_with_content(vec![ContentBlock::Unknown {
+            type_str: type_str.to_owned(),
+            raw: serde_json::json!({
+                "type": type_str,
+                "tool_use_id": id,
+                "content": "ok",
+            }),
+        }])
+    }
+
+    /// One entry per emitted record, with every field it carried, so a
+    /// test can pin values and emission count rather than existence.
+    #[derive(Clone)]
+    struct CapturedEvent {
+        level: tracing::Level,
+        name: String,
+        fields: Vec<(String, String)>,
+    }
+
+    impl CapturedEvent {
+        fn field(&self, name: &str) -> Option<&str> {
+            self.fields.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str())
+        }
+    }
+
     #[derive(Clone, Default)]
-    struct EventCapture(std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String)>>>);
+    struct EventCapture(std::sync::Arc<std::sync::Mutex<Vec<CapturedEvent>>>);
 
     impl EventCapture {
         fn names_at(&self, level: tracing::Level) -> Vec<String> {
             let seen = self.0.lock().expect("capture");
-            seen.iter()
-                .filter(|(seen_level, _)| *seen_level == level)
-                .map(|(_, name)| name.clone())
-                .collect()
+            seen.iter().filter(|e| e.level == level).map(|e| e.name.clone()).collect()
+        }
+
+        /// Every emission of `event_name`, in order.
+        fn records_named(&self, event_name: &str) -> Vec<CapturedEvent> {
+            let seen = self.0.lock().expect("capture");
+            seen.iter().filter(|e| e.name == event_name).cloned().collect()
         }
     }
 
-    struct EventNameVisitor(Option<String>);
+    #[derive(Default)]
+    struct EventFieldVisitor(Vec<(String, String)>);
 
-    impl tracing::field::Visit for EventNameVisitor {
-        // Every `event_name` arrives here - plain, `%` and `?` alike -
-        // because `record_str` forwards to this arm.
+    impl tracing::field::Visit for EventFieldVisitor {
+        // Every field arrives here - plain, `%` and `?` alike - because
+        // the typed `record_*` arms forward to this one.
         fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-            if field.name() == "event_name" {
-                self.0 = Some(format!("{value:?}").trim_matches('"').to_owned());
-            }
+            self.0
+                .push((field.name().to_owned(), format!("{value:?}").trim_matches('"').to_owned()));
         }
     }
 
@@ -460,10 +648,18 @@ mod tests {
             event: &tracing::Event<'_>,
             _ctx: tracing_subscriber::layer::Context<'_, S>,
         ) {
-            let mut visitor = EventNameVisitor(None);
+            let mut visitor = EventFieldVisitor::default();
             event.record(&mut visitor);
-            let name = visitor.0.unwrap_or_else(|| event.metadata().name().to_owned());
-            self.0.lock().expect("capture").push((*event.metadata().level(), name));
+            let fields = visitor.0;
+            let name = fields
+                .iter()
+                .find(|(key, _)| key == "event_name")
+                .map_or_else(|| event.metadata().name().to_owned(), |(_, value)| value.clone());
+            self.0.lock().expect("capture").push(CapturedEvent {
+                level: *event.metadata().level(),
+                name,
+                fields,
+            });
         }
     }
 
@@ -478,11 +674,23 @@ mod tests {
     /// Returns the capture AND the walked `App`, so liveness can be
     /// asserted from state rather than from records.
     fn capture_replay_of(history: &[Message]) -> (EventCapture, App) {
+        capture_replay_of_session(None, history)
+    }
+
+    /// [`capture_replay_of`] with the session id set, so a record's
+    /// `session_id` can be asserted as populated rather than present.
+    fn capture_replay_of_session(
+        session_id: Option<&str>,
+        history: &[Message],
+    ) -> (EventCapture, App) {
         use tracing_subscriber::layer::SubscriberExt;
 
         let capture = EventCapture::default();
         let subscriber = tracing_subscriber::registry().with(capture.clone());
         let mut app = App::test_default();
+        if let Some(id) = session_id {
+            app.set_session_id(Some(crate::agent::model::SessionId::new(id.to_owned())));
+        }
         tracing::subscriber::with_default(subscriber, || {
             load_resume_history(&mut app, history);
         });
@@ -678,6 +886,216 @@ mod tests {
         assert!(
             debug.iter().any(|name| name == "resume_user_text_rendered"),
             "the replay path's own debug trail is deliberately kept, saw {debug:?}",
+        );
+    }
+
+    const UNTERMINATED: &str = "resume_tool_call_unterminated";
+
+    /// Resuming the session you would open to diagnose a mid-tool death
+    /// has to leave a record naming what was running. One per call that
+    /// never saw a result, carrying the session and the call, because a
+    /// log ring multiplexes every session and "died mid-tool" is only
+    /// half the question - the other half is "doing what".
+    #[test]
+    fn replay_names_each_tool_call_that_never_saw_a_result() {
+        let history = vec![
+            historical_user_text("run something"),
+            historical_tool_use("toolu_done"),
+            historical_tool_result("toolu_done", false),
+            historical_tool_use_named(
+                "toolu_dead",
+                "Bash",
+                serde_json::json!({"command": "sleep 900"}),
+            ),
+            historical_tool_use_named(
+                "toolu_dead_two",
+                "Read",
+                serde_json::json!({"file_path": "/tmp/x"}),
+            ),
+        ];
+        let (capture, _app) = capture_replay_of_session(Some("sess-resume-1"), &history);
+
+        let records = capture.records_named(UNTERMINATED);
+        let ids: Vec<Option<&str>> = records.iter().map(|r| r.field("tool_call_id")).collect();
+        assert_eq!(
+            records.len(),
+            2,
+            "one record per unterminated call, no more and no fewer: {ids:?}",
+        );
+        assert_eq!(
+            ids,
+            vec![Some("toolu_dead"), Some("toolu_dead_two")],
+            "each record names its own call, in the order the walk met them",
+        );
+        assert_eq!(
+            records.iter().map(|r| r.field("tool_name")).collect::<Vec<_>>(),
+            vec![Some("Bash"), Some("Read")],
+            "the record answers `doing what`, not only `how many`",
+        );
+        for record in &records {
+            assert_eq!(record.level, tracing::Level::WARN, "an unfinished call is not a success");
+            assert_eq!(record.field("outcome"), Some("failure"));
+            assert_eq!(
+                record.field("session_id"),
+                Some("sess-resume-1"),
+                "unattributable in a multiplexed ring without this",
+            );
+            assert_eq!(
+                record.field("user_turn_followed"),
+                Some("false"),
+                "nothing follows these calls, so the session did end on them",
+            );
+        }
+    }
+
+    /// Most of these calls are a user pressing Esc and carrying on, not
+    /// a session dying - 32 of 35 across the local transcripts had a
+    /// user turn after them. Without the distinction, someone reading
+    /// the log for why a session died wades through interruptions, so
+    /// the field has to separate the two rather than filter one away.
+    #[test]
+    fn replay_separates_an_interrupted_call_from_one_the_session_ended_on() {
+        let history = vec![
+            historical_user_text("run something"),
+            historical_tool_use_named("toolu_esc", "Bash", serde_json::json!({"command": "sleep"})),
+            historical_user_text("never mind, do this instead"),
+            historical_tool_use_named("toolu_died", "Bash", serde_json::json!({"command": "make"})),
+        ];
+        let (capture, _app) = capture_replay_of(&history);
+
+        let records = capture.records_named(UNTERMINATED);
+        let by_id: Vec<(Option<&str>, Option<&str>)> = records
+            .iter()
+            .map(|r| (r.field("tool_call_id"), r.field("user_turn_followed")))
+            .collect();
+        assert_eq!(
+            by_id,
+            vec![(Some("toolu_esc"), Some("true")), (Some("toolu_died"), Some("false"))],
+            "the interrupted call stays visible, and only the last one reads as a session end",
+        );
+    }
+
+    /// The count has to come from calls that genuinely never saw a
+    /// result, not from the post-walk sweep. A resume whose results all
+    /// arrived emits nothing, in each shape a result arrives in.
+    #[test]
+    fn replay_names_nothing_when_every_result_arrived() {
+        let (capture, _app) = capture_replay_of(&replay_fixture());
+        assert!(
+            capture.records_named(UNTERMINATED).is_empty(),
+            "the standard fixture terminates every call",
+        );
+
+        let exotic = vec![
+            historical_user_text("run something"),
+            historical_tool_use_named("toolu_mcp", "mcp__x__y", serde_json::json!({})),
+            historical_raw_tool_result("toolu_mcp", "mcp_tool_result"),
+            historical_server_tool_use("toolu_srv", "web_search"),
+            historical_server_tool_result("toolu_srv"),
+        ];
+        let (capture, app) = capture_replay_of(&exotic);
+        assert!(
+            app.lookup_tool_call("toolu_mcp").is_some(),
+            "the fixture has to reach the walk for its silence to mean anything",
+        );
+        assert!(
+            capture.records_named(UNTERMINATED).is_empty(),
+            "a result counts however it is shaped on the wire, saw {:?}",
+            capture
+                .records_named(UNTERMINATED)
+                .iter()
+                .map(|r| r.field("tool_call_id"))
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    /// A tool result is a `Message::User` too, so "did a user turn
+    /// follow" cannot be answered by matching that variant: a sibling
+    /// call's result arriving would read as the conversation continuing.
+    /// This is the shape that separates them - a batch of two where one
+    /// result lands and the other never does, and nothing after it. The
+    /// session died mid-batch, so neither call was interrupted.
+    #[test]
+    fn a_sibling_result_is_not_the_user_taking_a_turn() {
+        let batch = Message::Assistant {
+            message: AssistantEnvelope {
+                id: "msg_history".to_owned(),
+                role: "assistant".to_owned(),
+                model: "claude-test".to_owned(),
+                content: vec![
+                    ContentBlock::ToolUse {
+                        id: "toolu_landed".to_owned(),
+                        name: "Bash".to_owned(),
+                        input: serde_json::json!({"command": "echo a"}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "toolu_lost".to_owned(),
+                        name: "Bash".to_owned(),
+                        input: serde_json::json!({"command": "echo b"}),
+                    },
+                ],
+                stop_reason: None,
+                stop_sequence: None,
+                usage: None,
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            error: None,
+            uuid: None,
+        };
+        let history = vec![
+            historical_user_text("run both"),
+            batch,
+            historical_tool_result("toolu_landed", false),
+        ];
+        let (capture, _app) = capture_replay_of(&history);
+
+        let records = capture.records_named(UNTERMINATED);
+        assert_eq!(
+            records
+                .iter()
+                .map(|r| (r.field("tool_call_id"), r.field("user_turn_followed")))
+                .collect::<Vec<_>>(),
+            vec![(Some("toolu_lost"), Some("false"))],
+            "the surviving sibling's result is not the user carrying on",
+        );
+    }
+
+    /// #558's shape is result THEN re-statement, and that order is what
+    /// discriminates: resolving per-id by last-event-wins - which is
+    /// what the sweep effectively sees - leaves the completed call
+    /// looking unfinished. Building the resolved set over the whole
+    /// history first is what makes both orders agree. Its own fixture,
+    /// because appending a trailing re-state to `replay_fixture` moves
+    /// `toolu_ok` to Failed and breaks three other tests.
+    #[test]
+    fn a_completed_call_re_stated_afterwards_is_not_named() {
+        let history = vec![
+            historical_user_text("run something"),
+            historical_tool_use("toolu_settled"),
+            historical_tool_result("toolu_settled", false),
+            // The re-statement lands AFTER its own result.
+            historical_tool_use_named(
+                "toolu_settled",
+                "Bash",
+                serde_json::json!({"command": "echo hi again"}),
+            ),
+            // A second re-statement of a call that never resolved: the
+            // dedup has to fold these into one record, not two.
+            historical_tool_use_named("toolu_open", "Read", serde_json::json!({"file_path": "/a"})),
+            historical_tool_use_named("toolu_open", "Read", serde_json::json!({"file_path": "/a"})),
+        ];
+        let (capture, _app) = capture_replay_of(&history);
+
+        assert_eq!(
+            capture
+                .records_named(UNTERMINATED)
+                .iter()
+                .map(|r| r.field("tool_call_id"))
+                .collect::<Vec<_>>(),
+            vec![Some("toolu_open")],
+            "a re-stated completed call is settled by its own result, and a re-stated \
+             unresolved one is named once",
         );
     }
 

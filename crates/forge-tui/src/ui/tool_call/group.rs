@@ -240,7 +240,9 @@ fn pad_right(s: &str, target_cells: usize) -> String {
 }
 
 /// Clip `s` to `budget` display cells, appending `...` when over so the
-/// result still fits.
+/// result still fits. The guard and the walk both measure whole
+/// graphemes, because a per-char sum disagrees with the guard on any
+/// multi-codepoint cluster and on tabs.
 pub(crate) fn clip_to_width(s: &str, budget: usize) -> String {
     if cells(s) <= budget {
         return s.to_owned();
@@ -248,17 +250,7 @@ pub(crate) fn clip_to_width(s: &str, budget: usize) -> String {
     if budget <= 3 {
         return ".".repeat(budget);
     }
-    let mut out = String::new();
-    let mut acc = 0_usize;
-    let cap = budget - 3;
-    for c in s.chars() {
-        let cw = UnicodeWidthChar::width(c).unwrap_or(0);
-        if acc + cw > cap {
-            break;
-        }
-        out.push(c);
-        acc += cw;
-    }
+    let mut out = crate::ui::wrap::truncate_to_width(s, budget - 3);
     out.push_str("...");
     out
 }
@@ -568,6 +560,37 @@ mod tests {
         assert!(clipped.contains("..."), "middle dropped: {clipped:?}");
         assert!(clipped.ends_with("group.rs"), "filename tail kept: {clipped:?}");
         assert_eq!(clip_middle("a.rs", 24), "a.rs", "a short path is untouched");
+    }
+
+    /// The budget guard and the truncation walk have to measure the same
+    /// way. A per-char sum under-counts a tab (0 against 1) and an emoji
+    /// presentation sequence (1 against 2), so the kept prefix paints
+    /// wider than the budget and shears the row it sits in.
+    #[test]
+    fn clip_to_width_fits_budget_on_tabs_and_emoji_sequences() {
+        let cases = [
+            ("emoji presentation", "\u{2764}\u{FE0F}".repeat(5)),
+            ("keycap", "1\u{FE0F}\u{20E3}".repeat(5)),
+            ("tab indented", "a\tb\tc\td\te\tf".to_owned()),
+            ("zwj family", "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}".repeat(4)),
+        ];
+        for (label, s) in &cases {
+            for budget in 4..=12 {
+                let clipped = clip_to_width(s, budget);
+                assert!(
+                    cells(&clipped) <= budget,
+                    "{label} at budget {budget}: {clipped:?} paints {} cells",
+                    cells(&clipped)
+                );
+                // A per-char walk also stops mid-cluster. A joiner left
+                // dangling at the cut has nothing to join to.
+                let kept = clipped.strip_suffix("...").unwrap_or(&clipped);
+                assert!(
+                    !kept.ends_with('\u{200D}'),
+                    "{label} at budget {budget}: cut mid-cluster, kept {kept:?}",
+                );
+            }
+        }
     }
 
     /// Narrow width keeps every kind visible and every row within the

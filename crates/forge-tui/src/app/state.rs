@@ -249,7 +249,6 @@ pub struct ChatRenderTraceState {
     pub scroll_target: usize,
     pub scroll_offset: usize,
     pub max_scroll: usize,
-    pub first_visible: usize,
     pub render_start: usize,
     pub local_scroll: usize,
     pub rendered_msgs: usize,
