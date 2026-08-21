@@ -6998,7 +6998,47 @@ mod tests {
         let _ = app.enforce_history_retention();
 
         assert!(app.messages().iter().any(App::is_history_hidden_marker_message));
-        assert_eq!(app.active_viewport_mut().scroll_anchor_to_restore(), Some((2, 1)));
+
+        let anchored = app
+            .messages()
+            .iter()
+            .position(|msg| {
+                matches!(msg.blocks.first(), Some(MessageBlock::Text(block))
+                    if block.text.contains("keep this anchored"))
+            })
+            .expect("the anchored message survives the drop");
+
+        // Measure the marker taller than the message it replaced, so the rows
+        // above the reader move. Sized identically, the anchor reproduces the
+        // raw offset and the restore has nothing to do.
+        let heights: Vec<usize> = app
+            .messages()
+            .iter()
+            .map(|msg| if App::is_history_hidden_marker_message(msg) { 6 } else { 4 })
+            .collect();
+        let vp = app.active_viewport_mut();
+        vp.sync_message_count(heights.len());
+        for (idx, &height) in heights.iter().enumerate() {
+            vp.set_message_height(idx, height);
+            vp.mark_message_height_measured(idx);
+        }
+        vp.rebuild_prefix_sums();
+        assert_ne!(
+            vp.find_first_visible(vp.scroll_offset),
+            anchored,
+            "fixture must move the rows above the reader so the raw offset drifts",
+        );
+
+        let anchor =
+            vp.take_ready_scroll_anchor().expect("retention must not discard the reader's anchor");
+        vp.restore_scroll_anchor(anchor.0, anchor.1);
+        let top = vp.find_first_visible(vp.scroll_offset);
+
+        assert_eq!(
+            top, anchored,
+            "dropping a message above the reader and inserting a marker in its place must \
+             leave them on the message they were reading",
+        );
     }
 
     #[test]
@@ -7637,20 +7677,33 @@ mod tests {
         vp.scroll_pos = 7.0;
 
         let _ = vp.on_frame(40, 24);
-        let (anchor_idx, anchor_offset) =
-            vp.resize_scroll_anchor().expect("resize should snapshot a scroll anchor");
-        assert_eq!((anchor_idx, anchor_offset), (1, 2));
 
+        // Re-wrapping moves every height, so the reader drifts unless the
+        // anchor corrects for it.
         vp.set_message_height(0, 12);
+        vp.mark_message_height_measured(0);
         vp.set_message_height(1, 8);
+        vp.mark_message_height_measured(1);
         vp.set_message_height(2, 6);
         vp.set_message_height(3, 6);
         vp.prefix_sums_width = 0;
         vp.rebuild_prefix_sums();
+        assert_ne!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "fixture must re-wrap enough that the raw offset drifts off message 1",
+        );
+
+        let (anchor_idx, anchor_offset) =
+            vp.take_ready_scroll_anchor().expect("resize should snapshot a scroll anchor");
         vp.restore_scroll_anchor(anchor_idx, anchor_offset);
 
+        assert_eq!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "the resize must land the reader back on the message they were reading",
+        );
         assert_eq!(vp.scroll_offset, 14);
-        assert_eq!(vp.find_first_visible(vp.scroll_offset), 1);
     }
 
     #[test]
@@ -7670,8 +7723,6 @@ mod tests {
         vp.scroll_pos = 7.0;
 
         let _ = vp.on_frame(40, 24);
-        let resize_anchor = vp.resize_scroll_anchor().expect("resize should preserve an anchor");
-        assert_eq!(resize_anchor, (1, 2));
         assert_eq!(vp.remeasure_reason(), Some(LayoutRemeasureReason::Resize));
 
         vp.invalidate_messages_from(0);
@@ -7681,8 +7732,29 @@ mod tests {
             Some(LayoutRemeasureReason::Resize),
             "a follow-up MessagesFrom must not downgrade the in-flight Resize plan",
         );
-        assert_eq!(vp.resize_scroll_anchor(), Some(resize_anchor));
-        assert_eq!(vp.scroll_anchor_to_restore(), Some(resize_anchor));
+
+        vp.set_message_height(0, 12);
+        vp.mark_message_height_measured(0);
+        vp.set_message_height(1, 8);
+        vp.mark_message_height_measured(1);
+        vp.rebuild_prefix_sums();
+
+        assert_ne!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "fixture must re-wrap enough that the raw offset drifts off message 1",
+        );
+
+        let anchor =
+            vp.take_ready_scroll_anchor().expect("the resize anchor survives the follow-up");
+        vp.restore_scroll_anchor(anchor.0, anchor.1);
+
+        assert_eq!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "the follow-up must leave the reader landing where the resize anchored them",
+        );
+        assert_eq!(vp.scroll_offset, 14);
     }
 
     #[test]
@@ -7703,18 +7775,27 @@ mod tests {
 
         vp.invalidate_message(0);
 
-        let anchor =
-            vp.scroll_anchor_to_restore().expect("manual scroll should preserve an anchor");
-        assert_eq!(anchor, (1, 2));
-
         vp.set_message_height(0, 12);
         vp.mark_message_height_measured(0);
         vp.rebuild_prefix_sums();
-        assert_eq!(vp.take_ready_scroll_anchor(), Some(anchor));
 
+        assert_ne!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "fixture must grow the message above enough that the raw offset drifts",
+        );
+
+        let anchor = vp
+            .take_ready_scroll_anchor()
+            .expect("a manual-scroll invalidation should preserve an anchor");
         vp.restore_scroll_anchor(anchor.0, anchor.1);
+
+        assert_eq!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "growing the message above must not move the reader off the one they were reading",
+        );
         assert_eq!(vp.scroll_offset, 14);
-        assert_eq!(vp.find_first_visible(vp.scroll_offset), 1);
     }
 
     #[test]
@@ -7734,15 +7815,20 @@ mod tests {
         vp.scroll_pos = 12.0;
 
         let _ = vp.on_frame(40, 24);
-        let anchor = vp.resize_scroll_anchor().expect("resize should preserve an anchor");
-        assert_eq!(anchor, (2, 2));
-        assert_eq!(vp.scroll_anchor_to_restore(), Some(anchor));
-        assert_eq!(vp.take_ready_scroll_anchor(), None);
+        assert_eq!(
+            vp.take_ready_scroll_anchor(),
+            None,
+            "restoring against stale rows above would land the reader on the wrong one",
+        );
 
         vp.set_message_height(2, 9);
         vp.mark_message_height_measured(2);
         vp.rebuild_prefix_sums();
-        assert_eq!(vp.take_ready_scroll_anchor(), None);
+        assert_eq!(
+            vp.take_ready_scroll_anchor(),
+            None,
+            "measuring the anchor's own row is not enough; the rows above set its position",
+        );
 
         vp.set_message_height(0, 11);
         vp.mark_message_height_measured(0);
@@ -7750,7 +7836,21 @@ mod tests {
         vp.mark_message_height_measured(1);
         vp.rebuild_prefix_sums();
 
-        assert_eq!(vp.take_ready_scroll_anchor(), Some(anchor));
+        assert_ne!(
+            vp.find_first_visible(vp.scroll_offset),
+            2,
+            "fixture must grow the rows above enough that the raw offset drifts",
+        );
+
+        let anchor = vp
+            .take_ready_scroll_anchor()
+            .expect("the anchor is ready once every row above it is exact");
+        vp.restore_scroll_anchor(anchor.0, anchor.1);
+        assert_eq!(
+            vp.find_first_visible(vp.scroll_offset),
+            2,
+            "the delayed restore still lands the reader on the message they were reading",
+        );
     }
 
     /// The anchor is viewport state, not plan state: a teardown site added
@@ -7772,18 +7872,27 @@ mod tests {
         vp.scroll_pos = 7.0;
 
         vp.invalidate_message(0);
-        let anchor =
-            vp.scroll_anchor_to_restore().expect("a manual-scroll invalidation arms an anchor");
 
         vp.set_message_height(0, 12);
         vp.mark_message_height_measured(0);
         vp.finalize_remeasure_if_clean();
+        vp.rebuild_prefix_sums();
 
         assert!(!vp.remeasure_active(), "teardown must actually clear the plan");
+        assert_ne!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "fixture must grow the message above enough that the raw offset drifts",
+        );
+
+        let anchor = vp
+            .take_ready_scroll_anchor()
+            .expect("the anchor must outlive the plan that happened to be open when it was armed");
+        vp.restore_scroll_anchor(anchor.0, anchor.1);
         assert_eq!(
-            vp.scroll_anchor_to_restore(),
-            Some(anchor),
-            "the anchor must outlive the plan that happened to be open when it was armed",
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "an anchor discarded by teardown would leave the reader adrift on message 0",
         );
     }
 
@@ -7807,27 +7916,27 @@ mod tests {
         vp.scroll_pos = 7.0;
 
         vp.invalidate_message(0);
-        let anchor =
-            vp.scroll_anchor_to_restore().expect("a manual-scroll invalidation arms an anchor");
-
         vp.set_message_height(0, 12);
         vp.mark_message_height_measured(0);
         vp.finalize_remeasure_if_clean();
+        vp.rebuild_prefix_sums();
         assert!(!vp.remeasure_active(), "the state under test needs the plan already torn down");
+
+        // The state under test needs a live anchor there to lose, so prove one
+        // is there by spending it, then re-arm the same way.
+        let anchor = vp.take_ready_scroll_anchor().expect("an anchor outlived the teardown");
+        vp.restore_scroll_anchor(anchor.0, anchor.1);
         assert_eq!(
-            vp.scroll_anchor_to_restore(),
-            Some(anchor),
-            "the state under test needs a live anchor there to lose",
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "setup: the anchor that survived the teardown must still describe message 1",
         );
+        vp.invalidate_message(0);
+        vp.mark_message_height_measured(0);
+        vp.finalize_remeasure_if_clean();
 
         vp.auto_scroll = true;
         vp.invalidate_message(1);
-
-        assert_eq!(
-            vp.scroll_anchor_to_restore(),
-            None,
-            "returning to the bottom must retire an anchor that outlived its plan",
-        );
 
         // Heights are [12, 5, 5, 5], so message 2 starts at row 17.
         vp.auto_scroll = false;
@@ -7836,10 +7945,21 @@ mod tests {
         vp.scroll_pos = 18.0;
         vp.invalidate_message(2);
 
+        vp.mark_message_height_measured(1);
+        vp.mark_message_height_measured(2);
+        vp.rebuild_prefix_sums();
+        let fresh = vp.take_ready_scroll_anchor().expect("the next arm preserves an anchor");
+        vp.restore_scroll_anchor(fresh.0, fresh.1);
+
         assert_eq!(
-            vp.scroll_anchor_to_restore(),
-            Some((2, 1)),
-            "the next arm must capture where the reader is now, not where they were",
+            vp.find_first_visible(vp.scroll_offset),
+            2,
+            "returning to the bottom must retire the stale anchor so the next arm wins; \
+             an un-retired one would drag the reader back to message 1",
+        );
+        assert_eq!(
+            vp.scroll_offset, 18,
+            "the fresh arm captured the exact row, not just the row's message"
         );
     }
 
@@ -7864,9 +7984,6 @@ mod tests {
         vp.scroll_pos = 7.0;
 
         vp.invalidate_message(0);
-        let first_arm =
-            vp.scroll_anchor_to_restore().expect("a manual-scroll invalidation arms an anchor");
-        assert_eq!(first_arm, (1, 2), "the first arm captures where the reader was");
 
         // The reader moves on to message 3 (row 17) with that anchor still live.
         vp.scroll_offset = 17;
@@ -7874,10 +7991,17 @@ mod tests {
         vp.scroll_pos = 17.0;
         vp.invalidate_message(2);
 
+        vp.mark_message_height_measured(0);
+        vp.mark_message_height_measured(2);
+        vp.rebuild_prefix_sums();
+        let anchor = vp.take_ready_scroll_anchor().expect("the preserved anchor is still there");
+        vp.restore_scroll_anchor(anchor.0, anchor.1);
+
         assert_eq!(
-            vp.scroll_anchor_to_restore(),
-            Some(first_arm),
-            "a second arm must not overwrite a preserved anchor that is still unconsumed",
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "the first arm wins: a second arm overwriting it would yank the reader forward \
+             to message 3, where they had scrolled to but never asked to be returned",
         );
     }
 
@@ -7922,9 +8046,6 @@ mod tests {
         vp.scroll_pos = 17.0;
 
         vp.invalidate_all_messages(LayoutRemeasureReason::Global);
-        let anchor =
-            vp.scroll_anchor_to_restore().expect("global remeasure should preserve an anchor");
-        assert_eq!(anchor, (3, 2));
 
         vp.invalidate_message(5);
 
@@ -7933,19 +8054,30 @@ mod tests {
             Some(LayoutRemeasureReason::Global),
             "a single-message invalidate must not downgrade the in-flight Global plan",
         );
-        assert_eq!(vp.scroll_anchor_to_restore(), Some(anchor));
 
         vp.set_message_height(0, 12);
         vp.mark_message_height_measured(0);
         vp.set_message_height(1, 8);
         vp.mark_message_height_measured(1);
+        vp.mark_message_height_measured(2);
+        vp.mark_message_height_measured(3);
         vp.rebuild_prefix_sums();
 
-        assert_eq!(vp.find_first_visible(vp.scroll_offset), 1);
+        assert_eq!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "fixture must grow the rows above enough that the raw offset drifts",
+        );
 
+        let anchor =
+            vp.take_ready_scroll_anchor().expect("global remeasure should preserve an anchor");
         vp.restore_scroll_anchor(anchor.0, anchor.1);
 
-        assert_eq!(vp.find_first_visible(vp.scroll_offset), 3);
+        assert_eq!(
+            vp.find_first_visible(vp.scroll_offset),
+            3,
+            "the anchor must pull the reader back off the drift and onto message 3",
+        );
         assert_eq!(vp.scroll_offset, 27);
     }
 
