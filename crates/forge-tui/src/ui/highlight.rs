@@ -95,9 +95,9 @@ impl LineHighlighter {
     }
 
     /// Highlight a single line and return the spans. The trailing
-    /// newline (if any) is stripped from the input before highlighting
-    /// so the spans don't carry control characters into ratatui's
-    /// layout. Empty input yields an empty span vec.
+    /// newline (if any) is stripped before highlighting so it does not
+    /// reach a span. Other control characters are left alone, tabs
+    /// included. Empty input yields an empty span vec.
     pub(crate) fn highlight(&mut self, line: &str) -> Vec<Span<'static>> {
         let trimmed = line.strip_suffix('\n').unwrap_or(line);
         if trimmed.is_empty() {

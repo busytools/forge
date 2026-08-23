@@ -1,5 +1,6 @@
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
+use std::borrow::Cow;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -23,6 +24,41 @@ enum WrapToken {
 
 pub(crate) fn display_width(text: &str) -> usize {
     UnicodeWidthStr::width(text)
+}
+
+/// Stop interval for tab expansion. Deliberately 4 rather than the
+/// terminal's 8: a Go file then reads at the same depth in a forge pane
+/// as the space-indented files beside it, at the cost of showing half the
+/// indent `git diff` would.
+const TAB_WIDTH: usize = 4;
+
+/// Expand tabs to spaces, measuring stops from the start of `text`, which
+/// must be a single line.
+///
+/// `Span::styled_graphemes` drops control characters, so a raw tab measures
+/// one column and paints none: the indent vanishes and the wrap budget is
+/// over-charged by the difference. Other C0 characters have the same split
+/// and are left alone.
+///
+/// Columns measure whole segments, since per-char and string-level width
+/// disagree on multi-codepoint graphemes.
+pub(crate) fn expand_tabs(text: &str) -> Cow<'_, str> {
+    if !text.contains('\t') {
+        return Cow::Borrowed(text);
+    }
+
+    let mut out = String::with_capacity(text.len() + TAB_WIDTH);
+    let mut column = 0usize;
+    for (index, segment) in text.split('\t').enumerate() {
+        if index > 0 {
+            let advance = TAB_WIDTH - (column % TAB_WIDTH);
+            out.extend(std::iter::repeat_n(' ', advance));
+            column += advance;
+        }
+        out.push_str(segment);
+        column += display_width(segment);
+    }
+    Cow::Owned(out)
 }
 
 pub(crate) fn line_display_width(line: &Line<'_>) -> usize {
@@ -291,6 +327,16 @@ mod tests {
     #[test]
     fn wrap_plain_wraps_long_emoji_graphemes() {
         assert_eq!(wrap_plain("👩‍💻👩‍💻👩‍💻", 4), vec!["👩‍💻👩‍💻".to_owned(), "👩‍💻".to_owned()]);
+    }
+
+    #[test]
+    fn expand_tabs_advances_to_the_next_stop_and_borrows_when_clean() {
+        assert_eq!(expand_tabs("\t\tx"), "        x");
+        assert_eq!(expand_tabs("ab\tx"), "ab  x");
+        assert_eq!(expand_tabs("abcd\tx"), "abcd    x");
+        assert_eq!(expand_tabs("\u{4e16}\u{754c}\tx"), "\u{4e16}\u{754c}    x");
+        assert!(matches!(expand_tabs(""), Cow::Borrowed("")));
+        assert!(matches!(expand_tabs("no tabs here"), Cow::Borrowed(_)));
     }
 
     #[test]

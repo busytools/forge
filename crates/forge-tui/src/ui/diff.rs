@@ -1,7 +1,7 @@
 use crate::agent::model;
 use crate::ui::highlight::LineHighlighter;
 use crate::ui::theme;
-use crate::ui::wrap::{StyledChunk, display_width, wrap_styled_chunks};
+use crate::ui::wrap::{StyledChunk, display_width, expand_tabs, wrap_styled_chunks};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use similar::TextDiff;
@@ -105,7 +105,8 @@ pub fn render_diff(
             // Split leading whitespace; `wrap_styled_chunks` drops
             // leading spaces at wrap boundaries, so the indent column
             // is rendered explicitly (matches pre-syntect behavior).
-            let (leading_indent, content) = split_leading_whitespace(value);
+            let expanded = expand_tabs(value);
+            let (leading_indent, content) = split_leading_whitespace(&expanded);
             let highlighted = row_is_highlighted(row_idx, row_total, highlight_window);
             row_idx += 1;
             let highlighted_spans = if highlighted {
@@ -203,7 +204,11 @@ fn render_raw_diff_line(line: &str) -> Line<'static> {
     // File-header lines stay un-tinted so the metadata band reads
     // distinct from the actual diff payload. Body `+` / `-` lines pick
     // up the GitHub-style row tint via the theme constants.
-    let (style, row_bg) = if line.starts_with("diff --git ")
+    //
+    // The third field marks a row whose text after the one-char marker
+    // is source, so tab stops are measured from the source column and
+    // this path indents to the same depth as the other diff surfaces.
+    let (style, row_bg, carries_source) = if line.starts_with("diff --git ")
         || line.starts_with("index ")
         || line.starts_with("new file mode ")
         || line.starts_with("deleted file mode ")
@@ -211,24 +216,32 @@ fn render_raw_diff_line(line: &str) -> Line<'static> {
         || line.starts_with("rename from ")
         || line.starts_with("rename to ")
     {
-        (Style::default().fg(Color::White).add_modifier(Modifier::BOLD), None)
+        (Style::default().fg(Color::White).add_modifier(Modifier::BOLD), None, false)
     } else if line.starts_with("@@") {
-        (Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD), None)
+        (Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD), None, false)
     } else if line.starts_with("+++ ") {
-        (Style::default().fg(Color::Green), None)
+        (Style::default().fg(Color::Green), None, false)
     } else if line.starts_with("--- ") {
-        (Style::default().fg(Color::Red), None)
+        (Style::default().fg(Color::Red), None, false)
     } else if line.starts_with('+') {
-        (Style::default().fg(Color::Green), Some(theme::DIFF_ADDITION_BG))
+        (Style::default().fg(Color::Green), Some(theme::DIFF_ADDITION_BG), true)
     } else if line.starts_with('-') {
-        (Style::default().fg(Color::Red), Some(theme::DIFF_DELETION_BG))
+        (Style::default().fg(Color::Red), Some(theme::DIFF_DELETION_BG), true)
     } else if line.starts_with('\\') {
-        (Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC), None)
+        (Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC), None, false)
     } else {
-        (Style::default().fg(theme::DIM), None)
+        // Only a context row has a space marker to skip; peeling any
+        // other line's first column would strip a leading tab.
+        (Style::default().fg(theme::DIM), None, line.starts_with(' '))
     };
 
-    let mut rendered = Line::from(Span::styled(line.to_owned(), style));
+    // Every marker is one ASCII byte, so the split is always on a
+    // boundary when `carries_source` holds.
+    let text = match carries_source.then(|| line.split_at(1)) {
+        Some((marker, body)) => format!("{marker}{}", expand_tabs(body)),
+        None => expand_tabs(line).into_owned(),
+    };
+    let mut rendered = Line::from(Span::styled(text, style));
     if let Some(bg) = row_bg {
         rendered = rendered.style(Style::default().bg(bg));
     }
@@ -619,6 +632,64 @@ mod tests {
         assert!(rendered.iter().any(|line| line.starts_with("              ")));
     }
 
+    /// A raw tab measured one column and painted none, so a Go indent
+    /// disappeared and the row's wrap budget was over-charged for it.
+    /// Tabs expand to 4-column stops, the depth a space-indented Rust
+    /// file already renders at.
+    #[test]
+    fn render_diff_expands_tabs_to_match_a_space_indent() {
+        let rendered = |source: &str| -> Vec<String> {
+            render_diff(&model::Diff::new("tmp.go", source.to_owned()), 80, None)
+                .iter()
+                .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+                .collect()
+        };
+
+        let nested = rendered("func main() {\n\tif err != nil {\n\t\treturn err\n\t}\n}\n");
+        assert!(
+            nested.iter().all(|line| !line.contains('\t')),
+            "no raw tab may reach the terminal: {nested:?}"
+        );
+        assert!(nested.iter().any(|line| line.contains("+      if err != nil {")));
+        assert!(nested.iter().any(|line| line.contains("+          return err")));
+
+        // Verbatim gofmt output: tab-indented, space-aligned. Expanding
+        // the indent must not shear the alignment it pads out to.
+        let aligned =
+            rendered("type Foo struct {\n\tName          string\n\tLongFieldName bool\n}\n");
+        let column_of = |needle: &str| {
+            aligned
+                .iter()
+                .find_map(|line| line.find(needle))
+                .unwrap_or_else(|| panic!("no row containing `{needle}`"))
+        };
+        assert_eq!(
+            column_of("string"),
+            column_of("bool"),
+            "gofmt alignment must survive: {aligned:?}"
+        );
+
+        // Nothing else emits spaces for alignment, so an interior tab
+        // has to expand too or it shears the row on its own.
+        let hand_tabbed = rendered("var (\n\tx\t= 1\n)\n");
+        assert!(
+            hand_tabbed.iter().all(|line| !line.contains('\t')),
+            "no raw tab may reach the terminal: {hand_tabbed:?}"
+        );
+        assert!(
+            hand_tabbed.iter().any(|line| line.contains("x   = 1")),
+            "a tab at column 5 advances to column 8: {hand_tabbed:?}"
+        );
+
+        // A 2-column grapheme ahead of a tab, where per-char and
+        // string-level width measurement disagree.
+        let grapheme = rendered("var (\n\t\u{2764}\u{fe0f}\tx = 1\n)\n");
+        assert!(
+            grapheme.iter().any(|line| line.contains("\u{2764}\u{fe0f}  x = 1")),
+            "a 2-column grapheme leaves the tab advancing 2: {grapheme:?}"
+        );
+    }
+
     #[test]
     fn compact_hunk_header_omits_empty_side_and_uses_ranges() {
         assert_eq!(format_compact_hunk_header("@@ -0,0 +1,7 @@"), "lines +1-7");
@@ -728,6 +799,28 @@ mod tests {
                 "trailing pad span must carry the row bg so the tint extends to the right edge"
             );
         }
+    }
+
+    /// The Bash-tool path. Stops are measured past the marker, so one
+    /// tab indents 4 columns here exactly as it does in the inline diff
+    /// and the overlay.
+    #[test]
+    fn render_raw_unified_diff_expands_tabs() {
+        let lines =
+            render_raw_unified_diff("@@ -1 +1 @@\n+\tif err != nil {\n \tcontext\n\ttrailing\n");
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+        assert!(
+            rendered.iter().all(|line| !line.contains('\t')),
+            "no raw tab may reach the terminal: {rendered:?}"
+        );
+        assert!(rendered.iter().any(|line| line == "+    if err != nil {"), "{rendered:?}");
+        assert!(rendered.iter().any(|line| line == "     context"), "{rendered:?}");
+        // An unclassified line has no marker to skip, so its own first
+        // column is column 0.
+        assert!(rendered.iter().any(|line| line == "    trailing"), "{rendered:?}");
     }
 
     #[test]
