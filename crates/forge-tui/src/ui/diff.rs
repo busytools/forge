@@ -375,28 +375,32 @@ fn render_wrapped_diff_row(
 /// so a real tab would land on a stop unrelated to the indent level.
 const TAB_WIDTH: usize = 4;
 
-/// Expand tabs to spaces, measuring stops from the start of the line.
+/// Expand tabs to spaces, measuring stops from the start of `text`, which
+/// is one diff row.
 ///
 /// A tab measures one column but paints out to the terminal's next tab
 /// stop, so leaving it raw makes the wrap budget disagree with what lands
-/// on screen (#660). Covers the whole row, not just the indent: gofmt
-/// aligns with spaces, but hand-tabbed sources and Makefiles do not.
+/// on screen. Covers the whole row, not just the indent: gofmt aligns with
+/// spaces, but hand-tabbed sources and Makefiles do not.
+///
+/// Columns come from `display_width` on whole segments. A per-char sum
+/// disagrees with it in both directions on multi-codepoint graphemes, and
+/// would put a following tab on the wrong stop.
 fn expand_tabs(text: &str) -> Cow<'_, str> {
     if !text.contains('\t') {
         return Cow::Borrowed(text);
     }
 
-    let mut out = String::with_capacity(text.len());
+    let mut out = String::with_capacity(text.len() + TAB_WIDTH);
     let mut column = 0usize;
-    for ch in text.chars() {
-        if ch == '\t' {
+    for (index, segment) in text.split('\t').enumerate() {
+        if index > 0 {
             let advance = TAB_WIDTH - (column % TAB_WIDTH);
             out.extend(std::iter::repeat_n(' ', advance));
             column += advance;
-        } else {
-            out.push(ch);
-            column += display_width(ch.encode_utf8(&mut [0u8; 4]));
         }
+        out.push_str(segment);
+        column += display_width(segment);
     }
     Cow::Owned(out)
 }
@@ -654,9 +658,9 @@ mod tests {
         assert!(rendered.iter().any(|line| line.starts_with("              ")));
     }
 
-    /// #660: a hard tab measured one column but painted out to the
-    /// terminal's next 8-column stop, so the wrap budget for the rest of
-    /// the row was computed against a width the row did not have. Tabs
+    /// A hard tab measures one column but paints out to the terminal's
+    /// next 8-column stop, so the wrap budget for the rest of the row
+    /// used to be computed against a width the row did not have. Tabs
     /// expand to 4-column stops, the depth a space-indented Rust file
     /// already renders at.
     #[test]
@@ -693,11 +697,26 @@ mod tests {
         );
 
         // Nothing else emits spaces for alignment, so an interior tab
-        // has to expand too or it shears the row on its own.
+        // has to expand too or it shears the row on its own. The second
+        // tab starts at column 5, so it advances 3 rather than a flat
+        // TAB_WIDTH - expanding every tab to 4 fails here and nowhere
+        // else in this test.
         let hand_tabbed = rendered("var (\n\tx\t= 1\n)\n");
         assert!(
             hand_tabbed.iter().all(|line| !line.contains('\t')),
             "no raw tab may reach the terminal: {hand_tabbed:?}"
+        );
+        assert!(
+            hand_tabbed.iter().any(|line| line.contains("x   = 1")),
+            "a tab at column 5 advances to column 8: {hand_tabbed:?}"
+        );
+
+        // A per-char width sum reads this heart-plus-VS16 as one column
+        // and puts the tab on the wrong stop; display_width reads two.
+        let grapheme = rendered("var (\n\t\u{2764}\u{fe0f}\tx = 1\n)\n");
+        assert!(
+            grapheme.iter().any(|line| line.contains("\u{2764}\u{fe0f}  x = 1")),
+            "a 2-column grapheme leaves the tab advancing 2: {grapheme:?}"
         );
     }
 
