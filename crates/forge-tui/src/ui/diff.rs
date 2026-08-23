@@ -230,9 +230,8 @@ fn render_raw_diff_line(line: &str) -> Line<'static> {
     } else if line.starts_with('\\') {
         (Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC), None, false)
     } else {
-        // A context row carries source after its space marker. Anything
-        // else reaching here is interleaved output with no marker to
-        // skip, and peeling its first column would strip a leading tab.
+        // Only a context row has a space marker to skip; peeling any
+        // other line's first column would strip a leading tab.
         (Style::default().fg(theme::DIM), None, line.starts_with(' '))
     };
 
