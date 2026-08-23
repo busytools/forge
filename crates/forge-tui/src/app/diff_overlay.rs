@@ -2996,6 +2996,55 @@ pub(crate) fn rail_width_for(terminal_width: u16) -> u16 {
     proportional.max(RAIL_WIDTH_MIN)
 }
 
+/// Gutter width for a file's split / unified line numbers.
+///
+/// Min 2 so single-digit line numbers don't shift the marker column
+/// relative to two-digit ones in the same hunk; capped at 6.
+pub(crate) fn gutter_width_for(file: &FileHunks) -> usize {
+    let max_line = file
+        .hunks
+        .iter()
+        .flat_map(|h| h.lines.iter())
+        .filter_map(|l| l.new_line.or(l.old_line))
+        .max()
+        .unwrap_or(1);
+    max_line.to_string().len().clamp(2, 6)
+}
+
+/// Leading indent before the left column of a split row.
+const SPLIT_INDENT_COLS: usize = 2;
+/// Space, `│`, space between the two columns.
+const SPLIT_DIVIDER_COLS: usize = 3;
+/// Space, marker, space between a column's gutter and its text.
+const SPLIT_MARKER_COLS: usize = 3;
+
+/// Column geometry of one split-view row.
+pub(crate) struct SplitLayout {
+    pub left_width: usize,
+    pub right_width: usize,
+    /// Pane-local column the `│` is painted in.
+    pub divider_col: usize,
+}
+
+/// Split-row geometry, shared by the renderer at
+/// `crate::ui::diff_overlay::split_diff_row` and the click handler.
+///
+/// The divider is NOT the pane midpoint: the left column carries a
+/// gutter and a marker on top of its text width, which pushes the
+/// `│` right of centre. Both sides derive from here so the painted
+/// divider and the click boundary cannot drift apart.
+pub(crate) fn split_layout(gutter_width: usize, pane_width: u16) -> SplitLayout {
+    let usable = usize::from(pane_width)
+        .saturating_sub(SPLIT_INDENT_COLS)
+        .saturating_sub(SPLIT_DIVIDER_COLS);
+    let left_width = usable / 2;
+    SplitLayout {
+        left_width,
+        right_width: usable - left_width,
+        divider_col: SPLIT_INDENT_COLS + gutter_width + SPLIT_MARKER_COLS + left_width + 1,
+    }
+}
+
 /// Outcome of a mouse interaction. Some interactions need access
 /// to the full App (key event needs to fire `dispatch_prompt` for
 /// the Esc submit path) which the inner `handle_*` borrow doesn't
@@ -3212,16 +3261,20 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
     match key {
         BodyRowKey::HunkRow { left, right } => {
             // Unified is one column, so either side resolves the
-            // line. Split has two columns: the divider sits at the
-            // pane midpoint, so clicks left of it pick the old side,
-            // right of it the new side. An empty picked side (blank
-            // half of an unbalanced split row) is a no-op.
+            // line. Split picks by the painted divider, whose column
+            // depends on this file's gutter width. An empty picked
+            // side (blank half of an unbalanced row) is a no-op.
             let key = match overlay.view_mode {
                 DiffViewMode::Unified => left.or(right),
                 DiffViewMode::Split => {
-                    let pane_local_col = column.saturating_sub(overlay.pane_origin_col);
-                    let mid_col = overlay.pane_width / 2;
-                    if pane_local_col < mid_col { left } else { right }
+                    let pane_local_col =
+                        usize::from(column.saturating_sub(overlay.pane_origin_col));
+                    let gutter = left
+                        .or(right)
+                        .and_then(|k| overlay.files.get(k.file_idx))
+                        .map_or(SPLIT_INDENT_COLS, gutter_width_for);
+                    let divider = split_layout(gutter, overlay.pane_width).divider_col;
+                    if pane_local_col < divider { left } else { right }
                 }
             };
             match key {
@@ -3675,6 +3728,30 @@ mod tests {
         let effect = handle_left_click(&mut state, 120, 2, 160);
         assert!(effect.redraw);
         assert_eq!(state.active_input.as_ref().map(|i| i.key), Some(right_key));
+    }
+
+    /// The left half carries the gutter and marker on top of its text
+    /// column, so the divider is drawn well past the pane midpoint. A
+    /// click in the band between the two is visually on the old side.
+    #[test]
+    fn body_click_just_left_of_the_divider_resolves_the_old_side() {
+        let mut state = sample_state();
+        state.view_mode = DiffViewMode::Split;
+        let left_key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let right_key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 };
+        state.body_keys = vec![
+            BodyRowKey::FileHeader { file_idx: 0 },
+            BodyRowKey::HunkHeader { file_idx: 0, hunk_idx: 0 },
+            BodyRowKey::HunkRow { left: Some(left_key), right: Some(right_key) },
+        ];
+        state.pane_origin_row = 0;
+        state.pane_origin_col = 41;
+        state.pane_width = 119;
+        // Pane-local 60: past the midpoint (59), still inside the left
+        // column, whose last cell is 63.
+        let effect = handle_left_click(&mut state, 101, 2, 160);
+        assert!(effect.redraw);
+        assert_eq!(state.active_input.as_ref().map(|i| i.key), Some(left_key));
     }
 
     #[test]

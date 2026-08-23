@@ -32,7 +32,7 @@ use forge_workspace::env::git_diff::hunks::{DiffLineKind, FileHunks, FileStatus,
 
 use crate::app::diff_overlay::{
     ActiveCommentInput, BodyRowKey, DiffScope, DiffViewMode, FileHighlight, HunkComment, LineKey,
-    RailRowKey, rail_width_for,
+    RailRowKey, gutter_width_for, rail_width_for, split_layout,
 };
 use pairing::{PairedDiffRow, pair_hunk_lines};
 use ratatui::Frame;
@@ -2435,21 +2435,6 @@ fn fit_box_content(text: &str, max_cols: usize) -> String {
     format!("{truncated}...")
 }
 
-fn gutter_width_for(file: &FileHunks) -> usize {
-    let max_line = file
-        .hunks
-        .iter()
-        .flat_map(|h| h.lines.iter())
-        .filter_map(|l| l.new_line.or(l.old_line))
-        .max()
-        .unwrap_or(1);
-    // Min width 2 so single-digit line numbers don't shift the
-    // marker column relative to two-digit ones inside the same
-    // hunk; cap at 6 for sanity (10⁶ lines is well beyond what
-    // anyone reviews in one pane).
-    max_line.to_string().len().clamp(2, 6)
-}
-
 fn hunk_header_row(hunk: &Hunk) -> Line<'static> {
     let text = format!(
         "  @@ -{},{} +{},{} @@",
@@ -2469,19 +2454,13 @@ fn split_diff_row(
     pane_width: u16,
     cache: Option<&FileHighlight>,
 ) -> Line<'static> {
-    // Per-side body width: pane minus 2-col leading indent minus the
-    // 3-col divider zone (space + '│' + space). Splits as floor/ceil
-    // so any leftover odd column goes to the right (additions) side
-    // - gives the `+` half a touch more breathing room than the `-`
+    // Any leftover odd column goes to the right (additions) side,
+    // giving the `+` half a touch more breathing room than the `-`
     // half, which mirrors how most users read a diff (focus right).
-    let indent_cols: usize = 2;
-    let divider_cols: usize = 3;
-    let usable = usize::from(pane_width).saturating_sub(indent_cols).saturating_sub(divider_cols);
-    let left_width = usable / 2;
-    let right_width = usable - left_width;
+    let layout = split_layout(gutter_width, pane_width);
 
-    let left = build_split_half(file, pair.left, gutter_width, left_width, cache);
-    let right = build_split_half(file, pair.right, gutter_width, right_width, cache);
+    let left = build_split_half(file, pair.left, gutter_width, layout.left_width, cache);
+    let right = build_split_half(file, pair.right, gutter_width, layout.right_width, cache);
 
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(left.len() + right.len() + 4);
     spans.push(Span::raw("  "));
@@ -3209,6 +3188,37 @@ mod tests {
         let highlight = build_file_highlight(&file);
         let text: String = highlight[0][0].iter().map(|span| span.content.as_ref()).collect();
         assert_eq!(text, "        return err", "two tabs reach column 8");
+    }
+
+    /// The click handler splits old from new on `divider_col`. If the
+    /// painted divider ever lands anywhere else, clicks in the gap file
+    /// a review comment against the wrong side and persist it.
+    #[test]
+    fn the_painted_divider_sits_where_split_layout_says() {
+        // Line counts either side of a gutter-width step, so a wrong
+        // gutter term in the formula shows up rather than cancelling.
+        for lines in [9usize, 120] {
+            let file = multi_line_file("a.rs", lines);
+            let gutter = gutter_width_for(&file);
+            let pair = PairedDiffRow {
+                left: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }),
+                right: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 }),
+            };
+            for pane_width in [80u16, 119, 160, 184] {
+                let row = split_diff_row(&file, pair, gutter, pane_width, None);
+                let mut col = 0usize;
+                let painted = row.spans.iter().find_map(|span| {
+                    let at = col;
+                    col += span.width();
+                    (span.content.as_ref() == "\u{2502}").then_some(at)
+                });
+                assert_eq!(
+                    painted,
+                    Some(split_layout(gutter, pane_width).divider_col),
+                    "lines={lines} gutter={gutter} pane_width={pane_width}"
+                );
+            }
+        }
     }
 
     fn one_line_file(path: &str) -> FileHunks {
