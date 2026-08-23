@@ -368,24 +368,22 @@ fn render_wrapped_diff_row(
         .collect()
 }
 
-/// Columns a hard tab occupies in a rendered diff row. Matches rustfmt's
-/// `tab_spaces`, so a tab-indented file and a space-indented one read at
-/// the same depth in the same panel. The terminal's own 8-column stops
-/// are not reachable here: the row starts after the line-number gutter,
-/// so a real tab would land on a stop unrelated to the indent level.
+/// Stop interval for tab expansion. Matches rustfmt's `tab_spaces`, so a
+/// tab-indented file and a space-indented one read at the same depth.
 const TAB_WIDTH: usize = 4;
 
 /// Expand tabs to spaces, measuring stops from the start of `text`, which
 /// is one diff row.
 ///
-/// A tab measures one column but paints out to the terminal's next tab
-/// stop, so leaving it raw makes the wrap budget disagree with what lands
-/// on screen. Covers the whole row, not just the indent: gofmt aligns with
-/// spaces, but hand-tabbed sources and Makefiles do not.
+/// `Span::styled_graphemes` drops control characters, so a raw tab measures
+/// one column and paints none: the indent vanishes and the wrap budget is
+/// over-charged by the difference. Whole-row rather than indent-only
+/// because gofmt aligns with spaces but Makefiles and hand-tabbed sources
+/// do not.
 ///
-/// Columns come from `display_width` on whole segments. A per-char sum
-/// disagrees with it in both directions on multi-codepoint graphemes, and
-/// would put a following tab on the wrong stop.
+/// Columns come from `display_width` on whole segments; a per-char sum
+/// disagrees with it on multi-codepoint graphemes and would misplace the
+/// next stop.
 fn expand_tabs(text: &str) -> Cow<'_, str> {
     if !text.contains('\t') {
         return Cow::Borrowed(text);
@@ -658,11 +656,10 @@ mod tests {
         assert!(rendered.iter().any(|line| line.starts_with("              ")));
     }
 
-    /// A hard tab measures one column but paints out to the terminal's
-    /// next 8-column stop, so the wrap budget for the rest of the row
-    /// used to be computed against a width the row did not have. Tabs
-    /// expand to 4-column stops, the depth a space-indented Rust file
-    /// already renders at.
+    /// A raw tab measured one column and painted none, so a Go indent
+    /// disappeared and the row's wrap budget was over-charged for it.
+    /// Tabs expand to 4-column stops, the depth a space-indented Rust
+    /// file already renders at.
     #[test]
     fn render_diff_expands_tabs_to_match_a_space_indent() {
         let rendered = |source: &str| -> Vec<String> {
