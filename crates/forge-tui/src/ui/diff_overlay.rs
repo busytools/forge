@@ -1217,7 +1217,8 @@ pub(crate) struct UnifiedRow {
     /// removed; `None` for hunk headers.
     pub line_no: Option<u32>,
     /// Raw line text (no marker). For a hunk header, the `@@ … @@`
-    /// string.
+    /// string. Body rows paint from the span cache, not from here, so
+    /// this still carries unexpanded tabs.
     pub text: String,
 }
 

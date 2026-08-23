@@ -204,7 +204,11 @@ fn render_raw_diff_line(line: &str) -> Line<'static> {
     // File-header lines stay un-tinted so the metadata band reads
     // distinct from the actual diff payload. Body `+` / `-` lines pick
     // up the GitHub-style row tint via the theme constants.
-    let (style, row_bg) = if line.starts_with("diff --git ")
+    //
+    // The third field marks a row whose text after the one-char marker
+    // is source, so tab stops are measured from the source column and
+    // this path indents to the same depth as the other diff surfaces.
+    let (style, row_bg, carries_source) = if line.starts_with("diff --git ")
         || line.starts_with("index ")
         || line.starts_with("new file mode ")
         || line.starts_with("deleted file mode ")
@@ -212,24 +216,28 @@ fn render_raw_diff_line(line: &str) -> Line<'static> {
         || line.starts_with("rename from ")
         || line.starts_with("rename to ")
     {
-        (Style::default().fg(Color::White).add_modifier(Modifier::BOLD), None)
+        (Style::default().fg(Color::White).add_modifier(Modifier::BOLD), None, false)
     } else if line.starts_with("@@") {
-        (Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD), None)
+        (Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD), None, false)
     } else if line.starts_with("+++ ") {
-        (Style::default().fg(Color::Green), None)
+        (Style::default().fg(Color::Green), None, false)
     } else if line.starts_with("--- ") {
-        (Style::default().fg(Color::Red), None)
+        (Style::default().fg(Color::Red), None, false)
     } else if line.starts_with('+') {
-        (Style::default().fg(Color::Green), Some(theme::DIFF_ADDITION_BG))
+        (Style::default().fg(Color::Green), Some(theme::DIFF_ADDITION_BG), true)
     } else if line.starts_with('-') {
-        (Style::default().fg(Color::Red), Some(theme::DIFF_DELETION_BG))
+        (Style::default().fg(Color::Red), Some(theme::DIFF_DELETION_BG), true)
     } else if line.starts_with('\\') {
-        (Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC), None)
+        (Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC), None, false)
     } else {
-        (Style::default().fg(theme::DIM), None)
+        (Style::default().fg(theme::DIM), None, true)
     };
 
-    let mut rendered = Line::from(Span::styled(expand_tabs(line).into_owned(), style));
+    let text = match carries_source.then(|| line.split_at_checked(1)).flatten() {
+        Some((marker, body)) => format!("{marker}{}", expand_tabs(body)),
+        None => expand_tabs(line).into_owned(),
+    };
+    let mut rendered = Line::from(Span::styled(text, style));
     if let Some(bg) = row_bg {
         rendered = rendered.style(Style::default().bg(bg));
     }
@@ -658,10 +666,7 @@ mod tests {
         );
 
         // Nothing else emits spaces for alignment, so an interior tab
-        // has to expand too or it shears the row on its own. The second
-        // tab starts at column 5, so it advances 3 rather than a flat
-        // TAB_WIDTH - expanding every tab to 4 fails here and nowhere
-        // else in this test.
+        // has to expand too or it shears the row on its own.
         let hand_tabbed = rendered("var (\n\tx\t= 1\n)\n");
         assert!(
             hand_tabbed.iter().all(|line| !line.contains('\t')),
@@ -672,8 +677,8 @@ mod tests {
             "a tab at column 5 advances to column 8: {hand_tabbed:?}"
         );
 
-        // A per-char width sum reads this heart-plus-VS16 as one column
-        // and puts the tab on the wrong stop; display_width reads two.
+        // A 2-column grapheme ahead of a tab, where per-char and
+        // string-level width measurement disagree.
         let grapheme = rendered("var (\n\t\u{2764}\u{fe0f}\tx = 1\n)\n");
         assert!(
             grapheme.iter().any(|line| line.contains("\u{2764}\u{fe0f}  x = 1")),
@@ -792,12 +797,12 @@ mod tests {
         }
     }
 
-    /// The Bash-tool path: stdout that looks like a unified diff renders
-    /// here, marker included, so stops are measured from the marker column
-    /// exactly as a terminal would.
+    /// The Bash-tool path. Stops are measured past the marker, so one
+    /// tab indents 4 columns here exactly as it does in the inline diff
+    /// and the overlay.
     #[test]
     fn render_raw_unified_diff_expands_tabs() {
-        let lines = render_raw_unified_diff("@@ -1 +1 @@\n+\tif err != nil {\n");
+        let lines = render_raw_unified_diff("@@ -1 +1 @@\n+\tif err != nil {\n \tcontext\n");
         let rendered: Vec<String> = lines
             .iter()
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
@@ -806,7 +811,8 @@ mod tests {
             rendered.iter().all(|line| !line.contains('\t')),
             "no raw tab may reach the terminal: {rendered:?}"
         );
-        assert!(rendered.iter().any(|line| line == "+   if err != nil {"), "{rendered:?}");
+        assert!(rendered.iter().any(|line| line == "+    if err != nil {"), "{rendered:?}");
+        assert!(rendered.iter().any(|line| line == "     context"), "{rendered:?}");
     }
 
     #[test]

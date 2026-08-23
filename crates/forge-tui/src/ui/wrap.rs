@@ -26,8 +26,10 @@ pub(crate) fn display_width(text: &str) -> usize {
     UnicodeWidthStr::width(text)
 }
 
-/// Stop interval for tab expansion. Matches rustfmt's `tab_spaces`, so a
-/// tab-indented file and a space-indented one read at the same depth.
+/// Stop interval for tab expansion. Deliberately 4 rather than the
+/// terminal's 8: a Go file then reads at the same depth in a forge pane
+/// as the space-indented files beside it, at the cost of showing half the
+/// indent `git diff` would.
 const TAB_WIDTH: usize = 4;
 
 /// Expand tabs to spaces, measuring stops from the start of `text`, which
@@ -35,11 +37,11 @@ const TAB_WIDTH: usize = 4;
 ///
 /// `Span::styled_graphemes` drops control characters, so a raw tab measures
 /// one column and paints none: the indent vanishes and the wrap budget is
-/// over-charged by the difference.
+/// over-charged by the difference. Other C0 characters have the same split
+/// and are left alone.
 ///
-/// Columns come from `display_width` on whole segments; a per-char sum
-/// disagrees with it on multi-codepoint graphemes and would misplace the
-/// next stop.
+/// Columns measure whole segments, since per-char and string-level width
+/// disagree on multi-codepoint graphemes.
 pub(crate) fn expand_tabs(text: &str) -> Cow<'_, str> {
     if !text.contains('\t') {
         return Cow::Borrowed(text);
@@ -325,6 +327,21 @@ mod tests {
     #[test]
     fn wrap_plain_wraps_long_emoji_graphemes() {
         assert_eq!(wrap_plain("👩‍💻👩‍💻👩‍💻", 4), vec!["👩‍💻👩‍💻".to_owned(), "👩‍💻".to_owned()]);
+    }
+
+    #[test]
+    fn expand_tabs_advances_to_the_next_stop_and_borrows_when_clean() {
+        assert_eq!(expand_tabs("\t\tx"), "        x");
+        assert_eq!(expand_tabs("ab\tx"), "ab  x");
+        assert_eq!(expand_tabs("abcd\tx"), "abcd    x");
+        assert_eq!(expand_tabs("\u{4e16}\u{754c}\tx"), "\u{4e16}\u{754c}    x");
+        assert!(matches!(expand_tabs(""), Cow::Borrowed("")));
+        assert!(matches!(expand_tabs("no tabs here"), Cow::Borrowed(_)));
+
+        // Callers on the diff paths chain renderers, so a second pass
+        // must be a no-op rather than shifting the stops again.
+        let once = expand_tabs("\tx\ty").into_owned();
+        assert_eq!(expand_tabs(&once), once);
     }
 
     #[test]
