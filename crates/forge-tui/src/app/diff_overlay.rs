@@ -2996,10 +2996,14 @@ pub(crate) fn rail_width_for(terminal_width: u16) -> u16 {
     proportional.max(RAIL_WIDTH_MIN)
 }
 
+/// Narrowest gutter, so single-digit line numbers don't shift the
+/// marker column relative to two-digit ones in the same hunk.
+const SPLIT_GUTTER_MIN: usize = 2;
+/// Widest gutter. Beyond this the gutter is under-reserved and the
+/// row's divider shifts right of where `split_layout` puts it.
+const SPLIT_GUTTER_MAX: usize = 6;
+
 /// Gutter width for a file's split / unified line numbers.
-///
-/// Min 2 so single-digit line numbers don't shift the marker column
-/// relative to two-digit ones in the same hunk; capped at 6.
 pub(crate) fn gutter_width_for(file: &FileHunks) -> usize {
     let max_line = file
         .hunks
@@ -3008,7 +3012,22 @@ pub(crate) fn gutter_width_for(file: &FileHunks) -> usize {
         .filter_map(|l| l.new_line.or(l.old_line))
         .max()
         .unwrap_or(1);
-    max_line.to_string().len().clamp(2, 6)
+    max_line.to_string().len().clamp(SPLIT_GUTTER_MIN, SPLIT_GUTTER_MAX)
+}
+
+/// Minimum body width (in columns) for the side-by-side split view -
+/// two columns of readable code need the room. Unified renders at any
+/// width (it soft-wraps), so below this the split toggle silently
+/// falls back to unified rather than blocking the overlay.
+pub(crate) const MIN_WIDTH_FOR_SPLIT: u16 = 100;
+
+/// The layout actually painted: the stored choice, except a body
+/// narrower than [`MIN_WIDTH_FOR_SPLIT`] forces unified. The stored
+/// `view_mode` is untouched, so widening the pane restores split.
+/// The hit-test reads this too, so a click resolves against the
+/// layout on screen rather than the one the user last asked for.
+pub(crate) fn effective_view_mode(stored: DiffViewMode, pane_width: u16) -> DiffViewMode {
+    if pane_width < MIN_WIDTH_FOR_SPLIT { DiffViewMode::Unified } else { stored }
 }
 
 /// Leading indent before the left column of a split row.
@@ -3016,7 +3035,7 @@ const SPLIT_INDENT_COLS: usize = 2;
 /// Space, `│`, space between the two columns.
 const SPLIT_DIVIDER_COLS: usize = 3;
 /// Space, marker, space between a column's gutter and its text.
-const SPLIT_MARKER_COLS: usize = 3;
+pub(crate) const SPLIT_MARKER_COLS: usize = 3;
 
 /// Column geometry of one split-view row.
 pub(crate) struct SplitLayout {
@@ -3026,13 +3045,11 @@ pub(crate) struct SplitLayout {
     pub divider_col: usize,
 }
 
-/// Split-row geometry, shared by the renderer at
-/// `crate::ui::diff_overlay::split_diff_row` and the click handler.
+/// Split-row geometry, shared by the renderer and the click handler.
 ///
 /// The divider is NOT the pane midpoint: the left column carries a
-/// gutter and a marker on top of its text width, which pushes the
-/// `│` right of centre. Both sides derive from here so the painted
-/// divider and the click boundary cannot drift apart.
+/// gutter and a marker on top of its text width, which pushes the `│`
+/// right of centre.
 pub(crate) fn split_layout(gutter_width: usize, pane_width: u16) -> SplitLayout {
     let usable = usize::from(pane_width)
         .saturating_sub(SPLIT_INDENT_COLS)
@@ -3264,7 +3281,7 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
             // line. Split picks by the painted divider, whose column
             // depends on this file's gutter width. An empty picked
             // side (blank half of an unbalanced row) is a no-op.
-            let key = match overlay.view_mode {
+            let key = match effective_view_mode(overlay.view_mode, overlay.pane_width) {
                 DiffViewMode::Unified => left.or(right),
                 DiffViewMode::Split => {
                     let pane_local_col =
@@ -3272,7 +3289,7 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
                     let gutter = left
                         .or(right)
                         .and_then(|k| overlay.files.get(k.file_idx))
-                        .map_or(SPLIT_INDENT_COLS, gutter_width_for);
+                        .map_or(SPLIT_GUTTER_MIN, gutter_width_for);
                     let divider = split_layout(gutter, overlay.pane_width).divider_col;
                     if pane_local_col < divider { left } else { right }
                 }
@@ -3704,7 +3721,7 @@ mod tests {
         state.pane_origin_row = 0;
         state.pane_origin_col = 41; // Past rail + separator on wide.
         state.pane_width = 119;
-        // Left half: pane-local col in [0, 59) → click_col in [41, 100).
+        // Left half: well clear of the divider at pane-local 65.
         let effect = handle_left_click(&mut state, 60, 2, 160);
         assert!(effect.redraw);
         assert_eq!(state.active_input.as_ref().map(|i| i.key), Some(left_key));
@@ -3724,7 +3741,7 @@ mod tests {
         state.pane_origin_row = 0;
         state.pane_origin_col = 41;
         state.pane_width = 119;
-        // Right half: pane-local col in [60, 119) → click_col in [101, 160).
+        // Right half: past the divider at pane-local 65.
         let effect = handle_left_click(&mut state, 120, 2, 160);
         assert!(effect.redraw);
         assert_eq!(state.active_input.as_ref().map(|i| i.key), Some(right_key));
@@ -3733,6 +3750,16 @@ mod tests {
     /// The left half carries the gutter and marker on top of its text
     /// column, so the divider is drawn well past the pane midpoint. A
     /// click in the band between the two is visually on the old side.
+    #[test]
+    fn effective_view_mode_forces_unified_below_split_threshold() {
+        assert_eq!(effective_view_mode(DiffViewMode::Split, 80), DiffViewMode::Unified);
+        assert_eq!(
+            effective_view_mode(DiffViewMode::Split, MIN_WIDTH_FOR_SPLIT),
+            DiffViewMode::Split,
+        );
+        assert_eq!(effective_view_mode(DiffViewMode::Unified, 200), DiffViewMode::Unified);
+    }
+
     #[test]
     fn body_click_just_left_of_the_divider_resolves_the_old_side() {
         let mut state = sample_state();

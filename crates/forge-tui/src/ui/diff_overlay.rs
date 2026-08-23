@@ -32,7 +32,8 @@ use forge_workspace::env::git_diff::hunks::{DiffLineKind, FileHunks, FileStatus,
 
 use crate::app::diff_overlay::{
     ActiveCommentInput, BodyRowKey, DiffScope, DiffViewMode, FileHighlight, HunkComment, LineKey,
-    RailRowKey, gutter_width_for, rail_width_for, split_layout,
+    RailRowKey, SPLIT_MARKER_COLS, effective_view_mode, gutter_width_for, rail_width_for,
+    split_layout,
 };
 use pairing::{PairedDiffRow, pair_hunk_lines};
 use ratatui::Frame;
@@ -50,20 +51,6 @@ use crate::ui::chat_tree;
 use crate::ui::highlight::LineHighlighter;
 use crate::ui::theme;
 use crate::ui::wrap::expand_tabs;
-
-/// Minimum body width (in columns) for the side-by-side split view -
-/// two columns of readable code need the room. Unified renders at any
-/// width (it soft-wraps), so below this the split toggle silently
-/// falls back to unified rather than blocking the overlay.
-const MIN_WIDTH_FOR_SPLIT: u16 = 100;
-
-/// The layout to actually render: the user's stored choice, except a
-/// body narrower than [`MIN_WIDTH_FOR_SPLIT`] forces unified (split's
-/// two columns don't fit). The stored `view_mode` is untouched, so
-/// widening the pane restores split.
-fn effective_view_mode(stored: DiffViewMode, pane_width: u16) -> DiffViewMode {
-    if pane_width < MIN_WIDTH_FOR_SPLIT { DiffViewMode::Unified } else { stored }
-}
 
 /// Named row offsets inside the commit stepper bar: the title on row 0,
 /// the movement/controls row on row 2, with blank spacers between and
@@ -2485,9 +2472,9 @@ fn build_split_half(
     cache: Option<&FileHighlight>,
 ) -> Vec<Span<'static>> {
     let Some(key) = key else {
-        // Blank side: gutter padding + space + marker padding + space
-        // + text padding. Total = gutter_width + 3 + text_width.
-        let pad_width = gutter_width.saturating_add(3).saturating_add(text_width);
+        // Blank side: pad to the same width a filled half occupies, so
+        // the divider stays where `split_layout` says.
+        let pad_width = gutter_width.saturating_add(SPLIT_MARKER_COLS).saturating_add(text_width);
         return vec![Span::raw(" ".repeat(pad_width))];
     };
     let line = &file.hunks[key.hunk_idx].lines[key.line_idx];
@@ -2892,16 +2879,6 @@ mod tests {
     }
 
     #[test]
-    fn effective_view_mode_forces_unified_below_split_threshold() {
-        assert_eq!(effective_view_mode(DiffViewMode::Split, 80), DiffViewMode::Unified);
-        assert_eq!(
-            effective_view_mode(DiffViewMode::Split, MIN_WIDTH_FOR_SPLIT),
-            DiffViewMode::Split,
-        );
-        assert_eq!(effective_view_mode(DiffViewMode::Unified, 200), DiffViewMode::Unified);
-    }
-
-    #[test]
     fn narrow_pane_renders_unified_even_with_split_stored() {
         use forge_workspace::env::git_diff::hunks::DiffLine;
         // One removed + one added line. Unified emits both as separate
@@ -3200,23 +3177,29 @@ mod tests {
         for lines in [9usize, 120] {
             let file = multi_line_file("a.rs", lines);
             let gutter = gutter_width_for(&file);
-            let pair = PairedDiffRow {
+            let both = PairedDiffRow {
                 left: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }),
                 right: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 }),
             };
-            for pane_width in [80u16, 119, 160, 184] {
-                let row = split_diff_row(&file, pair, gutter, pane_width, None);
-                let mut col = 0usize;
-                let painted = row.spans.iter().find_map(|span| {
-                    let at = col;
-                    col += span.width();
-                    (span.content.as_ref() == "\u{2502}").then_some(at)
-                });
-                assert_eq!(
-                    painted,
-                    Some(split_layout(gutter, pane_width).divider_col),
-                    "lines={lines} gutter={gutter} pane_width={pane_width}"
-                );
+            // An unbalanced row pads its blank half by hand, so it can
+            // drift from a filled one.
+            let left_only = PairedDiffRow { right: None, ..both };
+            let right_only = PairedDiffRow { left: None, ..both };
+            for pair in [both, left_only, right_only] {
+                for pane_width in [101u16, 119, 160, 184] {
+                    let row = split_diff_row(&file, pair, gutter, pane_width, None);
+                    let mut col = 0usize;
+                    let painted = row.spans.iter().find_map(|span| {
+                        let at = col;
+                        col += span.width();
+                        (span.content.as_ref() == "\u{2502}").then_some(at)
+                    });
+                    assert_eq!(
+                        painted,
+                        Some(split_layout(gutter, pane_width).divider_col),
+                        "lines={lines} gutter={gutter} pane_width={pane_width} pair={pair:?}"
+                    );
+                }
             }
         }
     }
