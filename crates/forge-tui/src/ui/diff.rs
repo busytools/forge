@@ -5,6 +5,7 @@ use crate::ui::wrap::{StyledChunk, display_width, wrap_styled_chunks};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use similar::TextDiff;
+use std::borrow::Cow;
 
 /// Rows outside this window render without syntax highlighting.
 ///
@@ -105,7 +106,8 @@ pub fn render_diff(
             // Split leading whitespace; `wrap_styled_chunks` drops
             // leading spaces at wrap boundaries, so the indent column
             // is rendered explicitly (matches pre-syntect behavior).
-            let (leading_indent, content) = split_leading_whitespace(value);
+            let expanded = expand_tabs(value);
+            let (leading_indent, content) = split_leading_whitespace(&expanded);
             let highlighted = row_is_highlighted(row_idx, row_total, highlight_window);
             row_idx += 1;
             let highlighted_spans = if highlighted {
@@ -366,6 +368,39 @@ fn render_wrapped_diff_row(
         .collect()
 }
 
+/// Columns a hard tab occupies in a rendered diff row. Matches rustfmt's
+/// `tab_spaces`, so a tab-indented file and a space-indented one read at
+/// the same depth in the same panel. The terminal's own 8-column stops
+/// are not reachable here: the row starts after the line-number gutter,
+/// so a real tab would land on a stop unrelated to the indent level.
+const TAB_WIDTH: usize = 4;
+
+/// Expand tabs to spaces, measuring stops from the start of the line.
+///
+/// A tab measures one column but paints out to the terminal's next tab
+/// stop, so leaving it raw makes the wrap budget disagree with what lands
+/// on screen (#660). Covers the whole row, not just the indent: gofmt
+/// aligns with spaces, but hand-tabbed sources and Makefiles do not.
+fn expand_tabs(text: &str) -> Cow<'_, str> {
+    if !text.contains('\t') {
+        return Cow::Borrowed(text);
+    }
+
+    let mut out = String::with_capacity(text.len());
+    let mut column = 0usize;
+    for ch in text.chars() {
+        if ch == '\t' {
+            let advance = TAB_WIDTH - (column % TAB_WIDTH);
+            out.extend(std::iter::repeat_n(' ', advance));
+            column += advance;
+        } else {
+            out.push(ch);
+            column += display_width(ch.encode_utf8(&mut [0u8; 4]));
+        }
+    }
+    Cow::Owned(out)
+}
+
 fn split_leading_whitespace(text: &str) -> (&str, &str) {
     let split_at = text
         .char_indices()
@@ -617,6 +652,53 @@ mod tests {
         assert!(rendered.iter().any(|line| line.contains("+          This is a")));
         assert!(rendered.iter().any(|line| line.contains("indentation")));
         assert!(rendered.iter().any(|line| line.starts_with("              ")));
+    }
+
+    /// #660: a hard tab measured one column but painted out to the
+    /// terminal's next 8-column stop, so the wrap budget for the rest of
+    /// the row was computed against a width the row did not have. Tabs
+    /// expand to 4-column stops, the depth a space-indented Rust file
+    /// already renders at.
+    #[test]
+    fn render_diff_expands_tabs_to_match_a_space_indent() {
+        let rendered = |source: &str| -> Vec<String> {
+            render_diff(&model::Diff::new("tmp.go", source.to_owned()), 80, None)
+                .iter()
+                .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+                .collect()
+        };
+
+        let nested = rendered("func main() {\n\tif err != nil {\n\t\treturn err\n\t}\n}\n");
+        assert!(
+            nested.iter().all(|line| !line.contains('\t')),
+            "no raw tab may reach the terminal: {nested:?}"
+        );
+        assert!(nested.iter().any(|line| line.contains("+      if err != nil {")));
+        assert!(nested.iter().any(|line| line.contains("+          return err")));
+
+        // Verbatim gofmt output: tab-indented, space-aligned. Expanding
+        // the indent must not shear the alignment it pads out to.
+        let aligned =
+            rendered("type Foo struct {\n\tName          string\n\tLongFieldName bool\n}\n");
+        let column_of = |needle: &str| {
+            aligned
+                .iter()
+                .find_map(|line| line.find(needle))
+                .unwrap_or_else(|| panic!("no row containing `{needle}`"))
+        };
+        assert_eq!(
+            column_of("string"),
+            column_of("bool"),
+            "gofmt alignment must survive: {aligned:?}"
+        );
+
+        // Nothing else emits spaces for alignment, so an interior tab
+        // has to expand too or it shears the row on its own.
+        let hand_tabbed = rendered("var (\n\tx\t= 1\n)\n");
+        assert!(
+            hand_tabbed.iter().all(|line| !line.contains('\t')),
+            "no raw tab may reach the terminal: {hand_tabbed:?}"
+        );
     }
 
     #[test]
