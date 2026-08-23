@@ -230,10 +230,15 @@ fn render_raw_diff_line(line: &str) -> Line<'static> {
     } else if line.starts_with('\\') {
         (Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC), None, false)
     } else {
-        (Style::default().fg(theme::DIM), None, true)
+        // A context row carries source after its space marker. Anything
+        // else reaching here is interleaved output with no marker to
+        // skip, and peeling its first column would strip a leading tab.
+        (Style::default().fg(theme::DIM), None, line.starts_with(' '))
     };
 
-    let text = match carries_source.then(|| line.split_at_checked(1)).flatten() {
+    // Every marker is one ASCII byte, so the split is always on a
+    // boundary when `carries_source` holds.
+    let text = match carries_source.then(|| line.split_at(1)) {
         Some((marker, body)) => format!("{marker}{}", expand_tabs(body)),
         None => expand_tabs(line).into_owned(),
     };
@@ -802,7 +807,8 @@ mod tests {
     /// and the overlay.
     #[test]
     fn render_raw_unified_diff_expands_tabs() {
-        let lines = render_raw_unified_diff("@@ -1 +1 @@\n+\tif err != nil {\n \tcontext\n");
+        let lines =
+            render_raw_unified_diff("@@ -1 +1 @@\n+\tif err != nil {\n \tcontext\n\ttrailing\n");
         let rendered: Vec<String> = lines
             .iter()
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
@@ -813,6 +819,9 @@ mod tests {
         );
         assert!(rendered.iter().any(|line| line == "+    if err != nil {"), "{rendered:?}");
         assert!(rendered.iter().any(|line| line == "     context"), "{rendered:?}");
+        // An unclassified line has no marker to skip, so its own first
+        // column is column 0.
+        assert!(rendered.iter().any(|line| line == "    trailing"), "{rendered:?}");
     }
 
     #[test]

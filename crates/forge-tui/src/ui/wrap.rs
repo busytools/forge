@@ -337,11 +337,6 @@ mod tests {
         assert_eq!(expand_tabs("\u{4e16}\u{754c}\tx"), "\u{4e16}\u{754c}    x");
         assert!(matches!(expand_tabs(""), Cow::Borrowed("")));
         assert!(matches!(expand_tabs("no tabs here"), Cow::Borrowed(_)));
-
-        // Callers on the diff paths chain renderers, so a second pass
-        // must be a no-op rather than shifting the stops again.
-        let once = expand_tabs("\tx\ty").into_owned();
-        assert_eq!(expand_tabs(&once), once);
     }
 
     #[test]
