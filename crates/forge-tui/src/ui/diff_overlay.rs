@@ -49,6 +49,7 @@ use crate::ui::autocomplete;
 use crate::ui::chat_tree;
 use crate::ui::highlight::LineHighlighter;
 use crate::ui::theme;
+use crate::ui::wrap::expand_tabs;
 
 /// Minimum body width (in columns) for the side-by-side split view -
 /// two columns of readable code need the room. Unified renders at any
@@ -1305,12 +1306,15 @@ fn build_file_highlight(file: &FileHunks) -> FileHighlight {
         .map(|hunk| {
             hunk.lines
                 .iter()
-                .map(|line| match line.kind {
-                    DiffLineKind::Removed => old_hl.highlight(&line.text),
-                    DiffLineKind::Added => new_hl.highlight(&line.text),
-                    DiffLineKind::Context => {
-                        let _ = old_hl.highlight(&line.text);
-                        new_hl.highlight(&line.text)
+                .map(|line| {
+                    let text = expand_tabs(&line.text);
+                    match line.kind {
+                        DiffLineKind::Removed => old_hl.highlight(&text),
+                        DiffLineKind::Added => new_hl.highlight(&text),
+                        DiffLineKind::Context => {
+                            let _ = old_hl.highlight(&text);
+                            new_hl.highlight(&text)
+                        }
                     }
                 })
                 .collect()
@@ -3178,6 +3182,33 @@ mod tests {
     }
 
     // ---- render -> click round-trip at the real border offset ----
+
+    /// The overlay caches spans built here for both the unified and the
+    /// split body, so this is the only place either can pick up a tab.
+    #[test]
+    fn build_file_highlight_expands_tabs() {
+        use forge_workspace::env::git_diff::hunks::DiffLine;
+        let file = FileHunks {
+            path: "main.go".into(),
+            status: FileStatus::Modified,
+            oversize: false,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_count: 1,
+                new_start: 1,
+                new_count: 1,
+                lines: vec![DiffLine {
+                    kind: DiffLineKind::Added,
+                    text: "\t\treturn err".into(),
+                    old_line: None,
+                    new_line: Some(1),
+                }],
+            }],
+        };
+        let highlight = build_file_highlight(&file);
+        let text: String = highlight[0][0].iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(text, "        return err", "two tabs reach column 8");
+    }
 
     fn one_line_file(path: &str) -> FileHunks {
         use forge_workspace::env::git_diff::hunks::DiffLine;

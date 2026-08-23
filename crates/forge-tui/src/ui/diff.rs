@@ -1,11 +1,10 @@
 use crate::agent::model;
 use crate::ui::highlight::LineHighlighter;
 use crate::ui::theme;
-use crate::ui::wrap::{StyledChunk, display_width, wrap_styled_chunks};
+use crate::ui::wrap::{StyledChunk, display_width, expand_tabs, wrap_styled_chunks};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use similar::TextDiff;
-use std::borrow::Cow;
 
 /// Rows outside this window render without syntax highlighting.
 ///
@@ -230,7 +229,7 @@ fn render_raw_diff_line(line: &str) -> Line<'static> {
         (Style::default().fg(theme::DIM), None)
     };
 
-    let mut rendered = Line::from(Span::styled(line.to_owned(), style));
+    let mut rendered = Line::from(Span::styled(expand_tabs(line).into_owned(), style));
     if let Some(bg) = row_bg {
         rendered = rendered.style(Style::default().bg(bg));
     }
@@ -366,41 +365,6 @@ fn render_wrapped_diff_row(
             line
         })
         .collect()
-}
-
-/// Stop interval for tab expansion. Matches rustfmt's `tab_spaces`, so a
-/// tab-indented file and a space-indented one read at the same depth.
-const TAB_WIDTH: usize = 4;
-
-/// Expand tabs to spaces, measuring stops from the start of `text`, which
-/// is one diff row.
-///
-/// `Span::styled_graphemes` drops control characters, so a raw tab measures
-/// one column and paints none: the indent vanishes and the wrap budget is
-/// over-charged by the difference. Whole-row rather than indent-only
-/// because gofmt aligns with spaces but Makefiles and hand-tabbed sources
-/// do not.
-///
-/// Columns come from `display_width` on whole segments; a per-char sum
-/// disagrees with it on multi-codepoint graphemes and would misplace the
-/// next stop.
-fn expand_tabs(text: &str) -> Cow<'_, str> {
-    if !text.contains('\t') {
-        return Cow::Borrowed(text);
-    }
-
-    let mut out = String::with_capacity(text.len() + TAB_WIDTH);
-    let mut column = 0usize;
-    for (index, segment) in text.split('\t').enumerate() {
-        if index > 0 {
-            let advance = TAB_WIDTH - (column % TAB_WIDTH);
-            out.extend(std::iter::repeat_n(' ', advance));
-            column += advance;
-        }
-        out.push_str(segment);
-        column += display_width(segment);
-    }
-    Cow::Owned(out)
 }
 
 fn split_leading_whitespace(text: &str) -> (&str, &str) {
@@ -826,6 +790,23 @@ mod tests {
                 "trailing pad span must carry the row bg so the tint extends to the right edge"
             );
         }
+    }
+
+    /// The Bash-tool path: stdout that looks like a unified diff renders
+    /// here, marker included, so stops are measured from the marker column
+    /// exactly as a terminal would.
+    #[test]
+    fn render_raw_unified_diff_expands_tabs() {
+        let lines = render_raw_unified_diff("@@ -1 +1 @@\n+\tif err != nil {\n");
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+        assert!(
+            rendered.iter().all(|line| !line.contains('\t')),
+            "no raw tab may reach the terminal: {rendered:?}"
+        );
+        assert!(rendered.iter().any(|line| line == "+   if err != nil {"), "{rendered:?}");
     }
 
     #[test]

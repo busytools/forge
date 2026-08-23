@@ -1,5 +1,6 @@
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
+use std::borrow::Cow;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -23,6 +24,39 @@ enum WrapToken {
 
 pub(crate) fn display_width(text: &str) -> usize {
     UnicodeWidthStr::width(text)
+}
+
+/// Stop interval for tab expansion. Matches rustfmt's `tab_spaces`, so a
+/// tab-indented file and a space-indented one read at the same depth.
+const TAB_WIDTH: usize = 4;
+
+/// Expand tabs to spaces, measuring stops from the start of `text`, which
+/// must be a single line.
+///
+/// `Span::styled_graphemes` drops control characters, so a raw tab measures
+/// one column and paints none: the indent vanishes and the wrap budget is
+/// over-charged by the difference.
+///
+/// Columns come from `display_width` on whole segments; a per-char sum
+/// disagrees with it on multi-codepoint graphemes and would misplace the
+/// next stop.
+pub(crate) fn expand_tabs(text: &str) -> Cow<'_, str> {
+    if !text.contains('\t') {
+        return Cow::Borrowed(text);
+    }
+
+    let mut out = String::with_capacity(text.len() + TAB_WIDTH);
+    let mut column = 0usize;
+    for (index, segment) in text.split('\t').enumerate() {
+        if index > 0 {
+            let advance = TAB_WIDTH - (column % TAB_WIDTH);
+            out.extend(std::iter::repeat_n(' ', advance));
+            column += advance;
+        }
+        out.push_str(segment);
+        column += display_width(segment);
+    }
+    Cow::Owned(out)
 }
 
 pub(crate) fn line_display_width(line: &Line<'_>) -> usize {
