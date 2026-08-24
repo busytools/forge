@@ -10733,7 +10733,6 @@ mod workers_state_tests {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod worker_activity_tests {
     use super::*;
     use crate::mcp::workers::types::WorkerEntry;
