@@ -1173,7 +1173,6 @@ mod mock_tests {
 /// on the projection it calls - reverting this one `map` to
 /// `WorkerEntry::to_status` makes the whole field inert.
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod prod_list_workers_tests {
     use super::*;
     use forge_primitives::{SessionLifecycleState, WorkerLiveness};
