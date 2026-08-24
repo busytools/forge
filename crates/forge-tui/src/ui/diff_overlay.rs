@@ -50,7 +50,7 @@ use crate::ui::autocomplete;
 use crate::ui::chat_tree;
 use crate::ui::highlight::LineHighlighter;
 use crate::ui::theme;
-use crate::ui::wrap::expand_tabs;
+use crate::ui::wrap::{expand_tabs, take_prefix_by_width};
 
 /// Named row offsets inside the commit stepper bar: the title on row 0,
 /// the movement/controls row on row 2, with blank spacers between and
@@ -2534,9 +2534,9 @@ fn marker_for_kind(kind: DiffLineKind) -> (&'static str, Color, Option<Color>) {
     }
 }
 
-/// Truncate a span list to `max_width` display columns. Splits the
-/// last span mid-token if necessary using `unicode-width` per
-/// character. Returns an empty vec when `max_width == 0`.
+/// Truncate a span list to `max_width` display columns, cutting the
+/// last span by grapheme cluster if necessary. Returns an empty vec
+/// when `max_width == 0`.
 fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Span<'static>> {
     if max_width == 0 {
         return Vec::new();
@@ -2550,19 +2550,12 @@ fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<S
             out.push(span);
             continue;
         }
-        let remaining = max_width - consumed;
-        let mut buf = String::with_capacity(span.content.len());
-        let mut span_consumed = 0usize;
-        for c in span.content.chars() {
-            let cw = UnicodeWidthChar::width(c).unwrap_or(0);
-            if span_consumed + cw > remaining {
-                break;
-            }
-            buf.push(c);
-            span_consumed += cw;
-        }
-        if !buf.is_empty() {
-            out.push(Span::styled(buf, span.style));
+        // Measured the same way as the whole-span check above. A
+        // per-char sum disagrees with it on multi-codepoint clusters, so
+        // the kept prefix would overrun the column it was cut to fit.
+        let (kept, _) = take_prefix_by_width(span.content.as_ref(), max_width - consumed);
+        if !kept.is_empty() {
+            out.push(Span::styled(kept, span.style));
         }
         break;
     }
@@ -3165,6 +3158,80 @@ mod tests {
         let highlight = build_file_highlight(&file);
         let text: String = highlight[0][0].iter().map(|span| span.content.as_ref()).collect();
         assert_eq!(text, "        return err", "two tabs reach column 8");
+    }
+
+    /// A split row has to fit the pane. Reserving only the indent and
+    /// the divider zone leaves each half's gutter and marker unbudgeted,
+    /// so the row overruns and ratatui clips the new side's text.
+    #[test]
+    fn a_split_row_fits_the_pane() {
+        for lines in [9usize, 120, 5000] {
+            let file = multi_line_file("a.rs", lines);
+            let gutter = gutter_width_for(&file);
+            let both = PairedDiffRow {
+                left: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }),
+                right: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 }),
+            };
+            // A blank half pads itself by hand, so it can miss the budget
+            // a filled one hits.
+            let left_only = PairedDiffRow { right: None, ..both };
+            let right_only = PairedDiffRow { left: None, ..both };
+            // With no cache the text column is pure padding, so the
+            // pad arithmetic is only ever exercised against an empty
+            // one. Cutting is covered separately - these lines are far
+            // too short to reach it.
+            let cache = build_file_highlight(&file);
+            for pair in [both, left_only, right_only] {
+                for pane_width in [101u16, 119, 160, 184] {
+                    let row = split_diff_row(&file, pair, gutter, pane_width, Some(&cache));
+                    let painted: usize = row.spans.iter().map(Span::width).sum();
+                    assert_eq!(
+                        painted,
+                        usize::from(pane_width),
+                        "gutter={gutter} pane_width={pane_width} pair={pair:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A cluster straddling the cut is measured per-char by the walk but
+    /// string-wide by the fit check above it, so the kept prefix can be
+    /// wider than the column it was cut to fit.
+    #[test]
+    fn a_truncated_half_does_not_overrun_its_column() {
+        use forge_workspace::env::git_diff::hunks::DiffLine;
+        // Plain text, so the line stays one span and the cut is the only
+        // thing under test. Every unit is 3 columns wide.
+        let text = "x\u{2764}\u{fe0f}".repeat(60);
+        let line =
+            |kind, old_line, new_line| DiffLine { kind, text: text.clone(), old_line, new_line };
+        let file = FileHunks {
+            path: "notes.txt".into(),
+            status: FileStatus::Modified,
+            oversize: false,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_count: 1,
+                new_start: 1,
+                new_count: 1,
+                lines: vec![
+                    line(DiffLineKind::Removed, Some(1), None),
+                    line(DiffLineKind::Added, None, Some(1)),
+                ],
+            }],
+        };
+        let gutter = gutter_width_for(&file);
+        let cache = build_file_highlight(&file);
+        let pair = PairedDiffRow {
+            left: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }),
+            right: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 }),
+        };
+        for pane_width in [101u16, 119, 160, 184] {
+            let row = split_diff_row(&file, pair, gutter, pane_width, Some(&cache));
+            let painted: usize = row.spans.iter().map(Span::width).sum();
+            assert_eq!(painted, usize::from(pane_width), "pane_width={pane_width}");
+        }
     }
 
     /// The click handler splits old from new on `divider_col`. If the

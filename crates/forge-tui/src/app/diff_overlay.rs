@@ -3047,13 +3047,20 @@ pub(crate) struct SplitLayout {
 
 /// Split-row geometry, shared by the renderer and the click handler.
 ///
-/// The divider is NOT the pane midpoint: the left column carries a
-/// gutter and a marker on top of its text width, which pushes the `│`
-/// right of centre.
+/// Each half's gutter and marker are reserved before the text columns
+/// split what is left, so a row fits the pane and the divider sits on
+/// the midpoint at even pane widths, one column right of it at odd
+/// ones. Widening the gutter narrows both columns rather than moving
+/// the divider.
 pub(crate) fn split_layout(gutter_width: usize, pane_width: u16) -> SplitLayout {
+    // Both halves carry a gutter and a marker zone of their own, so
+    // those come out of the budget before the text columns split what
+    // is left.
+    let per_half_chrome = gutter_width.saturating_add(SPLIT_MARKER_COLS);
     let usable = usize::from(pane_width)
         .saturating_sub(SPLIT_INDENT_COLS)
-        .saturating_sub(SPLIT_DIVIDER_COLS);
+        .saturating_sub(SPLIT_DIVIDER_COLS)
+        .saturating_sub(per_half_chrome.saturating_mul(2));
     let left_width = usable / 2;
     SplitLayout {
         left_width,
@@ -3279,15 +3286,14 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
     match key {
         BodyRowKey::HunkRow { left, right } => {
             // Unified is one column, so either side resolves the
-            // line. Split picks by the painted divider, whose column
-            // depends on this file's gutter width. An empty picked
-            // side (blank half of an unbalanced row) is a no-op.
+            // line. Split picks by the painted divider. An empty
+            // picked side (blank half of an unbalanced row) is a no-op.
             let key = match effective_view_mode(overlay.view_mode, overlay.pane_width) {
                 DiffViewMode::Unified => left.or(right),
                 DiffViewMode::Split => {
-                    // No file means no gutter width, so no divider. Guessing
-                    // one would persist a side the user did not click; decline
-                    // instead, matching `save_active_input`'s out-of-bounds arm.
+                    // Guards a body mutated mid-click, paralleling
+                    // `save_active_input`'s out-of-bounds arm. The gutter feeds
+                    // the column widths; the divider does not depend on it.
                     let Some(file) = left.or(right).and_then(|key| overlay.files.get(key.file_idx))
                     else {
                         tracing::warn!(
@@ -3769,9 +3775,8 @@ mod tests {
         assert_eq!(effective_view_mode(DiffViewMode::Unified, 200), DiffViewMode::Unified);
     }
 
-    /// The left half carries the gutter and marker on top of its text
-    /// column, so the divider is drawn well past the pane midpoint. A
-    /// click in the band between the two is visually on the old side.
+    /// At an odd pane width the divider sits a column right of the
+    /// midpoint, so a click between the two is visually on the old side.
     #[test]
     fn body_click_just_left_of_the_divider_resolves_the_old_side() {
         let mut state = sample_state();
@@ -3786,54 +3791,44 @@ mod tests {
         state.pane_origin_row = 0;
         state.pane_origin_col = 41;
         state.pane_width = 119;
-        // Pane-local 60: past the midpoint (59), still inside the left
-        // column, whose last cell is 63.
-        let effect = handle_left_click(&mut state, 101, 2, 160);
+        // Pane-local 59 is the midpoint; the divider is at 60.
+        let effect = handle_left_click(&mut state, 41 + 59, 2, 160);
         assert!(effect.redraw);
         assert_eq!(state.active_input.as_ref().map(|i| i.key), Some(left_key));
 
         // The divider cell itself is ambiguous; it goes to the new side.
         state.active_input = None;
-        let effect = handle_left_click(&mut state, 41 + 65, 2, 160);
+        let effect = handle_left_click(&mut state, 41 + 60, 2, 160);
         assert!(effect.redraw);
         assert_eq!(state.active_input.as_ref().map(|i| i.key), Some(right_key));
     }
 
-    /// The divider moves with the clicked file's own gutter, so a
-    /// fixture whose line numbers are one digit cannot tell the lookup
-    /// apart from the clamp floor.
+    /// Each half's gutter comes out of its own text budget, so widening
+    /// the gutter narrows both columns and leaves the divider where it
+    /// was. A hit-test that assumed otherwise would drift per file.
     #[test]
-    fn body_click_uses_the_clicked_files_gutter_width() {
-        use forge_workspace::env::git_diff::hunks::DiffLine;
-        let lines: Vec<DiffLine> = (1..=150u32)
-            .map(|n| DiffLine {
-                kind: DiffLineKind::Context,
-                text: format!("line {n}"),
-                old_line: Some(n),
-                new_line: Some(n),
-            })
-            .collect();
-        let file = FileHunks {
-            path: "wide.rs".into(),
-            status: FileStatus::Modified,
-            oversize: false,
-            hunks: vec![Hunk { old_start: 1, old_count: 150, new_start: 1, new_count: 150, lines }],
-        };
-        let mut state =
-            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "HEAD".to_owned(), vec![file]);
-        state.view_mode = DiffViewMode::Split;
-        let left_key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
-        let right_key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 };
-        state.body_keys =
-            vec![BodyRowKey::HunkRow { left: Some(left_key), right: Some(right_key) }];
-        state.pane_origin_row = 0;
-        state.pane_origin_col = 41;
-        state.pane_width = 119;
-        // This file's 3-wide gutter puts the divider at 66, one past
-        // where the 2-wide clamp floor would.
-        let effect = handle_left_click(&mut state, 41 + 65, 0, 160);
-        assert!(effect.redraw);
-        assert_eq!(state.active_input.as_ref().map(|i| i.key), Some(left_key));
+    fn the_divider_does_not_move_with_gutter_width() {
+        for pane_width in [101u16, 119, 160, 184] {
+            let narrow = split_layout(SPLIT_GUTTER_MIN, pane_width);
+            let wide = split_layout(SPLIT_GUTTER_MAX, pane_width);
+            assert_eq!(narrow.divider_col, wide.divider_col, "pane_width={pane_width}");
+            // Every gutter, not just the two a line-count fixture can reach.
+            for gutter in SPLIT_GUTTER_MIN..=SPLIT_GUTTER_MAX {
+                let layout = split_layout(gutter, pane_width);
+                let row = SPLIT_INDENT_COLS
+                    + (gutter + SPLIT_MARKER_COLS + layout.left_width)
+                    + SPLIT_DIVIDER_COLS
+                    + (gutter + SPLIT_MARKER_COLS + layout.right_width);
+                assert_eq!(row, usize::from(pane_width), "gutter={gutter} pane={pane_width}");
+            }
+            // The wider gutter is paid for out of the text columns.
+            assert!(
+                wide.left_width < narrow.left_width,
+                "pane_width={pane_width} {} {}",
+                wide.left_width,
+                narrow.left_width
+            );
+        }
     }
 
     /// Below `MIN_WIDTH_FOR_SPLIT` the renderer paints unified rows,
