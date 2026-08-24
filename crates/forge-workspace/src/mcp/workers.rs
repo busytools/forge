@@ -378,14 +378,29 @@ impl Tool for List {
     fn description(&self) -> &'static str {
         "List every worker currently live in YOUR project. Returns a \
          JSON array of worker snapshots (label, full charter, status, \
-         session_id, spawned_at, spawned_by_session_id). These workers \
-         are durable: they persist across forge restarts and re-spawn \
+         activity, session_id, spawned_at, spawned_by_session_id). \
+         `status` is the spawn outcome only - it stops moving once a \
+         worker connects, so a worker idle for an hour still reads \
+         Running there. Read `activity` for what the worker is doing \
+         now: Running (a turn is in progress), Idle (connected, no \
+         turn), Attention (blocked on a permission prompt or question \
+         it cannot answer itself), Spawning, Failed, or Sleeping \
+         (listed but its session is gone). Attention needs you to \
+         unblock it. Idle means either the worker has finished and \
+         needs a message, or its turn has not started yet - queued \
+         behind another turn, or behind the boot kick drainer - so give \
+         a freshly spawned or freshly messaged worker a moment before \
+         re-sending. And Running is not proof of life: a worker that \
+         died mid-turn keeps reading Running until forge restarts, so \
+         check a long silent Running by asking the worker rather than \
+         trusting the field. These workers are \
+         durable: they persist across forge restarts and re-spawn \
          automatically until despawned, so this set is what will come \
          back after a restart. Both lead and worker sessions may call \
-         this; workers see the same set as the lead. Use the labels from \
-         this output as targets for workers__tell / workers__ask. An \
-         empty array means no workers are live in your project. Takes no \
-         arguments."
+         this; workers see the same set as the lead. Use the labels \
+         from this output as targets for workers__tell / workers__ask. \
+         An empty array means no workers are live in your project. \
+         Takes no arguments."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -1547,6 +1562,7 @@ mod tests {
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead-uuid".to_owned(),
             diagnostic: None,
+            activity: None,
         }
     }
 
@@ -1902,6 +1918,7 @@ mod tests {
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
             spawned_by_session_id: lead_uuid.to_owned(),
             diagnostic: None,
+            activity: None,
         }
     }
 

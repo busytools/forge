@@ -341,10 +341,11 @@ impl TerminalReason {
     }
 }
 
-/// Lifecycle state of a session, used by the Projects pane to render
-/// the right state glyph. Shared between `forge-tui` and
-/// `forge-workspace` so both crates project the same state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Lifecycle state of a session. `forge-tui` stores one per bucket to
+/// render the Projects pane glyph; `forge-workspace` derives one per
+/// worker for `WorkerStatus::activity`. The two derivations are
+/// independent and need not agree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SessionLifecycleState {
     /// No subprocess yet; lead exists conceptually but has never
     /// been spawned (or has been freed).
@@ -357,8 +358,11 @@ pub enum SessionLifecycleState {
     Idle,
     /// Subprocess is mid-turn or actively streaming.
     Running,
-    /// Background session is paused on a permission prompt and
-    /// needs user input to continue.
+    /// Cannot proceed without a human. Two independent producers:
+    /// `forge-tui` sets it when a session's connection failed on a
+    /// rate limit, and `forge-workspace` derives it for a session
+    /// holding a pending interaction (permission prompt,
+    /// `AskUserQuestion`, elicitation).
     Attention,
     /// Bridge is waiting on `/login` to complete before the session
     /// can be spawned.

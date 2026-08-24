@@ -11,7 +11,6 @@ use forge_primitives::WorkerStatus;
 use crate::SessionKey;
 use crate::mcp::peers::facade::{PeerStatsDelta, ReplyDeliverError};
 use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedPrompt};
-use crate::mcp::workers::types::WorkerEntry;
 use crate::protocol::{Command, WorkerSpawnReply};
 use crate::workspace::Workspace;
 
@@ -567,7 +566,10 @@ impl WorkerFacade for ProdWorkerFacade {
         let Some(ws) = self.workspace.upgrade() else {
             return Vec::new();
         };
-        ws.list_live_workers(&cp.project_key).iter().map(WorkerEntry::to_status).collect()
+        ws.list_live_workers(&cp.project_key)
+            .iter()
+            .map(|entry| ws.worker_status_snapshot(entry))
+            .collect()
     }
 
     fn deliver_worker_prompt(
@@ -1042,6 +1044,7 @@ mod mock_tests {
 
     #[test]
     fn dedup_finds_non_failed_label_ignores_failed() {
+        use crate::mcp::workers::types::WorkerEntry;
         use forge_primitives::WorkerLiveness;
         use std::time::SystemTime;
         let entry = |label: &str, status: WorkerLiveness| WorkerEntry {
@@ -1111,6 +1114,7 @@ mod mock_tests {
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
                 spawned_by_session_id: "lead-uuid".into(),
                 diagnostic: None,
+                activity: None,
             }],
         );
         let id = mock.caller_identity(&worker_key);
@@ -1161,6 +1165,64 @@ mod mock_tests {
         };
         let res = mock.deliver_worker_prompt(&caller, "missing", wrapped);
         assert!(matches!(res, Err(WorkerDeliverError::UnknownLabel { .. })));
+    }
+}
+
+/// The `workers__list` read path is the only producer of
+/// `WorkerStatus::activity`, so it needs pinning here rather than only
+/// on the projection it calls - reverting this one `map` to
+/// `WorkerEntry::to_status` makes the whole field inert.
+#[cfg(test)]
+mod prod_list_workers_tests {
+    use super::*;
+    use forge_primitives::{SessionLifecycleState, WorkerLiveness};
+
+    #[test]
+    fn list_workers_populates_activity() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project_with_static_workers("forge", "/tmp/forge", &[]);
+        let project = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("seeded project present")
+            .key;
+
+        // The caller IS the worker, which is enough for
+        // `caller_context` to resolve it into the project.
+        let caller = SessionKey::from_session_id("worker-uuid");
+        ws.insert_live_worker(
+            &project,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "implementer".into(),
+                charter: "test charter".into(),
+                session_key: caller.clone(),
+                status: WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead-uuid".into(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        let domain = ws.register_domain_session(caller.clone(), None);
+
+        let facade = ProdWorkerFacade::from_arc(&ws);
+        let listed = facade.list_workers(&caller);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            listed[0].activity,
+            Some(SessionLifecycleState::Idle),
+            "workers__list must report the derived activity, not leave it unset",
+        );
+
+        domain.lock().turn_pending = true;
+        assert_eq!(
+            facade.list_workers(&caller)[0].activity,
+            Some(SessionLifecycleState::Running),
+            "and it must be re-derived per call, not cached at spawn",
+        );
     }
 }
 

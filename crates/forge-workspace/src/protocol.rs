@@ -994,6 +994,7 @@ mod workers_command_tests {
                 spawned_at: SystemTime::UNIX_EPOCH,
                 spawned_by_session_id: "lead-uuid".into(),
                 diagnostic: None,
+                activity: None,
             },
             worktree: WorktreeDisposition::Intact,
         };

@@ -7,6 +7,8 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+use crate::runtime::SessionLifecycleState;
+
 /// Tag value written to the JSONL of every project-default (lead)
 /// session. Consumed by the resolver: `latest(forge:lead) →
 /// latest(untagged) → fresh`.
@@ -62,6 +64,31 @@ pub struct WorkerStatus {
     /// or terminal (e.g., spawn binary missing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<String>,
+    /// What the worker's session is doing right now, on the axis
+    /// `status` does not answer: `status` is the spawn outcome and
+    /// stops moving once the worker connects, so a worker idle for an
+    /// hour still reads `Running` there.
+    ///
+    /// `None` means **this path does not derive activity**, not that
+    /// activity is unknown - do not project a state from it. The only
+    /// producer that populates it is `workers__list`;
+    /// `SessionUpdate::WorkerStatusChanged` leaves it `None` because
+    /// nothing on that path reads it.
+    ///
+    /// `LoggedOut` has no producer anywhere in the tree;
+    /// `AuthRequired` reaches a worker's `SessionTask` but is not
+    /// mirrored into workspace state, so it is never derived.
+    ///
+    /// Two limits inherited from the signals this reads, not from the
+    /// derivation: `Running` does not tell a live turn apart from a
+    /// worker that died mid-turn, because subprocess death reaches no
+    /// terminal path and so never clears `turn_pending`
+    /// (busytools/forge#643). And a turn queued behind another reads
+    /// `Idle` until its first token, because `turn_pending` is a bool
+    /// that the first `Result` clears (busytools/forge#671). Treat this
+    /// as "what forge last observed", never as proof of life.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<SessionLifecycleState>,
 }
 
 #[cfg(test)]
@@ -118,11 +145,13 @@ mod tests {
             spawned_at: SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead-uuid".into(),
             diagnostic: Some("No conversation found".into()),
+            activity: Some(SessionLifecycleState::Attention),
         };
         let json = serde_json::to_string(&status).expect("serialize");
         let back: WorkerStatus = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.diagnostic.as_deref(), Some("No conversation found"));
         assert_eq!(back.status, WorkerLiveness::Failed);
+        assert_eq!(back.activity, Some(SessionLifecycleState::Attention));
     }
 
     #[test]
@@ -139,5 +168,6 @@ mod tests {
         }"#;
         let status: WorkerStatus = serde_json::from_str(json).expect("decode legacy shape");
         assert_eq!(status.diagnostic, None);
+        assert_eq!(status.activity, None);
     }
 }
