@@ -75,10 +75,12 @@ impl WorkerEntry {
     /// `session_key.as_str().to_owned()` once Connected).
     ///
     /// `activity` is left `None`: deriving it needs the entry's
-    /// `DomainSession`, which this method has no handle on, and every
-    /// caller here is a `SessionUpdate::WorkerStatusChanged` emission
-    /// whose consumers read `status` alone. `Workspace::
-    /// worker_status_snapshot` is the projection that fills it in.
+    /// `DomainSession`, which this method has no handle on. Every
+    /// caller is a `SessionUpdate::WorkerStatusChanged` emission whose
+    /// consumers read `status` alone, with one exception -
+    /// `Workspace::worker_status_snapshot` builds on this via
+    /// struct-update syntax and overwrites `activity` with the derived
+    /// value, which is what `workers__list` returns.
     pub fn to_status(&self) -> WorkerStatus {
         WorkerStatus {
             label: self.label.clone(),

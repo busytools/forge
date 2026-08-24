@@ -75,12 +75,9 @@ pub struct WorkerStatus {
     /// `SessionUpdate::WorkerStatusChanged` leaves it `None` because
     /// nothing on that path reads it.
     ///
-    /// Worker-reachable variants: `Spawning`, `Idle`, `Running`,
-    /// `Attention` (blocked on a permission prompt / question),
-    /// `Failed`, and `Sleeping` (registry lists the worker but its
-    /// session is gone). `LoggedOut` has no producer anywhere in the
-    /// tree; `AuthRequired` reaches a worker's `SessionTask` but is
-    /// not mirrored into workspace state, so it is never derived.
+    /// `LoggedOut` has no producer anywhere in the tree;
+    /// `AuthRequired` reaches a worker's `SessionTask` but is not
+    /// mirrored into workspace state, so it is never derived.
     ///
     /// Two limits inherited from the signals this reads, not from the
     /// derivation: `Running` does not tell a live turn apart from a

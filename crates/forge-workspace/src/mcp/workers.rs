@@ -385,15 +385,15 @@ impl Tool for List {
          now: Running (a turn is in progress), Idle (connected, no \
          turn), Attention (blocked on a permission prompt or question \
          it cannot answer itself), Spawning, Failed, or Sleeping \
-         (listed but its session is gone). A worker sitting at Idle or \
-         Attention will not move on its own; it needs a message from \
-         you. Two limits to know before you act on `activity`. Running \
-         is not proof of life: a worker that died mid-turn keeps \
-         reading Running until forge restarts, so check a long silent \
-         Running by asking the worker rather than trusting the field. \
-         And Idle on a worker you just messaged means its turn has not \
-         started yet, not that it ignored you - a turn queued behind \
-         another reads Idle until its first token. These workers are \
+         (listed but its session is gone). Attention needs you to \
+         unblock it. Idle means either the worker has finished and \
+         needs a message, or its turn has not started yet - queued \
+         behind another turn, or behind the boot kick drainer - so give \
+         a freshly spawned or freshly messaged worker a moment before \
+         re-sending. And Running is not proof of life: a worker that \
+         died mid-turn keeps reading Running until forge restarts, so \
+         check a long silent Running by asking the worker rather than \
+         trusting the field. These workers are \
          durable: they persist across forge restarts and re-spawn \
          automatically until despawned, so this set is what will come \
          back after a restart. Both lead and worker sessions may call \

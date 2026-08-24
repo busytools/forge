@@ -3099,12 +3099,26 @@ impl Workspace {
             return L::Sleeping;
         };
         let guard = domain.lock();
-        if !guard.pending_interactions.is_empty() {
+        // A permission request only exists during a turn, so with no
+        // turn there is nothing to be blocked on - a slot outliving its
+        // turn (busytools/forge#672) is incoherent state rather than a
+        // worker awaiting input, and must not read as `Attention`.
+        if !guard.turn_in_flight() {
+            return L::Idle;
+        }
+        // A turn is in flight, so ask whether it can advance on its own.
+        // `RequiresAction` is the CLI naming its own block; a held slot
+        // is forge naming it. Either way a human has to move first, and
+        // calling that `Running` is what makes a blocked worker
+        // invisible.
+        if matches!(
+            guard.runtime_state,
+            Some(forge_primitives::RuntimeSessionState::RequiresAction)
+        ) || !guard.pending_interactions.is_empty()
+        {
             L::Attention
-        } else if guard.turn_in_flight() {
-            L::Running
         } else {
-            L::Idle
+            L::Running
         }
     }
 
@@ -10798,12 +10812,16 @@ mod worker_activity_tests {
             L::Running,
             "the wire-confirmed Running state counts even before turn_pending",
         );
+        // Unreachable today rather than merely untested: nothing in the
+        // tree emits `requires_action`, and `session_state_changed`
+        // itself is in no wire-conformance baseline. Pinned so the
+        // mapping is already right if the CLI ever sends it.
         assert_eq!(
             with_domain("w-wire-action", &|d| {
                 d.runtime_state = Some(forge_primitives::RuntimeSessionState::RequiresAction);
             }),
-            L::Running,
-            "RequiresAction is a live turn on the wire",
+            L::Attention,
+            "RequiresAction is the CLI asking for a human, not a turn making progress",
         );
         assert_eq!(
             with_domain("w-blocked", &|d| {
@@ -10824,6 +10842,33 @@ mod worker_activity_tests {
         // through - neither has a connected session to interrogate.
         assert_eq!(ws.worker_activity(&entry("w-spawning", WorkerLiveness::Spawning)), L::Spawning);
         assert_eq!(ws.worker_activity(&entry("w-failed", WorkerLiveness::Failed)), L::Failed);
+    }
+
+    /// Contract, not a reproduction: `Attention` is only ever truthful
+    /// while a turn is in flight, so a held slot without one reads
+    /// `Idle`. No production route is known to reach this state - it
+    /// pins the invariant, so a slot that outlives its turn can never
+    /// pin a worker at `Attention` for the life of the session.
+    #[test]
+    fn stranded_interaction_slot_on_an_idle_session_reports_idle() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let key = SessionKey::from_session_id("w-stranded");
+        let domain = ws.register_domain_session(key, None);
+        {
+            let mut guard = domain.lock();
+            // A held slot with no turn: the shape the invariant forbids.
+            guard.turn_pending = false;
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            guard
+                .pending_interactions
+                .insert("tool-stranded".to_owned(), PendingInteractionSlot::Permission(tx));
+        }
+
+        assert_eq!(
+            ws.worker_activity(&entry("w-stranded", WorkerLiveness::Running)),
+            L::Idle,
+            "a held slot with no turn in flight is incoherent state, not a worker awaiting input",
+        );
     }
 
     /// `activity` is populated by the `workers__list` read path only; the
