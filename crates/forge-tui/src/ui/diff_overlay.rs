@@ -3175,18 +3175,24 @@ mod tests {
         for lines in [9usize, 120, 5000] {
             let file = multi_line_file("a.rs", lines);
             let gutter = gutter_width_for(&file);
-            let pair = PairedDiffRow {
+            let both = PairedDiffRow {
                 left: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }),
                 right: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 }),
             };
-            for pane_width in [101u16, 119, 160, 184] {
-                let row = split_diff_row(&file, pair, gutter, pane_width, None);
-                let painted: usize = row.spans.iter().map(Span::width).sum();
-                assert_eq!(
-                    painted,
-                    usize::from(pane_width),
-                    "gutter={gutter} pane_width={pane_width}"
-                );
+            // A blank half pads itself by hand, so it can miss the budget
+            // a filled one hits.
+            let left_only = PairedDiffRow { right: None, ..both };
+            let right_only = PairedDiffRow { left: None, ..both };
+            for pair in [both, left_only, right_only] {
+                for pane_width in [101u16, 119, 160, 184] {
+                    let row = split_diff_row(&file, pair, gutter, pane_width, None);
+                    let painted: usize = row.spans.iter().map(Span::width).sum();
+                    assert_eq!(
+                        painted,
+                        usize::from(pane_width),
+                        "gutter={gutter} pane_width={pane_width} pair={pair:?}"
+                    );
+                }
             }
         }
     }
