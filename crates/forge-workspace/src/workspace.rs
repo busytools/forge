@@ -3110,7 +3110,10 @@ impl Workspace {
         // `RequiresAction` is the CLI naming its own block; a held slot
         // is forge naming it. Either way a human has to move first, and
         // calling that `Running` is what makes a blocked worker
-        // invisible.
+        // invisible. This arm is reachable only because
+        // `turn_in_flight()` counts `RequiresAction` as in-flight:
+        // drop it from that OR and a `RequiresAction` session falls
+        // through the gate above to `Idle` instead.
         if matches!(
             guard.runtime_state,
             Some(forge_primitives::RuntimeSessionState::RequiresAction)
