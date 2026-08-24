@@ -90,14 +90,48 @@ Reach for this whenever the user wants recurring or deferred work - a \
 morning summary, a reminder, a follow-up check later - rather than \
 assuming you can only act in the current turn.";
 
+/// Append-text for the two things forge's own surfaces depend on and
+/// the CLI cannot know: the tool tree labels a Bash card with the
+/// `description`, and a worker reporting to its lead is the only route
+/// its output reliably takes.
+///
+/// Self-selecting rather than gated on `SessionKind`, which is derived
+/// from a `__spawn_worker_` spawn-key prefix: both resume paths
+/// (`__resume_worker_`, `__resume_<id>__`) classify as Lead, so a
+/// role-gated version would miss every resumed worker - exactly the
+/// long-lived population this is for.
+const FORGE_SESSION_CONDUCT_SYSTEM_PROMPT: &str = "\
+Two forge-specific habits.\n\
+\n\
+Always pass `description` on a Bash call. forge's tool tree shows that \
+line for each command and falls back to the raw command when it is \
+missing, so omitting it turns a readable list of intent into a wall of \
+shell.\n\
+\n\
+If you were spawned by a lead, route through the lead. The user reads \
+the lead's chat, not yours - your session is reachable, but nobody is \
+watching it - so do not address the user, do not park waiting for the \
+user, and never treat your own turn ending as having reported. Prefer \
+`workers__ask(\"lead\", ...)` over `AskUserQuestion`: a question you \
+ask in your own session blocks there unseen. When you finish, when you \
+are blocked, or when you need a decision that is the user's to make, \
+say so to the lead - `workers__ask(\"lead\", ...)` for a question, \
+`workers__tell(\"lead\", ...)` for a result, carrying `in_reply_to` \
+when you are answering an ask so it stops counting as inflight. Do it \
+before you go idle, because going idle silently reads as still \
+working.";
+
 /// Assemble the forge system-prompt append: trust block, then the
-/// always-on cron scheduling block, then the optional Lead delegation
-/// catalog, then the optional worker charter. Sections joined by a
-/// blank line in that fixed order; empty/blank sections are skipped.
+/// always-on cron scheduling block, then the always-on session-conduct
+/// block, then the optional Lead delegation catalog, then the optional
+/// worker charter. Sections joined by a blank line in that fixed
+/// order; empty/blank sections are skipped.
 fn build_forge_system_prompt(catalog: Option<&str>, charter: Option<&str>) -> String {
     let mut out = String::from(FORGE_MCP_TRUST_SYSTEM_PROMPT);
     out.push_str("\n\n");
     out.push_str(FORGE_CRON_SYSTEM_PROMPT);
+    out.push_str("\n\n");
+    out.push_str(FORGE_SESSION_CONDUCT_SYSTEM_PROMPT);
     for section in [catalog, charter] {
         if let Some(text) = section.map(str::trim).filter(|s| !s.is_empty()) {
             out.push_str("\n\n");
@@ -1585,6 +1619,15 @@ mod tests {
         let bare = build_forge_system_prompt(None, None);
         assert!(bare.contains("in-process forge MCP"));
         assert!(bare.contains("cron__create"), "cron scheduling is always present");
+        let conduct_at = out.find("`description`").expect("conduct present");
+        assert!(
+            cron_at < conduct_at && conduct_at < cat_at,
+            "order: trust, cron, conduct, catalog, charter"
+        );
+        assert!(
+            bare.contains("`description`"),
+            "the Bash description ask rides the base append, not a charter"
+        );
         assert!(!bare.contains("CATALOG"));
     }
 
