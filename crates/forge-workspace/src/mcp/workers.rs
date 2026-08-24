@@ -382,18 +382,25 @@ impl Tool for List {
          `status` is the spawn outcome only - it stops moving once a \
          worker connects, so a worker idle for an hour still reads \
          Running there. Read `activity` for what the worker is doing \
-         now: Running (a turn is in progress), Idle (connected, no turn \
-         - it is done or waiting on you), Attention (blocked on a \
-         permission prompt or question it cannot answer itself), \
-         Spawning, Failed, or Sleeping (listed but its session is \
-         gone). An Idle or Attention worker will not move again until \
-         you message it. These workers are durable: they persist across \
-         forge restarts and re-spawn automatically until despawned, so \
-         this set is what will come back after a restart. Both lead and \
-         worker sessions may call this; workers see the same set as the \
-         lead. Use the labels from this output as targets for \
-         workers__tell / workers__ask. An empty array means no workers \
-         are live in your project. Takes no arguments."
+         now: Running (a turn is in progress), Idle (connected, no \
+         turn), Attention (blocked on a permission prompt or question \
+         it cannot answer itself), Spawning, Failed, or Sleeping \
+         (listed but its session is gone). A worker sitting at Idle or \
+         Attention will not move on its own; it needs a message from \
+         you. Two limits to know before you act on `activity`. Running \
+         is not proof of life: a worker that died mid-turn keeps \
+         reading Running until forge restarts, so check a long silent \
+         Running by asking the worker rather than trusting the field. \
+         And Idle on a worker you just messaged means its turn has not \
+         started yet, not that it ignored you - a turn queued behind \
+         another reads Idle until its first token. These workers are \
+         durable: they persist across forge restarts and re-spawn \
+         automatically until despawned, so this set is what will come \
+         back after a restart. Both lead and worker sessions may call \
+         this; workers see the same set as the lead. Use the labels \
+         from this output as targets for workers__tell / workers__ask. \
+         An empty array means no workers are live in your project. \
+         Takes no arguments."
     }
 
     fn input_schema(&self) -> serde_json::Value {

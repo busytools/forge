@@ -81,6 +81,15 @@ pub struct WorkerStatus {
     /// session is gone). `LoggedOut` has no producer anywhere in the
     /// tree; `AuthRequired` reaches a worker's `SessionTask` but is
     /// not mirrored into workspace state, so it is never derived.
+    ///
+    /// Two limits inherited from the signals this reads, not from the
+    /// derivation: `Running` does not tell a live turn apart from a
+    /// worker that died mid-turn, because subprocess death reaches no
+    /// terminal path and so never clears `turn_pending`
+    /// (busytools/forge#643). And a turn queued behind another reads
+    /// `Idle` until its first token, because `turn_pending` is a bool
+    /// that the first `Result` clears (busytools/forge#671). Treat this
+    /// as "what forge last observed", never as proof of life.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<SessionLifecycleState>,
 }
