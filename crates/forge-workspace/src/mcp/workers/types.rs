@@ -73,6 +73,12 @@ impl WorkerEntry {
     /// Project the workspace-internal entry to the wire shape.
     /// `session_id` is the worker's claude-issued session UUID (=
     /// `session_key.as_str().to_owned()` once Connected).
+    ///
+    /// `activity` is left `None`: deriving it needs the entry's
+    /// `DomainSession`, which this method has no handle on, and every
+    /// caller here is a `SessionUpdate::WorkerStatusChanged` emission
+    /// whose consumers read `status` alone. `Workspace::
+    /// worker_status_snapshot` is the projection that fills it in.
     pub fn to_status(&self) -> WorkerStatus {
         WorkerStatus {
             label: self.label.clone(),
@@ -82,6 +88,7 @@ impl WorkerEntry {
             spawned_at: self.spawned_at,
             spawned_by_session_id: self.spawned_by_session_id.clone(),
             diagnostic: self.diagnostic.clone(),
+            activity: None,
         }
     }
 }

@@ -3072,6 +3072,55 @@ impl Workspace {
         self.live_workers.lock().get(project_key).cloned().unwrap_or_default()
     }
 
+    /// What `entry`'s session is doing right now - the axis
+    /// `WorkerLiveness` does not answer, since it stops moving once the
+    /// worker connects.
+    ///
+    /// A pending interaction outranks the turn it is blocking:
+    /// `Attention` is the state a lead has to act on, and reporting the
+    /// blocked worker as `Running` is what let the deadlock stay
+    /// invisible.
+    ///
+    /// Call this with no worker lock held - it reaches for
+    /// `domain_handles` and then the `DomainSession`.
+    pub fn worker_activity(
+        &self,
+        entry: &crate::mcp::workers::types::WorkerEntry,
+    ) -> forge_primitives::SessionLifecycleState {
+        use forge_primitives::{SessionLifecycleState as L, WorkerLiveness};
+
+        // Neither has a connected session to interrogate.
+        match entry.status {
+            WorkerLiveness::Spawning => return L::Spawning,
+            WorkerLiveness::Failed => return L::Failed,
+            WorkerLiveness::Running => {}
+        }
+        let Some(domain) = self.domain_session_for(&entry.session_key) else {
+            return L::Sleeping;
+        };
+        let guard = domain.lock();
+        if !guard.pending_interactions.is_empty() {
+            L::Attention
+        } else if guard.turn_in_flight() {
+            L::Running
+        } else {
+            L::Idle
+        }
+    }
+
+    /// `entry` projected to the wire shape with `activity` derived.
+    /// This is the `workers__list` projection; `WorkerEntry::to_status`
+    /// is the event-path one that leaves `activity` unset.
+    pub fn worker_status_snapshot(
+        &self,
+        entry: &crate::mcp::workers::types::WorkerEntry,
+    ) -> forge_primitives::WorkerStatus {
+        forge_primitives::WorkerStatus {
+            activity: Some(self.worker_activity(entry)),
+            ..entry.to_status()
+        }
+    }
+
     /// Lock the durable cron list, apply `f`, and persist to the
     /// machine-local store. Every cron-list mutation routes through here -
     /// `cron__create` / `cron__delete`, the scheduler's fire-advance, and
@@ -10680,6 +10729,119 @@ mod workers_state_tests {
         let entries = ws.list_live_workers(&project);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].session_key.as_str(), "real-uuid");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod worker_activity_tests {
+    use super::*;
+    use crate::mcp::workers::types::WorkerEntry;
+    use crate::protocol::PendingInteractionSlot;
+    use forge_primitives::{SessionLifecycleState as L, WorkerLiveness};
+    use std::time::SystemTime;
+
+    fn entry(key: &str, status: WorkerLiveness) -> WorkerEntry {
+        WorkerEntry {
+            label: "implementer".into(),
+            charter: "test charter".into(),
+            session_key: SessionKey::from_session_id(key),
+            status,
+            spawned_at: SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead-uuid".into(),
+            needs_tag: false,
+            is_git_repo_at_spawn: false,
+            diagnostic: None,
+            kick: None,
+        }
+    }
+
+    /// The whole point of the field: a worker that finished its turn is
+    /// still `WorkerLiveness::Running`, so a lead polling `workers__list`
+    /// used to have no way to tell it from one mid-turn.
+    #[test]
+    fn connected_worker_with_no_turn_in_flight_reports_idle() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let key = SessionKey::from_session_id("w-idle");
+        ws.register_domain_session(key.clone(), None);
+        let worker = entry("w-idle", WorkerLiveness::Running);
+
+        assert_eq!(
+            ws.worker_activity(&worker),
+            L::Idle,
+            "liveness Running with no turn in flight is idle, not working",
+        );
+    }
+
+    /// Every state the derivation can land on, including the precedence
+    /// that matters: a pending interaction outranks the in-flight turn it
+    /// is blocking, otherwise the deadlock stays invisible.
+    #[test]
+    fn worker_activity_covers_every_derived_state() {
+        let (ws, _rx) = Workspace::testing_stub();
+
+        let with_domain = |name: &str, f: &dyn Fn(&mut DomainSession)| {
+            let key = SessionKey::from_session_id(name);
+            let domain = ws.register_domain_session(key, None);
+            f(&mut domain.lock());
+            ws.worker_activity(&entry(name, WorkerLiveness::Running))
+        };
+
+        assert_eq!(
+            with_domain("w-pending", &|d| d.turn_pending = true),
+            L::Running,
+            "turn_pending is the synchronous turn-start marker",
+        );
+        assert_eq!(
+            with_domain("w-wire-running", &|d| {
+                d.runtime_state = Some(forge_primitives::RuntimeSessionState::Running);
+            }),
+            L::Running,
+            "the wire-confirmed Running state counts even before turn_pending",
+        );
+        assert_eq!(
+            with_domain("w-wire-action", &|d| {
+                d.runtime_state = Some(forge_primitives::RuntimeSessionState::RequiresAction);
+            }),
+            L::Running,
+            "RequiresAction is a live turn on the wire",
+        );
+        assert_eq!(
+            with_domain("w-blocked", &|d| {
+                d.turn_pending = true;
+                let (tx, _rx) = tokio::sync::oneshot::channel();
+                d.pending_interactions
+                    .insert("tool-1".to_owned(), PendingInteractionSlot::Permission(tx));
+            }),
+            L::Attention,
+            "a pending interaction outranks the turn it is blocking",
+        );
+
+        // No DomainSession at all: the subprocess is gone even though the
+        // registry still lists the worker.
+        assert_eq!(ws.worker_activity(&entry("w-gone", WorkerLiveness::Running)), L::Sleeping);
+
+        // Liveness that already answers the question passes straight
+        // through - neither has a connected session to interrogate.
+        assert_eq!(ws.worker_activity(&entry("w-spawning", WorkerLiveness::Spawning)), L::Spawning);
+        assert_eq!(ws.worker_activity(&entry("w-failed", WorkerLiveness::Failed)), L::Failed);
+    }
+
+    /// `activity` is populated by the `workers__list` read path only; the
+    /// `WorkerStatusChanged` event path leaves it `None`.
+    #[test]
+    fn event_path_leaves_activity_none() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let key = SessionKey::from_session_id("w-both");
+        ws.register_domain_session(key.clone(), None);
+        let worker = entry("w-both", WorkerLiveness::Running);
+
+        assert_eq!(worker.to_status().activity, None, "the event path derives no activity");
+        assert_eq!(
+            ws.worker_status_snapshot(&worker).activity,
+            Some(L::Idle),
+            "the read path always derives one",
+        );
     }
 }
 

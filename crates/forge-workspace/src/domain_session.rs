@@ -89,6 +89,24 @@ impl DomainSession {
             turn_pending: false,
         }
     }
+
+    /// Whether a turn is in flight. `turn_pending` is the primary
+    /// signal: it is stamped synchronously when a `Command::Prompt` is
+    /// routed, so it covers the window before any wire echo lands.
+    /// `runtime_state` is OR'd in rather than trusted on its own -
+    /// `session_state_changed` appears in no wire-conformance baseline
+    /// and in none of the captured session JSONL, so it may never
+    /// arrive.
+    ///
+    /// Shared by the `/account` switch backstop and the worker
+    /// activity derivation so the two cannot drift apart.
+    pub fn turn_in_flight(&self) -> bool {
+        self.turn_pending
+            || matches!(
+                self.runtime_state,
+                Some(RuntimeSessionState::Running | RuntimeSessionState::RequiresAction)
+            )
+    }
 }
 
 impl std::fmt::Debug for DomainSession {

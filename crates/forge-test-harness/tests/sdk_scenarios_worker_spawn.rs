@@ -67,6 +67,7 @@ async fn worker_spawn_scenario() {
             spawned_at: SystemTime::now(),
             spawned_by_session_id: "lead-test-session".into(),
             diagnostic: None,
+            activity: Some(forge_primitives::SessionLifecycleState::Idle),
         }],
     );
     let facade: Arc<dyn WorkerFacade> = Arc::new(mock);
