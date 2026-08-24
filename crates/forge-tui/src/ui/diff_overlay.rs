@@ -2534,9 +2534,9 @@ fn marker_for_kind(kind: DiffLineKind) -> (&'static str, Color, Option<Color>) {
     }
 }
 
-/// Truncate a span list to `max_width` display columns. Splits the
-/// last span mid-token if necessary using `unicode-width` per
-/// character. Returns an empty vec when `max_width == 0`.
+/// Truncate a span list to `max_width` display columns, cutting the
+/// last span by grapheme cluster if necessary. Returns an empty vec
+/// when `max_width == 0`.
 fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Span<'static>> {
     if max_width == 0 {
         return Vec::new();
@@ -3176,9 +3176,10 @@ mod tests {
             // a filled one hits.
             let left_only = PairedDiffRow { right: None, ..both };
             let right_only = PairedDiffRow { left: None, ..both };
-            // With no cache the text column is all padding and the
-            // truncator never runs, so the row has to be built from real
-            // spans wide enough to be cut.
+            // With no cache the text column is pure padding, so the
+            // pad arithmetic is only ever exercised against an empty
+            // one. Cutting is covered separately - these lines are far
+            // too short to reach it.
             let cache = build_file_highlight(&file);
             for pair in [both, left_only, right_only] {
                 for pane_width in [101u16, 119, 160, 184] {
