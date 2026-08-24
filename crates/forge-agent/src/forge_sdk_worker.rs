@@ -92,25 +92,34 @@ assuming you can only act in the current turn.";
 
 /// Append-text for the two things forge's own surfaces depend on and
 /// the CLI cannot know: the tool tree labels a Bash card with the
-/// `description`, and a worker's session is not a place a human reads.
-/// Self-selecting rather than role-gated - a lead has no lead, so the
-/// routing half is inert for it.
+/// `description`, and a worker reporting to its lead is the only route
+/// its output reliably takes.
+///
+/// Self-selecting rather than gated on `SessionKind`, which is derived
+/// from a `__spawn_worker_` spawn-key prefix: both resume paths
+/// (`__resume_worker_`, `__resume_<id>__`) classify as Lead, so a
+/// role-gated version would miss every resumed worker - exactly the
+/// long-lived population this is for.
 const FORGE_SESSION_CONDUCT_SYSTEM_PROMPT: &str = "\
 Two forge-specific habits.\n\
 \n\
 Always pass `description` on a Bash call. forge's tool tree shows that \
 line for each command and falls back to the raw command when it is \
 missing, so omitting it turns a readable list of intent into a wall of \
-shell. Keep it short and in active voice.\n\
+shell.\n\
 \n\
-If you were spawned by a lead, the lead is your only route out. Nobody \
-reads your session: the user sees the lead's chat, not yours. So never \
-address the user, never wait on user input, and never treat your own \
-turn ending as having reported. When you finish, when you are blocked, \
-or when you need a decision that is the user's to make, say so to the \
-lead with `workers__ask(\"lead\", ...)` for a question or \
-`workers__tell(\"lead\", ...)` for a result - and do it before you go \
-idle, because going idle silently reads as still working.";
+If you were spawned by a lead, route through the lead. The user reads \
+the lead's chat, not yours - your session is reachable, but nobody is \
+watching it - so do not address the user, do not park waiting for the \
+user, and never treat your own turn ending as having reported. Prefer \
+`workers__ask(\"lead\", ...)` over `AskUserQuestion`: a question you \
+ask in your own session blocks there unseen. When you finish, when you \
+are blocked, or when you need a decision that is the user's to make, \
+say so to the lead - `workers__ask(\"lead\", ...)` for a question, \
+`workers__tell(\"lead\", ...)` for a result, carrying `in_reply_to` \
+when you are answering an ask so it stops counting as inflight. Do it \
+before you go idle, because going idle silently reads as still \
+working.";
 
 /// Assemble the forge system-prompt append: trust block, then the
 /// always-on cron scheduling block, then the always-on session-conduct
@@ -1610,6 +1619,11 @@ mod tests {
         let bare = build_forge_system_prompt(None, None);
         assert!(bare.contains("in-process forge MCP"));
         assert!(bare.contains("cron__create"), "cron scheduling is always present");
+        let conduct_at = out.find("`description`").expect("conduct present");
+        assert!(
+            cron_at < conduct_at && conduct_at < cat_at,
+            "order: trust, cron, conduct, catalog, charter"
+        );
         assert!(
             bare.contains("`description`"),
             "the Bash description ask rides the base append, not a charter"
