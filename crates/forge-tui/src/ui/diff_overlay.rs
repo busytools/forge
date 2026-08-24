@@ -3167,6 +3167,30 @@ mod tests {
         assert_eq!(text, "        return err", "two tabs reach column 8");
     }
 
+    /// A split row has to fit the pane. Reserving only the indent and
+    /// the divider zone leaves each half's gutter and marker unbudgeted,
+    /// so the row overruns and ratatui clips the new side's text.
+    #[test]
+    fn a_split_row_fits_the_pane() {
+        for lines in [9usize, 120, 5000] {
+            let file = multi_line_file("a.rs", lines);
+            let gutter = gutter_width_for(&file);
+            let pair = PairedDiffRow {
+                left: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }),
+                right: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 }),
+            };
+            for pane_width in [101u16, 119, 160, 184] {
+                let row = split_diff_row(&file, pair, gutter, pane_width, None);
+                let painted: usize = row.spans.iter().map(Span::width).sum();
+                assert_eq!(
+                    painted,
+                    usize::from(pane_width),
+                    "gutter={gutter} pane_width={pane_width}"
+                );
+            }
+        }
+    }
+
     /// The click handler splits old from new on `divider_col`. If the
     /// painted divider ever lands anywhere else, clicks in the gap file
     /// a review comment against the wrong side and persist it.
