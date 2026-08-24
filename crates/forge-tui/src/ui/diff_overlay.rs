@@ -50,7 +50,7 @@ use crate::ui::autocomplete;
 use crate::ui::chat_tree;
 use crate::ui::highlight::LineHighlighter;
 use crate::ui::theme;
-use crate::ui::wrap::expand_tabs;
+use crate::ui::wrap::{expand_tabs, take_prefix_by_width};
 
 /// Named row offsets inside the commit stepper bar: the title on row 0,
 /// the movement/controls row on row 2, with blank spacers between and
@@ -2550,19 +2550,12 @@ fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<S
             out.push(span);
             continue;
         }
-        let remaining = max_width - consumed;
-        let mut buf = String::with_capacity(span.content.len());
-        let mut span_consumed = 0usize;
-        for c in span.content.chars() {
-            let cw = UnicodeWidthChar::width(c).unwrap_or(0);
-            if span_consumed + cw > remaining {
-                break;
-            }
-            buf.push(c);
-            span_consumed += cw;
-        }
-        if !buf.is_empty() {
-            out.push(Span::styled(buf, span.style));
+        // Measured the same way as the whole-span check above. A
+        // per-char sum disagrees with it on multi-codepoint clusters, so
+        // the kept prefix would overrun the column it was cut to fit.
+        let (kept, _) = take_prefix_by_width(span.content.as_ref(), max_width - consumed);
+        if !kept.is_empty() {
+            out.push(Span::styled(kept, span.style));
         }
         break;
     }
@@ -3183,9 +3176,13 @@ mod tests {
             // a filled one hits.
             let left_only = PairedDiffRow { right: None, ..both };
             let right_only = PairedDiffRow { left: None, ..both };
+            // With no cache the text column is all padding and the
+            // truncator never runs, so the row has to be built from real
+            // spans wide enough to be cut.
+            let cache = build_file_highlight(&file);
             for pair in [both, left_only, right_only] {
                 for pane_width in [101u16, 119, 160, 184] {
-                    let row = split_diff_row(&file, pair, gutter, pane_width, None);
+                    let row = split_diff_row(&file, pair, gutter, pane_width, Some(&cache));
                     let painted: usize = row.spans.iter().map(Span::width).sum();
                     assert_eq!(
                         painted,
@@ -3194,6 +3191,45 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// A cluster straddling the cut is measured per-char by the walk but
+    /// string-wide by the fit check above it, so the kept prefix can be
+    /// wider than the column it was cut to fit.
+    #[test]
+    fn a_truncated_half_does_not_overrun_its_column() {
+        use forge_workspace::env::git_diff::hunks::DiffLine;
+        // Plain text, so the line stays one span and the cut is the only
+        // thing under test. Every unit is 3 columns wide.
+        let text = "x\u{2764}\u{fe0f}".repeat(60);
+        let line =
+            |kind, old_line, new_line| DiffLine { kind, text: text.clone(), old_line, new_line };
+        let file = FileHunks {
+            path: "notes.txt".into(),
+            status: FileStatus::Modified,
+            oversize: false,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_count: 1,
+                new_start: 1,
+                new_count: 1,
+                lines: vec![
+                    line(DiffLineKind::Removed, Some(1), None),
+                    line(DiffLineKind::Added, None, Some(1)),
+                ],
+            }],
+        };
+        let gutter = gutter_width_for(&file);
+        let cache = build_file_highlight(&file);
+        let pair = PairedDiffRow {
+            left: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }),
+            right: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 }),
+        };
+        for pane_width in [101u16, 119, 160, 184] {
+            let row = split_diff_row(&file, pair, gutter, pane_width, Some(&cache));
+            let painted: usize = row.spans.iter().map(Span::width).sum();
+            assert_eq!(painted, usize::from(pane_width), "pane_width={pane_width}");
         }
     }
 
