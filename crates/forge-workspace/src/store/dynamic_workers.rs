@@ -17,9 +17,10 @@ use super::Db;
 const DYNAMIC_WORKERS: TableDefinition<(&str, &str), &[u8]> =
     TableDefinition::new("dynamic_workers");
 
-/// A persisted dynamic worker's re-spawn args. `charter`, `kick` and
-/// `resume_kick` are the resolved values from the originating
-/// `workers__spawn` (inline or role-file-loaded), so re-spawn is
+/// A persisted worker's re-spawn args. `charter`, `kick` and
+/// `resume_kick` are resolved values - from the originating
+/// `workers__spawn` (inline or role-file-loaded), or lifted from a
+/// `static_workers` label's files by the boot back-fill - so re-spawn is
 /// self-contained. The spawning lead's session_id is deliberately
 /// absent: a re-spawn re-parents to whatever lead is current on
 /// reconnect, so the original is never read back.
