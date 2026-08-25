@@ -328,6 +328,13 @@ pub async fn list_sessions(
     entries.into_iter().skip(offset).take(end.saturating_sub(offset)).collect()
 }
 
+/// Tail shared by every `get_session_messages` bail. The compaction count
+/// these paths return is unknown rather than zero, and the Projects-pane
+/// row hides at zero, so "count says 0 on a session I know compacted"
+/// has no triage path unless each bail is greppable.
+const UNREAD_TRANSCRIPT_COUNT_NOTE: &str =
+    "transcript unread, so the compaction count is unknown rather than zero";
+
 /// Read the full transcript for one session. Returns an empty Vec when
 /// the session file can't be found or parsed.
 pub fn get_session_messages(
@@ -336,6 +343,10 @@ pub fn get_session_messages(
     directory: Option<&str>,
 ) -> SessionHistory {
     if !is_valid_uuid(session_id) {
+        tracing::warn!(
+            %session_id,
+            "get_session_messages: not a session uuid; {UNREAD_TRANSCRIPT_COUNT_NOTE}",
+        );
         return SessionHistory::default();
     }
     let file_name = format!("{session_id}.jsonl");
@@ -347,7 +358,10 @@ pub fn get_session_messages(
         })
     };
     let Some(path) = candidate else {
-        tracing::debug!(%session_id, "get_session_messages: no on-disk file for session");
+        tracing::debug!(
+            %session_id,
+            "get_session_messages: no on-disk file for session; {UNREAD_TRANSCRIPT_COUNT_NOTE}",
+        );
         return SessionHistory::default();
     };
     let file = match fs::File::open(&path) {
@@ -357,7 +371,7 @@ pub fn get_session_messages(
                 %session_id,
                 path = %path.display(),
                 %err,
-                "get_session_messages: open failed; backfill renders empty",
+                "get_session_messages: open failed; backfill renders empty and {UNREAD_TRANSCRIPT_COUNT_NOTE}",
             );
             return SessionHistory::default();
         }
