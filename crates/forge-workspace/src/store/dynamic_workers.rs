@@ -4,9 +4,10 @@
 //! re-spawn them. LLM-spawned ("dynamic") workers write a row at
 //! `workers__spawn`; config-driven (`static_workers`) labels get one
 //! from the boot back-fill, so both kinds resume from this table. Keyed
-//! by `(project_key, label)` - at most one row per label per project. The whole record is stored as
-//! serde-json; the session_id is deliberately NOT stored, since resume is
-//! recovered from the `forge:worker:<label>` catalog tag.
+//! by `(project_key, label)` - at most one row per label per project.
+//! The whole record is stored as serde-json; the session_id is
+//! deliberately NOT stored, since resume is recovered from the
+//! `forge:worker:<label>` catalog tag.
 
 use anyhow::Context;
 use redb::{ReadableTable, TableDefinition};

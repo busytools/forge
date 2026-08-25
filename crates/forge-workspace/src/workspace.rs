@@ -3452,10 +3452,10 @@ impl Workspace {
     /// restart can bring it back. Two callers: the MCP `workers__spawn`
     /// path, and the boot back-fill that gives each `static_workers`
     /// label a row. A re-spawn dispatched from boot/reconnect must NOT
-    /// persist - it is replaying a row that already exists.
-    /// Returns `Err` when durability could not be achieved (the
-    /// store isn't open, or the write failed) so the caller can warn the
-    /// lead that this worker won't survive a restart.
+    /// persist - it is replaying a row that already exists. Returns
+    /// `Err` when durability could not be achieved (the store isn't
+    /// open, or the write failed) so the caller can warn the lead that
+    /// this worker won't survive a restart.
     pub(crate) fn persist_dynamic_worker(
         &self,
         worker: &crate::store::dynamic_workers::DynamicWorker,
