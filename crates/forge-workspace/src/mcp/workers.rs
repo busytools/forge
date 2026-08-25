@@ -1011,9 +1011,9 @@ fn format_update_error(err: &WorkerUpdateError) -> String {
         // to a tool that rejects the label as already live.
         WorkerUpdateError::NoSuchWorker { label, project_key } => format!(
             "no dynamic worker '{label}' in project '{project_key}'. workers__update revises a \
-             worker created by workers__spawn. If '{label}' is a static_workers role, its charter \
-             and kick are files under ~/.claude/forge-team/ and are edited there rather than \
-             through this tool. Otherwise spawn it with workers__spawn first."
+             worker created by workers__spawn, so spawn it first if you meant to create one. If \
+             '{label}' is instead a static_workers role, its charter, kick and resume-kick are \
+             files under ~/.claude/forge-team/ and are edited there rather than through this tool."
         ),
         WorkerUpdateError::StoreFailed { message } => format!("worker update failed: {message}"),
     }
@@ -2466,6 +2466,13 @@ mod tests {
         assert!(
             text.contains("static_workers") && text.contains("forge-team"),
             "the refusal names the static-role case and where those instructions live: {text}",
+        );
+        // All three fields this tool revises, not just the two that share a
+        // name with the spawn args - the third is the whole reason someone
+        // reaches for it on a static role.
+        assert!(
+            text.contains("charter") && text.contains("kick") && text.contains("resume-kick"),
+            "names every file the static-role case would need to edit: {text}",
         );
         assert!(
             !text.contains("workers__list"),
