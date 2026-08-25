@@ -167,7 +167,16 @@ contract with that binary, nothing more.
 The wire behaviour forge-sdk was built against is recorded in the
 wire-conformance baselines under
 `crates/forge-test-harness/baselines/sdk/`, which are live captures
-rather than prose and cannot go stale without failing replay.
+rather than prose. Replay guarantees that every inbound line still
+round-trips through the decoder without `DecodedLine::Unknown` or a
+decode error. Apart from the `initialize` handshake's
+`protocolVersion`, which is re-dispatched through today's code and
+compared, it does not check recorded content against what forge would
+send or receive now. A stale copy of forge's own MCP tool names
+therefore survives in both directions: outbound because nothing
+compares it, and inbound because the `init` frame carrying it is a
+whitelisted generic system subtype whose `tools` array is never
+inspected.
 
 ## Hard rules
 

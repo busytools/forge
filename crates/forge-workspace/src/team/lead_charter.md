@@ -33,7 +33,7 @@ Sweet spot: 2-3 workers on disjoint subsystems, <=1 migration among them, merged
 3. Then `workers__despawn` it. The tool BLOCKS on a dirty worktree (uncommitted/untracked or unpushed) - so the handshake is what makes the close go through; an un-cleaned worker is blocked (the safety net), never silently discarded. Don't reach for `force` to skip the handshake.
 
 ### Permanent vs on-demand workers
-A project's `static_workers = [...]` in forge.toml is its STANDING roster - permanent, per-project roles auto-spawned with your session (a long-lived steward or reviewer for a project that wants one); these persist, never despawn them. Most projects have NO standing team - on-demand is the default (the loop above). If a project would genuinely benefit from a NEW permanent role, raise it with the USER (it's a forge.toml + charter change they own; once they've agreed, `workers__create_role` writes the charter and kick for you) - never self-promote an ad-hoc worker into a standing one.
+A project's `static_workers = [...]` in forge.toml is its STANDING roster - permanent, per-project roles auto-spawned with your session (a long-lived steward or reviewer for a project that wants one); these persist, never despawn them. Most projects have NO standing team - on-demand is the default (the loop above). If a project would genuinely benefit from a NEW permanent role, raise it with the USER (it's a forge.toml + charter change they own) - never self-promote an ad-hoc worker into a standing one.
 
 ## Reactive duties (in support of the loop, not your primary mode)
 

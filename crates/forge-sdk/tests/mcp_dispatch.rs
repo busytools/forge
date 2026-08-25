@@ -128,7 +128,7 @@ async fn dispatch_tools_list() {
 async fn tools_list_order_is_deterministic() {
     // Registration order is deliberately neither sorted nor reverse-sorted.
     let mut b = McpServerBuilder::new("probe", "0.0.1");
-    for n in ["spawn", "list", "tell", "ask", "despawn", "create_role"] {
+    for n in ["spawn", "list", "tell", "ask", "despawn", "update"] {
         b = b.tool(NamedTool(n));
     }
     let resp =
