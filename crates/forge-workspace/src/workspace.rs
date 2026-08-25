@@ -2798,9 +2798,12 @@ impl Workspace {
         // their DB row rather than files.
         let dynamic = self.dynamic_workers_for_project(&project_key);
         // A dynamic row wins over a `static_workers` entry of the same label:
-        // the row is written deliberately by `workers__spawn` and carries its
-        // texts inline, where a static entry is a config declaration backed by
-        // files. Filtered before the branch split so every boot path below
+        // the row is the live worker's own record. This is not file-versus-
+        // inline - a `workers__spawn` with no charter stores `charter.md`'s
+        // text into the row, so the row's charter is often a snapshot of that
+        // same file. The cost is that once a row exists for a label, editing
+        // its `charter.md` stops taking effect on boot until the row is
+        // deleted. Filtered before the branch split so every boot path below
         // inherits it.
         let static_workers: Vec<String> = static_workers
             .into_iter()
@@ -12145,10 +12148,9 @@ mod team_spawn_tests {
             .expect("kick");
     }
 
-    /// A label in BOTH rosters spawns once, from its dynamic row. The row is
-    /// written deliberately by `workers__spawn` and carries its texts
-    /// inline; a `static_workers` entry is a config declaration backed by
-    /// files, so the row is the more specific and more recent intent.
+    /// A label in BOTH rosters spawns once, from its dynamic row. The policy
+    /// and its cost are stated once, at the filter in
+    /// `spawn_team_for_lead_with_catalog_scan`.
     #[test]
     fn catalog_scan_prefers_the_dynamic_row_over_a_same_label_static_entry() {
         let (workspace, _update_rx) = Workspace::testing_stub();
