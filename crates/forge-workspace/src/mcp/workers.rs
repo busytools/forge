@@ -1006,9 +1006,14 @@ fn format_update_error(err: &WorkerUpdateError) -> String {
         WorkerUpdateError::UnknownCallerProject => {
             "could not resolve caller to a known project (forge bug)".to_owned()
         }
+        // A running `static_workers` role reaches this arm too: it has no
+        // dynamic row, so naming only the spawn route would send the caller
+        // to a tool that rejects the label as already live.
         WorkerUpdateError::NoSuchWorker { label, project_key } => format!(
-            "no worker '{label}' in project '{project_key}'. workers__update revises an existing \
-             worker; spawn it with workers__spawn first. workers__list shows the current pool."
+            "no dynamic worker '{label}' in project '{project_key}'. workers__update revises a \
+             worker created by workers__spawn. If '{label}' is a static_workers role, its charter \
+             and kick are files under ~/.claude/forge-team/ and are edited there rather than \
+             through this tool. Otherwise spawn it with workers__spawn first."
         ),
         WorkerUpdateError::StoreFailed { message } => format!("worker update failed: {message}"),
     }
@@ -2453,10 +2458,18 @@ mod tests {
             .call(ToolInput { value: serde_json::json!({ "label": "ghost", "charter": "c" }) })
             .await;
         assert!(output.is_error, "an absent worker must be refused");
+        let text = &output.blocks[0].text;
+        assert!(text.contains("workers__spawn"), "the refusal points at spawn: {text}");
+        // A running `static_workers` role is listed by workers__list and has
+        // no dynamic row, so it lands here too. Telling it to spawn is a
+        // dead end - spawn rejects the label as already live.
         assert!(
-            output.blocks[0].text.contains("workers__spawn"),
-            "the refusal points at spawn: {}",
-            output.blocks[0].text,
+            text.contains("static_workers") && text.contains("forge-team"),
+            "the refusal names the static-role case and where those instructions live: {text}",
+        );
+        assert!(
+            !text.contains("workers__list"),
+            "must not point at the tool that lists the worker it just denied: {text}",
         );
     }
 
