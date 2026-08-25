@@ -167,7 +167,11 @@ contract with that binary, nothing more.
 The wire behaviour forge-sdk was built against is recorded in the
 wire-conformance baselines under
 `crates/forge-test-harness/baselines/sdk/`, which are live captures
-rather than prose and cannot go stale without failing replay.
+rather than prose. Replay guarantees that every inbound line still
+round-trips through the decoder without `DecodedLine::Unknown` or a
+decode error. It does not compare recorded outbound content against
+what forge would send today, so a baseline can carry a stale copy of
+forge's own MCP tool names and stay green.
 
 ## Hard rules
 
