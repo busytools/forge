@@ -1,7 +1,9 @@
 //! End-to-end: forge.toml with `static_workers = [...]` parses, project
 //! lead Connected programmatically dispatches one `Command::SpawnWorker`
 //! per configured label, where each label's charter + initial kick is
-//! loaded from `~/.claude/forge-team/<label>/{charter,kick}.md`.
+//! loaded from `~/.claude/forge-team/<label>/{charter,kick}.md` - since
+//! the boot back-fill, read into a `DynamicWorker` row during
+//! construction and delivered from there rather than at spawn time.
 //!
 //! Exercises the file-driven charters path end-to-end: forge.toml
 //! `static_workers = [...]` parsing (validate_label), the per-label
@@ -130,8 +132,10 @@ async fn config_load_through_team_dispatch() {
         assert_eq!(labels.len(), 3, "one SpawnWorker per configured label");
         assert_eq!(
             labels,
-            vec!["planner".to_owned(), "implementer".to_owned(), "reviewer".to_owned()],
-            "dispatch order matches static_workers = [...] order in forge.toml"
+            vec!["implementer".to_owned(), "planner".to_owned(), "reviewer".to_owned()],
+            "dispatch order is redb key order (alphabetical by label), NOT forge.toml order: \
+             the boot back-fill gives every static label a row, so all of them spawn through \
+             the dynamic path, which iterates the store by (project_key, label)"
         );
         Ok::<(), &'static str>(())
     };

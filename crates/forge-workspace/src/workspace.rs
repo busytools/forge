@@ -727,7 +727,7 @@ impl Workspace {
 
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
-        Ok(Self {
+        let workspace = Self {
             config_dir,
             config,
             catalog: Mutex::new(catalog),
@@ -761,7 +761,11 @@ impl Workspace {
             command_intercept: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             test_extra_projects: Mutex::new(Vec::new()),
-        })
+        };
+        // Before returning: no session exists yet, so no lead can have
+        // Connected and triggered a roster spawn from files.
+        workspace.backfill_static_worker_rows();
+        Ok(workspace)
     }
 
     /// Effective `[ui]` settings. All fields have defaults so callers
@@ -3523,6 +3527,61 @@ impl Workspace {
         };
         let rows = crate::store::dynamic_workers::list_for_project(db, project_key.as_str())?;
         Ok(rows.iter().any(|w| w.label == label))
+    }
+
+    /// One-shot back-fill: write a `DynamicWorker` row for every
+    /// `static_workers` label that has none, lifting its texts through the
+    /// same loaders the static spawn path reads. Rows only - it spawns
+    /// nothing, because the dynamic re-spawn path picks the rows up on this
+    /// same boot and the static roster is filtered against them.
+    ///
+    /// Called from `new_impl` before construction returns, which is the
+    /// ordering requirement: no session exists yet, so nothing can have
+    /// Connected and triggered a roster spawn.
+    ///
+    /// Throwaway - deleted with the filesystem role system.
+    fn backfill_static_worker_rows(&self) {
+        for view in self.list_projects() {
+            for label in &view.static_workers {
+                // An unreadable store is not an absent row; leave it alone.
+                if !matches!(self.dynamic_worker_exists(&view.key, label), Ok(false)) {
+                    continue;
+                }
+                let Some(resolved) = crate::team::roles::resolve_role(label, &view.name) else {
+                    continue;
+                };
+                // Both required: a label missing either cannot spawn today,
+                // so a partial row would only move the failure later.
+                let (Ok(charter), Ok(kick)) = (
+                    crate::team::load_charter(&resolved),
+                    crate::team::load_initial_kick(&resolved),
+                ) else {
+                    continue;
+                };
+                let row = crate::store::dynamic_workers::DynamicWorker {
+                    project_key: view.key.as_str().to_owned(),
+                    label: label.clone(),
+                    charter,
+                    kick: Some(kick),
+                    resume_kick: crate::team::load_resume_kick(&resolved).ok().flatten(),
+                };
+                match self.persist_dynamic_worker(&row) {
+                    Ok(()) => tracing::info!(
+                        target: "forge_workspace::team",
+                        project = %view.key.as_str(),
+                        label = %label,
+                        "back-filled a dynamic worker row from this static_workers label's files",
+                    ),
+                    Err(error) => tracing::warn!(
+                        target: "forge_workspace::team",
+                        %error,
+                        project = %view.key.as_str(),
+                        label = %label,
+                        "back-filling this static_workers label failed; it still spawns from files",
+                    ),
+                }
+            }
+        }
     }
 
     /// Merge the supplied fields onto the dynamic-worker row keyed by
@@ -12153,6 +12212,156 @@ mod team_spawn_tests {
             .expect("charter");
         std::fs::write(dir.join("kick.md"), format!("kick from the file for {label}"))
             .expect("kick");
+    }
+
+    /// Boot-time back-fill fixture: a workspace with an open store, a
+    /// redirected forge-team root, and one project declaring `labels`.
+    /// Returns the workspace, its project key, and the two tempdirs whose
+    /// lifetimes must outlive the test body.
+    fn backfill_fixture(
+        labels: &[&str],
+    ) -> (Arc<Workspace>, ProjectKey, tempfile::TempDir, tempfile::TempDir) {
+        let (ws, _rx) = Workspace::testing_stub();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&db_dir.path().join("db.redb")).expect("open db"),
+        );
+        let team_root = tempfile::tempdir().expect("team root");
+        let owned: Vec<String> = labels.iter().map(|l| (*l).to_owned()).collect();
+        ws.seed_test_project_with_static_workers("demo", "/tmp/demo", &owned);
+        let key =
+            ws.list_projects().into_iter().find(|v| v.name == "demo").expect("seeded project").key;
+        (ws, key, db_dir, team_root)
+    }
+
+    /// A static label with charter, kick and resume-kick on disk gets a row
+    /// carrying all three texts.
+    #[test]
+    fn backfill_writes_a_row_with_all_three_texts() {
+        let (ws, key, _db, team_root) = backfill_fixture(&["planner"]);
+        let _guard = crate::team::override_forge_team_root_for_test(team_root.path().to_path_buf());
+        write_static_role(team_root.path(), "demo", "planner");
+        std::fs::write(
+            team_root.path().join("demo").join("planner").join("resume-kick.md"),
+            "resume from the file",
+        )
+        .expect("resume-kick");
+
+        ws.backfill_static_worker_rows();
+
+        let rows = ws.dynamic_workers_for_project(&key);
+        assert_eq!(rows.len(), 1, "one row for the one static label");
+        assert_eq!(rows[0].label, "planner");
+        assert_eq!(rows[0].charter, "charter from the file for planner");
+        assert_eq!(rows[0].kick.as_deref(), Some("kick from the file for planner"));
+        assert_eq!(rows[0].resume_kick.as_deref(), Some("resume from the file"));
+    }
+
+    /// `resume-kick.md` is optional, so a role without one gets `None`
+    /// rather than an empty string or a skipped row.
+    #[test]
+    fn backfill_writes_none_resume_kick_when_the_file_is_absent() {
+        let (ws, key, _db, team_root) = backfill_fixture(&["planner"]);
+        let _guard = crate::team::override_forge_team_root_for_test(team_root.path().to_path_buf());
+        write_static_role(team_root.path(), "demo", "planner");
+
+        ws.backfill_static_worker_rows();
+
+        let rows = ws.dynamic_workers_for_project(&key);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].resume_kick, None, "absent resume-kick.md is None, not empty");
+        assert_eq!(rows[0].charter, "charter from the file for planner");
+    }
+
+    /// A label that already has a row is left completely alone, texts
+    /// included - the back-fill must not clobber a hand-updated charter.
+    #[test]
+    fn backfill_leaves_an_existing_row_untouched() {
+        let (ws, key, _db, team_root) = backfill_fixture(&["planner"]);
+        let _guard = crate::team::override_forge_team_root_for_test(team_root.path().to_path_buf());
+        write_static_role(team_root.path(), "demo", "planner");
+        let _ = ws.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+            project_key: key.as_str().to_owned(),
+            label: "planner".to_owned(),
+            charter: "hand-updated charter".to_owned(),
+            kick: Some("hand-updated kick".to_owned()),
+            resume_kick: None,
+        });
+
+        ws.backfill_static_worker_rows();
+
+        let rows = ws.dynamic_workers_for_project(&key);
+        assert_eq!(rows.len(), 1, "no duplicate row");
+        assert_eq!(rows[0].charter, "hand-updated charter", "existing texts survive");
+        assert_eq!(rows[0].kick.as_deref(), Some("hand-updated kick"));
+    }
+
+    /// A label whose `charter.md` or `kick.md` is missing cannot spawn
+    /// today, so it gets NO row rather than a partial one. Carries a
+    /// complete third label as an in-test control: it proves the back-fill
+    /// reached this fixture and wrote something, so the two absences are
+    /// real absences rather than a fixture that never ran.
+    #[test]
+    fn backfill_writes_nothing_for_a_label_missing_charter_or_kick() {
+        let (ws, key, _db, team_root) = backfill_fixture(&["no-charter", "no-kick", "complete"]);
+        let _guard = crate::team::override_forge_team_root_for_test(team_root.path().to_path_buf());
+        // `no-charter` has only kick.md; `no-kick` has only charter.md.
+        let a = team_root.path().join("demo").join("no-charter");
+        std::fs::create_dir_all(&a).expect("dir");
+        std::fs::write(a.join("kick.md"), "kick only").expect("kick");
+        let b = team_root.path().join("demo").join("no-kick");
+        std::fs::create_dir_all(&b).expect("dir");
+        std::fs::write(b.join("charter.md"), "charter only").expect("charter");
+        write_static_role(team_root.path(), "demo", "complete");
+
+        ws.backfill_static_worker_rows();
+
+        let labels: Vec<String> =
+            ws.dynamic_workers_for_project(&key).into_iter().map(|w| w.label).collect();
+        assert_eq!(
+            labels,
+            vec!["complete".to_owned()],
+            "only the label with both files gets a row",
+        );
+    }
+
+    /// The back-fill runs inside `Workspace::new`, so the row exists the
+    /// moment construction returns - before any session can exist to
+    /// Connect and spawn the roster from files. Deleting the call site
+    /// leaves every unit test above green, so this is what pins the wiring.
+    #[tokio::test]
+    async fn backfill_runs_before_workspace_construction_returns() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let forge_dir = tmp.path().join("forge");
+        std::fs::create_dir_all(&forge_dir).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+[[orgs.projects]]
+name = "demo"
+path = "/tmp/demo"
+static_workers = ["planner"]
+
+[[accounts]]
+display_name = "acct-a"
+config_dir = "/tmp/acct-a"
+"#,
+        )
+        .expect("write forge.toml");
+        let team_root = tmp.path().join("forge-team");
+        write_static_role(&team_root, "demo", "planner");
+        let _guard = crate::team::override_forge_team_root_for_test(team_root.clone());
+
+        let ws = Workspace::new_for_test(tmp.path().to_owned()).await.expect("workspace boot");
+
+        let key = ws.list_projects().into_iter().find(|v| v.name == "demo").expect("project").key;
+        let rows = ws.dynamic_workers_for_project(&key);
+        assert_eq!(rows.len(), 1, "construction back-filled the row before returning");
+        assert_eq!(rows[0].label, "planner");
+        assert_eq!(rows[0].charter, "charter from the file for planner");
     }
 
     /// A label in BOTH rosters spawns once, from its dynamic row. The policy
