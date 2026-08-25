@@ -2703,8 +2703,8 @@ impl Workspace {
     /// than files.
     ///
     /// Since this holds the dynamic set, it decides the kick directly:
-    /// a resume gets the forge restart note (dynamic workers have no
-    /// `resume-kick.md`), telling it to continue rather than restart; a
+    /// a resume takes the row's own `resume_kick` and falls back to the
+    /// forge restart note, telling it to continue rather than restart; a
     /// fresh re-spawn (never prompted, so no catalog tag) re-delivers the
     /// stored kick. Both flow through `maybe_kick_worker_on_connected`'s
     /// inline-kick path, so that hook needs no per-worker store lookup.
@@ -2718,7 +2718,7 @@ impl Workspace {
         for worker in dynamic {
             let resume_existing = resume_map.get(&worker.label).cloned();
             let kick = if resume_existing.is_some() {
-                Some(DYNAMIC_WORKER_RESTART_NOTE.to_owned())
+                worker.resume_kick.clone().or_else(|| Some(DYNAMIC_WORKER_RESTART_NOTE.to_owned()))
             } else {
                 worker.kick.clone()
             };
@@ -7973,6 +7973,7 @@ SOLO_TOKEN = "solo-secret"
             label: label.to_owned(),
             charter: format!("charter for {label}"),
             kick: Some(format!("kick for {label}")),
+            resume_kick: None,
         }
     }
 
@@ -11863,6 +11864,7 @@ mod team_spawn_tests {
             label: label.to_owned(),
             charter: format!("dynamic charter for {label}"),
             kick: kick.map(str::to_owned),
+            resume_kick: None,
         }
     }
 
@@ -11932,6 +11934,46 @@ mod team_spawn_tests {
         }
     }
 
+    /// A row carrying its own `resume_kick` takes that text on resume
+    /// instead of the generic restart note. The fresh-spawn path is
+    /// untouched by it: no catalog tag still means the stored kick.
+    #[test]
+    fn spawn_dynamic_workers_for_lead_prefers_the_rows_resume_kick() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        let project_key = ProjectKey::new("proj-x");
+        let mut steward = dyn_worker("steward", Some("original kick"));
+        steward.resume_kick = Some("Re-read the taste notes, then drain both queues.".to_owned());
+        let mut fresh = dyn_worker("fresh", Some("original kick"));
+        fresh.resume_kick = Some("never delivered: this one has no catalog tag".to_owned());
+        let dynamic = vec![steward, fresh];
+        let mut resume_map = std::collections::HashMap::new();
+        resume_map.insert("steward".to_owned(), "steward-uuid".to_owned());
+
+        workspace.spawn_dynamic_workers_for_lead("new-lead", &project_key, &dynamic, &resume_map);
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert_eq!(dispatched.len(), 2);
+        for cmd in dispatched {
+            let Command::SpawnWorker { label, kick, .. } = cmd else {
+                panic!("expected SpawnWorker");
+            };
+            match label.as_str() {
+                "steward" => assert_eq!(
+                    kick.as_deref(),
+                    Some("Re-read the taste notes, then drain both queues."),
+                    "a resuming worker with its own resume_kick gets that, not the generic note",
+                ),
+                "fresh" => assert_eq!(
+                    kick.as_deref(),
+                    Some("original kick"),
+                    "a fresh re-spawn still takes the stored kick",
+                ),
+                other => panic!("unexpected label {other}"),
+            }
+        }
+    }
+
     /// A project with an EMPTY static roster but a persisted dynamic
     /// worker still re-spawns it on lead reconnect (the empty-team early
     /// return must not skip the DB set).
@@ -11948,6 +11990,7 @@ mod team_spawn_tests {
             label: "scratch".to_owned(),
             charter: "resume the scratch task".to_owned(),
             kick: Some("go".to_owned()),
+            resume_kick: None,
         });
         workspace.enable_test_dispatch_intercept();
 
@@ -11987,6 +12030,7 @@ mod team_spawn_tests {
             label: "scratch".to_owned(),
             charter: "c".to_owned(),
             kick: None,
+            resume_kick: None,
         });
         workspace.delete_dynamic_worker(&project_key, "scratch");
         workspace.enable_test_dispatch_intercept();
@@ -12579,6 +12623,7 @@ mod async_worker_spawn_failure_tests {
             label: "reviewer".to_owned(),
             charter: "c".to_owned(),
             kick: None,
+            resume_kick: None,
         });
         workspace
             .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, lead_id, true));
@@ -12654,6 +12699,7 @@ mod async_worker_spawn_failure_tests {
             label: "reviewer".to_owned(),
             charter: "c".to_owned(),
             kick: None,
+            resume_kick: None,
         });
         // Non-git worker + a generic message classifies as DispatchFailed,
         // driving the transition-to-Failed (visible) path.

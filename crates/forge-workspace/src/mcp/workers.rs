@@ -69,6 +69,8 @@ pub(crate) fn add_tools(
 ///   `workers__tell` / `workers__ask` to address this worker
 /// - `charter` (string, required) - the worker's mission text, surfaced
 ///   to its LLM as a system-prompt addendum
+/// - `resume_kick` (string, optional) - re-orient message used in place
+///   of the generic restart note whenever this worker is resumed
 ///
 /// Returns a JSON object: `{ "session_id": "...", "tag": "forge:worker:..." }`.
 pub(crate) struct Spawn {
@@ -83,6 +85,8 @@ struct SpawnArgs {
     charter: Option<String>,
     #[serde(default)]
     kick: Option<String>,
+    #[serde(default)]
+    resume_kick: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -111,7 +115,12 @@ impl Tool for Spawn {
          re-spawned, resuming where it left off (a restarted worker is \
          told to continue, not start over), until you explicitly despawn \
          it with workers__despawn (or close its row in the Projects \
-         pane). So spawn one per distinct piece of work and despawn it \
+         pane). PASS `resume_kick` FOR A LONG-LIVED WORKER whose restart \
+         needs specific steps - re-read a file, catch up a queue, check \
+         what was mid-run - rather than that generic continue; it \
+         replaces the restart note on every resume. Omit it and the \
+         generic note is what a resumed worker gets. So spawn one per \
+         distinct piece of work and despawn it \
          once that work is truly done - a forgotten worker keeps coming \
          back on every restart. At most one live worker per label - \
          if one already exists, this errors and you should message it \
@@ -139,6 +148,10 @@ impl Tool for Spawn {
                     "type": "string",
                     "description": "Optional first-turn message delivered to the worker the moment it connects, so it STARTS WORKING IMMEDIATELY (equivalent to sending a workers__tell right after spawn). STRONGLY RECOMMENDED for ad-hoc spawns: WITHOUT a kick the worker sits idle until you send it a workers__tell - a 'begin now' line in the charter does NOT run on its own. Omit only when you intend to drive the worker yourself with a later workers__tell.",
                 },
+                "resume_kick": {
+                    "type": "string",
+                    "description": "Optional re-orient message delivered every time this worker is RESUMED after a forge restart, in place of the generic 'continue where you left off' note. For a LONG-LIVED worker whose restart needs specific steps - re-read a file, catch up a queue, check whether something was mid-run before re-running it - rather than a generic continue. Stored at spawn rather than delivered now; the first turn of a fresh spawn is `kick`. Non-empty after trim when provided - to keep the generic restart note, OMIT the argument rather than passing an empty string, which is rejected.",
+                },
             },
             "required": ["label"],
             "additionalProperties": false,
@@ -155,7 +168,17 @@ impl Tool for Spawn {
             Ok(k) => k,
             Err(err) => return tool_error(err.to_string()),
         };
-        match self.facade.spawn_worker(&caller_key, args.label, args.charter, args.kick).await {
+        // An empty one is `Some`, so it would beat the restart-note
+        // fallback and dispatch a blank first turn on every resume - the
+        // same contract `workers__create_role` holds this arg to.
+        if args.resume_kick.as_ref().is_some_and(|text| text.trim_end().is_empty()) {
+            return tool_error("resume_kick must be non-empty after trim when provided".to_owned());
+        }
+        match self
+            .facade
+            .spawn_worker(&caller_key, args.label, args.charter, args.kick, args.resume_kick)
+            .await
+        {
             Ok(reply) => {
                 let mut body = serde_json::json!({
                     "session_id": reply.session_id,
@@ -1278,6 +1301,75 @@ mod tests {
         );
     }
 
+    /// A long-lived worker can carry its own restart instructions; they
+    /// are persisted at spawn, not delivered now.
+    #[tokio::test]
+    async fn spawn_passes_resume_kick_through_to_facade() {
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
+            session_id: "u".into(),
+            tag: "forge:worker:steward".into(),
+            rate_limited_account: None,
+            durability_warning: None,
+        }));
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "steward",
+                    "charter": "Mind the queues.",
+                    "kick": "Begin: drain the queues.",
+                    "resume_kick": "Re-read the taste notes, then drain both queues.",
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "spawn with resume_kick should not error: {:?}", output.blocks);
+        let calls = mock.spawn_calls.lock();
+        assert_eq!(
+            calls[0].4.as_deref(),
+            Some("Re-read the taste notes, then drain both queues."),
+            "resume_kick passes through",
+        );
+    }
+
+    /// An empty `resume_kick` is `Some`, so it would win the restart-note
+    /// fallback and dispatch a blank first turn on every future resume.
+    /// Refused at the boundary, the way `workers__create_role` refuses the
+    /// same argument.
+    #[tokio::test]
+    async fn spawn_rejects_whitespace_only_resume_kick() {
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
+            session_id: "u".into(),
+            tag: "t".into(),
+            rate_limited_account: None,
+            durability_warning: None,
+        }));
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "steward",
+                    "charter": "Mind the queues.",
+                    "resume_kick": "   \n  ",
+                }),
+            })
+            .await;
+        assert!(output.is_error, "a whitespace-only resume_kick must be refused");
+        assert!(
+            output.blocks[0].text.contains("resume_kick must be non-empty after trim"),
+            "refusal matches the create_role message shape: {}",
+            output.blocks[0].text,
+        );
+        assert!(mock.spawn_calls.lock().is_empty(), "refused before anything spawns");
+    }
+
     #[tokio::test]
     async fn spawn_without_kick_passes_none() {
         let mock = Arc::new(MockWorkerFacade::new());
@@ -1298,6 +1390,11 @@ mod tests {
             .await;
         assert!(!output.is_error);
         assert_eq!(mock.spawn_calls.lock()[0].3, None, "absent kick is None");
+        assert_eq!(
+            mock.spawn_calls.lock()[0].4,
+            None,
+            "absent resume_kick is None, so the restart note stays the default",
+        );
     }
 
     #[tokio::test]

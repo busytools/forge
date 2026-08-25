@@ -240,13 +240,16 @@ pub trait WorkerFacade: Send + Sync {
     /// reply. Gating (lead-only, non-empty label) happens before
     /// dispatch. `charter`: `Some` inline mission, or `None` to load
     /// the role's stored charter (scope-checked against the caller's
-    /// project namespace).
+    /// project namespace). `resume_kick` is persisted rather than
+    /// delivered now; it replaces the generic restart note when this
+    /// worker resumes after a forge restart.
     async fn spawn_worker(
         &self,
         caller: &SessionKey,
         label: String,
         charter: Option<String>,
         kick: Option<String>,
+        resume_kick: Option<String>,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError>;
 
     /// Dispatch a `Command::DespawnWorker` and await its result.
@@ -415,6 +418,7 @@ impl WorkerFacade for ProdWorkerFacade {
         label: String,
         charter: Option<String>,
         kick: Option<String>,
+        resume_kick: Option<String>,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError> {
         let cp = self.caller_project(caller).ok_or(WorkerSpawnError::UnknownCallerProject)?;
         validate_worker_spawn(cp.is_lead, &label)?;
@@ -465,6 +469,7 @@ impl WorkerFacade for ProdWorkerFacade {
             label: label.clone(),
             charter: charter.clone(),
             kick: kick.clone(),
+            resume_kick,
         };
         let (tx, rx) = tokio::sync::oneshot::channel();
         let cmd = Command::SpawnWorker {
@@ -697,9 +702,9 @@ impl WorkerFacade for ProdWorkerFacade {
 }
 
 /// A captured `MockWorkerFacade::spawn_worker` call:
-/// `(caller, label, resolved charter, kick)`.
+/// `(caller, label, resolved charter, kick, resume_kick)`.
 #[cfg(any(test, feature = "testing"))]
-type RecordedSpawnCall = (SessionKey, String, String, Option<String>);
+type RecordedSpawnCall = (SessionKey, String, String, Option<String>, Option<String>);
 
 /// Mock for unit-testing the four Tool impls. Captures every
 /// dispatched call into a Vec so tests can assert "tool X
@@ -786,6 +791,7 @@ impl WorkerFacade for MockWorkerFacade {
         label: String,
         charter: Option<String>,
         kick: Option<String>,
+        resume_kick: Option<String>,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError> {
         let cp = self.caller_project(caller).ok_or(WorkerSpawnError::UnknownCallerProject)?;
         validate_worker_spawn(cp.is_lead, &label)?;
@@ -797,7 +803,7 @@ impl WorkerFacade for MockWorkerFacade {
             Some(_) => return Err(WorkerSpawnError::EmptyCharter),
             None => format!("file-charter:{label}"),
         };
-        self.spawn_calls.lock().push((caller.clone(), label, charter, kick));
+        self.spawn_calls.lock().push((caller.clone(), label, charter, kick, resume_kick));
         self.spawn_reply.lock().clone().unwrap_or(Err(WorkerSpawnError::DispatchFailed {
             message: "no preloaded reply".into(),
         }))
@@ -960,6 +966,7 @@ mod mock_tests {
                 "reviewer".into(),
                 Some("charter".into()),
                 None,
+                None,
             )
             .await;
         assert!(matches!(res, Err(WorkerSpawnError::NotLeadCaller)));
@@ -983,6 +990,7 @@ mod mock_tests {
                 &SessionKey::from_session_id("lead-key"),
                 "reviewer".into(),
                 Some("charter".into()),
+                None,
                 None,
             )
             .await
@@ -1015,7 +1023,7 @@ mod mock_tests {
             lead.clone(),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
         );
-        let res = mock.spawn_worker(&lead, "reviewer".into(), Some("   ".into()), None).await;
+        let res = mock.spawn_worker(&lead, "reviewer".into(), Some("   ".into()), None, None).await;
         assert!(matches!(res, Err(WorkerSpawnError::EmptyCharter)));
         assert_eq!(
             mock.spawn_calls.lock().len(),
