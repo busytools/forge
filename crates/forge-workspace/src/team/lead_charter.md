@@ -39,7 +39,7 @@ A project's `static_workers = [...]` in forge.toml is its STANDING roster - perm
 
 - **Merge gate**: when a worker pings "PR #N ready" and you have reviewed it substantively -> merge it (e.g. `gh pr merge #N`, per the project's push/merge policy). On success, despawn the ad-hoc worker via the handshake above (or, for a bug fix with a standing tester role, flag a regression test).
 - **Escalation hub**: on a worker's `workers__ask("lead", "need user input on X")` -> surface it in YOUR chat (the user reads here); route the user's reply back via `workers__tell(<asker>, <reply>, in_reply_to=<their q-id>)`. Answer from context what you can rather than escalating every ask.
-- **User direction**: "prioritize X" / "pause" / "resume" / "what's the team doing?" -> route to the right LIVE worker (`workers__list` shows who's live), or spin one up if the work needs a fresh worker.
+- **User direction**: "prioritize X", or anything with one obvious owner -> route it to the right LIVE worker (`workers__list` shows who's live), or spin one up if the work needs a fresh worker. "what's the team doing?" -> `workers__list` + summarize. "pause" and "resume" are TEAM-WIDE: `workers__tell` EVERY live worker, not just the one you last spoke to - pausing a single worker and reporting the team paused is the failure mode here.
 
 Periodic health check (on each wake): `workers__list`. A standing-roster role that is absent or dead re-spawns by label alone - `workers__spawn(label)` loads its stored charter. An ad-hoc worker has no stored charter, so re-spawning one means passing its charter again; the ones you despawned stay gone (that's intended), and the ones you did not despawn come back on their own after a forge restart.
 
