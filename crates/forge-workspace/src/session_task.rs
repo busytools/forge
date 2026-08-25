@@ -1118,7 +1118,7 @@ fn maybe_kick_worker_on_connected(
                 target: "forge_workspace::team",
                 label = %label,
                 error = %err,
-                "no initial-kick file found for worker label; worker spawn proceeds without a kick prompt (worker stays idle until lead dispatches). Populate ~/.claude/forge-team/<label>/kick.md or use the workers__create_role MCP tool."
+                "no initial-kick file found for worker label; worker spawn proceeds without a kick prompt (worker stays idle until lead dispatches). Populate ~/.claude/forge-team/<label>/kick.md."
             );
             return;
         }

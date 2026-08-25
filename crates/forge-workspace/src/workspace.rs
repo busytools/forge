@@ -2776,7 +2776,7 @@ impl Workspace {
                         project = %project_key.as_str(),
                         label = %label,
                         error = %err,
-                        "no charter/kick for worker label (project-first then global); spawn skipped. Populate ~/.claude/forge-team/<project>/<label>/ or ~/.claude/forge-team/<label>/, or use workers__create_role."
+                        "no charter/kick for worker label (project-first then global); spawn skipped. Populate ~/.claude/forge-team/<project>/<label>/ or ~/.claude/forge-team/<label>/."
                     );
                 }
             }
@@ -3504,6 +3504,41 @@ impl Workspace {
         };
         let rows = crate::store::dynamic_workers::list_for_project(db, project_key.as_str())?;
         Ok(rows.iter().any(|w| w.label == label))
+    }
+
+    /// Merge the supplied fields onto the dynamic-worker row keyed by
+    /// `(project_key, label)`, leaving a `None` field at its stored value.
+    /// Returns whether a row existed; this never creates one, because a
+    /// row is what makes a worker re-spawn on the next lead connect.
+    /// Read and write share one store lock so a concurrent despawn cannot
+    /// land between them and resurrect the row.
+    pub(crate) fn update_dynamic_worker(
+        &self,
+        project_key: &ProjectKey,
+        label: &str,
+        charter: Option<String>,
+        kick: Option<String>,
+        resume_kick: Option<String>,
+    ) -> anyhow::Result<bool> {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            anyhow::bail!("the dynamic-worker store is unavailable this session");
+        };
+        let rows = crate::store::dynamic_workers::list_for_project(db, project_key.as_str())?;
+        let Some(mut row) = rows.into_iter().find(|w| w.label == label) else {
+            return Ok(false);
+        };
+        if let Some(text) = charter {
+            row.charter = text;
+        }
+        if let Some(text) = kick {
+            row.kick = Some(text);
+        }
+        if let Some(text) = resume_kick {
+            row.resume_kick = Some(text);
+        }
+        crate::store::dynamic_workers::insert(db, &row)?;
+        Ok(true)
     }
 
     /// Persisted review threads for `(project, branch)`, empty when the
@@ -7975,6 +8010,81 @@ SOLO_TOKEN = "solo-secret"
             kick: Some(format!("kick for {label}")),
             resume_kick: None,
         }
+    }
+
+    /// An update merges only the supplied fields onto the stored row and
+    /// survives the redb round-trip. It must never create a row: a row
+    /// means the worker should be alive, so an absent one reports "not
+    /// updated" rather than bringing a worker into existence at the next
+    /// lead connect.
+    #[test]
+    fn update_dynamic_worker_merges_only_supplied_fields() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let project = ProjectKey::new("forge");
+        let _ = ws.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+            project_key: "forge".to_owned(),
+            label: "steward".to_owned(),
+            charter: "original charter".to_owned(),
+            kick: Some("original kick".to_owned()),
+            resume_kick: Some("original resume".to_owned()),
+        });
+        let stored = |ws: &Arc<Workspace>| {
+            ws.dynamic_workers_for_project(&project)
+                .into_iter()
+                .find(|w| w.label == "steward")
+                .expect("row present")
+        };
+
+        assert!(
+            ws.update_dynamic_worker(
+                &project,
+                "steward",
+                Some("new charter".to_owned()),
+                None,
+                None
+            )
+            .expect("update succeeds"),
+            "an existing row reports updated",
+        );
+        let row = stored(&ws);
+        assert_eq!(row.charter, "new charter", "the supplied field changed");
+        assert_eq!(row.kick.as_deref(), Some("original kick"), "an absent field is untouched");
+        assert_eq!(
+            row.resume_kick.as_deref(),
+            Some("original resume"),
+            "an absent field is untouched",
+        );
+
+        // The other two fields update independently, and the charter set
+        // above persists across a second call.
+        assert!(
+            ws.update_dynamic_worker(
+                &project,
+                "steward",
+                None,
+                Some("new kick".to_owned()),
+                Some("new resume".to_owned()),
+            )
+            .expect("second update succeeds"),
+        );
+        let row = stored(&ws);
+        assert_eq!(row.charter, "new charter", "the earlier update survived");
+        assert_eq!(row.kick.as_deref(), Some("new kick"));
+        assert_eq!(row.resume_kick.as_deref(), Some("new resume"));
+
+        assert!(
+            !ws.update_dynamic_worker(&project, "ghost", Some("c".to_owned()), None, None)
+                .expect("absent row is not an error"),
+            "no row means not updated",
+        );
+        assert!(
+            ws.dynamic_workers_for_project(&project).iter().all(|w| w.label != "ghost"),
+            "a failed update must not create the row",
+        );
     }
 
     fn live_worker_entry(label: &str, key: &str) -> crate::mcp::workers::types::WorkerEntry {

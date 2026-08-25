@@ -95,6 +95,20 @@ pub enum WorkerSpawnError {
     CharterFileMissing { label: String },
 }
 
+/// Synchronous error from `update_worker`. Gating (lead-only, non-empty
+/// label, at least one supplied field) happens in the tool before the
+/// call, so these are the outcomes only the store can decide.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorkerUpdateError {
+    /// Caller's session key resolves to no known project (defensive).
+    UnknownCallerProject,
+    /// No persisted dynamic-worker row for `label` in the caller's
+    /// project. Update never creates one.
+    NoSuchWorker { label: String, project_key: String },
+    /// The store read or write failed, or the store isn't open.
+    StoreFailed { message: String },
+}
+
 /// Synchronous outcome of `despawn_worker` - the success-shaped half
 /// of a `Command::DespawnWorker`. Gating + dispatch errors are the
 /// `Err` arm of the result; these two variants are what the
@@ -218,12 +232,6 @@ pub trait WorkerFacade: Send + Sync {
     /// Returns `None` when `caller` matches no known session.
     fn caller_project(&self, caller: &SessionKey) -> Option<CallerProject>;
 
-    /// Resolve the caller's project namespace (the forge.toml `name`),
-    /// used to scope `workers__create_role` writes under
-    /// `<namespace>/<label>`. Returns `None` when the caller matches no
-    /// known project.
-    fn caller_namespace(&self, caller: &SessionKey) -> Option<String>;
-
     /// Resolve a display identity for `caller`. Always returns a value
     /// (no `Option`); the production impl falls back to the raw
     /// session id for genuinely unresolvable callers so the envelope
@@ -251,6 +259,21 @@ pub trait WorkerFacade: Send + Sync {
         kick: Option<String>,
         resume_kick: Option<String>,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError>;
+
+    /// Merge the supplied fields onto the stored dynamic-worker row for
+    /// `label` in the caller's project, leaving a `None` field at its
+    /// stored value. Errors with `NoSuchWorker` when no row exists:
+    /// update revises an existing worker, it never creates one. Takes
+    /// effect on that worker's next respawn, since a session's system
+    /// prompt is fixed when the session spawns.
+    fn update_worker(
+        &self,
+        caller: &SessionKey,
+        label: &str,
+        charter: Option<String>,
+        kick: Option<String>,
+        resume_kick: Option<String>,
+    ) -> Result<(), WorkerUpdateError>;
 
     /// Dispatch a `Command::DespawnWorker` and await its result.
     /// Gating (lead-only, non-empty label) happens before dispatch.
@@ -388,12 +411,6 @@ impl WorkerFacade for ProdWorkerFacade {
         Some(CallerProject { project_key: cx.project_key, is_lead: cx.is_lead })
     }
 
-    fn caller_namespace(&self, caller: &SessionKey) -> Option<String> {
-        let ws = self.workspace.upgrade()?;
-        let cp = self.caller_project(caller)?;
-        ws.list_projects().into_iter().find(|v| v.key == cp.project_key).map(|v| v.name)
-    }
-
     fn caller_identity(&self, caller: &SessionKey) -> WorkerIdentity {
         let Some(ws) = self.workspace.upgrade() else {
             return WorkerIdentity { name: caller.as_str().to_owned(), org: String::new() };
@@ -513,6 +530,28 @@ impl WorkerFacade for ProdWorkerFacade {
             Err(_) => Err(WorkerSpawnError::DispatchFailed {
                 message: "spawn handler dropped reply channel".into(),
             }),
+        }
+    }
+
+    fn update_worker(
+        &self,
+        caller: &SessionKey,
+        label: &str,
+        charter: Option<String>,
+        kick: Option<String>,
+        resume_kick: Option<String>,
+    ) -> Result<(), WorkerUpdateError> {
+        let cp = self.caller_project(caller).ok_or(WorkerUpdateError::UnknownCallerProject)?;
+        let ws = self.workspace.upgrade().ok_or_else(|| WorkerUpdateError::StoreFailed {
+            message: "workspace dropped".into(),
+        })?;
+        match ws.update_dynamic_worker(&cp.project_key, label, charter, kick, resume_kick) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(WorkerUpdateError::NoSuchWorker {
+                label: label.to_owned(),
+                project_key: cp.project_key.as_str().to_owned(),
+            }),
+            Err(err) => Err(WorkerUpdateError::StoreFailed { message: err.to_string() }),
         }
     }
 
@@ -706,6 +745,11 @@ impl WorkerFacade for ProdWorkerFacade {
 #[cfg(any(test, feature = "testing"))]
 type RecordedSpawnCall = (SessionKey, String, String, Option<String>, Option<String>);
 
+/// A captured `MockWorkerFacade::update_worker` call:
+/// `(caller, label, charter, kick, resume_kick)`.
+#[cfg(any(test, feature = "testing"))]
+type RecordedUpdateCall = (SessionKey, String, Option<String>, Option<String>, Option<String>);
+
 /// Mock for unit-testing the four Tool impls. Captures every
 /// dispatched call into a Vec so tests can assert "tool X
 /// dispatched spawn with these args" without spinning up a real
@@ -725,6 +769,12 @@ pub struct MockWorkerFacade {
     /// Pre-loaded reply for `spawn_worker`. When `None`, the mock
     /// returns `DispatchFailed { message: "no preloaded reply" }`.
     pub spawn_reply: parking_lot::Mutex<Option<Result<WorkerSpawnReply, WorkerSpawnError>>>,
+    /// Captured `update_worker` calls.
+    pub update_calls: parking_lot::Mutex<Vec<RecordedUpdateCall>>,
+    /// Pre-loaded result for `update_worker`. When `None`, the mock
+    /// reports success, so a test that cares only about the args
+    /// passed through does not have to set it.
+    pub update_result: parking_lot::Mutex<Option<Result<(), WorkerUpdateError>>>,
     /// Captured `deliver_worker_prompt` calls.
     pub deliver_calls: parking_lot::Mutex<Vec<(SessionKey, String, WrappedPrompt)>>,
     /// Captured `deliver_reply_to_caller` calls so tests can assert
@@ -765,12 +815,6 @@ impl WorkerFacade for MockWorkerFacade {
         self.callers.lock().get(caller).cloned()
     }
 
-    fn caller_namespace(&self, caller: &SessionKey) -> Option<String> {
-        // Tests set `project_key` to the project name they want, so the
-        // mock namespace is the key string.
-        self.caller_project(caller).map(|cp| cp.project_key.as_str().to_owned())
-    }
-
     fn caller_identity(&self, caller: &SessionKey) -> WorkerIdentity {
         let Some(cp) = self.caller_project(caller) else {
             return WorkerIdentity { name: caller.as_str().to_owned(), org: String::new() };
@@ -807,6 +851,25 @@ impl WorkerFacade for MockWorkerFacade {
         self.spawn_reply.lock().clone().unwrap_or(Err(WorkerSpawnError::DispatchFailed {
             message: "no preloaded reply".into(),
         }))
+    }
+
+    fn update_worker(
+        &self,
+        caller: &SessionKey,
+        label: &str,
+        charter: Option<String>,
+        kick: Option<String>,
+        resume_kick: Option<String>,
+    ) -> Result<(), WorkerUpdateError> {
+        self.caller_project(caller).ok_or(WorkerUpdateError::UnknownCallerProject)?;
+        self.update_calls.lock().push((
+            caller.clone(),
+            label.to_owned(),
+            charter,
+            kick,
+            resume_kick,
+        ));
+        self.update_result.lock().clone().unwrap_or(Ok(()))
     }
 
     async fn despawn_worker(
