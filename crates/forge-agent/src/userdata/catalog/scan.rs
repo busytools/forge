@@ -335,8 +335,13 @@ pub async fn list_sessions(
 const UNREAD_TRANSCRIPT_COUNT_NOTE: &str =
     "transcript unread, so the compaction count is unknown rather than zero";
 
-/// Read the full transcript for one session. Returns an empty Vec when
-/// the session file can't be found or parsed.
+/// Read the full transcript for one session.
+///
+/// Returns a default [`SessionHistory`] when the file can't be found or
+/// opened - no messages and a **zero** compaction count, which is
+/// indistinguishable from a session that never compacted. Each of those
+/// paths logs `UNREAD_TRANSCRIPT_COUNT_NOTE` so the difference is
+/// recoverable from the log even though it is not from the return value.
 pub fn get_session_messages(
     config_dir: &Path,
     session_id: &str,
