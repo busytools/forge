@@ -169,8 +169,10 @@ wire-conformance baselines under
 `crates/forge-test-harness/baselines/sdk/`, which are live captures
 rather than prose. Replay guarantees that every inbound line still
 round-trips through the decoder without `DecodedLine::Unknown` or a
-decode error. It does not compare recorded outbound content against
-what forge would send today, so a baseline can carry a stale copy of
+decode error. Apart from the `initialize` handshake's
+`protocolVersion`, which is re-dispatched through today's code and
+compared, it does not compare recorded outbound content against what
+forge would send today, so a baseline can carry a stale copy of
 forge's own MCP tool names and stay green.
 
 ## Hard rules
