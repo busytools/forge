@@ -718,6 +718,7 @@ pub(super) fn apply_session_update_connected(
     available_models: Vec<forge_primitives::AvailableModel>,
     mode: Option<forge_primitives::ModeState>,
     history: &[forge_primitives::Message],
+    compaction_count: u32,
 ) {
     use super::super::connect::type_converters::map_available_models;
     // Defensive synthetic→real migration: in production, the
@@ -783,6 +784,10 @@ pub(super) fn apply_session_update_connected(
         history,
         was_active,
     );
+    // After the presentation chain, not before: its `reset_for_new_session`
+    // assigns a whole default `SessionUsageState`, so a seed set earlier
+    // is wiped.
+    seed_compaction_count(app, key, compaction_count);
     // Resolve the tab's project identity from its (now-applied) cwd,
     // unless a preceding `Spawning` already named it. The boot project
     // and workers reach Connected without a Spawning, so this is where
@@ -809,6 +814,7 @@ pub(super) fn apply_session_update_session_replaced(
     available_models: Vec<forge_primitives::AvailableModel>,
     mode: Option<forge_primitives::ModeState>,
     history: &[forge_primitives::Message],
+    compaction_count: u32,
 ) {
     use super::super::connect::type_converters::map_available_models;
     let session_id = model::SessionId::new(session_id.into_string());
@@ -825,6 +831,7 @@ pub(super) fn apply_session_update_session_replaced(
             mode,
             history,
         );
+        seed_compaction_count(app, key, compaction_count);
         return;
     }
     // The replaced session is not the one on screen. Migrate its bucket
@@ -862,6 +869,29 @@ pub(super) fn apply_session_update_session_replaced(
         bucket.pending_cancel = false;
         bucket.is_compacting = false;
         bucket.pending_compact_clear = false;
+    }
+    seed_compaction_count(app, key, compaction_count);
+}
+
+/// Set a session's compaction count from what its transcript records.
+///
+/// Assignment, not accumulation: the transcript already holds every
+/// boundary counted live this run, so re-seeding on a later Connected
+/// lands on the same total.
+fn seed_compaction_count(app: &mut App, key: &SessionKey, compaction_count: u32) {
+    if let Some(session) = app.session_mut(key) {
+        session.session_usage.compaction_count = compaction_count;
+    } else {
+        // This is the count's only durable source, so a missed bucket
+        // silently costs the whole number rather than one update.
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "compaction_seed_dropped",
+            outcome = "dropped",
+            session_key = %key.as_str(),
+            compaction_count,
+            "no bucket for the seeded compaction count; session will read zero",
+        );
     }
 }
 
@@ -976,6 +1006,37 @@ mod stamp_project_tests {
             app.sessions.get(&key).and_then(|b| b.project.clone()).as_deref(),
             Some("stampproj"),
             "force = true re-stamps from the cwd",
+        );
+    }
+}
+
+#[cfg(test)]
+mod seed_compaction_count_tests {
+    use super::seed_compaction_count;
+    use crate::app::App;
+    use crate::app::session::UiSession;
+    use forge_workspace::SessionKey;
+
+    /// Assignment, not accumulation. The transcript the seed comes from
+    /// already contains every boundary counted live this run, so adding
+    /// would double each one. Asserted against a bucket that already
+    /// carries a live count, because the reducer paths that reach this
+    /// helper all zero the count on the way in and so cannot tell the
+    /// two apart.
+    #[test]
+    fn seeding_replaces_a_live_count_rather_than_adding_to_it() {
+        let mut app = App::test_default();
+        let key = SessionKey::from_session_id("seeded".to_owned());
+        let mut bucket = UiSession::new(key.clone());
+        bucket.session_usage.compaction_count = 3;
+        app.sessions.insert(key.clone(), bucket);
+
+        seed_compaction_count(&mut app, &key, 5);
+
+        assert_eq!(
+            app.sessions.get(&key).expect("bucket").session_usage.compaction_count,
+            5,
+            "the transcript count is the whole answer, not an addition to it",
         );
     }
 }

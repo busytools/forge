@@ -112,7 +112,7 @@ pub use public_types::{
     AccountInfo, ContextUsageCategory, ContextUsageResponse, ForgeAccountIdentity, McpServerConfig,
     McpServerConnectionStatus, McpServerInfo, McpServerStatus, McpStatusResponse,
     McpToolAnnotations, McpToolInfo, SDKSessionInfo, SandboxIgnoreViolations, SandboxNetworkConfig,
-    SandboxSettings, SessionMessage, SessionMessageKind, StreamEvent,
+    SandboxSettings, SessionHistory, SessionMessage, SessionMessageKind, StreamEvent,
 };
 pub use question::{
     QuestionAnnotation, QuestionOption, QuestionOutcome, QuestionPrompt, QuestionRequest,

@@ -324,10 +324,10 @@ async fn emit_connected(
         bridge_commands::build_mode_state_from_supported(m, &supported)
     });
 
-    let history_updates = resume_id.and_then(|prev_session_id| {
-        let messages = load_history_messages(config_dir, prev_session_id, cwd, session_id);
-        if messages.is_empty() { None } else { Some(messages) }
-    });
+    let resumed = resume_id
+        .map(|prev_session_id| load_history_messages(config_dir, prev_session_id, cwd, session_id));
+    let compaction_count = resumed.as_ref().map_or(0, |r| r.compaction_count);
+    let history_updates = resumed.map(|r| r.messages).filter(|messages| !messages.is_empty());
 
     if event_tx
         .send(AgentEvent::Connected {
@@ -337,6 +337,7 @@ async fn emit_connected(
             available_models,
             mode,
             history_updates,
+            compaction_count,
         })
         .is_err()
     {
@@ -402,16 +403,25 @@ async fn emit_connected(
     }
 }
 
+/// Replayable history for a resumed session plus the compaction count
+/// its transcript records - the only place that count survives a resume.
+struct ResumedHistory {
+    messages: Vec<forge_primitives::Message>,
+    compaction_count: u32,
+}
+
 fn load_history_messages(
     config_dir: &Path,
     prev_session_id: &str,
     cwd: &str,
     session_id: &str,
-) -> Vec<forge_primitives::Message> {
+) -> ResumedHistory {
     let dir = if cwd.is_empty() { None } else { Some(cwd) };
-    let messages =
+    let history =
         crate::userdata::catalog::scan::get_session_messages(config_dir, prev_session_id, dir);
-    let raw: Vec<serde_json::Value> = messages
+    let compaction_count = history.compaction_count;
+    let raw: Vec<serde_json::Value> = history
+        .messages
         .into_iter()
         .map(|m| {
             let kind = match m.kind {
@@ -437,7 +447,7 @@ fn load_history_messages(
             _ => {}
         }
     }
-    synthesized
+    ResumedHistory { messages: synthesized, compaction_count }
 }
 
 async fn list_recent_sessions(
@@ -1533,6 +1543,38 @@ mod tests {
         assert!(!super::is_reserved_env_key("ANTHROPIC_BASE_URL"));
         assert!(!super::is_reserved_env_key("ANTHROPIC_AUTH_TOKEN"));
         assert!(!super::is_reserved_env_key("ANTHROPIC_SMALL_FAST_MODEL"));
+    }
+
+    /// The wire between the two ends that were already pinned: the scan
+    /// counts and the TUI seeds, but nothing checked that
+    /// `load_history_messages` carries the number across unchanged. An
+    /// off-by-one here ships green against both of those.
+    #[test]
+    fn load_history_messages_carries_the_transcript_count_across_verbatim() {
+        use std::fmt::Write as _;
+
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let session_id = "550e8400-e29b-41d4-a716-446655440000";
+        let project_dir = config_dir.path().join("projects").join("any-project-key");
+        std::fs::create_dir_all(&project_dir).expect("project dir");
+        let mut jsonl = String::new();
+        for i in 0..3 {
+            let _ = writeln!(
+                jsonl,
+                "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"turn {i}\"}}}}"
+            );
+            jsonl.push_str(
+                "{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"compactMetadata\":{\"trigger\":\"auto\",\"preTokens\":1002459}}\n",
+            );
+        }
+        std::fs::write(project_dir.join(format!("{session_id}.jsonl")), jsonl).expect("write");
+
+        // Empty cwd -> the scan searches every project dir for the file,
+        // so the test does not depend on the cwd-to-project-key hash.
+        let resumed = super::load_history_messages(config_dir.path(), session_id, "", session_id);
+
+        assert_eq!(resumed.compaction_count, 3, "three boundaries reach the Connected event");
+        assert_eq!(resumed.messages.len(), 3, "and the three turns still replay");
     }
 
     #[test]

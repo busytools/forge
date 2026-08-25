@@ -175,6 +175,7 @@ impl SessionTask {
                 available_models,
                 mode,
                 history_updates,
+                compaction_count,
             } => {
                 let history = history_updates.unwrap_or_default();
                 let real_key = SessionKey::from_session_id(session_id.clone());
@@ -267,6 +268,7 @@ impl SessionTask {
                         available_models,
                         mode,
                         history,
+                        compaction_count,
                     });
                 } else {
                     self.rekey_to(&real_key);
@@ -310,6 +312,7 @@ impl SessionTask {
                         available_models,
                         mode,
                         history,
+                        compaction_count,
                     });
                     // Drain any peer prompts buffered while this
                     // session was pre-Connected (pushed by
@@ -1855,6 +1858,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history_updates: None,
+                compaction_count: 0,
             },
         );
 
@@ -1892,6 +1896,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history_updates: None,
+                compaction_count: 0,
             },
         );
 
@@ -1950,6 +1955,7 @@ mod tests {
             available_models: Vec::new(),
             mode: None,
             history_updates: None,
+            compaction_count: 0,
         });
 
         assert!(
@@ -2037,6 +2043,7 @@ mod tests {
             available_models: Vec::new(),
             mode: None,
             history_updates: None,
+            compaction_count: 0,
         });
 
         // Drain dispatches Command::Prompt for each buffered entry,
@@ -2087,6 +2094,7 @@ mod tests {
             available_models: Vec::new(),
             mode: None,
             history_updates: None,
+            compaction_count: 0,
         }
     }
 
@@ -2221,6 +2229,52 @@ mod tests {
         assert_eq!(lead_bucket[0].text, "lead work");
     }
 
+    /// The count has coverage at both ends - the scan produces it, the
+    /// TUI seeds from it - and this is the layer in between. Both emitted
+    /// arms are checked because a task that has connected before emits
+    /// `SessionReplaced` instead of `Connected`, and forcing the field to
+    /// zero on either one is invisible to every other test here.
+    #[tokio::test]
+    async fn translate_event_carries_a_non_zero_compaction_count_on_both_arms() {
+        for (connected_once, arm) in [(false, "Connected"), (true, "SessionReplaced")] {
+            let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+            let session_key = SessionKey::from_session_id("count-through-uuid");
+            let domain =
+                Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
+            let (handle, _agent_cmd_rx) = Agent::testing_stub();
+            let (_cmd_tx, command_rx) =
+                tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+            let mut task = SessionTask {
+                key: session_key.clone(),
+                handle: Arc::new(handle),
+                command_rx,
+                domain: Arc::clone(&domain),
+                update_tx: workspace.update_sender(),
+                spawn_key: None,
+                connected_once,
+                workspace: Arc::downgrade(&workspace),
+            };
+
+            let mut event = connected_event(session_key.as_str(), "/tmp/count");
+            if let AgentEvent::Connected { compaction_count, .. } = &mut event {
+                *compaction_count = 7;
+            }
+            task.translate_event(event);
+
+            let mut seen = None;
+            while let Ok(u) = update_rx.try_recv() {
+                match u {
+                    SessionUpdate::Connected { compaction_count, .. }
+                    | SessionUpdate::SessionReplaced { compaction_count, .. } => {
+                        seen = Some(compaction_count);
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(seen, Some(7), "{arm} must carry the count through unchanged");
+        }
+    }
+
     /// The account-switch re-spawn seeds `connected_once = true`, so
     /// the new task's first Connected emits `SessionReplaced` (not a
     /// fresh Connected) carrying the resumed history. The TUI reducer
@@ -2276,6 +2330,7 @@ mod tests {
             available_models: Vec::new(),
             mode: None,
             history_updates: Some(history),
+            compaction_count: 0,
         });
 
         let mut replaced_history_len = None;

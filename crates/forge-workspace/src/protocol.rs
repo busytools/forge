@@ -551,6 +551,9 @@ pub enum SessionUpdate {
         available_models: Vec<AvailableModel>,
         mode: Option<ModeState>,
         history: Vec<Message>,
+        /// Compactions the resumed transcript records. Seeds the
+        /// per-session count, which has no other durable source.
+        compaction_count: u32,
     },
     /// `key` is the replacement session; `previous_key` is the bucket
     /// it supersedes (the task's key before `rekey_to`). The two differ
@@ -566,6 +569,9 @@ pub enum SessionUpdate {
         available_models: Vec<AvailableModel>,
         mode: Option<ModeState>,
         history: Vec<Message>,
+        /// Compactions the resumed transcript records. Seeds the
+        /// per-session count, which has no other durable source.
+        compaction_count: u32,
     },
     ConnectionFailed {
         key: SessionKey,

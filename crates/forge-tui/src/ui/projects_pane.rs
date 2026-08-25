@@ -1328,8 +1328,19 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         .map_or_else(|| "\u{2014}".to_owned(), format_token_count);
     let ctx_size_chars = ctx_size_text.chars().count();
     let ctx_size_budget = usize::from(width).saturating_sub(PANEL_RIGHT_GUTTER);
-    let ctx_size_fill = ctx_size_budget.saturating_sub(ctx_size_chars);
+    // Shares this row's otherwise-blank left half so the panel's fixed
+    // height holds.
+    let compactions = app.session_usage().compaction_count;
+    let compaction_text = match compactions {
+        0 => String::new(),
+        1 => " 1 compaction".to_owned(),
+        n => format!(" {n} compactions"),
+    };
+    let ctx_size_fill = ctx_size_budget
+        .saturating_sub(ctx_size_chars)
+        .saturating_sub(compaction_text.chars().count());
     lines.push(Line::from(vec![
+        Span::styled(compaction_text, Style::default().fg(theme::DIM)),
         Span::raw(" ".repeat(ctx_size_fill)),
         Span::styled(ctx_size_text, Style::default().fg(theme::DIM)),
     ]));
@@ -1925,6 +1936,76 @@ mod tests {
             worker_row.contains('2') && worker_row.contains('1'),
             "worker row should render outgoing=2 + incoming=1; got: {worker_row}"
         );
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect::<String>()
+    }
+
+    /// Renders on the Ctx bar's size row, whose left half is otherwise
+    /// blank, so the panel's fixed row count does not move.
+    #[test]
+    fn the_ctx_size_row_carries_the_compaction_count() {
+        let mut app = App::test_default();
+        app.session_usage_mut().compaction_count = 54;
+        let rendered = build_account_panel_lines(&app, 32)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("54 compactions"), "got:\n{rendered}");
+    }
+
+    #[test]
+    fn one_compaction_reads_singular() {
+        let mut app = App::test_default();
+        app.session_usage_mut().compaction_count = 1;
+        let rendered = build_account_panel_lines(&app, 32)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("1 compaction"), "got:\n{rendered}");
+        assert!(!rendered.contains("1 compactions"), "got:\n{rendered}");
+    }
+
+    /// The compaction text and the context-window size share one row, so
+    /// the fill between them has to be reserved for both. At Medium tier
+    /// the pane is 24 columns and the two together leave about four
+    /// spare, so an unreserved fill pushes the row past the pane instead
+    /// of tightening between them.
+    #[test]
+    fn the_shared_ctx_size_row_stays_within_the_pane_width() {
+        for width in [24_u16, 32] {
+            let mut app = App::test_default();
+            app.session_usage_mut().compaction_count = 54;
+            app.session_usage_mut().context_max_tokens = Some(1_000_000);
+            let row = build_account_panel_lines(&app, width)
+                .iter()
+                .map(line_text)
+                .find(|t| t.contains("compactions"))
+                .expect("the shared row renders");
+            assert!(
+                row.chars().count() <= usize::from(width),
+                "shared row overruns a {width}-column pane at {} chars: [{row}]",
+                row.chars().count()
+            );
+            assert!(row.ends_with("1M"), "the size it shares with is not clipped: [{row}]");
+        }
+    }
+
+    /// A session that has never compacted shows nothing rather than a
+    /// zero - the row is shared with the context-window size and an
+    /// always-on `0 compactions` is noise on every fresh session.
+    #[test]
+    fn a_never_compacted_session_renders_no_compaction_text() {
+        let app = App::test_default();
+        let rendered = build_account_panel_lines(&app, 32)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!rendered.contains("compaction"), "got:\n{rendered}");
     }
 
     #[test]

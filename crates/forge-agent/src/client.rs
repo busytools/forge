@@ -50,6 +50,9 @@ pub enum AgentEvent {
         available_models: Vec<types::AvailableModel>,
         mode: Option<types::ModeState>,
         history_updates: Option<Vec<types::Message>>,
+        /// Compactions the resumed transcript records, seeding the
+        /// per-session count. `0` for a fresh session.
+        compaction_count: u32,
     },
     AuthRequired {
         method_name: String,

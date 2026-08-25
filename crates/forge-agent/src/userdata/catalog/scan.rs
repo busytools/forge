@@ -17,7 +17,7 @@ use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
 use forge_primitives::{
-    FORGE_WORKER_TAG_PREFIX, SDKSessionInfo, SessionMessage, SessionMessageKind,
+    FORGE_WORKER_TAG_PREFIX, SDKSessionInfo, SessionHistory, SessionMessage, SessionMessageKind,
 };
 use forge_sdk::projects_dir_for;
 
@@ -88,16 +88,23 @@ fn canonicalize_path(path: &str) -> String {
     resolved.nfc().collect()
 }
 
-fn parse_session_messages<R: std::io::Read>(reader: R) -> Vec<SessionMessage> {
+fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
     let mut out = Vec::new();
+    let mut compaction_count = 0_u32;
     for (idx, line_res) in BufReader::new(reader).lines().enumerate() {
         let line = match line_res {
             Ok(l) => l,
             Err(e) => {
+                // The compaction count is also truncated here, and it is
+                // rendered hidden at zero, so without naming it a torn
+                // read is indistinguishable from a session that never
+                // compacted. The transcript dir is file-sync replicated,
+                // so a torn read is a live case.
                 tracing::warn!(
                     line_no = idx,
                     error = %e,
-                    "session scan: read failed; truncating message list"
+                    compactions_counted_before_truncation = compaction_count,
+                    "session scan: read failed; truncating both the message list and the compaction count"
                 );
                 break;
             }
@@ -133,6 +140,15 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> Vec<SessionMessage> {
                 }
                 _ => continue,
             },
+            // Not a replayable message, but the only durable record of
+            // how often this session has compacted - nothing else
+            // survives a resume.
+            Some("system")
+                if value.get("subtype").and_then(Value::as_str) == Some("compact_boundary") =>
+            {
+                compaction_count = compaction_count.saturating_add(1);
+                continue;
+            }
             _ => continue,
         };
         if value.get("parent_tool_use_id").is_some_and(|v| !v.is_null()) {
@@ -148,7 +164,7 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> Vec<SessionMessage> {
             parent_tool_use_id: None,
         });
     }
-    out
+    SessionHistory { messages: out, compaction_count }
 }
 
 /// Build a `{"role":"user","content":[{queued_command}]}` envelope from
@@ -318,9 +334,9 @@ pub fn get_session_messages(
     config_dir: &Path,
     session_id: &str,
     directory: Option<&str>,
-) -> Vec<SessionMessage> {
+) -> SessionHistory {
     if !is_valid_uuid(session_id) {
-        return Vec::new();
+        return SessionHistory::default();
     }
     let file_name = format!("{session_id}.jsonl");
     let candidate = if let Some(dir) = directory {
@@ -332,7 +348,7 @@ pub fn get_session_messages(
     };
     let Some(path) = candidate else {
         tracing::debug!(%session_id, "get_session_messages: no on-disk file for session");
-        return Vec::new();
+        return SessionHistory::default();
     };
     let file = match fs::File::open(&path) {
         Ok(file) => file,
@@ -343,7 +359,7 @@ pub fn get_session_messages(
                 %err,
                 "get_session_messages: open failed; backfill renders empty",
             );
-            return Vec::new();
+            return SessionHistory::default();
         }
     };
     parse_session_messages(file)
@@ -945,7 +961,7 @@ mod tests {
 {"type":"attachment","attachment":{"type":"queued_command","prompt":"queued prompt","commandMode":"prompt"},"uuid":"a1","session_id":"s1"}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]},"uuid":"as1","session_id":"s1"}
 "#;
-        let msgs = parse_session_messages(jsonl.as_bytes());
+        let msgs = parse_session_messages(jsonl.as_bytes()).messages;
         assert_eq!(msgs.len(), 3, "expected 3 rows (user + synthesised user + assistant)");
         assert!(matches!(msgs[0].kind, SessionMessageKind::User));
         assert!(matches!(msgs[1].kind, SessionMessageKind::User), "attachment row hoisted to User");
@@ -962,6 +978,34 @@ mod tests {
         assert!(matches!(msgs[2].kind, SessionMessageKind::Assistant));
     }
 
+    /// The count has to come out of the same streamed pass that builds
+    /// the messages. Transcripts that have compacted are the 100 MB+ ones
+    /// (a session compacts because it is huge), so a second read of the
+    /// file to count them would land squarely on the resume path for
+    /// exactly the sessions this number is about.
+    #[test]
+    fn parse_session_messages_counts_compaction_boundaries() {
+        let jsonl = r#"{"type":"user","message":{"role":"user","content":"one"},"uuid":"u1","session_id":"s1"}
+{"type":"system","subtype":"compact_boundary","uuid":"cb1","session_id":"s1","compactMetadata":{"trigger":"auto","preTokens":1002459}}
+{"type":"assistant","message":{"role":"assistant","content":[]},"uuid":"as1","session_id":"s1"}
+{"type":"system","subtype":"compact_boundary","uuid":"cb2","session_id":"s1","compactMetadata":{"trigger":"manual","preTokens":53903}}
+{"type":"system","subtype":"other_thing","uuid":"x1","session_id":"s1"}
+"#;
+        let history = parse_session_messages(jsonl.as_bytes());
+        assert_eq!(
+            history.compaction_count, 2,
+            "both boundaries counted, the other system row not"
+        );
+        assert_eq!(history.messages.len(), 2, "system rows still stay out of the message list");
+    }
+
+    #[test]
+    fn parse_session_messages_counts_no_boundaries_in_a_never_compacted_session() {
+        let jsonl = r#"{"type":"user","message":{"role":"user","content":"one"},"uuid":"u1","session_id":"s1"}
+"#;
+        assert_eq!(parse_session_messages(jsonl.as_bytes()).compaction_count, 0);
+    }
+
     #[test]
     fn parse_session_messages_skips_attachment_without_queued_command() {
         // Other attachment subtypes (image, document, etc.) are not
@@ -969,7 +1013,7 @@ mod tests {
         let jsonl = r#"{"type":"attachment","attachment":{"type":"image","source":{}},"uuid":"a1","session_id":"s1"}
 {"type":"assistant","message":{"role":"assistant","content":[]},"uuid":"as1","session_id":"s1"}
 "#;
-        let msgs = parse_session_messages(jsonl.as_bytes());
+        let msgs = parse_session_messages(jsonl.as_bytes()).messages;
         assert_eq!(msgs.len(), 1, "non-queued_command attachment must be skipped");
         assert!(matches!(msgs[0].kind, SessionMessageKind::Assistant));
     }
@@ -1161,10 +1205,12 @@ mod tests {
             "{\"type\":\"user\",\"message\":{\"content\":\"hello from the worktree\"}}\n",
         );
 
-        let from_worktree = get_session_messages(config_dir.path(), session_id, Some(worktree));
+        let from_worktree =
+            get_session_messages(config_dir.path(), session_id, Some(worktree)).messages;
         assert_eq!(from_worktree.len(), 1, "resume reads the JSONL under the worktree key");
 
-        let from_repo_root = get_session_messages(config_dir.path(), session_id, Some(repo_root));
+        let from_repo_root =
+            get_session_messages(config_dir.path(), session_id, Some(repo_root)).messages;
         assert!(
             from_repo_root.is_empty(),
             "the same session id under the repo-root key is not where a git worker reads",

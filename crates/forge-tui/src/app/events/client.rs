@@ -108,6 +108,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             available_models,
             mode,
             history,
+            compaction_count,
         } => {
             session::apply_session_update_connected(
                 app,
@@ -118,6 +119,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 available_models,
                 mode,
                 &history,
+                compaction_count,
             );
             post_connect_refreshes(app, &key);
         }
@@ -130,6 +132,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             available_models,
             mode,
             history,
+            compaction_count,
         } => {
             session::apply_session_update_session_replaced(
                 app,
@@ -141,6 +144,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 available_models,
                 mode,
                 &history,
+                compaction_count,
             );
             post_connect_refreshes(app, &key);
         }
@@ -1282,6 +1286,7 @@ mod tests {
             available_models: Vec::new(),
             mode: None,
             history: Vec::new(),
+            compaction_count: 0,
         }
     }
 
@@ -1880,6 +1885,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: Vec::new(),
+                compaction_count: 0,
             },
         );
         let bucket = app.sessions.get(&background).expect("bucket present");
@@ -1944,6 +1950,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: Vec::new(),
+                compaction_count: 0,
             },
         );
 
@@ -1983,6 +1990,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: Vec::new(),
+                compaction_count: 0,
             },
         );
 
@@ -2176,6 +2184,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: Vec::new(),
+                compaction_count: 0,
             },
         );
 
@@ -2230,6 +2239,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: Vec::new(),
+                compaction_count: 0,
             },
         );
 

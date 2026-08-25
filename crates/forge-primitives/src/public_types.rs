@@ -129,6 +129,19 @@ pub struct SessionMessage {
     pub parent_tool_use_id: Option<String>,
 }
 
+/// A session transcript's replayable messages plus the compaction count
+/// recovered from the same pass over the file.
+///
+/// The count cannot be derived from `messages`: a `compact_boundary` row
+/// is `type: "system"` and never becomes a `SessionMessage`.
+#[derive(Debug, Default)]
+pub struct SessionHistory {
+    /// User / assistant turns, in file order.
+    pub messages: Vec<SessionMessage>,
+    /// `compact_boundary` rows seen in the transcript.
+    pub compaction_count: u32,
+}
+
 /// User / assistant discriminator. Wire shape:
 /// `Literal["user", "assistant"]` on `SessionMessage.type`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
