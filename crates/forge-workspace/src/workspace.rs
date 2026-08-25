@@ -3465,10 +3465,12 @@ impl Workspace {
         crate::store::dynamic_workers::insert(db, worker)
     }
 
-    /// Delete a dynamic worker's persisted row so it never re-spawns.
-    /// Keyed by `(project_key, label)`; a no-op for static workers (they
-    /// have no row) and when the DB isn't open. Called from
-    /// `spawn::teardown_worker`, the shared close/despawn routine.
+    /// Delete a worker's persisted row so it never re-spawns. Keyed by
+    /// `(project_key, label)`; a no-op when the DB isn't open. Since the
+    /// boot back-fill a `static_workers` label has a row too, so this
+    /// removes that as well and the next boot re-creates it from files.
+    /// Called from `spawn::teardown_worker`, the shared close/despawn
+    /// routine.
     pub(crate) fn delete_dynamic_worker(&self, project_key: &ProjectKey, label: &str) {
         if let Some(db) = self.db.lock().as_ref()
             && let Err(error) =
@@ -5052,8 +5054,10 @@ impl Workspace {
             // reply, before this async failure. A worktree-creation
             // failure is a hard removal (the worker never started), so
             // delete the row too - otherwise it zombie-re-spawns every
-            // restart despite a visibly-failed spawn. No-op for static
-            // workers (no row). The transition-to-Failed path below
+            // restart despite a visibly-failed spawn. Since the boot
+            // back-fill a `static_workers` label has a row as well, so
+            // its row goes too and the next boot re-creates it from
+            // files, retrying the spawn. The transition-to-Failed path below
             // deliberately keeps the row: a Failed-but-visible worker
             // wasn't despawned, so it should re-spawn to recover or
             // re-fail visibly.

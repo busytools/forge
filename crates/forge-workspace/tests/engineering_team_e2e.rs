@@ -100,8 +100,9 @@ async fn config_load_through_team_dispatch() {
         // Team-spawn under a tokio runtime goes through
         // `spawn_team_for_lead_with_catalog_scan` which dispatches the
         // SpawnWorker commands from a tokio::spawn after an async
-        // catalog scan + the file-driven charter load. Poll the
-        // dispatch buffer briefly to let that async task land.
+        // catalog scan. The charter rides the worker's stored row, which
+        // the boot back-fill lifted from the files. Poll the dispatch
+        // buffer briefly to let that async task land.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut dispatched: Vec<Command> = Vec::new();
         while std::time::Instant::now() < deadline {

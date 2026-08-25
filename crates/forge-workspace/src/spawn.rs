@@ -1073,10 +1073,11 @@ fn teardown_worker(
 ) -> Option<crate::mcp::workers::types::WorkerEntry> {
     let entry = workspace.remove_latest_worker(project_key, label)?;
     // Both entry points into this routine (the Projects-pane close and
-    // the `workers__despawn` MCP tool) delete the persisted dynamic-
-    // worker row so it never re-spawns. A no-op for static workers (no
-    // row). Cancel and the lead-close cascade go through other paths and
-    // deliberately leave the row intact.
+    // the `workers__despawn` MCP tool) delete the persisted worker row so
+    // it never re-spawns. Since the boot back-fill a `static_workers`
+    // label has a row too, so its row goes as well; the next boot
+    // re-creates it from files. Cancel and the lead-close cascade go
+    // through other paths and deliberately leave the row intact.
     workspace.delete_dynamic_worker(project_key, label);
     // A static worker re-spawns from forge.toml, so only a dynamic worker's
     // close clears its durable state (crons + Gotify subs).

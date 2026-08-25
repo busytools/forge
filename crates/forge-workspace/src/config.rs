@@ -92,8 +92,9 @@ struct ProjectEntry {
     /// Static (config-defined) worker role labels to auto-spawn
     /// alongside this project's lead, each resolving to a charter + kick
     /// under `~/.claude/forge-team/<label>/`. Dynamic (LLM-spawned)
-    /// workers are separate and persisted to the redb store, not listed
-    /// here. Empty / missing means no static workers.
+    /// workers are not listed here; since the boot back-fill both kinds
+    /// carry a row in the redb store. Empty / missing means no static
+    /// workers.
     #[serde(default)]
     static_workers: Vec<String>,
 }
