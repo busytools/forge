@@ -2797,6 +2797,25 @@ impl Workspace {
         // through the same resume-map trigger; charter/kick come from
         // their DB row rather than files.
         let dynamic = self.dynamic_workers_for_project(&project_key);
+        // A dynamic row wins over a `static_workers` entry of the same label:
+        // the row is the live worker's own record. This is not file-versus-
+        // inline - a `workers__spawn` with no charter stores `charter.md`'s
+        // text into the row, so the row's charter is often a snapshot of that
+        // same file. The cost is that once a row exists for a label, editing
+        // its `charter.md` stops taking effect on boot until the row is
+        // deleted. Filtered before the branch split so every boot path below
+        // inherits it.
+        let (static_workers, shadowed): (Vec<String>, Vec<String>) = static_workers
+            .into_iter()
+            .partition(|label| !dynamic.iter().any(|w| w.label == *label));
+        if !shadowed.is_empty() {
+            tracing::info!(
+                target: "forge_workspace::team",
+                project = %project_key.as_str(),
+                labels = %shadowed.join(", "),
+                "static_workers entries superseded by a dynamic worker row; their charter/kick files are not read while the row exists",
+            );
+        }
         if static_workers.is_empty() && dynamic.is_empty() {
             return;
         }
@@ -12123,6 +12142,96 @@ mod team_spawn_tests {
             assert_eq!(label, "scratch");
             assert_eq!(charter, "resume the scratch task", "charter comes from the DB row");
         }
+    }
+
+    /// Write a loadable static role under the redirected forge-team root,
+    /// scoped to `namespace` the way `resolve_role` looks it up.
+    fn write_static_role(root: &std::path::Path, namespace: &str, label: &str) {
+        let dir = root.join(namespace).join(label);
+        std::fs::create_dir_all(&dir).expect("role dir");
+        std::fs::write(dir.join("charter.md"), format!("charter from the file for {label}"))
+            .expect("charter");
+        std::fs::write(dir.join("kick.md"), format!("kick from the file for {label}"))
+            .expect("kick");
+    }
+
+    /// A label in BOTH rosters spawns once, from its dynamic row. The policy
+    /// and its cost are stated once, at the filter in
+    /// `spawn_team_for_lead_with_catalog_scan`.
+    #[test]
+    fn catalog_scan_prefers_the_dynamic_row_over_a_same_label_static_entry() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let dir = tempfile::tempdir().expect("tempdir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let team_root = tempfile::tempdir().expect("team root");
+        let _guard = crate::team::override_forge_team_root_for_test(team_root.path().to_path_buf());
+        write_static_role(team_root.path(), "data-modules", "steward");
+
+        let project_key = ProjectKey::new("data-modules");
+        let _ = workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+            project_key: "data-modules".to_owned(),
+            label: "steward".to_owned(),
+            charter: "charter from the row".to_owned(),
+            kick: Some("kick from the row".to_owned()),
+            resume_kick: None,
+        });
+        workspace.enable_test_dispatch_intercept();
+
+        workspace.spawn_team_for_lead_with_catalog_scan(
+            "lead-uuid".to_owned(),
+            project_key,
+            std::path::PathBuf::from("/tmp/data-modules"),
+            "data-modules".to_owned(),
+            vec!["steward".to_owned()],
+            false,
+        );
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let spawns: Vec<&Command> =
+            dispatched.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).collect();
+        assert_eq!(spawns.len(), 1, "a label in both rosters dispatches exactly one spawn");
+        let Command::SpawnWorker { label, charter, kick, .. } = spawns[0] else {
+            panic!("expected SpawnWorker");
+        };
+        assert_eq!(label, "steward");
+        assert_eq!(charter, "charter from the row", "the row wins over the static entry");
+        assert_eq!(kick.as_deref(), Some("kick from the row"), "and it brings the row's kick");
+    }
+
+    /// A label present ONLY in `static_workers` still spawns from its
+    /// files. The dedup must not cost anyone their static workers.
+    #[test]
+    fn catalog_scan_still_spawns_a_static_only_label_from_files() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let dir = tempfile::tempdir().expect("tempdir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let team_root = tempfile::tempdir().expect("team root");
+        let _guard = crate::team::override_forge_team_root_for_test(team_root.path().to_path_buf());
+        write_static_role(team_root.path(), "data-modules", "planner");
+
+        workspace.enable_test_dispatch_intercept();
+        workspace.spawn_team_for_lead_with_catalog_scan(
+            "lead-uuid".to_owned(),
+            ProjectKey::new("data-modules"),
+            std::path::PathBuf::from("/tmp/data-modules"),
+            "data-modules".to_owned(),
+            vec!["planner".to_owned()],
+            false,
+        );
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let spawns: Vec<&Command> =
+            dispatched.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).collect();
+        assert_eq!(spawns.len(), 1, "a static-only label still spawns");
+        let Command::SpawnWorker { label, charter, .. } = spawns[0] else {
+            panic!("expected SpawnWorker");
+        };
+        assert_eq!(label, "planner");
+        assert_eq!(charter, "charter from the file for planner", "charter still comes from files");
     }
 
     /// A dynamic worker whose row was deleted (despawn / close) does NOT
