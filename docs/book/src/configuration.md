@@ -71,9 +71,11 @@ Project names are the argument `forge <PROJECT>` takes, and the key
 ### `static_workers`
 
 Each label resolves to a charter and an initial kick prompt on disk.
-Labels are validated at load, but the files are not looked up until a
-worker actually spawns, so a label naming a role you have not created
-yet loads fine and fails at spawn time.
+Labels are validated at load. The files are read at startup, when forge
+back-fills a stored worker record for any label that has none, so a
+label naming a role you have not created yet loads fine and is skipped
+there. From then on the stored record is what spawns the worker, and
+editing the files no longer changes it.
 
 Label validation at load rejects: an empty label, a leading `/`, and
 any path segment equal to `.`, `..`, or empty (which a `//` would
