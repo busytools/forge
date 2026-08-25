@@ -2805,10 +2805,17 @@ impl Workspace {
         // its `charter.md` stops taking effect on boot until the row is
         // deleted. Filtered before the branch split so every boot path below
         // inherits it.
-        let static_workers: Vec<String> = static_workers
+        let (static_workers, shadowed): (Vec<String>, Vec<String>) = static_workers
             .into_iter()
-            .filter(|label| !dynamic.iter().any(|w| w.label == *label))
-            .collect();
+            .partition(|label| !dynamic.iter().any(|w| w.label == *label));
+        if !shadowed.is_empty() {
+            tracing::info!(
+                target: "forge_workspace::team",
+                project = %project_key.as_str(),
+                labels = %shadowed.join(", "),
+                "static_workers entries superseded by a dynamic worker row; their charter/kick files are not read while the row exists",
+            );
+        }
         if static_workers.is_empty() && dynamic.is_empty() {
             return;
         }
