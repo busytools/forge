@@ -1566,10 +1566,10 @@ config_dir = "/tmp/acct-a"
     }
 
     #[test]
-    fn arbitrary_role_label_accepted_existence_checked_lazily_at_spawn() {
+    fn arbitrary_role_label_accepted_existence_checked_after_config_load() {
         // Post-#220 the static_workers field is an open set: any
         // well-formed label is accepted at config-load. The disk-side
-        // existence check fires when a worker actually spawns.
+        // existence check fires later, in the boot back-fill.
         let tmp = tempfile::tempdir().expect("tempdir");
         write_config(
             tmp.path(),
