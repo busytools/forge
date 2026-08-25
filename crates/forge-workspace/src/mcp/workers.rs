@@ -2467,9 +2467,6 @@ mod tests {
             text.contains("static_workers") && text.contains("forge-team"),
             "the refusal names the static-role case and where those instructions live: {text}",
         );
-        // All three fields this tool revises, not just the two that share a
-        // name with the spawn args - the third is the whole reason someone
-        // reaches for it on a static role.
         assert!(
             text.contains("charter") && text.contains("kick") && text.contains("resume-kick"),
             "names every file the static-role case would need to edit: {text}",
