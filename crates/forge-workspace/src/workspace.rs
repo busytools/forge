@@ -2919,7 +2919,8 @@ impl Workspace {
             &config_dir,
             session_id,
             None,
-        );
+        )
+        .messages;
         let user_turn_count = messages
             .iter()
             .filter(|m| matches!(m.kind, forge_primitives::SessionMessageKind::User))

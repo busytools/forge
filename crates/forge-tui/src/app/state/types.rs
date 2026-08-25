@@ -561,6 +561,11 @@ pub struct UsageState {
 pub struct SessionUsageState {
     pub last_compaction_trigger: Option<model::CompactionTrigger>,
     pub last_compaction_pre_tokens: Option<u64>,
+    /// Compactions this session has been through: seeded at connect from
+    /// the transcript, incremented on each live boundary. Seeded rather
+    /// than counted per run because nothing else persists it across a
+    /// resume.
+    pub compaction_count: u32,
     pub context_usage_percent: Option<u8>,
     /// Raw model context-window size in tokens (e.g. 200_000 for
     /// Sonnet's base cap, 1_000_000 for the 1M variant). Read by

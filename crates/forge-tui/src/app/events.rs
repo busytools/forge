@@ -897,6 +897,7 @@ mod tests {
             available_models: Vec::new(),
             mode: None,
             history: Vec::new(),
+            compaction_count: 0,
         }
     }
 
@@ -1752,6 +1753,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: Vec::new(),
+                compaction_count: 0,
             },
         );
 
@@ -2023,6 +2025,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: Vec::new(),
+                compaction_count: 0,
             },
         );
 
@@ -2072,6 +2075,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: Vec::new(),
+                compaction_count: 0,
             },
         );
 
@@ -2509,6 +2513,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: Vec::new(),
+                compaction_count: 0,
             },
         );
 
@@ -2536,6 +2541,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: history_updates,
+                compaction_count: 0,
             },
         );
 
@@ -2575,6 +2581,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history,
+                compaction_count: 0,
             },
         );
 
@@ -2610,6 +2617,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: history_updates,
+                compaction_count: 0,
             },
         );
 
@@ -2659,6 +2667,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: vec![open_tool],
+                compaction_count: 0,
             },
         );
 
@@ -2689,6 +2698,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: vec![assistant_text_message("assistant reply")],
+                compaction_count: 0,
             },
         );
 
@@ -2718,6 +2728,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: vec![task_tool],
+                compaction_count: 0,
             },
         );
 
@@ -3223,6 +3234,137 @@ mod tests {
     }
 
     #[test]
+    fn each_compaction_boundary_increments_the_session_count() {
+        let mut app = make_test_app();
+        assert_eq!(app.session_usage().compaction_count, 0);
+
+        for _ in 0..3 {
+            send_msg(
+                &mut app,
+                system_message(
+                    "compact_boundary",
+                    serde_json::json!({
+                        "compact_metadata": {"trigger": "auto", "pre_tokens": 234_567}
+                    }),
+                ),
+            );
+        }
+
+        assert_eq!(app.session_usage().compaction_count, 3);
+    }
+
+    /// The whole point of the seed: a session resumed after N
+    /// compactions must not read zero. `SessionUsageState` is in-memory
+    /// and the transcript is the only durable record.
+    fn connected_with_compactions(compaction_count: u32) -> SessionUpdate {
+        SessionUpdate::Connected {
+            key: forge_workspace::SessionKey::from_session_id("test-session".to_owned()),
+            session_id: forge_primitives::SessionId::new("test-session"),
+            cwd: "/test".into(),
+            current_model: test_current_model_primitives("model"),
+            available_models: Vec::new(),
+            mode: None,
+            history: Vec::new(),
+            compaction_count,
+        }
+    }
+
+    #[test]
+    fn connect_seeds_the_count_from_the_resumed_transcript() {
+        let mut app = make_test_app();
+        apply_session_update(&mut app, connected_with_compactions(54));
+        assert_eq!(app.session_usage().compaction_count, 54);
+    }
+
+    #[test]
+    fn a_live_boundary_counts_on_top_of_the_seeded_total() {
+        let mut app = make_test_app();
+        apply_session_update(&mut app, connected_with_compactions(5));
+        send_msg(
+            &mut app,
+            system_message(
+                "compact_boundary",
+                serde_json::json!({
+                    "compact_metadata": {"trigger": "auto", "pre_tokens": 1_002_459}
+                }),
+            ),
+        );
+        assert_eq!(app.session_usage().compaction_count, 6);
+    }
+
+    #[test]
+    fn session_replaced_seeds_the_count_on_the_foreground_arm() {
+        let mut app = make_test_app();
+        let previous_key = active_session_key(&app);
+        apply_session_update(
+            &mut app,
+            SessionUpdate::SessionReplaced {
+                key: forge_workspace::SessionKey::from_session_id("replaced-fg".to_owned()),
+                previous_key,
+                session_id: forge_primitives::SessionId::new("replaced-fg"),
+                cwd: "/test".into(),
+                current_model: test_current_model_primitives("model"),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+                compaction_count: 7,
+            },
+        );
+        assert_eq!(app.session_usage().compaction_count, 7);
+    }
+
+    /// The background arm reaches the bucket through `key_renamed` rather
+    /// than `reset_for_new_session`, so it seeds by a different route and
+    /// a `session_mut` miss here would no-op in silence.
+    #[test]
+    fn session_replaced_seeds_the_count_on_the_background_arm() {
+        let mut app = make_test_app();
+        let background_key =
+            forge_workspace::SessionKey::from_session_id("background-old".to_owned());
+        app.sessions.insert(
+            background_key.clone(),
+            crate::app::session::UiSession::new(background_key.clone()),
+        );
+        let replacement = forge_workspace::SessionKey::from_session_id("background-new".to_owned());
+        apply_session_update(
+            &mut app,
+            SessionUpdate::SessionReplaced {
+                key: replacement.clone(),
+                previous_key: background_key,
+                session_id: forge_primitives::SessionId::new("background-new"),
+                cwd: "/test".into(),
+                current_model: test_current_model_primitives("model"),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+                compaction_count: 9,
+            },
+        );
+        assert_eq!(
+            app.sessions
+                .get(&replacement)
+                .expect("replacement bucket")
+                .session_usage
+                .compaction_count,
+            9,
+        );
+    }
+
+    /// A boundary whose metadata will not decode is still a compaction
+    /// that happened, and the transcript-seeded count keys on the subtype
+    /// alone, so counting it is what keeps the two definitions agreeing.
+    #[test]
+    fn an_undecodable_boundary_still_counts_but_records_no_trigger() {
+        let mut app = make_test_app();
+        send_msg(
+            &mut app,
+            system_message("compact_boundary", serde_json::json!({"nonsense": true})),
+        );
+        assert_eq!(app.session_usage().compaction_count, 1);
+        assert_eq!(app.session_usage().last_compaction_trigger, None);
+    }
+
+    #[test]
     fn auto_compaction_boundary_sets_compacting_without_manual_success_pending() {
         let mut app = make_test_app();
         assert!(!app.is_compacting());
@@ -3506,6 +3648,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: Vec::new(),
+                compaction_count: 0,
             },
         );
         assert!(app.turn_notice_refs().is_empty());

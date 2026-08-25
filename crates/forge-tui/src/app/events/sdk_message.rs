@@ -920,11 +920,18 @@ fn apply_compaction_boundary(app: &mut App, data: &Value) {
         pre_tokens: u64,
     }
 
+    // The row's presence is the compaction; its metadata is detail. Count
+    // before the decode so this agrees with the transcript-seeded count,
+    // which keys on the subtype alone - otherwise a metadata quirk makes
+    // the number jump the next time a resume re-reads the file.
+    let usage = app.session_usage_mut();
+    usage.compaction_count = usage.compaction_count.saturating_add(1);
+
     let Ok(boundary) = serde_json::from_value::<Boundary>(data.clone()) else {
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
             ?data,
-            "apply_compaction_boundary: failed to decode compact_boundary record; skipped",
+            "apply_compaction_boundary: counted the compaction but could not decode its metadata; trigger and pre_tokens stay unset",
         );
         return;
     };
