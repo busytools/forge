@@ -150,7 +150,7 @@ impl Tool for Spawn {
                 },
                 "resume_kick": {
                     "type": "string",
-                    "description": "Optional re-orient message delivered every time this worker is RESUMED after a forge restart, in place of the generic 'continue where you left off' note. For a LONG-LIVED worker whose restart needs specific steps - re-read a file, catch up a queue, check whether something was mid-run before re-running it - rather than a generic continue. Stored at spawn rather than delivered now; the first turn of a fresh spawn is `kick`. Omit it and a resumed worker keeps getting the generic restart note.",
+                    "description": "Optional re-orient message delivered every time this worker is RESUMED after a forge restart, in place of the generic 'continue where you left off' note. For a LONG-LIVED worker whose restart needs specific steps - re-read a file, catch up a queue, check whether something was mid-run before re-running it - rather than a generic continue. Stored at spawn rather than delivered now; the first turn of a fresh spawn is `kick`. Non-empty after trim when provided - to keep the generic restart note, OMIT the argument rather than passing an empty string, which is rejected.",
                 },
             },
             "required": ["label"],
@@ -168,6 +168,12 @@ impl Tool for Spawn {
             Ok(k) => k,
             Err(err) => return tool_error(err.to_string()),
         };
+        // An empty one is `Some`, so it would beat the restart-note
+        // fallback and dispatch a blank first turn on every resume - the
+        // same contract `workers__create_role` holds this arg to.
+        if args.resume_kick.as_ref().is_some_and(|text| text.trim_end().is_empty()) {
+            return tool_error("resume_kick must be non-empty after trim when provided".to_owned());
+        }
         match self
             .facade
             .spawn_worker(&caller_key, args.label, args.charter, args.kick, args.resume_kick)
@@ -1327,6 +1333,41 @@ mod tests {
             Some("Re-read the taste notes, then drain both queues."),
             "resume_kick passes through",
         );
+    }
+
+    /// An empty `resume_kick` is `Some`, so it would win the restart-note
+    /// fallback and dispatch a blank first turn on every future resume.
+    /// Refused at the boundary, the way `workers__create_role` refuses the
+    /// same argument.
+    #[tokio::test]
+    async fn spawn_rejects_whitespace_only_resume_kick() {
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
+            session_id: "u".into(),
+            tag: "t".into(),
+            rate_limited_account: None,
+            durability_warning: None,
+        }));
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "steward",
+                    "charter": "Mind the queues.",
+                    "resume_kick": "   \n  ",
+                }),
+            })
+            .await;
+        assert!(output.is_error, "a whitespace-only resume_kick must be refused");
+        assert!(
+            output.blocks[0].text.contains("resume_kick must be non-empty after trim"),
+            "refusal matches the create_role message shape: {}",
+            output.blocks[0].text,
+        );
+        assert!(mock.spawn_calls.lock().is_empty(), "refused before anything spawns");
     }
 
     #[tokio::test]
