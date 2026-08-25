@@ -31,8 +31,7 @@ pub struct DynamicWorker {
     pub charter: String,
     pub kick: Option<String>,
     /// Re-orient message delivered instead of the generic forge restart
-    /// note when this worker resumes, the dynamic-worker equivalent of a
-    /// role's `resume-kick.md`. `None` keeps the generic note.
+    /// note when this worker resumes; `None` keeps the generic note.
     pub resume_kick: Option<String>,
 }
 
