@@ -84,7 +84,7 @@ produce). A `/` is otherwise allowed as a namespace separator, so
 Repeating a label within one project is also rejected: one instance per
 label per project.
 
-At spawn, a label is resolved project-scoped first and globally second.
+At back-fill, a label is resolved project-scoped first and globally second.
 For a project named `P`, forge looks for
 `~/.claude/forge-team/P/<label>/charter.md` and then
 `~/.claude/forge-team/<label>/charter.md`, and uses the first that
