@@ -1006,14 +1006,9 @@ fn format_update_error(err: &WorkerUpdateError) -> String {
         WorkerUpdateError::UnknownCallerProject => {
             "could not resolve caller to a known project (forge bug)".to_owned()
         }
-        // A running `static_workers` role reaches this arm too: it has no
-        // dynamic row, so naming only the spawn route would send the caller
-        // to a tool that rejects the label as already live.
         WorkerUpdateError::NoSuchWorker { label, project_key } => format!(
             "no dynamic worker '{label}' in project '{project_key}'. workers__update revises a \
-             worker created by workers__spawn, so if you meant to create one, spawn it first. If \
-             '{label}' is instead a static_workers role, its charter, kick and resume-kick are \
-             files under ~/.claude/forge-team/ and are edited there rather than through this tool."
+             worker created by workers__spawn, so if you meant to create one, spawn it first."
         ),
         WorkerUpdateError::StoreFailed { message } => format!("worker update failed: {message}"),
     }
@@ -2460,16 +2455,12 @@ mod tests {
         assert!(output.is_error, "an absent worker must be refused");
         let text = &output.blocks[0].text;
         assert!(text.contains("workers__spawn"), "the refusal points at spawn: {text}");
-        // A running `static_workers` role is listed by workers__list and has
-        // no dynamic row, so it lands here too. Telling it to spawn is a
-        // dead end - spawn rejects the label as already live.
+        // The boot back-fill gives every `static_workers` label a row, so a
+        // static role no longer reaches this arm - it is now only a label
+        // with no row at all.
         assert!(
-            text.contains("static_workers") && text.contains("forge-team"),
-            "the refusal names the static-role case and where those instructions live: {text}",
-        );
-        assert!(
-            text.contains("charter") && text.contains("kick") && text.contains("resume-kick"),
-            "names every file the static-role case would need to edit: {text}",
+            !text.contains("forge-team"),
+            "must not send the caller to files the row would override: {text}",
         );
         assert!(
             !text.contains("workers__list"),
