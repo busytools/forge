@@ -1,7 +1,9 @@
 //! End-to-end: forge.toml with `static_workers = [...]` parses, project
 //! lead Connected programmatically dispatches one `Command::SpawnWorker`
 //! per configured label, where each label's charter + initial kick is
-//! loaded from `~/.claude/forge-team/<label>/{charter,kick}.md`.
+//! loaded from `~/.claude/forge-team/<label>/{charter,kick}.md` - since
+//! the boot back-fill, read into a `DynamicWorker` row during
+//! construction and delivered from there rather than at spawn time.
 //!
 //! Exercises the file-driven charters path end-to-end: forge.toml
 //! `static_workers = [...]` parsing (validate_label), the per-label
@@ -98,8 +100,9 @@ async fn config_load_through_team_dispatch() {
         // Team-spawn under a tokio runtime goes through
         // `spawn_team_for_lead_with_catalog_scan` which dispatches the
         // SpawnWorker commands from a tokio::spawn after an async
-        // catalog scan + the file-driven charter load. Poll the
-        // dispatch buffer briefly to let that async task land.
+        // catalog scan. The charter rides the worker's stored row, which
+        // the boot back-fill lifted from the files. Poll the dispatch
+        // buffer briefly to let that async task land.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut dispatched: Vec<Command> = Vec::new();
         while std::time::Instant::now() < deadline {
@@ -130,8 +133,10 @@ async fn config_load_through_team_dispatch() {
         assert_eq!(labels.len(), 3, "one SpawnWorker per configured label");
         assert_eq!(
             labels,
-            vec!["planner".to_owned(), "implementer".to_owned(), "reviewer".to_owned()],
-            "dispatch order matches static_workers = [...] order in forge.toml"
+            vec!["implementer".to_owned(), "planner".to_owned(), "reviewer".to_owned()],
+            "dispatch order is redb key order (alphabetical by label), NOT forge.toml order: \
+             the boot back-fill gives every static label a row, so all of them spawn through \
+             the dynamic path, which iterates the store by (project_key, label)"
         );
         Ok::<(), &'static str>(())
     };
