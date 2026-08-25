@@ -187,8 +187,8 @@ pub(crate) struct LoadedProject {
     pub auto_start: bool,
     /// Validated static-worker labels for this project (format only -
     /// existence of the per-label charter files at
-    /// `~/.claude/forge-team/<label>/{charter,kick}.md` is checked
-    /// lazily at spawn time, not here). Empty means no static workers.
+    /// `~/.claude/forge-team/<label>/{charter,kick}.md` is checked by the
+    /// boot back-fill, not here). Empty means no static workers.
     /// See `crate::team::Role` + `crate::team::validate_label`.
     pub static_workers: Vec<String>,
     /// Per-project environment from `[projects.<name>.env]`, layered
