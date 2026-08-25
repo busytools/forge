@@ -1011,7 +1011,7 @@ fn format_update_error(err: &WorkerUpdateError) -> String {
         // to a tool that rejects the label as already live.
         WorkerUpdateError::NoSuchWorker { label, project_key } => format!(
             "no dynamic worker '{label}' in project '{project_key}'. workers__update revises a \
-             worker created by workers__spawn, so spawn it first if you meant to create one. If \
+             worker created by workers__spawn, so if you meant to create one, spawn it first. If \
              '{label}' is instead a static_workers role, its charter, kick and resume-kick are \
              files under ~/.claude/forge-team/ and are edited there rather than through this tool."
         ),
