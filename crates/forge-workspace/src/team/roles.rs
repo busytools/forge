@@ -349,6 +349,29 @@ pub fn load_resume_kick(label: &str) -> Result<Option<String>, CharterError> {
 mod tests {
     use super::*;
 
+    /// The bundled charter ships to every install, so it must not name
+    /// tooling or projects that only exist in one author's environment:
+    /// a fresh install has no user-scope skills, no plugins and no
+    /// justfile, and `team` is not a `forge.toml` key (`static_workers`
+    /// is). Each entry is a token that reached the bundled charter by
+    /// being copied from an on-disk one.
+    #[test]
+    fn bundled_lead_charter_assumes_no_local_environment() {
+        for (token, why) in [
+            ("pr-review-loop", "user-scope skill, absent on a fresh install"),
+            ("superpowers", "plugin, absent on a fresh install"),
+            ("commit-commands", "plugin, absent on a fresh install"),
+            ("`just ", "project justfile, not every project has one"),
+            ("hub-modules", "one user's project name"),
+            ("team = ", "not a forge.toml key; the key is static_workers"),
+        ] {
+            assert!(
+                !DEFAULT_LEAD_CHARTER.contains(token),
+                "bundled lead charter names '{token}' ({why})"
+            );
+        }
+    }
+
     #[test]
     fn validate_label_accepts_simple_names() {
         assert!(validate_label("planner").is_ok());
