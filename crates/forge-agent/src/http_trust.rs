@@ -2,8 +2,8 @@
 //! certs from `NODE_EXTRA_CA_CERTS` (with `SSL_CERT_FILE` as fallback)
 //! to match native `claude`'s TLS trust behaviour.
 //!
-//! Forge makes outbound HTTPS from several non-rewriter call sites
-//! (oauth usage probe, service-status check, CLI-version probe).
+//! Forge makes outbound HTTPS from several call sites (oauth usage
+//! probe, service-status check, CLI-version probe).
 //! These use reqwest, which by default trusts webpki-roots + system
 //! roots only - neither covers a mitmproxy / Zscaler / Palo Alto /
 //! corporate CA setup that the user has wired up via

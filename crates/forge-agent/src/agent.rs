@@ -78,9 +78,9 @@ impl AgentHandle {
 
     /// The bridge's resolved forge.toml env. Test-only, and one hop
     /// short of what the child receives - the subprocess also gets
-    /// `CLAUDE_CONFIG_DIR`, the proxy trio and the SDK version. It
-    /// exists so a test can observe the map a spawn carries rather
-    /// than what the resolution helper returned.
+    /// `CLAUDE_CONFIG_DIR` and the SDK version. It exists so a test
+    /// can observe the map a spawn carries rather than what the
+    /// resolution helper returned.
     #[cfg(any(test, feature = "testing"))]
     pub fn env(&self) -> std::collections::HashMap<String, String> {
         self.bridge.env()
@@ -289,19 +289,14 @@ impl Agent {
     }
 
     /// Spawn a new agent runtime bound to `config_dir` with an
-    /// optional forge-account `display_name` and optional wire-
-    /// classification rewriter `proxy`. All three are stored on the
+    /// optional forge-account `display_name`. Both are stored on the
     /// bridge as typed fields. `config_dir` is consulted by every
     /// in-process accessor (oauth, settings, catalog scans) and
     /// exported to the spawned `claude` subprocess as
     /// `CLAUDE_CONFIG_DIR`. `display_name`, when set, is surfaced
     /// via [`crate::client::AgentEvent::StatusSnapshot`] so the TUI
-    /// renders which forge-account the bridge is bound to. `proxy`,
-    /// when set, is stamped onto every `forge_sdk::Options`
-    /// constructed by spawn_session so the subprocess inherits
-    /// `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` and its wire
-    /// classification gets normalised to `cli` shape. `env` carries
-    /// the session's resolved forge.toml env - `[env]`, then
+    /// renders which forge-account the bridge is bound to. `env`
+    /// carries the session's resolved forge.toml env - `[env]`, then
     /// `[accounts.env]`, then the spawning project's
     /// `[projects.<name>.env]` - stamped onto the spawned subprocess
     /// alongside `CLAUDE_CONFIG_DIR`. Returns a
@@ -310,11 +305,10 @@ impl Agent {
     pub fn spawn(
         config_dir: PathBuf,
         display_name: Option<String>,
-        proxy: Option<forge_sdk::transport::proxy::ProxyHandle>,
         extra_mcp_servers: Vec<(String, forge_sdk::mcp::McpServer)>,
         env: HashMap<String, String>,
     ) -> AgentHandle {
-        let bridge = ForgeSdkBridge::new(config_dir, display_name, proxy, extra_mcp_servers, env);
+        let bridge = ForgeSdkBridge::new(config_dir, display_name, extra_mcp_servers, env);
         let agent_event_rx = bridge.take_events().unwrap_or_else(|| mpsc::unbounded_channel().1);
 
         let (commands_tx, commands_rx) = mpsc::unbounded_channel::<AgentCommand>();

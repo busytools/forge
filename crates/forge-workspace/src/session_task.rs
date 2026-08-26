@@ -1343,7 +1343,6 @@ mod tests {
         crate::config::LoadedAccount {
             display_name: name.to_owned(),
             config_dir: std::path::PathBuf::from(format!("/fake/{name}")),
-            proxy: true,
             env: std::collections::HashMap::new(),
             experimental: false,
         }

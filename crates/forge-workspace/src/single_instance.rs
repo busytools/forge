@@ -12,7 +12,7 @@
 //! of cross-process locking.
 //!
 //! The lockfile is MACHINE-LOCAL: it lives under forge's app-support base
-//! ([`forge_sdk::app_support_dir`], beside the proxy CA and the logs) at
+//! ([`forge_sdk::app_support_dir`], beside the logs) at
 //! `locks/<hash>.lock`, where `<hash>` is derived from the config-dir
 //! path so distinct profiles / config dirs on one machine get distinct,
 //! independently-held locks.
