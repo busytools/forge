@@ -71,11 +71,10 @@ pub struct WorkerEntry {
     /// cause is visible without having to switch into the worker's
     /// chat view.
     pub diagnostic: Option<String>,
-    /// Inline first-turn message from `workers__spawn(kick=...)`,
-    /// delivered as the worker's first user turn on Connected (see
-    /// `maybe_kick_worker_on_connected`). `None` for file-driven roles
-    /// (they load `kick.md`) and for kick-less spawns (the worker idles
-    /// until the lead sends a `workers__tell`).
+    /// First-turn message, delivered as the worker's first user turn on
+    /// Connected (see `maybe_kick_worker_on_connected`). `None` for a
+    /// kick-less spawn, where the worker idles until the lead sends a
+    /// `workers__tell`.
     pub kick: Option<String>,
 }
 
