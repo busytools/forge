@@ -1227,6 +1227,9 @@ mod tests {
         workspace.seed_test_dynamic_worker(&project.key, "reviewer");
         workspace.seed_test_dynamic_worker(&project.key, "scratch");
         workspace.seed_test_ready_account("Stargate");
+        // `reviewer` spawned this boot, so it has a plan entry and a
+        // chip; `scratch` has only a row and renders bare.
+        workspace.seed_test_worker_assignment(&project.key, "reviewer");
 
         let mut app = App::test_default();
         app.workspace = Some(std::sync::Arc::new(workspace));

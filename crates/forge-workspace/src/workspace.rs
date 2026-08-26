@@ -1641,7 +1641,6 @@ impl Workspace {
                     )),
                 ),
                 accounts: p.accounts.clone(),
-                static_workers: p.static_workers.clone(),
             })
             .collect();
 
@@ -6011,6 +6010,16 @@ impl Workspace {
             .lock()
             .set_loading(&AccountKey(account.to_owned()), crate::account::LoadingState::Ready);
         self.recompute_plan_if_ready();
+    }
+
+    /// Give `label` an assignment-plan entry the way a spawn does, so a
+    /// cross-crate test can produce a chipped worker row. A label without
+    /// one renders bare, which is the contrast worth testing; assignment
+    /// is what puts it in the plan now that nothing pre-seeds from
+    /// forge.toml. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_worker_assignment(&self, project_key: &ProjectKey, label: &str) {
+        let _ = self.extend_plan_for_adhoc_worker(project_key, label);
     }
 
     /// Persist a dynamic-worker row directly, bypassing `workers__spawn`.
@@ -13278,6 +13287,10 @@ config_dir = "~/.claude-beta"
             .expect("the lead resolves through the plan")
             .0;
 
+        // A worker earns its plan row by spawning, so give it one the way
+        // a spawn does before resuming it.
+        workspace.extend_plan_for_adhoc_worker(&project_key, "implementer");
+
         let worker_key = SessionKey::from_session_id("resumed-worker-uuid");
         workspace.insert_live_worker(
             &project_key,
@@ -13767,12 +13780,12 @@ config_dir = "~/.claude-alpha"
     }
 
     /// The launchpad's worker rows chip from the assignment plan, which
-    /// seeds `lead` plus the project's `static_workers` and nothing else.
-    /// So a `static_workers` label keeps its chip, while a persisted row
-    /// that has not spawned this boot has no plan entry and renders bare
-    /// - the launchpad must not invent a placeholder for the second case.
+    /// a worker enters when it spawns. So a worker that came up this boot
+    /// keeps its chip, while one with only a persisted row has no plan
+    /// entry and renders bare - the launchpad must not invent a
+    /// placeholder for the second case.
     #[tokio::test]
-    async fn plan_chips_a_static_label_but_not_a_never_spawned_one() {
+    async fn plan_chips_a_spawned_worker_but_not_a_never_spawned_one() {
         let dir = make_workspace_dir_static_worker();
         let workspace =
             Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
@@ -13795,9 +13808,11 @@ config_dir = "~/.claude-alpha"
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
             )));
 
+        workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
+
         assert!(
             workspace.session_chip_for(&project_key, "reviewer").is_some(),
-            "a static_workers label is in the plan, so its row stays chipped",
+            "a worker that spawned is in the plan, so its row is chipped",
         );
         assert!(
             workspace.session_chip_for(&project_key, "scratch").is_none(),
