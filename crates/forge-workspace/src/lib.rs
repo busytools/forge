@@ -71,7 +71,6 @@ mod single_instance;
 mod spawn;
 pub mod store;
 mod target;
-pub mod team;
 pub mod ui;
 mod views;
 mod workspace;
