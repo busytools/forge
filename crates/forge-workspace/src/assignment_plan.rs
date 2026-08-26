@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn compute_plan_matches_worked_example() {
         // Spec §3 worked example: 4 ready accounts; 2 projects.
-        // forge (idx 0, team = planner/implementer/reviewer/debugger/tester):
+        // forge (idx 0, workers planner/implementer/reviewer/debugger/tester):
         //   pool size 4, offset 0
         //   lead -> pool[0] = gateway
         //   planner -> pool[1] = gateway1
@@ -262,7 +262,7 @@ mod tests {
         //   reviewer -> pool[3] = stargate
         //   debugger -> pool[4 % 4 = 0] = gateway (wraps)
         //   tester -> pool[5 % 4 = 1] = gateway1
-        // data-modules (idx 1, team = babysitter/librarian):
+        // data-modules (idx 1, workers babysitter/librarian):
         //   pool size 4, offset 1
         //   lead -> pool[(1 + 0) % 4 = 1] = gateway1
         //   babysitter -> pool[(1 + 1) % 4 = 2] = personal

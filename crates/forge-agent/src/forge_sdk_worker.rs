@@ -751,7 +751,7 @@ fn build_options_with_callback(
     // needs.
     if has_forge_mcp {
         let append = build_forge_system_prompt(
-            launch_settings.delegation_catalog.as_deref(),
+            launch_settings.delegation_preamble.as_deref(),
             launch_settings.charter.as_deref(),
         );
         b = b.system_prompt(forge_sdk::SystemPromptKind::Preset {

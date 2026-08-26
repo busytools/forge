@@ -21,7 +21,7 @@ pub struct SessionLaunchSettings {
     /// knows which worker roles it can spawn. Built by the workspace
     /// for Lead spawns only; `None` for workers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delegation_catalog: Option<String>,
+    pub delegation_preamble: Option<String>,
     /// Spawn-path-specific extra CLI args to thread through to the
     /// `claude` subprocess via `OptionsBuilder::extra_arg`. Each pair
     /// becomes `--<flag> <value>` (or `--<flag>` when the value is

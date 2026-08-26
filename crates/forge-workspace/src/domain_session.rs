@@ -53,7 +53,7 @@ pub struct DomainSession {
     pub pending_gotify_prompts: Vec<GotifyNotification>,
     /// `--new` boot-wave flag, stamped at spawn time from
     /// `SessionLaunchSettings.force_new`. For a project lead it makes
-    /// the Connected-time team spawn skip the worker resume scan
+    /// the Connected-time respawn skip the worker resume scan
     /// (`resume_existing = None` for every role), so the workers come
     /// up fresh alongside their fresh lead. `false` for every non-boot
     /// spawn.

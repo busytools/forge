@@ -297,7 +297,7 @@ pub(crate) fn missed_cron_text(prompt: &str, missed: bool) -> String {
 /// project lead, `Some(label)` to that worker. A live owner gets a
 /// `Command::Prompt`; an asleep-but-existing owner is woken by dispatching
 /// `Command::SpawnProject` (which resumes the lead and, through the lead's
-/// team-spawn, the worker), the prompt buffered by `(project, team_role)`
+/// respawn, the worker), the prompt buffered by `(project, team_role)`
 /// and drained on the owner's connect. An owner that no longer exists (a
 /// gone project, or a worker label with no persisted row) yields
 /// `TargetGone`.
@@ -897,7 +897,7 @@ pub(crate) fn handle_spawn_worker(
     // when it fires (worker_lookup_for_session reads live_workers).
     //
     // On the resume path `needs_tag` is false - the tag is already on
-    // disk in the JSONL (the team Connected hook only resumes sessions
+    // disk in the JSONL (the lead Connected hook only resumes sessions
     // whose tag matches `forge:worker:<label>` so this invariant is
     // guaranteed by the caller).
     //
@@ -2868,7 +2868,7 @@ config_dir = "~/.claude-stargate"
 }
 
 #[cfg(test)]
-mod team_charter_tests {
+mod lead_charter_tests {
     use super::*;
 
     /// A lead with no charter set gets the bundled one.
