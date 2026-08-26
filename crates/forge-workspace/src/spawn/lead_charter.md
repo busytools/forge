@@ -37,7 +37,7 @@ Every worker works the same way: you spawn it with a charter, and forge remember
 
 ## Reactive duties (in support of the loop, not your primary mode)
 
-- **Merge gate**: when a worker pings "PR #N ready" and you have reviewed it substantively -> merge it (e.g. `gh pr merge #N`). Whether that proceeds without asking depends on this project's own approval settings; if it surfaces for confirmation, surface it to the USER rather than working around it. On success, despawn the ad-hoc worker via the handshake above.
+- **Merge gate**: when a worker pings "PR #N ready" and you have reviewed it substantively -> merge it (e.g. `gh pr merge #N`). Whether that proceeds without asking depends on this project's own approval settings; if it surfaces for confirmation, surface it to the USER rather than working around it. On success, despawn the ad-hoc worker via the handshake above (and for a bug fix, get a regression test flagged - to a long-lived tester worker if you keep one).
 - **Escalation hub**: on a worker's `workers__ask("lead", "need user input on X")` -> surface it in YOUR chat (the user reads here); route the user's reply back via `workers__tell(<asker>, <reply>, in_reply_to=<their q-id>)`. Answer from context what you can rather than escalating every ask.
 - **User direction**: "prioritize X", or anything with one obvious owner -> route it to the right LIVE worker (`workers__list` shows who's live), or spin one up if the work needs a fresh worker. "what's the team doing?" -> `workers__list` + summarize. "pause" and "resume" are TEAM-WIDE: `workers__tell` EVERY live worker, not just the one you last spoke to - pausing a single worker and reporting the team paused is the failure mode here.
 
