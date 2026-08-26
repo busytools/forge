@@ -343,8 +343,8 @@ pub(crate) fn deliver_cron_prompt(
         CronOwnerCheck::Absent => return CronFireOutcome::TargetGone,
         CronOwnerCheck::Unknown => return CronFireOutcome::DispatchFailed,
     }
-    // Buffer by owner, then wake via resume: SpawnProject resumes the lead
-    // and, through the lead's team-spawn, the worker; each drains its own
+    // Buffer by owner, then wake via resume: SpawnProject resumes the lead,
+    // whose reconnect re-spawns the persisted workers; each drains its own
     // bucket on connect.
     workspace.buffer_cron_for_owner(project_name, team_role, prompt, missed);
     match workspace.dispatch(Command::SpawnProject {
@@ -394,18 +394,18 @@ fn live_cron_owner(
 
 /// Outcome of checking whether a cron's owner still exists to be woken.
 enum CronOwnerCheck {
-    /// The owner exists (the lead, or a static / durable dynamic worker).
+    /// The owner exists (the lead, or a worker with a persisted row).
     Exists,
-    /// Conclusively gone: the read succeeded and the label is in neither
-    /// `static_workers` nor the `dynamic_workers` table.
+    /// Conclusively gone: the read succeeded and the label has no row in
+    /// the `dynamic_workers` table.
     Absent,
     /// The durable-worker lookup could not read, so absence is unconfirmed.
     Unknown,
 }
 
 /// Whether a cron's owner still exists to be woken. The lead exists
-/// whenever its project does; a worker exists while its label is in
-/// `static_workers` or the `dynamic_workers` table. A durable-worker read
+/// whenever its project does; a worker exists while its label has a row in
+/// the `dynamic_workers` table, since that row is what re-spawns it. A read
 /// failure yields [`CronOwnerCheck::Unknown`] so the fire router leaves the
 /// cron rather than deleting a real owner's cron on a transient hiccup.
 fn cron_owner_exists(
@@ -416,9 +416,6 @@ fn cron_owner_exists(
     let Some(label) = team_role else {
         return CronOwnerCheck::Exists;
     };
-    if view.static_workers.iter().any(|w| w == label) {
-        return CronOwnerCheck::Exists;
-    }
     match workspace.dynamic_worker_exists(&view.key, label) {
         Ok(true) => CronOwnerCheck::Exists,
         Ok(false) => CronOwnerCheck::Absent,
@@ -1076,17 +1073,10 @@ fn teardown_worker(
     // it never re-spawns. Cancel and the lead-close cascade go through
     // other paths and deliberately leave the row intact.
     workspace.delete_dynamic_worker(project_key, label);
-    // Only a dynamic worker's close clears its durable state (crons +
-    // Gotify subs); a label named in `static_workers` is left alone.
-    let is_dynamic = workspace
-        .list_projects()
-        .into_iter()
-        .find(|v| v.key == *project_key)
-        .is_none_or(|v| !v.static_workers.iter().any(|w| w == label));
-    if is_dynamic {
-        workspace.remove_gotify_subscriptions_for_worker(project_key, label);
-        workspace.delete_crons_for_worker(project_key, label);
-    }
+    // The row is gone, so nothing re-spawns this label: its durable state
+    // has no owner left to wake and goes with it.
+    workspace.remove_gotify_subscriptions_for_worker(project_key, label);
+    workspace.delete_crons_for_worker(project_key, label);
     // MUST call the non-cascading `release_session` primitive (NOT
     // `release_session_with_cascade`). By the time we get here the
     // worker is already gone from `live_workers` (via

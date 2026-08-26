@@ -8293,54 +8293,6 @@ SOLO_TOKEN = "solo-secret"
         assert!(subs.iter().any(|s| s.id == lead_sub.id), "the lead sub survives");
     }
 
-    #[tokio::test]
-    async fn teardown_static_worker_keeps_its_crons_and_subs() {
-        let (ws, _rx) = Workspace::testing_stub();
-        let dir = tempdir().expect("tempdir");
-        ws.install_db_for_test(
-            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
-        );
-        // "reviewer" IS a static worker -> it re-spawns, so a close keeps
-        // its durable state.
-        ws.seed_test_project_with_static_workers(
-            "forge",
-            "/tmp/cron-teardown-static",
-            &["reviewer".to_owned()],
-        );
-        let view_key = ws
-            .list_projects()
-            .into_iter()
-            .find(|v| v.name == "forge")
-            .map(|v| v.key)
-            .expect("seeded project view");
-        ws.insert_live_worker(&view_key, live_worker_entry("reviewer", "worker-1"));
-
-        let reviewer_cron = worker_cron("reviewer-cron", "forge", Some("reviewer"));
-        ws.push_cron(reviewer_cron.clone());
-        let mut reviewer_sub = gotify_sub("forge", &[], None);
-        reviewer_sub.team_role = Some("reviewer".to_owned());
-        ws.add_gotify_subscription(reviewer_sub.clone(), true);
-
-        crate::spawn::handle_close_worker(&ws, &view_key, "reviewer");
-
-        assert!(
-            ws.crons_for_project("forge").iter().any(|c| c.id == reviewer_cron.id),
-            "a static worker keeps its cron on close",
-        );
-        assert!(
-            ws.gotify_subscriptions_for_project("forge").iter().any(|s| s.id == reviewer_sub.id),
-            "a static worker keeps its sub on close",
-        );
-        let persisted_crons = {
-            let guard = ws.db.lock();
-            crate::store::cron::list(guard.as_ref().expect("db installed")).expect("list")
-        };
-        assert!(
-            persisted_crons.iter().any(|c| c.id == reviewer_cron.id),
-            "the static worker's cron stays in the store",
-        );
-    }
-
     /// The seam the bug lived in: `resolve_identity` gathers the caller's
     /// dynamic-worker labels from the table and marks a table-backed
     /// worker durable, so its sub persists through the subscribe path even
@@ -9110,14 +9062,28 @@ SOLO_TOKEN = "solo-secret"
     }
 
     #[test]
-    fn deliver_asleep_static_worker_cron_buffers_and_wakes_the_project() {
+    fn deliver_asleep_worker_cron_buffers_and_wakes_the_project() {
         let (ws, _rx) = Workspace::testing_stub();
-        // "reviewer" is a static worker, so the owner exists even while asleep.
-        ws.seed_test_project_with_static_workers(
-            "proj",
-            "/tmp/wc-static",
-            &["reviewer".to_owned()],
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
+        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-static", &[]);
+        // The row is what makes the owner exist while asleep; without it
+        // the fire router collects the cron instead.
+        let key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "proj")
+            .map(|v| v.key)
+            .expect("seeded project");
+        let _ = ws.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+            project_key: key.as_str().to_owned(),
+            label: "reviewer".to_owned(),
+            charter: "review".to_owned(),
+            kick: None,
+            resume_kick: None,
+        });
 
         ws.enable_test_dispatch_intercept();
         let outcome = crate::spawn::deliver_cron_prompt(
@@ -9151,12 +9117,19 @@ SOLO_TOKEN = "solo-secret"
     #[test]
     fn deliver_cron_to_spawning_worker_buffers_via_owner() {
         let (ws, _rx) = Workspace::testing_stub();
-        ws.seed_test_project_with_static_workers(
-            "proj",
-            "/tmp/wc-spawning",
-            &["reviewer".to_owned()],
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
+        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-spawning", &[]);
         let key = ws.list_projects().into_iter().find(|v| v.name == "proj").expect("view").key;
+        let _ = ws.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+            project_key: key.as_str().to_owned(),
+            label: "reviewer".to_owned(),
+            charter: "review".to_owned(),
+            kick: None,
+            resume_kick: None,
+        });
         let worker_key = SessionKey::from_session_id("worker-spawning-cron");
         ws.insert_live_worker(&key, live_worker_entry("reviewer", "worker-spawning-cron"));
         // Registered but not connected: session_id stays None.
@@ -9236,12 +9209,16 @@ SOLO_TOKEN = "solo-secret"
         );
         // Db open + empty dynamic_workers + no static roster: "ghost" is
         // conclusively absent, so its cron is removed.
-        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-gone", &[]);
+        // Named in `static_workers` and absent from the table: the key
+        // spawns nothing, so the row is the only thing that could bring
+        // this owner back and the cron must be collected, not buffered
+        // into a bucket nothing will ever drain.
+        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-gone", &["ghost".to_owned()]);
         let outcome =
             crate::spawn::deliver_cron_prompt(&ws, "proj", Some("ghost"), "x".to_owned(), false);
         assert!(
             matches!(outcome, crate::spawn::CronFireOutcome::TargetGone),
-            "a label conclusively absent from static + dynamic is gone",
+            "a label with no dynamic_workers row is gone even when static_workers names it",
         );
     }
 

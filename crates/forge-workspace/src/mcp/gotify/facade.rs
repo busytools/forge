@@ -170,9 +170,8 @@ impl GotifyFacade for ProdGotifyFacade {
 
 /// Resolve a caller to `(project_name, team_role, durable)`. `team_role`
 /// is the worker's role label (`None` targets the lead); `durable` is
-/// true for the lead or a worker whose label lives in a durable store
-/// (forge.toml `static_workers` or the `dynamic_workers` table), false
-/// for a worker in neither.
+/// true for the lead or a worker with a row in the `dynamic_workers`
+/// table, false for a worker without one.
 pub(crate) fn resolve_identity(
     ws: &Workspace,
     caller: &SessionKey,
@@ -186,33 +185,24 @@ pub(crate) fn resolve_identity(
             .find(|w| w.session_key == *caller)
             .map(|w| w.label)
     };
-    let static_workers = ws
-        .list_projects()
-        .into_iter()
-        .find(|v| v.key == cx.project_key)
-        .map(|v| v.static_workers)
-        .unwrap_or_default();
     let dynamic_labels: Vec<String> =
         ws.dynamic_workers_for_project(&cx.project_key).into_iter().map(|w| w.label).collect();
-    let (team_role, durable) =
-        durable_identity(worker_label.as_deref(), &static_workers, &dynamic_labels);
+    let (team_role, durable) = durable_identity(worker_label.as_deref(), &dynamic_labels);
     Some((cx.project_name, team_role, durable))
 }
 
 /// `(team_role, durable)` for a caller's worker label (`None` = the lead
 /// or a plain catalog session). A lead is always durable and targets
 /// itself. A worker is durable when its label lives in a durable store:
-/// forge.toml `static_workers` or the `dynamic_workers` table.
+/// the `dynamic_workers` table, since that row is what brings it back.
 fn durable_identity(
     worker_label: Option<&str>,
-    static_workers: &[String],
     dynamic_labels: &[String],
 ) -> (Option<String>, bool) {
     match worker_label {
         None => (None, true),
         Some(label) => {
-            let durable = static_workers.iter().any(|t| t == label)
-                || dynamic_labels.iter().any(|t| t == label);
+            let durable = dynamic_labels.iter().any(|t| t == label);
             (Some(label.to_owned()), durable)
         }
     }
@@ -412,38 +402,25 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_worker_is_durable_when_persisted() {
-        let statics = vec!["reviewer".to_owned()];
+    fn worker_is_durable_when_persisted() {
         let dynamic = vec!["scratch".to_owned()];
-        // Durable because "scratch" has a dynamic_workers row, even though
-        // it is not a configured static worker.
         assert_eq!(
-            durable_identity(Some("scratch"), &statics, &dynamic),
+            durable_identity(Some("scratch"), &dynamic),
             (Some("scratch".to_owned()), true),
         );
     }
 
     #[test]
     fn lead_is_durable_and_targets_itself() {
-        assert_eq!(durable_identity(None, &["reviewer".to_owned()], &[]), (None, true));
+        assert_eq!(durable_identity(None, &[]), (None, true));
     }
 
     #[test]
-    fn team_worker_is_durable_with_its_role() {
-        let team = vec!["reviewer".to_owned(), "tester".to_owned()];
+    fn worker_without_a_row_is_ephemeral() {
+        // No row means nothing re-spawns the label, so its subscription is
+        // in-memory only rather than written to redb for an absent owner.
         assert_eq!(
-            durable_identity(Some("reviewer"), &team, &[]),
-            (Some("reviewer".to_owned()), true),
-        );
-    }
-
-    #[test]
-    fn worker_in_neither_store_is_ephemeral() {
-        let statics = vec!["reviewer".to_owned()];
-        // A label absent from both static_workers and the dynamic_workers
-        // table is an ephemeral, in-memory-only subscriber.
-        assert_eq!(
-            durable_identity(Some("scratch"), &statics, &[]),
+            durable_identity(Some("scratch"), &["reviewer".to_owned()]),
             (Some("scratch".to_owned()), false),
         );
     }
