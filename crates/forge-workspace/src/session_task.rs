@@ -928,13 +928,13 @@ fn parse_project_lead_synth_key(key: &SessionKey) -> Option<String> {
 
 /// Shared worker Connected hook: if `spawn_key` is a project-lead synth
 /// key and no live workers exist for the project yet, (re-)spawn its
-/// workers - one `SpawnWorker` per configured static role plus one per
-/// persisted dynamic worker. Called from `SessionTask::translate_event`
-/// (production) and `on_connected_for_test` (tests). Idempotent; safe to
-/// call multiple times for the same session - the `live_workers.is_empty()`
-/// gate guards against double-spawn on `/new` reconnects or transient
-/// retries, and `spawn_team_for_lead_with_catalog_scan` no-ops when the
-/// project has neither static nor dynamic workers.
+/// workers - one `SpawnWorker` per persisted worker row. Called from
+/// `SessionTask::translate_event` (production) and `on_connected_for_test`
+/// (tests). Idempotent; safe to call multiple times for the same session -
+/// the `live_workers.is_empty()` gate guards against double-spawn on
+/// `/new` reconnects or transient retries, and
+/// `spawn_team_for_lead_with_catalog_scan` no-ops when the project has no
+/// worker rows.
 fn maybe_spawn_team_on_connected(
     workspace: &Arc<crate::Workspace>,
     spawn_key: &SessionKey,
@@ -966,8 +966,6 @@ fn maybe_spawn_team_on_connected(
         real_session_id.to_owned(),
         project_key,
         project.path.clone(),
-        project.name.clone(),
-        project.static_workers.clone(),
         force_new,
     );
 }
@@ -2425,68 +2423,52 @@ mod team_hook_tests {
     use crate::Workspace;
     use crate::protocol::Command;
     use crate::target::ProjectKey;
-    use crate::team::{DEFAULT_LEAD_CHARTER, override_forge_team_root_for_test};
-    use std::sync::OnceLock;
 
     fn synth_lead_key(project_name: &str) -> SessionKey {
         SessionKey::from_session_id(format!("__spawn_{project_name}__"))
     }
 
-    /// Seed an `implementer` and a `lead` role
-    /// into a process-persistent tempdir (written once) and return a
-    /// guard that points `forge_team_root()` at it under the shared
-    /// team-root lock. Every test here binds the returned guard (`let
-    /// _g = ensure_test_charter_root();`) so the override is held only
-    /// for that test - serialising against the other team-root tests.
-    fn ensure_test_charter_root() -> crate::team::ForgeTeamRootTestGuard {
-        static ROOT: OnceLock<tempfile::TempDir> = OnceLock::new();
-        let dir = ROOT.get_or_init(|| {
-            let tmp = tempfile::tempdir().expect("tempdir");
-            let root = tmp.path();
-            // Fixture text rather than shipped content, so a reader can
-            // see what the tests need without opening another file.
-            // `lead` keeps the real constant: two spawn tests compare
-            // against it by identity.
-            for (label, charter, kick) in [
-                (
-                    "implementer",
-                    "test implementer charter",
-                    "You are now active as the implementer, idle and awaiting a plan from the lead.",
-                ),
-                ("lead", DEFAULT_LEAD_CHARTER, "You are now active as the lead."),
-            ] {
-                let dir = root.join(label);
-                std::fs::create_dir_all(&dir).expect("create role dir");
-                std::fs::write(dir.join("charter.md"), charter).expect("write charter");
-                std::fs::write(dir.join("kick.md"), kick).expect("write kick");
-            }
-            tmp
+    /// Seed `proj-x` with one persisted worker row and return the
+    /// tempdir backing the store, whose lifetime must outlive the test.
+    fn seed_project_with_one_worker_row(
+        workspace: &Arc<Workspace>,
+        label: &str,
+    ) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        workspace.seed_test_project_with_static_workers("proj-x", "/tmp/proj-x", &[]);
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/proj-x")),
+        );
+        let _ = workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+            project_key: project_key.as_str().to_owned(),
+            label: label.to_owned(),
+            charter: format!("charter for {label}"),
+            kick: None,
+            resume_kick: None,
         });
-        override_forge_team_root_for_test(dir.path().to_owned())
+        dir
     }
 
-    /// A lead Connected for a project carrying a team config
-    /// triggers one `Command::SpawnWorker` per configured label.
+    /// A lead Connected for a project with a persisted worker triggers
+    /// one `Command::SpawnWorker` per row.
     #[test]
     fn lead_connected_with_team_triggers_team_spawn() {
-        let _charter_root = ensure_test_charter_root();
         let (workspace, _update_rx) = Workspace::testing_stub();
+        let _db = seed_project_with_one_worker_row(&workspace, "implementer");
         workspace.enable_test_dispatch_intercept();
-        workspace.seed_test_project_with_static_workers(
-            "proj-x",
-            "/tmp/proj-x",
-            &["implementer".to_owned()],
-        );
 
         on_connected_for_test(&workspace, &synth_lead_key("proj-x"), "lead-uuid");
 
         let dispatched = workspace.drain_test_dispatch_buffer();
         let spawns: Vec<&Command> =
             dispatched.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).collect();
-        assert_eq!(spawns.len(), 1, "one SpawnWorker per role");
+        assert_eq!(spawns.len(), 1, "one SpawnWorker per stored worker");
     }
 
-    /// A lead Connected for a project with NO team configuration is
+    /// A lead Connected for a project with no persisted workers is
     /// a no-op - nothing dispatched.
     #[test]
     fn lead_connected_without_team_does_nothing() {
@@ -2501,18 +2483,16 @@ mod team_hook_tests {
 
     /// A worker session's Connected (synth key prefixed with
     /// `__spawn_worker_...`) does NOT trigger the team-spawn hook
-    /// even when the project has a team configured.
+    /// even when the project has a worker that would spawn. The row is
+    /// what gives the assertion teeth: without one the project could
+    /// not have dispatched anything whatever key arrived.
     #[test]
     fn worker_connected_does_not_trigger_team_spawn() {
         let (workspace, _update_rx) = Workspace::testing_stub();
+        let _db = seed_project_with_one_worker_row(&workspace, "planner");
         workspace.enable_test_dispatch_intercept();
-        workspace.seed_test_project_with_static_workers(
-            "proj-z",
-            "/tmp/proj-z",
-            &["planner".to_owned()],
-        );
 
-        let worker_synth = SessionKey::from_session_id("__spawn_worker_proj-z_planner_abc__");
+        let worker_synth = SessionKey::from_session_id("__spawn_worker_proj-x_planner_abc__");
         on_connected_for_test(&workspace, &worker_synth, "worker-uuid");
 
         let dispatched = workspace.drain_test_dispatch_buffer();
@@ -2525,14 +2505,9 @@ mod team_hook_tests {
     /// gate trips and the trigger no-ops.
     #[test]
     fn second_lead_connected_does_not_double_spawn() {
-        let _charter_root = ensure_test_charter_root();
         let (workspace, _update_rx) = Workspace::testing_stub();
+        let _db = seed_project_with_one_worker_row(&workspace, "implementer");
         workspace.enable_test_dispatch_intercept();
-        workspace.seed_test_project_with_static_workers(
-            "proj-x",
-            "/tmp/proj-x",
-            &["implementer".to_owned()],
-        );
 
         let lead_synth = synth_lead_key("proj-x");
 

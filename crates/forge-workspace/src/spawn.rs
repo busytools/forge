@@ -933,8 +933,8 @@ pub(crate) fn handle_spawn_worker(
         kick,
     };
     // At-most-one-live-worker-per-label, enforced atomically at this
-    // shared core so no dispatch source (config static roster, dynamic DB
-    // re-spawn, MCP workers__spawn, charter health-check) - even two
+    // shared core so no dispatch source (DB re-spawn, MCP
+    // workers__spawn, charter health-check) - even two
     // genuinely-concurrent dispatches for the same label - can double-
     // insert and fork two subprocesses onto one worktree.
     if let Err(existing) = workspace.insert_live_worker_if_label_absent(&project_key, entry.clone())
@@ -1077,8 +1077,8 @@ fn teardown_worker(
     // it never re-spawns. Cancel and the lead-close cascade go through
     // other paths and deliberately leave the row intact.
     workspace.delete_dynamic_worker(project_key, label);
-    // A static worker re-spawns from forge.toml, so only a dynamic worker's
-    // close clears its durable state (crons + Gotify subs).
+    // Only a dynamic worker's close clears its durable state (crons +
+    // Gotify subs); a label named in `static_workers` is left alone.
     let is_dynamic = workspace
         .list_projects()
         .into_iter()

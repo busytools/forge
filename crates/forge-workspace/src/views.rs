@@ -36,11 +36,9 @@ pub struct ProjectView {
     /// loader enforces).
     pub accounts: Vec<String>,
     /// Static-worker role labels configured for this project via the
-    /// `static_workers = [...]` field in `forge.toml`. Drives the
-    /// auto-spawn roster: one worker per label on the lead's
-    /// `Connected`, each label resolving to a charter + kick file under
-    /// `~/.claude/forge-team/<label>/`. Empty means no roster; the lead
-    /// charter is independent of this list. See `crate::team::Role`.
+    /// `static_workers = [...]` field in `forge.toml`. Spawns nothing:
+    /// it pre-seeds the account-assignment plan and marks a label as
+    /// config-defined rather than dynamic.
     pub static_workers: Vec<String>,
     pub sessions: Vec<SessionView>,
 }

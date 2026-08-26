@@ -89,11 +89,11 @@ struct ProjectEntry {
     /// is focused until the user picks one. Defaults to `false`.
     #[serde(default)]
     auto_start: bool,
-    /// Static (config-defined) worker role labels to auto-spawn
-    /// alongside this project's lead, each resolving to a charter + kick
-    /// under `~/.claude/forge-team/<label>/`. Dynamic (LLM-spawned)
-    /// workers are not listed here; they carry a row in the redb store
-    /// instead. Empty / missing means no static workers.
+    /// Static (config-defined) worker role labels for this project.
+    /// Nothing spawns from them; they pre-seed the account-assignment
+    /// plan. Dynamic (LLM-spawned) workers are not listed here; they
+    /// carry a row in the redb store instead. Empty / missing means no
+    /// static workers.
     #[serde(default)]
     static_workers: Vec<String>,
 }
@@ -184,11 +184,9 @@ pub(crate) struct LoadedProject {
     /// `true` when the project should spawn automatically at forge
     /// launch.
     pub auto_start: bool,
-    /// Validated static-worker labels for this project (format only -
-    /// existence of the per-label charter files at
-    /// `~/.claude/forge-team/<label>/{charter,kick}.md` is checked at
-    /// spawn, not here). Empty means no static workers.
-    /// See `crate::team::Role` + `crate::team::validate_label`.
+    /// Validated static-worker labels for this project - format only,
+    /// since nothing loads a file per label any more. Empty means no
+    /// static workers. See `crate::team::validate_label`.
     pub static_workers: Vec<String>,
     /// Per-project environment from `[projects.<name>.env]`, layered
     /// over the account's env at spawn. An `ANTHROPIC_BASE_URL` or
@@ -1565,10 +1563,9 @@ config_dir = "/tmp/acct-a"
     }
 
     #[test]
-    fn arbitrary_role_label_accepted_existence_checked_after_config_load() {
+    fn arbitrary_role_label_accepted_at_config_load() {
         // Post-#220 the static_workers field is an open set: any
-        // well-formed label is accepted at config-load. The disk-side
-        // existence check fires later, at spawn.
+        // well-formed label is accepted at config-load.
         let tmp = tempfile::tempdir().expect("tempdir");
         write_config(
             tmp.path(),
