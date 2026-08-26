@@ -9,11 +9,12 @@ default:
 fmt-check:
     cargo fmt --check
 
-# Forbid em-dash / en-dash / horizontal-bar / curly quotes in
-# forge-authored source. Ellipsis U+2026 is allowed. Test baselines
-# + reference-captures are excluded. See the script for the full
-# rationale + the `\u{2014}` escape recipe when a codepoint is
-# functionally required (render glyph).
+# Ellipsis U+2026 is allowed. Test baselines + reference-captures are
+# excluded. See the script for the full rationale + the `\u{2014}`
+# escape recipe when a codepoint is functionally required (render
+# glyph).
+#
+# Forbid em-dash / en-dash / horizontal-bar / curly quotes in forge-authored source.
 unicode-punct-check:
     ./scripts/check_no_unicode_punctuation.sh
 
@@ -21,7 +22,6 @@ unicode-punct-check:
 fmt:
     cargo fmt
 
-# Lint everything (lib, tests, examples, bins) with warnings as errors.
 # Mirrors CI's two clippy invocations. `RUSTFLAGS=-D warnings` matches
 # CI's workflow-level env (#257); the `-- -D warnings` after the
 # dash-dash applies to clippy's own lints and the env covers everything
@@ -33,30 +33,34 @@ fmt:
 # nothing compiles the `cfg(not(feature = ...))` branches. Every other
 # job in CI is already on the flag, so the bare invocation is the only
 # thing keeping the default build linted at all.
+#
+# Lint everything (lib, tests, examples, bins) with warnings as errors.
 clippy:
     RUSTFLAGS="-D warnings" cargo clippy --all-targets --workspace -- -D warnings
     RUSTFLAGS="-D warnings" cargo clippy --all-targets --workspace --all-features -- -D warnings
 
-# Run the forge-sdk test suite via nextest.
 # `RUSTFLAGS=-D warnings` mirrors CI; without it the test-target
 # compile is less strict than CI and an unused-import in a test mod
 # would pass local but fail CI.
+#
+# Run the forge-sdk test suite via nextest.
 test:
     RUSTFLAGS="-D warnings" cargo nextest run -p forge-sdk
 
-# Run tests across the whole workspace (includes forge-test-harness replay).
 # Mirrors CI's `cargo nextest run --workspace --all-features` so feature-
 # gated test mods that CI runs aren't silently skipped locally.
 # `RUSTFLAGS=-D warnings` mirrors CI's workflow-level env (#257).
+#
+# Run tests across the whole workspace (includes forge-test-harness replay).
 test-all:
     RUSTFLAGS="-D warnings" cargo nextest run --workspace --all-features
 
-# Run wire-conformance replays against every committed baseline.
 # `RUSTFLAGS=-D warnings` mirrors CI's workflow-level env (#257).
+#
+# Run wire-conformance replays against every committed baseline.
 conformance:
     RUSTFLAGS="-D warnings" cargo nextest run -p forge-test-harness
 
-# Live-capture a single SDK-wire conformance scenario against the real CLI.
 # Usage: `just conformance-capture-sdk wire_capture_trivial_prompt`
 # Burns API tokens. Baseline goes to target/wire-traces/; promote with
 # `cp target/wire-traces/capture-<scenario>-<ts>.jsonl \
@@ -72,6 +76,8 @@ conformance:
 # An empty argument is rejected rather than passed through: with no
 # filter left, the command selects every live-capture scenario and runs
 # all of them against the real API.
+#
+# Live-capture one SDK-wire conformance scenario against the real CLI (burns tokens).
 conformance-capture-sdk test:
     @if [ -z "{{test}}" ]; then \
         echo "[ERROR] test name required, e.g. wire_capture_trivial_prompt" >&2; \
@@ -81,12 +87,13 @@ conformance-capture-sdk test:
     FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
         --no-capture --run-ignored only --no-tests=fail {{test}}
 
-# Build docs with warnings as errors. Mirrors CI's
-# `cargo doc --workspace --no-deps --all-features`.
+# Mirrors CI's `cargo doc --workspace --no-deps --all-features`.
 # `RUSTDOCFLAGS=-D warnings` denies rustdoc lints (broken links,
 # private intra-doc links, etc.); `RUSTFLAGS=-D warnings` mirrors
 # CI's workflow-level env so the underlying compile that `cargo doc`
 # drives is also strict (#257).
+#
+# Build docs with warnings as errors.
 doc:
     RUSTDOCFLAGS="-D warnings" RUSTFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 
@@ -196,8 +203,9 @@ ci-watch run_id="":
 install:
     ./scripts/install.sh
 
-# Same as `install` but strips the perf sidecar entirely. Only useful
-# for measuring whether perf adds detectable overhead.
+# Only useful for measuring whether perf adds detectable overhead.
+#
+# Same as `install` but strips the perf sidecar entirely.
 install-no-perf:
     ./scripts/install.sh --no-perf
 
@@ -205,13 +213,14 @@ install-no-perf:
 remove-cert:
     ./scripts/remove-cert.sh
 
-# Cut a release: bump the workspace version, commit, tag.
 # Does NOT push - that's gated per CLAUDE.md and stays explicit.
 # Requires cargo-edit (`cargo install cargo-edit`) for `cargo set-version`.
 # Gates on check-release because the ordering is what turns a caught
 # error into a public one: `cargo install` builds release, and it runs
 # after this recipe has already tagged.
 # Usage: `just release 0.17.0`
+#
+# Cut a release: bump the workspace version, commit, tag.
 release version: check-release
     @if ! cargo set-version --help >/dev/null 2>&1; then \
         echo "[ERROR] cargo set-version not available - run: cargo install cargo-edit" >&2; \
