@@ -154,7 +154,7 @@ fn run() -> anyhow::Result<()> {
 /// is threaded as a typed `PathBuf` (via `Workspace::new`, which in
 /// turn binds each `Agent::spawn(config_dir)` to its account's path).
 ///
-/// Per hard rule #15 - no cwd-derived fallbacks. When `$CLAUDE_CONFIG_DIR`
+/// Per hard rule #14 - no cwd-derived fallbacks. When `$CLAUDE_CONFIG_DIR`
 /// is unset/empty AND `dirs::home_dir()` returns None, refuse to launch
 /// rather than substituting `./.claude`.
 fn resolve_config_dir() -> anyhow::Result<PathBuf> {

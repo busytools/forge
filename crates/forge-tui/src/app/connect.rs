@@ -53,7 +53,7 @@ pub(crate) fn session_launch_settings_for_resume(
 
 /// Create the `App` struct in `Connecting` state and load shared
 /// settings state. `cwd_raw` is sourced from `forge.toml` (per
-/// Hard Rule #15) - chat-direct mode picks up `project.path`,
+/// Hard Rule #14) - chat-direct mode picks up `project.path`,
 /// launchpad mode leaves it empty.
 pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App {
     create_app_impl(cli, workspace, None)

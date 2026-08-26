@@ -29,7 +29,7 @@ use crate::Error;
 ///
 /// [`Error::Connection`] when none of `dirs::data_local_dir()`,
 /// `dirs::cache_dir()`, or `dirs::home_dir()` resolve. Per the
-/// project's Hard Rule #15 there is no `current_dir()` fallback - the
+/// project's Hard Rule #14 there is no `current_dir()` fallback - the
 /// path must not vary with the launch directory.
 pub fn app_support_dir() -> Result<PathBuf, Error> {
     if let Some(dir) = dirs::data_local_dir() {

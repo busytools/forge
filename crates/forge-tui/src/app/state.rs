@@ -5393,7 +5393,7 @@ mod tests {
 
     /// Regression: the pre-connect bucket's `cwd_raw` must not be
     /// seeded from `std::env::current_dir()` - forge.toml is the
-    /// source of truth (Hard Rule #15). In launchpad mode (no argv
+    /// source of truth (Hard Rule #14). In launchpad mode (no argv
     /// project), the pre-connect bucket's `cwd_raw` stays empty so
     /// it cannot collide with any project lookup. This test pins
     /// that invariant for `test_default`'s pre-connect bucket.

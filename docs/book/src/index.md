@@ -42,13 +42,8 @@ rather than managed through the UI. It is open source because the code
 may be useful to read or build on, not because it has been generalised
 for arbitrary deployments.
 
-Two behaviours are worth knowing before you run it:
+One behaviour is worth knowing before you run it:
 
-- forge starts a local man-in-the-middle HTTPS proxy and routes every
-  `claude` child through it. It terminates TLS for every host the child
-  reaches, not only Anthropic, and anything the child spawns inherits
-  it. forge refuses to boot if that proxy cannot start. See
-  [the proxy page](./classification-proxy.md).
 - forge takes an exclusive lock on a config directory, so a second
   forge on the same config directory is normally refused at boot. The
   guard is best-effort and warns rather than failing if it cannot be
