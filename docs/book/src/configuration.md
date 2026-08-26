@@ -63,21 +63,18 @@ under. Rules enforced at load:
 | `name` | string | yes | | Must be unique across *all* orgs, not just within one. |
 | `path` | string | yes | | A leading `~/` is expanded to the home directory. The un-expanded string is kept for display. |
 | `auto_start` | bool | no | `false` | When true, the project's lead session spawns at forge launch. Any number of projects may set it. |
-| `static_workers` | array of strings | no | `[]` | Worker role labels to spawn alongside this project's lead. |
+| `static_workers` | array of strings | no | `[]` | Worker labels that get an account-assignment slot. Spawns nothing on its own. |
 
 Project names are the argument `forge <PROJECT>` takes, and the key
 `[projects.<name>]` env tables refer to.
 
 ### `static_workers`
 
-Each label resolves to a charter and an initial kick prompt on disk.
-Labels are validated at load. The files are read at startup, when forge
-back-fills a stored worker record for any label that has none, so a
-label naming a role you have not created yet loads fine and is skipped
-there. From then on the stored record is what spawns the worker, so
-editing the files no longer changes it while that record exists. Closing
-the worker drops its record, and the next startup back-fills it again
-from the files as they stand then.
+Labels are validated at load and nothing spawns from them: the list
+pre-seeds the account-assignment plan, so a label here gets an account
+slot and a launchpad chip. Workers themselves come from
+`workers__spawn`, which stores each one's charter and brings it back
+after a restart.
 
 Label validation at load rejects: an empty label, a leading `/`, and
 any path segment equal to `.`, `..`, or empty (which a `//` would
@@ -85,23 +82,6 @@ produce). A `/` is otherwise allowed as a namespace separator, so
 `researcher` and `some-namespace/researcher` are both well-formed.
 Repeating a label within one project is also rejected: one instance per
 label per project.
-
-At back-fill, a label is resolved project-scoped first and globally second.
-For a project named `P`, forge looks for
-`~/.claude/forge-team/P/<label>/charter.md` and then
-`~/.claude/forge-team/<label>/charter.md`, and uses the first that
-exists. Each role directory needs both `charter.md` and `kick.md`. A
-label whose files resolve nowhere is skipped with a warning rather than
-blocking the rest of the roster.
-
-That root comes from the home directory, not from `<config_dir>`, so it
-stays at `~/.claude/forge-team/` even when `$CLAUDE_CONFIG_DIR` points
-somewhere else.
-
-You author these files yourself; forge ships no starting content and
-does no bootstrap. The `lead` role is the exception: when
-`~/.claude/forge-team/lead/charter.md` is absent, forge falls back to a
-charter compiled into the binary, so a lead is always charter-backed.
 
 ## `[[accounts]]`
 
