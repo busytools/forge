@@ -17,6 +17,8 @@
 use std::io;
 use std::path::PathBuf;
 
+use forge_primitives::LEAD_LABEL;
+
 /// Loaded role data: label + charter prose + initial-kick prose.
 /// Constructed via [`Role::load`] (production) or by hand in tests.
 #[derive(Debug, PartialEq, Eq)]
@@ -69,12 +71,6 @@ impl Role {
         })
     }
 }
-
-/// Reserved label addressing the caller's own lead - see the workers
-/// MCP server. Kept here so charter validation in
-/// `forge-workspace::config` can sanity-check `static_workers = [...]`
-/// entries against it without pulling in `mcp::workers`.
-pub const LEAD_LABEL: &str = "lead";
 
 /// Bundled lead charter, compiled in as the fallback when
 /// `~/.claude/forge-team/lead/charter.md` is absent.

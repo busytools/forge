@@ -18,6 +18,11 @@ pub const FORGE_LEAD_TAG: &str = "forge:lead";
 /// formatted as `forge:worker:<label>` via [`worker_tag`].
 pub const FORGE_WORKER_TAG_PREFIX: &str = "forge:worker:";
 
+/// Reserved label a worker uses to address its spawning lead via
+/// `workers__tell` / `workers__ask`. `workers__spawn` rejects it so no
+/// live worker can shadow the keyword.
+pub const LEAD_LABEL: &str = "lead";
+
 /// Format a worker session's tag value: `forge:worker:<label>`.
 /// Used at spawn (writer side) and at scan (reader side).
 pub fn worker_tag(label: &str) -> String {

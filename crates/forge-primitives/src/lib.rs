@@ -135,5 +135,5 @@ pub use session_update::{
 pub use subagents::{EffortPreset, SubagentDefinition, SubagentMcpServerRef, SubagentMemory};
 pub use turn_error::TurnErrorClass;
 pub use workers::{
-    FORGE_LEAD_TAG, FORGE_WORKER_TAG_PREFIX, WorkerLiveness, WorkerStatus, worker_tag,
+    FORGE_LEAD_TAG, FORGE_WORKER_TAG_PREFIX, LEAD_LABEL, WorkerLiveness, WorkerStatus, worker_tag,
 };
