@@ -16,10 +16,10 @@ pub struct SessionLaunchSettings {
     /// only when the caller supplies none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub charter: Option<String>,
-    /// Lead-session delegation catalog: when `Some`, appended to the
+    /// Lead-session delegation preamble: when `Some`, appended to the
     /// system prompt after the forge MCP trust block so a Lead session
-    /// knows which worker roles it can spawn. Built by the workspace
-    /// for Lead spawns only; `None` for workers.
+    /// knows how to spawn and drive workers. Built by the workspace for
+    /// Lead spawns only; `None` for workers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegation_preamble: Option<String>,
     /// Spawn-path-specific extra CLI args to thread through to the
