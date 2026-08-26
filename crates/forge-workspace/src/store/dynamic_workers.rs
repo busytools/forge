@@ -9,6 +9,8 @@
 //! deliberately NOT stored, since resume is recovered from the
 //! `forge:worker:<label>` catalog tag.
 
+use std::collections::HashMap;
+
 use anyhow::Context;
 use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
@@ -92,6 +94,26 @@ pub fn list_for_project(db: &Db, project_key: &str) -> anyhow::Result<Vec<Dynami
                 );
             }
         }
+    }
+    Ok(out)
+}
+
+/// Every persisted label, grouped by project key, each group in key
+/// order. Reads the composite key alone and never deserializes the
+/// record, so a caller on a render path pays neither to parse each
+/// worker's charter nor to re-scan the table once per project.
+pub fn labels_by_project(db: &Db) -> anyhow::Result<HashMap<String, Vec<String>>> {
+    let txn = db.database().begin_read()?;
+    let table = match txn.open_table(DYNAMIC_WORKERS) {
+        Ok(t) => t,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(HashMap::new()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    for entry in table.iter()? {
+        let (key, _) = entry?;
+        let (project_key, label) = key.value();
+        out.entry(project_key.to_owned()).or_default().push(label.to_owned());
     }
     Ok(out)
 }
@@ -198,6 +220,37 @@ mod tests {
             list_for_project(&db, "proj-b").expect("list").len(),
             1,
             "deleting from proj-a leaves proj-b untouched",
+        );
+    }
+
+    /// The launchpad reads labels every frame, so this path must not
+    /// parse the records. Scoping still holds, and a row whose value is
+    /// undecodable still yields its label - the proof that the key alone
+    /// was read, since `list_for_project` drops that same row.
+    #[test]
+    fn labels_read_the_key_without_decoding_the_record() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        insert(&db, &worker("proj-a", "reviewer")).expect("insert reviewer");
+        insert(&db, &worker("proj-b", "tester")).expect("insert tester");
+        let txn = db.database().begin_write().expect("begin");
+        {
+            let mut table = txn.open_table(DYNAMIC_WORKERS).expect("open table");
+            table.insert(("proj-a", "corrupt"), "not a worker".as_bytes()).expect("insert corrupt");
+        }
+        txn.commit().expect("commit");
+
+        let grouped = labels_by_project(&db).expect("list labels");
+        assert_eq!(
+            grouped.get("proj-a"),
+            Some(&vec!["corrupt".to_owned(), "reviewer".to_owned()]),
+            "labels come from the composite key, so an undecodable record still reports its label",
+        );
+        assert_eq!(
+            grouped.get("proj-b"),
+            Some(&vec!["tester".to_owned()]),
+            "one scan groups every project separately rather than merging them",
         );
     }
 

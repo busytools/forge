@@ -169,7 +169,11 @@ fn build_picker_rows(app: &App) -> Vec<PickerRow> {
         for (idx, project) in bucket.iter().enumerate() {
             let lifecycle = resolve_lifecycle(app, project);
             let error = resolve_error(app, project);
-            let last_activity_label = format_activity(project, lifecycle, now);
+            let last_activity_label = format_activity(
+                lifecycle,
+                project.sessions.first().and_then(|s| s.last_activity),
+                now,
+            );
             rows.push(PickerRow {
                 project_name: project.name.clone(),
                 org: org.clone(),
@@ -217,14 +221,14 @@ fn resolve_error(app: &App, project: &ProjectView) -> Option<String> {
 }
 
 fn format_activity(
-    project: &ProjectView,
     lifecycle: SessionLifecycleState,
+    last_activity: Option<SystemTime>,
     now: SystemTime,
 ) -> String {
     match lifecycle {
         SessionLifecycleState::Spawning => "spawning".to_owned(),
         SessionLifecycleState::Failed => "failed".to_owned(),
-        _ => match project.sessions.first().and_then(|s| s.last_activity) {
+        _ => match last_activity {
             Some(activity) => format_relative_time(activity, now),
             None => "\u{2014}".to_owned(),
         },
@@ -438,6 +442,11 @@ fn build_picker_content(
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut selected_flat: Option<usize> = None;
     let dim = Style::default().fg(theme::DIM);
+    let now = SystemTime::now();
+    // One scan of the dynamic-worker store for the whole picker; the
+    // per-project lookup below is a map index.
+    let worker_labels =
+        app.workspace.as_ref().map(|ws| ws.dynamic_worker_labels_by_project()).unwrap_or_default();
 
     let mut last_org: Option<String> = None;
     for (project_row_idx, row) in rows.iter().enumerate() {
@@ -460,16 +469,17 @@ fn build_picker_content(
         if let Some(err) = &row.error {
             push_error_row(&mut lines, err, width);
         }
-        // Worker rows: show forge.toml team labels (if any) nested
-        // under the project, each with its assigned-account chip
-        // from the AssignmentPlan. Info-only, not selectable.
+        // Worker rows: the project's persisted dynamic workers nested
+        // under it. Info-only, not selectable.
         let project_view = app
             .workspace
             .as_ref()
             .map(|ws| ws.list_projects())
             .and_then(|list| list.into_iter().find(|p| p.name == row.project_name));
-        if let Some(project) = project_view.as_ref() {
-            push_worker_rows(&mut lines, project, app);
+        if let Some(project) = project_view.as_ref()
+            && let Some(labels) = worker_labels.get(project.key.as_str())
+        {
+            push_worker_rows(&mut lines, project, app, labels, now);
         }
         // Surface a "no usable accounts" hint when the project's
         // pool resolved to empty (every allowed account Bailed, or
@@ -634,7 +644,7 @@ fn push_project_row(
     let name_label = truncate_to(&row.project_name, PROJECT_NAME_WIDTH);
     let name_pad = PROJECT_NAME_WIDTH.saturating_sub(name_label.chars().count());
     let chip_col_pad = CHIP_COLUMN_WIDTH.saturating_sub(chip_width);
-    let right_width: usize = 10;
+    let right_width: usize = ACTIVITY_COLUMN_WIDTH;
     let right_label = truncate_to(&row.last_activity_label, right_width);
 
     let dim = Style::default().fg(theme::DIM);
@@ -676,55 +686,109 @@ fn push_project_row(
 const PROJECT_NAME_WIDTH: usize = 14;
 
 /// Worker-row name column width. Workers are indented 3 cells deeper
-/// (the worker subtree connector), so the name column is correspondingly
-/// narrower to keep the trailing chip column aligned with project rows.
-const WORKER_NAME_WIDTH: usize = 11;
+/// (the worker subtree connector) and carry the same lifecycle glyph +
+/// separating space the project row does, so the name column is
+/// correspondingly narrower to keep the trailing chip column aligned
+/// with project rows.
+const WORKER_NAME_WIDTH: usize = 9;
+
+/// Right-aligned activity column width, shared by project and worker
+/// rows so both end at the same x.
+const ACTIVITY_COLUMN_WIDTH: usize = 10;
 
 /// Chip column width - the leading-space + `(<account>)` chip pads to
 /// this width so the time column (project rows) lands at a fixed x.
 /// 13 = 1 space + 12 (CHIP_MAX_WIDTH in `account_chip_spans`).
 const CHIP_COLUMN_WIDTH: usize = 13;
 
-/// Append one row per declared static worker (from forge.toml's
-/// `static_workers = [...]` for this project) directly below the
-/// project's row. Each row shows the worker label + its assigned-account
-/// chip from the AssignmentPlan, so the user can see the per-session
-/// account mapping before clicking the project. Workers are
-/// info-only on the launchpad - clicks land on the project lead
-/// row; the worker rows are not selectable.
-fn push_worker_rows(lines: &mut Vec<Line<'static>>, project: &ProjectView, app: &App) {
-    if project.static_workers.is_empty() {
+/// Append one row per persisted dynamic worker for this project,
+/// directly below the project's row. Each row carries what the project
+/// row carries - lifecycle glyph, name, assigned-account chip from the
+/// AssignmentPlan, right-aligned activity - so the user can see the
+/// per-session account mapping and each worker's state before clicking
+/// the project. Workers are info-only on the launchpad: clicks land on
+/// the project lead row, and the worker rows are not selectable.
+///
+/// `labels` are this project's persisted dynamic workers, which the
+/// caller reads for the whole picker in one pass. They come from the
+/// persisted rows rather than `list_live_workers`, which is empty until
+/// the project launches - the state the launchpad renders in.
+fn push_worker_rows(
+    lines: &mut Vec<Line<'static>>,
+    project: &ProjectView,
+    app: &App,
+    labels: &[String],
+    now: SystemTime,
+) {
+    let Some(workspace) = app.workspace.as_ref() else {
+        return;
+    };
+    if labels.is_empty() {
         return;
     }
+    let live = workspace.list_live_workers(&project.key);
     let dim = Style::default().fg(theme::DIM);
-    let workers = &project.static_workers;
-    let count = workers.len();
-    for (idx, label) in workers.iter().enumerate() {
+    let count = labels.len();
+    for (idx, label) in labels.iter().enumerate() {
         let is_last = idx + 1 == count;
         let tree_glyph = if is_last { "└─" } else { "├─" };
-        let chip_info =
-            app.workspace.as_ref().and_then(|ws| ws.session_chip_for(&project.key, label));
-        let (chip_spans, _chip_width) = account_chip_spans(chip_info.as_ref());
+        let lifecycle = worker_lifecycle(app, &live, label);
+        let (glyph, glyph_color) = glyph_for_row(lifecycle, app.active_spinner_glyph());
+        let chip_info = workspace.session_chip_for(&project.key, label);
+        let (chip_spans, chip_width) = account_chip_spans(chip_info.as_ref());
         let name_label = truncate_to(label, WORKER_NAME_WIDTH);
         let name_pad = WORKER_NAME_WIDTH.saturating_sub(name_label.chars().count());
+        let chip_col_pad = CHIP_COLUMN_WIDTH.saturating_sub(chip_width);
+        // Workers run in worktrees, which the catalog keys separately
+        // from their project, so no per-worker last-activity reaches here.
+        let right_label =
+            truncate_to(&format_activity(lifecycle, None, now), ACTIVITY_COLUMN_WIDTH);
 
         // Worker-row chrome: 2 (selection prefix) + 2 (`│ `) + 3
         // (vertical continuation gap) + 2 (`├─`/`└─` tree connector)
-        // + 1 (sp) = 10 cells. Plus name column (WORKER_NAME_WIDTH),
-        // chip rendered after. Project-row chrome is only 7 cells +
-        // PROJECT_NAME_WIDTH (14) = 21 cells. So worker chrome+name
-        // = 10 + 11 = 21 - same trailing column for the chip.
+        // + 1 (sp) + 1 (glyph) + 1 (sp) = 12 cells. Project-row chrome
+        // is 7 cells + PROJECT_NAME_WIDTH (14) = 21, so worker
+        // chrome+name = 12 + 9 = 21 - same trailing column for the chip.
         let mut spans: Vec<Span<'static>> = vec![
             Span::raw(" ".repeat(SELECTION_PREFIX_WIDTH)),
             Span::styled("│ ".to_owned(), dim),
             Span::raw(" ".repeat(3)),
             Span::styled(tree_glyph.to_owned(), dim),
             Span::raw(" ".to_owned()),
+            Span::styled(glyph, Style::default().fg(glyph_color)),
+            Span::raw(" ".to_owned()),
             Span::styled(name_label, Style::default().fg(theme::DIM)),
             Span::raw(" ".repeat(name_pad)),
         ];
         spans.extend(chip_spans);
+        spans.push(Span::raw(" ".repeat(chip_col_pad)));
+        spans.push(Span::raw("  ".to_owned()));
+        spans.push(Span::styled(format!("{right_label:>ACTIVITY_COLUMN_WIDTH$}"), dim));
         lines.push(Line::from(spans));
+    }
+}
+
+/// What the worker labelled `label` is doing right now. The two states
+/// with no session to interrogate come from the live entry; the rest
+/// resolves through the same `UiSession` bucket the project row reads.
+/// `Sleeping` when the label has no live worker - a persisted row that
+/// has not spawned this boot.
+fn worker_lifecycle(
+    app: &App,
+    live: &[forge_workspace::WorkerEntry],
+    label: &str,
+) -> SessionLifecycleState {
+    use forge_primitives::WorkerLiveness;
+    let Some(entry) = live.iter().find(|w| w.label == label) else {
+        return SessionLifecycleState::Sleeping;
+    };
+    match entry.status {
+        WorkerLiveness::Spawning => SessionLifecycleState::Spawning,
+        WorkerLiveness::Failed => SessionLifecycleState::Failed,
+        WorkerLiveness::Running => app
+            .sessions
+            .get(&entry.session_key)
+            .map_or(SessionLifecycleState::Sleeping, |s| s.lifecycle_state),
     }
 }
 
@@ -1128,6 +1192,83 @@ mod tests {
         assert!(
             first_flat >= usize::from(back) && first_flat < usize::from(back) + view,
             "first row stays inside the visible window",
+        );
+    }
+
+    /// Build a workspace over a one-project `forge.toml`, seed `label` as
+    /// a persisted dynamic worker, and hand back an `App` wired to it.
+    async fn app_with_persisted_worker(label: &str) -> (App, tempfile::TempDir, tempfile::TempDir) {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("project tempdir");
+        let forge = config_dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/ dir");
+        let project_path = project_dir.path().to_string_lossy().replace('\\', "/");
+        std::fs::write(
+            forge.join("forge.toml"),
+            format!(
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n\
+                 [[orgs.projects]]\nname = \"picker\"\npath = \"{project_path}\"\n\n\
+                 [[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"~/.claude-stargate\"\n"
+            ),
+        )
+        .expect("write forge.toml");
+
+        let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
+            .await
+            .expect("workspace");
+        let project = workspace.list_projects().into_iter().next().expect("one project");
+        workspace.seed_test_dynamic_worker(&project.key, label);
+
+        let mut app = App::test_default();
+        app.workspace = Some(std::sync::Arc::new(workspace));
+        (app, config_dir, project_dir)
+    }
+
+    /// Flatten each rendered line into a plain string.
+    fn flatten(lines: &[Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect()
+    }
+
+    /// Worker rows come from the persisted dynamic workers, not from
+    /// `static_workers`, and carry the same four elements the lead row
+    /// does - lifecycle glyph, name, chip column, right-aligned activity.
+    /// The two rows therefore render to the same width, which is the
+    /// column alignment the geometry constants exist to hold.
+    #[tokio::test]
+    async fn worker_row_matches_the_project_row_shape() {
+        let (app, _config_dir, _project_dir) = app_with_persisted_worker("reviewer").await;
+        let rows = build_picker_rows(&app);
+        let (lines, _) = build_picker_content(&app, &rows, PICKER_WIDTH);
+        let rendered = flatten(&lines);
+
+        let project_row = rendered
+            .iter()
+            .find(|l| l.contains("picker"))
+            .expect("the project row renders")
+            .clone();
+        let worker_row = rendered
+            .iter()
+            .find(|l| l.contains("reviewer"))
+            .expect("a persisted dynamic worker renders a row")
+            .clone();
+
+        assert!(
+            worker_row.contains('\u{25cb}'),
+            "a worker that has never spawned carries the Sleeping glyph; got: {worker_row:?}",
+        );
+        assert_eq!(
+            worker_row.chars().count(),
+            project_row.chars().count(),
+            "worker and project rows must render to the same width so their chip and activity \
+             columns line up; worker {worker_row:?} vs project {project_row:?}",
+        );
+        assert!(
+            worker_row.trim_end().ends_with('\u{2014}'),
+            "no per-worker activity timestamp exists, so the activity column reads as the \
+             em-dash placeholder; got: {worker_row:?}",
         );
     }
 

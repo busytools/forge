@@ -3515,6 +3515,33 @@ impl Workspace {
         )
     }
 
+    /// Every persisted dynamic-worker label, keyed by project.
+    ///
+    /// The launchpad's worker rows read this once per frame, which is
+    /// what the shape is for: one lock, one read transaction and one
+    /// scan answer every project row. It also skips the record parse -
+    /// `dynamic_workers_for_project` deserializes a multi-KB charter per
+    /// row, and unlike [`Self::list_live_workers`] this answers before
+    /// the project has launched, which is when the launchpad renders.
+    ///
+    /// Empty on a read failure rather than surfacing it, deliberately
+    /// unlike the sibling `dynamic_worker_exists`: the caller is a
+    /// render path, where a warn plus a bare row beats failing the frame.
+    pub fn dynamic_worker_labels_by_project(&self) -> HashMap<String, Vec<String>> {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            return HashMap::new();
+        };
+        crate::store::dynamic_workers::labels_by_project(db).unwrap_or_else(|error| {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                "listing persisted dynamic-worker labels failed",
+            );
+            HashMap::new()
+        })
+    }
+
     /// Whether `label` has a persisted dynamic-worker row in `project_key`.
     /// Distinct from [`Self::dynamic_workers_for_project`], which swallows a
     /// read failure as empty: this surfaces the error (and treats a missing
@@ -6144,6 +6171,20 @@ impl Workspace {
             auto_start: false,
             static_workers: static_workers.to_vec(),
             env: std::collections::HashMap::new(),
+        });
+    }
+
+    /// Persist a dynamic-worker row directly, bypassing `workers__spawn`.
+    /// Cross-crate test access to the otherwise `pub(crate)` store write
+    /// so forge-tui can render launchpad worker rows against a seeded row.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_dynamic_worker(&self, project_key: &ProjectKey, label: &str) {
+        let _ = self.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+            project_key: project_key.as_str().to_owned(),
+            label: label.to_owned(),
+            charter: format!("charter for {label}"),
+            kick: None,
+            resume_kick: None,
         });
     }
 
@@ -13643,6 +13684,31 @@ config_dir = "~/.claude-stargate"
         dir
     }
 
+    /// Like `make_workspace_dir_246` but the project declares a static
+    /// worker, so the computed plan seeds a label beyond `lead`.
+    fn make_workspace_dir_static_worker() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+static_workers = ["reviewer"]
+
+[[accounts]]
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
+"#,
+        )
+        .expect("write forge.toml");
+        dir
+    }
+
     /// Two org accounts in definition order (Alpha, Beta) and a
     /// project with NO `accounts` allow-list, so the project pool IS
     /// the org-ordered ready slice - the exact shape where HashMap
@@ -14222,6 +14288,46 @@ config_dir = "~/.claude-alpha"
         let chip = workspace.session_chip_for(&project_key, "lead").expect("chip");
         assert_eq!(chip.state, SessionChipState::Normal);
         assert_eq!(chip.account_name, "Stargate");
+    }
+
+    /// The launchpad's worker rows chip from the assignment plan, which
+    /// seeds `lead` plus the project's `static_workers` and nothing else.
+    /// So a label the boot back-fill lifted from `static_workers` keeps
+    /// its chip, while a persisted row that has not spawned this boot has
+    /// no plan entry and renders bare - the launchpad must not invent a
+    /// placeholder for the second case.
+    #[tokio::test]
+    async fn plan_chips_a_static_label_but_not_a_never_spawned_one() {
+        let dir = make_workspace_dir_static_worker();
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            let snapshot = forge_primitives::usage::UsageSnapshot {
+                source: forge_primitives::usage::UsageSourceKind::Oauth,
+                fetched_at: std::time::SystemTime::UNIX_EPOCH,
+                five_hour: None,
+                seven_day: None,
+                seven_day_opus: None,
+                seven_day_sonnet: None,
+                extra_usage: None,
+            };
+            accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
+        }
+        workspace.recompute_plan_if_ready();
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+
+        assert!(
+            workspace.session_chip_for(&project_key, "reviewer").is_some(),
+            "a static_workers label is in the plan, so its row stays chipped",
+        );
+        assert!(
+            workspace.session_chip_for(&project_key, "scratch").is_none(),
+            "a label with no plan entry has no chip to render",
+        );
     }
 
     #[tokio::test]
