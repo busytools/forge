@@ -11906,6 +11906,135 @@ mod team_spawn_tests {
             "a deleted dynamic worker must not re-spawn",
         );
     }
+
+    /// Boot a real workspace over a one-project forge.toml, persist a
+    /// `steward` row, and lay down a `forge:worker:steward` tagged
+    /// session under the project's own storage key so the catalog scan
+    /// has something resumable to find. Returns the workspace plus the
+    /// project's key and path, and the session_id the scan should pick.
+    ///
+    /// Both tempdirs must outlive the caller.
+    async fn resumable_worker_fixture(
+        project: &tempfile::TempDir,
+        cfg: &tempfile::TempDir,
+    ) -> (Arc<Workspace>, crate::target::ProjectKey, PathBuf, String) {
+        let project_path = project.path().to_string_lossy().replace('\\', "/");
+        let forge_dir = cfg.path().join("forge");
+        std::fs::create_dir_all(&forge_dir).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+[[orgs.projects]]
+name = "demo"
+path = "{project_path}"
+
+[[accounts]]
+display_name = "acct-a"
+config_dir = "{}"
+"#,
+                cfg.path().to_string_lossy().replace('\\', "/"),
+            ),
+        )
+        .expect("write forge.toml");
+
+        // The scan matches a session's STORAGE KEY against the label's
+        // run dir, which for a non-git project is the project root.
+        let session_id = "550e8400-e29b-41d4-a716-446655440099";
+        let storage_key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+            &project.path().to_string_lossy(),
+        ));
+        let jsonl_dir = forge_sdk::projects_dir_for(cfg.path()).join(&storage_key);
+        std::fs::create_dir_all(&jsonl_dir).expect("jsonl dir");
+        std::fs::write(
+            jsonl_dir.join(format!("{session_id}.jsonl")),
+            format!(
+                "{{\"type\":\"user\",\"cwd\":\"{project_path}\",\"message\":{{\"content\":\"hi\"}}}}\n\
+                 {{\"type\":\"tag\",\"tag\":\"forge:worker:steward\"}}\n"
+            ),
+        )
+        .expect("write tagged jsonl");
+
+        let ws = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).await.expect("boot"));
+        let view = ws.list_projects().into_iter().find(|v| v.name == "demo").expect("project");
+        let _ = ws.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+            project_key: view.key.as_str().to_owned(),
+            label: "steward".to_owned(),
+            charter: "mind the queues".to_owned(),
+            kick: None,
+            resume_kick: None,
+        });
+        ws.enable_test_dispatch_intercept();
+        (ws, view.key.clone(), view.path.clone(), session_id.to_owned())
+    }
+
+    /// Poll the intercept buffer until a SpawnWorker lands or the
+    /// deadline passes; the dispatch happens in a spawned task after an
+    /// async catalog scan.
+    async fn await_spawn_worker(ws: &Arc<Workspace>) -> Vec<Command> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            let dispatched = ws.drain_test_dispatch_buffer();
+            if dispatched.iter().any(|c| matches!(c, Command::SpawnWorker { .. })) {
+                return dispatched;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        Vec::new()
+    }
+
+    /// The async arm: under a runtime the scan runs, finds the tagged
+    /// session and re-spawns the worker onto it.
+    #[tokio::test]
+    async fn catalog_scan_resumes_a_worker_onto_its_tagged_session() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, key, path, session_id) = resumable_worker_fixture(&project, &cfg).await;
+
+        ws.spawn_team_for_lead_with_catalog_scan("lead-uuid".to_owned(), key, path, false);
+
+        let dispatched = await_spawn_worker(&ws).await;
+        let spawns: Vec<&Command> =
+            dispatched.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).collect();
+        assert_eq!(spawns.len(), 1, "the persisted row dispatches one SpawnWorker");
+        let Command::SpawnWorker { label, resume_existing, .. } = spawns[0] else {
+            panic!("expected SpawnWorker");
+        };
+        assert_eq!(label, "steward");
+        assert_eq!(
+            resume_existing.as_deref(),
+            Some(session_id.as_str()),
+            "the scan resumes the worker onto its tagged session",
+        );
+    }
+
+    /// `--new`: the same fixture skips the scan entirely, so the worker
+    /// that WOULD have resumed spawns fresh. Paired with the test above
+    /// deliberately - against a fixture with nothing resumable both
+    /// arms yield None and the branch is unobservable.
+    #[tokio::test]
+    async fn force_new_spawns_fresh_the_worker_the_scan_would_have_resumed() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, key, path, _session_id) = resumable_worker_fixture(&project, &cfg).await;
+
+        ws.spawn_team_for_lead_with_catalog_scan("lead-uuid".to_owned(), key, path, true);
+
+        let dispatched = await_spawn_worker(&ws).await;
+        let spawns: Vec<&Command> =
+            dispatched.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).collect();
+        assert_eq!(spawns.len(), 1, "force_new still spawns the persisted worker");
+        let Command::SpawnWorker { resume_existing, .. } = spawns[0] else {
+            panic!("expected SpawnWorker");
+        };
+        assert!(
+            resume_existing.is_none(),
+            "force_new skips the scan, so a resumable worker still spawns fresh",
+        );
+    }
 }
 
 #[cfg(test)]
