@@ -281,7 +281,7 @@ impl AccountStateMap {
     }
 
     /// Distinct on-disk config_dirs across every known account. Used by
-    /// the team-resume scan, which must look under every account a
+    /// the worker-resume scan, which must look under every account a
     /// worker could have been spawned under (the assignment-plan
     /// rotation distributes workers across accounts).
     pub fn config_dirs(&self) -> Vec<PathBuf> {

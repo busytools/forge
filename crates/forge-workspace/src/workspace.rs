@@ -319,20 +319,20 @@ pub struct Workspace {
     /// stream task is live; dropping/sending stops it. `None` when idle
     /// (no subscriptions) or unconfigured. Guards against double-starting.
     gotify_subsystem: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-    /// Per-project in-flight guard for the engineering-team Connected
+    /// Per-project in-flight guard for the lead Connected
     /// hook's catalog scan. Inserted synchronously when
-    /// `spawn_team_for_lead_with_catalog_scan` starts; removed when
+    /// `respawn_workers_for_lead` starts; removed when
     /// the async scan completes and dispatches its SpawnWorker
     /// commands. A concurrent second Connected (e.g. a fast /new
     /// reconnect) checking this set sees the entry and skips its own
-    /// team-spawn, preventing duplicate worker sets while the scan
+    /// respawn, preventing duplicate worker sets while the scan
     /// is in flight. The existing `live_workers.is_empty()` gate
     /// covers the post-dispatch case.
-    team_spawn_in_flight: Mutex<std::collections::HashSet<ProjectKey>>,
+    respawn_in_flight: Mutex<std::collections::HashSet<ProjectKey>>,
     /// Test-only intercept buffer for app-level Commands. When
     /// `Some`, `dispatch` captures the command into the buffer
     /// instead of routing it to the spawn::* handler - used by
-    /// engineering-team tests to assert what would have been
+    /// respawn tests to assert what would have been
     /// dispatched without spinning up real subprocesses. Always
     /// `None` in production (no enable hook outside test cfg).
     #[cfg(any(test, feature = "testing"))]
@@ -340,7 +340,7 @@ pub struct Workspace {
     /// Test-only project overlay. Entries appended via
     /// `seed_test_project` are searched first in
     /// `find_project_view_by_name` so tests can drive the
-    /// Connected-hook team-spawn trigger without writing a
+    /// Connected-hook respawn trigger without writing a
     /// real `forge.toml`. Empty in production.
     #[cfg(any(test, feature = "testing"))]
     test_extra_projects: Mutex<Vec<LoadedProject>>,
@@ -501,7 +501,7 @@ async fn refresh_gotify_app_index(
 /// are filtered out. Untagged or `forge:lead`-tagged sessions are
 /// filtered out by the tag-prefix check.
 ///
-/// Scans every account's `config_dir`: team workers pick their account
+/// Scans every account's `config_dir`: workers pick their account
 /// from the assignment-plan rotation, so a prior worker session can
 /// live under any account, not just the workspace's canonical dir.
 async fn scan_worker_resume_map(
@@ -778,7 +778,7 @@ impl Workspace {
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),
-            team_spawn_in_flight: Mutex::new(std::collections::HashSet::new()),
+            respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             #[cfg(any(test, feature = "testing"))]
             command_intercept: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
@@ -915,7 +915,7 @@ impl Workspace {
     /// settings. No-op for a worker.
     fn apply_lead_delegation(settings: &mut SessionLaunchSettings, kind: crate::mcp::SessionKind) {
         if matches!(kind, crate::mcp::SessionKind::Lead) {
-            settings.delegation_catalog = Some(LEAD_DELEGATION_PREAMBLE.to_owned());
+            settings.delegation_preamble = Some(LEAD_DELEGATION_PREAMBLE.to_owned());
         }
     }
 
@@ -1085,7 +1085,7 @@ impl Workspace {
             }
         };
         // Carry `--new` onto the domain so a project lead's
-        // Connected-time team spawn skips the worker resume scan and
+        // Connected-time respawn skips the worker resume scan and
         // brings its workers up fresh alongside the fresh lead.
         domain_arc.lock().spawned_force_new = settings.force_new;
 
@@ -2683,7 +2683,7 @@ impl Workspace {
     /// fresh re-spawn (never prompted, so no catalog tag) re-delivers the
     /// stored kick. `maybe_kick_worker_on_connected` then just delivers
     /// whatever this put on the `WorkerEntry`.
-    pub(crate) fn spawn_dynamic_workers_for_lead(
+    pub(crate) fn dispatch_worker_respawns(
         self: &Arc<Self>,
         lead_session_id: &str,
         project_key: &crate::target::ProjectKey,
@@ -2709,11 +2709,11 @@ impl Workspace {
             };
             if let Err(err) = self.dispatch(cmd) {
                 tracing::error!(
-                    target: "forge_workspace::team",
+                    target: "forge_workspace::workers",
                     project = %project_key.as_str(),
                     label = %worker.label,
                     error = ?err,
-                    "spawn_dynamic_workers_for_lead: dispatch failed for label"
+                    "dispatch_worker_respawns: dispatch failed for label"
                 );
             }
         }
@@ -2730,9 +2730,9 @@ impl Workspace {
     ///
     /// No-op when the per-project guard is already claimed (another
     /// scan is in flight). The first-pass `live_workers.is_empty()`
-    /// gate in `session_task::maybe_spawn_team_on_connected` catches
+    /// gate in `session_task::maybe_respawn_workers_on_connected` catches
     /// the post-scan case; this guard covers the during-scan window.
-    pub(crate) fn spawn_team_for_lead_with_catalog_scan(
+    pub(crate) fn respawn_workers_for_lead(
         self: &Arc<Self>,
         lead_session_id: String,
         project_key: crate::target::ProjectKey,
@@ -2743,9 +2743,9 @@ impl Workspace {
         if dynamic.is_empty() {
             return;
         }
-        if !self.try_claim_team_spawn(&project_key) {
+        if !self.try_claim_respawn(&project_key) {
             tracing::debug!(
-                target: "forge_workspace::team",
+                target: "forge_workspace::workers",
                 project = %project_key.as_str(),
                 "worker-spawn already in flight; skipping duplicate Connected fire",
             );
@@ -2756,28 +2756,28 @@ impl Workspace {
         // (an empty resume map => `resume_existing = None` for all).
         if force_new {
             let empty = std::collections::HashMap::new();
-            self.spawn_dynamic_workers_for_lead(&lead_session_id, &project_key, &dynamic, &empty);
-            self.release_team_spawn(&project_key);
+            self.dispatch_worker_respawns(&lead_session_id, &project_key, &dynamic, &empty);
+            self.release_respawn(&project_key);
             return;
         }
         // When invoked inside a tokio runtime (production + any
         // `#[tokio::test]`), spawn the catalog scan + dispatch
         // asynchronously so translate_event isn't blocked on file
         // I/O. When invoked outside a runtime (the sync `#[test]`
-        // fixtures in `team_hook_tests`), fall back to a synchronous
+        // fixtures in `connected_hook_tests`), fall back to a synchronous
         // dispatch with an empty resume map: those tests exercise
         // the worker-fanout shape, not the resume mechanic. Tests that
         // need the resume path opt into `#[tokio::test]` + fixture
         // JSONLs explicitly.
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             tracing::debug!(
-                target: "forge_workspace::team",
+                target: "forge_workspace::workers",
                 project = %project_key.as_str(),
                 "no tokio runtime in scope; falling back to sync worker-spawn (test path)",
             );
             let empty = std::collections::HashMap::new();
-            self.spawn_dynamic_workers_for_lead(&lead_session_id, &project_key, &dynamic, &empty);
-            self.release_team_spawn(&project_key);
+            self.dispatch_worker_respawns(&lead_session_id, &project_key, &dynamic, &empty);
+            self.release_respawn(&project_key);
             return;
         };
         let workspace = Arc::clone(self);
@@ -2791,35 +2791,35 @@ impl Workspace {
         handle.spawn(async move {
             let resume_map = scan_worker_resume_map(&config_dirs, &project_dir).await;
             tracing::info!(
-                target: "forge_workspace::team",
+                target: "forge_workspace::workers",
                 project = %project_key.as_str(),
                 lead_session_id = %lead_session_id,
                 resume_count = resume_map.len(),
-                dynamic_count = dynamic.len(),
-                "worker-spawn catalog scan complete; dispatching SpawnWorker per label",
+                worker_count = dynamic.len(),
+                "worker resume scan complete; dispatching SpawnWorker per row",
             );
-            workspace.spawn_dynamic_workers_for_lead(
+            workspace.dispatch_worker_respawns(
                 &lead_session_id,
                 &project_key,
                 &dynamic,
                 &resume_map,
             );
-            workspace.release_team_spawn(&project_key);
+            workspace.release_respawn(&project_key);
         });
     }
 
-    /// Claim the per-project team-spawn in-flight guard. Returns true
+    /// Claim the per-project respawn in-flight guard. Returns true
     /// if the guard was acquired (entry was absent), false if another
     /// scan was already in flight.
-    fn try_claim_team_spawn(&self, project_key: &crate::target::ProjectKey) -> bool {
-        self.team_spawn_in_flight.lock().insert(project_key.clone())
+    fn try_claim_respawn(&self, project_key: &crate::target::ProjectKey) -> bool {
+        self.respawn_in_flight.lock().insert(project_key.clone())
     }
 
-    /// Release the per-project team-spawn in-flight guard. Paired with
-    /// `try_claim_team_spawn`; called from the async task's tail
-    /// after `spawn_team_for_lead_with_resume` returns.
-    fn release_team_spawn(&self, project_key: &crate::target::ProjectKey) {
-        self.team_spawn_in_flight.lock().remove(project_key);
+    /// Release the per-project respawn in-flight guard. Paired with
+    /// `try_claim_respawn`; called once the dispatches have gone out, on
+    /// each of the three paths that can issue them.
+    fn release_respawn(&self, project_key: &crate::target::ProjectKey) {
+        self.respawn_in_flight.lock().remove(project_key);
     }
 
     /// Set the `session_id` field on the workspace's `DomainSession`
@@ -5955,7 +5955,7 @@ impl Workspace {
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),
-            team_spawn_in_flight: Mutex::new(std::collections::HashSet::new()),
+            respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             command_intercept: Mutex::new(None),
             test_extra_projects: Mutex::new(Vec::new()),
         };
@@ -5997,7 +5997,7 @@ impl Workspace {
 #[cfg(any(test, feature = "testing"))]
 impl Workspace {
     /// Append a synthetic project to the test overlay searched first
-    /// by `find_project_view_by_name`. Used by engineering-team tests
+    /// by `find_project_view_by_name`. Used by respawn tests
     /// to drive the Connected-hook worker-spawn trigger without
     /// writing a real `forge.toml`. Test-only.
     pub fn seed_test_project(&self, name: &str, path: &str) {
@@ -11548,7 +11548,7 @@ mod tag_retry_tests {
     /// passed the repo root to `tag_session_with_retry`, the lookup
     /// missed (different sanitised key), all 30 retries hit NotFound,
     /// and `needs_tag` stayed true forever. On forge restart the
-    /// catalog scan found zero tagged worker JSONLs and every role
+    /// catalog scan found zero tagged worker JSONLs and every worker
     /// spawned fresh.
     ///
     /// Test breaks the existing fixture's "write path = lookup path"
@@ -11674,7 +11674,7 @@ mod tag_retry_tests {
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-mod team_spawn_tests {
+mod worker_respawn_tests {
     use super::*;
     use crate::protocol::Command;
 
@@ -11687,18 +11687,18 @@ mod team_spawn_tests {
     fn only_a_lead_session_gets_the_delegation_block() {
         let mut worker = SessionLaunchSettings::default();
         Workspace::apply_lead_delegation(&mut worker, crate::mcp::SessionKind::Worker);
-        assert_eq!(worker.delegation_catalog, None, "a worker gets no delegation block");
+        assert_eq!(worker.delegation_preamble, None, "a worker gets no delegation block");
 
         let mut lead = SessionLaunchSettings::default();
         Workspace::apply_lead_delegation(&mut lead, crate::mcp::SessionKind::Lead);
         assert!(
-            lead.delegation_catalog.is_some_and(|t| t.contains("workers__spawn")),
+            lead.delegation_preamble.is_some_and(|t| t.contains("workers__spawn")),
             "a lead does get it",
         );
     }
 
     #[test]
-    fn force_new_team_spawn_dispatches_workers_fresh() {
+    fn force_new_respawn_dispatches_workers_fresh() {
         // A force-new lead's worker spawn skips the catalog resume scan,
         // so every worker dispatches with resume_existing = None.
         let (workspace, _update_rx) = Workspace::testing_stub();
@@ -11714,7 +11714,7 @@ mod team_spawn_tests {
             resume_kick: None,
         });
         workspace.enable_test_dispatch_intercept();
-        workspace.spawn_team_for_lead_with_catalog_scan(
+        workspace.respawn_workers_for_lead(
             "lead-uuid".to_owned(),
             ProjectKey::new("data-modules"),
             std::path::PathBuf::from("/tmp/data-modules"),
@@ -11744,7 +11744,7 @@ mod team_spawn_tests {
     /// a catalog-tag match resumes and takes the forge restart note as its
     /// kick; one without re-delivers its stored kick.
     #[test]
-    fn spawn_dynamic_workers_for_lead_resumes_or_redelivers_kick() {
+    fn dispatch_worker_respawns_resumes_or_redelivers_kick() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
         let project_key = ProjectKey::new("proj-x");
@@ -11756,7 +11756,7 @@ mod team_spawn_tests {
         let mut resume_map = std::collections::HashMap::new();
         resume_map.insert("reviewer".to_owned(), "reviewer-uuid".to_owned());
 
-        workspace.spawn_dynamic_workers_for_lead("new-lead", &project_key, &dynamic, &resume_map);
+        workspace.dispatch_worker_respawns("new-lead", &project_key, &dynamic, &resume_map);
 
         let dispatched = workspace.drain_test_dispatch_buffer();
         assert_eq!(dispatched.len(), 3, "one SpawnWorker per persisted dynamic worker");
@@ -11810,7 +11810,7 @@ mod team_spawn_tests {
     /// instead of the generic restart note. The fresh-spawn path is
     /// untouched by it: no catalog tag still means the stored kick.
     #[test]
-    fn spawn_dynamic_workers_for_lead_prefers_the_rows_resume_kick() {
+    fn dispatch_worker_respawns_prefers_the_rows_resume_kick() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
         let project_key = ProjectKey::new("proj-x");
@@ -11822,7 +11822,7 @@ mod team_spawn_tests {
         let mut resume_map = std::collections::HashMap::new();
         resume_map.insert("steward".to_owned(), "steward-uuid".to_owned());
 
-        workspace.spawn_dynamic_workers_for_lead("new-lead", &project_key, &dynamic, &resume_map);
+        workspace.dispatch_worker_respawns("new-lead", &project_key, &dynamic, &resume_map);
 
         let dispatched = workspace.drain_test_dispatch_buffer();
         assert_eq!(dispatched.len(), 2);
@@ -11867,7 +11867,7 @@ mod team_spawn_tests {
 
         // No tokio runtime in a plain #[test] -> the sync fallback path
         // dispatches with an empty resume map.
-        workspace.spawn_team_for_lead_with_catalog_scan(
+        workspace.respawn_workers_for_lead(
             "lead-uuid".to_owned(),
             project_key,
             std::path::PathBuf::from("/tmp/data-modules"),
@@ -11909,7 +11909,7 @@ mod team_spawn_tests {
         workspace.delete_dynamic_worker(&project_key, "scratch");
         workspace.enable_test_dispatch_intercept();
 
-        workspace.spawn_team_for_lead_with_catalog_scan(
+        workspace.respawn_workers_for_lead(
             "lead-uuid".to_owned(),
             project_key,
             std::path::PathBuf::from("/tmp/data-modules"),
@@ -12010,7 +12010,7 @@ config_dir = "{}"
         let cfg = tempfile::tempdir().expect("cfg dir");
         let (ws, key, path, session_id) = resumable_worker_fixture(&project, &cfg).await;
 
-        ws.spawn_team_for_lead_with_catalog_scan("lead-uuid".to_owned(), key, path, false);
+        ws.respawn_workers_for_lead("lead-uuid".to_owned(), key, path, false);
 
         let dispatched = await_spawn_worker(&ws).await;
         let spawns: Vec<&Command> =
@@ -12037,7 +12037,7 @@ config_dir = "{}"
         let cfg = tempfile::tempdir().expect("cfg dir");
         let (ws, key, path, _session_id) = resumable_worker_fixture(&project, &cfg).await;
 
-        ws.spawn_team_for_lead_with_catalog_scan("lead-uuid".to_owned(), key, path, true);
+        ws.respawn_workers_for_lead("lead-uuid".to_owned(), key, path, true);
 
         let dispatched = await_spawn_worker(&ws).await;
         let spawns: Vec<&Command> =

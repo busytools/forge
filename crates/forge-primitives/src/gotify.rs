@@ -41,7 +41,10 @@ pub struct GotifyMessage {
 pub struct GotifySubscription {
     pub id: uuid::Uuid,
     pub project: String,
-    /// forge.toml team-worker role; `None` targets the project lead.
+    /// Worker label owning this subscription; `None` targets the
+    /// project lead. Named `team_role` for the stored shape - a rename
+    /// would decode cleanly to `None` and silently reroute every
+    /// worker's subscription to the lead.
     pub team_role: Option<String>,
     /// Gotify application NAME filters; empty matches any application,
     /// otherwise the message's app must be one of the listed names.

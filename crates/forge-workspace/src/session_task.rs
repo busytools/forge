@@ -282,7 +282,7 @@ impl SessionTask {
                         && let Some(workspace) = self.workspace.upgrade()
                     {
                         let force_new = self.domain.lock().spawned_force_new;
-                        maybe_spawn_team_on_connected(
+                        maybe_respawn_workers_on_connected(
                             &workspace,
                             spawn_key,
                             real_key.as_str(),
@@ -931,9 +931,9 @@ fn parse_project_lead_synth_key(key: &SessionKey) -> Option<String> {
 /// (tests). Idempotent; safe to call multiple times for the same session -
 /// the `live_workers.is_empty()` gate guards against double-spawn on
 /// `/new` reconnects or transient retries, and
-/// `spawn_team_for_lead_with_catalog_scan` no-ops when the project has no
+/// `respawn_workers_for_lead` no-ops when the project has no
 /// worker rows.
-fn maybe_spawn_team_on_connected(
+fn maybe_respawn_workers_on_connected(
     workspace: &Arc<crate::Workspace>,
     spawn_key: &SessionKey,
     real_session_id: &str,
@@ -960,7 +960,7 @@ fn maybe_spawn_team_on_connected(
     // in-flight guard synchronously so a fast double-Connected
     // can't slip a second worker-spawn through. The guard is
     // released after the SpawnWorker commands are dispatched.
-    workspace.spawn_team_for_lead_with_catalog_scan(
+    workspace.respawn_workers_for_lead(
         real_session_id.to_owned(),
         project_key,
         project.path.clone(),
@@ -1029,7 +1029,7 @@ fn maybe_kick_worker_on_connected(
         workspace.list_live_workers(&view.key).into_iter().rev().find(|w| w.label == label)
     else {
         tracing::warn!(
-            target: "forge_workspace::team",
+            target: "forge_workspace::workers",
             label = %label,
             session_id = real_session_id,
             "no live worker entry for this label; the worker connects unkicked and idles",
@@ -1050,11 +1050,11 @@ fn maybe_kick_worker_on_connected(
     });
 }
 
-/// Test-only entry point for the Connected team hooks.
-/// Drives both `maybe_spawn_team_on_connected` (lead path) and
+/// Test-only entry point for the Connected hooks.
+/// Drives both `maybe_respawn_workers_on_connected` (lead path) and
 /// `maybe_kick_worker_on_connected` (worker path) directly without
 /// constructing a `SessionTask` or pumping through the actor - the
-/// `team_hook_tests` module uses this to assert the trigger logic.
+/// `connected_hook_tests` module uses this to assert the trigger logic.
 /// Only one hook fires per call: the spawn_key's shape selects.
 #[cfg(test)]
 fn on_connected_for_test(
@@ -1063,8 +1063,8 @@ fn on_connected_for_test(
     real_session_id: &str,
 ) {
     // Normal (non-`--new`) Connected simulation; the force-new cascade
-    // is exercised directly against spawn_team_for_lead_with_catalog_scan.
-    maybe_spawn_team_on_connected(workspace, synth_key, real_session_id, false);
+    // is exercised directly against respawn_workers_for_lead.
+    maybe_respawn_workers_on_connected(workspace, synth_key, real_session_id, false);
     maybe_kick_worker_on_connected(workspace, synth_key, real_session_id);
 }
 
@@ -2424,7 +2424,7 @@ mod tests {
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-mod team_hook_tests {
+mod connected_hook_tests {
     use super::*;
     use crate::Workspace;
     use crate::protocol::Command;
@@ -2461,7 +2461,7 @@ mod team_hook_tests {
     /// A lead Connected for a project with a persisted worker triggers
     /// one `Command::SpawnWorker` per row.
     #[test]
-    fn lead_connected_with_team_triggers_team_spawn() {
+    fn lead_connected_with_a_worker_row_triggers_respawn() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         let _db = seed_project_with_one_worker_row(&workspace, "implementer");
         workspace.enable_test_dispatch_intercept();
@@ -2477,7 +2477,7 @@ mod team_hook_tests {
     /// A lead Connected for a project with no persisted workers is
     /// a no-op - nothing dispatched.
     #[test]
-    fn lead_connected_without_team_does_nothing() {
+    fn lead_connected_without_a_worker_row_does_nothing() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         // An OPEN store holding no rows, which is the interesting case:
         // with no store at all the read fails and the scan bails before
@@ -2495,12 +2495,12 @@ mod team_hook_tests {
     }
 
     /// A worker session's Connected (synth key prefixed with
-    /// `__spawn_worker_...`) does NOT trigger the team-spawn hook
+    /// `__spawn_worker_...`) does NOT trigger the respawn hook
     /// even when the project has a worker that would spawn. The row is
     /// what gives the assertion teeth: without one the project could
     /// not have dispatched anything whatever key arrived.
     #[test]
-    fn worker_connected_does_not_trigger_team_spawn() {
+    fn worker_connected_does_not_trigger_respawn() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         let _db = seed_project_with_one_worker_row(&workspace, "planner");
         workspace.enable_test_dispatch_intercept();
@@ -2533,12 +2533,12 @@ mod team_hook_tests {
 
         let lead_synth = synth_lead_key("proj-x");
 
-        // First Connected: triggers team spawn (1 SpawnWorker).
+        // First Connected: triggers the respawn (1 SpawnWorker).
         on_connected_for_test(&workspace, &lead_synth, "lead-uuid");
         let after_first = workspace.drain_test_dispatch_buffer();
         let first_spawns: usize =
             after_first.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).count();
-        assert_eq!(first_spawns, 1, "first Connected spawns the team");
+        assert_eq!(first_spawns, 1, "first Connected respawns the workers");
 
         // Simulate the workers having become live (the production
         // flow does this via `handle_spawn_worker`'s
@@ -2607,9 +2607,9 @@ mod team_hook_tests {
         ))
     }
 
-    /// An inline `workers__spawn(kick=...)` worker (non-role label, no
-    /// kick.md) gets its kick delivered as the first turn, verbatim,
-    /// through the same dispatcher the file kicks use.
+    /// A worker spawned with `workers__spawn(kick=...)` gets that kick
+    /// delivered as its first turn, verbatim, through the rate-limited
+    /// dispatcher.
     #[tokio::test(start_paused = true)]
     async fn worker_with_inline_kick_dispatches_it_as_first_turn() {
         let (workspace, _update_rx) = Workspace::testing_stub();
