@@ -3096,6 +3096,33 @@ impl Workspace {
         self.live_workers.lock().get(project_key).cloned().unwrap_or_default()
     }
 
+    /// Every live worker's liveness, keyed by project.
+    ///
+    /// The launchpad's worker rows read this once per frame, which is
+    /// what the shape is for: one lock answers every project row, and
+    /// the projection leaves each worker's charter in the registry
+    /// instead of copying it, which [`Self::list_live_workers`] does on
+    /// every call.
+    pub fn live_worker_states_by_project(
+        &self,
+    ) -> HashMap<ProjectKey, Vec<crate::mcp::workers::types::LiveWorkerState>> {
+        self.live_workers
+            .lock()
+            .iter()
+            .map(|(project, workers)| {
+                let states = workers
+                    .iter()
+                    .map(|w| crate::mcp::workers::types::LiveWorkerState {
+                        label: w.label.clone(),
+                        status: w.status,
+                        session_key: w.session_key.clone(),
+                    })
+                    .collect();
+                (project.clone(), states)
+            })
+            .collect()
+    }
+
     /// What `entry`'s session is doing right now - the axis
     /// `WorkerLiveness` does not answer, since it stops moving once the
     /// worker connects.

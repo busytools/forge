@@ -443,10 +443,12 @@ fn build_picker_content(
     let mut selected_flat: Option<usize> = None;
     let dim = Style::default().fg(theme::DIM);
     let now = SystemTime::now();
-    // One scan of the dynamic-worker store for the whole picker; the
-    // per-project lookup below is a map index.
+    // One store scan and one registry snapshot for the whole picker;
+    // the per-project lookups below are map indexes.
     let worker_labels =
         app.workspace.as_ref().map(|ws| ws.dynamic_worker_labels_by_project()).unwrap_or_default();
+    let live_workers =
+        app.workspace.as_ref().map(|ws| ws.live_worker_states_by_project()).unwrap_or_default();
 
     let mut last_org: Option<String> = None;
     for (project_row_idx, row) in rows.iter().enumerate() {
@@ -479,7 +481,8 @@ fn build_picker_content(
         if let Some(project) = project_view.as_ref()
             && let Some(labels) = worker_labels.get(project.key.as_str())
         {
-            push_worker_rows(&mut lines, project, app, labels, now);
+            let live = live_workers.get(&project.key).map_or(&[][..], Vec::as_slice);
+            push_worker_rows(&mut lines, project, app, labels, live, now);
         }
         // Surface a "no usable accounts" hint when the project's
         // pool resolved to empty (every allowed account Bailed, or
@@ -709,15 +712,17 @@ const CHIP_COLUMN_WIDTH: usize = 13;
 /// the project. Workers are info-only on the launchpad: clicks land on
 /// the project lead row, and the worker rows are not selectable.
 ///
-/// `labels` are this project's persisted dynamic workers, which the
-/// caller reads for the whole picker in one pass. They come from the
-/// persisted rows rather than `list_live_workers`, which is empty until
-/// the project launches - the state the launchpad renders in.
+/// `labels` are this project's persisted dynamic workers and `live` its
+/// registry entries, both of which the caller reads for the whole picker
+/// in one pass. The labels come from the persisted rows rather than the
+/// registry, which is empty until the project launches - the state the
+/// launchpad renders in.
 fn push_worker_rows(
     lines: &mut Vec<Line<'static>>,
     project: &ProjectView,
     app: &App,
     labels: &[String],
+    live: &[forge_workspace::LiveWorkerState],
     now: SystemTime,
 ) {
     let Some(workspace) = app.workspace.as_ref() else {
@@ -726,13 +731,12 @@ fn push_worker_rows(
     if labels.is_empty() {
         return;
     }
-    let live = workspace.list_live_workers(&project.key);
     let dim = Style::default().fg(theme::DIM);
     let count = labels.len();
     for (idx, label) in labels.iter().enumerate() {
         let is_last = idx + 1 == count;
         let tree_glyph = if is_last { "└─" } else { "├─" };
-        let lifecycle = worker_lifecycle(app, &live, label);
+        let lifecycle = worker_lifecycle(app, live, label);
         let (glyph, glyph_color) = glyph_for_row(lifecycle, app.active_spinner_glyph());
         let chip_info = workspace.session_chip_for(&project.key, label);
         let (chip_spans, chip_width) = account_chip_spans(chip_info.as_ref());
@@ -780,7 +784,7 @@ fn push_worker_rows(
 /// yet, not a worker that stopped.
 fn worker_lifecycle(
     app: &App,
-    live: &[forge_workspace::WorkerEntry],
+    live: &[forge_workspace::LiveWorkerState],
     label: &str,
 ) -> SessionLifecycleState {
     use forge_primitives::WorkerLiveness;
@@ -1305,18 +1309,11 @@ mod tests {
         label: &str,
         session: &str,
         status: forge_primitives::WorkerLiveness,
-    ) -> forge_workspace::WorkerEntry {
-        forge_workspace::WorkerEntry {
+    ) -> forge_workspace::LiveWorkerState {
+        forge_workspace::LiveWorkerState {
             label: label.to_owned(),
-            charter: String::new(),
-            session_key: SessionKey::from_session_id(session.to_owned()),
             status,
-            spawned_at: SystemTime::UNIX_EPOCH,
-            spawned_by_session_id: "lead".to_owned(),
-            needs_tag: false,
-            is_git_repo_at_spawn: false,
-            diagnostic: None,
-            kick: None,
+            session_key: SessionKey::from_session_id(session.to_owned()),
         }
     }
 

@@ -28,6 +28,16 @@ pub fn worker_tag_dir(project_root: &Path, label: &str, is_git_repo_at_spawn: bo
     }
 }
 
+/// One live worker's liveness, without the spawn args. A render path
+/// reads only these three fields, and cloning a `WorkerEntry` to get
+/// them copies the worker's whole charter.
+#[derive(Debug, Clone)]
+pub struct LiveWorkerState {
+    pub label: String,
+    pub status: WorkerLiveness,
+    pub session_key: SessionKey,
+}
+
 /// In-memory entry stored in `Workspace.live_workers[project_key]`.
 /// `WorkerStatus` is the wire shape returned by `workers__list`;
 /// `session_key` is the workspace-internal routing handle.
