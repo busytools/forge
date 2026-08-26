@@ -7,8 +7,8 @@ pub mod catalog;
 pub mod roles;
 
 pub use roles::{
-    CharterError, DEFAULT_LEAD_CHARTER, LEAD_LABEL, Role, forge_team_root, load_charter,
-    load_initial_kick, load_lead_charter_or_default, load_resume_kick, role_dir, validate_label,
+    CharterError, DEFAULT_LEAD_CHARTER, Role, forge_team_root, load_charter, load_initial_kick,
+    load_lead_charter_or_default, load_resume_kick, role_dir, validate_label,
 };
 
 #[cfg(any(test, feature = "testing"))]

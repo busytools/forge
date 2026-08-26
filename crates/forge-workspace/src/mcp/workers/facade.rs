@@ -53,7 +53,7 @@ pub enum WorkerLeadDeliverError {
 /// lead via `workers__tell` / `workers__ask`. Workers may target the
 /// lead with `label="lead"`; `workers__spawn` rejects the label so
 /// no live worker can shadow the keyword.
-pub use crate::team::LEAD_LABEL;
+pub use forge_primitives::LEAD_LABEL;
 
 /// Org string stamped into a lead caller's wire envelope (and the
 /// matching synthetic org for Assistant peer-outbound tool_use rows

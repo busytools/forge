@@ -8,7 +8,8 @@
 
 use std::path::Path;
 
-use crate::team::roles::{LEAD_LABEL, forge_team_root};
+use crate::team::roles::forge_team_root;
+use forge_primitives::LEAD_LABEL;
 
 /// One spawnable role and its one-line catalog description.
 #[derive(Debug, PartialEq, Eq)]
