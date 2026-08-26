@@ -2,9 +2,13 @@
 //! `RLIMIT_NOFILE` raise (#251) - macOS launchd hands GUI-spawned
 //! processes a soft cap of 256 open FDs, and multi-session forge
 //! steady-state crosses that ceiling (~15-25 FDs per session ×
-//! claude pipes / proxy sockets / watchers / MCP / tokio kqueues).
-//! Without the bump, git scans, the wire-rewriter proxy, and other
-//! openers fail with `EMFILE` once enough sessions are open.
+//! claude pipes / watchers / MCP / tokio kqueues). Without the bump,
+//! git scans and other openers fail with `EMFILE` once enough
+//! sessions are open.
+//!
+//! That per-session estimate was measured when each session also held
+//! proxy sockets, so it now runs high; re-measure before treating it
+//! as current.
 
 use rlimit::Resource;
 

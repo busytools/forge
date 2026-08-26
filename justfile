@@ -192,10 +192,7 @@ ci-watch run_id="":
     line="[OK] run $run_id: success at $head_sha"
     record "$line"; echo "$line"
 
-# Build forge-tui from the current checkout and install the `forge`
-# binary into ~/.cargo/bin/forge. Defaults to release+perf. Wraps up
-# by refreshing the wire-rewriter CA in the System keychain (best-
-# effort - repeat installs are no-ops via SHA-256 fingerprint compare).
+# Build forge-tui from this checkout into ~/.cargo/bin/forge (release+perf, then zsh completions).
 install:
     ./scripts/install.sh
 

@@ -29,10 +29,6 @@ grep -n "PINNED_CLI_VERSION" crates/forge-test-harness/src/sdk_wire.rs
 # 3. What baseline directories exist? (anything other than the pinned
 #    version is leftover - note it for cleanup but don't delete yet.)
 ls crates/forge-test-harness/baselines/sdk/
-
-# 4. Confirm mitmproxy is available (capture needs it; install with
-#    `brew install mitmproxy` if missing).
-which mitmdump || brew install mitmproxy
 ```
 
 If installed == pinned: nothing to do. Skill exits clean.

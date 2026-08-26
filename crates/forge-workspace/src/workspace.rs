@@ -574,7 +574,7 @@ impl Workspace {
     /// Shared constructor body. `app_support` supplies the app-support
     /// base dir; `None` resolves the real machine `app_support_dir` and
     /// degrades to no lock and no durable store on failure (hard rule
-    /// #15: no cwd fallback).
+    /// #14: no cwd fallback).
     async fn new_impl(
         config_dir: PathBuf,
         app_support: Option<PathBuf>,
