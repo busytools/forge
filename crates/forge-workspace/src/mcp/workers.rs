@@ -2469,7 +2469,7 @@ mod tests {
         assert!(text.contains("workers__spawn"), "the refusal points at spawn: {text}");
         assert!(
             !text.contains("forge-team"),
-            "must not send the caller to files the row would override: {text}",
+            "must not send the caller to files that no longer exist: {text}",
         );
         assert!(
             !text.contains("workers__list"),

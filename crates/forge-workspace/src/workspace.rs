@@ -11678,6 +11678,20 @@ mod worker_respawn_tests {
     use super::*;
     use crate::protocol::Command;
 
+    /// The guard refuses a second claim while the first is outstanding.
+    /// Holding the claim directly is all this needs - the blocked branch
+    /// is unreachable only when claim and release share one call, which
+    /// is a property of the callers rather than of the guard.
+    #[test]
+    fn respawn_guard_refuses_a_second_claim() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let key = ProjectKey::new("proj");
+        assert!(ws.try_claim_respawn(&key), "an unclaimed guard grants");
+        assert!(!ws.try_claim_respawn(&key), "a claimed guard refuses");
+        ws.release_respawn(&key);
+        assert!(ws.try_claim_respawn(&key), "release makes it claimable again");
+    }
+
     /// A worker must not receive the delegation block. It instructs the
     /// reader to call `workers__spawn`, which is lead-only, so a worker
     /// given it would be told to call a tool that refuses it. The lead
