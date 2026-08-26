@@ -16,9 +16,7 @@
 # --no-perf.
 #
 # After install, the script regenerates the zsh completion at
-# ~/.zsh/completions/_forge (override via FORGE_ZSH_COMPLETION_DIR)
-# and best-effort runs scripts/install-cert.sh to refresh the
-# wire-rewriter CA in the System keychain.
+# ~/.zsh/completions/_forge (override via FORGE_ZSH_COMPLETION_DIR).
 #
 # Usage:
 #   scripts/install.sh             # regular install (perf feature on)
@@ -143,10 +141,3 @@ else
     log_warn "forge --generate-completion not supported by this build; skipping zsh completion"
 fi
 
-# Refresh the wire-rewriter CA in the System keychain. Best-effort:
-# install-cert.sh's content-idempotent compare returns 0 even when no
-# work is needed; an actual refresh might trigger a Touch ID prompt
-# but we still don't want this to fail the binary install.
-if [ -x "$SCRIPT_DIR/install-cert.sh" ]; then
-    "$SCRIPT_DIR/install-cert.sh" || log_warn "install-cert.sh returned non-zero; run again manually if needed"
-fi

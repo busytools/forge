@@ -204,20 +204,6 @@ install:
 install-no-perf:
     ./scripts/install.sh --no-perf
 
-# Install / refresh forge's wire-rewriter CA in the System keychain
-# without rebuilding the binary. Content-idempotent - a Touch ID
-# prompt fires only on first install or after a CA rotation.
-install-cert:
-    ./scripts/install-cert.sh
-
-# Report-only: is forge's CA currently trusted in the System keychain?
-install-cert-status:
-    ./scripts/install-cert.sh --status
-
-# Remove forge's CA from the System keychain.
-install-cert-uninstall:
-    ./scripts/install-cert.sh --uninstall
-
 # Cut a release: bump the workspace version, commit, tag.
 # Does NOT push - that's gated per CLAUDE.md and stays explicit.
 # Requires cargo-edit (`cargo install cargo-edit`) for `cargo set-version`.
