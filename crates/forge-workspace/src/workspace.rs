@@ -11923,6 +11923,25 @@ mod team_spawn_tests {
         }
     }
 
+    /// A worker must not receive the delegation block. It instructs the
+    /// reader to call `workers__spawn`, which is lead-only, so a worker
+    /// given it would be told to call a tool that refuses it. The lead
+    /// half is the control: without it, a helper that did nothing at all
+    /// would still satisfy the assertion above.
+    #[test]
+    fn only_a_lead_session_gets_the_delegation_block() {
+        let mut worker = SessionLaunchSettings::default();
+        Workspace::apply_lead_delegation(&mut worker, crate::mcp::SessionKind::Worker);
+        assert_eq!(worker.delegation_catalog, None, "a worker gets no delegation block");
+
+        let mut lead = SessionLaunchSettings::default();
+        Workspace::apply_lead_delegation(&mut lead, crate::mcp::SessionKind::Lead);
+        assert!(
+            lead.delegation_catalog.is_some_and(|t| t.contains("workers__spawn")),
+            "a lead does get it",
+        );
+    }
+
     #[test]
     fn spawn_team_for_lead_dispatches_one_command_per_role() {
         let (workspace, _update_rx) = Workspace::testing_stub();
