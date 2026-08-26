@@ -7,17 +7,11 @@
 //! A role may also carry `resume-kick.md`, read by [`load_resume_kick`]
 //! when a worker resumes rather than starts fresh.
 //!
-//! Users author these files themselves. There is no runtime bootstrap:
-//! a label whose files are missing is skipped with a warning, `lead`
-//! included when it is named in `static_workers`. The one fallback is on
-//! the lead-spawn path, where an absent lead CHARTER resolves to
-//! [`DEFAULT_LEAD_CHARTER`], compiled in from `lead_charter.md` beside
-//! this file; nothing supplies a missing `kick.md`.
+//! Users author these files themselves. There is no runtime bootstrap
+//! and nothing supplies a missing file.
 
 use std::io;
 use std::path::PathBuf;
-
-use forge_primitives::LEAD_LABEL;
 
 /// Loaded role data: label + charter prose + initial-kick prose.
 /// Constructed via [`Role::load`] (production) or by hand in tests.
@@ -71,10 +65,6 @@ impl Role {
         })
     }
 }
-
-/// Bundled lead charter, compiled in as the fallback when
-/// `~/.claude/forge-team/lead/charter.md` is absent.
-pub const DEFAULT_LEAD_CHARTER: &str = include_str!("lead_charter.md");
 
 /// Errors loading a role's charter or kick file from disk.
 #[derive(Debug)]
@@ -276,25 +266,6 @@ pub fn load_charter(label: &str) -> Result<String, CharterError> {
     }
 }
 
-/// Load the lead charter, preferring the user override and falling
-/// back to [`DEFAULT_LEAD_CHARTER`] so a lead is always charter-backed.
-/// A missing override falls back silently; any other load failure is
-/// logged first so the cause stays diagnosable.
-pub fn load_lead_charter_or_default() -> String {
-    match load_charter(LEAD_LABEL) {
-        Ok(charter) => charter,
-        Err(CharterError::CharterNotFound { .. }) => DEFAULT_LEAD_CHARTER.to_owned(),
-        Err(e) => {
-            tracing::warn!(
-                target: "forge_workspace::team",
-                error = %e,
-                "could not load lead charter; using bundled default"
-            );
-            DEFAULT_LEAD_CHARTER.to_owned()
-        }
-    }
-}
-
 /// Load `<label>/kick.md` from the forge-team root.
 ///
 /// # Errors
@@ -344,32 +315,6 @@ pub fn load_resume_kick(label: &str) -> Result<Option<String>, CharterError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The bundled charter ships to every install, so it must not name
-    /// tooling or projects that only exist in one author's environment:
-    /// a fresh install has no user-scope skills, no plugins and no
-    /// justfile, and `team` is not a `forge.toml` key (`static_workers`
-    /// is). Most entries got here by being copied from an on-disk
-    /// charter; the two path entries are pre-emptive, since prose about
-    /// where a role's charter lives is the obvious place to write one.
-    #[test]
-    fn bundled_lead_charter_assumes_no_local_environment() {
-        for (token, why) in [
-            ("pr-review-loop", "user-scope skill, absent on a fresh install"),
-            ("superpowers", "plugin, absent on a fresh install"),
-            ("commit-commands", "plugin, absent on a fresh install"),
-            ("`just ", "project justfile, not every project has one"),
-            ("hub-modules", "one user's project name"),
-            ("team = ", "not a forge.toml key; the key is static_workers"),
-            ("~/.claude", "the charter must not pin where role files live"),
-            ("forge-team", "the charter must not pin where role files live"),
-        ] {
-            assert!(
-                !DEFAULT_LEAD_CHARTER.contains(token),
-                "bundled lead charter names '{token}' ({why})"
-            );
-        }
-    }
 
     #[test]
     fn validate_label_accepts_simple_names() {

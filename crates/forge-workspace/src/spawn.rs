@@ -24,7 +24,6 @@ use crate::protocol::{
     Command, SessionUpdate, WorkerSpawnReply, WorkerStatusAction, WorktreeDisposition,
 };
 use crate::target::ProjectKey;
-use crate::team::load_lead_charter_or_default;
 use crate::workspace::Workspace;
 use crate::{SessionKey, SessionTarget};
 
@@ -52,17 +51,17 @@ fn build_worker_extra_args(is_git_repo: bool, label: &str) -> Vec<(String, Optio
     args
 }
 
-/// Stamp the lead charter onto the launch settings so every lead
-/// session carries it, independent of the project's `team` list.
-/// No-op when a charter is already set - worker spawns supply their
-/// own inline charter and we never overwrite it. The charter prefers
-/// the user override at `~/.claude/forge-team/lead/charter.md` and
-/// falls back to the bundled default, so a lead is never charter-less.
+/// Charter every lead session is launched with.
+pub const DEFAULT_LEAD_CHARTER: &str = include_str!("spawn/lead_charter.md");
+
+/// Stamp [`DEFAULT_LEAD_CHARTER`] onto the launch settings so every lead
+/// session carries one. No-op when a charter is already set - worker
+/// spawns supply their own and we never overwrite it.
 fn apply_lead_charter(settings: &mut SessionLaunchSettings) {
     if settings.charter.is_some() {
         return;
     }
-    settings.charter = Some(load_lead_charter_or_default());
+    settings.charter = Some(DEFAULT_LEAD_CHARTER.to_owned());
 }
 
 /// Emit a `SessionUpdate` and log at debug when the receiver is gone
@@ -2885,26 +2884,17 @@ config_dir = "~/.claude-stargate"
 #[cfg(test)]
 mod team_charter_tests {
     use super::*;
-    use crate::team::{DEFAULT_LEAD_CHARTER, override_forge_team_root_for_test};
 
-    /// A lead with no charter set gets one stamped regardless of
-    /// `team`; the user override on disk wins when present.
+    /// A lead with no charter set gets the bundled one.
     #[test]
-    fn lead_gets_charter_regardless_of_team() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let lead = tmp.path().join("lead");
-        std::fs::create_dir_all(&lead).expect("lead dir");
-        std::fs::write(lead.join("charter.md"), "user lead charter").expect("charter");
-        let _guard = override_forge_team_root_for_test(tmp.path().to_owned());
-
+    fn lead_without_a_charter_gets_the_bundled_one() {
         let mut settings = SessionLaunchSettings::default();
         apply_lead_charter(&mut settings);
-
-        assert_eq!(settings.charter.as_deref(), Some("user lead charter"));
+        assert_eq!(settings.charter.as_deref(), Some(DEFAULT_LEAD_CHARTER));
     }
 
     /// An already-set charter (a worker spawn's inline persona) is
-    /// never overwritten - the guard short-circuits before any read.
+    /// never overwritten - the guard short-circuits first.
     #[test]
     fn existing_charter_is_preserved_not_overwritten() {
         let mut settings = SessionLaunchSettings {
@@ -2915,32 +2905,37 @@ mod team_charter_tests {
         assert_eq!(settings.charter.as_deref(), Some("pre-existing"));
     }
 
-    /// Missing user override falls back to the bundled default so a
-    /// lead is never charter-less.
+    /// The bundled charter ships to every install, so it must not name
+    /// tooling or projects that only exist in one author's environment:
+    /// a fresh install has no user-scope skills, no plugins and no
+    /// justfile, and `team` is not a `forge.toml` key (`static_workers`
+    /// is). Most entries got here by being copied from an on-disk
+    /// charter; the two path entries are pre-emptive, since prose about
+    /// where a charter lives is the obvious place to write one.
+    ///
+    /// Every assertion below is a `!contains`, so all of them hold
+    /// against an empty string - the first check is what makes the rest
+    /// mean anything if the `include_str!` ever resolves somewhere else.
     #[test]
-    fn missing_user_charter_falls_back_to_bundled_default() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let _guard = override_forge_team_root_for_test(tmp.path().to_owned());
-
-        let mut settings = SessionLaunchSettings::default();
-        apply_lead_charter(&mut settings);
-
-        assert_eq!(settings.charter.as_deref(), Some(DEFAULT_LEAD_CHARTER));
-    }
-
-    /// A present-but-unreadable override (invalid UTF-8 makes the read
-    /// fail) still falls back to the bundled default.
-    #[test]
-    fn unreadable_user_charter_falls_back_to_bundled_default() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let lead = tmp.path().join("lead");
-        std::fs::create_dir_all(&lead).expect("lead dir");
-        std::fs::write(lead.join("charter.md"), [0xff, 0xfe, 0xfd]).expect("charter");
-        let _guard = override_forge_team_root_for_test(tmp.path().to_owned());
-
-        let mut settings = SessionLaunchSettings::default();
-        apply_lead_charter(&mut settings);
-
-        assert_eq!(settings.charter.as_deref(), Some(DEFAULT_LEAD_CHARTER));
+    fn bundled_lead_charter_assumes_no_local_environment() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("workers__spawn"),
+            "the compiled-in charter is the real one, not an empty or wrong file",
+        );
+        for (token, why) in [
+            ("pr-review-loop", "user-scope skill, absent on a fresh install"),
+            ("superpowers", "plugin, absent on a fresh install"),
+            ("commit-commands", "plugin, absent on a fresh install"),
+            ("`just ", "project justfile, not every project has one"),
+            ("hub-modules", "one user's project name"),
+            ("team = ", "not a forge.toml key; the key is static_workers"),
+            ("~/.claude", "the charter must not pin where role files live"),
+            ("forge-team", "the charter must not pin where role files live"),
+        ] {
+            assert!(
+                !DEFAULT_LEAD_CHARTER.contains(token),
+                "bundled lead charter names '{token}' ({why})"
+            );
+        }
     }
 }
