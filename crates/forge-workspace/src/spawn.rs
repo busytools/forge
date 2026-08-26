@@ -52,7 +52,7 @@ fn build_worker_extra_args(is_git_repo: bool, label: &str) -> Vec<(String, Optio
 }
 
 /// Charter every lead session is launched with.
-pub const DEFAULT_LEAD_CHARTER: &str = include_str!("spawn/lead_charter.md");
+const DEFAULT_LEAD_CHARTER: &str = include_str!("spawn/lead_charter.md");
 
 /// Stamp [`DEFAULT_LEAD_CHARTER`] onto the launch settings so every lead
 /// session carries one. No-op when a charter is already set - worker
