@@ -1054,7 +1054,7 @@ fn maybe_kick_worker_on_connected(
 /// Drives both `maybe_respawn_workers_on_connected` (lead path) and
 /// `maybe_kick_worker_on_connected` (worker path) directly without
 /// constructing a `SessionTask` or pumping through the actor - the
-/// `team_hook_tests` module uses this to assert the trigger logic.
+/// `connected_hook_tests` module uses this to assert the trigger logic.
 /// Only one hook fires per call: the spawn_key's shape selects.
 #[cfg(test)]
 fn on_connected_for_test(

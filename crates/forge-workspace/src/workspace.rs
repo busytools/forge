@@ -2764,7 +2764,7 @@ impl Workspace {
         // `#[tokio::test]`), spawn the catalog scan + dispatch
         // asynchronously so translate_event isn't blocked on file
         // I/O. When invoked outside a runtime (the sync `#[test]`
-        // fixtures in `team_hook_tests`), fall back to a synchronous
+        // fixtures in `connected_hook_tests`), fall back to a synchronous
         // dispatch with an empty resume map: those tests exercise
         // the worker-fanout shape, not the resume mechanic. Tests that
         // need the resume path opt into `#[tokio::test]` + fixture
