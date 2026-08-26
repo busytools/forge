@@ -54,7 +54,7 @@ pub struct DomainSession {
     /// `--new` boot-wave flag, stamped at spawn time from
     /// `SessionLaunchSettings.force_new`. For a project lead it makes
     /// the Connected-time respawn skip the worker resume scan
-    /// (`resume_existing = None` for every role), so the workers come
+    /// (`resume_existing = None` for every worker), so they come
     /// up fresh alongside their fresh lead. `false` for every non-boot
     /// spawn.
     pub spawned_force_new: bool,

@@ -549,7 +549,7 @@ pub(crate) fn deliver_gotify_message(
     }
 }
 
-/// The team worker of role `label` in `project`, if a live entry
+/// The team worker labelled `label` in `project`, if a live entry
 /// exists - regardless of whether it has finished connecting. The
 /// caller checks connectedness to decide dispatch-vs-buffer.
 fn team_worker_key(workspace: &Arc<Workspace>, project: &str, label: &str) -> Option<SessionKey> {

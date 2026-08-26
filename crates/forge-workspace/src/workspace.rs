@@ -2816,8 +2816,8 @@ impl Workspace {
     }
 
     /// Release the per-project respawn in-flight guard. Paired with
-    /// `try_claim_respawn`; called from the async task's tail once the
-    /// dispatches have gone out.
+    /// `try_claim_respawn`; called once the dispatches have gone out, on
+    /// each of the three paths that can issue them.
     fn release_respawn(&self, project_key: &crate::target::ProjectKey) {
         self.respawn_in_flight.lock().remove(project_key);
     }

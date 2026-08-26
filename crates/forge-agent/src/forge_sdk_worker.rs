@@ -123,16 +123,16 @@ working.";
 
 /// Assemble the forge system-prompt append: trust block, then the
 /// always-on cron scheduling block, then the always-on session-conduct
-/// block, then the optional Lead delegation catalog, then the optional
+/// block, then the optional Lead delegation preamble, then the optional
 /// worker charter. Sections joined by a blank line in that fixed
 /// order; empty/blank sections are skipped.
-fn build_forge_system_prompt(catalog: Option<&str>, charter: Option<&str>) -> String {
+fn build_forge_system_prompt(preamble: Option<&str>, charter: Option<&str>) -> String {
     let mut out = String::from(FORGE_MCP_TRUST_SYSTEM_PROMPT);
     out.push_str("\n\n");
     out.push_str(FORGE_CRON_SYSTEM_PROMPT);
     out.push_str("\n\n");
     out.push_str(FORGE_SESSION_CONDUCT_SYSTEM_PROMPT);
-    for section in [catalog, charter] {
+    for section in [preamble, charter] {
         if let Some(text) = section.map(str::trim).filter(|s| !s.is_empty()) {
             out.push_str("\n\n");
             out.push_str(text);

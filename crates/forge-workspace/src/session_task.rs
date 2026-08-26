@@ -2477,7 +2477,7 @@ mod connected_hook_tests {
     /// A lead Connected for a project with no persisted workers is
     /// a no-op - nothing dispatched.
     #[test]
-    fn lead_connected_without_team_does_nothing() {
+    fn lead_connected_without_a_worker_row_does_nothing() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         // An OPEN store holding no rows, which is the interesting case:
         // with no store at all the read fails and the scan bails before
@@ -2607,9 +2607,9 @@ mod connected_hook_tests {
         ))
     }
 
-    /// An inline `workers__spawn(kick=...)` worker (non-role label, no
-    /// kick.md) gets its kick delivered as the first turn, verbatim,
-    /// through the same dispatcher the file kicks use.
+    /// A worker spawned with `workers__spawn(kick=...)` gets that kick
+    /// delivered as its first turn, verbatim, through the rate-limited
+    /// dispatcher.
     #[tokio::test(start_paused = true)]
     async fn worker_with_inline_kick_dispatches_it_as_first_turn() {
         let (workspace, _update_rx) = Workspace::testing_stub();
