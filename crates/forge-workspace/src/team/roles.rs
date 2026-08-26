@@ -17,6 +17,8 @@
 use std::io;
 use std::path::PathBuf;
 
+use forge_primitives::LEAD_LABEL;
+
 /// Loaded role data: label + charter prose + initial-kick prose.
 /// Constructed via [`Role::load`] (production) or by hand in tests.
 #[derive(Debug, PartialEq, Eq)]
@@ -69,8 +71,6 @@ impl Role {
         })
     }
 }
-
-use forge_primitives::LEAD_LABEL;
 
 /// Bundled lead charter, compiled in as the fallback when
 /// `~/.claude/forge-team/lead/charter.md` is absent.
