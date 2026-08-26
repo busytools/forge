@@ -404,10 +404,7 @@ mod tests {
     #[test]
     fn worker_is_durable_when_persisted() {
         let dynamic = vec!["scratch".to_owned()];
-        assert_eq!(
-            durable_identity(Some("scratch"), &dynamic),
-            (Some("scratch".to_owned()), true),
-        );
+        assert_eq!(durable_identity(Some("scratch"), &dynamic), (Some("scratch".to_owned()), true),);
     }
 
     #[test]
