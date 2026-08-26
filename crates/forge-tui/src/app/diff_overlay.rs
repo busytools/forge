@@ -2872,8 +2872,9 @@ fn persist_active_input(app: &mut App) {
         authored_this_session: true,
         persisted,
     };
-    // Replace any existing comment at the same key (saving an edited reopen).
-    overlay.comments.retain(|c| c.key != key);
+    // Replace any existing comment at the same key IN THIS SCOPE (saving an
+    // edited reopen); another scope's comment can share the key.
+    overlay.comments.retain(|c| c.key != key || c.commit != comment.commit);
     overlay.comments.push(comment);
     overlay.recompute_comment_counts();
     app.needs_redraw = true;
@@ -8221,6 +8222,58 @@ mod tests {
         assert_eq!(
             whole[0].thread.id, "wd",
             "the stale in-memory whole-diff comment was replaced by the hydrated thread",
+        );
+    }
+
+    #[test]
+    fn save_replaces_only_the_same_scope_at_a_key() {
+        // The save-path twin of the hydrate retain above: saving at a key
+        // must replace the comment in the SAVED scope and leave another
+        // scope's comment at that same key alone.
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        overlay.comments.push(HunkComment {
+            key,
+            path: "src/x.rs".to_owned(),
+            line: 5,
+            comment_text: "on sha1".to_owned(),
+            commit: Some("sha1".to_owned()),
+            thread: stock_thread(),
+            authored_this_session: true,
+            persisted: false,
+        });
+        overlay.comments.push(HunkComment {
+            key,
+            path: "src/x.rs".to_owned(),
+            line: 5,
+            comment_text: "stale whole-diff".to_owned(),
+            commit: None,
+            thread: stock_thread(),
+            authored_this_session: true,
+            persisted: false,
+        });
+        // Whole-diff scope, so the save's own scope is `None`.
+        with_editor(&mut overlay, key, "fresh whole-diff");
+        app.diff_overlay = Some(overlay);
+
+        save_active_input(&mut app);
+
+        let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
+        let other = comments.iter().find(|c| c.commit.as_deref() == Some("sha1"));
+        assert_eq!(
+            other.map(|c| c.comment_text.as_str()),
+            Some("on sha1"),
+            "the commit-scoped comment at the same key survives a whole-diff save",
+        );
+        let whole: Vec<_> = comments.iter().filter(|c| c.commit.is_none()).collect();
+        assert_eq!(whole.len(), 1, "the saved scope keeps exactly one comment at the key");
+        assert_eq!(
+            whole[0].comment_text, "fresh whole-diff",
+            "the stale same-scope comment was replaced by the save",
         );
     }
 
