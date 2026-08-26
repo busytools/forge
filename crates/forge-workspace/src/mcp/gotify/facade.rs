@@ -305,7 +305,7 @@ mod tests {
     /// cron facade's fixture so the two families are tested the same way.
     fn fixture() -> (Arc<Workspace>, Arc<dyn GotifyFacade>, ProjectKey, SessionKey, SessionKey) {
         let (ws, _rx) = Workspace::testing_stub();
-        ws.seed_test_project_with_static_workers("myproj", "/tmp/gotify-scope", &[]);
+        ws.seed_test_project("myproj", "/tmp/gotify-scope");
         let key =
             ws.list_projects().into_iter().find(|v| v.name == "myproj").expect("seeded view").key;
         ws.record_connected_session("/tmp/gotify-scope", "lead-uuid", None);

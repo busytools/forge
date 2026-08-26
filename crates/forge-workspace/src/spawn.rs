@@ -1840,13 +1840,13 @@ config_dir = "~/.claude-stargate"
 
     /// #1: the at-most-one-live-per-label guard lives in the shared
     /// `handle_spawn_worker` core, so a second dispatch for an
-    /// already-live label (e.g. the same label in both config
-    /// `static_workers` and the persisted dynamic set on reconnect)
-    /// inserts no duplicate entry and never reaches the subprocess spawn.
+    /// already-live label - a boot re-spawn racing an MCP spawn for the
+    /// same label - inserts no duplicate entry and never reaches the
+    /// subprocess spawn.
     #[tokio::test]
     async fn handle_spawn_worker_dedups_already_live_label() {
         let (workspace, _rx) = Workspace::testing_stub();
-        workspace.seed_test_project_with_static_workers("forge", "/tmp/forge", &[]);
+        workspace.seed_test_project("forge", "/tmp/forge");
         let project = workspace
             .list_projects()
             .into_iter()
@@ -2222,11 +2222,7 @@ config_dir = "~/.claude-stargate"
 
         let repo = tempdir().expect("repo tempdir");
         run_git(repo.path(), &["init", "-q"]);
-        workspace.seed_test_project_with_static_workers(
-            "ghost",
-            &repo.path().to_string_lossy(),
-            &[],
-        );
+        workspace.seed_test_project("ghost", &repo.path().to_string_lossy());
         let project = workspace
             .list_projects()
             .into_iter()
@@ -2898,8 +2894,8 @@ mod team_charter_tests {
     /// The bundled charter ships to every install, so it must not name
     /// tooling or projects that only exist in one author's environment:
     /// a fresh install has no user-scope skills, no plugins and no
-    /// justfile, and `team` is not a `forge.toml` key (`static_workers`
-    /// is). Most entries got here by being copied from an on-disk
+    /// justfile, and `team` is not a `forge.toml` key. Most entries got
+    /// here by being copied from an on-disk
     /// charter; the two path entries are pre-emptive, since prose about
     /// where a charter lives is the obvious place to write one.
     ///
@@ -2918,7 +2914,7 @@ mod team_charter_tests {
             ("commit-commands", "plugin, absent on a fresh install"),
             ("`just ", "project justfile, not every project has one"),
             ("hub-modules", "one user's project name"),
-            ("team = ", "not a forge.toml key; the key is static_workers"),
+            ("team = ", "not a forge.toml key"),
             ("~/.claude", "the charter must not pin a path in the user's home"),
             ("forge-team", "the charter must not name the deleted role filesystem"),
         ] {

@@ -1214,7 +1214,6 @@ mod tests {
             format!(
                 "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n\
                  [[orgs.projects]]\nname = \"picker\"\npath = \"{project_path}\"\n\
-                 static_workers = [\"reviewer\"]\n\n\
                  [[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"~/.claude-stargate\"\n"
             ),
         )
@@ -1278,9 +1277,9 @@ mod tests {
         );
     }
 
-    /// Worker rows are sourced from the persisted dynamic workers, so a
-    /// label that is not in `static_workers` still gets a row - and with
-    /// no assignment-plan entry it renders its lifecycle glyph and the
+    /// Worker rows are sourced from the persisted workers, so a label
+    /// that never spawned still gets a row - and with no
+    /// assignment-plan entry it renders its lifecycle glyph and the
     /// activity placeholder with no chip at all.
     #[tokio::test]
     async fn a_never_spawned_dynamic_worker_renders_bare() {

@@ -217,7 +217,7 @@ mod prod_facade_tests {
 
     fn fixture() -> (Arc<Workspace>, Arc<dyn CronFacade>, SessionKey, SessionKey) {
         let (ws, _rx) = Workspace::testing_stub();
-        ws.seed_test_project_with_static_workers("myproj", "/tmp/b2-myproj", &[]);
+        ws.seed_test_project("myproj", "/tmp/b2-myproj");
         let key =
             ws.list_projects().into_iter().find(|v| v.name == "myproj").expect("seeded view").key;
         ws.record_connected_session("/tmp/b2-myproj", "lead-uuid", None);

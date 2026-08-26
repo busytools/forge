@@ -35,11 +35,6 @@ pub struct ProjectView {
     /// from the project's `[[orgs]]` entry. Non-empty (the config
     /// loader enforces).
     pub accounts: Vec<String>,
-    /// Static-worker role labels configured for this project via the
-    /// `static_workers = [...]` field in `forge.toml`. Spawns nothing:
-    /// it pre-seeds the account-assignment plan and marks a label as
-    /// config-defined rather than dynamic.
-    pub static_workers: Vec<String>,
     pub sessions: Vec<SessionView>,
 }
 
@@ -63,7 +58,6 @@ impl ProjectView {
             path: PathBuf::from(&display_path),
             display_path,
             accounts: Vec::new(),
-            static_workers: Vec::new(),
             sessions,
         }
     }
@@ -88,7 +82,6 @@ impl ProjectView {
             path: PathBuf::from(&display_path),
             display_path,
             accounts,
-            static_workers: Vec::new(),
             sessions,
         }
     }

@@ -78,18 +78,6 @@ pub enum WorkspaceError {
     ProjectNotFound { name: String, path: PathBuf },
 
     #[error(
-        "forge.toml at {}: project '{project_name}' static_workers contains invalid label '{role}'",
-        path.display()
-    )]
-    UnknownStaticWorker { path: PathBuf, project_name: String, role: String },
-
-    #[error(
-        "forge.toml at {}: project '{project_name}' static_workers has duplicate label '{role}'; only one instance per label is supported",
-        path.display()
-    )]
-    DuplicateStaticWorker { path: PathBuf, project_name: String, role: String },
-
-    #[error(
         "wire-classification rewriter proxy failed to start: {reason}. forge refuses to spawn sessions without a healthy proxy because the wire shape Anthropic sees determines billing tier"
     )]
     ProxyUnavailable { reason: String },

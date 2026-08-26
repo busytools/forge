@@ -63,25 +63,10 @@ under. Rules enforced at load:
 | `name` | string | yes | | Must be unique across *all* orgs, not just within one. |
 | `path` | string | yes | | A leading `~/` is expanded to the home directory. The un-expanded string is kept for display. |
 | `auto_start` | bool | no | `false` | When true, the project's lead session spawns at forge launch. Any number of projects may set it. |
-| `static_workers` | array of strings | no | `[]` | Worker labels that get an account-assignment slot. Spawns nothing on its own. |
 
 Project names are the argument `forge <PROJECT>` takes, and the key
 `[projects.<name>]` env tables refer to.
 
-### `static_workers`
-
-Labels are validated at load and nothing spawns from them: the list
-pre-seeds the account-assignment plan, so a label here gets an account
-slot and a launchpad chip. Workers themselves come from
-`workers__spawn`, which stores each one's charter and brings it back
-after a restart.
-
-Label validation at load rejects: an empty label, a leading `/`, and
-any path segment equal to `.`, `..`, or empty (which a `//` would
-produce). A `/` is otherwise allowed as a namespace separator, so
-`researcher` and `some-namespace/researcher` are both well-formed.
-Repeating a label within one project is also rejected: one instance per
-label per project.
 
 ## `[[accounts]]`
 
@@ -231,7 +216,6 @@ accounts = ["Personal", "Scratch"]
   name = "forge"
   path = "~/Projects/forge"
   auto_start = true
-  static_workers = ["planner", "implementer", "reviewer"]
 
   [[orgs.projects]]
   name = "notes"
