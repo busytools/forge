@@ -778,10 +778,10 @@ fn push_worker_rows(
 /// `Sleeping` when the label has no live worker - a persisted row that
 /// has not spawned this boot.
 ///
-/// A Running worker whose bucket has not arrived falls back to `Idle`
-/// rather than `Sleeping`: the registry is the authority on liveness, so
-/// the gap is the TUI's view lagging a `Connected` it has not drained
-/// yet, not a worker that stopped.
+/// A Running worker whose bucket has not arrived falls back to
+/// `Spawning`, matching what the Projects pane renders for the same
+/// worker in the same instant (see `append_worker_tree_children`): the
+/// gap is a `Connected` the TUI has not drained yet.
 fn worker_lifecycle(
     app: &App,
     live: &[forge_workspace::LiveWorkerState],
@@ -797,7 +797,7 @@ fn worker_lifecycle(
         WorkerLiveness::Running => app
             .sessions
             .get(&entry.session_key)
-            .map_or(SessionLifecycleState::Idle, |s| s.lifecycle_state),
+            .map_or(SessionLifecycleState::Spawning, |s| s.lifecycle_state),
     }
 }
 
@@ -1318,10 +1318,11 @@ mod tests {
     }
 
     /// A live worker's glyph tracks its own session, and a Running one
-    /// whose bucket has not arrived reads as alive rather than asleep -
-    /// the registry, not `app.sessions`, is what knows it is up.
+    /// whose bucket has not arrived reads as `Spawning` - the same
+    /// answer the Projects pane gives for that worker in that instant,
+    /// so the two surfaces cannot disagree about it.
     #[test]
-    fn a_running_worker_without_a_bucket_reads_as_idle() {
+    fn a_running_worker_without_a_bucket_reads_as_spawning() {
         use crate::app::session::UiSession;
         use forge_primitives::WorkerLiveness;
 
@@ -1342,8 +1343,9 @@ mod tests {
         );
         assert_eq!(
             worker_lifecycle(&app, &live, "unbucketed"),
-            SessionLifecycleState::Idle,
-            "a Running worker whose bucket has not arrived is alive, not sleeping",
+            SessionLifecycleState::Spawning,
+            "a Running worker whose bucket has not arrived reads as Spawning, the same answer \
+             projects_pane.rs gives for it",
         );
         assert_eq!(
             worker_lifecycle(&app, &live, "never-spawned"),
