@@ -1056,8 +1056,8 @@ fn maybe_kick_worker_on_connected(
 /// constructing a `SessionTask` or pumping through the actor - the
 /// `team_hook_tests` module uses this to assert the trigger logic.
 /// Only one hook fires per call: the spawn_key's shape selects.
-#[cfg(any(test, feature = "testing"))]
-pub fn on_connected_for_test(
+#[cfg(test)]
+fn on_connected_for_test(
     workspace: &Arc<crate::Workspace>,
     synth_key: &SessionKey,
     real_session_id: &str,
@@ -2505,7 +2505,16 @@ mod team_hook_tests {
         let _db = seed_project_with_one_worker_row(&workspace, "planner");
         workspace.enable_test_dispatch_intercept();
 
-        let worker_synth = SessionKey::from_session_id("__spawn_worker_proj-x_planner_abc__");
+        // Built from the ProjectKey the way production does; the project
+        // NAME is a different string, so a key spelled that way resolves
+        // to nothing and the test would pass without reaching the hook.
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/proj-x")),
+        );
+        let worker_synth = SessionKey::from_session_id(format!(
+            "__spawn_worker_{}_planner_abc__",
+            project_key.as_str()
+        ));
         on_connected_for_test(&workspace, &worker_synth, "worker-uuid");
 
         let dispatched = workspace.drain_test_dispatch_buffer();

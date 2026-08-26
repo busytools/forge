@@ -2919,8 +2919,8 @@ mod team_charter_tests {
             ("`just ", "project justfile, not every project has one"),
             ("hub-modules", "one user's project name"),
             ("team = ", "not a forge.toml key; the key is static_workers"),
-            ("~/.claude", "the charter must not pin where role files live"),
-            ("forge-team", "the charter must not pin where role files live"),
+            ("~/.claude", "the charter must not pin a path in the user's home"),
+            ("forge-team", "the charter must not name the deleted role filesystem"),
         ] {
             assert!(
                 !DEFAULT_LEAD_CHARTER.contains(token),

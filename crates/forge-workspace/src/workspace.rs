@@ -5947,7 +5947,11 @@ impl Workspace {
     }
 }
 
-#[cfg(any(test, feature = "testing"))]
+/// Kept apart from the `testing`-feature block below: these two are
+/// consumed only by this crate's own test mods, so they need neither
+/// `pub` nor the feature arm. The seeds in that block do - forge-tui's
+/// tests call them.
+#[cfg(test)]
 impl Workspace {
     /// Enable test-mode app-level command interception. After this
     /// call, every `Command` routed through the app-level branch of
@@ -5955,7 +5959,7 @@ impl Workspace {
     /// drain via `drain_test_dispatch_buffer`. No-op if already
     /// enabled. Test-only - tests use this to assert what would
     /// have been dispatched without spinning up real subprocesses.
-    pub fn enable_test_dispatch_intercept(&self) {
+    pub(crate) fn enable_test_dispatch_intercept(&self) {
         let mut intercept = self.command_intercept.lock();
         if intercept.is_none() {
             *intercept = Some(Vec::new());
@@ -5965,14 +5969,17 @@ impl Workspace {
     /// Drain every app-level `Command` captured since the last call.
     /// Returns empty when no intercept was enabled or no commands
     /// were dispatched. Test-only.
-    pub fn drain_test_dispatch_buffer(&self) -> Vec<crate::protocol::Command> {
+    pub(crate) fn drain_test_dispatch_buffer(&self) -> Vec<crate::protocol::Command> {
         let mut intercept = self.command_intercept.lock();
         match intercept.as_mut() {
             Some(buffer) => std::mem::take(buffer),
             None => Vec::new(),
         }
     }
+}
 
+#[cfg(any(test, feature = "testing"))]
+impl Workspace {
     /// Append a synthetic project to the test overlay searched first
     /// by `find_project_view_by_name`. Used by engineering-team tests
     /// to drive the Connected-hook worker-spawn trigger without

@@ -9,8 +9,3 @@ pub use roles::{
     CharterError, Role, forge_team_root, load_charter, load_initial_kick, load_resume_kick,
     role_dir, validate_label,
 };
-
-#[cfg(any(test, feature = "testing"))]
-pub use roles::{
-    ForgeTeamRootTestGuard, override_forge_team_root_for_test, set_forge_team_root_for_test,
-};
