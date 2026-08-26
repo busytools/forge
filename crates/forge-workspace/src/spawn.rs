@@ -948,11 +948,11 @@ pub(crate) fn handle_spawn_worker(
         )));
         return;
     }
-    // Extend the assignment plan so this adhoc worker's account is
-    // picked from the same rotation as the boot-time team members.
-    // No-op when the plan isn't populated yet (boot still in
-    // flight); the fallback round-robin in
-    // get_agent_handle_with_spawn_key takes over in that case.
+    // Extend the assignment plan so this worker's account comes from the
+    // same rotation as the lead's. No-op while the plan is unpopulated
+    // (boot still in flight) - `recompute_plan_if_ready` seeds the live
+    // workers when it lands, which is the only thing that gives this one
+    // an entry.
     let rate_limited_account = workspace.extend_plan_for_adhoc_worker(&project_key, label);
     try_emit(
         workspace,

@@ -1643,7 +1643,26 @@ impl Workspace {
             })
             .collect();
 
-        let fresh = compute_plan(&ready_accounts, &saturated, &projects);
+        let mut fresh = compute_plan(&ready_accounts, &saturated, &projects);
+
+        // A worker that spawned while the accounts were still loading
+        // found no plan to extend, and nothing downstream would ever give
+        // it an entry: `compute_plan` emits only the lead, and the frozen
+        // overlay adds only what `fresh` already holds. Seed the live
+        // ones here, in label order so the rotation is deterministic.
+        let usable: Vec<AccountKey> =
+            ready_accounts.iter().filter(|k| !saturated.contains(k)).cloned().collect::<Vec<_>>();
+        for input in &projects {
+            let mut labels: Vec<String> =
+                self.list_live_workers(&input.key).into_iter().map(|w| w.label).collect();
+            labels.sort();
+            for label in labels {
+                fresh.assign_adhoc_worker(&input.key, &label, |k| {
+                    usable.is_empty() || usable.contains(k)
+                });
+            }
+        }
+
         let mut plan_guard = self.assignment_plan.lock();
         match plan_guard.as_mut() {
             // First compute - just store. Boot-time path.
@@ -13711,6 +13730,45 @@ config_dir = "~/.claude-alpha"
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
             )));
         assert!(workspace.session_chip_for(&project_key, "lead").is_none());
+    }
+
+    /// A worker that spawns while the accounts are still loading gets no
+    /// plan entry from `extend_plan_for_adhoc_worker` - the plan is None,
+    /// so it no-ops. Nothing else can create that entry afterwards:
+    /// `compute_plan` emits only the lead, and the frozen overlay adds
+    /// only what `fresh` already holds. So the recompute has to seed the
+    /// workers that are already live.
+    ///
+    /// The lead half is the control. It shares every other precondition,
+    /// so a lead chip proves the fixture and the chip path work and makes
+    /// a missing worker chip attributable to the worker path alone.
+    #[tokio::test]
+    async fn a_worker_spawned_before_the_plan_populates_still_gets_chipped() {
+        let dir = make_workspace_dir_246();
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        // Boot window: the plan is not populated, so the spawn's own
+        // attempt to extend it no-ops.
+        assert!(workspace.extend_plan_for_adhoc_worker(&project_key, "early").is_none());
+        workspace.insert_live_worker(
+            &project_key,
+            worker_entry("early", &SessionKey::from_session_id("early-uuid"), false),
+        );
+
+        workspace.seed_test_ready_account("Stargate");
+
+        assert!(
+            workspace.session_chip_for(&project_key, "lead").is_some(),
+            "control: the lead is chipped, so the fixture and chip path work",
+        );
+        assert!(
+            workspace.session_chip_for(&project_key, "early").is_some(),
+            "a worker live at recompute gets a plan entry rather than staying bare forever",
+        );
     }
 
     #[tokio::test]
