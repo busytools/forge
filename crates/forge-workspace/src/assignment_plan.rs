@@ -512,29 +512,33 @@ mod tests {
 
     #[test]
     fn merge_frozen_preserves_existing_assignments() {
-        // Boot-time: one ready account; all forge sessions land on it.
-        let boot_accounts = vec![ak("a")];
+        // Boot-time: only "b" is ready, so every session lands there.
+        // The pools must DISAGREE about where the lead goes - boot puts
+        // it on b, recovery on pool[0] = a - or the overlay has no
+        // conflict to refuse and the test cannot tell or_insert from
+        // insert.
+        let boot_accounts = vec![ak("b")];
         let projects = vec![project("p", &["a", "b"])];
         let mut plan = compute_plan(&boot_accounts, &[], &projects);
         plan.assign_adhoc_worker(&pk("p"), &"w1".to_owned(), |_| true);
-        assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("a")));
-        assert_eq!(plan.lookup(&pk("p"), &"w1".into()), Some(&ak("a")));
+        assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("b")));
+        assert_eq!(plan.lookup(&pk("p"), &"w1".into()), Some(&ak("b")));
 
-        // Recovery: account "b" comes back online. Fresh plan would
-        // distribute across [a, b] but the frozen overlay must
-        // PRESERVE the existing (lead, w1) -> a assignments.
+        // Recovery: account "a" comes back online. Fresh plan would put
+        // the lead on a, but the frozen overlay must PRESERVE the
+        // existing assignments.
         let recovered_accounts = vec![ak("a"), ak("b")];
         let fresh = compute_plan(&recovered_accounts, &[], &projects);
         plan.merge_frozen(fresh);
 
         assert_eq!(
             plan.lookup(&pk("p"), &"lead".into()),
-            Some(&ak("a")),
+            Some(&ak("b")),
             "lead must keep its boot-time account",
         );
         assert_eq!(
             plan.lookup(&pk("p"), &"w1".into()),
-            Some(&ak("a")),
+            Some(&ak("b")),
             "w1 must keep its boot-time account",
         );
     }
