@@ -17,11 +17,10 @@
 //! - Offset: each project's position in the projects list, mod the
 //!   pool size. Spreads the workload so different projects don't all
 //!   hammer the first account.
-//! - Assignment: for session_n in the project's [lead] + team list,
-//!   account = pool[(offset + session_n) % pool.len()]. Lead is
-//!   session_n=0; team workers are 1, 2, ... in order.
-//! - Adhoc workers (workers__spawn): bump a per-project counter past
-//!   the boot-time team length; assign with the same offset arithmetic.
+//! - Assignment: account = pool[(offset + session_n) % pool.len()].
+//!   Only the lead is known at boot, at session_n=0.
+//! - Workers: each takes the next session_n when it spawns, with the
+//!   same offset arithmetic, so the rotation continues from the lead.
 //!
 //! Frozen overlay: when a Bailed account recovers (Section 4.4),
 //! recompute against the now-larger pool but PRESERVE existing
@@ -35,9 +34,7 @@ use crate::account::AccountKey;
 use crate::target::ProjectKey;
 
 /// Session-within-project identifier. `"lead"` for the project's
-/// primary session; team-role labels (`"planner"`, `"reviewer"`,
-/// etc.) for boot-spawned workers; ad-hoc labels from
-/// `workers__spawn` calls for runtime workers.
+/// primary session; a worker's own label for everything else.
 pub type SessionLabel = String;
 
 /// Per-project metadata cached on the plan so `assign_adhoc_worker`
@@ -74,10 +71,6 @@ pub struct ProjectInput {
     /// Empty/missing -> defaults to all ready accounts at compute
     /// time.
     pub accounts: Vec<String>,
-    /// Static-worker labels from `static_workers = [...]`. Lead is
-    /// implicit at session_n=0; static_workers[0] is session_n=1,
-    /// static_workers[1] is session_n=2, etc.
-    pub static_workers: Vec<String>,
 }
 
 impl AssignmentPlan {
@@ -231,24 +224,12 @@ pub fn compute_plan(
 
         let offset = project_idx % pool.len();
 
-        // Lead session is session_n=0; static workers follow in order
-        // as session_n=1, 2, ....
-        let mut sessions = Vec::with_capacity(1 + project.static_workers.len());
-        sessions.push("lead".to_owned());
-        for label in &project.static_workers {
-            sessions.push(label.clone());
-        }
+        // Only the lead is known at boot; every worker takes its slot
+        // from `assign_adhoc_worker` when it spawns, so session_n starts
+        // at 1 with the lead holding 0.
+        plan.assignments.insert((project.key.clone(), "lead".to_owned()), pool[offset].clone());
 
-        for (session_n, label) in sessions.iter().enumerate() {
-            let pool_idx = (offset + session_n) % pool.len();
-            let account = pool[pool_idx].clone();
-            plan.assignments.insert((project.key.clone(), label.clone()), account);
-        }
-
-        plan.slots.insert(
-            project.key.clone(),
-            ProjectSlot { pool, offset, next_session_n: sessions.len() },
-        );
+        plan.slots.insert(project.key.clone(), ProjectSlot { pool, offset, next_session_n: 1 });
     }
 
     plan
@@ -266,12 +247,8 @@ mod tests {
         ProjectKey::new(name)
     }
 
-    fn project(key: &str, accounts: &[&str], static_workers: &[&str]) -> ProjectInput {
-        ProjectInput {
-            key: pk(key),
-            accounts: accounts.iter().map(|s| (*s).to_owned()).collect(),
-            static_workers: static_workers.iter().map(|s| (*s).to_owned()).collect(),
-        }
+    fn project(key: &str, accounts: &[&str]) -> ProjectInput {
+        ProjectInput { key: pk(key), accounts: accounts.iter().map(|s| (*s).to_owned()).collect() }
     }
 
     #[test]
@@ -292,11 +269,16 @@ mod tests {
         //   librarian -> pool[(1 + 2) % 4 = 3] = stargate
         let accounts = vec![ak("gateway"), ak("gateway1"), ak("personal"), ak("stargate")];
         let names: Vec<&str> = vec!["gateway", "gateway1", "personal", "stargate"];
-        let projects = vec![
-            project("forge", &names, &["planner", "implementer", "reviewer", "debugger", "tester"]),
-            project("data-modules", &names, &["babysitter", "librarian"]),
-        ];
-        let plan = compute_plan(&accounts, &[], &projects);
+        let projects = vec![project("forge", &names), project("data-modules", &names)];
+        let mut plan = compute_plan(&accounts, &[], &projects);
+        // Boot assigns the lead; every worker takes its slot when it
+        // spawns, continuing the same rotation.
+        for label in ["planner", "implementer", "reviewer", "debugger", "tester"] {
+            let _ = plan.assign_adhoc_worker(&pk("forge"), &label.into(), |_| true);
+        }
+        for label in ["babysitter", "librarian"] {
+            let _ = plan.assign_adhoc_worker(&pk("data-modules"), &label.into(), |_| true);
+        }
 
         assert_eq!(plan.lookup(&pk("forge"), &"lead".into()), Some(&ak("gateway")));
         assert_eq!(plan.lookup(&pk("forge"), &"planner".into()), Some(&ak("gateway1")));
@@ -316,9 +298,9 @@ mod tests {
         // the ready set; the algorithm silently filters it out
         // rather than panicking or assigning a nonexistent account.
         let accounts = vec![ak("gateway"), ak("personal")];
-        let projects =
-            vec![project("forge", &["gateway", "typo-account", "personal"], &["worker1"])];
-        let plan = compute_plan(&accounts, &[], &projects);
+        let projects = vec![project("forge", &["gateway", "typo-account", "personal"])];
+        let mut plan = compute_plan(&accounts, &[], &projects);
+        let _ = plan.assign_adhoc_worker(&pk("forge"), &"worker1".into(), |_| true);
 
         // Pool reduces to [gateway, personal]; offset 0; size 2.
         assert_eq!(plan.lookup(&pk("forge"), &"lead".into()), Some(&ak("gateway")));
@@ -332,12 +314,11 @@ mod tests {
         // produces zero assignments; `project_has_no_assignments`
         // reports true.
         let accounts = vec![ak("gateway")];
-        let projects = vec![project("forge", &["bailed-account"], &["worker1"])];
+        let projects = vec![project("forge", &["bailed-account"])];
         let plan = compute_plan(&accounts, &[], &projects);
 
         assert!(plan.project_has_no_assignments(&pk("forge")));
         assert_eq!(plan.lookup(&pk("forge"), &"lead".into()), None);
-        assert_eq!(plan.lookup(&pk("forge"), &"worker1".into()), None);
     }
 
     #[test]
@@ -345,8 +326,9 @@ mod tests {
         // Project with empty allow-list -> defaults to every ready
         // account. Common case for solo-account setups.
         let accounts = vec![ak("gateway"), ak("personal")];
-        let projects = vec![project("forge", &[], &["w1"])];
-        let plan = compute_plan(&accounts, &[], &projects);
+        let projects = vec![project("forge", &[])];
+        let mut plan = compute_plan(&accounts, &[], &projects);
+        let _ = plan.assign_adhoc_worker(&pk("forge"), &"w1".into(), |_| true);
 
         assert_eq!(plan.lookup(&pk("forge"), &"lead".into()), Some(&ak("gateway")));
         assert_eq!(plan.lookup(&pk("forge"), &"w1".into()), Some(&ak("personal")));
@@ -354,12 +336,15 @@ mod tests {
 
     #[test]
     fn compute_plan_single_account_wraps_all_sessions_to_it() {
-        // One account + a 5-session team -> every session lands on
-        // the lone account. `cursor % 1 == 0` collapses to a single
-        // assignment per session.
+        // One account: every session lands on it. This pins that a
+        // len-1 pool never yields an out-of-range index, not the
+        // rotation - no arithmetic variant is observable at len 1.
         let accounts = vec![ak("only")];
-        let projects = vec![project("forge", &["only"], &["a", "b", "c", "d"])];
-        let plan = compute_plan(&accounts, &[], &projects);
+        let projects = vec![project("forge", &["only"])];
+        let mut plan = compute_plan(&accounts, &[], &projects);
+        for label in ["a", "b", "c", "d"] {
+            let _ = plan.assign_adhoc_worker(&pk("forge"), &label.into(), |_| true);
+        }
 
         for label in ["lead", "a", "b", "c", "d"] {
             assert_eq!(plan.lookup(&pk("forge"), &label.into()), Some(&ak("only")));
@@ -373,12 +358,13 @@ mod tests {
         // the saturated accounts drop out of the pool.
         let accounts = vec![ak("gateway"), ak("gateway1"), ak("personal")];
         let saturated = vec![ak("gateway"), ak("gateway1")];
-        let projects = vec![project(
-            "forge",
-            &["gateway", "gateway1", "personal"],
-            &["planner", "implementer"],
-        )];
-        let plan = compute_plan(&accounts, &saturated, &projects);
+        let projects = vec![project("forge", &["gateway", "gateway1", "personal"])];
+        let mut plan = compute_plan(&accounts, &saturated, &projects);
+        // Workers reach the plan by spawning now, so assign them the way
+        // a spawn does before asserting where they landed.
+        for label in ["planner", "implementer"] {
+            let _ = plan.assign_adhoc_worker(&pk("forge"), &label.into(), |_| true);
+        }
 
         for label in ["lead", "planner", "implementer"] {
             assert_eq!(
@@ -396,8 +382,9 @@ mod tests {
         // gets assigned rather than going dark.
         let accounts = vec![ak("gateway"), ak("gateway1")];
         let saturated = vec![ak("gateway"), ak("gateway1")];
-        let projects = vec![project("gateway-backend", &["gateway", "gateway1"], &["worker1"])];
-        let plan = compute_plan(&accounts, &saturated, &projects);
+        let projects = vec![project("gateway-backend", &["gateway", "gateway1"])];
+        let mut plan = compute_plan(&accounts, &saturated, &projects);
+        let _ = plan.assign_adhoc_worker(&pk("gateway-backend"), &"worker1".into(), |_| true);
 
         assert!(
             !plan.project_has_no_assignments(&pk("gateway-backend")),
@@ -410,27 +397,26 @@ mod tests {
 
     #[test]
     fn assign_adhoc_worker_extends_with_consistent_arithmetic() {
-        // After boot, the project has lead + 1 boot worker = 2
-        // sessions assigned (session_n 0 and 1). An adhoc spawn is
-        // session_n=2, slot = (offset + 2) % pool_size.
+        // Boot assigns only the lead (session_n=0), so the first spawn
+        // is session_n=1, slot = (offset + 1) % pool_size.
         let accounts = vec![ak("a"), ak("b"), ak("c")];
-        let projects = vec![project("p", &["a", "b", "c"], &["w1"])];
+        let projects = vec![project("p", &["a", "b", "c"])];
         let mut plan = compute_plan(&accounts, &[], &projects);
 
-        // Pool = [a, b, c], offset = 0, next_session_n = 2.
-        // Adhoc session_n=2, slot=(0+2)%3=2 -> c.
+        // Pool = [a, b, c], offset = 0, next_session_n = 1.
+        // Adhoc session_n=1, slot=(0+1)%3=1 -> b.
         let assigned = plan.assign_adhoc_worker(&pk("p"), &"adhoc".into(), |_| true);
-        assert_eq!(assigned, Some(ak("c")));
-        assert_eq!(plan.lookup(&pk("p"), &"adhoc".into()), Some(&ak("c")));
+        assert_eq!(assigned, Some(ak("b")));
+        assert_eq!(plan.lookup(&pk("p"), &"adhoc".into()), Some(&ak("b")));
     }
 
     #[test]
     fn assign_adhoc_worker_wraps_around_pool() {
-        // 3-account pool, 1 boot worker (next_session_n=2 post-boot).
-        // 4 adhoc spawns -> session_n=2,3,4,5 -> slots=2,0,1,2 ->
-        // accounts c, a, b, c.
+        // 3-account pool, lead only at boot (next_session_n=1).
+        // 4 adhoc spawns -> session_n=1,2,3,4 -> slots=1,2,0,1 ->
+        // accounts b, c, a, b.
         let accounts = vec![ak("a"), ak("b"), ak("c")];
-        let projects = vec![project("p", &["a", "b", "c"], &["w1"])];
+        let projects = vec![project("p", &["a", "b", "c"])];
         let mut plan = compute_plan(&accounts, &[], &projects);
 
         let picks: Vec<AccountKey> = (0..4)
@@ -439,7 +425,7 @@ mod tests {
                     .expect("pool non-empty")
             })
             .collect();
-        assert_eq!(picks, vec![ak("c"), ak("a"), ak("b"), ak("c")]);
+        assert_eq!(picks, vec![ak("b"), ak("c"), ak("a"), ak("b")]);
     }
 
     #[test]
@@ -450,7 +436,7 @@ mod tests {
         // rate-limited, the assignment must walk forward to the next
         // usable account (c) instead of silently landing on b.
         let accounts = vec![ak("a"), ak("b"), ak("c")];
-        let projects = vec![project("p", &["a", "b", "c"], &[])];
+        let projects = vec![project("p", &["a", "b", "c"])];
         let mut plan = compute_plan(&accounts, &[], &projects);
 
         let assigned = plan.assign_adhoc_worker(&pk("p"), &"adhoc".into(), |k| k != &ak("b"));
@@ -470,7 +456,7 @@ mod tests {
         // the user sees the subprocess's own 429 instead of forge
         // silently refusing - matching pick_for_project's fallback.
         let accounts = vec![ak("a"), ak("b"), ak("c")];
-        let projects = vec![project("p", &["a", "b", "c"], &[])];
+        let projects = vec![project("p", &["a", "b", "c"])];
         let mut plan = compute_plan(&accounts, &[], &projects);
 
         let assigned = plan.assign_adhoc_worker(&pk("p"), &"adhoc".into(), |_| false);
@@ -486,7 +472,7 @@ mod tests {
         // Re-spawning a worker under the same label preserves its
         // original assignment - wire identity doesn't shift.
         let accounts = vec![ak("a"), ak("b")];
-        let projects = vec![project("p", &["a", "b"], &[])];
+        let projects = vec![project("p", &["a", "b"])];
         let mut plan = compute_plan(&accounts, &[], &projects);
 
         let first = plan.assign_adhoc_worker(&pk("p"), &"reviewer".into(), |_| true);
@@ -497,7 +483,7 @@ mod tests {
     #[test]
     fn assign_adhoc_worker_returns_none_for_empty_pool() {
         let accounts = vec![ak("a")];
-        let projects = vec![project("p", &["bailed"], &[])];
+        let projects = vec![project("p", &["bailed"])];
         let mut plan = compute_plan(&accounts, &[], &projects);
         assert_eq!(plan.assign_adhoc_worker(&pk("p"), &"any".into(), |_| true), None);
     }
@@ -511,7 +497,7 @@ mod tests {
 
     #[test]
     fn project_has_no_assignments_false_when_assignments_exist() {
-        let plan = compute_plan(&[ak("a")], &[], &[project("p", &["a"], &[])]);
+        let plan = compute_plan(&[ak("a")], &[], &[project("p", &["a"])]);
         assert!(!plan.project_has_no_assignments(&pk("p")));
     }
 
@@ -524,28 +510,33 @@ mod tests {
 
     #[test]
     fn merge_frozen_preserves_existing_assignments() {
-        // Boot-time: one ready account; all forge sessions land on it.
-        let boot_accounts = vec![ak("a")];
-        let projects = vec![project("p", &["a", "b"], &["w1"])];
+        // Boot-time: only "b" is ready, so every session lands there.
+        // The pools must DISAGREE about where the lead goes - boot puts
+        // it on b, recovery on pool[0] = a - or the overlay has no
+        // conflict to refuse and the test cannot tell or_insert from
+        // insert.
+        let boot_accounts = vec![ak("b")];
+        let projects = vec![project("p", &["a", "b"])];
         let mut plan = compute_plan(&boot_accounts, &[], &projects);
-        assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("a")));
-        assert_eq!(plan.lookup(&pk("p"), &"w1".into()), Some(&ak("a")));
+        let _ = plan.assign_adhoc_worker(&pk("p"), &"w1".into(), |_| true);
+        assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("b")));
+        assert_eq!(plan.lookup(&pk("p"), &"w1".into()), Some(&ak("b")));
 
-        // Recovery: account "b" comes back online. Fresh plan would
-        // distribute across [a, b] but the frozen overlay must
-        // PRESERVE the existing (lead, w1) -> a assignments.
+        // Recovery: account "a" comes back online. Fresh plan would put
+        // the lead on a, but the frozen overlay must PRESERVE the
+        // existing assignments.
         let recovered_accounts = vec![ak("a"), ak("b")];
         let fresh = compute_plan(&recovered_accounts, &[], &projects);
         plan.merge_frozen(fresh);
 
         assert_eq!(
             plan.lookup(&pk("p"), &"lead".into()),
-            Some(&ak("a")),
+            Some(&ak("b")),
             "lead must keep its boot-time account",
         );
         assert_eq!(
             plan.lookup(&pk("p"), &"w1".into()),
-            Some(&ak("a")),
+            Some(&ak("b")),
             "w1 must keep its boot-time account",
         );
     }
@@ -556,7 +547,7 @@ mod tests {
         // recovered accounts so future adhoc workers can land on
         // them. Existing sessions stay put.
         let boot_accounts = vec![ak("a")];
-        let projects = vec![project("p", &["a", "b"], &[])];
+        let projects = vec![project("p", &["a", "b"])];
         let mut plan = compute_plan(&boot_accounts, &[], &projects);
 
         let recovered_accounts = vec![ak("a"), ak("b")];
@@ -578,7 +569,7 @@ mod tests {
         // Boot + 2 adhoc workers issued. Recovery shouldn't roll the
         // counter back so a third adhoc lands at the right slot.
         let accounts = vec![ak("a"), ak("b"), ak("c")];
-        let projects = vec![project("p", &["a", "b", "c"], &[])];
+        let projects = vec![project("p", &["a", "b", "c"])];
         let mut plan = compute_plan(&accounts, &[], &projects);
         let _ = plan.assign_adhoc_worker(&pk("p"), &"w1".into(), |_| true); // slot 1 -> b
         let _ = plan.assign_adhoc_worker(&pk("p"), &"w2".into(), |_| true); // slot 2 -> c

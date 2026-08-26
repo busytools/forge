@@ -955,7 +955,7 @@ mod stamp_project_tests {
         let mut app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
         let path = "/tmp/stamp-proj";
-        ws.seed_test_project_with_static_workers("stampproj", path, &[]);
+        ws.seed_test_project("stampproj", path);
 
         let lead = forge_workspace::SessionKey::from_session_id("lead-uuid");
         let mut bucket = crate::app::session::UiSession::new(lead.clone());
@@ -986,7 +986,7 @@ mod stamp_project_tests {
     fn stamp_respects_force_flag() {
         let mut app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
-        ws.seed_test_project_with_static_workers("stampproj", "/tmp/stamp-force-proj", &[]);
+        ws.seed_test_project("stampproj", "/tmp/stamp-force-proj");
 
         let key = forge_workspace::SessionKey::from_session_id("k");
         let mut bucket = crate::app::session::UiSession::new(key.clone());

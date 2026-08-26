@@ -299,8 +299,8 @@ pub(crate) fn missed_cron_text(prompt: &str, missed: bool) -> String {
 /// `Command::SpawnProject` (which resumes the lead and, through the lead's
 /// team-spawn, the worker), the prompt buffered by `(project, team_role)`
 /// and drained on the owner's connect. An owner that no longer exists (a
-/// gone project, or a worker label that is neither static nor a durable
-/// dynamic row) yields `TargetGone`.
+/// gone project, or a worker label with no persisted row) yields
+/// `TargetGone`.
 pub(crate) fn deliver_cron_prompt(
     workspace: &Arc<Workspace>,
     project_name: &str,
@@ -948,11 +948,11 @@ pub(crate) fn handle_spawn_worker(
         )));
         return;
     }
-    // Extend the assignment plan so this adhoc worker's account is
-    // picked from the same rotation as the boot-time team members.
-    // No-op when the plan isn't populated yet (boot still in
-    // flight); the fallback round-robin in
-    // get_agent_handle_with_spawn_key takes over in that case.
+    // Extend the assignment plan so this worker's account comes from the
+    // same rotation as the lead's. No-op while the plan is unpopulated
+    // (boot still in flight) - `recompute_plan_if_ready` seeds the live
+    // workers when it lands, which is the only thing that gives this one
+    // an entry.
     let rate_limited_account = workspace.extend_plan_for_adhoc_worker(&project_key, label);
     try_emit(
         workspace,
@@ -1840,13 +1840,13 @@ config_dir = "~/.claude-stargate"
 
     /// #1: the at-most-one-live-per-label guard lives in the shared
     /// `handle_spawn_worker` core, so a second dispatch for an
-    /// already-live label (e.g. the same label in both config
-    /// `static_workers` and the persisted dynamic set on reconnect)
-    /// inserts no duplicate entry and never reaches the subprocess spawn.
+    /// already-live label - a boot re-spawn racing an MCP spawn for the
+    /// same label - inserts no duplicate entry and never reaches the
+    /// subprocess spawn.
     #[tokio::test]
     async fn handle_spawn_worker_dedups_already_live_label() {
         let (workspace, _rx) = Workspace::testing_stub();
-        workspace.seed_test_project_with_static_workers("forge", "/tmp/forge", &[]);
+        workspace.seed_test_project("forge", "/tmp/forge");
         let project = workspace
             .list_projects()
             .into_iter()
@@ -2222,11 +2222,7 @@ config_dir = "~/.claude-stargate"
 
         let repo = tempdir().expect("repo tempdir");
         run_git(repo.path(), &["init", "-q"]);
-        workspace.seed_test_project_with_static_workers(
-            "ghost",
-            &repo.path().to_string_lossy(),
-            &[],
-        );
+        workspace.seed_test_project("ghost", &repo.path().to_string_lossy());
         let project = workspace
             .list_projects()
             .into_iter()
@@ -2898,8 +2894,8 @@ mod team_charter_tests {
     /// The bundled charter ships to every install, so it must not name
     /// tooling or projects that only exist in one author's environment:
     /// a fresh install has no user-scope skills, no plugins and no
-    /// justfile, and `team` is not a `forge.toml` key (`static_workers`
-    /// is). Most entries got here by being copied from an on-disk
+    /// justfile, and `team` is not a `forge.toml` key. Most entries got
+    /// here by being copied from an on-disk
     /// charter; the two path entries are pre-emptive, since prose about
     /// where a charter lives is the obvious place to write one.
     ///
@@ -2918,7 +2914,8 @@ mod team_charter_tests {
             ("commit-commands", "plugin, absent on a fresh install"),
             ("`just ", "project justfile, not every project has one"),
             ("hub-modules", "one user's project name"),
-            ("team = ", "not a forge.toml key; the key is static_workers"),
+            ("team = ", "not a forge.toml key"),
+            ("static_workers", "no longer a forge.toml key either"),
             ("~/.claude", "the charter must not pin a path in the user's home"),
             ("forge-team", "the charter must not name the deleted role filesystem"),
         ] {

@@ -1199,10 +1199,10 @@ mod tests {
         );
     }
 
-    /// Render the picker over a one-project `forge.toml` that declares
-    /// `reviewer` as a static worker, with both `reviewer` and `scratch`
-    /// persisted as dynamic workers: a label the assignment plan knows
-    /// (so it chips) alongside one it does not (so it does not).
+    /// Render the picker over a one-project `forge.toml` with both
+    /// `reviewer` and `scratch` persisted as workers, and only
+    /// `reviewer` assigned in the plan: a label the plan knows (so it
+    /// chips) alongside one it does not (so it does not).
     async fn render_picker_rows() -> (Vec<String>, tempfile::TempDir, tempfile::TempDir) {
         let config_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("project tempdir");
@@ -1214,7 +1214,6 @@ mod tests {
             format!(
                 "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n\
                  [[orgs.projects]]\nname = \"picker\"\npath = \"{project_path}\"\n\
-                 static_workers = [\"reviewer\"]\n\n\
                  [[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"~/.claude-stargate\"\n"
             ),
         )
@@ -1227,6 +1226,9 @@ mod tests {
         workspace.seed_test_dynamic_worker(&project.key, "reviewer");
         workspace.seed_test_dynamic_worker(&project.key, "scratch");
         workspace.seed_test_ready_account("Stargate");
+        // `reviewer` spawned this boot, so it has a plan entry and a
+        // chip; `scratch` has only a row and renders bare.
+        workspace.seed_test_worker_assignment(&project.key, "reviewer");
 
         let mut app = App::test_default();
         app.workspace = Some(std::sync::Arc::new(workspace));
@@ -1275,9 +1277,9 @@ mod tests {
         );
     }
 
-    /// Worker rows are sourced from the persisted dynamic workers, so a
-    /// label that is not in `static_workers` still gets a row - and with
-    /// no assignment-plan entry it renders its lifecycle glyph and the
+    /// Worker rows are sourced from the persisted workers, so a label
+    /// that never spawned still gets a row - and with no
+    /// assignment-plan entry it renders its lifecycle glyph and the
     /// activity placeholder with no chip at all.
     #[tokio::test]
     async fn a_never_spawned_dynamic_worker_renders_bare() {

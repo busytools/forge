@@ -447,7 +447,7 @@ mod resolve_scope_tests {
     /// caller registered as a catalog session whose cwd is that root.
     fn ws_with_session_cwd(cwd: &str) -> (Arc<Workspace>, SessionKey) {
         let (ws, _rx) = Workspace::testing_stub();
-        ws.seed_test_project_with_static_workers("myproj", cwd, &[]);
+        ws.seed_test_project("myproj", cwd);
         let caller = SessionKey::from_session_id("caller-uuid");
         ws.record_connected_session(cwd, caller.as_str(), None);
         (ws, caller)
@@ -464,7 +464,7 @@ mod resolve_scope_tests {
         label: &str,
         is_git_repo_at_spawn: bool,
     ) -> SessionKey {
-        ws.seed_test_project_with_static_workers("myproj", project_root, &[]);
+        ws.seed_test_project("myproj", project_root);
         let key = ws
             .list_projects()
             .into_iter()

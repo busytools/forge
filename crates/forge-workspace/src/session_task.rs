@@ -2022,7 +2022,7 @@ mod tests {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
         // The session's cwd resolves to this project so the owner drain keys
         // on (project, None) - a lead session with no live-worker label.
-        workspace.seed_test_project_with_static_workers("cron-drain", "/tmp/cron-drain", &[]);
+        workspace.seed_test_project("cron-drain", "/tmp/cron-drain");
         workspace.buffer_cron_for_owner("cron-drain", None, "morning reminder".to_owned(), false);
 
         let session_key = SessionKey::from_session_id("cron-drain-uuid");
@@ -2083,7 +2083,7 @@ mod tests {
     #[tokio::test]
     async fn worker_first_connected_drains_its_own_bucket_with_missed_marker() {
         let (workspace, _rx) = crate::Workspace::testing_stub();
-        workspace.seed_test_project_with_static_workers("wdp", "/tmp/wdp", &[]);
+        workspace.seed_test_project("wdp", "/tmp/wdp");
         let key =
             workspace.list_projects().into_iter().find(|v| v.name == "wdp").expect("view").key;
         workspace.insert_live_worker(&key, cron_worker_entry("reviewer", "worker-drain-uuid"));
@@ -2444,7 +2444,7 @@ mod team_hook_tests {
         workspace.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        workspace.seed_test_project_with_static_workers("proj-x", "/tmp/proj-x", &[]);
+        workspace.seed_test_project("proj-x", "/tmp/proj-x");
         let project_key = ProjectKey::new(
             forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/proj-x")),
         );
@@ -2487,7 +2487,7 @@ mod team_hook_tests {
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
         workspace.enable_test_dispatch_intercept();
-        workspace.seed_test_project_with_static_workers("proj-y", "/tmp/proj-y", &[]);
+        workspace.seed_test_project("proj-y", "/tmp/proj-y");
 
         on_connected_for_test(&workspace, &synth_lead_key("proj-y"), "lead-uuid");
 
@@ -2579,7 +2579,7 @@ mod team_hook_tests {
         label: &str,
         kick: Option<String>,
     ) -> SessionKey {
-        workspace.seed_test_project_with_static_workers("forge", "/tmp/forge", &[]);
+        workspace.seed_test_project("forge", "/tmp/forge");
         let project_key = workspace
             .list_projects()
             .into_iter()

@@ -4252,7 +4252,7 @@ mod tests {
         let mut app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
         let path = "/Users/me/Projects/web-api";
-        ws.seed_test_project_with_static_workers("web-api", path, &[]);
+        ws.seed_test_project("web-api", path);
         // Mirror production: record_connected_session stamps the on-disk
         // catalog at Connect, which is exactly what resolve_active_project_view
         // reads to highlight the active project in the pane + top bar.
@@ -4296,7 +4296,7 @@ mod tests {
         let mut app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
         let path = "/Users/me/Projects/web-api";
-        ws.seed_test_project_with_static_workers("web-api", path, &[]);
+        ws.seed_test_project("web-api", path);
         let uuid = "acbd8a76-448b-4dda-bb01-dd930cdd261a";
         ws.record_connected_session(path, uuid, None);
         ws.seed_test_cron(CronEntry {
@@ -4344,7 +4344,7 @@ mod tests {
         let mut app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
         let path = "/Users/me/Projects/web-api";
-        ws.seed_test_project_with_static_workers("web-api", path, &[]);
+        ws.seed_test_project("web-api", path);
         let cron = CronEntry {
             id: CronId::from("c1"),
             project_name: "web-api".to_owned(),
@@ -4388,7 +4388,7 @@ mod tests {
 
         // Project path is stored expanded; the bucket cwd is a tilde
         // form that cannot prefix-match it.
-        ws.seed_test_project_with_static_workers("web-api", "/Users/me/Projects/web-api", &[]);
+        ws.seed_test_project("web-api", "/Users/me/Projects/web-api");
         let cron = CronEntry {
             id: CronId::from("c1"),
             project_name: "web-api".to_owned(),
@@ -4430,7 +4430,7 @@ mod tests {
         let mut app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
 
-        ws.seed_test_project_with_static_workers("cronproj", "/tmp/cronproj-inspector", &[]);
+        ws.seed_test_project("cronproj", "/tmp/cronproj-inspector");
         let cron = CronEntry {
             id: CronId::from("c1"),
             project_name: "cronproj".to_owned(),
@@ -4497,7 +4497,7 @@ mod tests {
         {
             let mut app = App::test_default();
             let ws = app.workspace.clone().expect("test workspace");
-            ws.seed_test_project_with_static_workers("cronproj", "/tmp/cronproj-shapes", &[]);
+            ws.seed_test_project("cronproj", "/tmp/cronproj-shapes");
             ws.seed_test_cron(cron.clone());
 
             let key = forge_workspace::SessionKey::from_session_id(key_str);
@@ -4628,7 +4628,7 @@ mod tests {
 
         let mut app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
-        ws.seed_test_project_with_static_workers("core-v1", "/tmp/core-v1", &[]);
+        ws.seed_test_project("core-v1", "/tmp/core-v1");
         // Insert the worker under the SAME key list_projects returns
         // (derived from the project path, not the name).
         let project_key = ws
@@ -4915,7 +4915,7 @@ mod tests {
         let mut app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
         let path = "/tmp/cronproj-worktree";
-        ws.seed_test_project_with_static_workers("cronproj", path, &[]);
+        ws.seed_test_project("cronproj", path);
         let cron = CronEntry {
             id: CronId::from("c1"),
             project_name: "cronproj".to_owned(),
@@ -4953,7 +4953,7 @@ mod tests {
         let mut app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
         let path = "/tmp/gotify-inspector-proj";
-        ws.seed_test_project_with_static_workers("gproj", path, &[]);
+        ws.seed_test_project("gproj", path);
         ws.seed_test_gotify_subscription(forge_primitives::GotifySubscription {
             id: uuid::Uuid::new_v4(),
             project: "gproj".to_owned(),
@@ -4989,7 +4989,7 @@ mod tests {
     ) -> (App, Arc<forge_workspace::Workspace>, forge_workspace::SessionKey) {
         let mut app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
-        ws.seed_test_project_with_static_workers(project, &format!("/tmp/{project}"), &[]);
+        ws.seed_test_project(project, &format!("/tmp/{project}"));
         let key = forge_workspace::SessionKey::from_session_id(session_id);
         let mut bucket = crate::app::session::UiSession::new(key.clone());
         bucket.project = Some(project.to_owned());

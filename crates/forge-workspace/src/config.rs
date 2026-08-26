@@ -89,13 +89,6 @@ struct ProjectEntry {
     /// is focused until the user picks one. Defaults to `false`.
     #[serde(default)]
     auto_start: bool,
-    /// Static (config-defined) worker role labels for this project.
-    /// Nothing spawns from them; they pre-seed the account-assignment
-    /// plan. Dynamic (LLM-spawned) workers are not listed here; they
-    /// carry a row in the redb store instead. Empty / missing means no
-    /// static workers.
-    #[serde(default)]
-    static_workers: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -184,10 +177,6 @@ pub(crate) struct LoadedProject {
     /// `true` when the project should spawn automatically at forge
     /// launch.
     pub auto_start: bool,
-    /// Validated static-worker labels for this project - format only,
-    /// since nothing loads a file per label any more. Empty means no
-    /// static workers. See `crate::team::validate_label`.
-    pub static_workers: Vec<String>,
     /// Per-project environment from `[projects.<name>.env]`, layered
     /// over the account's env at spawn. An `ANTHROPIC_BASE_URL` or
     /// `ANTHROPIC_AUTH_TOKEN` here desyncs forge's own accounting -
@@ -359,28 +348,6 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             if !seen_project_names.insert(project_entry.name.clone()) {
                 return Err(WorkspaceError::DuplicateProject { path, name: project_entry.name });
             }
-            let mut static_worker_labels: Vec<String> =
-                Vec::with_capacity(project_entry.static_workers.len());
-            let mut seen_labels: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
-            for raw_label in &project_entry.static_workers {
-                let label = raw_label.trim().to_owned();
-                if let Err(label_err) = crate::team::validate_label(&label) {
-                    return Err(WorkspaceError::UnknownStaticWorker {
-                        path: path.clone(),
-                        project_name: project_entry.name.clone(),
-                        role: format!("{raw_label} ({label_err})"),
-                    });
-                }
-                if !seen_labels.insert(label.clone()) {
-                    return Err(WorkspaceError::DuplicateStaticWorker {
-                        path: path.clone(),
-                        project_name: project_entry.name.clone(),
-                        role: raw_label.clone(),
-                    });
-                }
-                static_worker_labels.push(label);
-            }
             let project_env = project_env_tables
                 .remove(&project_entry.name)
                 .map(|table| resolve_project_env(&project_entry.name, table))
@@ -392,7 +359,6 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 org: org_entry.name.clone(),
                 accounts: org_entry.accounts.clone(),
                 auto_start: project_entry.auto_start,
-                static_workers: static_worker_labels,
                 env: project_env,
             });
         }
@@ -1470,178 +1436,5 @@ config_dir = "~/.claude-other"
         write_config(dir.path(), &config_text);
         let config = load_from_dir(dir.path()).expect("legacy [selection] should be ignored");
         assert_eq!(config.default_project().name, "forge");
-    }
-}
-
-#[cfg(test)]
-mod static_worker_tests {
-    use super::*;
-
-    fn write_config(dir: &std::path::Path, contents: &str) {
-        let forge = ensure_forge_data_dir(dir).expect("forge/ dir");
-        std::fs::write(forge.join("forge.toml"), contents).expect("write forge/forge.toml");
-    }
-
-    #[test]
-    fn project_without_static_workers_field_loads_empty() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        write_config(
-            tmp.path(),
-            r#"
-[[orgs]]
-name = "TestOrg"
-accounts = ["acct-a"]
-[[orgs.projects]]
-name = "p1"
-path = "/tmp/p1"
-
-[[accounts]]
-display_name = "acct-a"
-config_dir = "/tmp/acct-a"
-"#,
-        );
-        let cfg = load_from_dir(tmp.path()).expect("load ok");
-        let p = cfg.projects.iter().find(|p| p.name == "p1").expect("p1 present");
-        assert!(p.static_workers.is_empty(), "missing static_workers field -> empty");
-    }
-
-    #[test]
-    fn project_with_static_workers_field_parses_labels() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        write_config(
-            tmp.path(),
-            r#"
-[[orgs]]
-name = "TestOrg"
-accounts = ["acct-a"]
-[[orgs.projects]]
-name = "p1"
-path = "/tmp/p1"
-static_workers = ["planner", "implementer", "reviewer", "debugger", "tester"]
-
-[[accounts]]
-display_name = "acct-a"
-config_dir = "/tmp/acct-a"
-"#,
-        );
-        let cfg = load_from_dir(tmp.path()).expect("load ok");
-        let p = cfg.projects.iter().find(|p| p.name == "p1").expect("p1 present");
-        assert_eq!(
-            p.static_workers,
-            vec![
-                "planner".to_owned(),
-                "implementer".to_owned(),
-                "reviewer".to_owned(),
-                "debugger".to_owned(),
-                "tester".to_owned(),
-            ]
-        );
-    }
-
-    #[test]
-    fn project_with_partial_static_workers_only_enables_listed() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        write_config(
-            tmp.path(),
-            r#"
-[[orgs]]
-name = "TestOrg"
-accounts = ["acct-a"]
-[[orgs.projects]]
-name = "p1"
-path = "/tmp/p1"
-static_workers = ["reviewer", "planner"]
-
-[[accounts]]
-display_name = "acct-a"
-config_dir = "/tmp/acct-a"
-"#,
-        );
-        let cfg = load_from_dir(tmp.path()).expect("load ok");
-        let p = cfg.projects.iter().find(|p| p.name == "p1").expect("p1 present");
-        assert_eq!(p.static_workers, vec!["reviewer".to_owned(), "planner".to_owned()]);
-    }
-
-    #[test]
-    fn arbitrary_role_label_accepted_at_config_load() {
-        // Post-#220 the static_workers field is an open set: any
-        // well-formed label is accepted at config-load.
-        let tmp = tempfile::tempdir().expect("tempdir");
-        write_config(
-            tmp.path(),
-            r#"
-[[orgs]]
-name = "TestOrg"
-accounts = ["acct-a"]
-[[orgs.projects]]
-name = "p1"
-path = "/tmp/p1"
-static_workers = ["planner", "researcher", "p1/custom"]
-
-[[accounts]]
-display_name = "acct-a"
-config_dir = "/tmp/acct-a"
-"#,
-        );
-        let cfg = load_from_dir(tmp.path()).expect("open-set labels load ok");
-        let p = cfg.projects.iter().find(|p| p.name == "p1").expect("p1 present");
-        assert_eq!(
-            p.static_workers,
-            vec!["planner".to_owned(), "researcher".to_owned(), "p1/custom".to_owned(),]
-        );
-    }
-
-    #[test]
-    fn malformed_label_rejected_at_config_load() {
-        // Path-traversal-shaped labels reject loud; ditto empty / `.`
-        // / leading `/`.
-        let tmp = tempfile::tempdir().expect("tempdir");
-        write_config(
-            tmp.path(),
-            r#"
-[[orgs]]
-name = "TestOrg"
-accounts = ["acct-a"]
-[[orgs.projects]]
-name = "p1"
-path = "/tmp/p1"
-static_workers = ["planner", "../escape"]
-
-[[accounts]]
-display_name = "acct-a"
-config_dir = "/tmp/acct-a"
-"#,
-        );
-        let err = load_from_dir(tmp.path()).expect_err("must reject");
-        let msg = format!("{err}");
-        assert!(msg.contains("escape"), "error must name the malformed label; got: {msg}");
-        assert!(msg.contains("p1"), "error must name the project; got: {msg}");
-    }
-
-    #[test]
-    fn duplicate_label_in_static_workers_rejects() {
-        // Only one instance per label per project. Duplicate entries
-        // reject loud rather than silently dedup.
-        let tmp = tempfile::tempdir().expect("tempdir");
-        write_config(
-            tmp.path(),
-            r#"
-[[orgs]]
-name = "TestOrg"
-accounts = ["acct-a"]
-[[orgs.projects]]
-name = "p1"
-path = "/tmp/p1"
-static_workers = ["planner", "planner"]
-
-[[accounts]]
-display_name = "acct-a"
-config_dir = "/tmp/acct-a"
-"#,
-        );
-        let err = load_from_dir(tmp.path()).expect_err("must reject");
-        let msg = format!("{err}");
-        assert!(msg.contains("planner"), "error must name duplicate label; got: {msg}");
-        assert!(msg.contains("p1"), "error must name the project; got: {msg}");
     }
 }

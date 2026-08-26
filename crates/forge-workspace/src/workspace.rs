@@ -338,7 +338,7 @@ pub struct Workspace {
     #[cfg(any(test, feature = "testing"))]
     command_intercept: Mutex<Option<Vec<Command>>>,
     /// Test-only project overlay. Entries appended via
-    /// `seed_test_project_with_static_workers` are searched first in
+    /// `seed_test_project` are searched first in
     /// `find_project_view_by_name` so tests can drive the
     /// Connected-hook team-spawn trigger without writing a
     /// real `forge.toml`. Empty in production.
@@ -847,7 +847,7 @@ impl Workspace {
         // `ui::render` under projects with ~14 entries.
         let catalog = self.catalog.lock();
         // Iterate config.projects, with the test-only overlay appended
-        // so unit tests can seed projects via `seed_test_project_with_static_workers`
+        // so unit tests can seed projects via `seed_test_project`
         // and exercise paths that read `list_projects` (matches the
         // `project_root_for_key` / `find_project_view_by_name` overlay
         // pattern).
@@ -897,7 +897,6 @@ impl Workspace {
                 path: project.path.clone(),
                 display_path: project.display_path.clone(),
                 accounts: project.accounts.clone(),
-                static_workers: project.static_workers.clone(),
                 sessions,
             });
         }
@@ -1523,12 +1522,11 @@ impl Workspace {
         }
     }
 
-    /// Extend the assignment plan with a new adhoc worker. Called
-    /// from `handle_spawn_worker` (Section 2.5 of #246) so workers
-    /// spawned via `workers__spawn` are assigned through the same
-    /// plan-driven rotation as boot-time team members. No-op when
-    /// the plan isn't populated yet (boot still in flight) - the
-    /// fallback `pick_for_project` path takes over in that case.
+    /// Extend the assignment plan with a newly spawned worker. Called
+    /// from `handle_spawn_worker` (Section 2.5 of #246) so a worker is
+    /// assigned through the same plan-driven rotation the lead is.
+    /// No-op when the plan isn't populated yet (boot still in flight);
+    /// `recompute_plan_if_ready` seeds the live workers when it lands.
     /// Returns `Some(account)` when the assigned account is itself
     /// currently unusable (a fresh assignment that fell back onto a
     /// fully saturated pool, or a re-spawn pinned to a since-unusable
@@ -1610,7 +1608,7 @@ impl Workspace {
                 .ordered_keys
                 .iter()
                 // Experimental accounts never enter the assignment pool
-                // (leads, static + adhoc workers) even when a project's
+                // (leads and workers alike) even when a project's
                 // org pins them; they are reachable only via the
                 // `/account` picker.
                 .filter(|k| !accounts.is_experimental(k))
@@ -1641,11 +1639,29 @@ impl Workspace {
                     )),
                 ),
                 accounts: p.accounts.clone(),
-                static_workers: p.static_workers.clone(),
             })
             .collect();
 
-        let fresh = compute_plan(&ready_accounts, &saturated, &projects);
+        let mut fresh = compute_plan(&ready_accounts, &saturated, &projects);
+
+        // A worker that spawned while the accounts were still loading
+        // found no plan to extend, and nothing downstream would ever give
+        // it an entry: `compute_plan` emits only the lead, and the frozen
+        // overlay adds only what `fresh` already holds. Seed the live
+        // ones here, in label order so the rotation is deterministic.
+        let usable: Vec<AccountKey> =
+            ready_accounts.iter().filter(|k| !saturated.contains(k)).cloned().collect::<Vec<_>>();
+        for input in &projects {
+            let mut labels: Vec<String> =
+                self.list_live_workers(&input.key).into_iter().map(|w| w.label).collect();
+            labels.sort();
+            for label in labels {
+                fresh.assign_adhoc_worker(&input.key, &label, |k| {
+                    usable.is_empty() || usable.contains(k)
+                });
+            }
+        }
+
         let mut plan_guard = self.assignment_plan.lock();
         match plan_guard.as_mut() {
             // First compute - just store. Boot-time path.
@@ -5984,12 +6000,7 @@ impl Workspace {
     /// by `find_project_view_by_name`. Used by engineering-team tests
     /// to drive the Connected-hook worker-spawn trigger without
     /// writing a real `forge.toml`. Test-only.
-    pub fn seed_test_project_with_static_workers(
-        &self,
-        name: &str,
-        path: &str,
-        static_workers: &[String],
-    ) {
+    pub fn seed_test_project(&self, name: &str, path: &str) {
         self.test_extra_projects.lock().push(crate::config::LoadedProject {
             name: name.to_owned(),
             path: std::path::PathBuf::from(path),
@@ -5997,7 +6008,6 @@ impl Workspace {
             org: "TestOrg".to_owned(),
             accounts: vec!["acct-a".to_owned()],
             auto_start: false,
-            static_workers: static_workers.to_vec(),
             env: std::collections::HashMap::new(),
         });
     }
@@ -6011,6 +6021,15 @@ impl Workspace {
             .lock()
             .set_loading(&AccountKey(account.to_owned()), crate::account::LoadingState::Ready);
         self.recompute_plan_if_ready();
+    }
+
+    /// Give `label` an assignment-plan entry the way a spawn does, so a
+    /// cross-crate test can produce a chipped worker row. A label without
+    /// one renders bare, which is the contrast worth testing; assignment
+    /// is what puts it in the plan now that nothing pre-seeds from
+    /// forge.toml. Test-only.
+    pub fn seed_test_worker_assignment(&self, project_key: &ProjectKey, label: &str) {
+        let _ = self.extend_plan_for_adhoc_worker(project_key, label);
     }
 
     /// Persist a dynamic-worker row directly, bypassing `workers__spawn`.
@@ -6776,7 +6795,7 @@ mod tests {
     ) -> (Arc<Workspace>, tokio::sync::mpsc::UnboundedReceiver<crate::SessionUpdate>) {
         let (ws, rx) = Workspace::testing_stub_with_config_dir(dir.to_owned());
         ws.install_db_for_test(crate::store::Db::open(&dir.join("db.redb")).expect("open db"));
-        ws.seed_test_project_with_static_workers(name, &root.to_string_lossy(), &[]);
+        ws.seed_test_project(name, &root.to_string_lossy());
         (ws, rx)
     }
 
@@ -7587,7 +7606,7 @@ mod tests {
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
 
         let path = "/tmp/cron-project-path-proj";
-        ws.seed_test_project_with_static_workers("cronproj", path, &[]);
+        ws.seed_test_project("cronproj", path);
 
         // The escalation guard for the one-time Connected stamp: a clean
         // project-root cwd MUST resolve the name. If this ever returns
@@ -7626,7 +7645,7 @@ mod tests {
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(dir.path().join("real"), &link).expect("symlink");
         let root = link.join("proj");
-        ws.seed_test_project_with_static_workers("symproj", &root.to_string_lossy(), &[]);
+        ws.seed_test_project("symproj", &root.to_string_lossy());
 
         let absent_worktree = root.join(".claude").join("worktrees").join("reviewer");
         assert_eq!(
@@ -8137,7 +8156,7 @@ SOLO_TOKEN = "solo-secret"
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        ws.seed_test_project_with_static_workers("forge", "/tmp/gotify-durability", &[]);
+        ws.seed_test_project("forge", "/tmp/gotify-durability");
         let view_key = ws
             .list_projects()
             .into_iter()
@@ -8191,7 +8210,7 @@ SOLO_TOKEN = "solo-secret"
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        ws.seed_test_project_with_static_workers("forge", "/tmp/gotify-durability", &[]);
+        ws.seed_test_project("forge", "/tmp/gotify-durability");
         let view_key = ws
             .list_projects()
             .into_iter()
@@ -8251,15 +8270,7 @@ SOLO_TOKEN = "solo-secret"
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        // "scratch" is named in static_workers on purpose: the key spawns
-        // nothing, so it must not exempt the label from the cleanup. The
-        // fixture the repo already ships for the launchpad has exactly
-        // this overlap, so it is not a contrived case.
-        ws.seed_test_project_with_static_workers(
-            "forge",
-            "/tmp/cron-teardown-dyn",
-            &["scratch".to_owned()],
-        );
+        ws.seed_test_project("forge", "/tmp/cron-teardown-dyn");
         let view_key = ws
             .list_projects()
             .into_iter()
@@ -8310,7 +8321,7 @@ SOLO_TOKEN = "solo-secret"
     /// The seam the bug lived in: `resolve_identity` gathers the caller's
     /// dynamic-worker labels from the table and marks a table-backed
     /// worker durable, so its sub persists through the subscribe path even
-    /// though the worker is neither a static worker nor the lead.
+    /// though the worker is not the lead.
     #[test]
     fn resolve_identity_persists_a_table_backed_dynamic_workers_sub() {
         let (ws, _rx) = Workspace::testing_stub();
@@ -8318,7 +8329,7 @@ SOLO_TOKEN = "solo-secret"
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        ws.seed_test_project_with_static_workers("forge", "/tmp/gotify-durability-seam", &[]);
+        ws.seed_test_project("forge", "/tmp/gotify-durability-seam");
         let view_key = ws
             .list_projects()
             .into_iter()
@@ -8326,7 +8337,7 @@ SOLO_TOKEN = "solo-secret"
             .map(|v| v.key)
             .expect("seeded project view");
 
-        // "scratch" is neither a static worker nor the lead: durability
+        // "scratch" is not the lead: durability
         // must come solely from its dynamic_workers row.
         let _ = ws.persist_dynamic_worker(&dynamic_worker_row(view_key.as_str(), "scratch"));
         let caller = SessionKey::from_session_id("scratch-session");
@@ -8370,7 +8381,7 @@ SOLO_TOKEN = "solo-secret"
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        ws.seed_test_project_with_static_workers("forge", "/tmp/gotify-durability-noop", &[]);
+        ws.seed_test_project("forge", "/tmp/gotify-durability-noop");
 
         let mut scratch_sub = gotify_sub("forge", &[], None);
         scratch_sub.team_role = Some("scratch".to_owned());
@@ -8399,7 +8410,7 @@ SOLO_TOKEN = "solo-secret"
     fn remove_gotify_subscriptions_for_worker_scrubs_memory_without_a_db() {
         let (ws, _rx) = Workspace::testing_stub();
         // No install_db_for_test: the store is closed for this session.
-        ws.seed_test_project_with_static_workers("forge", "/tmp/gotify-durability-nodb", &[]);
+        ws.seed_test_project("forge", "/tmp/gotify-durability-nodb");
         let view_key = ws
             .list_projects()
             .into_iter()
@@ -8595,7 +8606,7 @@ SOLO_TOKEN = "solo-secret"
     fn deliver_gotify_message_spawns_asleep_project_and_buffers() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project_with_static_workers("forge", "/tmp/gotify-forge", &[]);
+        ws.seed_test_project("forge", "/tmp/gotify-forge");
 
         let notif = gotify_notif("forge", "Heads up", "hello envelope", 5);
         ws.enable_test_dispatch_intercept();
@@ -8646,11 +8657,7 @@ SOLO_TOKEN = "solo-secret"
     fn deliver_gotify_message_delivers_to_running_team_worker() {
         let dir = tempdir().expect("tempdir");
         let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project_with_static_workers(
-            "forge",
-            "/tmp/gotify-team",
-            &["reviewer".to_owned()],
-        );
+        ws.seed_test_project("forge", "/tmp/gotify-team");
         let view_key = ws
             .list_projects()
             .into_iter()
@@ -8705,11 +8712,7 @@ SOLO_TOKEN = "solo-secret"
     fn deliver_gotify_message_team_worker_asleep_falls_through_to_lead() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project_with_static_workers(
-            "forge",
-            "/tmp/gotify-team",
-            &["reviewer".to_owned()],
-        );
+        ws.seed_test_project("forge", "/tmp/gotify-team");
 
         // No live worker of that role: the subscription falls through to
         // lead delivery, which spawns the asleep project (the lead brings up
@@ -8748,11 +8751,7 @@ SOLO_TOKEN = "solo-secret"
     fn deliver_gotify_message_to_spawning_team_worker_buffers_on_its_domain() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project_with_static_workers(
-            "forge",
-            "/tmp/gotify-spawning",
-            &["reviewer".to_owned()],
-        );
+        ws.seed_test_project("forge", "/tmp/gotify-spawning");
         let view_key = ws
             .list_projects()
             .into_iter()
@@ -8832,7 +8831,7 @@ SOLO_TOKEN = "solo-secret"
         use forge_primitives::cron::{CronEntry, CronId, CronKind};
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project_with_static_workers("forge", "/tmp/forge", &[]);
+        ws.seed_test_project("forge", "/tmp/forge");
 
         let now = std::time::SystemTime::now();
         let past = std::time::SystemTime::UNIX_EPOCH;
@@ -8901,7 +8900,7 @@ SOLO_TOKEN = "solo-secret"
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         let db = crate::store::Db::open(&dir.path().join("db.redb")).expect("open db");
         ws.install_db_for_test(db);
-        ws.seed_test_project_with_static_workers("forge", "/tmp/forge-catchup", &[]);
+        ws.seed_test_project("forge", "/tmp/forge-catchup");
 
         let now = std::time::SystemTime::now();
         let past = std::time::SystemTime::UNIX_EPOCH;
@@ -9005,7 +9004,7 @@ SOLO_TOKEN = "solo-secret"
     fn deliver_cron_prompt_to_running_lead_emits_cron_prompt_appended() {
         let dir = tempdir().expect("tempdir");
         let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project_with_static_workers("cronlead", "/tmp/cron-lead", &[]);
+        ws.seed_test_project("cronlead", "/tmp/cron-lead");
         // Seed the catalog + pool so the project has a running (open) lead:
         // list_projects derives `is_open` from pool membership.
         let cwd = project_expanded_path(&ws, "cronlead");
@@ -9050,7 +9049,7 @@ SOLO_TOKEN = "solo-secret"
     #[test]
     fn deliver_worker_cron_to_a_live_worker_prompts_the_worker() {
         let (ws, _rx) = Workspace::testing_stub();
-        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-live", &["reviewer".to_owned()]);
+        ws.seed_test_project("proj", "/tmp/wc-live");
         let key = ws.list_projects().into_iter().find(|v| v.name == "proj").expect("view").key;
         ws.insert_live_worker(&key, live_worker_entry("reviewer", "worker-uuid"));
         let worker_key = SessionKey::from_session_id("worker-uuid");
@@ -9082,7 +9081,7 @@ SOLO_TOKEN = "solo-secret"
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-static", &[]);
+        ws.seed_test_project("proj", "/tmp/wc-static");
         // The row is what makes the owner exist while asleep; without it
         // the fire router collects the cron instead.
         let key = ws
@@ -9135,7 +9134,7 @@ SOLO_TOKEN = "solo-secret"
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-spawning", &[]);
+        ws.seed_test_project("proj", "/tmp/wc-spawning");
         let key = ws.list_projects().into_iter().find(|v| v.name == "proj").expect("view").key;
         let _ = ws.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
             project_key: key.as_str().to_owned(),
@@ -9185,7 +9184,7 @@ SOLO_TOKEN = "solo-secret"
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-dyn", &[]);
+        ws.seed_test_project("proj", "/tmp/wc-dyn");
         let key = ws.list_projects().into_iter().find(|v| v.name == "proj").expect("view").key;
         // "scratch" exists only via its dynamic_workers row.
         let _ = ws.persist_dynamic_worker(&dynamic_worker_row(key.as_str(), "scratch"));
@@ -9221,18 +9220,16 @@ SOLO_TOKEN = "solo-secret"
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        // Db open + empty dynamic_workers: "ghost" is conclusively
-        // absent, so its cron is removed.
-        // Named in `static_workers` and absent from the table: the key
-        // spawns nothing, so the row is the only thing that could bring
-        // this owner back and the cron must be collected, not buffered
-        // into a bucket nothing will ever drain.
-        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-gone", &["ghost".to_owned()]);
+        // Db open, empty dynamic_workers: the row is the only thing that
+        // could bring this owner back, so "ghost" is conclusively absent
+        // and its cron must be collected rather than buffered into a
+        // bucket nothing will ever drain.
+        ws.seed_test_project("proj", "/tmp/wc-gone");
         let outcome =
             crate::spawn::deliver_cron_prompt(&ws, "proj", Some("ghost"), "x".to_owned(), false);
         assert!(
             matches!(outcome, crate::spawn::CronFireOutcome::TargetGone),
-            "a label with no dynamic_workers row is gone even when static_workers names it",
+            "a label with no dynamic_workers row is conclusively gone",
         );
     }
 
@@ -9242,7 +9239,7 @@ SOLO_TOKEN = "solo-secret"
         // be confirmed, so the cron must be left (retried next tick), not
         // deleted as owner-gone.
         let (ws, _rx) = Workspace::testing_stub();
-        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-unknown", &[]);
+        ws.seed_test_project("proj", "/tmp/wc-unknown");
         let outcome =
             crate::spawn::deliver_cron_prompt(&ws, "proj", Some("scratch"), "x".to_owned(), false);
         assert!(
@@ -9255,7 +9252,7 @@ SOLO_TOKEN = "solo-secret"
     fn deliver_cron_marks_an_overdue_fire_as_missed() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-missed", &[]);
+        ws.seed_test_project("proj", "/tmp/wc-missed");
         let cwd = project_expanded_path(&ws, "proj");
         ws.record_connected_session(&cwd, "lead-uuid", None);
         let lead_key = SessionKey::from_session_id("lead-uuid");
@@ -9293,7 +9290,7 @@ SOLO_TOKEN = "solo-secret"
         use forge_primitives::cron::{CronEntry, CronId, CronKind};
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-thresh", &[]);
+        ws.seed_test_project("proj", "/tmp/wc-thresh");
         let cwd = project_expanded_path(&ws, "proj");
         ws.record_connected_session(&cwd, "lead-uuid", None);
         let lead_key = SessionKey::from_session_id("lead-uuid");
@@ -11743,7 +11740,7 @@ mod team_spawn_tests {
         }
     }
 
-    /// Dynamic re-spawn mirrors the static resume mechanic: a worker with
+    /// Re-spawn resumes by catalog tag: a worker with
     /// a catalog-tag match resumes and takes the forge restart note as its
     /// kick; one without re-delivers its stored kick.
     #[test]
@@ -12879,7 +12876,7 @@ mod git_scan_cwd_tests {
         worker_session: &str,
         is_git: bool,
     ) -> (std::path::PathBuf, SessionKey) {
-        ws.seed_test_project_with_static_workers(project_name, project_root, &[]);
+        ws.seed_test_project(project_name, project_root);
         let project_key = ProjectKey::new(
             forge_agent::userdata::catalog::scan::project_key_for_directory(Some(project_root)),
         );
@@ -12942,7 +12939,7 @@ mod git_scan_cwd_tests {
         // raw cwd survives unchanged. No `live_workers` entry exists
         // for the lead.
         let (ws, _rx) = Workspace::testing_stub();
-        ws.seed_test_project_with_static_workers("forge", "/tmp/test-forge-lead", &[]);
+        ws.seed_test_project("forge", "/tmp/test-forge-lead");
         let lead_key = SessionKey::from_session_id("lead-uuid");
         let lead_cwd = std::path::PathBuf::from("/tmp/test-forge-lead");
         let resolved = ws.git_scan_cwd_for_session(&lead_key, &lead_cwd);
@@ -13160,9 +13157,9 @@ config_dir = "~/.claude-stargate"
         dir
     }
 
-    /// Like `make_workspace_dir_246` but the project declares a static
-    /// worker, so the computed plan seeds a label beyond `lead`.
-    fn make_workspace_dir_static_worker() -> tempfile::TempDir {
+    /// Like `make_workspace_dir_246` without `auto_start`, so a test can
+    /// drive the plan itself rather than racing a boot spawn.
+    fn make_workspace_dir_no_auto_start() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
             forge_toml_path(dir.path()),
@@ -13174,7 +13171,6 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-static_workers = ["reviewer"]
 
 [[accounts]]
 display_name = "Stargate"
@@ -13217,10 +13213,10 @@ config_dir = "~/.claude-beta"
         dir
     }
 
-    /// Two accounts and one static worker, so the plan binds the lead
-    /// and the worker to DIFFERENT accounts (lead is session_n=0,
-    /// static_workers[0] is session_n=1). That separation is what makes
-    /// a wrong label observable rather than accidentally right.
+    /// Two accounts, so the lead (session_n=0) and the first worker to
+    /// spawn (session_n=1) bind to DIFFERENT accounts. That separation
+    /// is what makes a wrong label observable rather than accidentally
+    /// right.
     fn make_workspace_dir_lead_and_worker() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
@@ -13234,7 +13230,6 @@ accounts = ["Alpha", "Beta"]
 name = "forge"
 path = "~/Projects/forge"
 auto_start = true
-static_workers = ["implementer"]
 
 [[accounts]]
 display_name = "Alpha"
@@ -13277,6 +13272,10 @@ config_dir = "~/.claude-beta"
             .plan_assignment(&SessionTarget::Named("forge".to_owned()), None)
             .expect("the lead resolves through the plan")
             .0;
+
+        // A worker earns its plan row by spawning, so give it one the way
+        // a spawn does before resuming it.
+        workspace.extend_plan_for_adhoc_worker(&project_key, "implementer");
 
         let worker_key = SessionKey::from_session_id("resumed-worker-uuid");
         workspace.insert_live_worker(
@@ -13731,6 +13730,45 @@ config_dir = "~/.claude-alpha"
         assert!(workspace.session_chip_for(&project_key, "lead").is_none());
     }
 
+    /// A worker that spawns while the accounts are still loading gets no
+    /// plan entry from `extend_plan_for_adhoc_worker` - the plan is None,
+    /// so it no-ops. Nothing else can create that entry afterwards:
+    /// `compute_plan` emits only the lead, and the frozen overlay adds
+    /// only what `fresh` already holds. So the recompute has to seed the
+    /// workers that are already live.
+    ///
+    /// The lead half is the control. It shares every other precondition,
+    /// so a lead chip proves the fixture and the chip path work and makes
+    /// a missing worker chip attributable to the worker path alone.
+    #[tokio::test]
+    async fn a_worker_spawned_before_the_plan_populates_still_gets_chipped() {
+        let dir = make_workspace_dir_246();
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        // Boot window: the plan is not populated, so the spawn's own
+        // attempt to extend it no-ops.
+        assert!(workspace.extend_plan_for_adhoc_worker(&project_key, "early").is_none());
+        workspace.insert_live_worker(
+            &project_key,
+            worker_entry("early", &SessionKey::from_session_id("early-uuid"), false),
+        );
+
+        workspace.seed_test_ready_account("Stargate");
+
+        assert!(
+            workspace.session_chip_for(&project_key, "lead").is_some(),
+            "control: the lead is chipped, so the fixture and chip path work",
+        );
+        assert!(
+            workspace.session_chip_for(&project_key, "early").is_some(),
+            "a worker live at recompute gets a plan entry rather than staying bare forever",
+        );
+    }
+
     #[tokio::test]
     async fn session_chip_for_normal_branch_for_ready_account() {
         let dir = make_workspace_dir_246();
@@ -13767,13 +13805,13 @@ config_dir = "~/.claude-alpha"
     }
 
     /// The launchpad's worker rows chip from the assignment plan, which
-    /// seeds `lead` plus the project's `static_workers` and nothing else.
-    /// So a `static_workers` label keeps its chip, while a persisted row
-    /// that has not spawned this boot has no plan entry and renders bare
-    /// - the launchpad must not invent a placeholder for the second case.
+    /// a worker enters when it spawns. So a worker that came up this boot
+    /// keeps its chip, while one with only a persisted row has no plan
+    /// entry and renders bare - the launchpad must not invent a
+    /// placeholder for the second case.
     #[tokio::test]
-    async fn plan_chips_a_static_label_but_not_a_never_spawned_one() {
-        let dir = make_workspace_dir_static_worker();
+    async fn plan_chips_a_spawned_worker_but_not_a_never_spawned_one() {
+        let dir = make_workspace_dir_no_auto_start();
         let workspace =
             Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         {
@@ -13795,9 +13833,11 @@ config_dir = "~/.claude-alpha"
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
             )));
 
+        workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
+
         assert!(
             workspace.session_chip_for(&project_key, "reviewer").is_some(),
-            "a static_workers label is in the plan, so its row stays chipped",
+            "a worker that spawned is in the plan, so its row is chipped",
         );
         assert!(
             workspace.session_chip_for(&project_key, "scratch").is_none(),

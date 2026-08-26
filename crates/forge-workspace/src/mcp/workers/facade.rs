@@ -1213,7 +1213,7 @@ mod prod_list_workers_tests {
     #[test]
     fn list_workers_populates_activity() {
         let (ws, _rx) = Workspace::testing_stub();
-        ws.seed_test_project_with_static_workers("forge", "/tmp/forge", &[]);
+        ws.seed_test_project("forge", "/tmp/forge");
         let project = ws
             .list_projects()
             .into_iter()
