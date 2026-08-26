@@ -6174,6 +6174,17 @@ impl Workspace {
         });
     }
 
+    /// Mark `account` Ready and recompute the assignment plan, so a
+    /// cross-crate test can render chip-bearing rows without driving the
+    /// real account loader. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_ready_account(&self, account: &str) {
+        self.accounts
+            .lock()
+            .set_loading(&AccountKey(account.to_owned()), crate::account::LoadingState::Ready);
+        self.recompute_plan_if_ready();
+    }
+
     /// Persist a dynamic-worker row directly, bypassing `workers__spawn`.
     /// Cross-crate test access to the otherwise `pub(crate)` store write
     /// so forge-tui can render launchpad worker rows against a seeded row.

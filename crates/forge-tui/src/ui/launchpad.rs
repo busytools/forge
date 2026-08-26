@@ -1195,9 +1195,12 @@ mod tests {
         );
     }
 
-    /// Build a workspace over a one-project `forge.toml`, seed `label` as
-    /// a persisted dynamic worker, and hand back an `App` wired to it.
-    async fn app_with_persisted_worker(label: &str) -> (App, tempfile::TempDir, tempfile::TempDir) {
+    /// Render the picker over a one-project `forge.toml` that declares
+    /// `reviewer` as a static worker, with both `reviewer` and `scratch`
+    /// persisted as dynamic workers. That is the post-back-fill shape: a
+    /// label the assignment plan knows (so it chips) alongside one it
+    /// does not (so it does not).
+    async fn render_picker_rows() -> (Vec<String>, tempfile::TempDir, tempfile::TempDir) {
         let config_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("project tempdir");
         let forge = config_dir.path().join("forge");
@@ -1207,7 +1210,8 @@ mod tests {
             forge.join("forge.toml"),
             format!(
                 "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n\
-                 [[orgs.projects]]\nname = \"picker\"\npath = \"{project_path}\"\n\n\
+                 [[orgs.projects]]\nname = \"picker\"\npath = \"{project_path}\"\n\
+                 static_workers = [\"reviewer\"]\n\n\
                  [[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"~/.claude-stargate\"\n"
             ),
         )
@@ -1217,58 +1221,78 @@ mod tests {
             .await
             .expect("workspace");
         let project = workspace.list_projects().into_iter().next().expect("one project");
-        workspace.seed_test_dynamic_worker(&project.key, label);
+        workspace.seed_test_dynamic_worker(&project.key, "reviewer");
+        workspace.seed_test_dynamic_worker(&project.key, "scratch");
+        workspace.seed_test_ready_account("Stargate");
 
         let mut app = App::test_default();
         app.workspace = Some(std::sync::Arc::new(workspace));
-        (app, config_dir, project_dir)
-    }
-
-    /// Flatten each rendered line into a plain string.
-    fn flatten(lines: &[Line<'static>]) -> Vec<String> {
-        lines
-            .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
-            .collect()
-    }
-
-    /// Worker rows come from the persisted dynamic workers, not from
-    /// `static_workers`, and carry the same four elements the lead row
-    /// does - lifecycle glyph, name, chip column, right-aligned activity.
-    /// The two rows therefore render to the same width, which is the
-    /// column alignment the geometry constants exist to hold.
-    #[tokio::test]
-    async fn worker_row_matches_the_project_row_shape() {
-        let (app, _config_dir, _project_dir) = app_with_persisted_worker("reviewer").await;
         let rows = build_picker_rows(&app);
         let (lines, _) = build_picker_content(&app, &rows, PICKER_WIDTH);
-        let rendered = flatten(&lines);
-
-        let project_row = rendered
+        let rendered = lines
             .iter()
-            .find(|l| l.contains("picker"))
-            .expect("the project row renders")
-            .clone();
-        let worker_row = rendered
-            .iter()
-            .find(|l| l.contains("reviewer"))
-            .expect("a persisted dynamic worker renders a row")
-            .clone();
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect();
+        (rendered, config_dir, project_dir)
+    }
 
-        assert!(
-            worker_row.contains('\u{25cb}'),
-            "a worker that has never spawned carries the Sleeping glyph; got: {worker_row:?}",
+    fn row_containing<'a>(rendered: &'a [String], needle: &str) -> &'a str {
+        rendered
+            .iter()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no rendered row contains {needle:?}; got {rendered:#?}"))
+    }
+
+    /// The geometry claim: a worker row's chip opens at the same column
+    /// as the project row's. Equal row width alone would not pin this -
+    /// widening the name column and narrowing the chip column keeps the
+    /// total identical while moving the chips a column apart - so assert
+    /// the index of the chip's own opening bracket.
+    #[tokio::test]
+    async fn worker_row_chip_opens_in_the_project_row_chip_column() {
+        let (rendered, _config_dir, _project_dir) = render_picker_rows().await;
+        let project_row = row_containing(&rendered, "picker");
+        let worker_row = row_containing(&rendered, "reviewer");
+
+        let chip_at = |row: &str| match row.char_indices().find(|(_, c)| *c == '(') {
+            Some((i, _)) => row[..i].chars().count(),
+            None => panic!("row carries an account chip; got {row:?}"),
+        };
+        assert_eq!(
+            chip_at(worker_row),
+            chip_at(project_row),
+            "the worker row's chip must open in the project row's chip column; \
+             worker {worker_row:?} vs project {project_row:?}",
         );
         assert_eq!(
             worker_row.chars().count(),
             project_row.chars().count(),
-            "worker and project rows must render to the same width so their chip and activity \
-             columns line up; worker {worker_row:?} vs project {project_row:?}",
+            "both rows end at the same column, so the activity field lines up too; \
+             worker {worker_row:?} vs project {project_row:?}",
+        );
+    }
+
+    /// Worker rows are sourced from the persisted dynamic workers, so a
+    /// label that is not in `static_workers` still gets a row - and with
+    /// no assignment-plan entry it renders its lifecycle glyph and the
+    /// activity placeholder with no chip at all.
+    #[tokio::test]
+    async fn a_never_spawned_dynamic_worker_renders_bare() {
+        let (rendered, _config_dir, _project_dir) = render_picker_rows().await;
+        let worker_row = row_containing(&rendered, "scratch");
+
+        assert!(
+            !worker_row.contains('('),
+            "a label with no assignment-plan entry renders no chip; got {worker_row:?}",
+        );
+        assert!(
+            worker_row.contains('\u{25cb}'),
+            "a worker that has never spawned carries the Sleeping glyph; got {worker_row:?}",
         );
         assert!(
             worker_row.trim_end().ends_with('\u{2014}'),
             "no per-worker activity timestamp exists, so the activity column reads as the \
-             em-dash placeholder; got: {worker_row:?}",
+             em-dash placeholder; got {worker_row:?}",
         );
     }
 
