@@ -2467,8 +2467,6 @@ mod tests {
         assert!(output.is_error, "an absent worker must be refused");
         let text = &output.blocks[0].text;
         assert!(text.contains("workers__spawn"), "the refusal points at spawn: {text}");
-        // Guards the refusal STRING, not code: no such files exist, but
-        // this message is hand-written and could name them again.
         assert!(
             !text.contains("forge-team"),
             "must not send the caller to files that no longer exist: {text}",

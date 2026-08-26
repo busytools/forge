@@ -2917,8 +2917,6 @@ mod lead_charter_tests {
             ("team = ", "not a forge.toml key"),
             ("static_workers", "no longer a forge.toml key either"),
             ("~/.claude", "the charter must not pin a path in the user's home"),
-            // Guards PROSE, not code: the tree is gone, but a charter
-            // edited by hand can name it again. Not residue.
             ("forge-team", "the charter must not name the deleted role filesystem"),
         ] {
             assert!(

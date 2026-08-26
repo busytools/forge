@@ -2477,11 +2477,12 @@ mod connected_hook_tests {
     /// A lead Connected for a project with no persisted workers is
     /// a no-op - nothing dispatched.
     ///
-    /// UNTESTED, deliberately: this cannot tell the empty-set early
-    /// return from falling through and iterating an empty slice, and
-    /// deleting the store setup below passes too. Observing a scan that
-    /// did not happen needs a harness this does not have. Recorded so
-    /// the gap stays findable rather than blessed.
+    /// UNTESTED: this cannot tell the empty-set early return from
+    /// falling through and iterating an empty slice, and deleting the
+    /// store setup below passes too. What is hard is not the harness -
+    /// `workspace::worker_respawn_tests` already has one - but that
+    /// observing the skipped scan means asserting on private state or
+    /// racing the spawned task. Recorded so the gap stays findable.
     #[test]
     fn lead_connected_without_a_worker_row_does_nothing() {
         let (workspace, _update_rx) = Workspace::testing_stub();
@@ -2710,6 +2711,28 @@ mod connected_hook_tests {
             dispatched.iter().all(|c| !matches!(c, Command::Prompt { .. })),
             "a label with no entry of its own must not be handed another worker's kick",
         );
+    }
+
+    /// The guard directly, with no preconditions to decay: a lead key
+    /// yields its project name, a worker-shaped key yields nothing. The
+    /// second case is what the hook relies on, and unlike the fixture
+    /// test it cannot be defeated by a project that fails to resolve.
+    #[test]
+    fn parse_project_lead_synth_key_rejects_the_worker_shape() {
+        let lead = SessionKey::from_session_id("__spawn_forge__");
+        assert_eq!(parse_project_lead_synth_key(&lead).as_deref(), Some("forge"));
+
+        let worker = SessionKey::from_session_id("__spawn_worker_wp_planner_abc__");
+        assert_eq!(parse_project_lead_synth_key(&worker), None);
+    }
+
+    /// The boundary the doc claims: a project literally named `worker_*`
+    /// parses as a lead until its segment count reaches the worker
+    /// shape. Nothing else checks this, so the doc was the only record.
+    #[test]
+    fn parse_project_lead_synth_key_keeps_a_short_worker_prefixed_name() {
+        let short = SessionKey::from_session_id("__spawn_worker_foo__");
+        assert_eq!(parse_project_lead_synth_key(&short).as_deref(), Some("worker_foo"));
     }
 
     #[test]

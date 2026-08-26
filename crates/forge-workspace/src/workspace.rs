@@ -2811,11 +2811,6 @@ impl Workspace {
     /// Claim the per-project respawn in-flight guard. Returns true
     /// if the guard was acquired (entry was absent), false if another
     /// scan was already in flight.
-    ///
-    /// UNTESTED: making this always grant survives the suite. Claim and
-    /// release happen inside one synchronous call on every test path,
-    /// so the blocked branch is unreachable without a harness that can
-    /// hold two respawns open at once.
     fn try_claim_respawn(&self, project_key: &crate::target::ProjectKey) -> bool {
         self.respawn_in_flight.lock().insert(project_key.clone())
     }
@@ -11682,6 +11677,20 @@ mod tag_retry_tests {
 mod worker_respawn_tests {
     use super::*;
     use crate::protocol::Command;
+
+    /// The guard refuses a second claim while the first is outstanding.
+    /// Holding the claim directly is all this needs - the blocked branch
+    /// is unreachable only when claim and release share one call, which
+    /// is a property of the callers rather than of the guard.
+    #[test]
+    fn respawn_guard_refuses_a_second_claim() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let key = ProjectKey::new("proj");
+        assert!(ws.try_claim_respawn(&key), "an unclaimed guard grants");
+        assert!(!ws.try_claim_respawn(&key), "a claimed guard refuses");
+        ws.release_respawn(&key);
+        assert!(ws.try_claim_respawn(&key), "release makes it claimable again");
+    }
 
     /// A worker must not receive the delegation block. It instructs the
     /// reader to call `workers__spawn`, which is lead-only, so a worker
