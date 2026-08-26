@@ -171,8 +171,7 @@ fn build_picker_rows(app: &App) -> Vec<PickerRow> {
             let error = resolve_error(app, project);
             let last_activity_label = format_activity(
                 lifecycle,
-                project.sessions.first().and_then(|s| s.last_activity),
-                now,
+                project.sessions.first().and_then(|s| s.last_activity).map(|a| (a, now)),
             );
             rows.push(PickerRow {
                 project_name: project.name.clone(),
@@ -220,16 +219,18 @@ fn resolve_error(app: &App, project: &ProjectView) -> Option<String> {
     find_live_bucket(app, project).and_then(|s| s.last_connection_error.clone())
 }
 
+/// `since` is `(last_activity, now)`, absent for a row with no
+/// timestamp to render - which is every worker row, since the clock is
+/// only ever read against a timestamp.
 fn format_activity(
     lifecycle: SessionLifecycleState,
-    last_activity: Option<SystemTime>,
-    now: SystemTime,
+    since: Option<(SystemTime, SystemTime)>,
 ) -> String {
     match lifecycle {
         SessionLifecycleState::Spawning => "spawning".to_owned(),
         SessionLifecycleState::Failed => "failed".to_owned(),
-        _ => match last_activity {
-            Some(activity) => format_relative_time(activity, now),
+        _ => match since {
+            Some((activity, now)) => format_relative_time(activity, now),
             None => "\u{2014}".to_owned(),
         },
     }
@@ -442,7 +443,6 @@ fn build_picker_content(
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut selected_flat: Option<usize> = None;
     let dim = Style::default().fg(theme::DIM);
-    let now = SystemTime::now();
     // One store scan and one registry snapshot for the whole picker;
     // the per-project lookups below are map indexes.
     let worker_labels =
@@ -482,7 +482,7 @@ fn build_picker_content(
             && let Some(labels) = worker_labels.get(project.key.as_str())
         {
             let live = live_workers.get(&project.key).map_or(&[][..], Vec::as_slice);
-            push_worker_rows(&mut lines, project, app, labels, live, now);
+            push_worker_rows(&mut lines, project, app, labels, live);
         }
         // Surface a "no usable accounts" hint when the project's
         // pool resolved to empty (every allowed account Bailed, or
@@ -723,7 +723,6 @@ fn push_worker_rows(
     app: &App,
     labels: &[String],
     live: &[forge_workspace::LiveWorkerState],
-    now: SystemTime,
 ) {
     let Some(workspace) = app.workspace.as_ref() else {
         return;
@@ -742,8 +741,7 @@ fn push_worker_rows(
         let chip_col_pad = CHIP_COLUMN_WIDTH.saturating_sub(chip_width);
         // Workers run in worktrees, which the catalog keys separately
         // from their project, so no per-worker last-activity reaches here.
-        let right_label =
-            truncate_to(&format_activity(lifecycle, None, now), ACTIVITY_COLUMN_WIDTH);
+        let right_label = truncate_to(&format_activity(lifecycle, None), ACTIVITY_COLUMN_WIDTH);
 
         // Worker-row chrome: 2 (selection prefix) + 2 (`│ `) + 3
         // (vertical continuation gap) + 2 (`├─`/`└─` tree connector)
