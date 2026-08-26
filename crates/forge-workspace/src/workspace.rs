@@ -8238,14 +8238,21 @@ SOLO_TOKEN = "solo-secret"
     }
 
     #[tokio::test]
-    async fn teardown_dynamic_worker_drops_its_crons_and_subs_keeps_others() {
+    async fn teardown_worker_drops_its_crons_and_subs_keeps_others() {
         let (ws, _rx) = Workspace::testing_stub();
         let dir = tempdir().expect("tempdir");
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        // Empty static_workers -> "scratch" is a dynamic worker.
-        ws.seed_test_project_with_static_workers("forge", "/tmp/cron-teardown-dyn", &[]);
+        // "scratch" is named in static_workers on purpose: the key spawns
+        // nothing, so it must not exempt the label from the cleanup. The
+        // fixture the repo already ships for the launchpad has exactly
+        // this overlap, so it is not a contrived case.
+        ws.seed_test_project_with_static_workers(
+            "forge",
+            "/tmp/cron-teardown-dyn",
+            &["scratch".to_owned()],
+        );
         let view_key = ws
             .list_projects()
             .into_iter()
@@ -11883,13 +11890,18 @@ mod team_spawn_tests {
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
         let project_key = ProjectKey::new("data-modules");
-        let _ = workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
-            project_key: "data-modules".to_owned(),
-            label: "scratch".to_owned(),
-            charter: "c".to_owned(),
-            kick: None,
-            resume_kick: None,
-        });
+        // Expect rather than discard: a silent write failure would leave
+        // nothing to delete and the negative assertion would hold for the
+        // wrong reason.
+        workspace
+            .persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+                project_key: "data-modules".to_owned(),
+                label: "scratch".to_owned(),
+                charter: "c".to_owned(),
+                kick: None,
+                resume_kick: None,
+            })
+            .expect("persist the row this test then deletes");
         workspace.delete_dynamic_worker(&project_key, "scratch");
         workspace.enable_test_dispatch_intercept();
 

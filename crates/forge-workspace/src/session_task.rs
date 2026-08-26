@@ -2479,6 +2479,13 @@ mod team_hook_tests {
     #[test]
     fn lead_connected_without_team_does_nothing() {
         let (workspace, _update_rx) = Workspace::testing_stub();
+        // An OPEN store holding no rows, which is the interesting case:
+        // with no store at all the read fails and the scan bails before
+        // it ever consults the row set.
+        let dir = tempfile::tempdir().expect("tempdir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
         workspace.enable_test_dispatch_intercept();
         workspace.seed_test_project_with_static_workers("proj-y", "/tmp/proj-y", &[]);
 
@@ -2641,41 +2648,38 @@ mod team_hook_tests {
         assert!(prompts.is_empty(), "a live entry carrying no kick gets none");
     }
 
-    /// Worker Connected for a label with no live `WorkerEntry` at all
-    /// does not kick - the other no-kick path, distinct from an entry
-    /// that exists and carries no kick.
-    #[test]
-    fn worker_connected_for_non_role_label_does_not_kick() {
+    /// A label with no live `WorkerEntry` of its own gets no kick, even
+    /// when the project has a live worker holding one. The other entry
+    /// is what gives this teeth: with an empty project the lookup has
+    /// nothing to wrongly return. The drainer has to be running too -
+    /// without it a mis-delivered kick only reaches the queue, and the
+    /// dispatch buffer stays empty for the wrong reason.
+    #[tokio::test(start_paused = true)]
+    async fn worker_connected_for_an_unmatched_label_does_not_take_another_workers_kick() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
+        workspace.start_kick_dispatcher();
+        // One live worker, carrying a kick, under a DIFFERENT label.
+        seed_adhoc_worker_with_kick(&workspace, "other", Some("not yours".into()));
+        let project_key = workspace
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("seeded project")
+            .key;
+        let worker_synth = SessionKey::from_session_id(format!(
+            "__spawn_worker_{}_scratchpad_abc__",
+            project_key.as_str()
+        ));
 
-        let worker_synth = SessionKey::from_session_id("__spawn_worker_forge_scratchpad_abc123__");
         on_connected_for_test(&workspace, &worker_synth, "worker-uuid");
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
 
         let dispatched = workspace.drain_test_dispatch_buffer();
         assert!(
             dispatched.iter().all(|c| !matches!(c, Command::Prompt { .. })),
-            "non-role labels should not trigger a kick",
-        );
-    }
-
-    /// Lead Connected does not dispatch any kick prompt - kicks are
-    /// for workers only.
-    #[test]
-    fn lead_connected_does_not_dispatch_kick_prompt() {
-        let (workspace, _update_rx) = Workspace::testing_stub();
-        workspace.enable_test_dispatch_intercept();
-        // Empty team so the spawn-team path doesn't fire either; we
-        // want to assert PURELY on the kick path being suppressed
-        // for leads.
-        workspace.seed_test_project_with_static_workers("proj-x", "/tmp/proj-x", &[]);
-
-        on_connected_for_test(&workspace, &synth_lead_key("proj-x"), "lead-uuid");
-
-        let dispatched = workspace.drain_test_dispatch_buffer();
-        assert!(
-            dispatched.iter().all(|c| !matches!(c, Command::Prompt { .. })),
-            "lead synth keys must not trigger the worker-kick path",
+            "a label with no entry of its own must not be handed another worker's kick",
         );
     }
 
