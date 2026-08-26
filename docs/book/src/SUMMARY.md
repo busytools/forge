@@ -6,5 +6,4 @@
 - [forge.toml reference](./configuration.md)
 - [Architecture](./architecture.md)
 - [The wire contract](./wire-contract.md)
-- [The wire-classification proxy](./classification-proxy.md)
 - [Contributing](./contributing.md)

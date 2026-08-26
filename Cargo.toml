@@ -67,29 +67,6 @@ rustix = { version = "1", features = ["fs"] }
 croner = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
-# Wire-classification rewriter - MITM proxy stack that rewrites the 6
-# classification channels the `claude` CLI broadcasts (bootstrap qs,
-# User-Agent, event_logging body, statsig body, datadog ddtags +
-# body) from sdk-cli shape to cli (interactive subscription) shape.
-# The channels are enumerated in `forge-sdk::transport::proxy`.
-# hudsucker re-exports rcgen + rustls + hyper, so we only need the
-# external surface bits (Bytes, http-body-util, url) directly.
-# hyper-proxy2 lets us chain forge's embedded proxy through an upstream
-# HTTP proxy (HTTPS_PROXY env), so the agent's mitmproxy-capture recipe
-# works identically for forge and the bare `claude` binary.
-hudsucker = { version = "0.22", default-features = false, features = ["rustls-client", "rcgen-ca"] }
-hyper-proxy2 = { version = "0.1", default-features = false, features = ["rustls-webpki"] }
-hyper-rustls = { version = "0.26", default-features = false, features = ["http1", "ring", "webpki-roots"] }
-hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
-tokio-rustls = { version = "0.25", default-features = false, features = ["ring"] }
-rustls-pemfile = "2"
-rustls-pki-types = "1"
-webpki-roots = "0.26"
-http-body-util = "0.1"
-bytes = "1"
-url = "2"
-memchr = "2"
-
 # Gotify inbound integration: redb is the machine-local embedded store
 # for durable subscriptions; tokio-tungstenite streams the Gotify
 # server's notification WebSocket. rustls-tls-native-roots trusts the OS

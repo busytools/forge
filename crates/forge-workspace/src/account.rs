@@ -95,11 +95,6 @@ pub enum LoadingState {
 #[derive(Debug, Clone)]
 pub(crate) struct AccountState {
     pub config_dir: PathBuf,
-    /// Whether sessions for this account spawn with the
-    /// wire-classification rewriter proxy attached. Mirrors the
-    /// `[[accounts]] proxy = true|false` toggle in forge.toml.
-    /// Defaults to `true` when the field is absent.
-    pub proxy: bool,
     /// Per-account environment from `[accounts.env]`. Stamped onto the
     /// account's `claude` subprocess at spawn, and consulted by the
     /// usage probe: an `ANTHROPIC_BASE_URL` key here redirects the
@@ -191,7 +186,6 @@ impl AccountStateMap {
                 key,
                 AccountState {
                     config_dir: account.config_dir.clone(),
-                    proxy: account.proxy,
                     env: account.env.clone(),
                     experimental: account.experimental,
                     usage: None,
@@ -292,13 +286,6 @@ impl AccountStateMap {
             }
         }
         dirs
-    }
-
-    /// Whether sessions for `key` should spawn with the rewriter
-    /// proxy attached. Returns `false` for unknown keys (defensive;
-    /// the spawn path's normal-case key always resolves).
-    pub fn proxy_enabled(&self, key: &AccountKey) -> bool {
-        self.by_key.get(key).is_some_and(|s| s.proxy)
     }
 
     /// Whether `key` is an experimental account (excluded from
@@ -776,7 +763,6 @@ mod tests {
         LoadedAccount {
             display_name: name.to_owned(),
             config_dir: PathBuf::from(format!("/fake/{name}")),
-            proxy: true,
             env: std::collections::HashMap::new(),
             experimental: false,
         }
@@ -810,15 +796,6 @@ mod tests {
             seven_day_sonnet: None,
             extra_usage: None,
         }
-    }
-
-    #[test]
-    fn proxy_enabled_reflects_account_flag() {
-        let mut direct = make_account("Direct");
-        direct.proxy = false;
-        let map = AccountStateMap::new(&[make_account("Proxied"), direct]);
-        assert!(map.proxy_enabled(&AccountKey("Proxied".to_owned())));
-        assert!(!map.proxy_enabled(&AccountKey("Direct".to_owned())));
     }
 
     #[test]

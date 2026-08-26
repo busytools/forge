@@ -192,10 +192,7 @@ ci-watch run_id="":
     line="[OK] run $run_id: success at $head_sha"
     record "$line"; echo "$line"
 
-# Build forge-tui from the current checkout and install the `forge`
-# binary into ~/.cargo/bin/forge. Defaults to release+perf. Wraps up
-# by refreshing the wire-rewriter CA in the System keychain (best-
-# effort - repeat installs are no-ops via SHA-256 fingerprint compare).
+# Build forge-tui from this checkout into ~/.cargo/bin/forge (release+perf, then zsh completions).
 install:
     ./scripts/install.sh
 
@@ -204,19 +201,9 @@ install:
 install-no-perf:
     ./scripts/install.sh --no-perf
 
-# Install / refresh forge's wire-rewriter CA in the System keychain
-# without rebuilding the binary. Content-idempotent - a Touch ID
-# prompt fires only on first install or after a CA rotation.
-install-cert:
-    ./scripts/install-cert.sh
-
-# Report-only: is forge's CA currently trusted in the System keychain?
-install-cert-status:
-    ./scripts/install-cert.sh --status
-
-# Remove forge's CA from the System keychain.
-install-cert-uninstall:
-    ./scripts/install-cert.sh --uninstall
+# Untrust forge's retired proxy CA and delete its key material (idempotent, one-shot).
+remove-cert:
+    ./scripts/remove-cert.sh
 
 # Cut a release: bump the workspace version, commit, tag.
 # Does NOT push - that's gated per CLAUDE.md and stays explicit.

@@ -28,20 +28,6 @@ parking_lot = { workspace = true }
 dirs = { workspace = true }
 time = { workspace = true }
 
-# Wire-classification rewriter: MITM proxy that rewrites the CLI's
-# classification signals from sdk-cli shape to cli (interactive) shape.
-hudsucker = { workspace = true }
-hyper-proxy2 = { workspace = true }
-hyper-rustls = { workspace = true }
-hyper-util = { workspace = true }
-tokio-rustls = { workspace = true }
-rustls-pemfile = { workspace = true }
-rustls-pki-types = { workspace = true }
-webpki-roots = { workspace = true }
-http-body-util = { workspace = true }
-bytes = { workspace = true }
-url = { workspace = true }
-memchr = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

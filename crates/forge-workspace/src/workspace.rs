@@ -262,18 +262,6 @@ pub struct Workspace {
     /// and no-op (mirrors `start_usage_poller`'s guard against
     /// duplicate spawns).
     kick_dispatcher_rx_slot: Mutex<Option<mpsc::UnboundedReceiver<KickRequest>>>,
-    /// Wire-classification rewriter proxy started at workspace boot.
-    /// Stamped onto every `Agent::spawn` so spawned subprocesses
-    /// inherit `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` and their wire
-    /// classification gets normalised to `cli` (interactive
-    /// subscription) shape. Forge refuses to construct a Workspace if
-    /// the proxy fails to boot (hard-fail policy - see
-    /// [`forge_agent::proxy`]).
-    ///
-    /// `None` only in `Workspace::testing_stub` - that path skips
-    /// `new()` and therefore the proxy boot. Tests don't drive real
-    /// subprocesses, so the absence is fine.
-    proxy: Option<forge_agent::proxy::ProxyHandle>,
     /// Single-instance lock file held open for the process lifetime.
     /// `Workspace::new` takes an exclusive flock on a machine-local
     /// lockfile keyed by the config dir (see [`crate::single_instance`])
@@ -380,7 +368,7 @@ pub fn resolve_lead_session(sessions: &[SDKSessionInfo]) -> Option<&SDKSessionIn
 /// creating the app-support dir first. Returns `None` (with a warn) when
 /// the dir can't be created or the DB can't open - forge then runs
 /// without durable Gotify subscriptions or dynamic workers this session
-/// (hard rule #15: no cwd fallback).
+/// (hard rule #14: no cwd fallback).
 fn open_db(app_support: &Path) -> Option<crate::store::Db> {
     if let Err(error) = std::fs::create_dir_all(app_support) {
         tracing::warn!(
@@ -573,11 +561,10 @@ impl Workspace {
     }
 
     /// Like [`Workspace::new`] but puts forge's whole app-support base -
-    /// the redb store, the single-instance lock and the proxy CA - under
-    /// a tempdir inside `config_dir` rather than the real machine
-    /// `app_support_dir`, so tests never touch the user's durable store,
-    /// contend for their live lock, or regenerate the CA their running
-    /// proxy trusts.
+    /// the redb store and the single-instance lock - under a tempdir
+    /// inside `config_dir` rather than the real machine
+    /// `app_support_dir`, so tests never touch the user's durable store
+    /// or contend for their live lock.
     #[cfg(any(test, feature = "testing"))]
     pub async fn new_for_test(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
         let app_support = config_dir.join("app-support");
@@ -587,7 +574,7 @@ impl Workspace {
     /// Shared constructor body. `app_support` supplies the app-support
     /// base dir; `None` resolves the real machine `app_support_dir` and
     /// degrades to no lock and no durable store on failure (hard rule
-    /// #15: no cwd fallback).
+    /// #14: no cwd fallback).
     async fn new_impl(
         config_dir: PathBuf,
         app_support: Option<PathBuf>,
@@ -597,8 +584,7 @@ impl Workspace {
         // Create forge's own config subfolder before anything writes into
         // it (the lock, the cron + state stores all live under it). Hard-
         // fail if it can't be created: forge can persist nothing without a
-        // writable config dir, so degrading is pointless - mirror the
-        // ProxyUnavailable hard-fail below.
+        // writable config dir, so degrading is pointless.
         crate::config::ensure_forge_data_dir(&config_dir).map_err(|source| {
             WorkspaceError::DataDirUnavailable {
                 path: crate::config::forge_data_dir(&config_dir),
@@ -607,11 +593,10 @@ impl Workspace {
         })?;
 
         // forge's machine-local app-support base, resolved once: the
-        // single-instance lock, the redb store and the proxy CA all sit
-        // under it. `Some` comes from the test constructor, which points
-        // the whole base at a tempdir. `None` degrades to no lock
-        // and no durable store rather than falling back to cwd (hard
-        // rule #15); the proxy hard-fails on it below, as it already did.
+        // single-instance lock and the redb store both sit under it.
+        // `Some` comes from the test constructor, which points the whole
+        // base at a tempdir. `None` degrades to no lock and no durable
+        // store rather than falling back to cwd (hard rule #14).
         let app_support = match app_support {
             Some(dir) => Some(dir),
             None => match forge_sdk::app_support_dir() {
@@ -628,11 +613,9 @@ impl Workspace {
         };
 
         // Single-instance guard: forge runs one process per config dir.
-        // Take it BEFORE the proxy boot so a doomed second instance
-        // refuses without binding proxy ports. The held File is stored
-        // on `Self` for the process lifetime; flock auto-releases on
-        // exit/crash. A second forge on the same config dir hard-fails
-        // here exactly like ProxyUnavailable does below.
+        // The held File is stored on `Self` for the process lifetime;
+        // flock auto-releases on exit/crash. A second forge on the same
+        // config dir hard-fails here.
         let single_instance_lock = match app_support.as_deref() {
             Some(base) => match crate::single_instance::acquire(&config_dir, base) {
                 Ok(lock) => lock,
@@ -657,7 +640,7 @@ impl Workspace {
         // Open the machine-local redb store: durable crons + Gotify
         // subscriptions both live in it. A failure to resolve the app-
         // support dir or open the DB degrades to no durable state this run
-        // (non-fatal, like the state cache) - no cwd fallback (hard rule #15).
+        // (non-fatal, like the state cache) - no cwd fallback (hard rule #14).
         let db = app_support.as_deref().and_then(open_db);
 
         // Load durable forge crons into the in-memory working set. Boot
@@ -685,17 +668,6 @@ impl Workspace {
             }),
             None => Vec::new(),
         };
-
-        // Boot the wire-classification rewriter proxy BEFORE any
-        // session can spawn. Hard-fail policy: if the proxy can't
-        // bind / load its CA / build the TLS context, forge refuses
-        // to start. The wire shape every spawned `claude` broadcasts
-        // is correctness-critical (Anthropic tier classification), so
-        // there is no "best-effort" fallback that lets sessions land
-        // on metered tier silently.
-        let proxy = forge_agent::proxy::start(app_support.as_deref())
-            .await
-            .map_err(|e| WorkspaceError::ProxyUnavailable { reason: e.to_string() })?;
 
         // Catalog scan reads against the workspace's canonical
         // `config_dir` (where forge.toml lives). Each spawn binds to
@@ -769,7 +741,6 @@ impl Workspace {
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
-            proxy: Some(proxy),
             _single_instance_lock: single_instance_lock,
             crons: Mutex::new(crons),
             pending_cron_by_owner: Mutex::new(HashMap::new()),
@@ -1019,21 +990,11 @@ impl Workspace {
         // it from there, and the spawned `claude` subprocess
         // inherits it as `CLAUDE_CONFIG_DIR` so each session reads/
         // writes the right account's user-data tree.
-        // Attach the rewriter proxy only when the picked account's
-        // `proxy = true` in forge.toml (defaults to true when the
-        // field is absent). When false, claude talks direct to
-        // Anthropic with native sdk-cli classification - used for
-        // API-key accounts where the rewriter adds no value, or for
-        // debugging the raw wire shape.
-        let (account_proxy_enabled, account_env) = {
+        let account_env = {
             let accounts = self.accounts.lock();
-            (
-                accounts.proxy_enabled(&account_key),
-                accounts.env(&account_key).cloned().unwrap_or_default(),
-            )
+            accounts.env(&account_key).cloned().unwrap_or_default()
         };
         let session_env = self.session_env_for(&target, &account_env);
-        let attached_proxy = if account_proxy_enabled { self.proxy.clone() } else { None };
 
         // Hoist DomainSession creation to BEFORE Agent::spawn so the
         // per-session peer-MCP server's CallerKeyResolver can read
@@ -1127,7 +1088,6 @@ impl Workspace {
         let handle = forge_agent::Agent::spawn(
             account_dir.clone(),
             Some(account_key.0.clone()),
-            attached_proxy,
             vec![("forge".to_owned(), forge_server)],
             session_env,
         );
@@ -5944,9 +5904,6 @@ impl Workspace {
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
-            // testing_stub skips Workspace::new and therefore the
-            // proxy boot. Tests don't drive real subprocesses.
-            proxy: None,
             _single_instance_lock: None,
             crons: Mutex::new(Vec::new()),
             pending_cron_by_owner: Mutex::new(HashMap::new()),
@@ -6359,14 +6316,12 @@ mod tests {
                 crate::config::LoadedAccount {
                     display_name: "A".to_owned(),
                     config_dir: PathBuf::from("/cfg/A"),
-                    proxy: true,
                     env: std::collections::HashMap::new(),
                     experimental: false,
                 },
                 crate::config::LoadedAccount {
                     display_name: "B".to_owned(),
                     config_dir: PathBuf::from("/cfg/B"),
-                    proxy: true,
                     env: std::collections::HashMap::new(),
                     experimental: false,
                 },
@@ -6416,14 +6371,12 @@ mod tests {
                 crate::config::LoadedAccount {
                     display_name: "A".to_owned(),
                     config_dir: PathBuf::from("/cfg/A"),
-                    proxy: true,
                     env: std::collections::HashMap::new(),
                     experimental: false,
                 },
                 crate::config::LoadedAccount {
                     display_name: "Exp".to_owned(),
                     config_dir: PathBuf::from("/cfg/Exp"),
-                    proxy: true,
                     env: std::collections::HashMap::new(),
                     experimental: true,
                 },
@@ -6453,14 +6406,12 @@ mod tests {
                 crate::config::LoadedAccount {
                     display_name: "A".to_owned(),
                     config_dir: PathBuf::from("/cfg/A"),
-                    proxy: true,
                     env: std::collections::HashMap::new(),
                     experimental: false,
                 },
                 crate::config::LoadedAccount {
                     display_name: "Exp".to_owned(),
                     config_dir: PathBuf::from("/cfg/Exp"),
-                    proxy: true,
                     env: std::collections::HashMap::new(),
                     experimental: true,
                 },
@@ -6491,14 +6442,12 @@ mod tests {
                 crate::config::LoadedAccount {
                     display_name: "One".to_owned(),
                     config_dir: PathBuf::from("/c/One"),
-                    proxy: true,
                     env: std::collections::HashMap::new(),
                     experimental: false,
                 },
                 crate::config::LoadedAccount {
                     display_name: "Two".to_owned(),
                     config_dir: PathBuf::from("/c/Two"),
-                    proxy: true,
                     env: std::collections::HashMap::new(),
                     experimental: false,
                 },
@@ -9433,7 +9382,7 @@ config_dir = "~/.claude-stargate"
     }
 
     #[tokio::test]
-    async fn new_for_test_writes_the_lock_and_ca_under_the_tempdir() {
+    async fn new_for_test_writes_the_lock_under_the_tempdir() {
         let dir = make_workspace_dir();
         let _workspace =
             Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
@@ -9444,10 +9393,6 @@ config_dir = "~/.claude-stargate"
         assert!(
             base.join("locks").is_dir(),
             "new_for_test takes the single-instance lock under the tempdir base",
-        );
-        assert!(
-            base.join("ca").join("ca-cert.pem").is_file(),
-            "new_for_test generates the proxy CA under the tempdir base",
         );
     }
 

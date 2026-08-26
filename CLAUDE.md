@@ -129,12 +129,6 @@ forge is built for **one trusted user driving their own machine**, and
 several design decisions assume it. A contributor should know what those
 are, and should not quietly widen them:
 
-- **forge MITMs its own child's HTTPS.** To keep sessions
-  wire-indistinguishable from a native `claude` run (see below), forge
-  runs a local rewriting proxy and installs its CA into the system trust
-  store. That CA is generated per machine and used only for the proxy,
-  but it is real trust-store surface, and `scripts/install-cert.sh`
-  exists to add and remove it.
 - **State is unencrypted and machine-local.** The redb DB and the
   captured session JSONL hold conversation content in the clear, at
   filesystem permissions.
@@ -265,41 +259,6 @@ inspected.
     detection, and effort overrides like `$CLAUDE_CODE_EFFORT_LEVEL`.
     Spotting one of these while doing other work means fixing it on the
     spot and auditing for the same pattern; they cluster.
-15. **Wire classification matches reality.** A forge session appears as
-    `cli` - an interactive subscription session - on every Anthropic and
-    Datadog signal channel, byte-equivalent to a real interactive
-    `claude` run. The rewriter in `forge-sdk::transport::proxy` is the
-    enforcement mechanism, and `Workspace::new` hard-fails if it cannot
-    bind, load its CA, or build TLS: no proxy, no sessions.
-
-    **`proxy.rs`'s own module docs are the authority on what it
-    rewrites**, including which of the four rewrites are host-scoped.
-    Do not restate that list here; a second copy is how this rule came
-    to describe a scope the code does not have. Two things worth knowing
-    before touching it:
-
-    - The **User-Agent rewrite applies to every outbound request**,
-      third-party MCP servers included, and that is deliberate: an
-      un-normalised UA identifies forge to any observer. The other three
-      rewrites are gated on Anthropic or Datadog hosts.
-    - The recursive normaliser is the place to extend. If you find
-      yourself adding a hard-coded JSON path, the walker was already
-      going to reach it.
-
-    Two invariants that live outside `proxy.rs` and so belong here:
-
-    - `forge-sdk::transport::process::spawn` must NOT stamp
-      `CLAUDE_CODE_ENTRYPOINT`. The CLI self-classifies and the rewriter
-      handles the wire shape; re-introducing the stamp leaks an unknown
-      entrypoint string through surfaces the rewriter does not cover.
-    - When `HTTPS_PROXY` is set in the parent env, the rewriter chains
-      its outbound HTTPS through that upstream proxy and extends its
-      trust store from `NODE_EXTRA_CA_CERTS`. That symmetry is the
-      point: the same env vars that capture a bare `claude` invocation
-      capture forge too. "Indistinguishable on the wire" requires
-      identical capture ergonomics for any observer, so breaking it is a
-      regression. `.claude/skills/wire-equivalence-check/` is how this
-      gets checked.
 16. **A scoped change must not alter anything else observable.** A
     performance fix changes only speed. A UI change changes only that
     surface. If the scoped change *requires* touching behaviour
@@ -372,5 +331,3 @@ otherwise find the error after the tag exists.
 
 - `.claude/skills/claude-cli-upgrade/` - CLI version bumps, baseline
   regeneration, and the wire-conformance cheatsheet.
-- `.claude/skills/wire-equivalence-check/` - proving forge is
-  wire-indistinguishable from native `claude`.

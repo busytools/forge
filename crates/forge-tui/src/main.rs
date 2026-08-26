@@ -33,8 +33,8 @@ fn run() -> anyhow::Result<()> {
     let _logging = forge_tui::logging::LoggingRuntime::init(&cli)?;
     // Raise the FD soft limit BEFORE any code that opens sockets /
     // files / pipes so the bump applies to every subsequent opener
-    // (tokio runtime, wire-rewriter proxy, workspace I/O, etc). Sits
-    // AFTER tracing init so the bump's log line lands. See #251.
+    // (tokio runtime, workspace I/O, etc). Sits AFTER tracing init so
+    // the bump's log line lands. See #251.
     forge_tui::startup::raise_fd_limit();
     let perf_path = forge_tui::logging::resolve_perf_path(&cli)?;
 
@@ -154,7 +154,7 @@ fn run() -> anyhow::Result<()> {
 /// is threaded as a typed `PathBuf` (via `Workspace::new`, which in
 /// turn binds each `Agent::spawn(config_dir)` to its account's path).
 ///
-/// Per hard rule #15 - no cwd-derived fallbacks. When `$CLAUDE_CONFIG_DIR`
+/// Per hard rule #14 - no cwd-derived fallbacks. When `$CLAUDE_CONFIG_DIR`
 /// is unset/empty AND `dirs::home_dir()` returns None, refuse to launch
 /// rather than substituting `./.claude`.
 fn resolve_config_dir() -> anyhow::Result<PathBuf> {

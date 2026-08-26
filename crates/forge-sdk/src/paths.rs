@@ -10,7 +10,7 @@
 //!
 //! Separately, [`app_support_dir`] resolves forge's own machine-local
 //! data directory (`forge-tui/` under the platform app-support base),
-//! shared by the proxy CA, the logs, and the single-instance lock.
+//! shared by the logs and the single-instance lock.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -21,15 +21,15 @@ use crate::Error;
 /// Resolve forge's machine-local application-support directory
 /// (`~/Library/Application Support/forge-tui` on macOS,
 /// `$XDG_DATA_HOME/forge-tui` on Linux). Distinct from the `claude`
-/// config dir: this holds forge's OWN per-machine state - the proxy
-/// CA, the diagnostics logs, and the single-instance lock all live
-/// under here, and it is never synced across machines.
+/// config dir: this holds forge's OWN per-machine state - the
+/// diagnostics logs and the single-instance lock both live under
+/// here, and it is never synced across machines.
 ///
 /// # Errors
 ///
 /// [`Error::Connection`] when none of `dirs::data_local_dir()`,
 /// `dirs::cache_dir()`, or `dirs::home_dir()` resolve. Per the
-/// project's Hard Rule #15 there is no `current_dir()` fallback - the
+/// project's Hard Rule #14 there is no `current_dir()` fallback - the
 /// path must not vary with the launch directory.
 pub fn app_support_dir() -> Result<PathBuf, Error> {
     if let Some(dir) = dirs::data_local_dir() {

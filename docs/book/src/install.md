@@ -42,10 +42,6 @@ builds and tests on Linux, but two things behave differently:
   with. An account that sets `ANTHROPIC_BASE_URL` in its
   `[accounts.env]` is unaffected, because that path carries its own
   bearer token and never consults the keychain.
-- **`scripts/install-cert.sh` is macOS-only.** It shells out to
-  `security` against the System keychain. See
-  [the proxy page](./classification-proxy.md) for what it does and why
-  you may want it.
 
 ## Build and check
 
@@ -96,14 +92,10 @@ reset. It passes `--features perf` unless you use
 in `Cargo.toml`, so a plain `cargo build` or `cargo install` does not
 enable `perf`.
 
-Two side effects worth knowing about:
-
-- It regenerates the zsh completion at `~/.zsh/completions/_forge`
-  (override the directory with `FORGE_ZSH_COMPLETION_DIR`) and removes
-  `~/.zcompdump*` so the next shell picks it up.
-- It runs `scripts/install-cert.sh` on a best-effort basis. That script
-  is a no-op unless forge's CA is missing from the System keychain or
-  has changed.
+One side effect worth knowing about: it regenerates the zsh completion
+at `~/.zsh/completions/_forge` (override the directory with
+`FORGE_ZSH_COMPLETION_DIR`) and removes `~/.zcompdump*` so the next
+shell picks it up.
 
 ## First run
 

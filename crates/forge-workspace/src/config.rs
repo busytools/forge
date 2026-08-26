@@ -95,16 +95,6 @@ struct ProjectEntry {
 struct AccountEntry {
     display_name: String,
     config_dir: String,
-    /// When true, sessions for this account spawn with the
-    /// wire-classification rewriter proxy attached
-    /// (`HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` env vars stamped on
-    /// the claude subprocess). When false, claude talks direct to
-    /// Anthropic and the wire signals carry the CLI's native
-    /// `sdk-cli` classification. Defaults to `true` so existing
-    /// forge.toml files without the field behave as if they had
-    /// it enabled.
-    #[serde(default = "default_account_proxy")]
-    proxy: bool,
     /// Free-form environment stamped onto the account's `claude`
     /// subprocess at spawn. Absent `[accounts.env]` table -> empty.
     /// An `ANTHROPIC_BASE_URL` key here is the implicit signal that
@@ -120,18 +110,10 @@ struct AccountEntry {
     experimental: bool,
 }
 
-fn default_account_proxy() -> bool {
-    true
-}
-
 #[derive(Debug)]
 pub(crate) struct LoadedAccount {
     pub display_name: String,
     pub config_dir: PathBuf,
-    /// Whether the wire-classification rewriter proxy should be
-    /// attached to sessions for this account. See
-    /// [`AccountEntry::proxy`].
-    pub proxy: bool,
     /// Per-account environment from `[accounts.env]`, stamped onto the
     /// spawned `claude` subprocess. See [`AccountEntry::env`].
     pub env: HashMap<String, String>,
@@ -300,7 +282,6 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         accounts.push(LoadedAccount {
             display_name: entry.display_name,
             config_dir: expand_home(&entry.config_dir),
-            proxy: entry.proxy,
             env,
             experimental: entry.experimental,
         });
@@ -430,7 +411,7 @@ fn read_env_file(project: &str, raw_path: &str) -> HashMap<String, String> {
     if !path.is_absolute() {
         // A relative path resolves against the process working
         // directory, so the same config would read a different file per
-        // launch directory (HR#15). Skipping is failing the operation;
+        // launch directory (HR#14). Skipping is failing the operation;
         // what the rule forbids is substituting a cwd-derived answer.
         skipped("not-absolute", "use an absolute or ~/ path");
         return env;
@@ -514,7 +495,7 @@ config_dir = "~/.claude-stargate"
     }
 
     #[test]
-    fn parses_account_env_table_and_proxy_false() {
+    fn parses_account_env_table() {
         let dir = tempdir().expect("tempdir");
         write_config(
             dir.path(),
@@ -528,7 +509,6 @@ path = "~/Projects/forge"
 [[accounts]]
 display_name = "Codex"
 config_dir = "~/.claude-codex"
-proxy = false
 [accounts.env]
 ANTHROPIC_BASE_URL = "http://localhost:18765"
 ANTHROPIC_AUTH_TOKEN = "unused"
@@ -542,17 +522,15 @@ ANTHROPIC_AUTH_TOKEN = "unused"
             Some("http://localhost:18765"),
         );
         assert_eq!(account.env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str), Some("unused"));
-        assert!(!account.proxy, "proxy = false parsed");
     }
 
     #[test]
-    fn account_without_env_table_is_empty_and_proxy_defaults_true() {
+    fn account_without_env_table_is_empty() {
         let dir = tempdir().expect("tempdir");
         write_config(dir.path(), minimal_config());
         let config = load_from_dir(dir.path()).expect("happy path");
         let account = &config.accounts[0];
         assert!(account.env.is_empty(), "no [accounts.env] -> empty map");
-        assert!(account.proxy, "absent proxy field defaults to true");
         assert!(!account.experimental, "absent experimental field defaults to false");
     }
 

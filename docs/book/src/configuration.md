@@ -76,18 +76,12 @@ An array of tables. At least one is required, or the load fails with
 |---|---|---|---|---|
 | `display_name` | string | yes | | Must be unique. This is the name orgs reference. |
 | `config_dir` | string | yes | | The `claude` config directory this account uses. `~/` is expanded. |
-| `proxy` | bool | no | `true` | Whether to attach the [wire-classification proxy](./classification-proxy.md) to this account's sessions. |
 | `experimental` | bool | no | `false` | Excludes the account from automatic assignment while leaving it selectable by hand. |
 | `env` | table | no | `{}` | Written as `[accounts.env]`. See [Environment layering](#environment-layering). |
 
 `config_dir` is what forge exports as `CLAUDE_CONFIG_DIR` to the
 spawned `claude` subprocess, so each account reads and writes its own
 credentials, session history and settings tree.
-
-`proxy = false` means the spawned `claude` talks to Anthropic directly
-and its wire signals carry the CLI's own classification. The proxy
-itself still starts at boot regardless of this setting; see the
-[proxy page](./classification-proxy.md).
 
 ## `[env]`
 
@@ -145,12 +139,10 @@ applied at spawn rather than earlier, because one account serves many
 projects and merging sooner would leak one project's keys into every
 other project on that account.
 
-Four keys are reserved by forge: `CLAUDE_CONFIG_DIR`, `HTTPS_PROXY`,
-`HTTP_PROXY` and `NODE_EXTRA_CA_CERTS`. Setting one of these in any env
-layer overrides forge's own stamp, which can stop the
-wire-classification proxy from seeing the child's traffic. The value
-still applies, since `forge.toml` is treated as trusted, but forge logs
-a warning naming the key.
+One key is reserved by forge: `CLAUDE_CONFIG_DIR`. Setting it in any
+env layer overrides forge's own stamp. The value still applies, since
+`forge.toml` is treated as trusted, but forge logs a warning naming the
+key.
 
 An `ANTHROPIC_BASE_URL` under `[accounts.env]` is how an account points
 at an alternate endpoint; there is no dedicated field for it, and
@@ -236,11 +228,10 @@ config_dir = "~/.claude"
 display_name = "Work"
 config_dir = "~/.claude-work"
 
-# Talks to a local endpoint, so the classification proxy adds nothing.
+# Talks to a local endpoint.
 [[accounts]]
 display_name = "Scratch"
 config_dir = "~/.claude-scratch"
-proxy = false
 experimental = true
 
   [accounts.env]
