@@ -1024,13 +1024,22 @@ fn maybe_kick_worker_on_connected(
     else {
         return;
     };
-    let Some(kick) = workspace
-        .list_live_workers(&view.key)
-        .into_iter()
-        .rev()
-        .find(|w| w.label == label)
-        .and_then(|w| w.kick)
+    // `handle_spawn_worker` inserts the entry as Spawning before the agent
+    // spawn so this hook always finds it, which makes a miss an invariant
+    // violation rather than a kick-less worker. Kept apart from `None`
+    // kick, which is the ordinary silent case.
+    let Some(entry) =
+        workspace.list_live_workers(&view.key).into_iter().rev().find(|w| w.label == label)
     else {
+        tracing::warn!(
+            target: "forge_workspace::team",
+            label = %label,
+            session_id = real_session_id,
+            "no live worker entry for this label; the worker connects unkicked and idles",
+        );
+        return;
+    };
+    let Some(kick) = entry.kick else {
         return;
     };
     // #259: kicks route through the workspace-level dispatcher so
