@@ -3,7 +3,6 @@
 //! Roles live as file-driven labels at
 //! `~/.claude/forge-team/<label>/{charter,kick}.md`.
 
-pub mod catalog;
 pub mod roles;
 
 pub use roles::{

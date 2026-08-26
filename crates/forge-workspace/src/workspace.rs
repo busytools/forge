@@ -81,6 +81,29 @@ const WORKER_TAG_RETRY_DELAY: Duration = Duration::from_millis(100);
 /// the cohort, vs ~1 s pre-#259 with most kicks rejected.
 const KICK_DISPATCH_INTERVAL: Duration = Duration::from_millis(750);
 
+/// Delegation block appended to a Lead session's system prompt.
+///
+/// Lead-only: `workers__spawn` refuses a worker caller, so a worker
+/// given this block would be told to call a tool that rejects it.
+///
+/// Matches the shipped-prompt constants in `forge-agent`: one escaped
+/// literal, no runtime assembly.
+const LEAD_DELEGATION_PREAMBLE: &str = "\
+You can delegate work to peer worker sessions via the \
+mcp__forge__workers__ tools. Spawn one with \
+workers__spawn(label=\"<name>\", charter=\"<its mission>\") - the charter \
+is required and is what defines that worker; talk to it with \
+workers__tell / workers__ask; list live workers with workers__list; \
+revise a worker's stored charter or kicks with workers__update, which \
+takes effect on its next restart. At most one live worker exists per \
+label - if it already exists, message it instead of spawning again. \
+Spawned workers are durable: they survive forge restarts and re-spawn \
+automatically, resuming where they left off, until you explicitly \
+despawn them with workers__despawn (or close their row in the Projects \
+pane). Despawn a worker once its work is truly done, otherwise it keeps \
+coming back on every restart. Default to doing the work yourself; \
+delegate only substantial or parallelizable work.";
+
 /// Forge-supplied resume kick for a dynamic worker on restart. Dynamic
 /// (LLM-spawned) workers have no `resume-kick.md`, so on a resuming
 /// re-spawn forge delivers this constant as the worker's first turn -
@@ -893,11 +916,12 @@ impl Workspace {
         self.find_project_by_name(name).map(|_| ())
     }
 
-    /// Build the rendered delegation catalog for a Lead session in the
-    /// project named `namespace`. Always returns text (the capability
-    /// preamble at minimum).
-    fn build_delegation_catalog(namespace: &str) -> String {
-        crate::team::catalog::render_catalog(&crate::team::catalog::scan_catalog(Some(namespace)))
+    /// Stamp [`LEAD_DELEGATION_PREAMBLE`] onto a Lead session's launch
+    /// settings. No-op for a worker.
+    fn apply_lead_delegation(settings: &mut SessionLaunchSettings, kind: crate::mcp::SessionKind) {
+        if matches!(kind, crate::mcp::SessionKind::Lead) {
+            settings.delegation_catalog = Some(LEAD_DELEGATION_PREAMBLE.to_owned());
+        }
     }
 
     /// Hands out the `Arc<AgentHandle>` for the requested session,
@@ -1120,10 +1144,7 @@ impl Workspace {
         match target {
             SessionTarget::Default => {
                 let project = self.config.default_project();
-                if matches!(session_kind, crate::mcp::SessionKind::Lead) {
-                    settings.delegation_catalog =
-                        Some(Self::build_delegation_catalog(&project.name));
-                }
+                Self::apply_lead_delegation(&mut settings, session_kind);
                 let cwd = project.path.to_string_lossy().to_string();
                 let resume_target = Self::apply_force_new_gate(
                     self.try_lead_session_id_for(project),
@@ -1137,10 +1158,7 @@ impl Workspace {
             }
             SessionTarget::Named(name) => {
                 let project = self.find_project_by_name(&name)?;
-                if matches!(session_kind, crate::mcp::SessionKind::Lead) {
-                    settings.delegation_catalog =
-                        Some(Self::build_delegation_catalog(&project.name));
-                }
+                Self::apply_lead_delegation(&mut settings, session_kind);
                 let cwd = project.path.to_string_lossy().to_string();
                 let resume_target = Self::apply_force_new_gate(
                     self.try_lead_session_id_for(project),
@@ -11905,18 +11923,23 @@ mod team_spawn_tests {
         }
     }
 
+    /// A worker must not receive the delegation block. It instructs the
+    /// reader to call `workers__spawn`, which is lead-only, so a worker
+    /// given it would be told to call a tool that refuses it. The lead
+    /// half is the control: without it, a helper that did nothing at all
+    /// would still satisfy the assertion above.
     #[test]
-    fn delegation_catalog_lists_globals_for_a_project() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let dir = tmp.path().join("implementer");
-        std::fs::create_dir_all(&dir).expect("mkdir");
-        std::fs::write(dir.join("charter.md"), "description: Generic code-writer\n")
-            .expect("write");
-        let _guard = crate::team::override_forge_team_root_for_test(tmp.path().to_path_buf());
+    fn only_a_lead_session_gets_the_delegation_block() {
+        let mut worker = SessionLaunchSettings::default();
+        Workspace::apply_lead_delegation(&mut worker, crate::mcp::SessionKind::Worker);
+        assert_eq!(worker.delegation_catalog, None, "a worker gets no delegation block");
 
-        let text = Workspace::build_delegation_catalog("forge");
-        assert!(text.contains("workers__spawn"));
-        assert!(text.contains("implementer - Generic code-writer"));
+        let mut lead = SessionLaunchSettings::default();
+        Workspace::apply_lead_delegation(&mut lead, crate::mcp::SessionKind::Lead);
+        assert!(
+            lead.delegation_catalog.is_some_and(|t| t.contains("workers__spawn")),
+            "a lead does get it",
+        );
     }
 
     #[test]
