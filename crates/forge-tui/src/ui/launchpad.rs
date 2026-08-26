@@ -1199,10 +1199,10 @@ mod tests {
         );
     }
 
-    /// Render the picker over a one-project `forge.toml` that declares
-    /// `reviewer` as a static worker, with both `reviewer` and `scratch`
-    /// persisted as dynamic workers: a label the assignment plan knows
-    /// (so it chips) alongside one it does not (so it does not).
+    /// Render the picker over a one-project `forge.toml` with both
+    /// `reviewer` and `scratch` persisted as workers, and only
+    /// `reviewer` assigned in the plan: a label the plan knows (so it
+    /// chips) alongside one it does not (so it does not).
     async fn render_picker_rows() -> (Vec<String>, tempfile::TempDir, tempfile::TempDir) {
         let config_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("project tempdir");

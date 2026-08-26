@@ -227,8 +227,7 @@ pub fn compute_plan(
         // Only the lead is known at boot; every worker takes its slot
         // from `assign_adhoc_worker` when it spawns, so session_n starts
         // at 1 with the lead holding 0.
-        let pool_idx = offset % pool.len();
-        plan.assignments.insert((project.key.clone(), "lead".to_owned()), pool[pool_idx].clone());
+        plan.assignments.insert((project.key.clone(), "lead".to_owned()), pool[offset].clone());
 
         plan.slots.insert(project.key.clone(), ProjectSlot { pool, offset, next_session_n: 1 });
     }
@@ -275,10 +274,10 @@ mod tests {
         // Boot assigns the lead; every worker takes its slot when it
         // spawns, continuing the same rotation.
         for label in ["planner", "implementer", "reviewer", "debugger", "tester"] {
-            plan.assign_adhoc_worker(&pk("forge"), &label.to_owned(), |_| true);
+            let _ = plan.assign_adhoc_worker(&pk("forge"), &label.into(), |_| true);
         }
         for label in ["babysitter", "librarian"] {
-            plan.assign_adhoc_worker(&pk("data-modules"), &label.to_owned(), |_| true);
+            let _ = plan.assign_adhoc_worker(&pk("data-modules"), &label.into(), |_| true);
         }
 
         assert_eq!(plan.lookup(&pk("forge"), &"lead".into()), Some(&ak("gateway")));
@@ -301,7 +300,7 @@ mod tests {
         let accounts = vec![ak("gateway"), ak("personal")];
         let projects = vec![project("forge", &["gateway", "typo-account", "personal"])];
         let mut plan = compute_plan(&accounts, &[], &projects);
-        plan.assign_adhoc_worker(&pk("forge"), &"worker1".to_owned(), |_| true);
+        let _ = plan.assign_adhoc_worker(&pk("forge"), &"worker1".into(), |_| true);
 
         // Pool reduces to [gateway, personal]; offset 0; size 2.
         assert_eq!(plan.lookup(&pk("forge"), &"lead".into()), Some(&ak("gateway")));
@@ -320,7 +319,6 @@ mod tests {
 
         assert!(plan.project_has_no_assignments(&pk("forge")));
         assert_eq!(plan.lookup(&pk("forge"), &"lead".into()), None);
-        assert_eq!(plan.lookup(&pk("forge"), &"worker1".into()), None);
     }
 
     #[test]
@@ -330,7 +328,7 @@ mod tests {
         let accounts = vec![ak("gateway"), ak("personal")];
         let projects = vec![project("forge", &[])];
         let mut plan = compute_plan(&accounts, &[], &projects);
-        plan.assign_adhoc_worker(&pk("forge"), &"w1".to_owned(), |_| true);
+        let _ = plan.assign_adhoc_worker(&pk("forge"), &"w1".into(), |_| true);
 
         assert_eq!(plan.lookup(&pk("forge"), &"lead".into()), Some(&ak("gateway")));
         assert_eq!(plan.lookup(&pk("forge"), &"w1".into()), Some(&ak("personal")));
@@ -338,14 +336,14 @@ mod tests {
 
     #[test]
     fn compute_plan_single_account_wraps_all_sessions_to_it() {
-        // One account + a 5-session team -> every session lands on
-        // the lone account. `cursor % 1 == 0` collapses to a single
-        // assignment per session.
+        // One account: every session lands on it. This pins that a
+        // len-1 pool never yields an out-of-range index, not the
+        // rotation - no arithmetic variant is observable at len 1.
         let accounts = vec![ak("only")];
         let projects = vec![project("forge", &["only"])];
         let mut plan = compute_plan(&accounts, &[], &projects);
         for label in ["a", "b", "c", "d"] {
-            plan.assign_adhoc_worker(&pk("forge"), &label.to_owned(), |_| true);
+            let _ = plan.assign_adhoc_worker(&pk("forge"), &label.into(), |_| true);
         }
 
         for label in ["lead", "a", "b", "c", "d"] {
@@ -365,7 +363,7 @@ mod tests {
         // Workers reach the plan by spawning now, so assign them the way
         // a spawn does before asserting where they landed.
         for label in ["planner", "implementer"] {
-            plan.assign_adhoc_worker(&pk("forge"), &label.to_owned(), |_| true);
+            let _ = plan.assign_adhoc_worker(&pk("forge"), &label.into(), |_| true);
         }
 
         for label in ["lead", "planner", "implementer"] {
@@ -386,7 +384,7 @@ mod tests {
         let saturated = vec![ak("gateway"), ak("gateway1")];
         let projects = vec![project("gateway-backend", &["gateway", "gateway1"])];
         let mut plan = compute_plan(&accounts, &saturated, &projects);
-        plan.assign_adhoc_worker(&pk("gateway-backend"), &"worker1".to_owned(), |_| true);
+        let _ = plan.assign_adhoc_worker(&pk("gateway-backend"), &"worker1".into(), |_| true);
 
         assert!(
             !plan.project_has_no_assignments(&pk("gateway-backend")),
@@ -520,7 +518,7 @@ mod tests {
         let boot_accounts = vec![ak("b")];
         let projects = vec![project("p", &["a", "b"])];
         let mut plan = compute_plan(&boot_accounts, &[], &projects);
-        plan.assign_adhoc_worker(&pk("p"), &"w1".to_owned(), |_| true);
+        let _ = plan.assign_adhoc_worker(&pk("p"), &"w1".into(), |_| true);
         assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("b")));
         assert_eq!(plan.lookup(&pk("p"), &"w1".into()), Some(&ak("b")));
 

@@ -1522,12 +1522,11 @@ impl Workspace {
         }
     }
 
-    /// Extend the assignment plan with a new adhoc worker. Called
-    /// from `handle_spawn_worker` (Section 2.5 of #246) so workers
-    /// spawned via `workers__spawn` are assigned through the same
-    /// plan-driven rotation as boot-time team members. No-op when
-    /// the plan isn't populated yet (boot still in flight) - the
-    /// fallback `pick_for_project` path takes over in that case.
+    /// Extend the assignment plan with a newly spawned worker. Called
+    /// from `handle_spawn_worker` (Section 2.5 of #246) so a worker is
+    /// assigned through the same plan-driven rotation the lead is.
+    /// No-op when the plan isn't populated yet (boot still in flight);
+    /// `recompute_plan_if_ready` seeds the live workers when it lands.
     /// Returns `Some(account)` when the assigned account is itself
     /// currently unusable (a fresh assignment that fell back onto a
     /// fully saturated pool, or a re-spawn pinned to a since-unusable
@@ -1609,7 +1608,7 @@ impl Workspace {
                 .ordered_keys
                 .iter()
                 // Experimental accounts never enter the assignment pool
-                // (leads, static + adhoc workers) even when a project's
+                // (leads and workers alike) even when a project's
                 // org pins them; they are reachable only via the
                 // `/account` picker.
                 .filter(|k| !accounts.is_experimental(k))
@@ -6029,7 +6028,6 @@ impl Workspace {
     /// one renders bare, which is the contrast worth testing; assignment
     /// is what puts it in the plan now that nothing pre-seeds from
     /// forge.toml. Test-only.
-    #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_worker_assignment(&self, project_key: &ProjectKey, label: &str) {
         let _ = self.extend_plan_for_adhoc_worker(project_key, label);
     }
@@ -8323,7 +8321,7 @@ SOLO_TOKEN = "solo-secret"
     /// The seam the bug lived in: `resolve_identity` gathers the caller's
     /// dynamic-worker labels from the table and marks a table-backed
     /// worker durable, so its sub persists through the subscribe path even
-    /// though the worker is neither a static worker nor the lead.
+    /// though the worker is not the lead.
     #[test]
     fn resolve_identity_persists_a_table_backed_dynamic_workers_sub() {
         let (ws, _rx) = Workspace::testing_stub();
@@ -8339,7 +8337,7 @@ SOLO_TOKEN = "solo-secret"
             .map(|v| v.key)
             .expect("seeded project view");
 
-        // "scratch" is neither a static worker nor the lead: durability
+        // "scratch" is not the lead: durability
         // must come solely from its dynamic_workers row.
         let _ = ws.persist_dynamic_worker(&dynamic_worker_row(view_key.as_str(), "scratch"));
         let caller = SessionKey::from_session_id("scratch-session");
@@ -11742,7 +11740,7 @@ mod team_spawn_tests {
         }
     }
 
-    /// Dynamic re-spawn mirrors the static resume mechanic: a worker with
+    /// Re-spawn resumes by catalog tag: a worker with
     /// a catalog-tag match resumes and takes the forge restart note as its
     /// kick; one without re-delivers its stored kick.
     #[test]
@@ -13159,9 +13157,9 @@ config_dir = "~/.claude-stargate"
         dir
     }
 
-    /// Like `make_workspace_dir_246` but the project declares a static
-    /// worker, so the computed plan seeds a label beyond `lead`.
-    fn make_workspace_dir_static_worker() -> tempfile::TempDir {
+    /// Like `make_workspace_dir_246` without `auto_start`, so a test can
+    /// drive the plan itself rather than racing a boot spawn.
+    fn make_workspace_dir_no_auto_start() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
             forge_toml_path(dir.path()),
@@ -13813,7 +13811,7 @@ config_dir = "~/.claude-alpha"
     /// placeholder for the second case.
     #[tokio::test]
     async fn plan_chips_a_spawned_worker_but_not_a_never_spawned_one() {
-        let dir = make_workspace_dir_static_worker();
+        let dir = make_workspace_dir_no_auto_start();
         let workspace =
             Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         {

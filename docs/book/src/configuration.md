@@ -67,7 +67,6 @@ under. Rules enforced at load:
 Project names are the argument `forge <PROJECT>` takes, and the key
 `[projects.<name>]` env tables refer to.
 
-
 ## `[[accounts]]`
 
 An array of tables. At least one is required, or the load fails with

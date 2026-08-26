@@ -299,8 +299,8 @@ pub(crate) fn missed_cron_text(prompt: &str, missed: bool) -> String {
 /// `Command::SpawnProject` (which resumes the lead and, through the lead's
 /// team-spawn, the worker), the prompt buffered by `(project, team_role)`
 /// and drained on the owner's connect. An owner that no longer exists (a
-/// gone project, or a worker label that is neither static nor a durable
-/// dynamic row) yields `TargetGone`.
+/// gone project, or a worker label with no persisted row) yields
+/// `TargetGone`.
 pub(crate) fn deliver_cron_prompt(
     workspace: &Arc<Workspace>,
     project_name: &str,
@@ -2915,6 +2915,7 @@ mod team_charter_tests {
             ("`just ", "project justfile, not every project has one"),
             ("hub-modules", "one user's project name"),
             ("team = ", "not a forge.toml key"),
+            ("static_workers", "no longer a forge.toml key either"),
             ("~/.claude", "the charter must not pin a path in the user's home"),
             ("forge-team", "the charter must not name the deleted role filesystem"),
         ] {
