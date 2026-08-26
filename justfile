@@ -201,6 +201,10 @@ install:
 install-no-perf:
     ./scripts/install.sh --no-perf
 
+# Untrust forge's retired proxy CA and delete its key material (idempotent, one-shot).
+remove-cert:
+    ./scripts/remove-cert.sh
+
 # Cut a release: bump the workspace version, commit, tag.
 # Does NOT push - that's gated per CLAUDE.md and stays explicit.
 # Requires cargo-edit (`cargo install cargo-edit`) for `cargo set-version`.
