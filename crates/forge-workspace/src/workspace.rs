@@ -104,10 +104,10 @@ pane). Despawn a worker once its work is truly done, otherwise it keeps \
 coming back on every restart. Default to doing the work yourself; \
 delegate only substantial or parallelizable work.";
 
-/// Forge-supplied resume kick for a dynamic worker on restart. Dynamic
-/// (LLM-spawned) workers have no `resume-kick.md`, so on a resuming
-/// re-spawn forge delivers this constant as the worker's first turn -
-/// telling it to continue rather than start the task over.
+/// Forge-supplied resume kick for a worker whose row carries no
+/// `resume_kick` of its own. On a resuming re-spawn forge delivers this
+/// constant as the worker's first turn - telling it to continue rather
+/// than start the task over.
 const DYNAMIC_WORKER_RESTART_NOTE: &str = "This session was restarted by forge. Your prior conversation and progress are in the history above. Continue where you left off; do not restart the task.";
 
 /// One enqueue onto the workspace-level worker-kick channel
@@ -116,8 +116,7 @@ const DYNAMIC_WORKER_RESTART_NOTE: &str = "This session was restarted by forge. 
 /// `start_kick_dispatcher` task, which fires one `Command::Prompt`
 /// per `KICK_DISPATCH_INTERVAL` tick. Same payload shape as the
 /// existing `Command::Prompt` carries (no attachments are ever
-/// part of a kick prompt - kicks are pure text from
-/// `<label>/kick.md` or `<label>/resume-kick.md`).
+/// part of a kick prompt - kicks are pure text).
 #[derive(Debug)]
 pub(crate) struct KickRequest {
     pub session_key: SessionKey,
@@ -2716,17 +2715,16 @@ impl Workspace {
 
     /// Re-spawn this project's persisted dynamic (LLM-spawned) workers on
     /// lead reconnect. Folded into the same catalog-scan trigger as the
-    /// static roster and sharing its `resume_map`, so every downstream
-    /// mechanic (resume-by-label, `resume_existing`, the past-progress
-    /// guard) is identical. Charter + kick come from the DB row rather
-    /// than files.
+    /// static roster and sharing its `resume_map`, so resume-by-label and
+    /// `resume_existing` behave identically for both. Charter + kick come
+    /// from the DB row rather than files.
     ///
     /// Since this holds the dynamic set, it decides the kick directly:
     /// a resume takes the row's own `resume_kick` and falls back to the
     /// forge restart note, telling it to continue rather than restart; a
     /// fresh re-spawn (never prompted, so no catalog tag) re-delivers the
-    /// stored kick. Both flow through `maybe_kick_worker_on_connected`'s
-    /// inline-kick path, so that hook needs no per-worker store lookup.
+    /// stored kick. `maybe_kick_worker_on_connected` then just delivers
+    /// whatever this put on the `WorkerEntry`.
     pub(crate) fn spawn_dynamic_workers_for_lead(
         self: &Arc<Self>,
         lead_session_id: &str,
@@ -2928,42 +2926,6 @@ impl Workspace {
     /// after `spawn_team_for_lead_with_resume` returns.
     fn release_team_spawn(&self, project_key: &crate::target::ProjectKey) {
         self.team_spawn_in_flight.lock().remove(project_key);
-    }
-
-    /// Inspect a worker session's JSONL to decide whether it has
-    /// progressed beyond the initial team-kick. Counts user-role
-    /// turns; threshold is 2.
-    ///
-    /// - 0 user turns: fresh session, no kick fired yet (or JSONL not
-    ///   yet written). Re-fire the kick.
-    /// - 1 user turn: kick landed but worker didn't progress past it
-    ///   (forge restarted before the worker did any real work, or
-    ///   crashed mid-response). Re-fire the kick so the work
-    ///   actually starts.
-    /// - 2+ user turns: worker received the kick AND has been
-    ///   prompted again since (peer/worker message, lead follow-up).
-    ///   Leave it alone; re-firing would override its in-flight
-    ///   state.
-    ///
-    /// Returns true iff the worker has 2+ user turns. The kick path
-    /// gates on this only for resume sessions; fresh sessions skip
-    /// the check (their JSONL doesn't exist yet so the answer is
-    /// always false anyway).
-    pub(crate) fn worker_has_progress_past_kick(&self, session_id: &str) -> bool {
-        let session_key = SessionKey::from_session_id(session_id.to_owned());
-        let config_dir =
-            self.config_dir_for(&session_key).unwrap_or_else(|| self.config_dir.clone());
-        let messages = forge_agent::userdata::catalog::scan::get_session_messages(
-            &config_dir,
-            session_id,
-            None,
-        )
-        .messages;
-        let user_turn_count = messages
-            .iter()
-            .filter(|m| matches!(m.kind, forge_primitives::SessionMessageKind::User))
-            .count();
-        user_turn_count >= 2
     }
 
     /// Set the `session_id` field on the workspace's `DomainSession`
@@ -12652,59 +12614,6 @@ mod build_resume_map_tests {
             Some(&"wt-uuid".to_owned()),
             "storage-key scoping resumes the worktree session even when the head-read cwd is wrong",
         );
-    }
-}
-
-#[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-mod worker_resume_kick_skip_tests {
-    use super::*;
-    use std::fs;
-    use tempfile::tempdir;
-
-    fn write_jsonl(config_dir: &std::path::Path, session_id: &str, body: &str) {
-        let project_dir = forge_sdk::projects_dir_for(config_dir).join("test-proj");
-        fs::create_dir_all(&project_dir).expect("project dir");
-        let path = project_dir.join(format!("{session_id}.jsonl"));
-        fs::write(&path, body).expect("write jsonl");
-    }
-
-    /// #157: 0 user turns (empty JSONL or no file) means the worker
-    /// hasn't progressed past the kick. Re-kick on resume.
-    #[test]
-    fn worker_has_progress_past_kick_zero_user_turns_returns_false() {
-        let cfg = tempdir().expect("cfg");
-        let session_id = "550e8400-e29b-41d4-a716-446655440010";
-        write_jsonl(cfg.path(), session_id, "");
-        let (workspace, _) = Workspace::testing_stub_with_config_dir(cfg.path().to_path_buf());
-        assert!(!workspace.worker_has_progress_past_kick(session_id));
-    }
-
-    /// #157: 1 user turn means the kick landed but the worker
-    /// crashed / didn't progress. Re-fire so work actually starts.
-    #[test]
-    fn worker_has_progress_past_kick_one_user_turn_returns_false() {
-        let cfg = tempdir().expect("cfg");
-        let session_id = "550e8400-e29b-41d4-a716-446655440011";
-        let body = r#"{"type":"user","timestamp":"2026-04-22T00:00:00.000Z","cwd":"/p","message":{"content":"kick"}}
-"#;
-        write_jsonl(cfg.path(), session_id, body);
-        let (workspace, _) = Workspace::testing_stub_with_config_dir(cfg.path().to_path_buf());
-        assert!(!workspace.worker_has_progress_past_kick(session_id));
-    }
-
-    /// #157: 2+ user turns means the worker is past the kick. Skip
-    /// re-kicking to preserve in-flight state.
-    #[test]
-    fn worker_has_progress_past_kick_two_user_turns_returns_true() {
-        let cfg = tempdir().expect("cfg");
-        let session_id = "550e8400-e29b-41d4-a716-446655440012";
-        let body = r#"{"type":"user","timestamp":"2026-04-22T00:00:00.000Z","cwd":"/p","message":{"content":"kick"}}
-{"type":"user","timestamp":"2026-04-22T00:01:00.000Z","cwd":"/p","message":{"content":"follow-up"}}
-"#;
-        write_jsonl(cfg.path(), session_id, body);
-        let (workspace, _) = Workspace::testing_stub_with_config_dir(cfg.path().to_path_buf());
-        assert!(workspace.worker_has_progress_past_kick(session_id));
     }
 }
 

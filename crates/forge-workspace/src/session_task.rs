@@ -998,26 +998,16 @@ fn parse_worker_synth_key(key: &SessionKey) -> Option<(String, String)> {
     Some((parts[0].to_owned(), parts[1].to_owned()))
 }
 
-/// True when `key` is the resume-shaped worker synth key
-/// (`__resume_worker_<project>_<label>_<uuid>__`). The kick-skip
-/// guard in `maybe_kick_worker_on_connected` keys on this to decide
-/// whether to inspect the JSONL turn count before firing the
-/// initial kick.
-fn is_resume_worker_synth_key(key: &SessionKey) -> bool {
-    key.as_str().starts_with("__resume_worker_")
-}
-
-/// Shared engineering-team worker-kick hook: if `spawn_key` is a
-/// worker synth key AND its label matches a known role, dispatch a
-/// `Command::Prompt` carrying that role's `initial_kick` text to the
-/// freshly-Connected worker. Claude sessions don't act until a
-/// user-turn arrives, so without this kick a team worker would sit
-/// idle indefinitely after spawn (its charter would shape behaviour
-/// IF prompted, but nothing prompts it).
+/// Shared worker-kick hook: if `spawn_key` is a worker synth key,
+/// dispatch a `Command::Prompt` carrying the live worker's stored kick
+/// to the freshly-Connected worker. Claude sessions don't act until a
+/// user-turn arrives, so without this kick a worker would sit idle
+/// indefinitely after spawn (its charter would shape behaviour IF
+/// prompted, but nothing prompts it).
 ///
-/// Workers spawned with non-role labels (e.g. LLM-driven
-/// `workers__spawn("scratchpad", ...)` outside the engineering-team
-/// flow) get no kick - they're caller-driven by design.
+/// A worker spawned without a kick gets none - it stays caller-driven
+/// until its lead sends it something. The re-spawn path decides what a
+/// resuming worker is kicked with, so there is nothing to decide here.
 ///
 /// Called from `SessionTask::translate_event` (production) and
 /// `on_connected_for_test` (tests). The dispatch goes through the
@@ -1032,122 +1022,27 @@ fn maybe_kick_worker_on_connected(
     let Some((project_key, label)) = parse_worker_synth_key(spawn_key) else {
         return;
     };
-
-    // Resolve the worker's project view once: its `ProjectKey` for the
-    // live-workers lookup below, and its name (namespace) for the
-    // file-driven role-kick resolution further down.
-    let project_view =
-        workspace.list_projects().into_iter().find(|v| v.key.as_str() == project_key);
-
-    // Inline kick from `workers__spawn(kick=...)` takes precedence over
-    // the file-driven `kick.md`: an ad-hoc spawn has no kick.md, so the
-    // WorkerEntry-stashed kick is the only thing that gives it a first
-    // turn. Delivered through the same rate-limited kick dispatcher the
-    // file kicks use.
-    if let Some(view) = project_view.as_ref() {
-        let inline_kick = workspace
-            .list_live_workers(&view.key)
-            .into_iter()
-            .rev()
-            .find(|w| w.label == label)
-            .and_then(|w| w.kick);
-        if let Some(kick) = inline_kick {
-            workspace.enqueue_kick(crate::workspace::KickRequest {
-                session_key: SessionKey::from_session_id(real_session_id.to_owned()),
-                prompt_body: kick,
-            });
-            return;
-        }
-    }
-
-    let is_resume = is_resume_worker_synth_key(spawn_key);
-
-    // Recover the worker's project namespace (the forge.toml name) so
-    // the kick resolves project-first-then-global, matching the charter
-    // the worker was spawned with. Fall back to the bare label when the
-    // project is gone so global-role workers still kick.
-    let resolved = project_view
-        .map(|v| v.name)
-        .and_then(|namespace| crate::team::roles::resolve_role(&label, &namespace))
-        .unwrap_or_else(|| label.clone());
-
-    // Resume path: prefer the resume-specific kick when the role
-    // ships one. `<label>/resume-kick.md` is opt-in (absent file is
-    // expected for most roles); when present, it represents the
-    // explicit "you're picking up, re-orient" framing. Override the
-    // past-progress guard so a re-orient lands even for workers that
-    // had progressed past their initial kick - the whole point of a
-    // resume-kick is to wake the worker up post-restart.
-    let kick_text = if is_resume {
-        match crate::team::load_resume_kick(&resolved) {
-            Ok(Some(text)) => Some(text),
-            Ok(None) => None,
-            Err(err) => {
-                tracing::warn!(
-                    target: "forge_workspace::team",
-                    label = %label,
-                    error = %err,
-                    "resume-kick lookup failed; falling back to initial-kick (or skip per past-progress guard)"
-                );
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    if let Some(resume_kick) = kick_text {
-        // #259: kicks route through the workspace-level dispatcher so
-        // multi-worker boots don't fire N simultaneous Prompts at
-        // Anthropic's per-IP burst limit. The drainer fires one per
-        // `KICK_DISPATCH_INTERVAL`; the first kick of an empty queue
-        // has zero added latency.
-        workspace.enqueue_kick(crate::workspace::KickRequest {
-            session_key: SessionKey::from_session_id(real_session_id.to_owned()),
-            prompt_body: resume_kick,
-        });
+    let Some(view) = workspace.list_projects().into_iter().find(|v| v.key.as_str() == project_key)
+    else {
         return;
-    }
-
-    // Fall-through: fresh spawn OR resume-without-resume-kick. Load
-    // the regular `<label>/kick.md`.
-    let initial_kick = match crate::team::load_initial_kick(&resolved) {
-        Ok(kick) => kick,
-        Err(err) => {
-            tracing::warn!(
-                target: "forge_workspace::team",
-                label = %label,
-                error = %err,
-                "no initial-kick file found for worker label; worker spawn proceeds without a kick prompt (worker stays idle until lead dispatches). Populate ~/.claude/forge-team/<label>/kick.md."
-            );
-            return;
-        }
     };
-    // Resume path WITHOUT a resume-kick.md: inspect the JSONL turn
-    // count before re-firing the regular kick. The kick lands as a
-    // USER turn; a worker that's already executed past the kick has
-    // at least one MORE user turn in its history (the next prompt
-    // from the lead, or an MCP-driven peer/worker message).
-    // Threshold is 2: a JSONL with exactly 1 user turn means the
-    // worker received the kick but crashed / didn't progress before
-    // forge restarted, so we re-fire to actually start the work. 2+
-    // means the worker has moved past the kick - leave it alone,
-    // since a re-kick would override its in-flight state. Fresh-
-    // spawn path skips this check (no JSONL exists yet;
-    // user_turn_count would be 0 anyway).
-    if is_resume && workspace.worker_has_progress_past_kick(real_session_id) {
-        tracing::info!(
-            target: "forge_workspace::team",
-            label = %label,
-            session_id = real_session_id,
-            "skipping kick on worker resume with prior progress past initial kick (no resume-kick.md available)",
-        );
+    let Some(kick) = workspace
+        .list_live_workers(&view.key)
+        .into_iter()
+        .rev()
+        .find(|w| w.label == label)
+        .and_then(|w| w.kick)
+    else {
         return;
-    }
-    // #259: same dispatcher route as the resume-kick branch above.
+    };
+    // #259: kicks route through the workspace-level dispatcher so
+    // multi-worker boots don't fire N simultaneous Prompts at
+    // Anthropic's per-IP burst limit. The drainer fires one per
+    // `KICK_DISPATCH_INTERVAL`; the first kick of an empty queue
+    // has zero added latency.
     workspace.enqueue_kick(crate::workspace::KickRequest {
         session_key: SessionKey::from_session_id(real_session_id.to_owned()),
-        prompt_body: initial_kick,
+        prompt_body: kick,
     });
 }
 
@@ -2548,14 +2443,10 @@ mod team_hook_tests {
         let dir = ROOT.get_or_init(|| {
             let tmp = tempfile::tempdir().expect("tempdir");
             let root = tmp.path();
-            // Fixture text rather than shipped content. The implementer
-            // kick carries all three properties
-            // `worker_connected_for_role_label_dispatches_kick_prompt`
-            // asserts on: activation framing, an await-a-plan line, and no
-            // instruction to self-poll issues. Stated here rather than
-            // inherited from a file, so a reader can see what the test
-            // needs without opening another one. `lead` keeps the real
-            // constant: two spawn tests compare against it by identity.
+            // Fixture text rather than shipped content, so a reader can
+            // see what the tests need without opening another file.
+            // `lead` keeps the real constant: two spawn tests compare
+            // against it by identity.
             for (label, charter, kick) in [
                 (
                     "implementer",
@@ -2683,100 +2574,6 @@ mod team_hook_tests {
         assert_eq!(second_spawns, 0, "second Connected must not double-spawn");
     }
 
-    /// Worker Connected with a role-matching label enqueues a kick
-    /// onto the workspace dispatcher (#259) which fans out as a
-    /// `Command::Prompt` carrying the role's initial-kick text to
-    /// the worker's real session_id. End-to-end: enqueue happens in
-    /// `maybe_kick_worker_on_connected`; the drainer task (started
-    /// here via `start_kick_dispatcher`) reads the channel and calls
-    /// `Workspace::dispatch` which lands in the intercept buffer.
-    /// Paused time + a yield-loop are the deterministic way to drive
-    /// the drainer one step.
-    #[tokio::test(start_paused = true)]
-    async fn worker_connected_for_role_label_dispatches_kick_prompt() {
-        let _charter_root = ensure_test_charter_root();
-        let (workspace, _update_rx) = Workspace::testing_stub();
-        workspace.enable_test_dispatch_intercept();
-        workspace.start_kick_dispatcher();
-
-        let worker_synth = SessionKey::from_session_id("__spawn_worker_forge_implementer_abc123__");
-        on_connected_for_test(&workspace, &worker_synth, "worker-uuid");
-
-        // Drainer pulls the just-enqueued kick on the next runtime
-        // yield; the first kick of an empty channel has zero added
-        // latency by design (the sleep happens AFTER the dispatch).
-        tokio::task::yield_now().await;
-        tokio::task::yield_now().await;
-
-        let dispatched = workspace.drain_test_dispatch_buffer();
-        let prompts: Vec<&Command> =
-            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
-        assert_eq!(prompts.len(), 1, "implementer worker gets exactly one kick");
-        if let Command::Prompt { key, text, .. } = prompts[0] {
-            assert_eq!(key.as_str(), "worker-uuid", "kick targets the worker's real session id");
-            assert!(
-                text.contains("You are now active"),
-                "kick opens with activation framing; got: {text}",
-            );
-            assert!(
-                !text.contains("gh issue list"),
-                "generic kick must not self-poll GitHub issues; got: {text}",
-            );
-            assert!(
-                text.contains("awaiting a plan"),
-                "kick tells the implementer to await a lead-driven plan; got: {text}",
-            );
-        }
-    }
-
-    /// A project-scoped worker (bare label `steward` in `data-modules`)
-    /// resolves its kick project-first to `data-modules/steward/kick.md`,
-    /// even though no global `steward` exists.
-    #[tokio::test]
-    async fn worker_kick_resolves_project_scoped_role() {
-        let tmp = tempfile::tempdir().expect("tmp");
-        let steward = tmp.path().join("data-modules").join("steward");
-        std::fs::create_dir_all(&steward).expect("mkdir");
-        std::fs::write(steward.join("charter.md"), "description: Hub steward\n").expect("charter");
-        std::fs::write(steward.join("kick.md"), "STEWARD-KICK: tend the modules\n").expect("kick");
-        let _guard = crate::team::override_forge_team_root_for_test(tmp.path().to_path_buf());
-
-        let (workspace, _update_rx) = Workspace::testing_stub();
-        workspace.enable_test_dispatch_intercept();
-        workspace.start_kick_dispatcher();
-        workspace.seed_test_project_with_static_workers(
-            "data-modules",
-            "/tmp/data-modules",
-            &["steward".to_owned()],
-        );
-        // Build the worker synth key from the seeded project's resolved
-        // key so the kick hook recovers `data-modules` as the namespace.
-        let project_key = workspace
-            .list_projects()
-            .into_iter()
-            .find(|v| v.name == "data-modules")
-            .expect("seeded project present")
-            .key;
-        let synth = SessionKey::from_session_id(format!(
-            "__spawn_worker_{}_steward_deadbeef__",
-            project_key.as_str()
-        ));
-        on_connected_for_test(&workspace, &synth, "worker-uuid");
-        tokio::task::yield_now().await;
-        tokio::task::yield_now().await;
-
-        let dispatched = workspace.drain_test_dispatch_buffer();
-        let prompts: Vec<&Command> =
-            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
-        assert_eq!(prompts.len(), 1, "project-scoped worker gets exactly one kick");
-        if let Command::Prompt { text, .. } = prompts[0] {
-            assert!(
-                text.contains("STEWARD-KICK"),
-                "kick resolved from data-modules/steward/kick.md; got: {text}",
-            );
-        }
-    }
-
     /// Helper: insert a live ad-hoc worker carrying `kick` under the
     /// seeded project, returning its synth key for `on_connected_for_test`.
     #[cfg(test)]
@@ -2844,9 +2641,8 @@ mod team_hook_tests {
         }
     }
 
-    /// An ad-hoc worker with NO inline kick and no kick.md gets no
-    /// kick - it idles until the lead sends a workers__tell (today's
-    /// behavior, unchanged).
+    /// A live worker whose entry carries no kick gets none - it idles
+    /// until the lead sends a workers__tell.
     #[tokio::test(start_paused = true)]
     async fn worker_without_inline_kick_for_adhoc_label_does_not_kick() {
         let (workspace, _update_rx) = Workspace::testing_stub();
@@ -2864,10 +2660,9 @@ mod team_hook_tests {
         assert!(prompts.is_empty(), "no kick without an inline kick or a kick.md");
     }
 
-    /// Worker Connected with a label NOT matching a built-in role
-    /// (e.g. an LLM-driven `workers__spawn("scratchpad", ...)` for
-    /// ad-hoc work) does not get a kick - only engineering-team
-    /// roles do.
+    /// Worker Connected for a label with no live `WorkerEntry` at all
+    /// does not kick - the other no-kick path, distinct from an entry
+    /// that exists and carries no kick.
     #[test]
     fn worker_connected_for_non_role_label_does_not_kick() {
         let (workspace, _update_rx) = Workspace::testing_stub();
@@ -2932,13 +2727,5 @@ mod team_hook_tests {
     fn parse_worker_synth_key_extracts_project_and_label_for_resume_shape() {
         let key = SessionKey::from_session_id("__resume_worker_forge_planner_abc123__");
         assert_eq!(parse_worker_synth_key(&key), Some(("forge".to_owned(), "planner".to_owned())));
-    }
-
-    #[test]
-    fn is_resume_worker_synth_key_identifies_resume_prefix() {
-        let resume = SessionKey::from_session_id("__resume_worker_forge_planner_abc123__");
-        let fresh = SessionKey::from_session_id("__spawn_worker_forge_planner_abc123__");
-        assert!(is_resume_worker_synth_key(&resume));
-        assert!(!is_resume_worker_synth_key(&fresh));
     }
 }
