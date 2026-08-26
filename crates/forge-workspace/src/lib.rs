@@ -94,7 +94,7 @@ pub use workspace::{SessionChipInfo, SessionChipState, Workspace};
 pub use mcp::cron::schedule::next_fire_after;
 pub use mcp::gotify::types::GotifyNotification;
 pub use mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
-pub use mcp::workers::types::WorkerEntry;
+pub use mcp::workers::types::{LiveWorkerState, WorkerEntry};
 
 #[cfg(any(test, feature = "testing"))]
 pub use session_task::on_connected_for_test;
