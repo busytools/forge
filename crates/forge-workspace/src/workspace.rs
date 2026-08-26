@@ -81,7 +81,11 @@ const WORKER_TAG_RETRY_DELAY: Duration = Duration::from_millis(100);
 /// the cohort, vs ~1 s pre-#259 with most kicks rejected.
 const KICK_DISPATCH_INTERVAL: Duration = Duration::from_millis(750);
 
-/// Delegation block appended to every Lead session's system prompt.
+/// Delegation block appended to a Lead session's system prompt.
+///
+/// Lead-only: `workers__spawn` refuses a worker caller, so a worker
+/// given this block would be told to call a tool that rejects it.
+///
 /// Matches the shipped-prompt constants in `forge-agent`: one escaped
 /// literal, no runtime assembly.
 const LEAD_DELEGATION_PREAMBLE: &str = "\
@@ -912,12 +916,12 @@ impl Workspace {
         self.find_project_by_name(name).map(|_| ())
     }
 
-    /// Delegation capabilities appended to a Lead session's system
-    /// prompt. Lead-only: `workers__spawn` refuses a worker caller, so a
-    /// worker given this block would be told it can call a tool that
-    /// rejects it.
-    fn build_delegation_catalog() -> String {
-        LEAD_DELEGATION_PREAMBLE.to_owned()
+    /// Stamp [`LEAD_DELEGATION_PREAMBLE`] onto a Lead session's launch
+    /// settings. No-op for a worker.
+    fn apply_lead_delegation(settings: &mut SessionLaunchSettings, kind: crate::mcp::SessionKind) {
+        if matches!(kind, crate::mcp::SessionKind::Lead) {
+            settings.delegation_catalog = Some(LEAD_DELEGATION_PREAMBLE.to_owned());
+        }
     }
 
     /// Hands out the `Arc<AgentHandle>` for the requested session,
@@ -1140,9 +1144,7 @@ impl Workspace {
         match target {
             SessionTarget::Default => {
                 let project = self.config.default_project();
-                if matches!(session_kind, crate::mcp::SessionKind::Lead) {
-                    settings.delegation_catalog = Some(Self::build_delegation_catalog());
-                }
+                Self::apply_lead_delegation(&mut settings, session_kind);
                 let cwd = project.path.to_string_lossy().to_string();
                 let resume_target = Self::apply_force_new_gate(
                     self.try_lead_session_id_for(project),
@@ -1156,9 +1158,7 @@ impl Workspace {
             }
             SessionTarget::Named(name) => {
                 let project = self.find_project_by_name(&name)?;
-                if matches!(session_kind, crate::mcp::SessionKind::Lead) {
-                    settings.delegation_catalog = Some(Self::build_delegation_catalog());
-                }
+                Self::apply_lead_delegation(&mut settings, session_kind);
                 let cwd = project.path.to_string_lossy().to_string();
                 let resume_target = Self::apply_force_new_gate(
                     self.try_lead_session_id_for(project),
