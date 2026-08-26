@@ -2,9 +2,9 @@
 //!
 //! Workers persist their spawn args here so a forge restart can
 //! re-spawn them. LLM-spawned ("dynamic") workers write a row at
-//! `workers__spawn`; config-driven (`static_workers`) labels get one
-//! from the boot back-fill, so both kinds resume from this table. Keyed
-//! by `(project_key, label)` - at most one row per label per project.
+//! `workers__spawn`; config-driven (`static_workers`) labels re-spawn
+//! from forge.toml instead and have no row. Keyed by
+//! `(project_key, label)` - at most one row per label per project.
 //! The whole record is stored as serde-json; the session_id is
 //! deliberately NOT stored, since resume is recovered from the
 //! `forge:worker:<label>` catalog tag.
@@ -21,9 +21,8 @@ const DYNAMIC_WORKERS: TableDefinition<(&str, &str), &[u8]> =
     TableDefinition::new("dynamic_workers");
 
 /// A persisted worker's re-spawn args. `charter`, `kick` and
-/// `resume_kick` are resolved values - from the originating
-/// `workers__spawn` (inline or role-file-loaded), or lifted from a
-/// `static_workers` label's files by the boot back-fill - so re-spawn is
+/// `resume_kick` are resolved values from the originating
+/// `workers__spawn` (inline or role-file-loaded), so re-spawn is
 /// self-contained. The spawning lead's session_id is deliberately
 /// absent: a re-spawn re-parents to whatever lead is current on
 /// reconnect, so the original is never read back.

@@ -2455,9 +2455,6 @@ mod tests {
         assert!(output.is_error, "an absent worker must be refused");
         let text = &output.blocks[0].text;
         assert!(text.contains("workers__spawn"), "the refusal points at spawn: {text}");
-        // The boot back-fill gives every `static_workers` label a row, so a
-        // static role no longer reaches this arm - it is now only a label
-        // with no row at all.
         assert!(
             !text.contains("forge-team"),
             "must not send the caller to files the row would override: {text}",

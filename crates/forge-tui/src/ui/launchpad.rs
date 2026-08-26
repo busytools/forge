@@ -1201,9 +1201,8 @@ mod tests {
 
     /// Render the picker over a one-project `forge.toml` that declares
     /// `reviewer` as a static worker, with both `reviewer` and `scratch`
-    /// persisted as dynamic workers. That is the post-back-fill shape: a
-    /// label the assignment plan knows (so it chips) alongside one it
-    /// does not (so it does not).
+    /// persisted as dynamic workers: a label the assignment plan knows
+    /// (so it chips) alongside one it does not (so it does not).
     async fn render_picker_rows() -> (Vec<String>, tempfile::TempDir, tempfile::TempDir) {
         let config_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("project tempdir");
