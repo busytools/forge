@@ -65,7 +65,9 @@ fi
 require_cmd cargo
 require_cmd git
 
-[ -d "$FORGE_REPO/.git" ] \
+# `-e` not `-d`: in a git worktree `.git` is a file holding a gitdir:
+# pointer, and every worker session runs in one.
+[ -e "$FORGE_REPO/.git" ] \
     || die "forge checkout missing .git at $FORGE_REPO - script must run from inside the forge repo"
 [ -d "$FORGE_REPO/crates/forge-tui" ] \
     || die "forge-tui crate not found at $FORGE_REPO/crates/forge-tui"
