@@ -773,6 +773,11 @@ fn push_worker_rows(
 /// resolves through the same `UiSession` bucket the project row reads.
 /// `Sleeping` when the label has no live worker - a persisted row that
 /// has not spawned this boot.
+///
+/// A Running worker whose bucket has not arrived falls back to `Idle`
+/// rather than `Sleeping`: the registry is the authority on liveness, so
+/// the gap is the TUI's view lagging a `Connected` it has not drained
+/// yet, not a worker that stopped.
 fn worker_lifecycle(
     app: &App,
     live: &[forge_workspace::WorkerEntry],
@@ -788,7 +793,7 @@ fn worker_lifecycle(
         WorkerLiveness::Running => app
             .sessions
             .get(&entry.session_key)
-            .map_or(SessionLifecycleState::Sleeping, |s| s.lifecycle_state),
+            .map_or(SessionLifecycleState::Idle, |s| s.lifecycle_state),
     }
 }
 
@@ -1293,6 +1298,60 @@ mod tests {
             worker_row.trim_end().ends_with('\u{2014}'),
             "no per-worker activity timestamp exists, so the activity column reads as the \
              em-dash placeholder; got {worker_row:?}",
+        );
+    }
+
+    fn worker_entry(
+        label: &str,
+        session: &str,
+        status: forge_primitives::WorkerLiveness,
+    ) -> forge_workspace::WorkerEntry {
+        forge_workspace::WorkerEntry {
+            label: label.to_owned(),
+            charter: String::new(),
+            session_key: SessionKey::from_session_id(session.to_owned()),
+            status,
+            spawned_at: SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead".to_owned(),
+            needs_tag: false,
+            is_git_repo_at_spawn: false,
+            diagnostic: None,
+            kick: None,
+        }
+    }
+
+    /// A live worker's glyph tracks its own session, and a Running one
+    /// whose bucket has not arrived reads as alive rather than asleep -
+    /// the registry, not `app.sessions`, is what knows it is up.
+    #[test]
+    fn a_running_worker_without_a_bucket_reads_as_idle() {
+        use crate::app::session::UiSession;
+        use forge_primitives::WorkerLiveness;
+
+        let mut app = App::test_default();
+        let live = vec![
+            worker_entry("settled", "worker-settled", WorkerLiveness::Running),
+            worker_entry("unbucketed", "worker-unbucketed", WorkerLiveness::Running),
+        ];
+        let settled_key = SessionKey::from_session_id("worker-settled".to_owned());
+        let mut bucket = UiSession::new(settled_key.clone());
+        bucket.lifecycle_state = SessionLifecycleState::Running;
+        app.sessions.insert(settled_key, bucket);
+
+        assert_eq!(
+            worker_lifecycle(&app, &live, "settled"),
+            SessionLifecycleState::Running,
+            "a worker with a bucket reports that bucket's lifecycle",
+        );
+        assert_eq!(
+            worker_lifecycle(&app, &live, "unbucketed"),
+            SessionLifecycleState::Idle,
+            "a Running worker whose bucket has not arrived is alive, not sleeping",
+        );
+        assert_eq!(
+            worker_lifecycle(&app, &live, "never-spawned"),
+            SessionLifecycleState::Sleeping,
+            "a label with no live worker at all is sleeping",
         );
     }
 
