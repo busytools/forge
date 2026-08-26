@@ -81,8 +81,7 @@ pub(crate) struct Spawn {
 #[derive(serde::Deserialize)]
 struct SpawnArgs {
     label: String,
-    #[serde(default)]
-    charter: Option<String>,
+    charter: String,
     #[serde(default)]
     kick: Option<String>,
     #[serde(default)]
@@ -99,12 +98,9 @@ impl Tool for Spawn {
         "Spawn a new worker session inside YOUR project (lead-only). \
          The worker is a full forge session - its own claude subprocess, \
          own chat view, own permissions - addressable from your session \
-         by `label` via workers__tell / workers__ask. `charter` is \
-         optional: omit it to load the role's stored charter from \
-         ~/.claude/forge-team/<label>/charter.md (e.g. \
-         label=\"implementer\"), or provide it to spawn an ad-hoc \
-         worker with an inline mission threaded into the new session's \
-         system prompt. PROVIDE `kick` TO START THE WORKER IMMEDIATELY: \
+         by `label` via workers__tell / workers__ask. `charter` is the \
+         worker's mission, threaded into the new session's system \
+         prompt, and defines what that worker is. PROVIDE `kick` TO START THE WORKER IMMEDIATELY: \
          the kick is delivered as the worker's first user-turn the moment \
          it connects, so it begins working at once. WITHOUT a kick the \
          worker sits idle until you send it a workers__tell - a 'begin \
@@ -138,11 +134,11 @@ impl Tool for Spawn {
             "properties": {
                 "label": {
                     "type": "string",
-                    "description": "Identifier you will use to address this worker later via workers__tell / workers__ask. Non-empty after trim. For a file-driven spawn (no charter), this is the role name whose charter is loaded from ~/.claude/forge-team/<label>/charter.md. At most one live worker per label - reusing a label with a live worker is rejected.",
+                    "description": "Identifier you will use to address this worker later via workers__tell / workers__ask. Non-empty after trim. At most one live worker per label - reusing a label with a live worker is rejected.",
                 },
                 "charter": {
                     "type": "string",
-                    "description": "Optional. Omit to load the role's stored charter from ~/.claude/forge-team/<label>/charter.md (e.g. label=\"implementer\"). Provide it to spawn an ad-hoc worker with an inline mission, threaded into the new session's system prompt. Non-empty after trim when provided.",
+                    "description": "The worker's mission, threaded into the new session's system prompt. This is what defines the worker, so say what it is responsible for and how it should work. Non-empty after trim.",
                 },
                 "kick": {
                     "type": "string",
@@ -153,7 +149,7 @@ impl Tool for Spawn {
                     "description": "Optional re-orient message delivered every time this worker is RESUMED after a forge restart, in place of the generic 'continue where you left off' note. For a LONG-LIVED worker whose restart needs specific steps - re-read a file, catch up a queue, check whether something was mid-run before re-running it - rather than a generic continue. Stored at spawn rather than delivered now; the first turn of a fresh spawn is `kick`. Non-empty after trim when provided - to keep the generic restart note, OMIT the argument rather than passing an empty string, which is rejected.",
                 },
             },
-            "required": ["label"],
+            "required": ["label", "charter"],
             "additionalProperties": false,
         })
     }
@@ -228,9 +224,6 @@ fn format_spawn_error(err: &WorkerSpawnError) -> String {
         WorkerSpawnError::WorktreeCreationFailed { reason } => {
             format!("worktree creation failed: {reason}")
         }
-        WorkerSpawnError::CharterFileMissing { label } => format!(
-            "role '{label}' resolves to no charter from this project (looked under ~/.claude/forge-team/<project>/{label}/ then ~/.claude/forge-team/{label}/). Pass an inline charter instead."
-        ),
     }
 }
 
@@ -1152,8 +1145,27 @@ mod tests {
         let required = schema["required"].as_array().expect("required field present");
         assert!(required.iter().any(|v| v == "label"));
         assert!(
-            !required.iter().any(|v| v == "charter"),
-            "charter is optional (file-load default)"
+            required.iter().any(|v| v == "charter"),
+            "charter is required - there is no file to fall back to"
+        );
+    }
+
+    /// A spawn with no `charter` is refused outright rather than
+    /// resolving one off disk.
+    #[tokio::test]
+    async fn spawn_without_charter_is_error() {
+        let mock = MockWorkerFacade::new();
+        mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
+        let facade = mock.into_arc();
+        let tool =
+            Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let output =
+            tool.call(ToolInput { value: serde_json::json!({ "label": "reviewer" }) }).await;
+        assert!(output.is_error, "an omitted charter must be refused");
+        assert!(
+            output.blocks[0].text.to_lowercase().contains("charter"),
+            "the refusal names the missing field: {}",
+            output.blocks[0].text,
         );
     }
 
@@ -2455,9 +2467,6 @@ mod tests {
         assert!(output.is_error, "an absent worker must be refused");
         let text = &output.blocks[0].text;
         assert!(text.contains("workers__spawn"), "the refusal points at spawn: {text}");
-        // The boot back-fill gives every `static_workers` label a row, so a
-        // static role no longer reaches this arm - it is now only a label
-        // with no row at all.
         assert!(
             !text.contains("forge-team"),
             "must not send the caller to files the row would override: {text}",

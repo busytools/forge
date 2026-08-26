@@ -96,9 +96,6 @@ pub use mcp::gotify::types::GotifyNotification;
 pub use mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
 pub use mcp::workers::types::{LiveWorkerState, WorkerEntry};
 
-#[cfg(any(test, feature = "testing"))]
-pub use session_task::on_connected_for_test;
-
 // Re-export forge-agent types that public surface returns, so
 // callers can write `use forge_workspace::AgentHandle` if they
 // prefer.

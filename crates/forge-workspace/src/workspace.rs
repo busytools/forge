@@ -104,10 +104,10 @@ pane). Despawn a worker once its work is truly done, otherwise it keeps \
 coming back on every restart. Default to doing the work yourself; \
 delegate only substantial or parallelizable work.";
 
-/// Forge-supplied resume kick for a dynamic worker on restart. Dynamic
-/// (LLM-spawned) workers have no `resume-kick.md`, so on a resuming
-/// re-spawn forge delivers this constant as the worker's first turn -
-/// telling it to continue rather than start the task over.
+/// Forge-supplied resume kick for a worker whose row carries no
+/// `resume_kick` of its own. On a resuming re-spawn forge delivers this
+/// constant as the worker's first turn - telling it to continue rather
+/// than start the task over.
 const DYNAMIC_WORKER_RESTART_NOTE: &str = "This session was restarted by forge. Your prior conversation and progress are in the history above. Continue where you left off; do not restart the task.";
 
 /// One enqueue onto the workspace-level worker-kick channel
@@ -116,8 +116,7 @@ const DYNAMIC_WORKER_RESTART_NOTE: &str = "This session was restarted by forge. 
 /// `start_kick_dispatcher` task, which fires one `Command::Prompt`
 /// per `KICK_DISPATCH_INTERVAL` tick. Same payload shape as the
 /// existing `Command::Prompt` carries (no attachments are ever
-/// part of a kick prompt - kicks are pure text from
-/// `<label>/kick.md` or `<label>/resume-kick.md`).
+/// part of a kick prompt - kicks are pure text).
 #[derive(Debug)]
 pub(crate) struct KickRequest {
     pub session_key: SessionKey,
@@ -483,9 +482,9 @@ async fn refresh_gotify_app_index(
 
 /// Scan the catalog for `forge:worker:<label>` tagged sessions whose
 /// `cwd` equals the label's run dir under `project_dir` (the project's
-/// filesystem root). Returns one entry per role label, keyed by label
-/// and valued by session_id. Used by the engineering-team Connected
-/// hook to decide which roles to resume vs spawn fresh on forge restart.
+/// filesystem root). Returns one entry per worker label, keyed by label
+/// and valued by session_id. Used by the lead's Connected hook to decide
+/// which workers to resume vs spawn fresh on forge restart.
 ///
 /// Why scan the whole catalog rather than just `project_dir`'s own
 /// subdir: workers spawned with `--worktree=<label>` `chdir` into
@@ -785,9 +784,6 @@ impl Workspace {
             #[cfg(any(test, feature = "testing"))]
             test_extra_projects: Mutex::new(Vec::new()),
         };
-        // Before returning: no session exists yet, so no lead can have
-        // Connected and triggered a roster spawn from files.
-        workspace.backfill_static_worker_rows();
         Ok(workspace)
     }
 
@@ -2661,75 +2657,16 @@ impl Workspace {
         }
     }
 
-    /// Dispatch one `Command::SpawnWorker` per configured role for a
-    /// project whose lead session just emitted `Connected`. Called
-    /// from `SessionTask`'s Connected arm (lead path only, gated on
-    /// `live_workers.is_empty()` so a reconnect / second-Connected
-    /// doesn't double-spawn).
+    /// Re-spawn this project's persisted workers on lead reconnect,
+    /// resuming by label off the catalog-scan `resume_map`. Charter and
+    /// kick come from the DB row.
     ///
-    /// `resume_map` carries `role.label -> session_id` entries for
-    /// roles whose previous-process session JSONL was discovered by
-    /// the team Connected hook's catalog scan. A role present in the
-    /// map resumes that session; a role absent from the map spawns
-    /// fresh. Empty map = all-fresh (the v1 behaviour preserved by
-    /// `spawn_team_for_lead` for callers that haven't migrated yet).
-    ///
-    /// The dispatcher reuses the existing `Command::SpawnWorker`
-    /// handler (`handle_spawn_worker`); the only difference from
-    /// MCP-tool-driven spawn is the absence of an MCP caller -
-    /// `spawned_by_session_id` is the lead's UUID directly, and
-    /// `return_to` is a dropped oneshot (we don't await the reply
-    /// here; each worker's own Connected event surfaces them via
-    /// the normal flow).
-    ///
-    /// No-op when `team` is empty.
-    pub(crate) fn spawn_team_for_lead_with_resume(
-        self: &Arc<Self>,
-        lead_session_id: &str,
-        project_key: &crate::target::ProjectKey,
-        team: &[crate::team::Role],
-        resume_map: &std::collections::HashMap<String, String>,
-    ) {
-        if team.is_empty() {
-            return;
-        }
-        for role in team {
-            let resume_existing = resume_map.get(&role.label).cloned();
-            let (tx, _rx) = tokio::sync::oneshot::channel();
-            let cmd = crate::protocol::Command::SpawnWorker {
-                project_key: project_key.clone(),
-                label: role.label.clone(),
-                charter: role.charter.clone(),
-                spawned_by_session_id: lead_session_id.to_owned(),
-                resume_existing,
-                kick: None,
-                return_to: tx,
-            };
-            if let Err(err) = self.dispatch(cmd) {
-                tracing::error!(
-                    target: "forge_workspace::team",
-                    project = %project_key.as_str(),
-                    label = %role.label,
-                    error = ?err,
-                    "spawn_team_for_lead: dispatch failed for label"
-                );
-            }
-        }
-    }
-
-    /// Re-spawn this project's persisted dynamic (LLM-spawned) workers on
-    /// lead reconnect. Folded into the same catalog-scan trigger as the
-    /// static roster and sharing its `resume_map`, so every downstream
-    /// mechanic (resume-by-label, `resume_existing`, the past-progress
-    /// guard) is identical. Charter + kick come from the DB row rather
-    /// than files.
-    ///
-    /// Since this holds the dynamic set, it decides the kick directly:
+    /// Since this holds the worker set, it decides the kick directly:
     /// a resume takes the row's own `resume_kick` and falls back to the
     /// forge restart note, telling it to continue rather than restart; a
     /// fresh re-spawn (never prompted, so no catalog tag) re-delivers the
-    /// stored kick. Both flow through `maybe_kick_worker_on_connected`'s
-    /// inline-kick path, so that hook needs no per-worker store lookup.
+    /// stored kick. `maybe_kick_worker_on_connected` then just delivers
+    /// whatever this put on the `WorkerEntry`.
     pub(crate) fn spawn_dynamic_workers_for_lead(
         self: &Arc<Self>,
         lead_session_id: &str,
@@ -2766,11 +2703,11 @@ impl Workspace {
         }
     }
 
-    /// Engineering-team Connected-hook entry point. Synchronously
-    /// claims a per-project in-flight guard, then spawns an async
-    /// task that scans the catalog for `forge:worker:<label>` tagged
-    /// sessions and dispatches one `Command::SpawnWorker` per role
-    /// (with `resume_existing` populated for roles that have a
+    /// Lead Connected-hook entry point. Synchronously claims a
+    /// per-project in-flight guard, then spawns an async task that
+    /// scans the catalog for `forge:worker:<label>` tagged sessions
+    /// and dispatches one `Command::SpawnWorker` per persisted row
+    /// (with `resume_existing` populated for labels that have a
     /// matching catalog entry, `None` otherwise). The guard is
     /// released after the dispatches go out so a fast double-
     /// Connected can't slip a second scan through.
@@ -2779,66 +2716,15 @@ impl Workspace {
     /// scan is in flight). The first-pass `live_workers.is_empty()`
     /// gate in `session_task::maybe_spawn_team_on_connected` catches
     /// the post-scan case; this guard covers the during-scan window.
-    /// Load every label's charter + initial kick (file-driven loader)
-    /// before spawning. Returns the loaded set, skipping (with a warn
-    /// log) any label whose files are missing - so a single bad label
-    /// in `static_workers = [...]` doesn't block the rest of the roster.
-    fn load_team_roles(
-        team: &[String],
-        namespace: &str,
-        project_key: &crate::target::ProjectKey,
-    ) -> Vec<crate::team::Role> {
-        let mut loaded: Vec<crate::team::Role> = Vec::with_capacity(team.len());
-        for label in team {
-            match crate::team::Role::load_for(label, namespace) {
-                Ok(role) => loaded.push(role),
-                Err(err) => {
-                    tracing::warn!(
-                        target: "forge_workspace::team",
-                        project = %project_key.as_str(),
-                        label = %label,
-                        error = %err,
-                        "no charter/kick for worker label (project-first then global); spawn skipped. Populate ~/.claude/forge-team/<project>/<label>/ or ~/.claude/forge-team/<label>/."
-                    );
-                }
-            }
-        }
-        loaded
-    }
-
     pub(crate) fn spawn_team_for_lead_with_catalog_scan(
         self: &Arc<Self>,
         lead_session_id: String,
         project_key: crate::target::ProjectKey,
         project_dir: PathBuf,
-        namespace: String,
-        static_workers: Vec<String>,
         force_new: bool,
     ) {
-        // Persisted dynamic workers re-spawn alongside the config roster
-        // through the same resume-map trigger; charter/kick come from
-        // their DB row rather than files.
         let dynamic = self.dynamic_workers_for_project(&project_key);
-        // A dynamic row wins over a `static_workers` entry of the same label:
-        // the row is the live worker's own record. This is not file-versus-
-        // inline - a `workers__spawn` with no charter stores `charter.md`'s
-        // text into the row, so the row's charter is often a snapshot of that
-        // same file. The cost is that once a row exists for a label, editing
-        // its `charter.md` stops taking effect on boot until the row is
-        // deleted. Filtered before the branch split so every boot path below
-        // inherits it.
-        let (static_workers, shadowed): (Vec<String>, Vec<String>) = static_workers
-            .into_iter()
-            .partition(|label| !dynamic.iter().any(|w| w.label == *label));
-        if !shadowed.is_empty() {
-            tracing::info!(
-                target: "forge_workspace::team",
-                project = %project_key.as_str(),
-                labels = %shadowed.join(", "),
-                "static_workers entries superseded by a dynamic worker row; their charter/kick files are not read while the row exists",
-            );
-        }
-        if static_workers.is_empty() && dynamic.is_empty() {
+        if dynamic.is_empty() {
             return;
         }
         if !self.try_claim_team_spawn(&project_key) {
@@ -2853,9 +2739,7 @@ impl Workspace {
         // the catalog resume scan entirely and spawn every worker fresh
         // (an empty resume map => `resume_existing = None` for all).
         if force_new {
-            let loaded = Self::load_team_roles(&static_workers, &namespace, &project_key);
             let empty = std::collections::HashMap::new();
-            self.spawn_team_for_lead_with_resume(&lead_session_id, &project_key, &loaded, &empty);
             self.spawn_dynamic_workers_for_lead(&lead_session_id, &project_key, &dynamic, &empty);
             self.release_team_spawn(&project_key);
             return;
@@ -2875,9 +2759,7 @@ impl Workspace {
                 project = %project_key.as_str(),
                 "no tokio runtime in scope; falling back to sync worker-spawn (test path)",
             );
-            let loaded = Self::load_team_roles(&static_workers, &namespace, &project_key);
             let empty = std::collections::HashMap::new();
-            self.spawn_team_for_lead_with_resume(&lead_session_id, &project_key, &loaded, &empty);
             self.spawn_dynamic_workers_for_lead(&lead_session_id, &project_key, &dynamic, &empty);
             self.release_team_spawn(&project_key);
             return;
@@ -2892,22 +2774,13 @@ impl Workspace {
         };
         handle.spawn(async move {
             let resume_map = scan_worker_resume_map(&config_dirs, &project_dir).await;
-            let loaded = Self::load_team_roles(&static_workers, &namespace, &project_key);
             tracing::info!(
                 target: "forge_workspace::team",
                 project = %project_key.as_str(),
                 lead_session_id = %lead_session_id,
                 resume_count = resume_map.len(),
-                fresh_count = loaded.len().saturating_sub(resume_map.len()),
-                missing_count = static_workers.len().saturating_sub(loaded.len()),
                 dynamic_count = dynamic.len(),
                 "worker-spawn catalog scan complete; dispatching SpawnWorker per label",
-            );
-            workspace.spawn_team_for_lead_with_resume(
-                &lead_session_id,
-                &project_key,
-                &loaded,
-                &resume_map,
             );
             workspace.spawn_dynamic_workers_for_lead(
                 &lead_session_id,
@@ -2931,42 +2804,6 @@ impl Workspace {
     /// after `spawn_team_for_lead_with_resume` returns.
     fn release_team_spawn(&self, project_key: &crate::target::ProjectKey) {
         self.team_spawn_in_flight.lock().remove(project_key);
-    }
-
-    /// Inspect a worker session's JSONL to decide whether it has
-    /// progressed beyond the initial team-kick. Counts user-role
-    /// turns; threshold is 2.
-    ///
-    /// - 0 user turns: fresh session, no kick fired yet (or JSONL not
-    ///   yet written). Re-fire the kick.
-    /// - 1 user turn: kick landed but worker didn't progress past it
-    ///   (forge restarted before the worker did any real work, or
-    ///   crashed mid-response). Re-fire the kick so the work
-    ///   actually starts.
-    /// - 2+ user turns: worker received the kick AND has been
-    ///   prompted again since (peer/worker message, lead follow-up).
-    ///   Leave it alone; re-firing would override its in-flight
-    ///   state.
-    ///
-    /// Returns true iff the worker has 2+ user turns. The kick path
-    /// gates on this only for resume sessions; fresh sessions skip
-    /// the check (their JSONL doesn't exist yet so the answer is
-    /// always false anyway).
-    pub(crate) fn worker_has_progress_past_kick(&self, session_id: &str) -> bool {
-        let session_key = SessionKey::from_session_id(session_id.to_owned());
-        let config_dir =
-            self.config_dir_for(&session_key).unwrap_or_else(|| self.config_dir.clone());
-        let messages = forge_agent::userdata::catalog::scan::get_session_messages(
-            &config_dir,
-            session_id,
-            None,
-        )
-        .messages;
-        let user_turn_count = messages
-            .iter()
-            .filter(|m| matches!(m.kind, forge_primitives::SessionMessageKind::User))
-            .count();
-        user_turn_count >= 2
     }
 
     /// Set the `session_id` field on the workspace's `DomainSession`
@@ -3494,9 +3331,8 @@ impl Workspace {
     }
 
     /// Persist a worker's re-spawn args to the redb store so a forge
-    /// restart can bring it back. Two callers: the MCP `workers__spawn`
-    /// path, and the boot back-fill that gives each `static_workers`
-    /// label a row. A re-spawn dispatched from boot/reconnect must NOT
+    /// restart can bring it back. Called from the MCP `workers__spawn`
+    /// path. A re-spawn dispatched from boot/reconnect must NOT
     /// persist - it is replaying a row that already exists. Returns
     /// `Err` when durability could not be achieved (the store isn't
     /// open, or the write failed) so the caller can warn the lead that
@@ -3513,11 +3349,8 @@ impl Workspace {
     }
 
     /// Delete a worker's persisted row so it never re-spawns. Keyed by
-    /// `(project_key, label)`; a no-op when the DB isn't open. Since the
-    /// boot back-fill a `static_workers` label has a row too, so this
-    /// removes that as well and the next boot re-creates it from files.
-    /// Called from `spawn::teardown_worker`, the shared close/despawn
-    /// routine.
+    /// `(project_key, label)`; a no-op when the DB isn't open. Called
+    /// from `spawn::teardown_worker`, the shared close/despawn routine.
     pub(crate) fn delete_dynamic_worker(&self, project_key: &ProjectKey, label: &str) {
         if let Some(db) = self.db.lock().as_ref()
             && let Err(error) =
@@ -3603,61 +3436,6 @@ impl Workspace {
         };
         let rows = crate::store::dynamic_workers::list_for_project(db, project_key.as_str())?;
         Ok(rows.iter().any(|w| w.label == label))
-    }
-
-    /// One-shot back-fill: write a `DynamicWorker` row for every
-    /// `static_workers` label that has none, lifting its texts through the
-    /// same loaders the static spawn path reads. Rows only - it spawns
-    /// nothing, because the dynamic re-spawn path picks the rows up on this
-    /// same boot and the static roster is filtered against them.
-    ///
-    /// Called from `new_impl` before construction returns, which is the
-    /// ordering requirement: no session exists yet, so nothing can have
-    /// Connected and triggered a roster spawn.
-    ///
-    /// Throwaway - deleted with the filesystem role system.
-    fn backfill_static_worker_rows(&self) {
-        for view in self.list_projects() {
-            for label in &view.static_workers {
-                // An unreadable store is not an absent row; leave it alone.
-                if !matches!(self.dynamic_worker_exists(&view.key, label), Ok(false)) {
-                    continue;
-                }
-                let Some(resolved) = crate::team::roles::resolve_role(label, &view.name) else {
-                    continue;
-                };
-                // Both required: a label missing either cannot spawn today,
-                // so a partial row would only move the failure later.
-                let (Ok(charter), Ok(kick)) = (
-                    crate::team::load_charter(&resolved),
-                    crate::team::load_initial_kick(&resolved),
-                ) else {
-                    continue;
-                };
-                let row = crate::store::dynamic_workers::DynamicWorker {
-                    project_key: view.key.as_str().to_owned(),
-                    label: label.clone(),
-                    charter,
-                    kick: Some(kick),
-                    resume_kick: crate::team::load_resume_kick(&resolved).ok().flatten(),
-                };
-                match self.persist_dynamic_worker(&row) {
-                    Ok(()) => tracing::info!(
-                        target: "forge_workspace::team",
-                        project = %view.key.as_str(),
-                        label = %label,
-                        "back-filled a dynamic worker row from this static_workers label's files",
-                    ),
-                    Err(error) => tracing::warn!(
-                        target: "forge_workspace::team",
-                        %error,
-                        project = %view.key.as_str(),
-                        label = %label,
-                        "back-filling this static_workers label failed; it still spawns from files",
-                    ),
-                }
-            }
-        }
     }
 
     /// Merge the supplied fields onto the dynamic-worker row keyed by
@@ -5128,10 +4906,8 @@ impl Workspace {
             // reply, before this async failure. A worktree-creation
             // failure is a hard removal (the worker never started), so
             // delete the row too - otherwise it zombie-re-spawns every
-            // restart despite a visibly-failed spawn. Since the boot
-            // back-fill a `static_workers` label has a row as well, so
-            // its row goes too and the next boot re-creates it from
-            // files, retrying the spawn. The transition-to-Failed path below
+            // restart despite a visibly-failed spawn. The
+            // transition-to-Failed path below
             // deliberately keeps the row: a Failed-but-visible worker
             // wasn't despawned, so it should re-spawn to recover or
             // re-fail visibly.
@@ -6171,7 +5947,11 @@ impl Workspace {
     }
 }
 
-#[cfg(any(test, feature = "testing"))]
+/// Kept apart from the `testing`-feature block below: these two are
+/// consumed only by this crate's own test mods, so they need neither
+/// `pub` nor the feature arm. The seeds in that block do - forge-tui's
+/// tests call them.
+#[cfg(test)]
 impl Workspace {
     /// Enable test-mode app-level command interception. After this
     /// call, every `Command` routed through the app-level branch of
@@ -6179,7 +5959,7 @@ impl Workspace {
     /// drain via `drain_test_dispatch_buffer`. No-op if already
     /// enabled. Test-only - tests use this to assert what would
     /// have been dispatched without spinning up real subprocesses.
-    pub fn enable_test_dispatch_intercept(&self) {
+    pub(crate) fn enable_test_dispatch_intercept(&self) {
         let mut intercept = self.command_intercept.lock();
         if intercept.is_none() {
             *intercept = Some(Vec::new());
@@ -6189,14 +5969,17 @@ impl Workspace {
     /// Drain every app-level `Command` captured since the last call.
     /// Returns empty when no intercept was enabled or no commands
     /// were dispatched. Test-only.
-    pub fn drain_test_dispatch_buffer(&self) -> Vec<crate::protocol::Command> {
+    pub(crate) fn drain_test_dispatch_buffer(&self) -> Vec<crate::protocol::Command> {
         let mut intercept = self.command_intercept.lock();
         match intercept.as_mut() {
             Some(buffer) => std::mem::take(buffer),
             None => Vec::new(),
         }
     }
+}
 
+#[cfg(any(test, feature = "testing"))]
+impl Workspace {
     /// Append a synthetic project to the test overlay searched first
     /// by `find_project_view_by_name`. Used by engineering-team tests
     /// to drive the Connected-hook worker-spawn trigger without
@@ -8462,14 +8245,21 @@ SOLO_TOKEN = "solo-secret"
     }
 
     #[tokio::test]
-    async fn teardown_dynamic_worker_drops_its_crons_and_subs_keeps_others() {
+    async fn teardown_worker_drops_its_crons_and_subs_keeps_others() {
         let (ws, _rx) = Workspace::testing_stub();
         let dir = tempdir().expect("tempdir");
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        // Empty static_workers -> "scratch" is a dynamic worker.
-        ws.seed_test_project_with_static_workers("forge", "/tmp/cron-teardown-dyn", &[]);
+        // "scratch" is named in static_workers on purpose: the key spawns
+        // nothing, so it must not exempt the label from the cleanup. The
+        // fixture the repo already ships for the launchpad has exactly
+        // this overlap, so it is not a contrived case.
+        ws.seed_test_project_with_static_workers(
+            "forge",
+            "/tmp/cron-teardown-dyn",
+            &["scratch".to_owned()],
+        );
         let view_key = ws
             .list_projects()
             .into_iter()
@@ -8515,54 +8305,6 @@ SOLO_TOKEN = "solo-secret"
         let subs = ws.gotify_subscriptions_for_project("forge");
         assert!(subs.iter().all(|s| s.id != scratch_sub.id), "the dynamic worker's sub is dropped");
         assert!(subs.iter().any(|s| s.id == lead_sub.id), "the lead sub survives");
-    }
-
-    #[tokio::test]
-    async fn teardown_static_worker_keeps_its_crons_and_subs() {
-        let (ws, _rx) = Workspace::testing_stub();
-        let dir = tempdir().expect("tempdir");
-        ws.install_db_for_test(
-            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
-        );
-        // "reviewer" IS a static worker -> it re-spawns, so a close keeps
-        // its durable state.
-        ws.seed_test_project_with_static_workers(
-            "forge",
-            "/tmp/cron-teardown-static",
-            &["reviewer".to_owned()],
-        );
-        let view_key = ws
-            .list_projects()
-            .into_iter()
-            .find(|v| v.name == "forge")
-            .map(|v| v.key)
-            .expect("seeded project view");
-        ws.insert_live_worker(&view_key, live_worker_entry("reviewer", "worker-1"));
-
-        let reviewer_cron = worker_cron("reviewer-cron", "forge", Some("reviewer"));
-        ws.push_cron(reviewer_cron.clone());
-        let mut reviewer_sub = gotify_sub("forge", &[], None);
-        reviewer_sub.team_role = Some("reviewer".to_owned());
-        ws.add_gotify_subscription(reviewer_sub.clone(), true);
-
-        crate::spawn::handle_close_worker(&ws, &view_key, "reviewer");
-
-        assert!(
-            ws.crons_for_project("forge").iter().any(|c| c.id == reviewer_cron.id),
-            "a static worker keeps its cron on close",
-        );
-        assert!(
-            ws.gotify_subscriptions_for_project("forge").iter().any(|s| s.id == reviewer_sub.id),
-            "a static worker keeps its sub on close",
-        );
-        let persisted_crons = {
-            let guard = ws.db.lock();
-            crate::store::cron::list(guard.as_ref().expect("db installed")).expect("list")
-        };
-        assert!(
-            persisted_crons.iter().any(|c| c.id == reviewer_cron.id),
-            "the static worker's cron stays in the store",
-        );
     }
 
     /// The seam the bug lived in: `resolve_identity` gathers the caller's
@@ -9334,14 +9076,28 @@ SOLO_TOKEN = "solo-secret"
     }
 
     #[test]
-    fn deliver_asleep_static_worker_cron_buffers_and_wakes_the_project() {
+    fn deliver_asleep_worker_cron_buffers_and_wakes_the_project() {
         let (ws, _rx) = Workspace::testing_stub();
-        // "reviewer" is a static worker, so the owner exists even while asleep.
-        ws.seed_test_project_with_static_workers(
-            "proj",
-            "/tmp/wc-static",
-            &["reviewer".to_owned()],
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
+        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-static", &[]);
+        // The row is what makes the owner exist while asleep; without it
+        // the fire router collects the cron instead.
+        let key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "proj")
+            .map(|v| v.key)
+            .expect("seeded project");
+        let _ = ws.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+            project_key: key.as_str().to_owned(),
+            label: "reviewer".to_owned(),
+            charter: "review".to_owned(),
+            kick: None,
+            resume_kick: None,
+        });
 
         ws.enable_test_dispatch_intercept();
         let outcome = crate::spawn::deliver_cron_prompt(
@@ -9375,12 +9131,19 @@ SOLO_TOKEN = "solo-secret"
     #[test]
     fn deliver_cron_to_spawning_worker_buffers_via_owner() {
         let (ws, _rx) = Workspace::testing_stub();
-        ws.seed_test_project_with_static_workers(
-            "proj",
-            "/tmp/wc-spawning",
-            &["reviewer".to_owned()],
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
+        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-spawning", &[]);
         let key = ws.list_projects().into_iter().find(|v| v.name == "proj").expect("view").key;
+        let _ = ws.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+            project_key: key.as_str().to_owned(),
+            label: "reviewer".to_owned(),
+            charter: "review".to_owned(),
+            kick: None,
+            resume_kick: None,
+        });
         let worker_key = SessionKey::from_session_id("worker-spawning-cron");
         ws.insert_live_worker(&key, live_worker_entry("reviewer", "worker-spawning-cron"));
         // Registered but not connected: session_id stays None.
@@ -9458,14 +9221,18 @@ SOLO_TOKEN = "solo-secret"
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        // Db open + empty dynamic_workers + no static roster: "ghost" is
-        // conclusively absent, so its cron is removed.
-        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-gone", &[]);
+        // Db open + empty dynamic_workers: "ghost" is conclusively
+        // absent, so its cron is removed.
+        // Named in `static_workers` and absent from the table: the key
+        // spawns nothing, so the row is the only thing that could bring
+        // this owner back and the cron must be collected, not buffered
+        // into a bucket nothing will ever drain.
+        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-gone", &["ghost".to_owned()]);
         let outcome =
             crate::spawn::deliver_cron_prompt(&ws, "proj", Some("ghost"), "x".to_owned(), false);
         assert!(
             matches!(outcome, crate::spawn::CronFireOutcome::TargetGone),
-            "a label conclusively absent from static + dynamic is gone",
+            "a label with no dynamic_workers row is gone even when static_workers names it",
         );
     }
 
@@ -11913,15 +11680,6 @@ mod tag_retry_tests {
 mod team_spawn_tests {
     use super::*;
     use crate::protocol::Command;
-    use crate::team::Role;
-
-    fn role(label: &str) -> Role {
-        Role {
-            label: label.to_owned(),
-            charter: format!("test charter for {label}"),
-            initial_kick: format!("test kick for {label}"),
-        }
-    }
 
     /// A worker must not receive the delegation block. It instructs the
     /// reader to call `workers__spawn`, which is lead-only, so a worker
@@ -11943,215 +11701,36 @@ mod team_spawn_tests {
     }
 
     #[test]
-    fn spawn_team_for_lead_dispatches_one_command_per_role() {
-        let (workspace, _update_rx) = Workspace::testing_stub();
-        workspace.enable_test_dispatch_intercept();
-        let lead_sid = "lead-uuid";
-        let project_key = ProjectKey::new("proj-x");
-        let team = vec![role("planner"), role("reviewer"), role("tester")];
-
-        workspace.spawn_team_for_lead_with_resume(
-            lead_sid,
-            &project_key,
-            &team,
-            &std::collections::HashMap::new(),
-        );
-
-        let dispatched = workspace.drain_test_dispatch_buffer();
-        assert_eq!(dispatched.len(), 3, "one SpawnWorker per configured role");
-
-        let mut labels: Vec<String> = Vec::new();
-        let mut charters: Vec<String> = Vec::new();
-        for cmd in dispatched {
-            match cmd {
-                Command::SpawnWorker {
-                    label,
-                    charter,
-                    spawned_by_session_id,
-                    project_key: pk,
-                    ..
-                } => {
-                    assert_eq!(spawned_by_session_id, lead_sid);
-                    assert_eq!(pk, project_key);
-                    labels.push(label);
-                    charters.push(charter);
-                }
-                other => panic!("expected SpawnWorker, got {other:?}"),
-            }
-        }
-        labels.sort();
-        assert_eq!(labels, vec!["planner", "reviewer", "tester"]);
-        for c in charters {
-            assert!(!c.trim().is_empty(), "role charter must be non-empty");
-        }
-    }
-
-    #[test]
-    fn team_spawn_resolves_bare_label_to_project_charter() {
-        // Fixture: a project-scoped data-modules/steward charter only.
-        let tmp = tempfile::tempdir().expect("tmp");
-        let steward = tmp.path().join("data-modules").join("steward");
-        std::fs::create_dir_all(&steward).expect("mkdir");
-        std::fs::write(steward.join("charter.md"), "description: Hub steward\n").expect("charter");
-        std::fs::write(steward.join("kick.md"), "go\n").expect("kick");
-        let _guard = crate::team::override_forge_team_root_for_test(tmp.path().to_path_buf());
-
-        let (workspace, _update_rx) = Workspace::testing_stub();
-        workspace.enable_test_dispatch_intercept();
-        // No tokio runtime in a plain #[test] -> the sync fallback runs
-        // load_team_roles inline, so the bare label resolves here.
-        workspace.spawn_team_for_lead_with_catalog_scan(
-            "lead-uuid".to_owned(),
-            ProjectKey::new("data-modules"),
-            std::path::PathBuf::from("/tmp/data-modules"),
-            "data-modules".to_owned(),
-            vec!["steward".to_owned()],
-            false,
-        );
-
-        let dispatched = workspace.drain_test_dispatch_buffer();
-        let spawns: Vec<&Command> =
-            dispatched.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).collect();
-        assert_eq!(spawns.len(), 1, "bare team label resolves + spawns one worker");
-        if let Command::SpawnWorker { label, charter, .. } = spawns[0] {
-            assert_eq!(label, "steward", "worker label stays BARE, not data-modules/steward");
-            assert!(charter.contains("Hub steward"), "charter loaded from the project-scoped dir");
-        }
-    }
-
-    #[test]
     fn force_new_team_spawn_dispatches_workers_fresh() {
-        // A force-new lead's team spawn skips the catalog resume scan,
-        // so every worker dispatches with resume_existing = None. (The
-        // resume mechanic itself is covered by
-        // spawn_team_for_lead_with_resume_all_resume.)
-        let tmp = tempfile::tempdir().expect("tmp");
-        let steward = tmp.path().join("data-modules").join("steward");
-        std::fs::create_dir_all(&steward).expect("mkdir");
-        std::fs::write(steward.join("charter.md"), "description: Hub steward\n").expect("charter");
-        std::fs::write(steward.join("kick.md"), "go\n").expect("kick");
-        let _guard = crate::team::override_forge_team_root_for_test(tmp.path().to_path_buf());
-
+        // A force-new lead's worker spawn skips the catalog resume scan,
+        // so every worker dispatches with resume_existing = None.
         let (workspace, _update_rx) = Workspace::testing_stub();
+        let dir = tempfile::tempdir().expect("tempdir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let _ = workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+            project_key: "data-modules".to_owned(),
+            label: "steward".to_owned(),
+            charter: "Hub steward".to_owned(),
+            kick: Some("go".to_owned()),
+            resume_kick: None,
+        });
         workspace.enable_test_dispatch_intercept();
         workspace.spawn_team_for_lead_with_catalog_scan(
             "lead-uuid".to_owned(),
             ProjectKey::new("data-modules"),
             std::path::PathBuf::from("/tmp/data-modules"),
-            "data-modules".to_owned(),
-            vec!["steward".to_owned()],
             true, // force_new: skip the resume scan
         );
 
         let dispatched = workspace.drain_test_dispatch_buffer();
         let spawns: Vec<&Command> =
             dispatched.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).collect();
-        assert_eq!(spawns.len(), 1, "force-new still spawns the configured worker");
+        assert_eq!(spawns.len(), 1, "force-new still spawns the stored worker");
         if let Command::SpawnWorker { resume_existing, .. } = spawns[0] {
             assert!(resume_existing.is_none(), "force_new => worker spawns fresh (no resume)");
         }
-    }
-
-    #[test]
-    fn spawn_team_for_lead_with_empty_team_dispatches_nothing() {
-        let (workspace, _update_rx) = Workspace::testing_stub();
-        workspace.enable_test_dispatch_intercept();
-        workspace.spawn_team_for_lead_with_resume(
-            "lead-uuid",
-            &ProjectKey::new("proj-x"),
-            &Vec::<Role>::new(),
-            &std::collections::HashMap::new(),
-        );
-        assert!(workspace.drain_test_dispatch_buffer().is_empty());
-    }
-
-    /// #157: all-fresh path - when no roles have a matching entry in
-    /// `resume_map`, every dispatched `SpawnWorker` carries
-    /// `resume_existing = None`.
-    #[test]
-    fn spawn_team_for_lead_with_resume_all_fresh() {
-        let (workspace, _update_rx) = Workspace::testing_stub();
-        workspace.enable_test_dispatch_intercept();
-        let team = vec![role("planner"), role("reviewer")];
-        workspace.spawn_team_for_lead_with_resume(
-            "lead-uuid",
-            &ProjectKey::new("proj-x"),
-            &team,
-            &std::collections::HashMap::new(),
-        );
-        let dispatched = workspace.drain_test_dispatch_buffer();
-        assert_eq!(dispatched.len(), 2);
-        for cmd in dispatched {
-            match cmd {
-                Command::SpawnWorker { resume_existing, .. } => {
-                    assert!(resume_existing.is_none(), "all-fresh path passes None");
-                }
-                other => panic!("expected SpawnWorker, got {other:?}"),
-            }
-        }
-    }
-
-    /// #157: all-resume path - every role has a matching entry in
-    /// `resume_map`, so every dispatched `SpawnWorker` carries
-    /// `resume_existing = Some(<expected_session_id>)`.
-    #[test]
-    fn spawn_team_for_lead_with_resume_all_resume() {
-        let (workspace, _update_rx) = Workspace::testing_stub();
-        workspace.enable_test_dispatch_intercept();
-        let team = vec![role("planner"), role("reviewer")];
-        let mut resume_map = std::collections::HashMap::new();
-        resume_map.insert("planner".to_owned(), "planner-uuid".to_owned());
-        resume_map.insert("reviewer".to_owned(), "reviewer-uuid".to_owned());
-        workspace.spawn_team_for_lead_with_resume(
-            "lead-uuid",
-            &ProjectKey::new("proj-x"),
-            &team,
-            &resume_map,
-        );
-        let dispatched = workspace.drain_test_dispatch_buffer();
-        assert_eq!(dispatched.len(), 2);
-        for cmd in dispatched {
-            match cmd {
-                Command::SpawnWorker { label, resume_existing, .. } => {
-                    let expected = resume_map.get(&label).cloned();
-                    assert_eq!(resume_existing, expected, "resume_existing matches map entry");
-                }
-                other => panic!("expected SpawnWorker, got {other:?}"),
-            }
-        }
-    }
-
-    /// #157: mixed path - one role resumes, one is fresh.
-    #[test]
-    fn spawn_team_for_lead_with_resume_mixed() {
-        let (workspace, _update_rx) = Workspace::testing_stub();
-        workspace.enable_test_dispatch_intercept();
-        let team = vec![role("planner"), role("reviewer")];
-        let mut resume_map = std::collections::HashMap::new();
-        resume_map.insert("planner".to_owned(), "planner-uuid".to_owned());
-        // reviewer absent: fresh-spawn.
-        workspace.spawn_team_for_lead_with_resume(
-            "lead-uuid",
-            &ProjectKey::new("proj-x"),
-            &team,
-            &resume_map,
-        );
-        let dispatched = workspace.drain_test_dispatch_buffer();
-        assert_eq!(dispatched.len(), 2);
-        let mut planner_resume: Option<String> = None;
-        let mut reviewer_resume: Option<String> = None;
-        for cmd in dispatched {
-            match cmd {
-                Command::SpawnWorker { label, resume_existing, .. } => match label.as_str() {
-                    "planner" => planner_resume = resume_existing,
-                    "reviewer" => reviewer_resume = resume_existing,
-                    other => panic!("unexpected label {other}"),
-                },
-                other => panic!("expected SpawnWorker, got {other:?}"),
-            }
-        }
-        assert_eq!(planner_resume, Some("planner-uuid".to_owned()));
-        assert!(reviewer_resume.is_none(), "reviewer not in map → fresh-spawn");
     }
 
     fn dyn_worker(label: &str, kick: Option<&str>) -> crate::store::dynamic_workers::DynamicWorker {
@@ -12270,11 +11849,10 @@ mod team_spawn_tests {
         }
     }
 
-    /// A project with an EMPTY static roster but a persisted dynamic
-    /// worker still re-spawns it on lead reconnect (the empty-team early
-    /// return must not skip the DB set).
+    /// A persisted worker re-spawns on lead reconnect, carrying the
+    /// row's own charter.
     #[test]
-    fn catalog_scan_respawns_dynamic_worker_without_static_roster() {
+    fn catalog_scan_respawns_persisted_worker() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         let dir = tempfile::tempdir().expect("tempdir");
         workspace.install_db_for_test(
@@ -12296,259 +11874,17 @@ mod team_spawn_tests {
             "lead-uuid".to_owned(),
             project_key,
             std::path::PathBuf::from("/tmp/data-modules"),
-            "data-modules".to_owned(),
-            Vec::new(),
             false,
         );
 
         let dispatched = workspace.drain_test_dispatch_buffer();
         let spawns: Vec<&Command> =
             dispatched.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).collect();
-        assert_eq!(spawns.len(), 1, "the persisted dynamic worker re-spawns with no static roster");
+        assert_eq!(spawns.len(), 1, "the persisted worker re-spawns on lead reconnect");
         if let Command::SpawnWorker { label, charter, .. } = spawns[0] {
             assert_eq!(label, "scratch");
             assert_eq!(charter, "resume the scratch task", "charter comes from the DB row");
         }
-    }
-
-    /// Write a loadable static role under the redirected forge-team root,
-    /// scoped to `namespace` the way `resolve_role` looks it up.
-    fn write_static_role(root: &std::path::Path, namespace: &str, label: &str) {
-        let dir = root.join(namespace).join(label);
-        std::fs::create_dir_all(&dir).expect("role dir");
-        std::fs::write(dir.join("charter.md"), format!("charter from the file for {label}"))
-            .expect("charter");
-        std::fs::write(dir.join("kick.md"), format!("kick from the file for {label}"))
-            .expect("kick");
-    }
-
-    /// Boot-time back-fill fixture: a workspace with an open store, a
-    /// redirected forge-team root, and one project declaring `labels`.
-    /// Returns the workspace, its project key, and the two tempdirs whose
-    /// lifetimes must outlive the test body.
-    fn backfill_fixture(
-        labels: &[&str],
-    ) -> (Arc<Workspace>, ProjectKey, tempfile::TempDir, tempfile::TempDir) {
-        let (ws, _rx) = Workspace::testing_stub();
-        let db_dir = tempfile::tempdir().expect("db dir");
-        ws.install_db_for_test(
-            crate::store::Db::open(&db_dir.path().join("db.redb")).expect("open db"),
-        );
-        let team_root = tempfile::tempdir().expect("team root");
-        let owned: Vec<String> = labels.iter().map(|l| (*l).to_owned()).collect();
-        ws.seed_test_project_with_static_workers("demo", "/tmp/demo", &owned);
-        let key =
-            ws.list_projects().into_iter().find(|v| v.name == "demo").expect("seeded project").key;
-        (ws, key, db_dir, team_root)
-    }
-
-    /// A static label with charter, kick and resume-kick on disk gets a row
-    /// carrying all three texts.
-    #[test]
-    fn backfill_writes_a_row_with_all_three_texts() {
-        let (ws, key, _db, team_root) = backfill_fixture(&["planner"]);
-        let _guard = crate::team::override_forge_team_root_for_test(team_root.path().to_path_buf());
-        write_static_role(team_root.path(), "demo", "planner");
-        std::fs::write(
-            team_root.path().join("demo").join("planner").join("resume-kick.md"),
-            "resume from the file",
-        )
-        .expect("resume-kick");
-
-        ws.backfill_static_worker_rows();
-
-        let rows = ws.dynamic_workers_for_project(&key);
-        assert_eq!(rows.len(), 1, "one row for the one static label");
-        assert_eq!(rows[0].label, "planner");
-        assert_eq!(rows[0].charter, "charter from the file for planner");
-        assert_eq!(rows[0].kick.as_deref(), Some("kick from the file for planner"));
-        assert_eq!(rows[0].resume_kick.as_deref(), Some("resume from the file"));
-    }
-
-    /// `resume-kick.md` is optional, so a role without one gets `None`
-    /// rather than an empty string or a skipped row.
-    #[test]
-    fn backfill_writes_none_resume_kick_when_the_file_is_absent() {
-        let (ws, key, _db, team_root) = backfill_fixture(&["planner"]);
-        let _guard = crate::team::override_forge_team_root_for_test(team_root.path().to_path_buf());
-        write_static_role(team_root.path(), "demo", "planner");
-
-        ws.backfill_static_worker_rows();
-
-        let rows = ws.dynamic_workers_for_project(&key);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].resume_kick, None, "absent resume-kick.md is None, not empty");
-        assert_eq!(rows[0].charter, "charter from the file for planner");
-    }
-
-    /// A label that already has a row is left completely alone, texts
-    /// included - the back-fill must not clobber a hand-updated charter.
-    #[test]
-    fn backfill_leaves_an_existing_row_untouched() {
-        let (ws, key, _db, team_root) = backfill_fixture(&["planner"]);
-        let _guard = crate::team::override_forge_team_root_for_test(team_root.path().to_path_buf());
-        write_static_role(team_root.path(), "demo", "planner");
-        let _ = ws.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
-            project_key: key.as_str().to_owned(),
-            label: "planner".to_owned(),
-            charter: "hand-updated charter".to_owned(),
-            kick: Some("hand-updated kick".to_owned()),
-            resume_kick: None,
-        });
-
-        ws.backfill_static_worker_rows();
-
-        let rows = ws.dynamic_workers_for_project(&key);
-        assert_eq!(rows.len(), 1, "no duplicate row");
-        assert_eq!(rows[0].charter, "hand-updated charter", "existing texts survive");
-        assert_eq!(rows[0].kick.as_deref(), Some("hand-updated kick"));
-    }
-
-    /// A label whose `charter.md` or `kick.md` is missing cannot spawn
-    /// today, so it gets NO row rather than a partial one. Carries a
-    /// complete third label as an in-test control: it proves the back-fill
-    /// reached this fixture and wrote something, so the two absences are
-    /// real absences rather than a fixture that never ran.
-    #[test]
-    fn backfill_writes_nothing_for_a_label_missing_charter_or_kick() {
-        let (ws, key, _db, team_root) = backfill_fixture(&["no-charter", "no-kick", "complete"]);
-        let _guard = crate::team::override_forge_team_root_for_test(team_root.path().to_path_buf());
-        // `no-charter` has only kick.md; `no-kick` has only charter.md.
-        let a = team_root.path().join("demo").join("no-charter");
-        std::fs::create_dir_all(&a).expect("dir");
-        std::fs::write(a.join("kick.md"), "kick only").expect("kick");
-        let b = team_root.path().join("demo").join("no-kick");
-        std::fs::create_dir_all(&b).expect("dir");
-        std::fs::write(b.join("charter.md"), "charter only").expect("charter");
-        write_static_role(team_root.path(), "demo", "complete");
-
-        ws.backfill_static_worker_rows();
-
-        let labels: Vec<String> =
-            ws.dynamic_workers_for_project(&key).into_iter().map(|w| w.label).collect();
-        assert_eq!(
-            labels,
-            vec!["complete".to_owned()],
-            "only the label with both files gets a row",
-        );
-    }
-
-    /// The back-fill runs inside `Workspace::new`, so the row exists the
-    /// moment construction returns - before any session can exist to
-    /// Connect and spawn the roster from files. Deleting the call site
-    /// leaves every unit test above green, so this is what pins the wiring.
-    #[tokio::test]
-    async fn backfill_runs_before_workspace_construction_returns() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let forge_dir = tmp.path().join("forge");
-        std::fs::create_dir_all(&forge_dir).expect("forge dir");
-        std::fs::write(
-            forge_dir.join("forge.toml"),
-            r#"
-[[orgs]]
-name = "TestOrg"
-accounts = ["acct-a"]
-[[orgs.projects]]
-name = "demo"
-path = "/tmp/demo"
-static_workers = ["planner"]
-
-[[accounts]]
-display_name = "acct-a"
-config_dir = "/tmp/acct-a"
-"#,
-        )
-        .expect("write forge.toml");
-        let team_root = tmp.path().join("forge-team");
-        write_static_role(&team_root, "demo", "planner");
-        let _guard = crate::team::override_forge_team_root_for_test(team_root.clone());
-
-        let ws = Workspace::new_for_test(tmp.path().to_owned()).await.expect("workspace boot");
-
-        let key = ws.list_projects().into_iter().find(|v| v.name == "demo").expect("project").key;
-        let rows = ws.dynamic_workers_for_project(&key);
-        assert_eq!(rows.len(), 1, "construction back-filled the row before returning");
-        assert_eq!(rows[0].label, "planner");
-        assert_eq!(rows[0].charter, "charter from the file for planner");
-    }
-
-    /// A label in BOTH rosters spawns once, from its dynamic row. The policy
-    /// and its cost are stated once, at the filter in
-    /// `spawn_team_for_lead_with_catalog_scan`.
-    #[test]
-    fn catalog_scan_prefers_the_dynamic_row_over_a_same_label_static_entry() {
-        let (workspace, _update_rx) = Workspace::testing_stub();
-        let dir = tempfile::tempdir().expect("tempdir");
-        workspace.install_db_for_test(
-            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
-        );
-        let team_root = tempfile::tempdir().expect("team root");
-        let _guard = crate::team::override_forge_team_root_for_test(team_root.path().to_path_buf());
-        write_static_role(team_root.path(), "data-modules", "steward");
-
-        let project_key = ProjectKey::new("data-modules");
-        let _ = workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
-            project_key: "data-modules".to_owned(),
-            label: "steward".to_owned(),
-            charter: "charter from the row".to_owned(),
-            kick: Some("kick from the row".to_owned()),
-            resume_kick: None,
-        });
-        workspace.enable_test_dispatch_intercept();
-
-        workspace.spawn_team_for_lead_with_catalog_scan(
-            "lead-uuid".to_owned(),
-            project_key,
-            std::path::PathBuf::from("/tmp/data-modules"),
-            "data-modules".to_owned(),
-            vec!["steward".to_owned()],
-            false,
-        );
-
-        let dispatched = workspace.drain_test_dispatch_buffer();
-        let spawns: Vec<&Command> =
-            dispatched.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).collect();
-        assert_eq!(spawns.len(), 1, "a label in both rosters dispatches exactly one spawn");
-        let Command::SpawnWorker { label, charter, kick, .. } = spawns[0] else {
-            panic!("expected SpawnWorker");
-        };
-        assert_eq!(label, "steward");
-        assert_eq!(charter, "charter from the row", "the row wins over the static entry");
-        assert_eq!(kick.as_deref(), Some("kick from the row"), "and it brings the row's kick");
-    }
-
-    /// A label present ONLY in `static_workers` still spawns from its
-    /// files. The dedup must not cost anyone their static workers.
-    #[test]
-    fn catalog_scan_still_spawns_a_static_only_label_from_files() {
-        let (workspace, _update_rx) = Workspace::testing_stub();
-        let dir = tempfile::tempdir().expect("tempdir");
-        workspace.install_db_for_test(
-            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
-        );
-        let team_root = tempfile::tempdir().expect("team root");
-        let _guard = crate::team::override_forge_team_root_for_test(team_root.path().to_path_buf());
-        write_static_role(team_root.path(), "data-modules", "planner");
-
-        workspace.enable_test_dispatch_intercept();
-        workspace.spawn_team_for_lead_with_catalog_scan(
-            "lead-uuid".to_owned(),
-            ProjectKey::new("data-modules"),
-            std::path::PathBuf::from("/tmp/data-modules"),
-            "data-modules".to_owned(),
-            vec!["planner".to_owned()],
-            false,
-        );
-
-        let dispatched = workspace.drain_test_dispatch_buffer();
-        let spawns: Vec<&Command> =
-            dispatched.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).collect();
-        assert_eq!(spawns.len(), 1, "a static-only label still spawns");
-        let Command::SpawnWorker { label, charter, .. } = spawns[0] else {
-            panic!("expected SpawnWorker");
-        };
-        assert_eq!(label, "planner");
-        assert_eq!(charter, "charter from the file for planner", "charter still comes from files");
     }
 
     /// A dynamic worker whose row was deleted (despawn / close) does NOT
@@ -12561,13 +11897,18 @@ config_dir = "/tmp/acct-a"
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
         let project_key = ProjectKey::new("data-modules");
-        let _ = workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
-            project_key: "data-modules".to_owned(),
-            label: "scratch".to_owned(),
-            charter: "c".to_owned(),
-            kick: None,
-            resume_kick: None,
-        });
+        // Expect rather than discard: a silent write failure would leave
+        // nothing to delete and the negative assertion would hold for the
+        // wrong reason.
+        workspace
+            .persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+                project_key: "data-modules".to_owned(),
+                label: "scratch".to_owned(),
+                charter: "c".to_owned(),
+                kick: None,
+                resume_kick: None,
+            })
+            .expect("persist the row this test then deletes");
         workspace.delete_dynamic_worker(&project_key, "scratch");
         workspace.enable_test_dispatch_intercept();
 
@@ -12575,8 +11916,6 @@ config_dir = "/tmp/acct-a"
             "lead-uuid".to_owned(),
             project_key,
             std::path::PathBuf::from("/tmp/data-modules"),
-            "data-modules".to_owned(),
-            Vec::new(),
             false,
         );
 
@@ -12584,6 +11923,135 @@ config_dir = "/tmp/acct-a"
         assert!(
             dispatched.iter().all(|c| !matches!(c, Command::SpawnWorker { .. })),
             "a deleted dynamic worker must not re-spawn",
+        );
+    }
+
+    /// Boot a real workspace over a one-project forge.toml, persist a
+    /// `steward` row, and lay down a `forge:worker:steward` tagged
+    /// session under the project's own storage key so the catalog scan
+    /// has something resumable to find. Returns the workspace plus the
+    /// project's key and path, and the session_id the scan should pick.
+    ///
+    /// Both tempdirs must outlive the caller.
+    async fn resumable_worker_fixture(
+        project: &tempfile::TempDir,
+        cfg: &tempfile::TempDir,
+    ) -> (Arc<Workspace>, crate::target::ProjectKey, PathBuf, String) {
+        let project_path = project.path().to_string_lossy().replace('\\', "/");
+        let forge_dir = cfg.path().join("forge");
+        std::fs::create_dir_all(&forge_dir).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+[[orgs.projects]]
+name = "demo"
+path = "{project_path}"
+
+[[accounts]]
+display_name = "acct-a"
+config_dir = "{}"
+"#,
+                cfg.path().to_string_lossy().replace('\\', "/"),
+            ),
+        )
+        .expect("write forge.toml");
+
+        // The scan matches a session's STORAGE KEY against the label's
+        // run dir, which for a non-git project is the project root.
+        let session_id = "550e8400-e29b-41d4-a716-446655440099";
+        let storage_key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+            &project.path().to_string_lossy(),
+        ));
+        let jsonl_dir = forge_sdk::projects_dir_for(cfg.path()).join(&storage_key);
+        std::fs::create_dir_all(&jsonl_dir).expect("jsonl dir");
+        std::fs::write(
+            jsonl_dir.join(format!("{session_id}.jsonl")),
+            format!(
+                "{{\"type\":\"user\",\"cwd\":\"{project_path}\",\"message\":{{\"content\":\"hi\"}}}}\n\
+                 {{\"type\":\"tag\",\"tag\":\"forge:worker:steward\"}}\n"
+            ),
+        )
+        .expect("write tagged jsonl");
+
+        let ws = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).await.expect("boot"));
+        let view = ws.list_projects().into_iter().find(|v| v.name == "demo").expect("project");
+        let _ = ws.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+            project_key: view.key.as_str().to_owned(),
+            label: "steward".to_owned(),
+            charter: "mind the queues".to_owned(),
+            kick: None,
+            resume_kick: None,
+        });
+        ws.enable_test_dispatch_intercept();
+        (ws, view.key.clone(), view.path.clone(), session_id.to_owned())
+    }
+
+    /// Poll the intercept buffer until a SpawnWorker lands or the
+    /// deadline passes; the dispatch happens in a spawned task after an
+    /// async catalog scan.
+    async fn await_spawn_worker(ws: &Arc<Workspace>) -> Vec<Command> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            let dispatched = ws.drain_test_dispatch_buffer();
+            if dispatched.iter().any(|c| matches!(c, Command::SpawnWorker { .. })) {
+                return dispatched;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        Vec::new()
+    }
+
+    /// The async arm: under a runtime the scan runs, finds the tagged
+    /// session and re-spawns the worker onto it.
+    #[tokio::test]
+    async fn catalog_scan_resumes_a_worker_onto_its_tagged_session() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, key, path, session_id) = resumable_worker_fixture(&project, &cfg).await;
+
+        ws.spawn_team_for_lead_with_catalog_scan("lead-uuid".to_owned(), key, path, false);
+
+        let dispatched = await_spawn_worker(&ws).await;
+        let spawns: Vec<&Command> =
+            dispatched.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).collect();
+        assert_eq!(spawns.len(), 1, "the persisted row dispatches one SpawnWorker");
+        let Command::SpawnWorker { label, resume_existing, .. } = spawns[0] else {
+            panic!("expected SpawnWorker");
+        };
+        assert_eq!(label, "steward");
+        assert_eq!(
+            resume_existing.as_deref(),
+            Some(session_id.as_str()),
+            "the scan resumes the worker onto its tagged session",
+        );
+    }
+
+    /// `--new`: the same fixture skips the scan entirely, so the worker
+    /// that WOULD have resumed spawns fresh. Paired with the test above
+    /// deliberately - against a fixture with nothing resumable both
+    /// arms yield None and the branch is unobservable.
+    #[tokio::test]
+    async fn force_new_spawns_fresh_the_worker_the_scan_would_have_resumed() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, key, path, _session_id) = resumable_worker_fixture(&project, &cfg).await;
+
+        ws.spawn_team_for_lead_with_catalog_scan("lead-uuid".to_owned(), key, path, true);
+
+        let dispatched = await_spawn_worker(&ws).await;
+        let spawns: Vec<&Command> =
+            dispatched.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).collect();
+        assert_eq!(spawns.len(), 1, "force_new still spawns the persisted worker");
+        let Command::SpawnWorker { resume_existing, .. } = spawns[0] else {
+            panic!("expected SpawnWorker");
+        };
+        assert!(
+            resume_existing.is_none(),
+            "force_new skips the scan, so a resumable worker still spawns fresh",
         );
     }
 }
@@ -12866,59 +12334,6 @@ mod build_resume_map_tests {
             Some(&"wt-uuid".to_owned()),
             "storage-key scoping resumes the worktree session even when the head-read cwd is wrong",
         );
-    }
-}
-
-#[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-mod worker_resume_kick_skip_tests {
-    use super::*;
-    use std::fs;
-    use tempfile::tempdir;
-
-    fn write_jsonl(config_dir: &std::path::Path, session_id: &str, body: &str) {
-        let project_dir = forge_sdk::projects_dir_for(config_dir).join("test-proj");
-        fs::create_dir_all(&project_dir).expect("project dir");
-        let path = project_dir.join(format!("{session_id}.jsonl"));
-        fs::write(&path, body).expect("write jsonl");
-    }
-
-    /// #157: 0 user turns (empty JSONL or no file) means the worker
-    /// hasn't progressed past the kick. Re-kick on resume.
-    #[test]
-    fn worker_has_progress_past_kick_zero_user_turns_returns_false() {
-        let cfg = tempdir().expect("cfg");
-        let session_id = "550e8400-e29b-41d4-a716-446655440010";
-        write_jsonl(cfg.path(), session_id, "");
-        let (workspace, _) = Workspace::testing_stub_with_config_dir(cfg.path().to_path_buf());
-        assert!(!workspace.worker_has_progress_past_kick(session_id));
-    }
-
-    /// #157: 1 user turn means the kick landed but the worker
-    /// crashed / didn't progress. Re-fire so work actually starts.
-    #[test]
-    fn worker_has_progress_past_kick_one_user_turn_returns_false() {
-        let cfg = tempdir().expect("cfg");
-        let session_id = "550e8400-e29b-41d4-a716-446655440011";
-        let body = r#"{"type":"user","timestamp":"2026-04-22T00:00:00.000Z","cwd":"/p","message":{"content":"kick"}}
-"#;
-        write_jsonl(cfg.path(), session_id, body);
-        let (workspace, _) = Workspace::testing_stub_with_config_dir(cfg.path().to_path_buf());
-        assert!(!workspace.worker_has_progress_past_kick(session_id));
-    }
-
-    /// #157: 2+ user turns means the worker is past the kick. Skip
-    /// re-kicking to preserve in-flight state.
-    #[test]
-    fn worker_has_progress_past_kick_two_user_turns_returns_true() {
-        let cfg = tempdir().expect("cfg");
-        let session_id = "550e8400-e29b-41d4-a716-446655440012";
-        let body = r#"{"type":"user","timestamp":"2026-04-22T00:00:00.000Z","cwd":"/p","message":{"content":"kick"}}
-{"type":"user","timestamp":"2026-04-22T00:01:00.000Z","cwd":"/p","message":{"content":"follow-up"}}
-"#;
-        write_jsonl(cfg.path(), session_id, body);
-        let (workspace, _) = Workspace::testing_stub_with_config_dir(cfg.path().to_path_buf());
-        assert!(workspace.worker_has_progress_past_kick(session_id));
     }
 }
 
@@ -14353,10 +13768,9 @@ config_dir = "~/.claude-alpha"
 
     /// The launchpad's worker rows chip from the assignment plan, which
     /// seeds `lead` plus the project's `static_workers` and nothing else.
-    /// So a label the boot back-fill lifted from `static_workers` keeps
-    /// its chip, while a persisted row that has not spawned this boot has
-    /// no plan entry and renders bare - the launchpad must not invent a
-    /// placeholder for the second case.
+    /// So a `static_workers` label keeps its chip, while a persisted row
+    /// that has not spawned this boot has no plan entry and renders bare
+    /// - the launchpad must not invent a placeholder for the second case.
     #[tokio::test]
     async fn plan_chips_a_static_label_but_not_a_never_spawned_one() {
         let dir = make_workspace_dir_static_worker();

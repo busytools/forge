@@ -89,10 +89,6 @@ pub enum WorkerSpawnError {
     /// pick a different label, or `git commit --allow-empty` first
     /// in the empty-repo case).
     WorktreeCreationFailed { reason: String },
-    /// File-driven spawn (`charter` omitted) but `label` resolves to no
-    /// charter (neither a project-local `<namespace>/<label>` nor a
-    /// global `<label>`).
-    CharterFileMissing { label: String },
 }
 
 /// Synchronous error from `update_worker`. Gating (lead-only, non-empty
@@ -245,17 +241,16 @@ pub trait WorkerFacade: Send + Sync {
     fn caller_identity(&self, caller: &SessionKey) -> WorkerIdentity;
 
     /// Dispatch a `Command::SpawnWorker` and await its synchronous
-    /// reply. Gating (lead-only, non-empty label) happens before
-    /// dispatch. `charter`: `Some` inline mission, or `None` to load
-    /// the role's stored charter (scope-checked against the caller's
-    /// project namespace). `resume_kick` is persisted rather than
-    /// delivered now; it replaces the generic restart note when this
-    /// worker resumes after a forge restart.
+    /// reply. Gating (lead-only, non-empty label, non-empty charter)
+    /// happens before dispatch. `resume_kick` is persisted rather than
+    /// delivered now;
+    /// it replaces the generic restart note when this worker resumes
+    /// after a forge restart.
     async fn spawn_worker(
         &self,
         caller: &SessionKey,
         label: String,
-        charter: Option<String>,
+        charter: String,
         kick: Option<String>,
         resume_kick: Option<String>,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError>;
@@ -350,7 +345,11 @@ pub trait WorkerFacade: Send + Sync {
 /// Validation chain shared by the production and mock `spawn_worker`
 /// impls so tests exercise the real rules rather than a hand-copied
 /// duplicate. `is_lead` is the resolved caller role.
-pub(super) fn validate_worker_spawn(is_lead: bool, label: &str) -> Result<(), WorkerSpawnError> {
+pub(super) fn validate_worker_spawn(
+    is_lead: bool,
+    label: &str,
+    charter: &str,
+) -> Result<(), WorkerSpawnError> {
     if !is_lead {
         return Err(WorkerSpawnError::NotLeadCaller);
     }
@@ -359,6 +358,9 @@ pub(super) fn validate_worker_spawn(is_lead: bool, label: &str) -> Result<(), Wo
     }
     if label.trim() == LEAD_LABEL {
         return Err(WorkerSpawnError::ReservedLabel);
+    }
+    if charter.trim().is_empty() {
+        return Err(WorkerSpawnError::EmptyCharter);
     }
     Ok(())
 }
@@ -433,48 +435,27 @@ impl WorkerFacade for ProdWorkerFacade {
         &self,
         caller: &SessionKey,
         label: String,
-        charter: Option<String>,
+        charter: String,
         kick: Option<String>,
         resume_kick: Option<String>,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError> {
         let cp = self.caller_project(caller).ok_or(WorkerSpawnError::UnknownCallerProject)?;
-        validate_worker_spawn(cp.is_lead, &label)?;
+        validate_worker_spawn(cp.is_lead, &label, &charter)?;
         let ws = self.workspace.upgrade().ok_or_else(|| WorkerSpawnError::DispatchFailed {
             message: "workspace dropped".into(),
         })?;
-        // Resolve the caller's project view once: its name is the
-        // scope namespace for a file-driven spawn, and its path
-        // answers the is_git_repo probe the failure classifier reads
-        // (the WorkerEntry is gone by the time we see a spawn error).
+        // The project view's path answers the is_git_repo probe the
+        // failure classifier reads (the WorkerEntry is gone by the time
+        // we see a spawn error).
         let Some(view) = ws.list_projects().into_iter().find(|v| v.key == cp.project_key) else {
             return Err(WorkerSpawnError::UnknownCallerProject);
         };
         let is_git_repo_at_spawn = forge_agent::env::worktree::is_git_repo(&view.path);
-        let namespace = view.name;
         // The one-live-worker-per-label guard lives in the shared
-        // `handle_spawn_worker` core (so static/dynamic/health-check
-        // dispatches are deduped too); a duplicate MCP spawn surfaces
-        // from there as a dispatch error.
-        //
-        // `Some(non-empty)` is an ad-hoc inline mission. `None` resolves
-        // the bare label project-first-then-global and loads that
-        // charter; resolution IS the scope check (a project only ever
-        // resolves its own roles + globals).
-        let charter = match charter {
-            Some(text) if !text.trim().is_empty() => text,
-            Some(_) => return Err(WorkerSpawnError::EmptyCharter),
-            None => {
-                if label.contains('/') {
-                    return Err(WorkerSpawnError::CharterFileMissing { label }); // bare names only
-                }
-                let resolved = crate::team::roles::resolve_role(&label, &namespace)
-                    .ok_or_else(|| WorkerSpawnError::CharterFileMissing { label: label.clone() })?;
-                match crate::team::roles::load_charter(&resolved) {
-                    Ok(text) => text,
-                    Err(_) => return Err(WorkerSpawnError::CharterFileMissing { label }),
-                }
-            }
-        };
+        // `handle_spawn_worker` core, so a boot re-spawn is deduped
+        // against this one; a duplicate MCP spawn surfaces from there as
+        // a dispatch error.
+
         // Row to persist on success. Captured before the values move
         // into the Command so a forge restart can re-spawn this dynamic
         // worker (resolved charter/kick, no session_id - resume is
@@ -833,20 +814,12 @@ impl WorkerFacade for MockWorkerFacade {
         &self,
         caller: &SessionKey,
         label: String,
-        charter: Option<String>,
+        charter: String,
         kick: Option<String>,
         resume_kick: Option<String>,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError> {
         let cp = self.caller_project(caller).ok_or(WorkerSpawnError::UnknownCallerProject)?;
-        validate_worker_spawn(cp.is_lead, &label)?;
-        // Mirror the prod inline-charter rule; a file-driven (None)
-        // spawn doesn't touch the filesystem in the mock, so record a
-        // synthetic marker that still captures the label.
-        let charter = match charter {
-            Some(text) if !text.trim().is_empty() => text,
-            Some(_) => return Err(WorkerSpawnError::EmptyCharter),
-            None => format!("file-charter:{label}"),
-        };
+        validate_worker_spawn(cp.is_lead, &label, &charter)?;
         self.spawn_calls.lock().push((caller.clone(), label, charter, kick, resume_kick));
         self.spawn_reply.lock().clone().unwrap_or(Err(WorkerSpawnError::DispatchFailed {
             message: "no preloaded reply".into(),
@@ -1027,7 +1000,7 @@ mod mock_tests {
             .spawn_worker(
                 &SessionKey::from_session_id("k1"),
                 "reviewer".into(),
-                Some("charter".into()),
+                "charter".into(),
                 None,
                 None,
             )
@@ -1052,7 +1025,7 @@ mod mock_tests {
             .spawn_worker(
                 &SessionKey::from_session_id("lead-key"),
                 "reviewer".into(),
-                Some("charter".into()),
+                "charter".into(),
                 None,
                 None,
             )
@@ -1067,15 +1040,22 @@ mod mock_tests {
         // Prod + mock spawn_worker both route through this, so the rules
         // are covered against the shipping code, not a copy.
         assert!(matches!(
-            validate_worker_spawn(false, "reviewer"),
+            validate_worker_spawn(false, "reviewer", "c"),
             Err(WorkerSpawnError::NotLeadCaller)
         ));
-        assert!(matches!(validate_worker_spawn(true, "   "), Err(WorkerSpawnError::EmptyLabel)));
         assert!(matches!(
-            validate_worker_spawn(true, LEAD_LABEL),
+            validate_worker_spawn(true, "   ", "c"),
+            Err(WorkerSpawnError::EmptyLabel)
+        ));
+        assert!(matches!(
+            validate_worker_spawn(true, LEAD_LABEL, "c"),
             Err(WorkerSpawnError::ReservedLabel)
         ));
-        assert!(validate_worker_spawn(true, "reviewer").is_ok());
+        assert!(matches!(
+            validate_worker_spawn(true, "reviewer", "   "),
+            Err(WorkerSpawnError::EmptyCharter)
+        ));
+        assert!(validate_worker_spawn(true, "reviewer", "c").is_ok());
     }
 
     #[tokio::test]
@@ -1086,31 +1066,13 @@ mod mock_tests {
             lead.clone(),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
         );
-        let res = mock.spawn_worker(&lead, "reviewer".into(), Some("   ".into()), None, None).await;
+        let res = mock.spawn_worker(&lead, "reviewer".into(), "   ".into(), None, None).await;
         assert!(matches!(res, Err(WorkerSpawnError::EmptyCharter)));
         assert_eq!(
             mock.spawn_calls.lock().len(),
             0,
             "empty inline charter must not record a spawn"
         );
-    }
-
-    #[test]
-    fn resolution_scopes_project_role_to_its_own_project() {
-        // A project role resolves only from its own project; resolution
-        // IS the scope check now (a project sees its own roles + globals).
-        use crate::team::roles::{override_forge_team_root_for_test, resolve_role};
-        let tmp = tempfile::tempdir().expect("tmp");
-        let steward = tmp.path().join("data-modules").join("steward");
-        std::fs::create_dir_all(&steward).expect("mkdir");
-        std::fs::write(steward.join("charter.md"), "description: Hub steward\n").expect("charter");
-        let _guard = override_forge_team_root_for_test(tmp.path().to_path_buf());
-
-        assert_eq!(
-            resolve_role("steward", "data-modules").as_deref(),
-            Some("data-modules/steward")
-        );
-        assert_eq!(resolve_role("steward", "forge"), None);
     }
 
     #[test]
