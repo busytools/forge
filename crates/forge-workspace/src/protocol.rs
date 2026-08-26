@@ -281,10 +281,12 @@ pub enum Command {
         charter: String,
         spawned_by_session_id: String,
         resume_existing: Option<String>,
-        /// Inline first-message for `workers__spawn(kick=...)`. Delivered
-        /// as the worker's first user turn on Connected via the same
-        /// kick dispatcher the file-driven `kick.md` uses. `None` -> no
-        /// auto-kick (the worker idles until told).
+        /// First message delivered as the worker's user turn on Connected,
+        /// via the rate-limited kick dispatcher. Either `workers__spawn`'s
+        /// `kick`, or - on a re-spawn - the row's `resume_kick` or the
+        /// generic restart note, which is the only thing that wakes a
+        /// resuming worker. `None` -> no kick (the worker idles until
+        /// told).
         kick: Option<String>,
         return_to: oneshot::Sender<Result<WorkerSpawnReply, String>>,
     },
