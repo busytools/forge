@@ -273,13 +273,11 @@ impl SessionTask {
                 } else {
                     self.rekey_to(&real_key);
                     self.connected_once = true;
-                    // Engineering team: when the lead's synth key
-                    // names a project that carries a team config and
-                    // no workers are live yet, programmatically
-                    // dispatch one SpawnWorker per role. Idempotent
-                    // via the live_workers gate - a reconnect after
-                    // a transient failure skips re-spawn. See
-                    // `crate::team` and `Workspace::spawn_team_for_lead`.
+                    // When the lead's synth key names a project with
+                    // persisted workers and none are live yet, dispatch
+                    // one SpawnWorker per row. Idempotent via the
+                    // live_workers gate - a reconnect after a transient
+                    // failure skips re-spawn.
                     if let Some(spawn_key) = self.spawn_key.as_ref()
                         && let Some(workspace) = self.workspace.upgrade()
                     {
@@ -981,9 +979,8 @@ fn maybe_spawn_team_on_connected(
 /// `None` for lead synth keys or any other shape. Project keys are
 /// alphanumeric+dash only (no underscores) and uuids are hex (no
 /// underscores), so `splitn(3, '_')` on the "<project>_<label>_<uuid>"
-/// remainder yields exactly three parts. The project_key segment lets
-/// the kick hooks recover the worker's namespace for project-first
-/// role resolution.
+/// remainder yields exactly three parts. The project_key segment is what
+/// the kick hook scopes its live-worker lookup by.
 fn parse_worker_synth_key(key: &SessionKey) -> Option<(String, String)> {
     let s = key.as_str();
     let inner =
@@ -2641,7 +2638,7 @@ mod team_hook_tests {
         let dispatched = workspace.drain_test_dispatch_buffer();
         let prompts: Vec<&Command> =
             dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
-        assert!(prompts.is_empty(), "no kick without an inline kick or a kick.md");
+        assert!(prompts.is_empty(), "a live entry carrying no kick gets none");
     }
 
     /// Worker Connected for a label with no live `WorkerEntry` at all

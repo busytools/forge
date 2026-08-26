@@ -482,9 +482,9 @@ async fn refresh_gotify_app_index(
 
 /// Scan the catalog for `forge:worker:<label>` tagged sessions whose
 /// `cwd` equals the label's run dir under `project_dir` (the project's
-/// filesystem root). Returns one entry per role label, keyed by label
-/// and valued by session_id. Used by the engineering-team Connected
-/// hook to decide which roles to resume vs spawn fresh on forge restart.
+/// filesystem root). Returns one entry per worker label, keyed by label
+/// and valued by session_id. Used by the lead's Connected hook to decide
+/// which workers to resume vs spawn fresh on forge restart.
 ///
 /// Why scan the whole catalog rather than just `project_dir`'s own
 /// subdir: workers spawned with `--worktree=<label>` `chdir` into
@@ -2703,11 +2703,11 @@ impl Workspace {
         }
     }
 
-    /// Engineering-team Connected-hook entry point. Synchronously
-    /// claims a per-project in-flight guard, then spawns an async
-    /// task that scans the catalog for `forge:worker:<label>` tagged
-    /// sessions and dispatches one `Command::SpawnWorker` per role
-    /// (with `resume_existing` populated for roles that have a
+    /// Lead Connected-hook entry point. Synchronously claims a
+    /// per-project in-flight guard, then spawns an async task that
+    /// scans the catalog for `forge:worker:<label>` tagged sessions
+    /// and dispatches one `Command::SpawnWorker` per persisted row
+    /// (with `resume_existing` populated for labels that have a
     /// matching catalog entry, `None` otherwise). The guard is
     /// released after the dispatches go out so a fast double-
     /// Connected can't slip a second scan through.
@@ -9207,8 +9207,8 @@ SOLO_TOKEN = "solo-secret"
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        // Db open + empty dynamic_workers + no static roster: "ghost" is
-        // conclusively absent, so its cron is removed.
+        // Db open + empty dynamic_workers: "ghost" is conclusively
+        // absent, so its cron is removed.
         // Named in `static_workers` and absent from the table: the key
         // spawns nothing, so the row is the only thing that could bring
         // this owner back and the cron must be collected, not buffered

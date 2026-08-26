@@ -447,9 +447,10 @@ impl WorkerFacade for ProdWorkerFacade {
         };
         let is_git_repo_at_spawn = forge_agent::env::worktree::is_git_repo(&view.path);
         // The one-live-worker-per-label guard lives in the shared
-        // `handle_spawn_worker` core (so static/dynamic/health-check
-        // dispatches are deduped too); a duplicate MCP spawn surfaces
-        // from there as a dispatch error.
+        // `handle_spawn_worker` core, so a boot re-spawn is deduped
+        // against this one; a duplicate MCP spawn surfaces from there as
+        // a dispatch error.
+
         // Row to persist on success. Captured before the values move
         // into the Command so a forge restart can re-spawn this dynamic
         // worker (resolved charter/kick, no session_id - resume is

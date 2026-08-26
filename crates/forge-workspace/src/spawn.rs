@@ -929,10 +929,10 @@ pub(crate) fn handle_spawn_worker(
         kick,
     };
     // At-most-one-live-worker-per-label, enforced atomically at this
-    // shared core so no dispatch source (DB re-spawn, MCP
-    // workers__spawn, charter health-check) - even two
-    // genuinely-concurrent dispatches for the same label - can double-
-    // insert and fork two subprocesses onto one worktree.
+    // shared core so neither dispatch source - the boot re-spawn or an
+    // MCP `workers__spawn` - can double-insert and fork two subprocesses
+    // onto one worktree, even on two genuinely-concurrent dispatches for
+    // the same label.
     if let Err(existing) = workspace.insert_live_worker_if_label_absent(&project_key, entry.clone())
     {
         let existing_session = existing.as_str().to_owned();
