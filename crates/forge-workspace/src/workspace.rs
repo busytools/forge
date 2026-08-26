@@ -2811,6 +2811,11 @@ impl Workspace {
     /// Claim the per-project respawn in-flight guard. Returns true
     /// if the guard was acquired (entry was absent), false if another
     /// scan was already in flight.
+    ///
+    /// UNTESTED: making this always grant survives the suite. Claim and
+    /// release happen inside one synchronous call on every test path,
+    /// so the blocked branch is unreachable without a harness that can
+    /// hold two respawns open at once.
     fn try_claim_respawn(&self, project_key: &crate::target::ProjectKey) -> bool {
         self.respawn_in_flight.lock().insert(project_key.clone())
     }

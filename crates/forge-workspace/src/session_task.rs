@@ -2476,12 +2476,15 @@ mod connected_hook_tests {
 
     /// A lead Connected for a project with no persisted workers is
     /// a no-op - nothing dispatched.
+    ///
+    /// UNTESTED, deliberately: this cannot tell the empty-set early
+    /// return from falling through and iterating an empty slice, and
+    /// deleting the store setup below passes too. Observing a scan that
+    /// did not happen needs a harness this does not have. Recorded so
+    /// the gap stays findable rather than blessed.
     #[test]
     fn lead_connected_without_a_worker_row_does_nothing() {
         let (workspace, _update_rx) = Workspace::testing_stub();
-        // An OPEN store holding no rows, which is the interesting case:
-        // with no store at all the read fails and the scan bails before
-        // it ever consults the row set.
         let dir = tempfile::tempdir().expect("tempdir");
         workspace.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
@@ -2494,31 +2497,48 @@ mod connected_hook_tests {
         assert!(workspace.drain_test_dispatch_buffer().is_empty());
     }
 
-    /// A worker session's Connected (synth key prefixed with
-    /// `__spawn_worker_...`) does NOT trigger the respawn hook
-    /// even when the project has a worker that would spawn. The row is
-    /// what gives the assertion teeth: without one the project could
-    /// not have dispatched anything whatever key arrived.
+    /// A worker synth key does NOT trigger the respawn hook - the
+    /// `worker_`-prefix guard in `parse_project_lead_synth_key` is what
+    /// stops it.
+    ///
+    /// The fixture names the project exactly what a guard-less parse
+    /// would extract, so the name resolves and the guard is the only
+    /// thing left between the key and a dispatch. Naming it anything
+    /// else makes the assertion hold for the wrong reason: the lookup
+    /// is an exact match, so an unresolvable name returns before the
+    /// hook could dispatch, and deleting the guard still passes. A
+    /// persisted row is necessary for this to have teeth and is not
+    /// sufficient.
     #[test]
     fn worker_connected_does_not_trigger_respawn() {
         let (workspace, _update_rx) = Workspace::testing_stub();
-        let _db = seed_project_with_one_worker_row(&workspace, "planner");
+        let dir = tempfile::tempdir().expect("tempdir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        // What `__spawn_worker_wp_planner_abc__` parses to without the guard.
+        let lookalike = "worker_wp_planner_abc";
+        workspace.seed_test_project(lookalike, "/tmp/wp");
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/wp")),
+        );
+        let _ = workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+            project_key: project_key.as_str().to_owned(),
+            label: "planner".to_owned(),
+            charter: "charter for planner".to_owned(),
+            kick: None,
+            resume_kick: None,
+        });
         workspace.enable_test_dispatch_intercept();
 
-        // Built from the ProjectKey the way production does; the project
-        // NAME is a different string, so a key spelled that way resolves
-        // to nothing and the test would pass without reaching the hook.
-        let project_key = ProjectKey::new(
-            forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/proj-x")),
-        );
-        let worker_synth = SessionKey::from_session_id(format!(
-            "__spawn_worker_{}_planner_abc__",
-            project_key.as_str()
-        ));
+        let worker_synth = SessionKey::from_session_id(format!("__spawn_{lookalike}__"));
         on_connected_for_test(&workspace, &worker_synth, "worker-uuid");
 
         let dispatched = workspace.drain_test_dispatch_buffer();
-        assert!(dispatched.iter().all(|c| !matches!(c, Command::SpawnWorker { .. })));
+        assert!(
+            dispatched.iter().all(|c| !matches!(c, Command::SpawnWorker { .. })),
+            "the worker-shaped key must not be parsed as a lead",
+        );
     }
 
     /// Idempotency: a second Connected event for the same lead must
