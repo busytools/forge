@@ -728,9 +728,6 @@ fn push_worker_rows(
     let Some(workspace) = app.workspace.as_ref() else {
         return;
     };
-    if labels.is_empty() {
-        return;
-    }
     let dim = Style::default().fg(theme::DIM);
     let count = labels.len();
     for (idx, label) in labels.iter().enumerate() {
