@@ -1,18 +1,17 @@
 # Claude CLI upgrade check
 
-This skill verifies forge stays compatible with the `claude` CLI after an upstream version bump. It catches three failure classes:
+This skill verifies forge stays compatible with the `claude` CLI after an upstream version bump. It catches two failure classes:
 
 1. **Decoder drift** - the new CLI emits stream-json shapes (tool names, event subtypes, fields) that forge-sdk doesn't yet decode, producing `DecodedLine::Unknown` or decode errors. Sessions render incorrectly or break silently.
-2. **Rewriter drift** - the new CLI's wire classification (headers, body keys, telemetry shape) shifted, so the existing forge-side rewriter no longer produces native-equivalent traffic. Hard Rule #16 violated.
-3. **Tool surface drift** - the new CLI adds or removes tool primitives (e.g. `TodoWrite` → `TaskCreate/Update/List/Get` in 2.1.156) that forge-tui's inspector / chat renderers special-case. User-visible features silently regress.
+2. **Tool surface drift** - the new CLI adds or removes tool primitives (e.g. `TodoWrite` → `TaskCreate/Update/List/Get` in 2.1.156) that forge-tui's inspector / chat renderers special-case. User-visible features silently regress.
 
-The goal state: harness's `PINNED_CLI_VERSION` bumped to the new version, all sdk replay scenarios pass against fresh baselines, wire-equivalence-check still PASSes, and any drift is either decoded/rewritten or explicitly accepted with rationale.
+The goal state: harness's `PINNED_CLI_VERSION` bumped to the new version, all sdk replay scenarios pass against fresh baselines, and any drift is either decoded or explicitly accepted with rationale.
 
 ## When to invoke
 
 - After `brew upgrade claude-code` (or any other claude binary upgrade).
 - When `claude --version` differs from `PINNED_CLI_VERSION` in `crates/forge-test-harness/src/sdk_wire.rs`.
-- Before tagging a forge release - pairs with wire-equivalence-check as the two pre-release wire integrity checks.
+- Before tagging a forge release - the pre-release wire integrity check.
 - After a user reports forge behaves visibly differently than native on the wire OR a feature stopped rendering (renderer-side surface change).
 - Periodically (monthly) as a drift check - Anthropic ships CLI updates frequently enough that 2-3 versions can stack up between explicit invocations.
 
@@ -31,8 +30,8 @@ grep -n "PINNED_CLI_VERSION" crates/forge-test-harness/src/sdk_wire.rs
 #    version is leftover - note it for cleanup but don't delete yet.)
 ls crates/forge-test-harness/baselines/sdk/
 
-# 4. Confirm mitmproxy is available (the rewriter check + capture both
-#    need it; install with `brew install mitmproxy` if missing).
+# 4. Confirm mitmproxy is available (capture needs it; install with
+#    `brew install mitmproxy` if missing).
 which mitmdump || brew install mitmproxy
 ```
 
@@ -224,37 +223,23 @@ A CLI bump is the likeliest way to hit the three fallback categories, which repo
 
 If all scenarios pass: the decoder is up to date with the new CLI's wire surface. Proceed.
 
-## Phase 6: Wire-equivalence check (chain to existing skill)
-
-The decoder-side is now confirmed. Verify the rewriter still produces native-equivalent traffic on the new CLI binary by chaining to the `wire-equivalence-check` skill:
-
-```bash
-# Invoke the existing skill (or run it manually). It captures forge +
-# native side-by-side via mitmproxy and diffs every observable signal.
-# See .claude/skills/wire-equivalence-check/SKILL.md for the full flow.
-```
-
-This is the same routine as a release pre-flight - the difference is that we run it NOW because the CLI changed. Expect WARN/INFO deltas that come from upstream additions; FAIL findings need rewriter fixes in `crates/forge-sdk/src/transport/proxy.rs` before the upgrade is acceptable.
-
-## Phase 7: Renderer / inspector adjustments (if Phase 1 flagged adds)
+## Phase 6: Renderer / inspector adjustments (if Phase 1 flagged adds)
 
 If Phase 1 surfaced new tool names forge-tui doesn't handle (e.g. `TaskCreate` family), file a tracking issue per cluster. The PR for those changes can land separately from the version bump PR if it's substantial, but the upgrade is incomplete until the renderer catches up. Pin the issue in the upgrade PR's description so future readers see the linkage.
 
-## Phase 8: Land the upgrade
+## Phase 7: Land the upgrade
 
 One PR with:
 
 - `PINNED_CLI_VERSION` bumped in `crates/forge-test-harness/src/sdk_wire.rs`.
 - New baselines under `crates/forge-test-harness/baselines/sdk/<NEW_VERSION>/`.
 - Decoder patches (if any) in `crates/forge-sdk/`.
-- Rewriter patches (if any) in `crates/forge-sdk/src/transport/proxy.rs`.
 - Old baselines (`baselines/sdk/<OLD_VERSION>/`) deleted - they're frozen by `PINNED_CLI_VERSION` and the replay test only reads the pinned dir; keeping stale dirs is rot.
 
 PR body should call out:
 - The version delta (old → new).
 - Any wire shape changes the diff surfaced.
-- Any decoder/rewriter extensions made to handle them.
-- Confirmation that wire-equivalence-check passed.
+- Any decoder extensions made to handle them.
 - Links to any renderer follow-up issues (Phase 6).
 
 ## Failure modes
@@ -264,8 +249,6 @@ PR body should call out:
 **Capture mode produces empty `.jsonl` files** - the harness's capture-env didn't trigger. Confirm `FORGE_WIRE_CAPTURE=1` is exported, and that the scenarios are actually `#[ignore]`-gated (only `--run-ignored only` runs them). Check `crates/forge-test-harness/tests/sdk_scenarios_*.rs` for the gate.
 
 **Replay test passes against OLD baselines but FAILs against NEW** - most common failure. The new CLI emits a shape the decoder doesn't recognize. Look at the failing scenario's NEW baseline, find the unfamiliar `type/subtype`, extend the decoder.
-
-**`claude --version` matches `PINNED_CLI_VERSION` but rewriter check FAILs** - likely a forge-sdk regression unrelated to the upgrade. Run wire-equivalence-check directly to isolate.
 
 **Baseline diff shows many scenarios with "removed types"** - Anthropic dropped a wire shape. Search forge source for code paths that depend on it; some may need to be removed or rewritten. Don't just delete the baseline coverage - the decoder still needs to handle the old shape gracefully if any long-lived process on the old CLI might still emit it (e.g. a running forge subprocess that hasn't restarted yet).
 
@@ -287,9 +270,6 @@ If installed > pinned: run the workflow above. If equal: nothing to do.
 - Capture scenarios: `crates/forge-test-harness/tests/sdk_scenarios_*.rs`.
 - Tool-name gate (forge-tui): `crates/forge-tui/src/app/events/tool_calls.rs` (search for the string-match against tool names).
 - Decoder: `crates/forge-sdk/src/transport/codec.rs`.
-- Rewriter: `crates/forge-sdk/src/transport/proxy.rs`.
-- Hard Rule #16 (wire classification must match native CLI): top-level `CLAUDE.md`.
-- Paired skill: `.claude/skills/wire-equivalence-check/SKILL.md`.
 
 ## Wire-conformance cheatsheet (outside an upgrade)
 
