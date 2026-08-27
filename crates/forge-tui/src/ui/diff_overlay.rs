@@ -3227,7 +3227,11 @@ mod tests {
             left: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }),
             right: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 }),
         };
-        for pane_width in [101u16, 119, 160, 184] {
+        // 103 is here because the others do not reach this test's own
+        // subject: every unit is 3 columns, so the cut only straddles a
+        // cluster when the half's text column is 3n+2, and 101/119/160/184
+        // give 43/52/72/84 - none of them. 103 gives 44.
+        for pane_width in [101u16, 103, 119, 160, 184] {
             let row = split_diff_row(&file, pair, gutter, pane_width, Some(&cache));
             assert_eq!(
                 first_painted_column_past(&row, pane_width),
