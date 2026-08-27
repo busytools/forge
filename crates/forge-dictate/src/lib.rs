@@ -9,6 +9,17 @@
 //! later, inside a model runtime, as an offset error that reads like a
 //! bad build. Verifying first is what turns that into a sentence naming
 //! the file.
+//!
+//! # Every entry point here blocks
+//!
+//! This crate is runtime-agnostic on purpose, so nothing in it is
+//! async and nothing in it may be called from a runtime thread. An
+//! async caller wraps each entry point in `tokio::task::spawn_blocking`
+//! or its equivalent. Calling one directly from an async context
+//! panics in a debug build ("Cannot drop a runtime in a context where
+//! blocking is not allowed") and, worse, succeeds in a release build
+//! having held a runtime worker for the entire operation - so a release
+//! smoke test passes while dev crashes.
 
 mod config;
 mod error;

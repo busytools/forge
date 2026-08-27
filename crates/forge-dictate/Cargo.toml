@@ -14,7 +14,10 @@ workspace = true
 
 [dependencies]
 # `blocking` on top of the workspace feature set: this crate's API is
-# synchronous by design, so it must not require a caller's runtime.
+# synchronous by design, so it must not require a caller's runtime. The
+# converse is a hazard, not a guarantee: a blocking client must not run
+# ON a runtime either, so an async caller uses spawn_blocking. See the
+# crate docs.
 reqwest = { workspace = true, features = ["blocking"] }
 sha2 = { workspace = true }
 hex = { workspace = true }

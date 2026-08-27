@@ -23,6 +23,11 @@ pub enum Progress {
 
 /// Make every model the config names present and verified.
 ///
+/// Blocking, like everything else here: an async caller must run this
+/// on `tokio::task::spawn_blocking` or its equivalent. On a runtime
+/// thread it panics in a debug build and silently holds a worker for
+/// the whole transfer in a release one.
+///
 /// Downloads what is missing, resumes what was interrupted, and checks
 /// size then SHA-256 against the [`crate::ModelSpec`] before reporting
 /// a file ready. Safe to call repeatedly; a verified file is left
