@@ -1194,6 +1194,29 @@ fn label_span(text: &'static str, width: usize) -> Span<'static> {
     Span::styled(s, Style::default().fg(theme::DIM))
 }
 
+/// Fit `v<version>+<sha>` into `budget` columns by shortening the sha
+/// and never the version - a shorter sha still identifies the build,
+/// while a clipped version number reads as a different release. The
+/// `+` goes with the last hex digit, since it identifies nothing alone.
+///
+/// Below roughly 20 columns even one hex digit stops fitting; the stamp
+/// is returned whole there and the paint clips it, as every other panel
+/// row does at that width. An ellipsis would be worse than a clip: it
+/// spends a column saying a sha was cut without leaving a matchable one.
+fn fit_version_to_budget(version_short: &str, budget: usize) -> String {
+    let full = format!("v{version_short}");
+    if full.chars().count() <= budget {
+        return full;
+    }
+    match full.split_once('+') {
+        Some((base, sha)) if base.chars().count() + 2 <= budget => {
+            let room = budget - base.chars().count() - 1;
+            format!("{base}+{}", sha.chars().take(room).collect::<String>())
+        }
+        _ => full,
+    }
+}
+
 /// Build the panel's lines. Layout is fixed at `ACCOUNT_PANEL_HEIGHT`
 /// rows; missing data renders as a dim placeholder so the shape
 /// doesn't shift between sessions.
@@ -1411,7 +1434,13 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // reports a strictly-newer published version. Both rows render
     // a DIM ` - ` placeholder when the corresponding probe failed so
     // the panel's row count stays constant.
-    let forge_version = format!("v{}", crate::FORGE_VERSION_SHORT);
+    // Budgeted rather than fixed-length: the row is 1 pad + label + 2
+    // gutter + version, and the version string grows every release, so
+    // any constant sha length is wrong on a schedule. Keeps the same
+    // right gutter the claude row below already respects.
+    let version_budget = usize::from(width)
+        .saturating_sub(1 + ACCOUNT_PANEL_ID_LABEL_WIDTH + 2 + PANEL_RIGHT_GUTTER);
+    let forge_version = fit_version_to_budget(crate::FORGE_VERSION_SHORT, version_budget);
     lines.push(Line::from(vec![
         Span::raw(" "),
         label_span("forge", ACCOUNT_PANEL_ID_LABEL_WIDTH),
@@ -1967,6 +1996,87 @@ mod tests {
             .join("\n");
         assert!(rendered.contains("1 compaction"), "got:\n{rendered}");
         assert!(!rendered.contains("1 compactions"), "got:\n{rendered}");
+    }
+
+    /// Paint the pane to a `TestBackend` and return its rows, trailing
+    /// blanks trimmed. Painted rather than built, because a row that
+    /// overruns the pane and one that fits are indistinguishable in the
+    /// `Line` - only the buffer shows what the user actually sees.
+    fn painted_rows(app: &mut App, projects: &[ProjectView], width: u16) -> Vec<String> {
+        let backend = ratatui::backend::TestBackend::new(width, 30);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        let area = Rect { x: 0, y: 0, width, height: 30 };
+        terminal.draw(|frame| render(frame, area, app, projects)).expect("the pane paints");
+        let buffer = terminal.backend().buffer().clone();
+        (0..30)
+            .map(|y| {
+                (0..width)
+                    .map(|x| {
+                        buffer
+                            .cell((x, y))
+                            .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+                    })
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    /// #679: at Medium the forge version row ran to 26 columns in a
+    /// 24-column pane, so the paint dropped the last two hex digits of
+    /// the sha with no ellipsis and nothing to show it had happened.
+    ///
+    /// The width comes from `PANE_WIDTH_MEDIUM` and the budget from
+    /// `PANEL_RIGHT_GUTTER`, so a tier resize cannot leave this test
+    /// rendering at a width that is no longer Medium while still passing.
+    ///
+    /// `assert_eq!` rather than an upper bound: `<=` catches a clipped row
+    /// but not an over-trimmed one, and a sha cut to a single hex digit
+    /// fits any bound while failing the property this guards - that it
+    /// still matches a build. It also makes the case where the stamp
+    /// happens to fit outright loud rather than silently vacuous.
+    #[test]
+    fn the_forge_version_row_fills_the_medium_budget_exactly() {
+        let budget = usize::from(crate::ui::layout::PANE_WIDTH_MEDIUM) - PANEL_RIGHT_GUTTER;
+        let mut app = App::test_default();
+        let project_key = forge_workspace::ProjectKey::new_for_test("forge");
+        let projects =
+            vec![ProjectView::new_for_test(project_key, "forge", "~/Projects/forge", Vec::new())];
+
+        let rows = painted_rows(&mut app, &projects, crate::ui::layout::PANE_WIDTH_MEDIUM);
+        let row = rows
+            .iter()
+            .find(|l| l.trim_start().starts_with("forge "))
+            .expect("the forge version row paints");
+
+        assert_eq!(
+            row.chars().count(),
+            budget,
+            "the version row fills the Medium budget exactly, neither clipped nor over-trimmed: [{row}]",
+        );
+        // Not `contains('+')`: an ellipsis fix satisfies that while leaving
+        // the sha unusable. The property is that the shortened sha stays a
+        // matchable PREFIX of the real one.
+        let painted_sha = row.rsplit('+').next().expect("row splits");
+        let full_sha = crate::FORGE_VERSION_SHORT.rsplit('+').next().expect("stamp splits");
+        assert!(
+            !painted_sha.is_empty() && full_sha.starts_with(painted_sha),
+            "the shortened sha stays a clean prefix of the real one, not an elided cut: \
+             painted [{painted_sha}] against [{full_sha}]",
+        );
+
+        // Wide has room, so the fix must not reach it. Without this control
+        // a budget applied at every tier would look identical at Medium.
+        let wide = painted_rows(&mut app, &projects, crate::ui::layout::PANE_WIDTH_WIDE);
+        let wide_row = wide
+            .iter()
+            .find(|l| l.trim_start().starts_with("forge "))
+            .expect("the forge version row paints at Wide");
+        assert!(
+            wide_row.ends_with(&format!("v{}", crate::FORGE_VERSION_SHORT)),
+            "Wide has room, so it keeps the untrimmed version stamp: [{wide_row}]",
+        );
     }
 
     /// The compaction text and the context-window size share one row, so

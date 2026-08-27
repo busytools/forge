@@ -978,19 +978,19 @@ fn maybe_respawn_workers_on_connected(
 ///
 /// `None` for lead synth keys or any other shape. Project keys are
 /// alphanumeric+dash only (no underscores) and uuids are hex (no
-/// underscores), so `splitn(3, '_')` on the "<project>_<label>_<uuid>"
-/// remainder yields exactly three parts. The project_key segment is what
-/// the kick hook scopes its live-worker lookup by.
+/// underscores), so on the "<project>_<label>_<uuid>" remainder the
+/// project ends at the FIRST underscore and the uuid starts after the
+/// LAST. Everything between is the label, which is therefore free to
+/// contain underscores of its own (`code_review`). The project_key
+/// segment is what the kick hook scopes its live-worker lookup by.
 fn parse_worker_synth_key(key: &SessionKey) -> Option<(String, String)> {
     let s = key.as_str();
     let inner =
         s.strip_prefix("__spawn_").or_else(|| s.strip_prefix("__resume_"))?.strip_suffix("__")?;
     let after_worker = inner.strip_prefix("worker_")?;
-    let parts: Vec<&str> = after_worker.splitn(3, '_').collect();
-    if parts.len() != 3 {
-        return None;
-    }
-    Some((parts[0].to_owned(), parts[1].to_owned()))
+    let (project_key, rest) = after_worker.split_once('_')?;
+    let (label, _uuid) = rest.rsplit_once('_')?;
+    Some((project_key.to_owned(), label.to_owned()))
 }
 
 /// Shared worker-kick hook: if `spawn_key` is a worker synth key,
@@ -2658,6 +2658,34 @@ mod connected_hook_tests {
         }
     }
 
+    /// #695: the same inline kick with an underscore in the label as the
+    /// only variable. `worker_with_inline_kick_dispatches_it_as_first_turn`
+    /// above is the control - same fixture, same seed, plain label - which
+    /// is what makes a failure here mean the label rather than the harness.
+    #[tokio::test(start_paused = true)]
+    async fn worker_with_an_underscore_label_dispatches_its_kick() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        workspace.start_kick_dispatcher();
+        let synth = seed_adhoc_worker_with_kick(
+            &workspace,
+            "code_review",
+            Some("Begin: review the open diff.".into()),
+        );
+
+        on_connected_for_test(&workspace, &synth, "worker-uuid");
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let prompts: Vec<&Command> =
+            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
+        assert_eq!(prompts.len(), 1, "an underscore-labelled worker gets its kick");
+        if let Command::Prompt { text, .. } = prompts[0] {
+            assert_eq!(text, "Begin: review the open diff.", "the kick arrives verbatim");
+        }
+    }
+
     /// A live worker whose entry carries no kick gets none - it idles
     /// until the lead sends a workers__tell.
     #[tokio::test(start_paused = true)]
@@ -2763,5 +2791,27 @@ mod connected_hook_tests {
     fn parse_worker_synth_key_extracts_project_and_label_for_resume_shape() {
         let key = SessionKey::from_session_id("__resume_worker_forge_planner_abc123__");
         assert_eq!(parse_worker_synth_key(&key), Some(("forge".to_owned(), "planner".to_owned())));
+    }
+
+    /// #695: a label may contain underscores, so the label is everything
+    /// BETWEEN the project and uuid segments rather than the second one.
+    /// Both shapes, because a resume mis-parse costs the kick on every
+    /// restart rather than once at spawn.
+    #[test]
+    fn parse_worker_synth_key_keeps_underscores_in_the_label() {
+        assert_eq!(
+            parse_worker_synth_key(&SessionKey::from_session_id(
+                "__spawn_worker_forge_code_review_abc123__"
+            )),
+            Some(("forge".to_owned(), "code_review".to_owned())),
+            "an underscore in the label must not truncate it on spawn",
+        );
+        assert_eq!(
+            parse_worker_synth_key(&SessionKey::from_session_id(
+                "__resume_worker_forge_code_review_abc123__"
+            )),
+            Some(("forge".to_owned(), "code_review".to_owned())),
+            "an underscore in the label must not truncate it on resume",
+        );
     }
 }
