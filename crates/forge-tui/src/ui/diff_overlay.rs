@@ -3241,8 +3241,17 @@ mod tests {
     fn the_painted_divider_sits_where_split_layout_says() {
         // Line counts either side of a gutter-width step, so a wrong
         // gutter term in the formula shows up rather than cancelling.
-        for lines in [9usize, 120] {
-            let file = multi_line_file("a.rs", lines);
+        //
+        // Both text lengths, because they reach the divider by different
+        // routes: `multi_line_file`'s short `line {i}` leaves the filled
+        // half padded up to the text column, while a line longer than
+        // that column truncates to it and never pads at all.
+        for (lines, long_text) in [(9usize, false), (9, true), (120, false), (120, true)] {
+            let mut file = multi_line_file("a.rs", lines);
+            if long_text {
+                file.hunks[0].lines[0].text =
+                    "let very_long_identifier_name = compute(other_long_name);".repeat(3);
+            }
             let gutter = gutter_width_for(&file);
             let both = PairedDiffRow {
                 left: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }),
@@ -3252,23 +3261,121 @@ mod tests {
             // drift from a filled one.
             let left_only = PairedDiffRow { right: None, ..both };
             let right_only = PairedDiffRow { left: None, ..both };
+            // Real highlighted text rather than blank padding: with no
+            // cache `cached_line_spans` returns an empty slice. The
+            // divider lands on the nominal column either way, so it is
+            // the control below that turns the cache load-bearing.
+            let cache = build_file_highlight(&file);
             for pair in [both, left_only, right_only] {
                 for pane_width in [101u16, 119, 160, 184] {
-                    let row = split_diff_row(&file, pair, gutter, pane_width, None);
-                    let mut col = 0usize;
-                    let painted = row.spans.iter().find_map(|span| {
-                        let at = col;
-                        col += span.width();
-                        (span.content.as_ref() == "\u{2502}").then_some(at)
-                    });
+                    let row = split_diff_row(&file, pair, gutter, pane_width, Some(&cache));
                     assert_eq!(
-                        painted,
+                        painted_divider_col(&row, pane_width),
                         Some(split_layout(gutter, pane_width).divider_col),
-                        "lines={lines} gutter={gutter} pane_width={pane_width} pair={pair:?}"
+                        "the painted divider sits on split_layout's divider_col: \
+                         lines={lines} long_text={long_text} gutter={gutter} \
+                         pane_width={pane_width} pair={pair:?}"
                     );
                 }
             }
         }
+    }
+
+    /// The column the divider glyph occupies once painted. Production
+    /// paints these rows through an unwrapped `Paragraph` (`render` at
+    /// the top of this file), so the test reads back the same buffer the
+    /// click handler's geometry is compared against.
+    fn painted_divider_col(row: &Line<'_>, pane_width: u16) -> Option<usize> {
+        use ratatui::buffer::Buffer;
+        use ratatui::widgets::Widget;
+
+        let area = Rect::new(0, 0, pane_width, 1);
+        let mut buffer = Buffer::empty(area);
+        Paragraph::new(row.clone()).render(area, &mut buffer);
+        let hits: Vec<usize> = (0..pane_width)
+            .filter(|&x| buffer[(x, 0)].symbol() == "\u{2502}")
+            .map(usize::from)
+            .collect();
+        // Diff text can carry its own box-drawing glyphs. Returning the
+        // first would quietly report a text column as the divider.
+        assert!(
+            hits.len() <= 1,
+            "the row paints one divider glyph at pane_width={pane_width}, found columns {hits:?}"
+        );
+        hits.first().copied()
+    }
+
+    /// Negative control for the guard above. `Span::styled_graphemes`
+    /// drops C0 before paint while `Span::width` still charges a column
+    /// for it, so a row carrying one paints its divider left of the
+    /// nominal column. Summing span widths cannot see that - it re-derives
+    /// the production measurement and agrees with it on every input.
+    ///
+    /// The drift itself is #716, still open: it scales a column per
+    /// control character and the click handler keeps splitting on the
+    /// nominal column. When that is fixed this test should be deleted,
+    /// not repaired.
+    #[test]
+    fn the_divider_guard_sees_a_control_character_shift() {
+        use forge_workspace::env::git_diff::hunks::DiffLine;
+
+        let painted_for = |text: &str| {
+            let line = |kind, old_line, new_line| DiffLine {
+                kind,
+                text: text.to_owned(),
+                old_line,
+                new_line,
+            };
+            let file = FileHunks {
+                path: "a.rs".into(),
+                status: FileStatus::Modified,
+                oversize: false,
+                hunks: vec![Hunk {
+                    old_start: 1,
+                    old_count: 1,
+                    new_start: 1,
+                    new_count: 1,
+                    lines: vec![
+                        line(DiffLineKind::Removed, Some(1), None),
+                        line(DiffLineKind::Added, None, Some(1)),
+                    ],
+                }],
+            };
+            let gutter = gutter_width_for(&file);
+            let pair = PairedDiffRow {
+                left: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }),
+                right: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 }),
+            };
+            let pane_width = 119u16;
+            let cache = build_file_highlight(&file);
+            let row = split_diff_row(&file, pair, gutter, pane_width, Some(&cache));
+            let mut col = 0usize;
+            let walked = row.spans.iter().find_map(|span| {
+                let at = col;
+                col += span.width();
+                (span.content.as_ref() == "\u{2502}").then_some(at)
+            });
+            (walked, painted_divider_col(&row, pane_width), split_layout(gutter, pane_width))
+        };
+
+        let (clean_walk, clean_paint, layout) = painted_for("let x = compute(y);");
+        let (ctrl_walk, ctrl_paint, _) = painted_for("let x = \u{01}compute(y);");
+        let nominal = layout.divider_col;
+
+        assert_eq!(
+            (clean_walk, ctrl_walk),
+            (Some(nominal), Some(nominal)),
+            "the span walk reports the nominal column for both and so cannot tell them apart"
+        );
+        // Asserted as a pair so a control row that ever paints RIGHT of
+        // the clean one fails on this message rather than on a subtraction
+        // overflow, which would name no property at all. The two fixtures
+        // differ by one inserted character, so the gap is the causal claim.
+        assert_eq!(
+            (clean_paint, ctrl_paint),
+            (Some(nominal), Some(nominal - 1)),
+            "adding one control character pulls the painted divider exactly one column left"
+        );
     }
 
     fn one_line_file(path: &str) -> FileHunks {
