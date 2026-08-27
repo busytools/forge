@@ -596,6 +596,24 @@ mod tests_download {
     }
 
     #[test]
+    fn a_refusing_server_is_reported_as_its_status() {
+        let server = serve(vec![("/asr.gguf", b"present".to_vec())]);
+        let dir = tempfile::tempdir().unwrap();
+
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .asr_model(spec_for(&server, "/absent.gguf", b"never served"))
+            .normalizer(None)
+            .build();
+
+        let err = prepare(&cfg, |_| {}).expect_err("a 404 is not a download");
+        assert!(
+            matches!(err, Error::HttpStatus { status: 404, .. }),
+            "a refusal must be reported as the status it was, not as a corrupt file, got: {err:?}"
+        );
+    }
+
+    #[test]
     fn a_206_from_an_offset_we_did_not_ask_for_does_not_splice() {
         let body = b"pretend these are recognition weights".to_vec();
         let server = serve_clamping_range(vec![("/asr.gguf", body.clone())]);

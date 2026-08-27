@@ -171,11 +171,31 @@ mod tests_config {
             .normalizer(ModelSpec::cohere_transcribe_q4_k_m())
             .build();
 
-        assert_eq!(cfg.models_dir.as_deref(), Some(Path::new("/models")));
-        assert_eq!(cfg.asr_model.file, ModelSpec::s1_mini_f16().file);
-        assert_eq!(cfg.language.as_deref(), Some("en"));
-        assert_eq!(cfg.max_capture, Duration::from_secs(5));
-        assert!((cfg.silence_floor - -30.0).abs() < f32::EPSILON, "got {}", cfg.silence_floor);
+        assert_eq!(
+            cfg.models_dir.as_deref(),
+            Some(Path::new("/models")),
+            "an explicit models_dir must override the platform cache default"
+        );
+        assert_eq!(
+            cfg.asr_model.file,
+            ModelSpec::s1_mini_f16().file,
+            "asr_model must replace the default spec outright"
+        );
+        assert_eq!(
+            cfg.language.as_deref(),
+            Some("en"),
+            "a language hint must reach the field that autodetects when unset"
+        );
+        assert_eq!(
+            cfg.max_capture,
+            Duration::from_secs(5),
+            "max_capture must carry the caller's cap, not the 120s default"
+        );
+        assert!(
+            (cfg.silence_floor - -30.0).abs() < f32::EPSILON,
+            "silence_floor must carry the caller's threshold, not the -50 dBFS default, got {}",
+            cfg.silence_floor
+        );
         assert_eq!(
             cfg.normalizer.map(|n| n.file),
             Some(ModelSpec::cohere_transcribe_q4_k_m().file),
