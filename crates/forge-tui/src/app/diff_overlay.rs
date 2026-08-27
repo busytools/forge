@@ -3406,7 +3406,11 @@ fn reopen_comment_for_turn(
     key: LineKey,
     edit_turn: Option<usize>,
 ) -> MouseEffect {
-    let Some(pos) = overlay.comments.iter().position(|c| c.key == key) else {
+    // Scope-qualify, as the status-flip and re-nudge lookups do: keys
+    // collide across scopes on a single-commit branch, and reopening the
+    // wrong scope's comment re-stamps it with this scope on save.
+    let sha = overlay.current_commit_sha();
+    let Some(pos) = overlay.comments.iter().position(|c| c.key == key && c.commit == sha) else {
         return MouseEffect::default();
     };
     let comment = overlay.comments.remove(pos);
@@ -8274,6 +8278,62 @@ mod tests {
         assert_eq!(
             whole[0].comment_text, "fresh whole-diff",
             "the stale same-scope comment was replaced by the save",
+        );
+    }
+
+    #[test]
+    fn reopen_takes_the_comment_in_the_current_scope() {
+        // The reopen twin of `save_replaces_only_the_same_scope_at_a_key`.
+        // Reopening resolves by key, so with a co-located comment in
+        // another scope it can pull the wrong one: the editor is seeded
+        // from it, and saving then stamps THIS scope onto that thread -
+        // re-scoping it durably and orphaning the one the user clicked.
+        // The whole-diff comment is pushed FIRST so a key-only lookup
+        // finds it before the commit-scoped one.
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        overlay.commits = vec![commit_meta("aaa", "first")];
+        overlay.scope = DiffScope::Commit(0);
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        overlay.comments.push(HunkComment {
+            key,
+            path: "src/x.rs".to_owned(),
+            line: 5,
+            comment_text: "whole-diff note".to_owned(),
+            commit: None,
+            thread: user_thread("whole-diff note"),
+            authored_this_session: true,
+            persisted: false,
+        });
+        overlay.comments.push(HunkComment {
+            key,
+            path: "src/x.rs".to_owned(),
+            line: 5,
+            comment_text: "commit note".to_owned(),
+            commit: Some("aaa".to_owned()),
+            thread: user_thread("commit note"),
+            authored_this_session: true,
+            persisted: false,
+        });
+
+        reopen_comment_for_turn(&mut overlay, key, Some(0));
+
+        let input = overlay.active_input.as_ref().expect("the reopen opens an editor");
+        assert_eq!(
+            input.editor.text(),
+            "commit note",
+            "the editor is seeded from the comment in the current scope",
+        );
+        assert_eq!(
+            input.prior_comment.as_ref().and_then(|c| c.commit.as_deref()),
+            Some("aaa"),
+            "the stashed prior is the current scope's comment, so saving cannot re-scope another",
+        );
+        assert!(
+            overlay.comments.iter().any(|c| c.commit.is_none()),
+            "the co-located comment in another scope stays in the list",
         );
     }
 
