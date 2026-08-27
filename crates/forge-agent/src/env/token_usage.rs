@@ -69,8 +69,8 @@ fn fold_project_in(slug: &str, projects_prefix: &str, projects_root: &Path) -> S
 /// Resolve the repo name from a slug remainder (the encoded
 /// `<name>/<subpath...>` after the `Projects/` prefix). Picks the
 /// longest leading run of `-`-joined tokens that is an existing
-/// directory under `projects_root`; when nothing resolves (the repo
-/// was removed) the first component is the best-effort label.
+/// directory under `projects_root`; when nothing resolves (the repo is
+/// not checked out) the whole run is the best-effort label.
 fn resolve_project_name(remainder: &str, projects_root: &Path) -> String {
     // Drop empty tokens: a `.`/`/` in the original path encodes as a
     // dash, so a dotted or double-slashed segment leaves an empty token
@@ -83,7 +83,11 @@ fn resolve_project_name(remainder: &str, projects_root: &Path) -> String {
             return candidate;
         }
     }
-    tokens.first().map_or_else(|| remainder.to_owned(), |first| (*first).to_owned())
+    // Nothing confirms where the repo name ends, so keep the whole run:
+    // a first-token guess truncates `auto-portal` and can merge it into
+    // an unrelated `auto` repo's row.
+    let whole = tokens.join("-");
+    if whole.is_empty() { remainder.to_owned() } else { whole }
 }
 
 /// The trailing `-`-separated component of a slug, used when no richer
@@ -538,12 +542,19 @@ mod tests {
     }
 
     #[test]
-    fn vanished_repo_slug_falls_back_to_first_component() {
-        // The repo dir is gone, so resolution can't confirm the name;
-        // the leading path component is the best-effort repo label.
-        let root = projects_root_with(&[]);
-        let slug = "-Users-developer-Projects-ghostrepo-src-main";
-        assert_eq!(fold_project_in(slug, PREFIX, root.path()), "ghostrepo");
+    fn absent_repo_keeps_its_whole_dashed_name() {
+        // `forge` is checked out, `auto-portal` is not.
+        let root = projects_root_with(&["forge"]);
+        assert_eq!(
+            fold_project_in("-Users-developer-Projects-auto-portal", PREFIX, root.path()),
+            "auto-portal",
+            "an absent repo keeps its whole dashed name rather than the first token",
+        );
+        assert_eq!(
+            fold_project_in("-Users-developer-Projects-forge", PREFIX, root.path()),
+            "forge",
+            "a present repo still resolves against the filesystem",
+        );
     }
 
     #[test]
