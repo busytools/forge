@@ -1676,6 +1676,49 @@ mod tests {
         assert_eq!(app.workflows().len(), 2, "mixed-state WORKFLOWS must survive");
     }
 
+    /// The tests above seed the entries directly, so none of them
+    /// exercises the walk that actually builds one. A historical
+    /// `Workflow` tool_use reaches `upsert_workflow_from_tool_input`,
+    /// and no terminal event can follow it - the resume walk is fed by
+    /// `synthesize_replay_messages`, which emits only User / Assistant
+    /// envelopes, so no `TaskUpdated` / `TaskProgress` exists during
+    /// replay. Seeded in-progress it would linger forever AND hold the
+    /// section open for its completed siblings.
+    #[test]
+    fn resume_replay_drains_a_replayed_workflow_and_its_completed_sibling() {
+        let mut app = App::test_default();
+        *app.workflows_mut() = vec![stub_workflow("sibling", WorkflowStatus::Completed)];
+        let history = vec![historical_tool_use_named(
+            "toolu_wf",
+            "Workflow",
+            serde_json::json!({"script": "export const meta = { name: 'nightly-sweep' }"}),
+        )];
+
+        load_resume_history(&mut app, &history);
+
+        assert!(
+            app.workflows().is_empty(),
+            "a replayed Workflow must restore terminal so the WORKFLOWS section drains \
+             instead of showing it as in progress forever and blocking the clear for its \
+             completed siblings; got: {:?}",
+            app.workflows().iter().map(|w| (&w.meta_name, w.status)).collect::<Vec<_>>(),
+        );
+
+        // Drained is also what an entry that was never BUILT looks like,
+        // so hold the sibling non-terminal and check the replayed entry
+        // is really there and really terminal.
+        let mut app = App::test_default();
+        *app.workflows_mut() = vec![stub_workflow("sibling", WorkflowStatus::InProgress)];
+        load_resume_history(&mut app, &history);
+
+        assert_eq!(
+            app.workflows().iter().find(|w| w.meta_name == "nightly-sweep").map(|w| w.status),
+            Some(WorkflowStatus::Completed),
+            "the walk builds the replayed entry and seeds it terminal; got: {:?}",
+            app.workflows().iter().map(|w| (&w.meta_name, w.status)).collect::<Vec<_>>(),
+        );
+    }
+
     /// Starting a fresh session must drop the previous session's
     /// background-task registry - it is session-scoped and the incoming
     /// session has its own live set.
