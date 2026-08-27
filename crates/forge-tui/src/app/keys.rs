@@ -1145,11 +1145,14 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> bool {
     }
 }
 
-/// Toggle the session-wide `tools_collapsed` preference and clear
-/// every per-item collapse override (per-tool `collapsed_override`,
-/// per-peer-text-block `peer_collapsed_override`, per-group
-/// `group_collapse_levels`) so any row the user had clicked open or
-/// closed resets to its default-render state on the flip. Per-group
+/// Toggle the session-wide `tools_collapsed` preference and clear the
+/// active session's per-item collapse overrides (per-tool
+/// `collapsed_override`, per-peer-text-block `peer_collapsed_override`,
+/// per-group `group_collapse_levels` and
+/// `messaging_group_collapse_levels`) so any row the user had clicked
+/// open or closed there resets to its default-render state on the
+/// flip. The flag is App-global; the clear is not, so a background
+/// session keeps the rows it had clicked open. Per-group
 /// expand/collapse cycling stays bound to mouse-click on a group
 /// summary row (`app::events::mouse::try_toggle_tool_call_at_click`);
 /// the keyboard shortcut is the global toggle, always.
