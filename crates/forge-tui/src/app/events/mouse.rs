@@ -1047,14 +1047,20 @@ fn copy_session_id_to_clipboard(session_id: &str) {
 }
 
 fn close_session(app: &mut App, session_key: &forge_workspace::SessionKey) {
+    let was_active = app.active_session_key.as_ref() == Some(session_key);
+    // Captured ahead of the teardown: this row is about to leave the
+    // pane, and its position is what "the adjacent row" is measured
+    // from.
+    let drawn = if was_active { super::drawn_session_order(app) } else { Vec::new() };
     if let Some(workspace) = app.workspace.as_ref() {
         // Cascade-aware: if the session is a project's lead, all
         // workers under that project terminate first.
         workspace.release_session_with_cascade(session_key);
     }
     app.sessions.remove(session_key);
-    if app.active_session_key.as_ref() == Some(session_key) {
-        let fallback = app.sessions.keys().next().cloned();
+    if was_active {
+        let fallback = super::adjacent_drawn_session(app, &drawn, session_key)
+            .or_else(|| app.sessions.keys().next().cloned());
         if let Some(new_active) = fallback {
             app.switch_active_session(new_active);
         } else {
@@ -2230,5 +2236,44 @@ mod tests {
             app.active_session_key, initial_active,
             "close_worker dispatch is fire-and-forget",
         );
+    }
+
+    /// Closing the active session lands on the row the Projects pane
+    /// draws next to it. Projects are seeded out of alphabetical
+    /// order, so the drawn sequence matches neither insertion order
+    /// nor session-id order, and every row is closed in turn from its
+    /// own fresh App - picking out of the `app.sessions` HashMap
+    /// would have to guess all five neighbours to pass.
+    #[test]
+    fn close_session_lands_on_the_adjacent_drawn_row() {
+        // Seeded out of order; the pane sorts by name within the org.
+        let seeded =
+            [("delta", "s1"), ("alpha", "s2"), ("echo", "s3"), ("charlie", "s4"), ("bravo", "s5")];
+        // alpha, bravo, charlie, delta, echo.
+        let drawn = ["s2", "s5", "s4", "s1", "s3"];
+
+        for (idx, closing) in drawn.iter().enumerate() {
+            let expected = if idx + 1 < drawn.len() { drawn[idx + 1] } else { drawn[idx - 1] };
+            let mut app = App::test_default();
+            let ws = app.workspace.clone().expect("test workspace");
+            for (name, session_id) in seeded {
+                ws.seed_test_project(name, &format!("/tmp/{name}"));
+                let key = forge_workspace::SessionKey::from_session_id(session_id);
+                let mut bucket = UiSession::new(key.clone());
+                // The anchor the pane resolves a project row's lead by.
+                bucket.cwd_raw = format!("/tmp/{name}");
+                app.sessions.insert(key, bucket);
+            }
+            let closing_key = forge_workspace::SessionKey::from_session_id(*closing);
+            app.active_session_key = Some(closing_key.clone());
+
+            close_session(&mut app, &closing_key);
+
+            assert_eq!(
+                app.active_session_key.as_ref().map(forge_workspace::SessionKey::as_str),
+                Some(expected),
+                "closing {closing} must land on the row drawn next to it",
+            );
+        }
     }
 }

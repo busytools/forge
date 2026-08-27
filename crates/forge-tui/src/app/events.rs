@@ -37,6 +37,37 @@ fn skip_operational_log_during_replay(app: &App) -> bool {
     app.replay_in_progress
 }
 
+/// The Projects pane's rows in drawn order, as
+/// [`crate::ui::projects_pane::drawn_session_rows`] resolves them.
+/// Snapshot this BEFORE tearing a session down: once the bucket is
+/// gone its row is no longer in the list, and there is nothing left
+/// for the replacement focus to be adjacent to.
+pub(crate) fn drawn_session_order(app: &App) -> Vec<forge_workspace::SessionKey> {
+    let projects = app.workspace.as_ref().map(|ws| ws.list_projects()).unwrap_or_default();
+    crate::ui::projects_pane::drawn_session_rows(app, &projects)
+}
+
+/// The row a closed session hands focus to: the one the pane drew
+/// under it, or the one above when it was the last row. `order` is
+/// the drawn order captured before the close, which is what makes
+/// the closed row's position knowable.
+///
+/// Rows whose bucket went with it are skipped - closing a lead
+/// cascades its workers - and a closed row that the pane never drew
+/// falls back to the top of the list, the one place on screen that
+/// is predictable when the row itself was not.
+pub(crate) fn adjacent_drawn_session(
+    app: &App,
+    order: &[forge_workspace::SessionKey],
+    closed: &forge_workspace::SessionKey,
+) -> Option<forge_workspace::SessionKey> {
+    let live = |key: &&forge_workspace::SessionKey| app.sessions.contains_key(*key);
+    let Some(idx) = order.iter().position(|key| key == closed) else {
+        return order.iter().find(live).cloned();
+    };
+    order[idx + 1..].iter().chain(order[..idx].iter().rev()).find(live).cloned()
+}
+
 /// Set the bucket's `lifecycle_state` for `key`. Reducer-side helper
 /// used by the per-event handlers in this module tree (`session`,
 /// `client`, `turn`) plus `app::input_submit`. No-op when no bucket
