@@ -63,6 +63,7 @@ mod tests {
             mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
             size: 42,
             folded_project: project.to_owned(),
+            project_resolved: true,
             by_model_day,
         }
     }
@@ -85,6 +86,32 @@ mod tests {
         let entry = summary("forge", 7);
         store(&db, "/a.jsonl", &entry).expect("store");
         assert_eq!(load(&db, "/a.jsonl").expect("load"), Some(entry));
+    }
+
+    #[test]
+    fn a_row_predating_project_resolved_decodes_as_unresolved() {
+        let (_dir, db) = open_db();
+        // A row exactly as the previous version wrote it: the same blob
+        // minus the field that did not exist yet.
+        let mut old = serde_json::to_value(summary("auto", 7)).expect("serialize");
+        old.as_object_mut()
+            .expect("a summary serializes to an object")
+            .remove("project_resolved")
+            .expect("project_resolved is the field being dropped");
+        let bytes = serde_json::to_vec(&old).expect("serialize old shape");
+        let txn = db.database().begin_write().expect("begin write");
+        {
+            let mut table = txn.open_table(TOKEN_USAGE).expect("open table");
+            table.insert("/a.jsonl", bytes.as_slice()).expect("insert");
+        }
+        txn.commit().expect("commit");
+
+        let loaded = load(&db, "/a.jsonl").expect("load").expect("an old row still decodes");
+        assert_eq!(loaded.by_model_day["m"]["2026-07-08"].output, 7, "its counts survive");
+        assert!(
+            !loaded.project_resolved,
+            "an old row reads as unresolved, so its label is re-derived rather than frozen",
+        );
     }
 
     #[test]
