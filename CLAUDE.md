@@ -271,6 +271,41 @@ inspected.
     time, ask what a user would SEE that is different, and treat any
     non-empty answer on a perf or refactor change as a blocker until it
     is split out and decided on its own.
+17. **Behaviour forge depends on belongs in forge, and gets there
+    through an issue.** A rule living only in a contributor's own
+    `CLAUDE.md` is not shipped: every other install runs without it.
+    Promotion is never a direct edit - the text reaches every user of
+    every install, so it gets decided deliberately rather than
+    in-session.
+
+    The test has two halves and both must hold: **does forge machinery
+    depend on it, AND is it unknowable from outside forge?** A rule a
+    competent person reaches unaided fails it, however good the advice.
+    One about how forge's own workers, peers, crons or sessions behave
+    usually passes.
+
+    **Divergence counts, not just absence.** Present in both places but
+    SHARPER in one is the harder case: the shipped charter carried the
+    worker-despawn merge requirement only inside an exemplar ("a merged
+    PR") where the user-scope version stated it as the rule, so every
+    forge user but the author got the fragile phrasing - one adjective
+    from losing the behaviour, with no test asserting it.
+
+    **Placement decides whether the text fires at all.** Always-on
+    blocks (`forge-agent/src/forge_sdk_worker.rs`) for what every
+    session needs, the lead charter
+    (`forge-workspace/src/spawn/lead_charter.md`) for lead-only
+    behaviour, an MCP tool description for a fact about that tool's own
+    return value. The cross-project handoff rule sat in a peer tool
+    description, so it was read only once a peer tool was already in
+    hand - after the decision it governs.
+
+    Shipped text never names a user-scope skill, command or plugin: a
+    fresh install has none, so describe the behaviour and leave the
+    tooling as an optional shortcut. Also out - approval-scope tables,
+    timezone presentation, punctuation rules, PR-body voice, commit
+    conventions, release workflow: real preferences, none of them
+    things forge breaks without.
 
 ## Claude Code worktree interop
 
