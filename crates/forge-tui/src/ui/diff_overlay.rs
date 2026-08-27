@@ -3184,11 +3184,11 @@ mod tests {
             for pair in [both, left_only, right_only] {
                 for pane_width in [101u16, 119, 160, 184] {
                     let row = split_diff_row(&file, pair, gutter, pane_width, Some(&cache));
-                    let painted: usize = row.spans.iter().map(Span::width).sum();
                     assert_eq!(
-                        painted,
-                        usize::from(pane_width),
-                        "gutter={gutter} pane_width={pane_width} pair={pair:?}"
+                        first_painted_column_past(&row, pane_width),
+                        None,
+                        "the row paints nothing past the pane: \
+                         gutter={gutter} pane_width={pane_width} pair={pair:?}"
                     );
                 }
             }
@@ -3227,11 +3227,93 @@ mod tests {
             left: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }),
             right: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 }),
         };
-        for pane_width in [101u16, 119, 160, 184] {
+        // 103 is here because the others do not reach this test's own
+        // subject: every unit is 3 columns, so the cut only straddles a
+        // cluster when the half's text column is 3n+2, and 101/119/160/184
+        // give 43/52/72/84 - none of them. 103 gives 44.
+        for pane_width in [101u16, 103, 119, 160, 184] {
             let row = split_diff_row(&file, pair, gutter, pane_width, Some(&cache));
-            let painted: usize = row.spans.iter().map(Span::width).sum();
-            assert_eq!(painted, usize::from(pane_width), "pane_width={pane_width}");
+            assert_eq!(
+                first_painted_column_past(&row, pane_width),
+                None,
+                "a cut cluster paints nothing past the pane: pane_width={pane_width}"
+            );
+            // A mid-cluster cut is exactly where a half can come out the
+            // wrong painted width, which moves the divider the click
+            // handler splits on.
+            assert_eq!(
+                painted_divider_col(&row, pane_width),
+                Some(split_layout(gutter, pane_width).divider_col),
+                "a cut cluster leaves the divider on its nominal column: \
+                 pane_width={pane_width}"
+            );
         }
+    }
+
+    /// The first column at or past `pane_width` the row actually paints
+    /// into, measured in a buffer with slack so an overrun has somewhere
+    /// to land. Summing `Span::width` cannot see one - it is the same
+    /// measurement the fit check itself makes, so it agrees with a wrong
+    /// answer.
+    /// `build_split_half` re-measures after truncating and pads back up
+    /// to the column, so a cut that lands short is repaired before the
+    /// row is finished and no assertion on that row can see it. Pin the
+    /// cut itself.
+    #[test]
+    fn a_truncated_span_fills_the_column_it_was_cut_to() {
+        for max_width in [1usize, 7, 40, 83] {
+            let plain = vec![Span::raw("x".repeat(200))];
+            let kept: usize =
+                truncate_spans_to_width(plain, max_width).iter().map(Span::width).sum();
+            assert_eq!(
+                kept, max_width,
+                "a cut of plain text fills its column: max_width={max_width}"
+            );
+
+            // Every unit is `x` plus a 2-column presentation sequence, so
+            // a budget of 3n+2 is the only one that straddles a cluster -
+            // the case the function's own comment says a per-char sum
+            // would get wrong. Asserted exactly, because `<=` cannot see
+            // the short cut this test exists to pin.
+            let clustered = vec![Span::raw("x\u{2764}\u{fe0f}".repeat(80))];
+            let kept: usize =
+                truncate_spans_to_width(clustered, max_width).iter().map(Span::width).sum();
+            let expected = if max_width % 3 == 2 { max_width - 1 } else { max_width };
+            assert_eq!(
+                kept, expected,
+                "a cut keeps every whole cluster its column allows: max_width={max_width}"
+            );
+        }
+    }
+
+    /// The buffer is pre-filled with a sentinel rather than left empty:
+    /// a half pads itself with spaces, so an overrun made of padding is
+    /// indistinguishable from untouched background if blankness is the
+    /// test. Anything still carrying the sentinel was never painted.
+    fn first_painted_column_past(row: &Line<'_>, pane_width: u16) -> Option<usize> {
+        use ratatui::buffer::{Buffer, Cell};
+        use ratatui::widgets::Widget;
+
+        const SLACK: u16 = 24;
+        const SENTINEL: &str = "\u{2588}";
+
+        let area = Rect::new(0, 0, pane_width + SLACK, 1);
+        let mut sentinel = Cell::EMPTY;
+        sentinel.set_symbol(SENTINEL);
+        let mut buffer = Buffer::filled(area, sentinel);
+        Paragraph::new(row.clone()).render(area, &mut buffer);
+        // Missing the budget has two directions. The overrun is what
+        // the callers assert; a row stopping short of the edge leaves
+        // the per-line tint not reaching it, and only the buffer shows
+        // that either.
+        assert_ne!(
+            buffer[(pane_width - 1, 0)].symbol(),
+            SENTINEL,
+            "the row reaches the pane's right edge: pane_width={pane_width}"
+        );
+        (pane_width..pane_width + SLACK)
+            .find(|&x| buffer[(x, 0)].symbol() != SENTINEL)
+            .map(usize::from)
     }
 
     /// The click handler splits old from new on `divider_col`. If the
