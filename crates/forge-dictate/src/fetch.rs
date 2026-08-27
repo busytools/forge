@@ -280,6 +280,16 @@ mod tests_download {
     }
 
     fn serve(files: Vec<(&'static str, Vec<u8>)>) -> Server {
+        serve_inner(files, true)
+    }
+
+    /// Nothing obliges a server to honour `Range`; a mirror or proxy may
+    /// answer 200 with the whole file instead.
+    fn serve_ignoring_range(files: Vec<(&'static str, Vec<u8>)>) -> Server {
+        serve_inner(files, false)
+    }
+
+    fn serve_inner(files: Vec<(&'static str, Vec<u8>)>, honour_range: bool) -> Server {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let (tx, seen) = mpsc::channel();
@@ -302,6 +312,7 @@ mod tests_download {
                 let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
                 let start: usize = head
                     .lines()
+                    .filter(|_| honour_range)
                     .find(|l| l.to_ascii_lowercase().starts_with("range:"))
                     .and_then(|l| l.split("bytes=").nth(1))
                     .and_then(|r| r.trim().trim_end_matches('-').parse().ok())
@@ -366,12 +377,12 @@ mod tests_download {
         let mut reported = Vec::new();
         prepare(&cfg, |p| reported.push(p)).expect("both models must download and verify");
 
-        assert_eq!(fs::read(dir.path().join("asr.gguf")).unwrap(), asr, "asr model must land");
-        assert_eq!(
-            fs::read(dir.path().join("norm.gguf")).unwrap(),
-            norm,
-            "normalizer must be fetched too, not only the asr model"
-        );
+        let landed_asr = fs::read(dir.path().join("asr.gguf"))
+            .expect("the asr model must be on disk under its spec's file name");
+        let landed_norm = fs::read(dir.path().join("norm.gguf"))
+            .expect("the normalizer must be fetched too, not only the asr model");
+        assert_eq!(landed_asr, asr, "the asr model must be the bytes the server served");
+        assert_eq!(landed_norm, norm, "the normalizer must be the bytes the server served");
 
         let ready: Vec<_> = reported
             .iter()
@@ -414,6 +425,28 @@ mod tests_download {
             fs::read(dir.path().join("asr.gguf")).unwrap(),
             body,
             "the resumed file must be the whole model, not the tail alone"
+        );
+    }
+
+    #[test]
+    fn a_server_that_ignores_range_does_not_produce_a_spliced_file() {
+        let body = b"pretend these are recognition weights".to_vec();
+        let server = serve_ignoring_range(vec![("/asr.gguf", body.clone())]);
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("asr.gguf.part"), b"XXXXXXXXXX").unwrap();
+
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .asr_model(spec_for(&server, "/asr.gguf", &body))
+            .normalizer(None)
+            .build();
+
+        prepare(&cfg, |_| {})
+            .expect("a whole-file 200 must replace the partial, not be appended to it");
+        assert_eq!(
+            fs::read(dir.path().join("asr.gguf")).unwrap(),
+            body,
+            "a 200 answer to a ranged request must overwrite what was already on disk"
         );
     }
 
