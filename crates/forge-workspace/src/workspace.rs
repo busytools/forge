@@ -2531,6 +2531,7 @@ impl Workspace {
                     spawned_by_session_id,
                     resume_existing,
                     kick,
+                    interactive,
                     return_to,
                 } => {
                     let span = tracing::info_span!(
@@ -2538,6 +2539,7 @@ impl Workspace {
                         project = %project_key.as_str(),
                         label = %label,
                         resume = resume_existing.is_some(),
+                        interactive,
                     );
                     let _enter = span.enter();
                     spawn::handle_spawn_worker(
@@ -2548,6 +2550,7 @@ impl Workspace {
                         spawned_by_session_id,
                         resume_existing,
                         kick,
+                        interactive,
                         return_to,
                     );
                 }
@@ -2668,6 +2671,7 @@ impl Workspace {
                 spawned_by_session_id: lead_session_id.to_owned(),
                 resume_existing,
                 kick,
+                interactive: worker.interactive,
                 return_to: tx,
             };
             if let Err(err) = self.dispatch(cmd) {
@@ -6007,6 +6011,7 @@ impl Workspace {
             charter: format!("charter for {label}"),
             kick: None,
             resume_kick: None,
+            interactive: false,
         });
     }
 
@@ -7987,6 +7992,7 @@ SOLO_TOKEN = "solo-secret"
             charter: format!("charter for {label}"),
             kick: Some(format!("kick for {label}")),
             resume_kick: None,
+            interactive: false,
         }
     }
 
@@ -8009,6 +8015,7 @@ SOLO_TOKEN = "solo-secret"
             charter: "original charter".to_owned(),
             kick: Some("original kick".to_owned()),
             resume_kick: Some("original resume".to_owned()),
+            interactive: false,
         });
         let stored = |ws: &Arc<Workspace>| {
             ws.dynamic_workers_for_project(&project)
@@ -9091,6 +9098,7 @@ SOLO_TOKEN = "solo-secret"
             charter: "review".to_owned(),
             kick: None,
             resume_kick: None,
+            interactive: false,
         });
 
         ws.enable_test_dispatch_intercept();
@@ -9137,6 +9145,7 @@ SOLO_TOKEN = "solo-secret"
             charter: "review".to_owned(),
             kick: None,
             resume_kick: None,
+            interactive: false,
         });
         let worker_key = SessionKey::from_session_id("worker-spawning-cron");
         ws.insert_live_worker(&key, live_worker_entry("reviewer", "worker-spawning-cron"));
@@ -11770,6 +11779,7 @@ mod worker_respawn_tests {
             charter: "Hub steward".to_owned(),
             kick: Some("go".to_owned()),
             resume_kick: None,
+            interactive: false,
         });
         workspace.enable_test_dispatch_intercept();
         workspace.respawn_workers_for_lead(
@@ -11795,6 +11805,43 @@ mod worker_respawn_tests {
             charter: format!("dynamic charter for {label}"),
             kick: kick.map(str::to_owned),
             resume_kick: None,
+            interactive: false,
+        }
+    }
+
+    /// The interactive flag rides the subprocess CLI args, so a
+    /// re-spawn that dropped it would take `AskUserQuestion` away from
+    /// a worker mid-conversation on the first forge restart - and give
+    /// it to one that was never meant to have it.
+    #[test]
+    fn dispatch_worker_respawns_carries_interactive_from_the_row() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        let project_key = ProjectKey::new("proj-x");
+        let mut talkative = dyn_worker("talkative", None);
+        talkative.interactive = true;
+        let dynamic = vec![talkative, dyn_worker("quiet", None)];
+
+        workspace.dispatch_worker_respawns(
+            "new-lead",
+            &project_key,
+            &dynamic,
+            &std::collections::HashMap::new(),
+        );
+
+        for cmd in workspace.drain_test_dispatch_buffer() {
+            let Command::SpawnWorker { label, interactive, .. } = cmd else {
+                panic!("expected SpawnWorker");
+            };
+            match label.as_str() {
+                "talkative" => {
+                    assert!(interactive, "an interactive row re-spawns interactive");
+                }
+                "quiet" => {
+                    assert!(!interactive, "a non-interactive row re-spawns non-interactive");
+                }
+                other => panic!("unexpected label {other}"),
+            }
         }
     }
 
@@ -11920,6 +11967,7 @@ mod worker_respawn_tests {
             charter: "resume the scratch task".to_owned(),
             kick: Some("go".to_owned()),
             resume_kick: None,
+            interactive: false,
         });
         workspace.enable_test_dispatch_intercept();
 
@@ -11962,6 +12010,7 @@ mod worker_respawn_tests {
                 charter: "c".to_owned(),
                 kick: None,
                 resume_kick: None,
+                interactive: false,
             })
             .expect("persist the row this test then deletes");
         workspace.delete_dynamic_worker(&project_key, "scratch");
@@ -12040,6 +12089,7 @@ config_dir = "{}"
             charter: "mind the queues".to_owned(),
             kick: None,
             resume_kick: None,
+            interactive: false,
         });
         ws.enable_test_dispatch_intercept();
         (ws, view.key.clone(), view.path.clone(), session_id.to_owned())
@@ -12630,6 +12680,7 @@ mod async_worker_spawn_failure_tests {
             charter: "c".to_owned(),
             kick: None,
             resume_kick: None,
+            interactive: false,
         });
         workspace
             .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, lead_id, true));
@@ -12706,6 +12757,7 @@ mod async_worker_spawn_failure_tests {
             charter: "c".to_owned(),
             kick: None,
             resume_kick: None,
+            interactive: false,
         });
         // Non-git worker + a generic message classifies as DispatchFailed,
         // driving the transition-to-Failed (visible) path.

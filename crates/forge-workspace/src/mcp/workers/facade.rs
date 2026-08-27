@@ -245,7 +245,8 @@ pub trait WorkerFacade: Send + Sync {
     /// happens before dispatch. `resume_kick` is persisted rather than
     /// delivered now;
     /// it replaces the generic restart note when this worker resumes
-    /// after a forge restart.
+    /// after a forge restart. `interactive` keeps the built-in
+    /// `AskUserQuestion` tool, which every other worker is denied.
     async fn spawn_worker(
         &self,
         caller: &SessionKey,
@@ -253,6 +254,7 @@ pub trait WorkerFacade: Send + Sync {
         charter: String,
         kick: Option<String>,
         resume_kick: Option<String>,
+        interactive: bool,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError>;
 
     /// Merge the supplied fields onto the stored dynamic-worker row for
@@ -438,6 +440,7 @@ impl WorkerFacade for ProdWorkerFacade {
         charter: String,
         kick: Option<String>,
         resume_kick: Option<String>,
+        interactive: bool,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError> {
         let cp = self.caller_project(caller).ok_or(WorkerSpawnError::UnknownCallerProject)?;
         validate_worker_spawn(cp.is_lead, &label, &charter)?;
@@ -468,6 +471,7 @@ impl WorkerFacade for ProdWorkerFacade {
             charter: charter.clone(),
             kick: kick.clone(),
             resume_kick,
+            interactive,
         };
         let (tx, rx) = tokio::sync::oneshot::channel();
         let cmd = Command::SpawnWorker {
@@ -480,6 +484,7 @@ impl WorkerFacade for ProdWorkerFacade {
             // lead Connected hook only.
             resume_existing: None,
             kick,
+            interactive,
             return_to: tx,
         };
         if let Err(err) = ws.dispatch(cmd) {
@@ -722,9 +727,9 @@ impl WorkerFacade for ProdWorkerFacade {
 }
 
 /// A captured `MockWorkerFacade::spawn_worker` call:
-/// `(caller, label, resolved charter, kick, resume_kick)`.
+/// `(caller, label, resolved charter, kick, resume_kick, interactive)`.
 #[cfg(any(test, feature = "testing"))]
-type RecordedSpawnCall = (SessionKey, String, String, Option<String>, Option<String>);
+type RecordedSpawnCall = (SessionKey, String, String, Option<String>, Option<String>, bool);
 
 /// A captured `MockWorkerFacade::update_worker` call:
 /// `(caller, label, charter, kick, resume_kick)`.
@@ -817,10 +822,18 @@ impl WorkerFacade for MockWorkerFacade {
         charter: String,
         kick: Option<String>,
         resume_kick: Option<String>,
+        interactive: bool,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError> {
         let cp = self.caller_project(caller).ok_or(WorkerSpawnError::UnknownCallerProject)?;
         validate_worker_spawn(cp.is_lead, &label, &charter)?;
-        self.spawn_calls.lock().push((caller.clone(), label, charter, kick, resume_kick));
+        self.spawn_calls.lock().push((
+            caller.clone(),
+            label,
+            charter,
+            kick,
+            resume_kick,
+            interactive,
+        ));
         self.spawn_reply.lock().clone().unwrap_or(Err(WorkerSpawnError::DispatchFailed {
             message: "no preloaded reply".into(),
         }))
@@ -1003,6 +1016,7 @@ mod mock_tests {
                 "charter".into(),
                 None,
                 None,
+                false,
             )
             .await;
         assert!(matches!(res, Err(WorkerSpawnError::NotLeadCaller)));
@@ -1028,6 +1042,7 @@ mod mock_tests {
                 "charter".into(),
                 None,
                 None,
+                false,
             )
             .await
             .unwrap();
@@ -1066,7 +1081,8 @@ mod mock_tests {
             lead.clone(),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
         );
-        let res = mock.spawn_worker(&lead, "reviewer".into(), "   ".into(), None, None).await;
+        let res =
+            mock.spawn_worker(&lead, "reviewer".into(), "   ".into(), None, None, false).await;
         assert!(matches!(res, Err(WorkerSpawnError::EmptyCharter)));
         assert_eq!(
             mock.spawn_calls.lock().len(),

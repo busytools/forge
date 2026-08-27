@@ -288,6 +288,10 @@ pub enum Command {
         /// resuming worker. `None` -> no kick (the worker idles until
         /// told).
         kick: Option<String>,
+        /// Whether this worker keeps the built-in `AskUserQuestion`
+        /// tool. Read from the persisted row on a re-spawn, so it
+        /// survives a forge restart.
+        interactive: bool,
         return_to: oneshot::Sender<Result<WorkerSpawnReply, String>>,
     },
     /// Close (terminate agent + remove from `live_workers`) the

@@ -2453,6 +2453,7 @@ mod connected_hook_tests {
             charter: format!("charter for {label}"),
             kick: None,
             resume_kick: None,
+            interactive: false,
         });
         dir
     }
@@ -2528,6 +2529,7 @@ mod connected_hook_tests {
             charter: "charter for planner".to_owned(),
             kick: None,
             resume_kick: None,
+            interactive: false,
         });
         workspace.enable_test_dispatch_intercept();
 

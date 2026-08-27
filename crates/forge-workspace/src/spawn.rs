@@ -38,16 +38,31 @@ use crate::{SessionKey, SessionTarget};
 /// worktree-hop tools to escape. Comma-separated value form is
 /// empirically accepted by the CLI's variadic `<tools...>` parser.
 ///
+/// Unless `interactive`, `AskUserQuestion` joins that list. A worker's
+/// question renders in its own row, which nobody is usually looking
+/// at, and an answer that does arrive is indistinguishable from a
+/// decision the user made. Denying it at spawn means the capability is
+/// never offered rather than refused after the model has already
+/// decided to ask.
+///
 /// The `is_git_repo` boolean is passed in (already-computed by the
 /// caller) so the git-repo probe runs at most once per spawn even
 /// when the same answer is needed for both the `WorkerEntry.is_git_repo_at_spawn`
 /// field and this argument list.
-fn build_worker_extra_args(is_git_repo: bool, label: &str) -> Vec<(String, Option<String>)> {
+fn build_worker_extra_args(
+    is_git_repo: bool,
+    label: &str,
+    interactive: bool,
+) -> Vec<(String, Option<String>)> {
     let mut args = Vec::new();
     if is_git_repo {
         args.push(("worktree".to_owned(), Some(label.to_owned())));
     }
-    args.push(("disallowedTools".to_owned(), Some("EnterWorktree,ExitWorktree".to_owned())));
+    let mut disallowed = "EnterWorktree,ExitWorktree".to_owned();
+    if !interactive {
+        disallowed.push_str(",AskUserQuestion");
+    }
+    args.push(("disallowedTools".to_owned(), Some(disallowed)));
     args
 }
 
@@ -870,6 +885,7 @@ pub(crate) fn handle_spawn_worker(
     spawned_by_session_id: String,
     resume_existing: Option<String>,
     kick: Option<String>,
+    interactive: bool,
     return_to: tokio::sync::oneshot::Sender<Result<WorkerSpawnReply, String>>,
 ) {
     // Verify the project exists before claiming a synth key. Probe its
@@ -981,7 +997,7 @@ pub(crate) fn handle_spawn_worker(
     // lose state without warning).
     let settings = SessionLaunchSettings {
         charter: Some(charter),
-        extra_args: build_worker_extra_args(is_git, label),
+        extra_args: build_worker_extra_args(is_git, label, interactive),
         ..Default::default()
     };
     let target = match resume_existing {
@@ -1867,6 +1883,7 @@ config_dir = "~/.claude-stargate"
             "lead".to_owned(),
             None,
             None,
+            false,
             tx,
         );
 
@@ -2240,6 +2257,7 @@ config_dir = "~/.claude-stargate"
             "lead-uuid".to_owned(),
             None,
             None,
+            false,
             tx,
         );
         let err = resp_rx.await.expect("reply channel").expect_err("the agent spawn fails");
@@ -2770,7 +2788,7 @@ config_dir = "~/.claude-stargate"
             .expect("git init");
         let is_git = forge_agent::env::worktree::is_git_repo(dir.path());
         assert!(is_git, "freshly-initialised tempdir must register as git repo");
-        let args = build_worker_extra_args(is_git, "reviewer");
+        let args = build_worker_extra_args(is_git, "reviewer", false);
         assert!(
             args.iter()
                 .any(|(flag, value)| flag == "worktree" && value.as_deref() == Some("reviewer")),
@@ -2786,7 +2804,7 @@ config_dir = "~/.claude-stargate"
         let dir = tempdir().expect("tempdir"); // empty, not a repo
         let is_git = forge_agent::env::worktree::is_git_repo(dir.path());
         assert!(!is_git, "empty tempdir must not register as git repo");
-        let args = build_worker_extra_args(is_git, "reviewer");
+        let args = build_worker_extra_args(is_git, "reviewer", false);
         assert!(
             !args.iter().any(|(flag, _)| flag == "worktree"),
             "expected no worktree entry in {args:?}"
@@ -2804,7 +2822,7 @@ config_dir = "~/.claude-stargate"
     #[test]
     fn worker_in_git_repo_blocks_enter_and_exit_worktree() {
         let is_git = true;
-        let args = build_worker_extra_args(is_git, "reviewer");
+        let args = build_worker_extra_args(is_git, "reviewer", false);
         let blocked = args.iter().find(|(flag, _)| flag == "disallowedTools");
         let (_, value) = blocked.expect("expected --disallowedTools entry");
         let value = value.as_deref().expect("expected value for --disallowedTools");
@@ -2819,12 +2837,47 @@ config_dir = "~/.claude-stargate"
     #[test]
     fn worker_in_non_git_repo_also_blocks_worktree_tools() {
         let is_git = false;
-        let args = build_worker_extra_args(is_git, "reviewer");
+        let args = build_worker_extra_args(is_git, "reviewer", false);
         let blocked = args.iter().find(|(flag, _)| flag == "disallowedTools");
         let (_, value) = blocked.expect("expected --disallowedTools entry even outside git-repo");
         let value = value.as_deref().expect("expected value for --disallowedTools");
         assert!(value.contains("EnterWorktree"));
         assert!(value.contains("ExitWorktree"));
+    }
+
+    /// An answer to a worker's `AskUserQuestion` is indistinguishable
+    /// from a decision the user made, and reaches it only if someone
+    /// happens to be looking at that worker's row. The default is that
+    /// the tool is never offered.
+    #[test]
+    fn worker_spawned_without_interactive_is_denied_ask_user_question() {
+        let args = build_worker_extra_args(true, "reviewer", false);
+        let blocked = args.iter().find(|(flag, _)| flag == "disallowedTools");
+        let (_, value) = blocked.expect("expected --disallowedTools entry");
+        let value = value.as_deref().expect("expected value for --disallowedTools");
+        assert!(
+            value.contains("AskUserQuestion"),
+            "a worker spawned without interactive must not be offered AskUserQuestion, got {value:?}",
+        );
+    }
+
+    /// The opt-in keeps the tool, and changes nothing else: a worker
+    /// spawned to be talked to directly is one whose row the user has
+    /// open, but it is still pinned to its spawn location.
+    #[test]
+    fn worker_spawned_interactive_keeps_ask_user_question() {
+        let args = build_worker_extra_args(true, "reviewer", true);
+        let blocked = args.iter().find(|(flag, _)| flag == "disallowedTools");
+        let (_, value) = blocked.expect("expected --disallowedTools entry");
+        let value = value.as_deref().expect("expected value for --disallowedTools");
+        assert!(
+            !value.contains("AskUserQuestion"),
+            "an interactive worker must keep AskUserQuestion, got {value:?}",
+        );
+        assert!(
+            value.contains("EnterWorktree") && value.contains("ExitWorktree"),
+            "opting into interactive must not lift the worktree-hop denial, got {value:?}",
+        );
     }
 
     /// Regression for C4: closing a worker must expire every

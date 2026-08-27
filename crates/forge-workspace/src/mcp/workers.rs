@@ -86,6 +86,8 @@ struct SpawnArgs {
     kick: Option<String>,
     #[serde(default)]
     resume_kick: Option<String>,
+    #[serde(default)]
+    interactive: bool,
 }
 
 #[async_trait::async_trait]
@@ -115,7 +117,10 @@ impl Tool for Spawn {
          needs specific steps - re-read a file, catch up a queue, check \
          what was mid-run - rather than that generic continue; it \
          replaces the restart note on every resume. Omit it and the \
-         generic note is what a resumed worker gets. So spawn one per \
+         generic note is what a resumed worker gets. A worker cannot ask \
+         the user anything directly - it has no AskUserQuestion - and \
+         reaches them through you instead; PASS `interactive` only for a \
+         worker the user asked to talk to directly. So spawn one per \
          distinct piece of work and despawn it \
          once that work is truly done - a forgotten worker keeps coming \
          back on every restart. At most one live worker per label - \
@@ -148,6 +153,10 @@ impl Tool for Spawn {
                     "type": "string",
                     "description": "Optional re-orient message delivered every time this worker is RESUMED after a forge restart, in place of the generic 'continue where you left off' note. For a LONG-LIVED worker whose restart needs specific steps - re-read a file, catch up a queue, check whether something was mid-run before re-running it - rather than a generic continue. Stored at spawn rather than delivered now; the first turn of a fresh spawn is `kick`. Non-empty after trim when provided - to keep the generic restart note, OMIT the argument rather than passing an empty string, which is rejected.",
                 },
+                "interactive": {
+                    "type": "boolean",
+                    "description": "Set true ONLY when the user asked for a worker they will talk to DIRECTLY and will have its row open. It keeps the built-in AskUserQuestion tool, which every other worker is denied: a worker's question renders in its own row, which nobody is usually watching, and an answer that does arrive is indistinguishable from a decision the user actually made - so a worker can attribute a choice to the user in good faith that the user never saw. Defaults to false, which is right for any worker you are spawning on your own initiative; that worker reaches the user through you, via its workers__ask('lead', ...). This is fixed at spawn - changing it means despawning the worker and spawning it again.",
+                },
             },
             "required": ["label", "charter"],
             "additionalProperties": false,
@@ -172,7 +181,14 @@ impl Tool for Spawn {
         }
         match self
             .facade
-            .spawn_worker(&caller_key, args.label, args.charter, args.kick, args.resume_kick)
+            .spawn_worker(
+                &caller_key,
+                args.label,
+                args.charter,
+                args.kick,
+                args.resume_kick,
+                args.interactive,
+            )
             .await
         {
             Ok(reply) => {
@@ -1295,6 +1311,39 @@ mod tests {
             None,
             "absent resume_kick is None, so the restart note stays the default",
         );
+        assert!(
+            !mock.spawn_calls.lock()[0].5,
+            "absent interactive means the worker is not offered AskUserQuestion",
+        );
+    }
+
+    /// The lead is the party that knows whether the user asked for a
+    /// worker they will talk to directly, so the opt-in is an argument
+    /// rather than a default.
+    #[tokio::test]
+    async fn spawn_passes_interactive_through_to_facade() {
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
+            session_id: "u".into(),
+            tag: "forge:worker:pairing".into(),
+            rate_limited_account: None,
+            durability_warning: None,
+        }));
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "pairing",
+                    "charter": "Pair with Ved on the parser.",
+                    "interactive": true,
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "spawn with interactive should not error: {:?}", output.blocks);
+        assert!(mock.spawn_calls.lock()[0].5, "interactive passes through");
     }
 
     #[tokio::test]

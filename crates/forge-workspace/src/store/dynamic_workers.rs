@@ -32,6 +32,14 @@ pub struct DynamicWorker {
     /// Re-orient message delivered instead of the generic forge restart
     /// note when this worker resumes; `None` keeps the generic note.
     pub resume_kick: Option<String>,
+    /// Whether this worker was spawned to be talked to directly, and so
+    /// keeps the built-in `AskUserQuestion` tool. Stored because the
+    /// flag rides the subprocess CLI args and must be re-applied on
+    /// every re-spawn. `default` because a bare `bool` would otherwise
+    /// fail to decode every row written before the field existed, and
+    /// an undecodable row is skipped rather than reported.
+    #[serde(default)]
+    pub interactive: bool,
 }
 
 /// Persist a dynamic worker, replacing any prior record with the same
@@ -126,7 +134,49 @@ mod tests {
             charter: format!("charter for {label}"),
             kick: Some(format!("kick for {label}")),
             resume_kick: Some(format!("resume kick for {label}")),
+            interactive: false,
         }
+    }
+
+    /// A row persisted before `interactive` existed decodes as
+    /// not-interactive. `interactive` is a bare `bool`, so without
+    /// `#[serde(default)]` every already-persisted row fails to decode
+    /// and `list_for_project` skips it - the worker silently stops
+    /// being re-spawned at all.
+    #[test]
+    fn row_written_before_interactive_existed_loads_as_not_interactive() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        let old_shape = serde_json::json!({
+            "project_key": "proj-a",
+            "label": "steward",
+            "charter": "mind the queues",
+            "kick": "begin",
+            "resume_kick": "re-read the notes",
+        });
+        let txn = db.database().begin_write().expect("begin");
+        {
+            let mut table = txn.open_table(DYNAMIC_WORKERS).expect("open table");
+            let value = serde_json::to_vec(&old_shape).expect("serialize old row");
+            table.insert(("proj-a", "steward"), value.as_slice()).expect("insert old row");
+        }
+        txn.commit().expect("commit");
+
+        let loaded = list_for_project(&db, "proj-a").expect("list");
+        assert_eq!(loaded.len(), 1, "a row written before `interactive` existed still decodes");
+        assert_eq!(
+            loaded[0],
+            DynamicWorker {
+                project_key: "proj-a".to_owned(),
+                label: "steward".to_owned(),
+                charter: "mind the queues".to_owned(),
+                kick: Some("begin".to_owned()),
+                resume_kick: Some("re-read the notes".to_owned()),
+                interactive: false,
+            },
+            "every prior field survives and an absent `interactive` reads as not-interactive",
+        );
     }
 
     /// A row persisted before `resume_kick` existed still decodes, with
@@ -162,6 +212,7 @@ mod tests {
                 charter: "mind the queues".to_owned(),
                 kick: Some("begin".to_owned()),
                 resume_kick: None,
+                interactive: false,
             },
             "every prior field survives and the absent one defaults to None",
         );
@@ -173,7 +224,8 @@ mod tests {
         let db = Db::open(&dir.path().join("db.redb")).expect("open db");
 
         let w1 = worker("proj-a", "reviewer");
-        let w2 = worker("proj-a", "tester");
+        let mut w2 = worker("proj-a", "tester");
+        w2.interactive = true;
         let w3 = worker("proj-b", "reviewer");
         insert(&db, &w1).expect("insert w1");
         insert(&db, &w2).expect("insert w2");
@@ -182,6 +234,10 @@ mod tests {
         let a = list_for_project(&db, "proj-a").expect("list a");
         assert_eq!(a.len(), 2, "proj-a has two dynamic workers");
         assert!(a.iter().any(|w| w.label == "reviewer") && a.iter().any(|w| w.label == "tester"));
+        assert!(
+            a.iter().find(|w| w.label == "tester").expect("tester present").interactive,
+            "interactive survives the redb round-trip",
+        );
         let b = list_for_project(&db, "proj-b").expect("list b");
         assert_eq!(b.len(), 1, "proj-b is scoped separately from proj-a");
         assert_eq!(b[0].label, "reviewer");
