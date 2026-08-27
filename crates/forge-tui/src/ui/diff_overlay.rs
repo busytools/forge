@@ -3234,6 +3234,15 @@ mod tests {
                 None,
                 "a cut cluster paints nothing past the pane: pane_width={pane_width}"
             );
+            // A mid-cluster cut is exactly where a half can come out the
+            // wrong painted width, which moves the divider the click
+            // handler splits on.
+            assert_eq!(
+                painted_divider_col(&row, pane_width),
+                Some(split_layout(gutter, pane_width).divider_col),
+                "a cut cluster leaves the divider on its nominal column: \
+                 pane_width={pane_width}"
+            );
         }
     }
 
@@ -3257,15 +3266,18 @@ mod tests {
                 "a cut of plain text fills its column: max_width={max_width}"
             );
 
-            // Every unit is 3 columns, so an odd budget forces the cut
-            // mid-cluster - the case the function's own comment says a
-            // per-char sum would get wrong.
+            // Every unit is `x` plus a 2-column presentation sequence, so
+            // a budget of 3n+2 is the only one that straddles a cluster -
+            // the case the function's own comment says a per-char sum
+            // would get wrong. Asserted exactly, because `<=` cannot see
+            // the short cut this test exists to pin.
             let clustered = vec![Span::raw("x\u{2764}\u{fe0f}".repeat(80))];
             let kept: usize =
                 truncate_spans_to_width(clustered, max_width).iter().map(Span::width).sum();
-            assert!(
-                kept <= max_width,
-                "a cut mid-cluster never overruns its column: max_width={max_width} kept={kept}"
+            let expected = if max_width % 3 == 2 { max_width - 1 } else { max_width };
+            assert_eq!(
+                kept, expected,
+                "a cut keeps every whole cluster its column allows: max_width={max_width}"
             );
         }
     }
@@ -3286,6 +3298,15 @@ mod tests {
         sentinel.set_symbol(SENTINEL);
         let mut buffer = Buffer::filled(area, sentinel);
         Paragraph::new(row.clone()).render(area, &mut buffer);
+        // Missing the budget has two directions. The overrun is what
+        // the callers assert; a row stopping short of the edge leaves
+        // the per-line tint not reaching it, and only the buffer shows
+        // that either.
+        assert_ne!(
+            buffer[(pane_width - 1, 0)].symbol(),
+            SENTINEL,
+            "the row reaches the pane's right edge: pane_width={pane_width}"
+        );
         (pane_width..pane_width + SLACK)
             .find(|&x| buffer[(x, 0)].symbol() != SENTINEL)
             .map(usize::from)
