@@ -26,14 +26,15 @@ pub mod pricing;
 const WORKTREE_MARKER: &str = "--claude-worktrees-";
 
 /// Fold a `~/.claude/projects/<slug>` directory name to the display
-/// project it belongs to.
+/// project it belongs to, plus whether that label is final (see
+/// [`FileUsageSummary::project_resolved`]).
 ///
 /// The slug is the project's absolute path with `/` and `.` both
 /// replaced by `-`, so it is lossy: `web-api` and `web/api` encode
 /// identically. Resolution therefore consults the filesystem (the
 /// user's `~/Projects`) rather than splitting on `-`. Worktrees and
 /// sub-paths fold to their repo, `/tmp` paths to `scratch`.
-pub fn fold_project(slug: &str) -> String {
+fn fold_project(slug: &str) -> (String, bool) {
     let projects_root = home_dir().map(|home| home.join("Projects"));
     let prefix = projects_root.as_deref().map(encoded_projects_prefix).unwrap_or_default();
     let root = projects_root.as_deref().unwrap_or_else(|| Path::new(""));
@@ -44,7 +45,7 @@ pub fn fold_project(slug: &str) -> String {
 /// `<home>/Projects/` string to strip; an empty prefix disables the
 /// repo-resolution rule (no known home). `projects_root` is the real
 /// directory the candidate repo names are stat'd against.
-fn fold_project_in(slug: &str, projects_prefix: &str, projects_root: &Path) -> String {
+fn fold_project_in(slug: &str, projects_prefix: &str, projects_root: &Path) -> (String, bool) {
     // (a) A worktree folds to its parent repo; the part before the
     // marker is itself the parent's slug, so recurse on it.
     if let Some(idx) = slug.find(WORKTREE_MARKER) {
@@ -60,10 +61,11 @@ fn fold_project_in(slug: &str, projects_prefix: &str, projects_root: &Path) -> S
     }
     // (c) /tmp and /private/tmp collapse into one scratch bucket.
     if slug.starts_with("-private-tmp") || slug.starts_with("-tmp") {
-        return "scratch".to_owned();
+        return ("scratch".to_owned(), true);
     }
-    // (d) Anything else: the trailing path component.
-    basename_fallback(slug)
+    // (d) Anything else: the trailing path component. Nothing on disk
+    // is consulted, so the label cannot go stale.
+    (basename_fallback(slug), true)
 }
 
 /// Resolve the repo name from a slug remainder (the encoded
@@ -71,7 +73,7 @@ fn fold_project_in(slug: &str, projects_prefix: &str, projects_root: &Path) -> S
 /// longest leading run of `-`-joined tokens that is an existing
 /// directory under `projects_root`; when nothing resolves (the repo is
 /// not checked out) the whole run is the best-effort label.
-fn resolve_project_name(remainder: &str, projects_root: &Path) -> String {
+fn resolve_project_name(remainder: &str, projects_root: &Path) -> (String, bool) {
     // Drop empty tokens: a `.`/`/` in the original path encodes as a
     // dash, so a dotted or double-slashed segment leaves an empty token
     // that would otherwise resolve to `projects_root` itself (empty
@@ -80,14 +82,14 @@ fn resolve_project_name(remainder: &str, projects_root: &Path) -> String {
     for run_len in (1..=tokens.len()).rev() {
         let candidate = tokens[..run_len].join("-");
         if projects_root.join(&candidate).is_dir() {
-            return candidate;
+            return (candidate, true);
         }
     }
     // Nothing confirms where the repo name ends, so keep the whole run:
     // a first-token guess truncates `auto-portal` and can merge it into
     // an unrelated `auto` repo's row.
     let whole = tokens.join("-");
-    if whole.is_empty() { remainder.to_owned() } else { whole }
+    (if whole.is_empty() { remainder.to_owned() } else { whole }, false)
 }
 
 /// The trailing `-`-separated component of a slug, used when no richer
@@ -131,13 +133,38 @@ impl TokenCounts {
 /// One session file's deduped usage, keyed `model -> day -> counts`.
 /// `mtime` + `size` drive the incremental cache: an unchanged file is
 /// reused rather than re-parsed. `folded_project` is the repo the file
-/// belongs to (see [`fold_project`]).
+/// belongs to, folded from its `~/.claude/projects/<slug>` dir name.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FileUsageSummary {
     pub mtime: SystemTime,
     pub size: u64,
     pub folded_project: String,
+    /// Whether `folded_project` is final. False only for the guess made
+    /// when the repo is not checked out: that guess is re-derived on
+    /// cache reuse, since a session file's mtime never changes to force
+    /// a re-parse once the checkout comes back. Rows written before this
+    /// field existed default to false and so heal on the next scan.
+    #[serde(default)]
+    pub project_resolved: bool,
     pub by_model_day: BTreeMap<String, BTreeMap<String, TokenCounts>>,
+}
+
+impl FileUsageSummary {
+    /// Re-derive `folded_project` when it was only a guess, folding the
+    /// slug dir of `path` (the session file this summary was cached
+    /// for) afresh. Costs one fold and never a re-parse, so reusing a
+    /// cached summary still picks up a repo checked out since.
+    pub fn refresh_unresolved_project(&mut self, path: &Path) {
+        if self.project_resolved {
+            return;
+        }
+        let Some(slug) = path.parent().and_then(Path::file_name) else {
+            return;
+        };
+        let (name, resolved) = fold_project(&slug.to_string_lossy());
+        self.folded_project = name;
+        self.project_resolved = resolved;
+    }
 }
 
 /// Every real session file under `projects_dir/<slug>/`. Syncthing
@@ -188,7 +215,7 @@ pub fn parse_file(path: &Path, tz: &Tz) -> Option<FileUsageSummary> {
     let mtime = metadata.modified().ok()?;
     let size = metadata.len();
     let slug = path.parent()?.file_name()?.to_string_lossy().into_owned();
-    let folded_project = fold_project(&slug);
+    let (folded_project, project_resolved) = fold_project(&slug);
 
     let file = std::fs::File::open(path).ok()?;
     let reader = std::io::BufReader::new(file);
@@ -249,7 +276,7 @@ pub fn parse_file(path: &Path, tz: &Tz) -> Option<FileUsageSummary> {
         };
         by_model_day.entry(model).or_default().entry(day).or_default().add(&usage.into_counts());
     }
-    Some(FileUsageSummary { mtime, size, folded_project, by_model_day })
+    Some(FileUsageSummary { mtime, size, folded_project, project_resolved, by_model_day })
 }
 
 /// The `YYYY-MM-DD` calendar day in `tz` for an rfc3339 timestamp, or
@@ -503,56 +530,58 @@ mod tests {
         td
     }
 
+    /// The folded label alone, for the cases where resolution status is
+    /// not the property under test.
+    fn label(slug: &str, projects_root: &Path) -> String {
+        fold_project_in(slug, PREFIX, projects_root).0
+    }
+
     #[test]
     fn worktree_slug_folds_to_parent_repo() {
         let root = projects_root_with(&["airmail"]);
         let slug = "-Users-developer-Projects-airmail--claude-worktrees-abuse-hardening";
-        assert_eq!(fold_project_in(slug, PREFIX, root.path()), "airmail");
+        assert_eq!(label(slug, root.path()), "airmail");
     }
 
     #[test]
     fn sub_crate_slug_folds_to_repo_not_dash_split() {
         let root = projects_root_with(&["forge"]);
         let slug = "-Users-developer-Projects-forge-crates-forge-test-harness";
-        assert_eq!(fold_project_in(slug, PREFIX, root.path()), "forge");
+        assert_eq!(label(slug, root.path()), "forge");
     }
 
     #[test]
     fn dashed_project_name_is_not_split_on_internal_dash() {
         let root = projects_root_with(&["web-api"]);
-        let slug = "-Users-developer-Projects-web-api";
-        assert_eq!(fold_project_in(slug, PREFIX, root.path()), "web-api");
+        assert_eq!(label("-Users-developer-Projects-web-api", root.path()), "web-api");
     }
 
     #[test]
     fn tmp_slugs_fold_to_scratch() {
         let root = projects_root_with(&[]);
-        assert_eq!(
-            fold_project_in("-private-tmp-forge-refresh-0ed1d9d0", PREFIX, root.path()),
-            "scratch",
-        );
-        assert_eq!(fold_project_in("-tmp-scratchpad", PREFIX, root.path()), "scratch");
+        assert_eq!(label("-private-tmp-forge-refresh-0ed1d9d0", root.path()), "scratch");
+        assert_eq!(label("-tmp-scratchpad", root.path()), "scratch");
     }
 
     #[test]
     fn tmp_worktree_slug_folds_to_scratch_via_parent() {
         let root = projects_root_with(&[]);
         let slug = "-private-tmp-claude-501--tmpoBGeeH--claude-worktrees-harness-spawn";
-        assert_eq!(fold_project_in(slug, PREFIX, root.path()), "scratch");
+        assert_eq!(label(slug, root.path()), "scratch");
     }
 
     #[test]
-    fn absent_repo_keeps_its_whole_dashed_name() {
+    fn absent_repo_keeps_its_whole_dashed_name_and_stays_unresolved() {
         // `forge` is checked out, `auto-portal` is not.
         let root = projects_root_with(&["forge"]);
         assert_eq!(
             fold_project_in("-Users-developer-Projects-auto-portal", PREFIX, root.path()),
-            "auto-portal",
-            "an absent repo keeps its whole dashed name rather than the first token",
+            ("auto-portal".to_owned(), false),
+            "an absent repo keeps its whole dashed name and is not marked resolved",
         );
         assert_eq!(
             fold_project_in("-Users-developer-Projects-forge", PREFIX, root.path()),
-            "forge",
+            ("forge".to_owned(), true),
             "a present repo still resolves against the filesystem",
         );
     }
@@ -562,15 +591,9 @@ mod tests {
         let root = projects_root_with(&["forge"]);
         // `~/Projects/.hidden` (dir gone) encodes the `.` as a second
         // dash; the empty candidate must not match projects_root itself.
-        assert_eq!(
-            fold_project_in("-Users-developer-Projects--hidden", PREFIX, root.path()),
-            "hidden",
-        );
+        assert_eq!(label("-Users-developer-Projects--hidden", root.path()), "hidden");
         // `~/Projects/forge/.config` still folds to the repo.
-        assert_eq!(
-            fold_project_in("-Users-developer-Projects-forge--config", PREFIX, root.path()),
-            "forge",
-        );
+        assert_eq!(label("-Users-developer-Projects-forge--config", root.path()), "forge");
     }
 
     fn write_session(td: &TempDir, slug: &str, file: &str, lines: &[&str]) -> PathBuf {
@@ -721,6 +744,7 @@ mod tests {
             mtime: SystemTime::UNIX_EPOCH,
             size: 0,
             folded_project: project.to_owned(),
+            project_resolved: true,
             by_model_day,
         }
     }

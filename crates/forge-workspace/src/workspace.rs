@@ -4132,9 +4132,13 @@ impl Workspace {
         let key = path.to_string_lossy();
         let signature =
             std::fs::metadata(path).ok().and_then(|m| Some((m.modified().ok()?, m.len())));
-        if let Some(cached) = self.load_usage_summary(&key)
+        if let Some(mut cached) = self.load_usage_summary(&key)
             && signature.is_some_and(|(mtime, size)| cached.mtime == mtime && cached.size == size)
         {
+            // An inactive session's mtime never changes, so a project
+            // label guessed while its repo was absent would otherwise
+            // outlive the checkout coming back.
+            cached.refresh_unresolved_project(path);
             return Some(cached);
         }
         let parsed = forge_agent::env::token_usage::parse_file(path, tz)?;
@@ -7424,6 +7428,7 @@ mod tests {
                 mtime: meta.modified().expect("mtime"),
                 size: meta.len(),
                 folded_project: "slug".to_owned(),
+                project_resolved: true,
                 by_model_day,
             },
         );
@@ -7457,6 +7462,44 @@ mod tests {
             ws.scan_usage().lifetime.total.output,
             15,
             "a changed file is re-parsed, not served stale from the cache",
+        );
+    }
+
+    #[test]
+    fn scan_usage_re_derives_only_an_unresolved_project_label() {
+        let (dir, ws) = usage_workspace();
+        let rec = r#"{"type":"assistant","timestamp":"2026-07-08T09:30:34.184Z","message":{"id":"a","model":"m","usage":{"output_tokens":10}}}"#;
+        for slug in ["-guessed", "-settled"] {
+            let slug_dir = dir.path().join("projects").join(slug);
+            std::fs::create_dir_all(&slug_dir).expect("mkdir");
+            std::fs::write(slug_dir.join("s.jsonl"), rec).expect("write");
+        }
+        let _ = ws.scan_usage();
+
+        // Poison both cached labels, keeping each file's real mtime/size
+        // so the reuse condition still holds. The unresolved row stands
+        // for a label guessed while the repo was not checked out.
+        let canonical = std::fs::canonicalize(dir.path().join("projects")).expect("canon");
+        for file in forge_agent::env::token_usage::usage_files(&canonical) {
+            let mut summary = ws
+                .load_usage_summary(&file.to_string_lossy())
+                .expect("the first scan cached this file");
+            let guessed = file.to_string_lossy().contains("-guessed");
+            summary.folded_project =
+                if guessed { "GUESS-POISON" } else { "SETTLED-POISON" }.to_owned();
+            summary.project_resolved = !guessed;
+            ws.store_usage_summary(&file.to_string_lossy(), &summary);
+        }
+
+        let labels: Vec<String> =
+            ws.scan_usage().lifetime.by_project.into_iter().map(|row| row.label).collect();
+        assert!(
+            labels.iter().any(|l| l == "guessed") && !labels.iter().any(|l| l == "GUESS-POISON"),
+            "a guessed label is re-derived on cache reuse, so it heals: {labels:?}",
+        );
+        assert!(
+            labels.iter().any(|l| l == "SETTLED-POISON"),
+            "a settled label is trusted from cache, not re-derived: {labels:?}",
         );
     }
 
