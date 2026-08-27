@@ -95,9 +95,9 @@ assuming you can only act in the current turn.";
 /// `description`, and a worker reporting to its lead is the only route
 /// its output reliably takes.
 ///
-/// Self-selecting rather than gated on `SessionKind`, which is derived
-/// from the spawn key: a drilldown resume carries `__resume_<id>__` and
-/// classifies as Lead even when the row is a worker, so a role-gated
+/// Self-selecting rather than gated on `SessionKind`: a drilldown
+/// resume of a worker row carries `__resume_<id>__` and, with no live
+/// worker entry to read either, classifies as Lead - so a role-gated
 /// version would miss it.
 const FORGE_SESSION_CONDUCT_SYSTEM_PROMPT: &str = "\
 A few forge-specific habits.\n\

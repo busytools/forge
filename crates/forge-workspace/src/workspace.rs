@@ -890,18 +890,28 @@ impl Workspace {
         }
     }
 
-    /// Which role a spawn is for, read off the synthetic spawn key.
+    /// Which role a spawn is for. Two sources, because no single one
+    /// covers every spawn path:
     ///
-    /// Defers to [`crate::session_task::parse_worker_synth_key`] so one
-    /// parser owns both worker shapes: prefix-matching `__spawn_worker_`
-    /// here is what let a resumed worker's `__resume_worker_` key
-    /// classify as Lead.
-    fn session_kind_for_spawn_key(spawn_key: Option<&SessionKey>) -> crate::mcp::SessionKind {
-        if spawn_key.and_then(crate::session_task::parse_worker_synth_key).is_some() {
-            crate::mcp::SessionKind::Worker
-        } else {
-            crate::mcp::SessionKind::Lead
-        }
+    /// 1. The synthetic spawn key, via
+    ///    [`crate::session_task::parse_worker_synth_key`] so one parser
+    ///    owns both worker shapes: prefix-matching `__spawn_worker_`
+    ///    here is what let a resumed worker's `__resume_worker_` key
+    ///    classify as Lead. A fresh worker has no session id yet, so
+    ///    this is the only source that can answer for it.
+    /// 2. The live-worker registry, keyed by the resolved session key.
+    ///    The `/account` re-spawn passes no spawn key at all, and an
+    ///    absent key is absence of evidence rather than evidence of a
+    ///    lead - it re-spawns whatever session the user has focused,
+    ///    which can be a worker row.
+    fn session_kind_for_spawn(
+        &self,
+        spawn_key: Option<&SessionKey>,
+        session_key: &SessionKey,
+    ) -> crate::mcp::SessionKind {
+        let is_worker = spawn_key.and_then(crate::session_task::parse_worker_synth_key).is_some()
+            || self.worker_lookup_for_session(session_key).is_some();
+        if is_worker { crate::mcp::SessionKind::Worker } else { crate::mcp::SessionKind::Lead }
     }
 
     /// Hands out the `Arc<AgentHandle>` for the requested session,
@@ -1069,7 +1079,7 @@ impl Workspace {
         // lead or a worker. Leads see peers + workers (cross-project
         // coordination is a lead-only role); workers see workers
         // only. See `crate::mcp::SessionKind` for the rationale.
-        let session_kind = Self::session_kind_for_spawn_key(spawn_key.as_ref());
+        let session_kind = self.session_kind_for_spawn(spawn_key.as_ref(), &session_key);
         let forge_server = {
             let workspace_facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(self);
             let worker_facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(self);
@@ -11678,6 +11688,44 @@ mod worker_respawn_tests {
     use super::*;
     use crate::protocol::Command;
 
+    /// A live worker entry keyed by the session it is running as, which
+    /// is what `worker_lookup_for_session` matches on post-rekey.
+    fn worker_entry(
+        label: &str,
+        session_id: &str,
+        lead_id: &str,
+    ) -> crate::mcp::workers::types::WorkerEntry {
+        crate::mcp::workers::types::WorkerEntry {
+            label: label.to_owned(),
+            charter: "test".to_owned(),
+            session_key: SessionKey::from_session_id(session_id),
+            status: forge_primitives::WorkerLiveness::Running,
+            spawned_at: std::time::SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: lead_id.to_owned(),
+            needs_tag: false,
+            is_git_repo_at_spawn: false,
+            diagnostic: None,
+            kick: None,
+        }
+    }
+
+    /// The tool names the per-session `forge` MCP server registers for
+    /// `kind`, composed exactly as the spawn path composes them.
+    fn forge_tool_surface(workspace: &Arc<Workspace>, kind: crate::mcp::SessionKind) -> String {
+        let server = crate::mcp::build_forge_server(
+            crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace),
+            crate::mcp::workers::facade::ProdWorkerFacade::from_arc(workspace),
+            crate::mcp::review::facade::ProdReviewFacade::from_arc(workspace),
+            crate::mcp::cron::facade::ProdCronFacade::from_arc(workspace),
+            crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
+            crate::mcp::peers::facade::CallerKeyResolver::from_fixed(SessionKey::from_session_id(
+                "caller",
+            )),
+            kind,
+        );
+        format!("{server:?}")
+    }
+
     /// The guard refuses a second claim while the first is outstanding.
     /// Holding the claim directly is all this needs - the blocked branch
     /// is unreachable only when claim and release share one call, which
@@ -11718,9 +11766,10 @@ mod worker_respawn_tests {
     /// of its life.
     #[test]
     fn a_resumed_worker_classifies_as_worker() {
+        let (ws, _rx) = Workspace::testing_stub();
         let resumed = SessionKey::from_session_id("__resume_worker_forge_implementer_abc123__");
         assert_eq!(
-            Workspace::session_kind_for_spawn_key(Some(&resumed)),
+            ws.session_kind_for_spawn(Some(&resumed), &SessionKey::from_session_id("fresh-uuid")),
             crate::mcp::SessionKind::Worker,
             "a __resume_worker_ key is a worker",
         );
@@ -11731,16 +11780,19 @@ mod worker_respawn_tests {
     /// everything would satisfy it.
     #[test]
     fn fresh_workers_and_leads_keep_their_classification() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let unknown = SessionKey::from_session_id("fresh-uuid");
+
         let fresh = SessionKey::from_session_id("__spawn_worker_forge_implementer_abc123__");
         assert_eq!(
-            Workspace::session_kind_for_spawn_key(Some(&fresh)),
+            ws.session_kind_for_spawn(Some(&fresh), &unknown),
             crate::mcp::SessionKind::Worker,
             "a __spawn_worker_ key is still a worker",
         );
 
         let lead = SessionKey::from_session_id("__spawn_forge__");
         assert_eq!(
-            Workspace::session_kind_for_spawn_key(Some(&lead)),
+            ws.session_kind_for_spawn(Some(&lead), &unknown),
             crate::mcp::SessionKind::Lead,
             "a peer-spawned project lead is still a lead",
         );
@@ -11749,18 +11801,58 @@ mod worker_respawn_tests {
         // `worker_foo`; the old prefix check called it a worker.
         let worker_named_project = SessionKey::from_session_id("__spawn_worker_foo__");
         assert_eq!(
-            Workspace::session_kind_for_spawn_key(Some(&worker_named_project)),
+            ws.session_kind_for_spawn(Some(&worker_named_project), &unknown),
             crate::mcp::SessionKind::Lead,
             "a project named worker_foo is a lead, not a worker",
         );
 
-        // The only production `None` is the `/account` re-spawn, which
-        // carries whatever session is focused - a worker included. This
-        // pins today's answer, not a correct one: #731.
         assert_eq!(
-            Workspace::session_kind_for_spawn_key(None),
+            ws.session_kind_for_spawn(None, &unknown),
             crate::mcp::SessionKind::Lead,
-            "no spawn key answers Lead today (the /account re-spawn path; wrong for a worker, #731)",
+            "no spawn key and no live worker at the session key answers Lead",
+        );
+    }
+
+    /// The `/account` re-spawn is the one production spawn carrying no
+    /// spawn key, and it re-spawns whatever session the user has
+    /// focused - a worker row included. An absent key is absence of
+    /// evidence, so the classification reads the live-worker registry,
+    /// which knows; reading leadness out of the absence hands a
+    /// switched worker the cross-project `peers__*` surface.
+    ///
+    /// The lead half is the control: without it, a classifier answering
+    /// Worker for every keyless spawn would satisfy the worker half and
+    /// strip peers from every account switch.
+    #[test]
+    fn an_account_switch_classifies_by_the_worker_registry_not_the_absent_key() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let worker_key = SessionKey::from_session_id("worker-uuid");
+        let lead_key = SessionKey::from_session_id("lead-uuid");
+        ws.insert_live_worker(
+            &ProjectKey::new("proj-x"),
+            worker_entry("implementer", worker_key.as_str(), lead_key.as_str()),
+        );
+
+        let worker_kind = ws.session_kind_for_spawn(None, &worker_key);
+        assert_eq!(
+            worker_kind,
+            crate::mcp::SessionKind::Worker,
+            "a focused worker re-spawned by the account switch is a worker",
+        );
+        assert!(
+            !forge_tool_surface(&ws, worker_kind).contains("peers__"),
+            "the switched worker's forge server carries no peers tools",
+        );
+
+        let lead_kind = ws.session_kind_for_spawn(None, &lead_key);
+        assert_eq!(
+            lead_kind,
+            crate::mcp::SessionKind::Lead,
+            "a focused lead re-spawned by the same path is still a lead",
+        );
+        assert!(
+            forge_tool_surface(&ws, lead_kind).contains("peers__ask_agent"),
+            "the switched lead keeps its peers tools",
         );
     }
 
