@@ -1092,8 +1092,8 @@ mod tests {
     /// what the sweep effectively sees - leaves the completed call
     /// looking unfinished. Building the resolved set over the whole
     /// history first is what makes both orders agree. Its own fixture,
-    /// because appending a trailing re-state to `replay_fixture` moves
-    /// `toolu_ok` to Failed and breaks three other tests.
+    /// because it needs a second id that never resolves to exercise the
+    /// dedup.
     #[test]
     fn a_completed_call_re_stated_afterwards_is_not_named() {
         let history = vec![
@@ -1122,6 +1122,37 @@ mod tests {
             vec![Some("toolu_open")],
             "a re-stated completed call is settled by its own result, and a re-stated \
              unresolved one is named once",
+        );
+    }
+
+    /// The neighbour above pins the WARN record; this pins what the user
+    /// opens the resumed chat to see. A `tool_use` re-stated after its
+    /// own result used to stamp the call back to `InProgress`, and the
+    /// post-walk sweep force-fails whatever is still in progress - so a
+    /// call that succeeded rendered as failed. Asserted against its own
+    /// control so the fixture cannot drift into passing vacuously.
+    #[test]
+    fn a_re_stated_tool_use_leaves_a_completed_call_completed() {
+        let settled = vec![
+            historical_user_text("run something"),
+            historical_tool_use("toolu_ok"),
+            historical_tool_result("toolu_ok", false),
+        ];
+        let mut re_stated = settled.clone();
+        re_stated.push(historical_tool_use("toolu_ok"));
+
+        let status_of = |history: &[Message]| {
+            let (_capture, app) = capture_replay_of(history);
+            tool_call_status(&app, "toolu_ok")
+        };
+
+        assert_eq!(
+            (status_of(&settled), status_of(&re_stated)),
+            (
+                Some(crate::agent::model::ToolCallStatus::Completed),
+                Some(crate::agent::model::ToolCallStatus::Completed)
+            ),
+            "a completed call stays completed whether or not its tool_use is re-stated",
         );
     }
 
