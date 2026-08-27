@@ -244,6 +244,37 @@ mod tests_cached_verification {
     }
 
     #[test]
+    fn a_cached_model_matching_its_spec_is_used_as_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = b"the complete model weights";
+        fs::write(dir.path().join("asr.gguf"), body).unwrap();
+
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .asr_model(offline_spec("asr.gguf", body))
+            .normalizer(None)
+            .build();
+
+        let mut reported = Vec::new();
+        prepare(&cfg, |p| reported.push(p))
+            .expect("a cached model that matches its spec must be accepted");
+
+        let sequence: Vec<_> = reported
+            .iter()
+            .map(|p| match p {
+                Progress::Verifying { .. } => "verifying",
+                Progress::Downloading { .. } => "downloading",
+                Progress::Ready { .. } => "ready",
+            })
+            .collect();
+        assert_eq!(
+            sequence,
+            ["verifying", "ready"],
+            "a good cached model must be verified and announced without being fetched again"
+        );
+    }
+
+    #[test]
     fn truncated_cached_model_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let spec = offline_spec("asr.gguf", b"the complete model weights");
