@@ -983,7 +983,7 @@ fn maybe_respawn_workers_on_connected(
 /// LAST. Everything between is the label, which is therefore free to
 /// contain underscores of its own (`code_review`). The project_key
 /// segment is what the kick hook scopes its live-worker lookup by.
-fn parse_worker_synth_key(key: &SessionKey) -> Option<(String, String)> {
+pub(crate) fn parse_worker_synth_key(key: &SessionKey) -> Option<(String, String)> {
     let s = key.as_str();
     let inner =
         s.strip_prefix("__spawn_").or_else(|| s.strip_prefix("__resume_"))?.strip_suffix("__")?;

@@ -96,10 +96,9 @@ assuming you can only act in the current turn.";
 /// its output reliably takes.
 ///
 /// Self-selecting rather than gated on `SessionKind`, which is derived
-/// from a `__spawn_worker_` spawn-key prefix: both resume paths
-/// (`__resume_worker_`, `__resume_<id>__`) classify as Lead, so a
-/// role-gated version would miss every resumed worker - exactly the
-/// long-lived population this is for.
+/// from the spawn key: a drilldown resume carries `__resume_<id>__` and
+/// classifies as Lead even when the row is a worker, so a role-gated
+/// version would miss it.
 const FORGE_SESSION_CONDUCT_SYSTEM_PROMPT: &str = "\
 Two forge-specific habits.\n\
 \n\
