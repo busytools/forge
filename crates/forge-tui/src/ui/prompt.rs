@@ -335,12 +335,16 @@ fn build_option_lines(
 }
 
 fn build_footer_line(prompt: &PromptState) -> Line<'static> {
+    // A question that has not been picked on yet does not answer on
+    // Enter, so the hint must not offer it - otherwise the key looks
+    // broken rather than guarded.
     let text = match prompt.mode {
         PromptMode::OptionPicker => {
-            if prompt.is_multi_select() {
-                "space toggle  ↑↓ move  ⏎ submit  esc cancel"
-            } else {
-                "↑↓ select  ⏎ confirm  esc reject"
+            match (prompt.is_multi_select(), prompt.awaits_first_choice()) {
+                (true, true) => "space toggle to answer  ↑↓ move  esc cancel",
+                (true, false) => "space toggle  ↑↓ move  ⏎ submit  esc cancel",
+                (false, true) => "↑↓ pick to answer  esc reject",
+                (false, false) => "↑↓ select  ⏎ confirm  esc reject",
             }
         }
         PromptMode::EditingInput => "⏎ submit  esc back to options",
@@ -388,6 +392,26 @@ mod tests {
             col += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
         }
         None
+    }
+
+    /// Enter is inert on a question until an option is picked, so the
+    /// hint has to stop offering it - a key that silently does nothing
+    /// reads as broken.
+    #[test]
+    fn footer_offers_enter_on_a_question_only_once_an_option_is_picked() {
+        let mut prompt = PromptState::from_question("tc-q".into(), make_question_request(false));
+        let awaiting = render_to_string(&prompt, 1, 70, 14);
+        assert!(
+            awaiting.contains("pick to answer") && !awaiting.contains("⏎"),
+            "an untouched question names what to do and does not offer Enter; got:\n{awaiting}",
+        );
+
+        prompt.interacted = true;
+        let picked = render_to_string(&prompt, 1, 70, 14);
+        assert!(
+            picked.contains("⏎ confirm"),
+            "once picked, Enter is offered again; got:\n{picked}",
+        );
     }
 
     #[test]
