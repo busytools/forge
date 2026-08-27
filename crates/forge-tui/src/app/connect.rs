@@ -201,6 +201,7 @@ fn create_app_impl(
         workspace: Some(workspace),
         #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_permission_outcomes: std::cell::RefCell::new(Vec::new()),
         #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_question_outcomes: std::cell::RefCell::new(Vec::new()),
+        #[rustfmt::skip] #[cfg(feature = "testing")] test_notifications: std::cell::RefCell::new(Vec::new()),
         sessions,
         active_session_key: Some(pre_connect_key),
         forge_crons: Vec::new(),
