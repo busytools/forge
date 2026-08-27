@@ -1194,6 +1194,24 @@ fn label_span(text: &'static str, width: usize) -> Span<'static> {
     Span::styled(s, Style::default().fg(theme::DIM))
 }
 
+/// Fit `v<version>+<sha>` into `budget` columns by shortening the sha
+/// and never the version - a shorter sha still identifies the build,
+/// while a clipped version number reads as a different release. The
+/// `+` goes with the last hex digit, since it identifies nothing alone.
+fn fit_version_to_budget(version_short: &str, budget: usize) -> String {
+    let full = format!("v{version_short}");
+    if full.chars().count() <= budget {
+        return full;
+    }
+    match full.split_once('+') {
+        Some((base, sha)) if base.chars().count() + 2 <= budget => {
+            let room = budget - base.chars().count() - 1;
+            format!("{base}+{}", sha.chars().take(room).collect::<String>())
+        }
+        _ => truncate_with_ellipsis(&full, budget),
+    }
+}
+
 /// Build the panel's lines. Layout is fixed at `ACCOUNT_PANEL_HEIGHT`
 /// rows; missing data renders as a dim placeholder so the shape
 /// doesn't shift between sessions.
@@ -1411,7 +1429,13 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // reports a strictly-newer published version. Both rows render
     // a DIM ` - ` placeholder when the corresponding probe failed so
     // the panel's row count stays constant.
-    let forge_version = format!("v{}", crate::FORGE_VERSION_SHORT);
+    // Budgeted rather than fixed-length: the row is 1 pad + label + 2
+    // gutter + version, and the version string grows every release, so
+    // any constant sha length is wrong on a schedule. Keeps the same
+    // right gutter the claude row below already respects.
+    let version_budget = usize::from(width)
+        .saturating_sub(1 + ACCOUNT_PANEL_ID_LABEL_WIDTH + 2 + PANEL_RIGHT_GUTTER);
+    let forge_version = fit_version_to_budget(crate::FORGE_VERSION_SHORT, version_budget);
     lines.push(Line::from(vec![
         Span::raw(" "),
         label_span("forge", ACCOUNT_PANEL_ID_LABEL_WIDTH),
