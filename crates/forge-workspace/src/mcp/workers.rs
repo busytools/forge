@@ -502,7 +502,10 @@ impl Tool for Tell {
          leads have no lead and will get an error). Available to both \
          lead and worker callers (apart from the 'lead' case). Run \
          workers__list first to confirm the label and that the worker \
-         is live."
+         is live. A `delivered` status means the queue ACCEPTED the \
+         message, not that the target read it - a down or wedged worker \
+         still returns delivered, so confirm real work happened by a \
+         reply or an observable artifact rather than by the ack."
     }
 
     fn input_schema(&self) -> serde_json::Value {
