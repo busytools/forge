@@ -3,13 +3,23 @@
 //! milliseconds and catches a corrupted or half-added clip at check time
 //! rather than later as a confusing transcript diff.
 //!
-//! Three properties, each with a negative control below so the gate is
+//! Five properties, each with a negative control below so the gate is
 //! known to be able to return a negative: recorded `sha256` matches the
-//! bytes on disk, the manifest and the directory are in bijection, and
-//! `duration_ms` matches the clip's own WAV header. That last one is what
-//! makes the duration trustworthy as the denominator of a realtime
-//! factor; `duration_ms` merely PARSING is already enforced by
-//! deserialization, so asserting it would be vacuous.
+//! bytes on disk, the manifest and the directory are in bijection,
+//! `duration_ms` matches the clip's own WAV header, every clip carries the
+//! audio format the ASR expects, and no baseline is blank.
+//!
+//! Two of those exist because `sha256` cannot see them. A clip in the
+//! wrong sample rate has a perfectly valid hash, and so does a manifest
+//! whose baseline was blanked by hand. The duration check earns its place
+//! separately: the bench divides by `duration_ms` to get a realtime
+//! factor, so a wrong duration silently corrupts that number.
+//!
+//! `duration_ms` merely PARSING is enforced by deserialization, and so is
+//! a RENAMED baseline key - a missing field is a deserialization error,
+//! measured rather than assumed. The gap the blank-baseline check closes
+//! is a key that is present with an empty value, which parses fine and
+//! would leave the asserting half comparing real output against nothing.
 //!
 //! # The baselines are locked known-good, not ground truth
 //!
@@ -30,12 +40,20 @@
 //! blind to one that quietly degrades into a PASSTHROUGH - bump s1-mini,
 //! have it stop cleaning entirely, and this corpus mostly goes green.
 //!
-//! `15_020s.wav` is the most valuable single fixture and the only clip
-//! whose failure is unambiguous: its ASR renders GGUF as "GG, UF", which
-//! is exactly the repair the normalizer exists to perform. Note the locked
-//! `baseline_normalized` preserves that error, so byte-equality against
-//! the baseline is the WRONG assertion for this one clip - see
-//! `NORMALIZER_EXERCISING_CLIPS`.
+//! # A locked baseline that captured the old model's mistake inverts
+//!
+//! `15_020s.wav` is the most valuable single fixture: its ASR renders GGUF
+//! as "GG, UF", exactly the repair the normalizer exists to perform. But
+//! its locked `baseline_normalized` PRESERVES that error, so byte-equality
+//! against the baseline scores this clip backwards - our normalizer doing
+//! its job shows up as a diff, and our normalizer failing shows up as
+//! green.
+//!
+//! That generalises past clip 15: any clip whose locked baseline captured
+//! the old model's mistake inverts the same way. The baselines are
+//! known-good, not correct. So the bench reports what changed for a human
+//! to read rather than grading it, and no accuracy assertion belongs in
+//! CI.
 //!
 //! # Numbers discipline
 //!
@@ -59,13 +77,20 @@ use sha2::{Digest as _, Sha256};
 /// somebody adds a clip.
 const NORMALIZER_EXERCISING_CLIPS: usize = 4;
 
-/// A `manifest.json` entry. Only the fields the gate reads are declared;
-/// serde ignores `source_id` and the two baselines.
+/// The format the ASR expects, and what every clip in the corpus is.
+const EXPECTED_CHANNELS: u16 = 1;
+const EXPECTED_SAMPLE_RATE: u32 = 16_000;
+const EXPECTED_BITS_PER_SAMPLE: u16 = 16;
+
+/// A `manifest.json` entry. `source_id` is the only field the gate does
+/// not read, and serde ignores it.
 #[derive(Debug, Deserialize)]
 struct Entry {
     file: String,
     duration_ms: u64,
     sha256: String,
+    baseline_asr: String,
+    baseline_normalized: String,
 }
 
 /// A clip as the gate sees it: a name and its bytes.
@@ -92,20 +117,42 @@ enum Problem {
         manifest_ms: u64,
         header_ms: u64,
     },
+    UnexpectedFormat {
+        file: String,
+        channels: u16,
+        sample_rate: u32,
+        bits_per_sample: u16,
+    },
+    BlankBaseline {
+        file: String,
+        field: &'static str,
+    },
     UnreadableWav {
         file: String,
         error: String,
     },
 }
 
-/// Milliseconds of audio the clip's own WAV header describes.
-fn header_ms(bytes: &[u8]) -> Result<u64, String> {
+/// What the clip's own WAV header says about it.
+struct WavProbe {
+    ms: u64,
+    channels: u16,
+    sample_rate: u32,
+    bits_per_sample: u16,
+}
+
+fn wav_probe(bytes: &[u8]) -> Result<WavProbe, String> {
     let reader = hound::WavReader::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
-    let rate = u64::from(reader.spec().sample_rate);
-    if rate == 0 {
+    let spec = reader.spec();
+    if spec.sample_rate == 0 {
         return Err("sample rate is zero".to_owned());
     }
-    Ok(u64::from(reader.duration()) * 1000 / rate)
+    Ok(WavProbe {
+        ms: u64::from(reader.duration()) * 1000 / u64::from(spec.sample_rate),
+        channels: spec.channels,
+        sample_rate: spec.sample_rate,
+        bits_per_sample: spec.bits_per_sample,
+    })
 }
 
 /// The whole gate, as a pure function over parsed entries and clip bytes so
@@ -128,6 +175,18 @@ fn check(entries: &[Entry], clips: &[Clip]) -> Vec<Problem> {
     }
 
     for entry in entries {
+        for (field, text) in [
+            ("baseline_asr", &entry.baseline_asr),
+            ("baseline_normalized", &entry.baseline_normalized),
+        ] {
+            if text.trim().is_empty() {
+                problems.push(Problem::BlankBaseline {
+                    file: entry.file.clone(),
+                    field,
+                });
+            }
+        }
+
         let Some(clip) = clips.iter().find(|c| c.name == entry.file) else {
             continue;
         };
@@ -141,16 +200,27 @@ fn check(entries: &[Entry], clips: &[Clip]) -> Vec<Problem> {
             });
         }
 
-        match header_ms(&clip.bytes) {
-            // One millisecond of slack: a frame count need not divide the
-            // sample rate exactly, and a wrong duration is wrong by
-            // hundreds of milliseconds rather than by one.
-            Ok(ms) => {
-                if ms.abs_diff(entry.duration_ms) > 1 {
+        match wav_probe(&clip.bytes) {
+            Ok(probe) => {
+                // One millisecond of slack: a frame count need not divide
+                // the sample rate exactly, and a wrong duration is wrong
+                // by hundreds of milliseconds rather than by one.
+                if probe.ms.abs_diff(entry.duration_ms) > 1 {
                     problems.push(Problem::DurationDisagreesWithHeader {
                         file: entry.file.clone(),
                         manifest_ms: entry.duration_ms,
-                        header_ms: ms,
+                        header_ms: probe.ms,
+                    });
+                }
+                if probe.channels != EXPECTED_CHANNELS
+                    || probe.sample_rate != EXPECTED_SAMPLE_RATE
+                    || probe.bits_per_sample != EXPECTED_BITS_PER_SAMPLE
+                {
+                    problems.push(Problem::UnexpectedFormat {
+                        file: entry.file.clone(),
+                        channels: probe.channels,
+                        sample_rate: probe.sample_rate,
+                        bits_per_sample: probe.bits_per_sample,
                     });
                 }
             }
@@ -168,13 +238,14 @@ fn fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures")
 }
 
-fn load_corpus() -> (Vec<Entry>, Vec<Clip>) {
-    let dir = fixtures_dir();
-    let manifest = std::fs::read_to_string(dir.join("manifest.json")).unwrap();
-    let entries: Vec<Entry> = serde_json::from_str(&manifest).unwrap();
+fn load_manifest() -> Vec<Entry> {
+    let raw = std::fs::read_to_string(fixtures_dir().join("manifest.json")).unwrap();
+    serde_json::from_str(&raw).unwrap()
+}
 
+fn load_clips() -> Vec<Clip> {
     let mut clips = Vec::new();
-    for dirent in std::fs::read_dir(&dir).unwrap() {
+    for dirent in std::fs::read_dir(fixtures_dir()).unwrap() {
         let path = dirent.unwrap().path();
         if path.extension().is_some_and(|e| e == "wav") {
             clips.push(Clip {
@@ -183,21 +254,21 @@ fn load_corpus() -> (Vec<Entry>, Vec<Clip>) {
             });
         }
     }
-    (entries, clips)
+    clips
 }
 
-/// A minimal mono 16-bit 16 kHz clip, matching the corpus format.
-fn synth_wav(frames: u32) -> Vec<u8> {
+/// A silent clip in an arbitrary format, one second long.
+fn synth_wav(channels: u16, sample_rate: u32) -> Vec<u8> {
     let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: 16_000,
-        bits_per_sample: 16,
+        channels,
+        sample_rate,
+        bits_per_sample: EXPECTED_BITS_PER_SAMPLE,
         sample_format: hound::SampleFormat::Int,
     };
     let mut buf = Vec::new();
     {
         let mut writer = hound::WavWriter::new(Cursor::new(&mut buf), spec).unwrap();
-        for _ in 0..frames {
+        for _ in 0..(sample_rate * u32::from(channels)) {
             writer.write_sample(0i16).unwrap();
         }
         writer.finalize().unwrap();
@@ -205,25 +276,32 @@ fn synth_wav(frames: u32) -> Vec<u8> {
     buf
 }
 
+/// A one-second clip in the corpus format.
+fn clip(name: &str) -> Clip {
+    clip_in_format(name, EXPECTED_CHANNELS, EXPECTED_SAMPLE_RATE)
+}
+
+fn clip_in_format(name: &str, channels: u16, sample_rate: u32) -> Clip {
+    Clip {
+        name: name.to_owned(),
+        bytes: synth_wav(channels, sample_rate),
+    }
+}
+
+/// An entry that agrees with the clip on every property the gate checks.
 fn entry_for(clip: &Clip, duration_ms: u64) -> Entry {
     Entry {
         file: clip.name.clone(),
         duration_ms,
         sha256: hex::encode(Sha256::digest(&clip.bytes)),
-    }
-}
-
-fn clip(name: &str, frames: u32) -> Clip {
-    Clip {
-        name: name.to_owned(),
-        bytes: synth_wav(frames),
+        baseline_asr: "spoken words".to_owned(),
+        baseline_normalized: "spoken words".to_owned(),
     }
 }
 
 #[test]
 fn corpus_matches_manifest() {
-    let (entries, clips) = load_corpus();
-    let problems = check(&entries, &clips);
+    let problems = check(&load_manifest(), &load_clips());
     assert!(
         problems.is_empty(),
         "committed fixture corpus is not intact: {problems:#?}"
@@ -232,17 +310,9 @@ fn corpus_matches_manifest() {
 
 #[test]
 fn normalizer_coverage_is_still_what_the_docs_claim() {
-    #[derive(Deserialize)]
-    struct Baselines {
-        baseline_asr: String,
-        baseline_normalized: String,
-    }
-
-    let manifest = std::fs::read_to_string(fixtures_dir().join("manifest.json")).unwrap();
-    let rows: Vec<Baselines> = serde_json::from_str(&manifest).unwrap();
-    let exercising = rows
+    let exercising = load_manifest()
         .iter()
-        .filter(|r| r.baseline_asr != r.baseline_normalized)
+        .filter(|e| e.baseline_asr != e.baseline_normalized)
         .count();
 
     assert_eq!(
@@ -256,7 +326,7 @@ fn normalizer_coverage_is_still_what_the_docs_claim() {
 
 #[test]
 fn sha_mismatch_is_reported() {
-    let good = clip("01_003s.wav", 16_000);
+    let good = clip("01_003s.wav");
     let real_sha = hex::encode(Sha256::digest(&good.bytes));
     let mut entry = entry_for(&good, 1000);
     entry.sha256 = "0".repeat(64);
@@ -276,16 +346,11 @@ fn sha_mismatch_is_reported() {
 
 #[test]
 fn orphans_are_reported_in_both_directions() {
-    let present = clip("02_004s.wav", 16_000);
-    let unregistered = clip("99_099s.wav", 16_000);
-    let entries = vec![
-        entry_for(&present, 1000),
-        Entry {
-            file: "98_098s.wav".to_owned(),
-            duration_ms: 1000,
-            sha256: "0".repeat(64),
-        },
-    ];
+    let present = clip("02_004s.wav");
+    let unregistered = clip("99_099s.wav");
+    let mut absent = entry_for(&unregistered, 1000);
+    absent.file = "98_098s.wav".to_owned();
+    let entries = vec![entry_for(&present, 1000), absent];
 
     let problems = check(&entries, &[present, unregistered]);
 
@@ -305,7 +370,7 @@ fn orphans_are_reported_in_both_directions() {
 
 #[test]
 fn duration_disagreeing_with_wav_header_is_reported() {
-    let one_second = clip("03_005s.wav", 16_000);
+    let one_second = clip("03_005s.wav");
     let entry = entry_for(&one_second, 5328);
 
     let problems = check(&[entry], &[one_second]);
@@ -318,5 +383,57 @@ fn duration_disagreeing_with_wav_header_is_reported() {
             header_ms: 1000,
         }],
         "a duration_ms that disagrees with the clip's own WAV header must be reported"
+    );
+}
+
+/// Both clips here carry a valid sha256 and a duration matching their own
+/// header, so format is the only property that can catch them - which is
+/// why this check exists alongside the hash rather than being folded into
+/// it.
+#[test]
+fn unexpected_audio_format_is_reported() {
+    let stereo = clip_in_format("16_001s.wav", 2, EXPECTED_SAMPLE_RATE);
+    let wrong_rate = clip_in_format("17_001s.wav", EXPECTED_CHANNELS, 44_100);
+    let entries = vec![entry_for(&stereo, 1000), entry_for(&wrong_rate, 1000)];
+
+    let problems = check(&entries, &[stereo, wrong_rate]);
+
+    assert_eq!(
+        problems,
+        vec![
+            Problem::UnexpectedFormat {
+                file: "16_001s.wav".to_owned(),
+                channels: 2,
+                sample_rate: EXPECTED_SAMPLE_RATE,
+                bits_per_sample: EXPECTED_BITS_PER_SAMPLE,
+            },
+            Problem::UnexpectedFormat {
+                file: "17_001s.wav".to_owned(),
+                channels: EXPECTED_CHANNELS,
+                sample_rate: 44_100,
+                bits_per_sample: EXPECTED_BITS_PER_SAMPLE,
+            }
+        ],
+        "a clip whose channel count or sample rate is not what the ASR expects must be reported, \
+         even though its sha256 and duration are both valid"
+    );
+}
+
+#[test]
+fn blank_baseline_is_reported() {
+    let good = clip("05_006s.wav");
+    let mut entry = entry_for(&good, 1000);
+    entry.baseline_normalized = "   ".to_owned();
+
+    let problems = check(&[entry], &[good]);
+
+    assert_eq!(
+        problems,
+        vec![Problem::BlankBaseline {
+            file: "05_006s.wav".to_owned(),
+            field: "baseline_normalized",
+        }],
+        "a baseline that is present but blank must be reported, since the asserting half would \
+         otherwise compare real output against nothing"
     );
 }
