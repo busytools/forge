@@ -38,6 +38,11 @@ pub enum Error {
     #[error("{} is {actual} bytes, expected {expected}; delete it and prepare again", path.display())]
     SizeMismatch { path: PathBuf, expected: u64, actual: u64 },
 
+    /// The progress callback asked to stop. Any partial transfer is left
+    /// where it is, so a later call resumes rather than starting over.
+    #[error("cancelled by the progress callback")]
+    Cancelled,
+
     /// A file on disk is the right length but the wrong bytes.
     #[error("{} hashes to {actual}, expected {expected}; delete it and prepare again", path.display())]
     HashMismatch { path: PathBuf, expected: String, actual: String },

@@ -1,6 +1,7 @@
 //! Model fetch: download, resume, and verify before use.
 
 use std::fs::{self, File};
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
@@ -9,6 +10,18 @@ use crate::{Config, Error, ModelSpec};
 
 /// Bytes between progress reports during a transfer.
 const PROGRESS_INTERVAL: u64 = 1 << 20;
+
+/// The caller's progress callback as the internals pass it around.
+type Reporter<'a> = dyn FnMut(Progress) -> ControlFlow<()> + 'a;
+
+/// Hand one progress event to the caller, turning a `Break` into the
+/// error that unwinds the whole operation.
+fn announce(on_progress: &mut Reporter<'_>, progress: Progress) -> Result<(), Error> {
+    match on_progress(progress) {
+        ControlFlow::Continue(()) => Ok(()),
+        ControlFlow::Break(()) => Err(Error::Cancelled),
+    }
+}
 
 /// What [`prepare`] reports as it works.
 #[derive(Debug, Clone)]
@@ -42,7 +55,10 @@ pub enum Progress {
 /// even when there is nothing to download. An unoptimised build measures
 /// 34 s/GiB, near enough two minutes for the pair, which reads as a hang
 /// rather than as the profile.
-pub fn prepare(cfg: &Config, mut on_progress: impl FnMut(Progress)) -> Result<(), Error> {
+pub fn prepare(
+    cfg: &Config,
+    mut on_progress: impl FnMut(Progress) -> ControlFlow<()>,
+) -> Result<(), Error> {
     let dir = models_dir(cfg)?;
     fs::create_dir_all(&dir).map_err(|source| Error::Io { path: dir.clone(), source })?;
 
@@ -62,16 +78,12 @@ fn models_dir(cfg: &Config) -> Result<PathBuf, Error> {
     }
 }
 
-fn ensure(
-    dir: &Path,
-    spec: &ModelSpec,
-    on_progress: &mut dyn FnMut(Progress),
-) -> Result<(), Error> {
+fn ensure(dir: &Path, spec: &ModelSpec, on_progress: &mut Reporter<'_>) -> Result<(), Error> {
     let target = dir.join(&spec.file);
     if target.try_exists().map_err(|source| Error::Io { path: target.clone(), source })? {
-        on_progress(Progress::Verifying { file: spec.file.clone() });
+        announce(on_progress, Progress::Verifying { file: spec.file.clone() })?;
         verify(&target, spec)?;
-        on_progress(Progress::Ready { file: spec.file.clone() });
+        announce(on_progress, Progress::Ready { file: spec.file.clone() })?;
         return Ok(());
     }
 
@@ -80,7 +92,7 @@ fn ensure(
 
     // Announced before the hash, not after: on a multi-gigabyte file the
     // read takes seconds, and a caller left on "100%" reads it as a hang.
-    on_progress(Progress::Verifying { file: spec.file.clone() });
+    announce(on_progress, Progress::Verifying { file: spec.file.clone() })?;
 
     // Deleted where a cached file would be rejected, because this one is
     // ours and appending to bytes that already hash wrong can never
@@ -91,7 +103,7 @@ fn ensure(
         return Err(e);
     }
     fs::rename(&partial, &target).map_err(|source| Error::Io { path: target, source })?;
-    on_progress(Progress::Ready { file: spec.file.clone() });
+    announce(on_progress, Progress::Ready { file: spec.file.clone() })?;
     Ok(())
 }
 
@@ -128,11 +140,7 @@ fn sha256(path: &Path) -> Result<String, Error> {
     Ok(hex::encode(hasher.finalize()))
 }
 
-fn download(
-    spec: &ModelSpec,
-    partial: &Path,
-    on_progress: &mut dyn FnMut(Progress),
-) -> Result<(), Error> {
+fn download(spec: &ModelSpec, partial: &Path, on_progress: &mut Reporter<'_>) -> Result<(), Error> {
     let mut have = match fs::metadata(partial) {
         Ok(meta) => meta.len(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
@@ -193,12 +201,17 @@ fn download(
         written: have,
         reported: have,
         total: spec.size,
+        cancelled: false,
         on_progress,
     };
-    std::io::copy(&mut response, &mut sink)
-        .map_err(|source| Error::Io { path: partial.into(), source })?;
-    sink.report();
-    Ok(())
+    let copied = std::io::copy(&mut response, &mut sink);
+    // Checked before the io error, because cancellation arrives AS one
+    // and would otherwise be reported as a disk fault.
+    if sink.cancelled {
+        return Err(Error::Cancelled);
+    }
+    copied.map_err(|source| Error::Io { path: partial.into(), source })?;
+    sink.report_now()
 }
 
 /// Parse `Content-Range: bytes <start>-<end>/<total>` and say whether
@@ -217,32 +230,43 @@ fn content_range_starts_at(headers: &reqwest::header::HeaderMap, want: u64) -> b
 /// Counts bytes on their way to disk and forwards the running total,
 /// rate-limited so a multi-gigabyte transfer does not call back once
 /// per read.
-struct ProgressWriter<'a> {
+struct ProgressWriter<'a, 'r> {
     file: File,
     name: &'a str,
     written: u64,
     reported: u64,
     total: u64,
-    on_progress: &'a mut dyn FnMut(Progress),
+    cancelled: bool,
+    on_progress: &'a mut Reporter<'r>,
 }
 
-impl ProgressWriter<'_> {
-    fn report(&mut self) {
+impl ProgressWriter<'_, '_> {
+    fn report(&mut self) -> ControlFlow<()> {
         self.reported = self.written;
         (self.on_progress)(Progress::Downloading {
             file: self.name.to_owned(),
             downloaded: self.written,
             total: self.total,
-        });
+        })
+    }
+
+    fn report_now(&mut self) -> Result<(), Error> {
+        match self.report() {
+            ControlFlow::Continue(()) => Ok(()),
+            ControlFlow::Break(()) => Err(Error::Cancelled),
+        }
     }
 }
 
-impl std::io::Write for ProgressWriter<'_> {
+impl std::io::Write for ProgressWriter<'_, '_> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let n = self.file.write(buf)?;
         self.written += n as u64;
-        if self.written - self.reported >= PROGRESS_INTERVAL {
-            self.report();
+        if self.written - self.reported >= PROGRESS_INTERVAL && self.report().is_break() {
+            self.cancelled = true;
+            // Deliberately not `Interrupted`: `io::copy` retries that
+            // kind and would spin here rather than stop.
+            return Err(std::io::Error::other("cancelled by the progress callback"));
         }
         Ok(n)
     }
@@ -284,8 +308,11 @@ mod tests_cached_verification {
             .build();
 
         let mut reported = Vec::new();
-        prepare(&cfg, |p| reported.push(p))
-            .expect("a cached model that matches its spec must be accepted");
+        prepare(&cfg, |p| {
+            reported.push(p);
+            ControlFlow::Continue(())
+        })
+        .expect("a cached model that matches its spec must be accepted");
 
         let sequence: Vec<_> = reported
             .iter()
@@ -315,7 +342,8 @@ mod tests_cached_verification {
             .normalizer(None)
             .build();
 
-        prepare(&cfg, |_| {}).expect("a complete partial must be adopted, not re-downloaded");
+        prepare(&cfg, |_| ControlFlow::Continue(()))
+            .expect("a complete partial must be adopted, not re-downloaded");
         assert_eq!(
             fs::read(dir.path().join("asr.gguf")).unwrap(),
             body,
@@ -332,7 +360,8 @@ mod tests_cached_verification {
         let cfg =
             ConfigBuilder::new().models_dir(dir.path()).asr_model(spec).normalizer(None).build();
 
-        let err = prepare(&cfg, |_| {}).expect_err("a truncated model must not be accepted");
+        let err = prepare(&cfg, |_| ControlFlow::Continue(()))
+            .expect_err("a truncated model must not be accepted");
         assert!(
             matches!(err, Error::SizeMismatch { expected: 26, actual: 25, .. }),
             "truncation must be rejected on size, got: {err:?}"
@@ -348,7 +377,8 @@ mod tests_cached_verification {
         let cfg =
             ConfigBuilder::new().models_dir(dir.path()).asr_model(spec).normalizer(None).build();
 
-        let err = prepare(&cfg, |_| {}).expect_err("a same-length corruption must not be accepted");
+        let err = prepare(&cfg, |_| ControlFlow::Continue(()))
+            .expect_err("a same-length corruption must not be accepted");
         assert!(
             matches!(err, Error::HashMismatch { .. }),
             "a file of the right length with the wrong bytes must be rejected on hash, got: {err:?}"
@@ -429,10 +459,10 @@ mod tests_download {
                 // Whether we answer 206, and from where, are separate
                 // choices: a clamping proxy says 206 and means zero.
                 let (partial, start) = match (ranges, asked) {
-                    (_, None) => (false, 0),
                     (Ranges::Honour, Some(n)) => (true, n),
-                    (Ranges::Ignore, Some(_)) => (false, 0),
                     (Ranges::Clamp, Some(_)) => (true, 0),
+                    // No range asked, or one this server declines to act on.
+                    (Ranges::Ignore, Some(_)) | (_, None) => (false, 0),
                 };
                 tx.send(head).unwrap();
 
@@ -492,7 +522,11 @@ mod tests_download {
             .build();
 
         let mut reported = Vec::new();
-        prepare(&cfg, |p| reported.push(p)).expect("both models must download and verify");
+        prepare(&cfg, |p| {
+            reported.push(p);
+            ControlFlow::Continue(())
+        })
+        .expect("both models must download and verify");
 
         let landed_asr = fs::read(dir.path().join("asr.gguf"))
             .expect("the asr model must be on disk under its spec's file name");
@@ -524,7 +558,11 @@ mod tests_download {
             .build();
 
         let mut reported = Vec::new();
-        prepare(&cfg, |p| reported.push(p)).expect("the model must download");
+        prepare(&cfg, |p| {
+            reported.push(p);
+            ControlFlow::Continue(())
+        })
+        .expect("the model must download");
 
         let total = body.len() as u64;
         let sequence: Vec<_> = reported
@@ -559,7 +597,8 @@ mod tests_download {
             .normalizer(None)
             .build();
 
-        prepare(&cfg, |_| {}).expect("a partial download must resume, not fail");
+        prepare(&cfg, |_| ControlFlow::Continue(()))
+            .expect("a partial download must resume, not fail");
 
         let head = server.seen.recv().unwrap();
         assert!(
@@ -586,12 +625,33 @@ mod tests_download {
             .normalizer(None)
             .build();
 
-        prepare(&cfg, |_| {})
+        prepare(&cfg, |_| ControlFlow::Continue(()))
             .expect("a whole-file 200 must replace the partial, not be appended to it");
         assert_eq!(
             fs::read(dir.path().join("asr.gguf")).unwrap(),
             body,
             "a 200 answer to a ranged request must overwrite what was already on disk"
+        );
+    }
+
+    #[test]
+    fn a_callback_that_breaks_aborts_and_keeps_what_was_fetched() {
+        let body = b"pretend these are recognition weights".to_vec();
+        let server = serve(vec![("/asr.gguf", body.clone())]);
+        let dir = tempfile::tempdir().unwrap();
+
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .asr_model(spec_for(&server, "/asr.gguf", &body))
+            .normalizer(None)
+            .build();
+
+        let err = prepare(&cfg, |_| ControlFlow::Break(()))
+            .expect_err("a callback that breaks must stop the operation");
+        assert!(matches!(err, Error::Cancelled), "a break must surface as Cancelled, got: {err:?}");
+        assert!(
+            dir.path().join("asr.gguf.part").exists(),
+            "cancelling must leave the partial behind so a later call resumes rather than restarts"
         );
     }
 
@@ -606,7 +666,8 @@ mod tests_download {
             .normalizer(None)
             .build();
 
-        let err = prepare(&cfg, |_| {}).expect_err("a 404 is not a download");
+        let err =
+            prepare(&cfg, |_| ControlFlow::Continue(())).expect_err("a 404 is not a download");
         assert!(
             matches!(err, Error::HttpStatus { status: 404, .. }),
             "a refusal must be reported as the status it was, not as a corrupt file, got: {err:?}"
@@ -626,7 +687,8 @@ mod tests_download {
             .normalizer(None)
             .build();
 
-        prepare(&cfg, |_| {}).expect("a 206 starting at zero must replace the partial");
+        prepare(&cfg, |_| ControlFlow::Continue(()))
+            .expect("a 206 starting at zero must replace the partial");
         assert_eq!(
             fs::read(dir.path().join("asr.gguf")).unwrap(),
             body,
@@ -650,7 +712,8 @@ mod tests_download {
             .normalizer(None)
             .build();
 
-        let err = prepare(&cfg, |_| {}).expect_err("a corrupt resume must not be accepted");
+        let err = prepare(&cfg, |_| ControlFlow::Continue(()))
+            .expect_err("a corrupt resume must not be accepted");
         assert!(
             matches!(err, Error::HashMismatch { .. }),
             "expected a hash rejection, got: {err:?}"
