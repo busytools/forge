@@ -1170,6 +1170,9 @@ pub(super) fn toggle_all_tool_calls(app: &mut App) {
     }
     app.tools_collapsed = !app.tools_collapsed;
     app.invalidate_layout(InvalidationLevel::Global);
+    // The flag is App-global, so the flip changes what every session
+    // paints while `Global` invalidates one viewport.
+    app.invalidate_background_session_layouts();
 }
 
 /// Tier-aware Ctrl+B handler.
