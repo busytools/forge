@@ -439,7 +439,7 @@ where
                 return Err(e);
             }
             Err(_timeout) => {
-                // 30 s without a frame. Two legitimate causes:
+                // No frame for `read_timeout`. Two legitimate causes:
                 // (a) `drive` already drained the `Result` inside its
                 //     closure - common for scenarios that issue
                 //     follow-up control_requests after consuming the
