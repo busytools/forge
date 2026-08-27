@@ -3203,6 +3203,23 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// Mark every background session's message heights stale, for an
+    /// App-global render preference that changes what all of them paint
+    /// - `LayoutInvalidation::Global` reaches the active viewport only.
+    ///
+    /// Marking is the whole job: each session's remeasure stays lazy and
+    /// is paid when it next renders. No `layout_generation` bump, since
+    /// the per-block measurement keys already carry the preference.
+    pub(crate) fn invalidate_background_session_layouts(&mut self) {
+        let active = self.active_session_key.clone();
+        for (key, session) in &mut self.sessions {
+            if Some(key) == active.as_ref() {
+                continue;
+            }
+            session.viewport.invalidate_all_messages(LayoutRemeasureReason::Global);
+        }
+    }
+
     /// Out-of-range indices are dropped; passing one is a caller bug,
     /// not a supported input.
     pub(crate) fn invalidate_message_set<I>(&mut self, indices: I)
@@ -5332,6 +5349,73 @@ mod tests {
             after_flip, correct_height,
             "B's tool kept a height measured under the old preference \
              (collapsed={collapsed_height}, correct={correct_height}, got={after_flip})",
+        );
+    }
+
+    /// #651. The per-tool measurement key above repairs the tool's own
+    /// cached height, but the viewport's per-message height is written
+    /// only by the remeasure pass, and that pass skips any message
+    /// whose stale bit is clear. So an unfocused session reaches its
+    /// next render reporting rows measured under the old preference
+    /// while painting the new one, and every row offset below it -
+    /// scroll geometry, click hit-testing - is off by the difference.
+    #[test]
+    fn cross_session_collapse_flip_remeasures_background_viewport_height() {
+        const W: u16 = 80;
+        const H: u16 = 40;
+
+        fn head_height(app: &App) -> usize {
+            app.viewport().message_height(0)
+        }
+
+        let mut app = make_test_app();
+        app.tools_collapsed = true;
+        let a_key = app.active_session_key.clone().expect("an active session");
+        *app.active_messages_mut() = vec![ungrouped_tool_message("cross-session")];
+
+        let b_key = forge_workspace::SessionKey::from_str_for_test("collapse-background-height");
+        let mut b_bucket = crate::app::session::UiSession::new(b_key.clone());
+        b_bucket.messages = vec![ungrouped_tool_message("cross-session")];
+        app.sessions.insert(b_key.clone(), b_bucket);
+
+        // Both sessions measure once under the collapsed preference.
+        render_chat_frame(&mut app, W, H);
+        app.switch_active_session(b_key.clone());
+        render_chat_frame(&mut app, W, H);
+        let collapsed_height = head_height(&app);
+
+        // The flip happens while A is focused.
+        app.switch_active_session(a_key);
+        crate::app::keys::toggle_all_tool_calls(&mut app);
+        assert!(!app.tools_collapsed, "ctrl+x expanded the shared preference");
+        render_chat_frame(&mut app, W, H);
+        let active_height = head_height(&app);
+
+        // Back to B at the same size, no resize and no click.
+        app.switch_active_session(b_key);
+        render_chat_frame(&mut app, W, H);
+        let background_height = head_height(&app);
+
+        // What the same message measures from cold under the new preference.
+        let mut cold = make_test_app();
+        cold.tools_collapsed = false;
+        *cold.active_messages_mut() = vec![ungrouped_tool_message("cross-session")];
+        render_chat_frame(&mut cold, W, H);
+        let expanded_height = head_height(&cold);
+
+        assert_ne!(
+            collapsed_height, expanded_height,
+            "the preference has to move this message's height, or the assertions below are free",
+        );
+        assert_eq!(
+            active_height, expanded_height,
+            "the focused session's viewport must remeasure on the flip \
+             (collapsed={collapsed_height}, correct={expanded_height}, got={active_height})",
+        );
+        assert_eq!(
+            background_height, expanded_height,
+            "the background session's viewport kept a height measured under the old preference \
+             (collapsed={collapsed_height}, correct={expanded_height}, got={background_height})",
         );
     }
 
