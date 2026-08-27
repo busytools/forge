@@ -281,8 +281,9 @@ impl Tool for Despawn {
          PERMANENTLY remove a durable worker: a spawned worker otherwise \
          survives forge restarts and re-spawns automatically, so despawn \
          is what makes it stop coming back. Closing the worker's row in \
-         the Projects pane does the same. Despawn once a worker's work is \
-         truly done (typically after it is merged). Errors if called from \
+         the Projects pane does the same. Despawn once a worker has handed \
+         over what it was spawned to produce - a merged PR, a written \
+         report, an answered question. Errors if called from \
          a worker session; only the project lead may despawn."
     }
 
