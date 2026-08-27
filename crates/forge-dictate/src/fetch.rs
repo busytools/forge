@@ -78,6 +78,10 @@ fn ensure(
     let partial = dir.join(format!("{}.part", spec.file));
     download(spec, &partial, on_progress)?;
 
+    // Announced before the hash, not after: on a multi-gigabyte file the
+    // read takes seconds, and a caller left on "100%" reads it as a hang.
+    on_progress(Progress::Verifying { file: spec.file.clone() });
+
     // Deleted where a cached file would be rejected, because this one is
     // ours and appending to bytes that already hash wrong can never
     // converge, so keeping it would poison every later resume.
@@ -440,11 +444,39 @@ mod tests_download {
             })
             .collect();
         assert_eq!(ready, ["asr.gguf", "norm.gguf"], "each model must be reported ready");
-        assert!(
-            reported.iter().any(
-                |p| matches!(p, Progress::Downloading { downloaded, total, .. } if downloaded == total)
-            ),
-            "a transfer must report its final byte count, got: {reported:?}"
+    }
+
+    #[test]
+    fn a_download_reports_its_last_byte_before_it_reports_verifying() {
+        let body = b"pretend these are recognition weights".to_vec();
+        let server = serve(vec![("/asr.gguf", body.clone())]);
+        let dir = tempfile::tempdir().unwrap();
+
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .asr_model(spec_for(&server, "/asr.gguf", &body))
+            .normalizer(None)
+            .build();
+
+        let mut reported = Vec::new();
+        prepare(&cfg, |p| reported.push(p)).expect("the model must download");
+
+        let total = body.len() as u64;
+        let sequence: Vec<_> = reported
+            .iter()
+            .map(|p| match p {
+                Progress::Downloading { downloaded, .. } if *downloaded == total => {
+                    "downloaded-all"
+                }
+                Progress::Downloading { .. } => "downloading",
+                Progress::Verifying { .. } => "verifying",
+                Progress::Ready { .. } => "ready",
+            })
+            .collect();
+        assert_eq!(
+            sequence,
+            ["downloaded-all", "verifying", "ready"],
+            "a caller must be told hashing has started, or a full progress bar looks like a hang"
         );
     }
 
