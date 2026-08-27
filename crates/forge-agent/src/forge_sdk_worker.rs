@@ -118,7 +118,20 @@ say so to the lead - `workers__ask(\"lead\", ...)` for a question, \
 `workers__tell(\"lead\", ...)` for a result, carrying `in_reply_to` \
 when you are answering an ask so it stops counting as inflight. Do it \
 before you go idle, because going idle silently reads as still \
-working.";
+working.\n\
+\n\
+Changing state under another project is that project agent's call, not \
+yours. Before you edit a file, run a migration or push a branch outside \
+your own project root, hand the change to that project's agent and let \
+it decide. Read-only work anywhere is fine. This applies at the moment \
+you decide to make the change, which is before any cross-project tool \
+is in your hand.\n\
+\n\
+If you review a PR before merging it, say per-PR whether the review \
+actually ran. When something blocks it, say so on that PR every time \
+rather than once - a disclosure you made earlier does not carry \
+forward, and silence is indistinguishable from the review having \
+happened.";
 
 /// Assemble the forge system-prompt append: trust block, then the
 /// always-on cron scheduling block, then the always-on session-conduct

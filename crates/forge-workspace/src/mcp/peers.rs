@@ -256,7 +256,11 @@ impl Tool for TellAgent {
          The target's own agent will integrate the news inside its own \
          chat context. Reading the target's files for your own context is \
          still allowed; only state changes / hand-offs go through this \
-         tool. Run peers__list_agents first to confirm the target name."
+         tool. Run peers__list_agents first to confirm the target name. \
+         A `delivered` status means the queue ACCEPTED the message, not \
+         that the target read it - a down or sleeping agent still \
+         returns delivered, so confirm real work happened by a reply or \
+         an observable artifact rather than by the ack."
     }
 
     fn input_schema(&self) -> serde_json::Value {
