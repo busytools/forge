@@ -209,18 +209,31 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             apply_session_update_runtime_reload_failed(app, &session_id, &message);
         }
         SessionUpdate::PermissionRequest { key, tool_id, request } => {
+            let mut queued = false;
             if let Some(session) = app.session_mut(&key) {
                 let prompt = crate::app::prompt::PromptState::from_permission(tool_id, request);
                 crate::app::prompt::enqueue_prompt(session, prompt);
+                queued = true;
             }
             crate::app::prompt::snapshot_draft_if_needed(app, &key);
+            // Only once it is answerable: a prompt whose session has no
+            // bucket was dropped, and pointing the user at it would send
+            // them looking for something that is not there.
+            if queued {
+                app.notify(crate::app::notify::NotifyEvent::PermissionRequired);
+            }
         }
         SessionUpdate::QuestionRequest { key, tool_id, request } => {
+            let mut queued = false;
             if let Some(session) = app.session_mut(&key) {
                 let prompt = crate::app::prompt::PromptState::from_question(tool_id, request);
                 crate::app::prompt::enqueue_prompt(session, prompt);
+                queued = true;
             }
             crate::app::prompt::snapshot_draft_if_needed(app, &key);
+            if queued {
+                app.notify(crate::app::notify::NotifyEvent::QuestionRequired);
+            }
         }
         SessionUpdate::McpOperationError { key, error } => {
             crate::app::config::handle_mcp_operation_error(app, &key, &error);
@@ -2305,6 +2318,72 @@ mod tests {
             session.prompt_queue.front().expect("head").tool_id,
             "tc-q-evt",
             "queued question prompt carries the event's tool_id"
+        );
+    }
+
+    /// A queued question's only other signal is a glyph on a row, so
+    /// the enqueue has to raise the notification too. The variant
+    /// existed with no production caller: its call sites went out with
+    /// the dead pre-MVVM prompt path in #131 and never came back.
+    #[test]
+    fn question_request_event_raises_the_question_notification() {
+        let mut app = App::test_default();
+        let (key_a, _key_b) = seed_two_sessions(&mut app);
+        apply_session_update(
+            &mut app,
+            SessionUpdate::QuestionRequest {
+                key: key_a,
+                tool_id: "tc-q-evt".into(),
+                request: crate::app::prompt::tests::make_question_request(false),
+            },
+        );
+        assert_eq!(
+            crate::app::notify::test_capture::take_notifications(&app),
+            vec![crate::app::notify::NotifyEvent::QuestionRequired],
+            "an enqueued question raises QuestionRequired",
+        );
+    }
+
+    /// A permission request had the same silence as a question, on the
+    /// adjacent arm of the same match.
+    #[test]
+    fn permission_request_event_raises_the_permission_notification() {
+        let mut app = App::test_default();
+        let (key_a, _key_b) = seed_two_sessions(&mut app);
+        apply_session_update(
+            &mut app,
+            SessionUpdate::PermissionRequest {
+                key: key_a,
+                tool_id: "tc-evt".into(),
+                request: crate::app::prompt::tests::make_permission_request(),
+            },
+        );
+        assert_eq!(
+            crate::app::notify::test_capture::take_notifications(&app),
+            vec![crate::app::notify::NotifyEvent::PermissionRequired],
+            "an enqueued permission request raises PermissionRequired",
+        );
+    }
+
+    /// A prompt for a session the TUI has no bucket for is dropped
+    /// rather than queued, so there is nothing for the user to answer.
+    /// Notifying anyway would send them looking for a prompt that does
+    /// not exist.
+    #[test]
+    fn a_dropped_prompt_raises_no_notification() {
+        let mut app = App::test_default();
+        let (_key_a, _key_b) = seed_two_sessions(&mut app);
+        apply_session_update(
+            &mut app,
+            SessionUpdate::QuestionRequest {
+                key: forge_workspace::SessionKey::from_session_id("no-such-session"),
+                tool_id: "tc-orphan".into(),
+                request: crate::app::prompt::tests::make_question_request(false),
+            },
+        );
+        assert!(
+            crate::app::notify::test_capture::take_notifications(&app).is_empty(),
+            "a prompt that never reached a queue must not claim the user's attention",
         );
     }
 

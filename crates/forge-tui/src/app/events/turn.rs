@@ -426,10 +426,7 @@ fn apply_turn_complete_presentation(
     }
     crate::app::session_runtime::request_context_usage_refresh(app);
     if turn_was_active {
-        app.notifications.notify(
-            app.config.preferred_notification_channel_effective(),
-            super::super::notify::NotifyEvent::TurnComplete,
-        );
+        app.notify(super::super::notify::NotifyEvent::TurnComplete);
     }
     // Mid-turn submits leave user bubbles after the active assistant.
     // When this turn wraps, claude immediately starts another turn to

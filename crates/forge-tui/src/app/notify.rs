@@ -91,6 +91,31 @@ impl NotificationManager {
     }
 }
 
+impl crate::app::App {
+    /// Raise `event` through this app's notification manager, using the
+    /// app's configured channel. The single call site for every
+    /// notification, so nothing grows a second policy about when to
+    /// notify: the manager's own terminal-focus check decides that.
+    pub(crate) fn notify(&self, event: NotifyEvent) {
+        #[cfg(feature = "testing")]
+        self.test_notifications.borrow_mut().push(event);
+        self.notifications.notify(self.config.preferred_notification_channel_effective(), event);
+    }
+}
+
+/// Same-crate test helper for the `testing`-feature notification
+/// capture, mirroring `events::turn::test_capture`.
+#[cfg(test)]
+pub(crate) mod test_capture {
+    use super::NotifyEvent;
+
+    /// Test-only: drain every notification raised so far, in order.
+    pub fn take_notifications(app: &crate::app::App) -> Vec<NotifyEvent> {
+        #[rustfmt::skip] #[cfg(feature = "testing")] let drained = app.test_notifications.borrow_mut().drain(..).collect();
+        drained
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
