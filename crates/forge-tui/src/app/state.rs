@@ -2664,12 +2664,12 @@ impl App {
     ) -> bool {
         // Replay seeds the terminal status, matching
         // `upsert_monitor_from_tool_input`. Nothing can move a replayed
-        // entry off `InProgress`: the resume walk is fed by
+        // entry off its seeded status: the resume walk is fed by
         // `synthesize_replay_messages`, which emits only User /
         // Assistant envelopes, so neither `TaskProgress` nor
-        // `TaskUpdated` reaches the walk - a historical workflow would
-        // read as running forever and hold the WORKFLOWS section open
-        // for its completed siblings.
+        // `TaskUpdated` reaches the walk. Seeded `InProgress` a
+        // historical workflow would read as running forever and hold
+        // the WORKFLOWS section open for its completed siblings.
         let initial_status = if self.replay_in_progress {
             crate::app::state::types::WorkflowStatus::Completed
         } else {

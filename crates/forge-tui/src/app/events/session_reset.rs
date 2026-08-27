@@ -1703,6 +1703,20 @@ mod tests {
              completed siblings; got: {:?}",
             app.workflows().iter().map(|w| (&w.meta_name, w.status)).collect::<Vec<_>>(),
         );
+
+        // Drained is also what an entry that was never BUILT looks like,
+        // so hold the sibling non-terminal and check the replayed entry
+        // is really there and really terminal.
+        let mut app = App::test_default();
+        *app.workflows_mut() = vec![stub_workflow("sibling", WorkflowStatus::InProgress)];
+        load_resume_history(&mut app, &history);
+
+        assert_eq!(
+            app.workflows().iter().find(|w| w.meta_name == "nightly-sweep").map(|w| w.status),
+            Some(WorkflowStatus::Completed),
+            "the walk builds the replayed entry and seeds it terminal; got: {:?}",
+            app.workflows().iter().map(|w| (&w.meta_name, w.status)).collect::<Vec<_>>(),
+        );
     }
 
     /// Starting a fresh session must drop the previous session's

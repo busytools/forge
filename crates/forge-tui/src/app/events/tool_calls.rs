@@ -197,9 +197,8 @@ fn build_tool_info_from_tool_call(
     // - AskUserQuestion - dock-morph widget renders instead of a card.
     //
     // - Workflow - the Inspector WORKFLOWS section is the surface. A
-    //   chat block was tried and reverted: its liveness has two
-    //   completion routes and one of them drains the entry the block
-    //   reads from (#496).
+    //   chat block was tried and reverted; keeping the Inspector as the
+    //   only surface is the standing choice, not pending work.
     //
     // Monitor is NOT here: the lifecycle block in
     // `ui::message::render_lifecycle_one_liner` is its only surface,
