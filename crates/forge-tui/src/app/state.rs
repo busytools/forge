@@ -2662,6 +2662,19 @@ impl App {
         meta_name: String,
         meta_description: Option<String>,
     ) -> bool {
+        // Replay seeds the terminal status, matching
+        // `upsert_monitor_from_tool_input`. Nothing can move a replayed
+        // entry off `InProgress`: the resume walk is fed by
+        // `synthesize_replay_messages`, which emits only User /
+        // Assistant envelopes, so neither `TaskProgress` nor
+        // `TaskUpdated` reaches the walk - a historical workflow would
+        // read as running forever and hold the WORKFLOWS section open
+        // for its completed siblings.
+        let initial_status = if self.replay_in_progress {
+            crate::app::state::types::WorkflowStatus::Completed
+        } else {
+            crate::app::state::types::WorkflowStatus::InProgress
+        };
         let workflows = self.workflows_mut();
         if let Some(existing) = workflows.iter_mut().find(|w| w.tool_use_id == tool_use_id) {
             existing.meta_name = meta_name;
@@ -2674,7 +2687,7 @@ impl App {
             meta_name,
             meta_description,
             phases: Vec::new(),
-            status: crate::app::state::types::WorkflowStatus::InProgress,
+            status: initial_status,
             final_result_summary: None,
             expanded_in_inspector: false,
         });
@@ -8831,6 +8844,25 @@ mod tests {
         let monitors = app.monitors();
         assert_eq!(monitors.len(), 1);
         assert_eq!(monitors[0].status, crate::app::state::types::MonitorStatus::Running);
+    }
+
+    /// The replay seed must not leak into the live path: a workflow
+    /// launched now has to render as in progress and keep the WORKFLOWS
+    /// section open until the wire says otherwise. Seeding terminal
+    /// unconditionally would drain the section at the first status flip
+    /// of any sibling, while the workflow was still running.
+    #[test]
+    fn upsert_workflow_live_path_still_starts_in_progress() {
+        let mut app = make_test_app();
+        assert!(!app.replay_in_progress, "live default");
+        app.upsert_workflow_from_tool_input("tu_live_wf", "nightly-sweep".to_owned(), None);
+        let workflows = app.workflows();
+        assert_eq!(workflows.len(), 1);
+        assert_eq!(
+            workflows[0].status,
+            crate::app::state::types::WorkflowStatus::InProgress,
+            "a live workflow starts in progress",
+        );
     }
 
     // -----------------------------------------------------------
