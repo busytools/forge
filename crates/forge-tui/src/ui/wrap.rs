@@ -37,8 +37,8 @@ const TAB_WIDTH: usize = 4;
 ///
 /// `Span::styled_graphemes` drops control characters, so a raw tab measures
 /// one column and paints none: the indent vanishes and the wrap budget is
-/// over-charged by the difference. Other C0 characters have the same split
-/// and are left alone.
+/// over-charged by the difference. Every other control character has the
+/// same split; [`replace_control_chars`] closes it for those.
 ///
 /// Columns measure whole segments, since per-char and string-level width
 /// disagree on multi-codepoint graphemes.
@@ -59,6 +59,39 @@ pub(crate) fn expand_tabs(text: &str) -> Cow<'_, str> {
         column += display_width(segment);
     }
     Cow::Owned(out)
+}
+
+/// Swap each control character for its Control Pictures glyph so a diff
+/// row paints the columns it is charged for.
+///
+/// `Span::styled_graphemes` drops any grapheme containing a control
+/// character, while `display_width` charges it one column, so a raw one
+/// under-fills its row by a column and shifts everything downstream of the
+/// padding arithmetic. A picture is one column wide too, which is why the
+/// substitution moves nothing: it changes what paints, not what measures.
+///
+/// Takes a `Cow` so it composes with [`expand_tabs`] without a second
+/// allocation. Run it after that one - a tab reaching here pictures as
+/// `\u{2409}` rather than advancing to its stop.
+pub(crate) fn replace_control_chars(text: Cow<'_, str>) -> Cow<'_, str> {
+    if !text.contains(char::is_control) {
+        return text;
+    }
+    Cow::Owned(text.chars().map(control_picture).collect())
+}
+
+/// The Control Pictures block runs from `\u{2400}` in C0 codepoint order,
+/// then `\u{2421}` for DEL. C1 has no picture there, so it falls back to
+/// the replacement character.
+fn control_picture(ch: char) -> char {
+    match ch {
+        '\u{0}'..='\u{1f}' => {
+            char::from_u32(0x2400 + u32::from(ch)).unwrap_or(char::REPLACEMENT_CHARACTER)
+        }
+        '\u{7f}' => '\u{2421}',
+        _ if ch.is_control() => char::REPLACEMENT_CHARACTER,
+        _ => ch,
+    }
 }
 
 pub(crate) fn line_display_width(line: &Line<'_>) -> usize {
@@ -337,6 +370,35 @@ mod tests {
         assert_eq!(expand_tabs("\u{4e16}\u{754c}\tx"), "\u{4e16}\u{754c}    x");
         assert!(matches!(expand_tabs(""), Cow::Borrowed("")));
         assert!(matches!(expand_tabs("no tabs here"), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn replace_control_chars_pictures_each_control_and_holds_the_width() {
+        let pictured = |s: &str| replace_control_chars(Cow::Borrowed(s)).into_owned();
+        assert_eq!(
+            pictured("\u{0}\u{7}\u{b}\u{d}\u{1b}\u{1f}"),
+            "\u{2400}\u{2407}\u{240b}\u{240d}\u{241b}\u{241f}",
+            "C0 maps to its Control Pictures glyph, offset from \u{2400}"
+        );
+        assert_eq!(pictured("\u{7f}"), "\u{2421}", "DEL maps to \u{2421}, not the C0 offset");
+        assert_eq!(
+            pictured("\u{80}\u{9f}"),
+            "\u{fffd}\u{fffd}",
+            "C1 has no picture in the block and falls back to the replacement character"
+        );
+        assert!(
+            matches!(replace_control_chars(Cow::Borrowed("no controls")), Cow::Borrowed(_)),
+            "a clean line is returned borrowed"
+        );
+
+        // The property the divider geometry rests on.
+        let raw = "a\u{c}b\u{1b}c\u{7f}d\u{80}e";
+        assert_eq!(
+            display_width(&pictured(raw)),
+            display_width(raw),
+            "a picture costs the column the dropped control character was already \
+             charged, so no width downstream moves"
+        );
     }
 
     #[test]

@@ -50,7 +50,7 @@ use crate::ui::autocomplete;
 use crate::ui::chat_tree;
 use crate::ui::highlight::LineHighlighter;
 use crate::ui::theme;
-use crate::ui::wrap::{expand_tabs, take_prefix_by_width};
+use crate::ui::wrap::{expand_tabs, replace_control_chars, take_prefix_by_width};
 
 /// Named row offsets inside the commit stepper bar: the title on row 0,
 /// the movement/controls row on row 2, with blank spacers between and
@@ -1295,7 +1295,7 @@ fn build_file_highlight(file: &FileHunks) -> FileHighlight {
             hunk.lines
                 .iter()
                 .map(|line| {
-                    let text = expand_tabs(&line.text);
+                    let text = replace_control_chars(expand_tabs(&line.text));
                     match line.kind {
                         DiffLineKind::Removed => old_hl.highlight(&text),
                         DiffLineKind::Added => new_hl.highlight(&text),
@@ -3387,24 +3387,27 @@ mod tests {
         hits.first().copied()
     }
 
-    /// Negative control for the guard above. `Span::styled_graphemes`
-    /// drops C0 before paint while `Span::width` still charges a column
-    /// for it, so a row carrying one paints its divider left of the
-    /// nominal column. Summing span widths cannot see that - it re-derives
-    /// the production measurement and agrees with it on every input.
-    ///
-    /// The drift itself is #716, still open: it scales a column per
-    /// control character and the click handler keeps splitting on the
-    /// nominal column. When that is fixed this test should be deleted,
-    /// not repaired.
+    /// A control character reaches paint through the highlight cache, and
+    /// `Span::styled_graphemes` drops it while `Span::width` still charges
+    /// a column, so an unsanitised row under-fills and pulls the divider
+    /// left of the column the click handler splits on.
     #[test]
-    fn the_divider_guard_sees_a_control_character_shift() {
+    fn a_control_character_does_not_move_the_painted_divider() {
         use forge_workspace::env::git_diff::hunks::DiffLine;
 
-        let painted_for = |text: &str| {
+        // Short bodies pad their half up to the text column; the long one
+        // truncates to it and never pads. Both routes charge the dropped
+        // column, in different places.
+        let bodies = [
+            "let x = \u{c}compute(y);".to_owned(),
+            "let x = \u{c}\u{c}\u{c}\u{c}\u{c}\u{c}\u{c}\u{c}compute(y);".to_owned(),
+            "\u{1b}[0m\u{7}\u{b}\u{d}\u{1}\u{7f}\u{80} every shape".to_owned(),
+            "let very_long_identifier\u{c} = compute(other_long_name);".repeat(4),
+        ];
+        for body in bodies {
             let line = |kind, old_line, new_line| DiffLine {
                 kind,
-                text: text.to_owned(),
+                text: body.clone(),
                 old_line,
                 new_line,
             };
@@ -3424,40 +3427,21 @@ mod tests {
                 }],
             };
             let gutter = gutter_width_for(&file);
+            let cache = build_file_highlight(&file);
             let pair = PairedDiffRow {
                 left: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }),
                 right: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 }),
             };
-            let pane_width = 119u16;
-            let cache = build_file_highlight(&file);
-            let row = split_diff_row(&file, pair, gutter, pane_width, Some(&cache));
-            let mut col = 0usize;
-            let walked = row.spans.iter().find_map(|span| {
-                let at = col;
-                col += span.width();
-                (span.content.as_ref() == "\u{2502}").then_some(at)
-            });
-            (walked, painted_divider_col(&row, pane_width), split_layout(gutter, pane_width))
-        };
-
-        let (clean_walk, clean_paint, layout) = painted_for("let x = compute(y);");
-        let (ctrl_walk, ctrl_paint, _) = painted_for("let x = \u{01}compute(y);");
-        let nominal = layout.divider_col;
-
-        assert_eq!(
-            (clean_walk, ctrl_walk),
-            (Some(nominal), Some(nominal)),
-            "the span walk reports the nominal column for both and so cannot tell them apart"
-        );
-        // Asserted as a pair so a control row that ever paints RIGHT of
-        // the clean one fails on this message rather than on a subtraction
-        // overflow, which would name no property at all. The two fixtures
-        // differ by one inserted character, so the gap is the causal claim.
-        assert_eq!(
-            (clean_paint, ctrl_paint),
-            (Some(nominal), Some(nominal - 1)),
-            "adding one control character pulls the painted divider exactly one column left"
-        );
+            for pane_width in [101u16, 119, 160, 184] {
+                let row = split_diff_row(&file, pair, gutter, pane_width, Some(&cache));
+                assert_eq!(
+                    painted_divider_col(&row, pane_width),
+                    Some(split_layout(gutter, pane_width).divider_col),
+                    "a control character leaves the painted divider on \
+                     split_layout's divider_col: pane_width={pane_width} body={body:?}"
+                );
+            }
+        }
     }
 
     fn one_line_file(path: &str) -> FileHunks {
