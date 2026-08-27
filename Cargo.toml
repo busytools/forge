@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-agent", "crates/forge-workspace", "crates/forge-tui", "crates/forge-test-harness"]
+members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-dictate", "crates/forge-agent", "crates/forge-workspace", "crates/forge-tui", "crates/forge-test-harness"]
 
 [workspace.package]
 version = "1.0.19"

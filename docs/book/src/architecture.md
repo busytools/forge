@@ -1,9 +1,10 @@
 # Architecture
 
-Six crates, layered so the dependency graph stays acyclic.
+Seven crates, layered so the dependency graph stays acyclic.
 
 ```
 forge-primitives      leaf: pure data, no logic, no I/O, no async
+forge-dictate         leaf: dictation, depends on no forge-* crate
 forge-sdk         ->  primitives
 forge-agent       ->  primitives + sdk
 forge-workspace   ->  primitives + agent + sdk
@@ -14,6 +15,7 @@ forge-test-harness->  primitives + sdk
 | Crate | What it owns |
 |---|---|
 | `forge-primitives` | Every type that crosses a crate boundary: message envelopes, content blocks, hook and permission payloads, IDs, render-side view structs. No logic, no I/O, no async. |
+| `forge-dictate` | The dictation primitive: audio in, text out. Owns its model files, speech recognition and transcript normalization. Depends on no forge-* crate and knows nothing about the program embedding it. |
 | `forge-sdk` | The `claude` subprocess. Stream-json codec, transport, control dispatch, the in-process MCP host, and the options builder. |
 | `forge-agent` | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. Owns user-data reads, cloud calls, environment probes, event translation and tooling. Async, may shell out. |
 | `forge-workspace` | The multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml` loading, `DomainSession`, per-session actors, the machine-local state store, and the in-process MCP server forge exposes to every spawned session. |
@@ -29,21 +31,26 @@ at all, so it cannot reach the agent layer except through
 
 Work top-down; the first match wins.
 
-1. **A type that crosses a crate boundary** (an envelope, a snapshot
+1. **Audio, speech recognition, or turning either into text** (capture,
+   model fetch, transcription, transcript normalization) goes in
+   `forge-dictate`. It is a leaf: it may not depend on any forge-*
+   crate, and its own types stay there even once another crate reads
+   them.
+2. **A type that crosses a crate boundary** (an envelope, a snapshot
    struct, a hook payload, anything sent over a channel or touched by
    more than one crate) goes in `forge-primitives`. Data shapes only.
-2. **Anything that speaks stream-json to the subprocess** (a decoder, a
+3. **Anything that speaks stream-json to the subprocess** (a decoder, a
    new control-request subtype, transport, the MCP host, the options
    builder) goes in `forge-sdk`, and ships with a wire-conformance
    scenario.
-3. **Live state about the user's environment** (git watching, cwd
+4. **Live state about the user's environment** (git watching, cwd
    resolution, environment probes, OAuth, plugins, settings I/O,
    catalog scans) goes in `forge-agent`.
-4. **Orchestration across projects, sessions, accounts, `forge.toml`
+5. **Orchestration across projects, sessions, accounts, `forge.toml`
    or the command bus** goes in `forge-workspace`.
-5. **A widget, screen, key binding, mouse handler or per-session
+6. **A widget, screen, key binding, mouse handler or per-session
    presentation state** goes in `forge-tui`.
-6. **A wire-conformance scenario** goes in `forge-test-harness`.
+7. **A wire-conformance scenario** goes in `forge-test-harness`.
 
 Splits across several crates are normal; a git-diff feature naturally
 touches agent, workspace and TUI. The rule of thumb is that logic, I/O

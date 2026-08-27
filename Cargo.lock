@@ -1114,6 +1114,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-dictate"
+version = "1.0.19"
+dependencies = [
+ "dirs",
+ "hex",
+ "reqwest",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "forge-primitives"
 version = "1.0.19"
 dependencies = [
@@ -3061,7 +3074,9 @@ checksum = "62e0021ea2c22aed41653bc7e1419abb2c97e038ff2c33d0e1309e49a97deec0"
 dependencies = [
  "base64",
  "bytes",
+ "futures-channel",
  "futures-core",
+ "futures-util",
  "http",
  "http-body",
  "http-body-util",
