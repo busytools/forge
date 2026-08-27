@@ -97,7 +97,9 @@ much in forge-tui", so bias toward the deeper crate when unsure.
   producer and consumer are both in forge-tui, use a separate mpsc
   channel (see `git_diff_event_tx/rx`).
 - **Cross-crate type duplication.** Same-shaped `Foo` in two crates
-  means one is wrong; lift to primitives or import the re-export.
+  means one is wrong; lift to primitives or import the re-export. The
+  one exception is `forge-dictate`, which may not depend on primitives
+  at all: its types stay in it and consumers import them from there.
 - **Workspace methods bypassing the Command bus for user actions.**
   User-initiated actions go through `dispatch(Command)`; query-style
   refreshes are direct inherent methods. Don't conflate them.
