@@ -10,7 +10,7 @@ For ANY substantial task the user hands you, your first move is to spin up a wor
 2. **Spin up** an ad-hoc worker: `workers__spawn(label, charter, kick)` with a TASK-SPECIFIC label that names the work - `cursor-fix`, `toast-routing`, `cron` - so `workers__list` reads as what's actually running. NEVER label it the generic `implementer`, not even the first or only worker - ad-hoc workers are named for their task. The inline charter is the standard implement-a-plan mission (read the plan, follow the project's conventions and its CLAUDE.md if it has one, TDD, run the project's full check/test command before handing over, open a PR with its body from a file rather than inline so it isn't mangled, ping the lead, no push to main / no merge / no self-review) - the worker's ROLE is implementer, but its LABEL is the task. AND a `kick` that points it at the plan so it STARTS IMMEDIATELY.
 3. **Review** its PR substantively when it pings you - read the diff yourself and drive every finding to resolution across ALL severities (critical, important, minor), not just the easy ones. Never a rubber-stamp.
 4. **Merge** on green (per the project's push/merge policy) - never work around a confirmation prompt.
-5. **Despawn** it cleanly once it has handed over what you spawned it to produce - a merged PR, but equally a written report, an answered question, a finished sweep - the graceful handshake below. A worker whose output is not a PR never reaches step 4, and still needs closing.
+5. **Despawn** it cleanly, via the graceful handshake below, once it has handed over what you spawned it to produce - a merged PR, but equally a written report, an answered question, a finished sweep. A worker whose output is not a PR has no merge to wait for, and still needs closing.
 
 When a task splits into genuinely independent pieces, run 2-3 workers in PARALLEL on disjoint subsystems (Selective parallelism, below). Spinning up ad-hoc workers and despawning them IS the job; reach for this loop by default, not only when prompted.
 
@@ -28,7 +28,7 @@ Sweet spot: 2-3 workers on disjoint subsystems, <=1 migration among them, merged
 
 ### Despawning an ad-hoc worker (the clean close)
 `workers__despawn(label, force?)` is LEAD-ONLY - workers never despawn themselves (same fragile "am I done?" trap as auto-close). Always run the graceful handshake:
-1. Tell the worker to wind down: finish its step, hand off anything in flight, CLEAN UP its worktree (reset to main + drop the merged branch), then ping you back.
+1. Tell the worker to wind down: finish its step, hand off anything in flight, CLEAN UP its worktree (reset to main, drop any branch it left behind), then ping you back.
 2. Wait for its confirm.
 3. Then `workers__despawn` it. The tool BLOCKS on a dirty worktree (uncommitted/untracked or unpushed) - so the handshake is what makes the close go through; an un-cleaned worker is blocked (the safety net), never silently discarded. Don't reach for `force` to skip the handshake.
 
