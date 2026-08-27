@@ -405,7 +405,12 @@ where
     //    fall through to end_input).
     // 2. Close stdin so the CLI exits cleanly.
     // 3. Drain any trailing frames to EOF.
-    let read_timeout = std::time::Duration::from_secs(30);
+    // Per-read, not total: it bounds SILENCE between frames. A real
+    // compaction is the longest legitimate gap - the CLI acknowledges
+    // `/compact`, then says nothing until the boundary frame - and at
+    // 30s it was cut off mid-compaction, capturing a scenario that
+    // never reached the frame it exists to record.
+    let read_timeout = std::time::Duration::from_secs(120);
     let mut summary: Option<(u64, Option<f64>, u64)> = None;
     loop {
         match tokio::time::timeout(read_timeout, events.recv()).await {
@@ -447,7 +452,7 @@ where
                 //     which the post-drain summary line already
                 //     reports as "NO Result frame".
                 eprintln!(
-                    "{scenario}: 30s read_timeout fired with no Result \
+                    "{scenario}: read_timeout fired with no Result \
                      frame seen - `drive` may have drained it OR the \
                      CLI is hung. Proceeding to cleanup."
                 );
