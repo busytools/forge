@@ -289,6 +289,92 @@ struct PeerBadgeInput {
     last_failure_at: Option<Instant>,
 }
 
+/// Projects bucketed the way the pane draws them: orgs
+/// alphabetically (the `BTreeMap` key order), then projects
+/// alphabetically by name within each org. Shared with
+/// [`drawn_session_rows`] so the row the focus pick calls adjacent
+/// and the row the user is looking at cannot drift apart.
+fn projects_by_org(
+    projects: &[ProjectView],
+) -> std::collections::BTreeMap<&str, Vec<&ProjectView>> {
+    let mut by_org: std::collections::BTreeMap<&str, Vec<&ProjectView>> =
+        std::collections::BTreeMap::new();
+    for project in projects {
+        by_org.entry(project.org.as_str()).or_default().push(project);
+    }
+    for bucket in by_org.values_mut() {
+        bucket.sort_by(|a, b| a.name.cmp(&b.name));
+    }
+    by_org
+}
+
+/// Worker `SessionKey`s across every project. Used to skip worker
+/// entries when picking each project's "live lead" - the catalog
+/// includes worker JSONLs post-Connected, and naive iteration would
+/// surface a worker as the project's live row once the worker's
+/// mtime overtakes the lead's.
+fn live_worker_keys(app: &App) -> std::collections::HashSet<forge_workspace::SessionKey> {
+    app.workspace
+        .as_ref()
+        .map(|ws| ws.all_live_worker_session_keys().into_iter().collect())
+        .unwrap_or_default()
+}
+
+/// The session a project's row represents. Anchored to a non-worker
+/// pooled bucket whose `cwd_raw` matches the project path, which
+/// sidesteps catalog ordering (a freshly-spawned worker can overtake
+/// the lead by mtime) and the catalog-presence-of-the-lead question
+/// entirely. Falls back to a catalog walk excluding workers, for when
+/// the lead's bucket isn't yet pooled (cold project at launchpad
+/// time) but its session has a `SessionView` entry.
+fn live_lead_key(
+    app: &App,
+    project: &ProjectView,
+    project_path: &str,
+    worker_keys: &std::collections::HashSet<forge_workspace::SessionKey>,
+) -> Option<forge_workspace::SessionKey> {
+    app.sessions
+        .iter()
+        .find(|(k, s)| s.cwd_raw.as_str() == project_path && !worker_keys.contains(k))
+        .map(|(k, _)| k.clone())
+        .or_else(|| {
+            project.sessions.iter().find_map(|s| {
+                if worker_keys.contains(&s.session) {
+                    return None;
+                }
+                app.sessions.get(&s.session).map(|_| s.session.clone())
+            })
+        })
+}
+
+/// Every session the pane draws as a focusable row, in the order it
+/// draws them: each project's lead, then that project's live workers.
+/// The focus pick after a close reads this so it lands on the row
+/// next to the one that went away rather than on an arbitrary
+/// [`App::sessions`] entry.
+///
+/// A project waking under a `__spawn_<name>__` synthetic contributes
+/// nothing here. The pane does draw that row, but a click on it is
+/// refused while the bucket is `Spawning`, so it is not a place focus
+/// can be sent.
+pub(crate) fn drawn_session_rows(
+    app: &App,
+    projects: &[ProjectView],
+) -> Vec<forge_workspace::SessionKey> {
+    let worker_keys = live_worker_keys(app);
+    let mut rows = Vec::new();
+    for bucket in projects_by_org(projects).values() {
+        for project in bucket {
+            let project_path = project.path.to_string_lossy();
+            rows.extend(live_lead_key(app, project, &project_path, &worker_keys));
+            if let Some(ws) = app.workspace.as_ref() {
+                rows.extend(ws.list_live_workers(&project.key).into_iter().map(|w| w.session_key));
+            }
+        }
+    }
+    rows
+}
+
 fn append_project_rows(
     lines: &mut Vec<Line<'static>>,
     area: Rect,
@@ -297,16 +383,7 @@ fn append_project_rows(
 ) {
     let active_session_key = app.active_session_key.clone();
     let spinner_glyph = app.active_spinner_glyph();
-    // Worker session_keys across every project. Used to skip worker
-    // entries when picking each project's "live lead" - the catalog
-    // includes worker JSONLs post-Connected, and naive iteration would
-    // surface a worker as the project's live row once the worker's
-    // mtime overtakes the lead's.
-    let worker_keys: std::collections::HashSet<forge_workspace::SessionKey> = app
-        .workspace
-        .as_ref()
-        .map(|ws| ws.all_live_worker_session_keys().into_iter().collect())
-        .unwrap_or_default();
+    let worker_keys = live_worker_keys(app);
     let lifecycle_for = |key: &forge_workspace::SessionKey| -> SessionLifecycleState {
         app.sessions.get(key).map_or(SessionLifecycleState::default(), |s| s.lifecycle_state)
     };
@@ -317,83 +394,63 @@ fn append_project_rows(
         })
     };
 
-    // Bucket projects by org name. Each bucket is a Vec of
-    // (project, optional live session metadata + peer badges).
-    let mut by_org: std::collections::BTreeMap<String, Vec<RowMeta<'_>>> =
-        std::collections::BTreeMap::new();
-    for project in projects {
-        let spawn_synthetic =
-            forge_workspace::SessionKey::from_session_id(format!("__spawn_{}__", project.name));
-        let project_path_str = project.path.to_string_lossy().into_owned();
-        // The project row represents the LEAD. Anchor `live_session`
-        // to a non-worker pooled bucket whose `cwd_raw` matches the
-        // project path. This sidesteps catalog ordering (which a
-        // freshly-spawned worker can overtake by mtime) and the
-        // catalog-presence-of-the-lead question entirely.
-        let live_session = app
-            .sessions
-            .iter()
-            .find(|(k, s)| {
-                s.cwd_raw.as_str() == project_path_str.as_str() && !worker_keys.contains(k)
-            })
-            .map(|(k, s)| (k.clone(), s.lifecycle_state))
-            .or_else(|| {
-                // Fallback: catalog walk excluding workers. Used when
-                // the lead's bucket isn't yet pooled (cold project at
-                // launchpad time) but its session has a SessionView
-                // entry.
-                project.sessions.iter().find_map(|s| {
-                    if worker_keys.contains(&s.session) {
-                        return None;
-                    }
-                    app.sessions
-                        .get(&s.session)
-                        .map(|_| (s.session.clone(), lifecycle_for(&s.session)))
-                })
-            });
-        let synthetic = app
-            .sessions
-            .get(&spawn_synthetic)
-            .map(|_| (spawn_synthetic.clone(), lifecycle_for(&spawn_synthetic)));
-        // Project row is focused when the active session belongs to
-        // this project - either as the lead OR as one of its
-        // workers. The lead's bucket has cwd_raw matching the
-        // project path; a worker's bucket likewise sits under the
-        // project (via `live_workers[project.key]`); and the
-        // catalog tracks the session_key explicitly. Match any of
-        // the three signals so snapshot tests (which don't seed
-        // cwd_raw on test UiSessions) and the production hot path
-        // both highlight correctly.
-        //
-        // The third signal (`worker_match`) matters for **resumed
-        // workers** specifically: their `cwd_raw` carries the
-        // worktree path (claude chdir'd before writing the catalog
-        // row that the resume path reads) rather than the project
-        // root, and their JSONL is tagged under a per-worker project
-        // key in the catalog rather than the parent. Fresh-spawned
-        // workers accidentally pass `cwd_match` because their
-        // pre-Connect bucket still has `cwd_raw == project.path`.
-        let is_active_project = active_session_key.as_ref().is_some_and(|k| {
-            let cwd_match = app
+    // Row metadata per org, assembled in drawn order: each entry is
+    // a Vec of (project, optional live session metadata + peer
+    // badges).
+    let ordered = projects_by_org(projects);
+    let mut by_org: Vec<(&str, Vec<RowMeta<'_>>)> = Vec::with_capacity(ordered.len());
+    for (org_name, bucket) in &ordered {
+        let mut rows: Vec<RowMeta<'_>> = Vec::with_capacity(bucket.len());
+        for project in bucket {
+            let spawn_synthetic =
+                forge_workspace::SessionKey::from_session_id(format!("__spawn_{}__", project.name));
+            let project_path_str = project.path.to_string_lossy().into_owned();
+            // The project row represents the LEAD.
+            let live_session =
+                live_lead_key(app, project, &project_path_str, &worker_keys).map(|key| {
+                    let lifecycle = lifecycle_for(&key);
+                    (key, lifecycle)
+                });
+            let synthetic = app
                 .sessions
-                .get(k)
-                .is_some_and(|s| s.cwd_raw.as_str() == project_path_str.as_str());
-            let catalog_match = project.sessions.iter().any(|s| s.session == *k);
-            let worker_match = app.workspace.as_ref().is_some_and(|ws| {
-                ws.list_live_workers(&project.key).iter().any(|w| w.session_key == *k)
+                .get(&spawn_synthetic)
+                .map(|_| (spawn_synthetic.clone(), lifecycle_for(&spawn_synthetic)));
+            // Project row is focused when the active session belongs to
+            // this project - either as the lead OR as one of its
+            // workers. The lead's bucket has cwd_raw matching the
+            // project path; a worker's bucket likewise sits under the
+            // project (via `live_workers[project.key]`); and the
+            // catalog tracks the session_key explicitly. Match any of
+            // the three signals so snapshot tests (which don't seed
+            // cwd_raw on test UiSessions) and the production hot path
+            // both highlight correctly.
+            //
+            // The third signal (`worker_match`) matters for **resumed
+            // workers** specifically: their `cwd_raw` carries the
+            // worktree path (claude chdir'd before writing the catalog
+            // row that the resume path reads) rather than the project
+            // root, and their JSONL is tagged under a per-worker project
+            // key in the catalog rather than the parent. Fresh-spawned
+            // workers accidentally pass `cwd_match` because their
+            // pre-Connect bucket still has `cwd_raw == project.path`.
+            let is_active_project = active_session_key.as_ref().is_some_and(|k| {
+                let cwd_match = app
+                    .sessions
+                    .get(k)
+                    .is_some_and(|s| s.cwd_raw.as_str() == project_path_str.as_str());
+                let catalog_match = project.sessions.iter().any(|s| s.session == *k);
+                let worker_match = app.workspace.as_ref().is_some_and(|ws| {
+                    ws.list_live_workers(&project.key).iter().any(|w| w.session_key == *k)
+                });
+                cwd_match || catalog_match || worker_match
             });
-            cwd_match || catalog_match || worker_match
-        });
-        let live = live_session.or(synthetic).map(|(key, lifecycle)| {
-            let badges = badges_for(&key);
-            (key, lifecycle, is_active_project, badges)
-        });
-        by_org.entry(project.org.clone()).or_default().push((project, live));
-    }
-    // Alphabetical project order within each org for deterministic
-    // ordering across refreshes.
-    for bucket in by_org.values_mut() {
-        bucket.sort_by(|a, b| a.0.name.cmp(&b.0.name));
+            let live = live_session.or(synthetic).map(|(key, lifecycle)| {
+                let badges = badges_for(&key);
+                (key, lifecycle, is_active_project, badges)
+            });
+            rows.push((project, live));
+        }
+        by_org.push((org_name, rows));
     }
 
     let now = SystemTime::now();
@@ -403,7 +460,7 @@ fn append_project_rows(
         lines.push(Line::from(vec![
             Span::raw(" "),
             Span::styled(
-                org_name.clone(),
+                (*org_name).to_owned(),
                 Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
             ),
         ]));

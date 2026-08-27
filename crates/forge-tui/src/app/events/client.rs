@@ -296,10 +296,11 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             // knows the worker is gone and what became of its worktree.
             // Removed ALSO drops the worker's UiSession bucket from
             // `app.sessions` and, when it was the active session, falls
-            // back to the worker's spawning lead (or any other live
-            // session) - without this cleanup the bucket lingers with
-            // stale chat data and `active_session_key` keeps pointing at
-            // the released worker, so the chat view renders the dead
+            // back to the worker's spawning lead (the row its subtree
+            // hangs off) or else to the row the pane drew next to it -
+            // without this cleanup the bucket lingers with stale chat
+            // data and `active_session_key` keeps pointing at the
+            // released worker, so the chat view renders the dead
             // worker's history instead of the lead's.
             if matches!(action, forge_workspace::protocol::WorkerStatusAction::Removed) {
                 let toast = crate::ui::worker_status::format_close_toast(&status.label, worktree);
@@ -311,12 +312,15 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                     &toast,
                 );
                 let worker_key = SessionKey::from_session_id(status.session_id.clone());
+                let was_active = app.active_session_key.as_ref() == Some(&worker_key);
+                let drawn = if was_active { super::drawn_session_order(app) } else { Vec::new() };
                 app.sessions.remove(&worker_key);
-                if app.active_session_key.as_ref() == Some(&worker_key) {
+                if was_active {
                     let fallback = if app.sessions.contains_key(&lead_key) {
                         Some(lead_key)
                     } else {
-                        app.sessions.keys().next().cloned()
+                        super::adjacent_drawn_session(app, &drawn, &worker_key)
+                            .or_else(|| app.sessions.keys().next().cloned())
                     };
                     if let Some(new_active) = fallback {
                         app.switch_active_session(new_active);
@@ -2544,6 +2548,106 @@ mod tests {
             "active must fall back to a surviving session, not None, while any bucket exists",
         );
         assert!(!app.sessions.contains_key(&worker_key), "worker bucket itself must be gone");
+    }
+
+    /// Seed projects `alpha` and `bravo`, each with a lead bucket,
+    /// plus `workers` under alpha in spawn order. A worker flagged
+    /// `false` gets its `live_workers` entry but no `app.sessions`
+    /// bucket - the spawning window before its Connected lands.
+    fn seed_projects_with_workers(app: &mut App, workers: &[(&str, bool)]) {
+        let ws = app.workspace.clone().expect("test workspace");
+        for project in ["bravo", "alpha"] {
+            ws.seed_test_project(project, &format!("/tmp/{project}"));
+            let lead = SessionKey::from_session_id(format!("{project}-lead"));
+            let mut bucket = UiSession::new(lead.clone());
+            bucket.cwd_raw = format!("/tmp/{project}");
+            app.sessions.insert(lead, bucket);
+        }
+        let alpha =
+            ws.list_projects().into_iter().find(|p| p.name == "alpha").expect("seeded project").key;
+        for (label, has_bucket) in workers {
+            let key = SessionKey::from_session_id(*label);
+            if *has_bucket {
+                app.sessions.insert(key.clone(), UiSession::new(key.clone()));
+            }
+            ws.insert_live_worker(
+                &alpha,
+                forge_workspace::WorkerEntry {
+                    label: (*label).to_owned(),
+                    charter: "charter".to_owned(),
+                    session_key: key,
+                    status: forge_primitives::WorkerLiveness::Running,
+                    spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                    spawned_by_session_id: "lead-uuid".to_owned(),
+                    needs_tag: false,
+                    is_git_repo_at_spawn: false,
+                    diagnostic: None,
+                    kick: None,
+                },
+            );
+        }
+    }
+
+    /// A Removed event for the worker whose session key is `label`,
+    /// spawned by a lead that names no live bucket - so the lead
+    /// preference cannot fire and the fallback is what is on test.
+    fn worker_removed_orphaned(label: &str) -> SessionUpdate {
+        let mut event = worker_removed_event(label, WorktreeDisposition::Absent);
+        if let SessionUpdate::WorkerStatusChanged { status, .. } = &mut event {
+            status.session_id = label.to_owned();
+        }
+        event
+    }
+
+    /// With the spawning lead gone, Removed lands on the row the
+    /// Projects pane draws under the closed worker: the next worker
+    /// in the project's subtree, and the following project's lead
+    /// once the closed worker was the last one. Each position is
+    /// removed from its own fresh App, so a pick out of the
+    /// `app.sessions` HashMap would have to guess all three.
+    #[test]
+    fn worker_removed_event_lands_on_the_adjacent_drawn_row_when_lead_gone() {
+        // Drawn: alpha's lead, its workers in spawn order, then bravo's.
+        let workers = [("w-one", true), ("w-two", true), ("w-three", true)];
+        let cases = [("w-one", "w-two"), ("w-two", "w-three"), ("w-three", "bravo-lead")];
+
+        for (closing, expected) in cases {
+            let mut app = App::test_default();
+            seed_projects_with_workers(&mut app, &workers);
+            app.active_session_key = Some(SessionKey::from_session_id(closing));
+
+            apply_session_update(&mut app, worker_removed_orphaned(closing));
+
+            assert_eq!(
+                app.active_session_key.as_ref().map(SessionKey::as_str),
+                Some(expected),
+                "removing {closing} must land on the row drawn under it",
+            );
+        }
+    }
+
+    /// A worker still inside its spawning window draws a row but has
+    /// no bucket yet - the same window `switch_to_worker` refuses a
+    /// click in. Focus passes over that row: nominating it would put
+    /// the switch through a key `app.sessions` cannot resolve, which
+    /// `switch_active_session` declines, leaving active pointed at
+    /// the worker that was just removed.
+    #[test]
+    fn worker_removed_event_skips_a_drawn_row_whose_bucket_has_not_landed() {
+        let mut app = App::test_default();
+        seed_projects_with_workers(
+            &mut app,
+            &[("w-one", true), ("w-two", false), ("w-three", true)],
+        );
+        app.active_session_key = Some(SessionKey::from_session_id("w-one"));
+
+        apply_session_update(&mut app, worker_removed_orphaned("w-one"));
+
+        assert_eq!(
+            app.active_session_key.as_ref().map(SessionKey::as_str),
+            Some("w-three"),
+            "the spawning worker's row has no bucket to focus, so the pick moves past it",
+        );
     }
 
     /// When `active_session_key` was NOT the closed worker, it must
