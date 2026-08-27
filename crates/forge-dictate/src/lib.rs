@@ -21,10 +21,12 @@
 //! having held a runtime worker for the entire operation - so a release
 //! smoke test passes while dev crashes.
 
+mod audio;
 mod config;
 mod error;
 mod fetch;
 
+pub use audio::{AudioSource, SAMPLE_RATE, Samples};
 pub use config::{Config, ConfigBuilder, ModelSpec};
 pub use error::Error;
 pub use fetch::{Progress, prepare};
