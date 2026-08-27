@@ -100,7 +100,7 @@ assuming you can only act in the current turn.";
 /// classifies as Lead even when the row is a worker, so a role-gated
 /// version would miss it.
 const FORGE_SESSION_CONDUCT_SYSTEM_PROMPT: &str = "\
-Two forge-specific habits.\n\
+A few forge-specific habits.\n\
 \n\
 Always pass `description` on a Bash call. forge's tool tree shows that \
 line for each command and falls back to the raw command when it is \
