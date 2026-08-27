@@ -298,6 +298,26 @@ pub enum Message {
         session_id: String,
     },
 
+    /// A compaction finished and the transcript was replaced. Subtype
+    /// `"compact_boundary"`.
+    ///
+    /// The wire nests both fields under `compact_metadata`, next to
+    /// post-compaction counters and preserved-message uuids nothing
+    /// reads. Only what forge reacts to is modelled: every field
+    /// modelled here is one a later CLI can drop the whole frame to the
+    /// generic bucket over.
+    CompactBoundary {
+        /// What started the compaction: `"manual"` for `/compact`,
+        /// `"auto"` when the context window forced it.
+        trigger: String,
+        /// Context tokens in use immediately before the compaction.
+        pre_tokens: u64,
+        /// Unique identifier for this event.
+        uuid: String,
+        /// Session id the event applies to.
+        session_id: String,
+    },
+
     /// Rate-limit state transition. The CLI emits this when the current
     /// rate-limit window changes state (e.g. `allowed` → `allowed_warning`).
     /// Wire shape mirrors +
@@ -444,6 +464,7 @@ impl Message {
             | Message::CommandsChanged { session_id, .. }
             | Message::HookStarted { session_id, .. }
             | Message::HookResponse { session_id, .. }
+            | Message::CompactBoundary { session_id, .. }
             | Message::Result { session_id, .. }
             | Message::StreamEvent { session_id, .. } => Some(session_id.as_str()),
             Message::System { session_id, .. } => session_id.as_deref(),
@@ -983,6 +1004,21 @@ enum TypedSystemRepr {
         uuid: String,
         session_id: String,
     },
+    CompactBoundary {
+        compact_metadata: CompactMetadataRepr,
+        uuid: String,
+        session_id: String,
+    },
+}
+
+/// The subset of `compact_boundary`'s `compact_metadata` forge reads.
+/// Unlisted siblings (`post_tokens`, `duration_ms`, `preserved_segment`
+/// and friends) are dropped on decode rather than carried, so a change
+/// to one of them cannot fail the typed match.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CompactMetadataRepr {
+    trigger: String,
+    pre_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1149,6 +1185,11 @@ impl From<MessageRepr> for Message {
                 uuid,
                 session_id,
             },
+            MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::CompactBoundary {
+                compact_metadata: CompactMetadataRepr { trigger, pre_tokens },
+                uuid,
+                session_id,
+            })) => Message::CompactBoundary { trigger, pre_tokens, uuid, session_id },
             MessageRepr::System(SystemRepr::Generic(GenericSystemRepr {
                 subtype,
                 session_id,
@@ -1395,6 +1436,13 @@ impl From<Message> for MessageRepr {
                 uuid,
                 session_id,
             })),
+            Message::CompactBoundary { trigger, pre_tokens, uuid, session_id } => {
+                MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::CompactBoundary {
+                    compact_metadata: CompactMetadataRepr { trigger, pre_tokens },
+                    uuid,
+                    session_id,
+                }))
+            }
             Message::RateLimitEvent { rate_limit_info, uuid, session_id } => {
                 MessageRepr::RateLimitEvent { rate_limit_info, uuid, session_id }
             }
@@ -1816,6 +1864,79 @@ mod tests_message_extras {
             encoded.get("parent_tool_use_id").is_none(),
             "None-valued parent_tool_use_id must NOT serialize",
         );
+    }
+
+    /// Frame is verbatim from the `compact` capture, extras included:
+    /// the unmodelled `compact_metadata` siblings and
+    /// `logical_parent_uuid` must drop out rather than block the typed
+    /// match.
+    #[test]
+    fn compact_boundary_decodes_the_two_fields_forge_reads() {
+        let raw = json!({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "session_id": "sess-cb",
+            "uuid": "cb-uuid",
+            "compact_metadata": {
+                "trigger": "manual",
+                "pre_tokens": 68031,
+                "post_tokens": 9149,
+                "cumulative_dropped_tokens": 58882,
+                "duration_ms": 48928,
+                "preserved_segment": {"head_uuid": "h", "anchor_uuid": "a", "tail_uuid": "t"},
+                "preserved_messages": {"anchor_uuid": "a", "uuids": ["h"], "all_uuids": ["h", "t"]},
+            },
+            "logical_parent_uuid": "lp-uuid",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::CompactBoundary { trigger, pre_tokens, uuid, session_id } = msg else {
+            panic!("compact_boundary must decode typed, not into System; got {msg:?}");
+        };
+        assert_eq!(trigger, "manual", "trigger drives the TUI's pending-compact clear");
+        assert_eq!(pre_tokens, 68031, "pre_tokens is the number the usage panel shows");
+        assert_eq!(uuid, "cb-uuid");
+        assert_eq!(session_id, "sess-cb");
+
+        let encoded = serde_json::to_value(&Message::CompactBoundary {
+            trigger: "manual".to_owned(),
+            pre_tokens: 68031,
+            uuid: "cb-uuid".to_owned(),
+            session_id: "sess-cb".to_owned(),
+        })
+        .expect("encode");
+        assert_eq!(
+            encoded,
+            json!({
+                "type": "system",
+                "subtype": "compact_boundary",
+                "session_id": "sess-cb",
+                "uuid": "cb-uuid",
+                "compact_metadata": {"trigger": "manual", "pre_tokens": 68031},
+            }),
+            "encode must re-nest both fields under compact_metadata",
+        );
+    }
+
+    /// The guard hard rule 9 buys by typing this subtype: a rename of
+    /// either modelled field drops the frame into the generic bucket,
+    /// which `EXPECTED_GENERIC_SYSTEM_SUBTYPES` does not list, so the
+    /// next live capture fails instead of the TUI quietly losing the
+    /// trigger. `preTokens` is the plausible drift - the TUI already
+    /// carries an alias for that spelling.
+    #[test]
+    fn a_renamed_pre_tokens_falls_to_the_generic_bucket() {
+        let msg: Message = serde_json::from_value(json!({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "session_id": "sess-cb",
+            "uuid": "cb-uuid",
+            "compact_metadata": {"trigger": "manual", "preTokens": 68031},
+        }))
+        .expect("decode");
+        let Message::System { subtype, .. } = msg else {
+            panic!("drifted metadata must NOT satisfy the typed match; got {msg:?}");
+        };
+        assert_eq!(subtype, "compact_boundary", "and it stays identifiable as the same subtype");
     }
 
     #[test]

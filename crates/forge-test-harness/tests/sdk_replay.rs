@@ -11,8 +11,10 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+use forge_primitives::Message;
 use forge_sdk::mcp::McpServerBuilder;
 use forge_sdk::mcp::protocol::JsonRpcRequest;
+use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
 use forge_test_harness::sdk_wire::{
     PINNED_CLI_VERSION, baseline_dir, decode_all_inbound, load_baseline,
 };
@@ -116,6 +118,41 @@ async fn initialize_answers_the_requested_protocol_version() {
     // Guards the whole thing going quiet if the correlation ever stops
     // matching - the exact failure shape it exists to catch.
     assert!(total > 0, "no initialize handshake found in any committed baseline");
+}
+
+/// The baseline this replaced held a REFUSED compaction - "Not enough
+/// messages to compact" - which is a well-formed frame, so it decoded
+/// clean forever while the boundary the scenario exists to record never
+/// arrived. Decode-cleanliness cannot distinguish the two, exactly as
+/// `all_baselines_decode_cleanly` cannot distinguish an empty corpus
+/// from a passing one without its own floor. So the frame is asserted by
+/// name, and through the decoder rather than as a substring, which also
+/// pins that it still reaches the typed variant.
+#[test]
+fn the_compact_baseline_carries_a_real_compaction() {
+    let dir = baseline_dir();
+    if !dir.exists() {
+        eprintln!("no baselines directory at {} - skipping", dir.display());
+        return;
+    }
+
+    let log = load_baseline("compact");
+    let boundaries = log
+        .inbound()
+        .iter()
+        .filter(|line| {
+            matches!(
+                decode_dispatch(line, 1),
+                Ok(DecodedLine::Message(Message::CompactBoundary { .. }))
+            )
+        })
+        .count();
+
+    assert!(
+        boundaries >= 1,
+        "the compact baseline carries no compact_boundary frame, so the compaction path is \
+         uncovered - a capture of a refused compaction replays clean while covering nothing",
+    );
 }
 
 #[test]
