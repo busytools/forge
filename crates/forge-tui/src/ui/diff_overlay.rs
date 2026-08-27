@@ -3354,7 +3354,11 @@ mod tests {
         let (ctrl_walk, ctrl_paint, _) = painted_for("let x = \u{01}compute(y);");
         let nominal = layout.divider_col;
 
-        assert_eq!(clean_paint, Some(nominal), "clean text paints the divider on the nominal column");
+        assert_eq!(
+            clean_paint,
+            Some(nominal),
+            "clean text paints the divider on the nominal column"
+        );
         assert_eq!(
             (clean_walk, ctrl_walk),
             (Some(nominal), Some(nominal)),
