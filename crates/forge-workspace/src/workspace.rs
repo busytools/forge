@@ -11674,8 +11674,8 @@ mod worker_respawn_tests {
         );
     }
 
-    /// Controls for [`a_resumed_worker_classifies_as_worker`]: without
-    /// the two lead cases, a classifier that answered Worker for
+    /// Controls for [`a_resumed_worker_classifies_as_worker`]: without a
+    /// case that answers Lead, a classifier answering Worker for
     /// everything would satisfy it.
     #[test]
     fn fresh_workers_and_leads_keep_their_classification() {
@@ -11693,10 +11693,13 @@ mod worker_respawn_tests {
             "a peer-spawned project lead is still a lead",
         );
 
+        // The only production `None` is the `/account` re-spawn, which
+        // carries whatever session is focused - a worker included. This
+        // pins today's answer, not a correct one: #731.
         assert_eq!(
             Workspace::session_kind_for_spawn_key(None),
             crate::mcp::SessionKind::Lead,
-            "a direct lead spawn carries no spawn key and is still a lead",
+            "no spawn key answers Lead today (the /account re-spawn path; wrong for a worker, #731)",
         );
     }
 
