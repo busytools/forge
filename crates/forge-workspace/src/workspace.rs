@@ -11693,6 +11693,15 @@ mod worker_respawn_tests {
             "a peer-spawned project lead is still a lead",
         );
 
+        // `parse_project_lead_synth_key` reads this key as lead project
+        // `worker_foo`; the old prefix check called it a worker.
+        let worker_named_project = SessionKey::from_session_id("__spawn_worker_foo__");
+        assert_eq!(
+            Workspace::session_kind_for_spawn_key(Some(&worker_named_project)),
+            crate::mcp::SessionKind::Lead,
+            "a project named worker_foo is a lead, not a worker",
+        );
+
         // The only production `None` is the `/account` re-spawn, which
         // carries whatever session is focused - a worker included. This
         // pins today's answer, not a correct one: #731.
