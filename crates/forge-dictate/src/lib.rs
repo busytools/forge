@@ -38,7 +38,12 @@ mod tests_leaf_invariant {
         for (key, child) in table {
             if key.ends_with("dependencies") {
                 if let Some(deps) = child.as_table() {
-                    found.extend(deps.keys().filter(|k| k.starts_with("forge-")).cloned());
+                    found.extend(deps.iter().filter_map(|(key, dep)| {
+                        // A rename hides the real crate behind an arbitrary
+                        // key, so the resolved package name is what counts.
+                        let name = dep.get("package").and_then(toml::Value::as_str).unwrap_or(key);
+                        name.starts_with("forge-").then(|| name.to_owned())
+                    }));
                 }
             } else {
                 forge_deps(child, found);
