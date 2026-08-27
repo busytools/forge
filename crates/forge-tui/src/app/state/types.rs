@@ -748,6 +748,17 @@ mod tests {
             agent_event(1, "done", Some("first")),
             agent_event(2, "progress", None),
         ]);
+        // The discriminating one. Bailing at agent 1 left `phases`
+        // holding only agent 1, so the all-complete check ran over a
+        // one-element set and passed vacuously - the entry went
+        // terminal while agent 2 was still running, and the caller
+        // drains the section the moment it does.
+        assert_eq!(
+            entry.status,
+            WorkflowStatus::InProgress,
+            "a workflow whose later phase is still running has not completed",
+        );
+
         entry.apply_workflow_progress(&[
             agent_event(1, "done", Some("first")),
             agent_event(2, "done", Some("second")),
@@ -757,7 +768,34 @@ mod tests {
         assert_eq!(
             (phase_two, entry.status, entry.final_result_summary.as_deref()),
             (Some(PhaseStatus::Completed), WorkflowStatus::Completed, Some("second")),
-            "the terminating agent completes its phase, the entry and the summary",
+            "the terminating agent completes its own phase, the entry and the summary",
+        );
+    }
+
+    /// `Other` absorbs any event type forge does not decode, and
+    /// contributes no phase - so a snapshot of only those reaches the
+    /// all-complete check with an empty list, where `all()` is
+    /// vacuously true. Moving that check out of the agent branch is
+    /// what made this reachable.
+    #[test]
+    fn a_snapshot_carrying_no_phase_does_not_complete_the_workflow() {
+        let mut entry = WorkflowEntry {
+            tool_use_id: "toolu_wf".into(),
+            task_id: None,
+            meta_name: "sweep".into(),
+            meta_description: None,
+            phases: Vec::new(),
+            status: WorkflowStatus::InProgress,
+            final_result_summary: None,
+            expanded_in_inspector: false,
+        };
+
+        entry.apply_workflow_progress(&[forge_primitives::WorkflowProgressEvent::Other]);
+
+        assert_eq!(
+            entry.status,
+            WorkflowStatus::InProgress,
+            "an undecoded event carries no evidence that anything finished",
         );
     }
 
