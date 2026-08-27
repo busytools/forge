@@ -646,7 +646,11 @@ fn apply_tool_use_block(
     let mut fields = ToolCallUpdateFields {
         title: Some(tool_call.title.clone()),
         kind: Some(tool_call.kind),
-        status: Some(forge_primitives::ToolCallStatus::InProgress),
+        // A re-statement carries no news about the call's state, and a
+        // transcript can re-state one whose result already landed. Live,
+        // turn-complete settled it again; on resume the post-walk sweep
+        // force-fails whatever it finds in progress.
+        status: None,
         raw_input: tool_call.raw_input.clone(),
         locations: Some(tool_call.locations.clone()),
         meta: tool_call.meta.clone(),

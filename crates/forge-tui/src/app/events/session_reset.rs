@@ -1125,6 +1125,42 @@ mod tests {
         );
     }
 
+    /// The neighbour above pins the WARN record; this pins what the user
+    /// opens the resumed chat to see. A `tool_use` re-stated after its
+    /// own result stamps the call back to `InProgress`, and the
+    /// post-walk sweep force-fails whatever is still in progress - so a
+    /// call that succeeded renders as failed. Asserted against its own
+    /// control so the fixture cannot drift into passing vacuously.
+    #[test]
+    fn a_re_stated_tool_use_leaves_a_completed_call_completed() {
+        let settled = vec![
+            historical_user_text("run something"),
+            historical_tool_use("toolu_ok"),
+            historical_tool_result("toolu_ok", false),
+        ];
+        let mut re_stated = settled.clone();
+        re_stated.push(historical_tool_use("toolu_ok"));
+
+        let status_of = |history: &[Message]| {
+            let (_capture, mut app) = capture_replay_of(history);
+            app.active_messages_mut().iter().flat_map(|msg| msg.blocks.iter()).find_map(|block| {
+                match block {
+                    MessageBlock::ToolCall(tc) if tc.id == "toolu_ok" => Some(tc.status),
+                    _ => None,
+                }
+            })
+        };
+
+        assert_eq!(
+            (status_of(&settled), status_of(&re_stated)),
+            (
+                Some(crate::agent::model::ToolCallStatus::Completed),
+                Some(crate::agent::model::ToolCallStatus::Completed)
+            ),
+            "a completed call stays completed whether or not its tool_use is re-stated",
+        );
+    }
+
     /// The gate decides which records are written. It must never decide
     /// what the user ends up looking at - so a replayed walk and a live
     /// walk over the same envelopes have to land the same state. This
