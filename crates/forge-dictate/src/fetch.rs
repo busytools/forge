@@ -166,9 +166,13 @@ fn download(
     if !status.is_success() {
         return Err(Error::HttpStatus { url: spec.url.clone(), status: status.as_u16() });
     }
-    // A server free to ignore `Range` answers 200 with the whole file,
-    // and appending that to what we hold would interleave two copies.
-    let resuming = have > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT;
+    // Appending anything that does not begin at `have` splices two
+    // overlapping copies together. Two ways that happens: a server free
+    // to ignore `Range` answers 200 with the whole file, and a clamping
+    // proxy answers 206 from an offset we did not ask for.
+    let resuming = have > 0
+        && status == reqwest::StatusCode::PARTIAL_CONTENT
+        && content_range_starts_at(response.headers(), have);
     if !resuming {
         have = 0;
     }
@@ -195,6 +199,19 @@ fn download(
         .map_err(|source| Error::Io { path: partial.into(), source })?;
     sink.report();
     Ok(())
+}
+
+/// Parse `Content-Range: bytes <start>-<end>/<total>` and say whether
+/// the body starts where the caller asked. A missing or unreadable
+/// header counts as no, which costs a restart rather than a splice.
+fn content_range_starts_at(headers: &reqwest::header::HeaderMap, want: u64) -> bool {
+    headers
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split_whitespace().nth(1))
+        .and_then(|range| range.split('-').next())
+        .and_then(|start| start.parse::<u64>().ok())
+        .is_some_and(|start| start == want)
 }
 
 /// Counts bytes on their way to disk and forwards the running total,
@@ -359,17 +376,31 @@ mod tests_download {
         seen: mpsc::Receiver<String>,
     }
 
+    /// How the server answers a `Range` request. Nothing obliges it to
+    /// honour one, and the two ways of not honouring it fail differently.
+    #[derive(Clone, Copy)]
+    enum Ranges {
+        /// Serve from the requested offset, as a compliant server does.
+        Honour,
+        /// Answer 200 with the whole file, as a mirror or proxy may.
+        Ignore,
+        /// Answer 206, but from byte zero rather than where asked.
+        Clamp,
+    }
+
     fn serve(files: Vec<(&'static str, Vec<u8>)>) -> Server {
-        serve_inner(files, true)
+        serve_inner(files, Ranges::Honour)
     }
 
-    /// Nothing obliges a server to honour `Range`; a mirror or proxy may
-    /// answer 200 with the whole file instead.
     fn serve_ignoring_range(files: Vec<(&'static str, Vec<u8>)>) -> Server {
-        serve_inner(files, false)
+        serve_inner(files, Ranges::Ignore)
     }
 
-    fn serve_inner(files: Vec<(&'static str, Vec<u8>)>, honour_range: bool) -> Server {
+    fn serve_clamping_range(files: Vec<(&'static str, Vec<u8>)>) -> Server {
+        serve_inner(files, Ranges::Clamp)
+    }
+
+    fn serve_inner(files: Vec<(&'static str, Vec<u8>)>, ranges: Ranges) -> Server {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let (tx, seen) = mpsc::channel();
@@ -390,13 +421,19 @@ mod tests_download {
                 }
 
                 let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
-                let start: usize = head
+                let asked: Option<usize> = head
                     .lines()
-                    .filter(|_| honour_range)
                     .find(|l| l.to_ascii_lowercase().starts_with("range:"))
                     .and_then(|l| l.split("bytes=").nth(1))
-                    .and_then(|r| r.trim().trim_end_matches('-').parse().ok())
-                    .unwrap_or(0);
+                    .and_then(|r| r.trim().trim_end_matches('-').parse().ok());
+                // Whether we answer 206, and from where, are separate
+                // choices: a clamping proxy says 206 and means zero.
+                let (partial, start) = match (ranges, asked) {
+                    (_, None) => (false, 0),
+                    (Ranges::Honour, Some(n)) => (true, n),
+                    (Ranges::Ignore, Some(_)) => (false, 0),
+                    (Ranges::Clamp, Some(_)) => (true, 0),
+                };
                 tx.send(head).unwrap();
 
                 let body = files.iter().find(|(p, _)| *p == path).map(|(_, b)| b);
@@ -407,9 +444,7 @@ mod tests_download {
                     }
                     Some(full) => {
                         let slice = &full[start.min(full.len())..];
-                        let mut head = if start == 0 {
-                            format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n", slice.len())
-                        } else {
+                        let mut head = if partial {
                             format!(
                                 "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\n",
                                 slice.len(),
@@ -417,6 +452,8 @@ mod tests_download {
                                 full.len() - 1,
                                 full.len()
                             )
+                        } else {
+                            format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n", slice.len())
                         };
                         head.push_str("Connection: close\r\n\r\n");
                         let mut out = head.into_bytes();
@@ -555,6 +592,27 @@ mod tests_download {
             fs::read(dir.path().join("asr.gguf")).unwrap(),
             body,
             "a 200 answer to a ranged request must overwrite what was already on disk"
+        );
+    }
+
+    #[test]
+    fn a_206_from_an_offset_we_did_not_ask_for_does_not_splice() {
+        let body = b"pretend these are recognition weights".to_vec();
+        let server = serve_clamping_range(vec![("/asr.gguf", body.clone())]);
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("asr.gguf.part"), &body[..10]).unwrap();
+
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .asr_model(spec_for(&server, "/asr.gguf", &body))
+            .normalizer(None)
+            .build();
+
+        prepare(&cfg, |_| {}).expect("a 206 starting at zero must replace the partial");
+        assert_eq!(
+            fs::read(dir.path().join("asr.gguf")).unwrap(),
+            body,
+            "only the requested offset makes a 206 a resume; any other start must overwrite"
         );
     }
 
