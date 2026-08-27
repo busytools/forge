@@ -31,6 +31,10 @@ pub enum Progress {
 /// A file that is present but does not match its spec is reported, not
 /// repaired. Deciding to discard someone's model file belongs to
 /// whoever put it there.
+///
+/// Known cost: every call re-hashes each file end to end, measured at
+/// 1.8 s/GiB in release, so the default pair costs about five seconds
+/// even when there is nothing to download.
 pub fn prepare(cfg: &Config, mut on_progress: impl FnMut(Progress)) -> Result<(), Error> {
     let dir = models_dir(cfg)?;
     fs::create_dir_all(&dir).map_err(|source| Error::Io { path: dir.clone(), source })?;
@@ -67,8 +71,9 @@ fn ensure(
     let partial = dir.join(format!("{}.part", spec.file));
     download(spec, &partial, on_progress)?;
 
-    // Appending to bytes that already hash wrong can never converge, so
-    // a failed partial goes instead of poisoning every later resume.
+    // Deleted where a cached file would be rejected, because this one is
+    // ours and appending to bytes that already hash wrong can never
+    // converge, so keeping it would poison every later resume.
     if let Err(e) = verify(&partial, spec) {
         tracing::warn!(file = %spec.file, "downloaded model failed verification; discarding partial");
         let _ = fs::remove_file(&partial);
@@ -81,6 +86,11 @@ fn ensure(
 
 /// Size first, then digest: a truncated file is the common case and
 /// costs one `stat` to reject.
+///
+/// The digest compared here is always the spec's own, never a server
+/// `ETag`: HuggingFace answers with a chunked xet etag that is a
+/// different value from the file's SHA-256, so trusting it would reject
+/// a perfectly good file forever.
 fn verify(path: &Path, spec: &ModelSpec) -> Result<(), Error> {
     let actual =
         fs::metadata(path).map_err(|source| Error::Io { path: path.into(), source })?.len();
