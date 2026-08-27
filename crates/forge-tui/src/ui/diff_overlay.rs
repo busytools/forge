@@ -3241,12 +3241,17 @@ mod tests {
     fn the_painted_divider_sits_where_split_layout_says() {
         // Line counts either side of a gutter-width step, so a wrong
         // gutter term in the formula shows up rather than cancelling.
-        for lines in [9usize, 120] {
+        //
+        // Both text lengths, because they reach the divider by different
+        // routes: `multi_line_file`'s short `line {i}` leaves the filled
+        // half padded up to the text column, while a line longer than
+        // that column truncates to it and never pads at all.
+        for (lines, long_text) in [(9usize, false), (9, true), (120, false), (120, true)] {
             let mut file = multi_line_file("a.rs", lines);
-            // `multi_line_file` writes `line {i}`, far short of a half-pane
-            // column, so without this the truncation branch never runs.
-            file.hunks[0].lines[0].text =
-                "let very_long_identifier_name = compute(other_long_name);".repeat(3);
+            if long_text {
+                file.hunks[0].lines[0].text =
+                    "let very_long_identifier_name = compute(other_long_name);".repeat(3);
+            }
             let gutter = gutter_width_for(&file);
             let both = PairedDiffRow {
                 left: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }),
@@ -3257,10 +3262,9 @@ mod tests {
             let left_only = PairedDiffRow { right: None, ..both };
             let right_only = PairedDiffRow { left: None, ..both };
             // Real highlighted text rather than blank padding: with no
-            // cache `cached_line_spans` returns an empty slice, which is
-            // how this guard used to pass on every input. The divider
-            // lands on the nominal column either way, so it is the
-            // control below that turns the cache load-bearing.
+            // cache `cached_line_spans` returns an empty slice. The
+            // divider lands on the nominal column either way, so it is
+            // the control below that turns the cache load-bearing.
             let cache = build_file_highlight(&file);
             for pair in [both, left_only, right_only] {
                 for pane_width in [101u16, 119, 160, 184] {
@@ -3269,7 +3273,8 @@ mod tests {
                         painted_divider_col(&row, pane_width),
                         Some(split_layout(gutter, pane_width).divider_col),
                         "the painted divider sits on split_layout's divider_col: \
-                         lines={lines} gutter={gutter} pane_width={pane_width} pair={pair:?}"
+                         lines={lines} long_text={long_text} gutter={gutter} \
+                         pane_width={pane_width} pair={pair:?}"
                     );
                 }
             }
@@ -3293,7 +3298,10 @@ mod tests {
             .collect();
         // Diff text can carry its own box-drawing glyphs. Returning the
         // first would quietly report a text column as the divider.
-        assert!(hits.len() <= 1, "the row paints one divider glyph, found columns {hits:?}");
+        assert!(
+            hits.len() <= 1,
+            "the row paints one divider glyph at pane_width={pane_width}, found columns {hits:?}"
+        );
         hits.first().copied()
     }
 
@@ -3355,20 +3363,17 @@ mod tests {
         let nominal = layout.divider_col;
 
         assert_eq!(
-            clean_paint,
-            Some(nominal),
-            "clean text paints the divider on the nominal column"
-        );
-        assert_eq!(
             (clean_walk, ctrl_walk),
             (Some(nominal), Some(nominal)),
             "the span walk reports the nominal column for both and so cannot tell them apart"
         );
-        // The difference, not an absolute: this is the causal claim, and
-        // it stays true if the nominal column ever moves for other reasons.
+        // Asserted as a pair so a control row that ever paints RIGHT of
+        // the clean one fails on this message rather than on a subtraction
+        // overflow, which would name no property at all. The two fixtures
+        // differ by one inserted character, so the gap is the causal claim.
         assert_eq!(
-            clean_paint.zip(ctrl_paint).map(|(clean, ctrl)| clean - ctrl),
-            Some(1),
+            (clean_paint, ctrl_paint),
+            (Some(nominal), Some(nominal - 1)),
             "adding one control character pulls the painted divider exactly one column left"
         );
     }
