@@ -34,7 +34,9 @@ pub enum Progress {
 ///
 /// Known cost: every call re-hashes each file end to end, measured at
 /// 1.8 s/GiB in release, so the default pair costs about five seconds
-/// even when there is nothing to download.
+/// even when there is nothing to download. An unoptimised build measures
+/// 34 s/GiB, near enough two minutes for the pair, which reads as a hang
+/// rather than as the profile.
 pub fn prepare(cfg: &Config, mut on_progress: impl FnMut(Progress)) -> Result<(), Error> {
     let dir = models_dir(cfg)?;
     fs::create_dir_all(&dir).map_err(|source| Error::Io { path: dir.clone(), source })?;
