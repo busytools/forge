@@ -82,6 +82,9 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         Message::StopHookSummary { actions, hook_infos, .. } => {
             handle_stop_hook_summary(app, actions, hook_infos);
         }
+        Message::CompactBoundary { trigger, pre_tokens, .. } => {
+            handle_compact_boundary(app, &trigger, pre_tokens);
+        }
     }
 }
 
@@ -893,8 +896,17 @@ fn handle_system(app: &mut App, msg: Message) {
             apply_current_model_from_init(app, &data);
             apply_mode_state_from_init(app, &data);
         }
+        // Only reachable once the payload has drifted out of the typed
+        // variant, so the metadata is gone but the compaction still
+        // happened. `EXPECTED_GENERIC_SYSTEM_SUBTYPES` omits the subtype,
+        // which is what makes the next live capture report the drift.
         "compact_boundary" => {
-            apply_compaction_boundary(app, &data);
+            count_compaction(app);
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                ?data,
+                "compact_boundary arrived untyped: counted the compaction but trigger and pre_tokens stay unset",
+            );
         }
         "local_command_output" => {
             apply_local_command_output(app, &data);
@@ -903,51 +915,27 @@ fn handle_system(app: &mut App, msg: Message) {
     }
 }
 
-/// Drain `settings_errors` / `settingsErrors` from a System(init)
-/// data record and call the App's settings-parse-error notice handler
-/// once per error.
-/// Parse a System(compact_boundary) record and call the App's
-/// rate_limit::handle_compaction_boundary_update with the typed
-/// boundary value.
-fn apply_compaction_boundary(app: &mut App, data: &Value) {
-    #[derive(serde::Deserialize)]
-    struct Boundary {
-        compact_metadata: Inner,
-    }
-    #[derive(serde::Deserialize)]
-    struct Inner {
-        trigger: String,
-        // CLI emits both snake_case and camelCase shapes across versions.
-        #[serde(alias = "preTokens")]
-        pre_tokens: u64,
-    }
-
-    // The row's presence is the compaction; its metadata is detail. Count
-    // before the decode so this agrees with the transcript-seeded count,
-    // which keys on the subtype alone - otherwise a metadata quirk makes
-    // the number jump the next time a resume re-reads the file.
+/// The row's presence is the compaction; its metadata is detail. The
+/// transcript-seeded count keys on the subtype alone, so both arrival
+/// shapes have to reach this - otherwise a metadata quirk makes the
+/// number jump the next time a resume re-reads the file.
+fn count_compaction(app: &mut App) {
     let usage = app.session_usage_mut();
     usage.compaction_count = usage.compaction_count.saturating_add(1);
+}
 
-    let Ok(boundary) = serde_json::from_value::<Boundary>(data.clone()) else {
-        tracing::warn!(
-            target: crate::logging::targets::APP_SESSION,
-            ?data,
-            "apply_compaction_boundary: counted the compaction but could not decode its metadata; trigger and pre_tokens stay unset",
-        );
-        return;
-    };
-    let model_trigger = match boundary.compact_metadata.trigger.as_str() {
+/// Count a `Message::CompactBoundary` and apply its metadata. An
+/// unrecognised trigger still counts; only the boundary update needs it.
+fn handle_compact_boundary(app: &mut App, trigger: &str, pre_tokens: u64) {
+    count_compaction(app);
+    let model_trigger = match trigger {
         "manual" => crate::agent::model::CompactionTrigger::Manual,
         "auto" => crate::agent::model::CompactionTrigger::Auto,
         _ => return,
     };
     super::rate_limit::handle_compaction_boundary_update(
         app,
-        crate::agent::model::CompactionBoundary {
-            trigger: model_trigger,
-            pre_tokens: boundary.compact_metadata.pre_tokens,
-        },
+        crate::agent::model::CompactionBoundary { trigger: model_trigger, pre_tokens },
     );
 }
 
@@ -1135,6 +1123,9 @@ fn apply_local_command_output(app: &mut App, data: &Value) {
     super::streaming::handle_agent_message_chunk(app, chunk);
 }
 
+/// Drain `settings_errors` / `settingsErrors` from a System(init)
+/// data record and call the App's settings-parse-error notice handler
+/// once per error.
 fn apply_settings_parse_errors(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
     let Some(errors) = record.get("settings_errors").or_else(|| record.get("settingsErrors"))

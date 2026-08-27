@@ -1046,6 +1046,18 @@ mod tests {
         }
     }
 
+    /// A live boundary as the decoder now delivers it. Only a boundary
+    /// whose metadata drifted still arrives as `System`, so a test that
+    /// wants the metadata applied has to build the typed variant.
+    fn compact_boundary_message(trigger: &str, pre_tokens: u64) -> forge_primitives::Message {
+        forge_primitives::Message::CompactBoundary {
+            trigger: trigger.to_owned(),
+            pre_tokens,
+            uuid: "cb-uuid".to_owned(),
+            session_id: "test-session".to_owned(),
+        }
+    }
+
     fn system_message(subtype: &str, data: serde_json::Value) -> forge_primitives::Message {
         forge_primitives::Message::System {
             subtype: subtype.to_owned(),
@@ -2852,15 +2864,7 @@ mod tests {
         app.active_messages_mut().push(user_msg("/compact"));
         app.active_messages_mut()
             .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("compacted"))]));
-        send_msg(
-            &mut app,
-            system_message(
-                "compact_boundary",
-                serde_json::json!({
-                    "compact_metadata": {"trigger": "manual", "pre_tokens": 123_456}
-                }),
-            ),
-        );
+        send_msg(&mut app, compact_boundary_message("manual", 123_456));
         assert!(app.pending_compact_clear());
 
         let session_key = active_session_key(&app);
@@ -3245,15 +3249,7 @@ mod tests {
         let mut app = make_test_app();
         assert!(!app.is_compacting());
 
-        send_msg(
-            &mut app,
-            system_message(
-                "compact_boundary",
-                serde_json::json!({
-                    "compact_metadata": {"trigger": "manual", "pre_tokens": 123_456}
-                }),
-            ),
-        );
+        send_msg(&mut app, compact_boundary_message("manual", 123_456));
 
         assert!(app.is_compacting());
         assert!(app.pending_compact_clear());
@@ -3270,15 +3266,7 @@ mod tests {
         assert_eq!(app.session_usage().compaction_count, 0);
 
         for _ in 0..3 {
-            send_msg(
-                &mut app,
-                system_message(
-                    "compact_boundary",
-                    serde_json::json!({
-                        "compact_metadata": {"trigger": "auto", "pre_tokens": 234_567}
-                    }),
-                ),
-            );
+            send_msg(&mut app, compact_boundary_message("auto", 234_567));
         }
 
         assert_eq!(app.session_usage().compaction_count, 3);
@@ -3311,15 +3299,7 @@ mod tests {
     fn a_live_boundary_counts_on_top_of_the_seeded_total() {
         let mut app = make_test_app();
         apply_session_update(&mut app, connected_with_compactions(5));
-        send_msg(
-            &mut app,
-            system_message(
-                "compact_boundary",
-                serde_json::json!({
-                    "compact_metadata": {"trigger": "auto", "pre_tokens": 1_002_459}
-                }),
-            ),
-        );
+        send_msg(&mut app, compact_boundary_message("auto", 1_002_459));
         assert_eq!(app.session_usage().compaction_count, 6);
     }
 
@@ -3381,9 +3361,11 @@ mod tests {
         );
     }
 
-    /// A boundary whose metadata will not decode is still a compaction
-    /// that happened, and the transcript-seeded count keys on the subtype
-    /// alone, so counting it is what keeps the two definitions agreeing.
+    /// Deliberately still a `System` envelope: that is how a boundary
+    /// arrives once its metadata has drifted out of the typed variant.
+    /// It is a compaction that happened, and the transcript-seeded count
+    /// keys on the subtype alone, so counting it is what keeps the two
+    /// definitions agreeing.
     #[test]
     fn an_undecodable_boundary_still_counts_but_records_no_trigger() {
         let mut app = make_test_app();
@@ -3400,15 +3382,7 @@ mod tests {
         let mut app = make_test_app();
         assert!(!app.is_compacting());
 
-        send_msg(
-            &mut app,
-            system_message(
-                "compact_boundary",
-                serde_json::json!({
-                    "compact_metadata": {"trigger": "auto", "pre_tokens": 234_567}
-                }),
-            ),
-        );
+        send_msg(&mut app, compact_boundary_message("auto", 234_567));
 
         assert!(app.is_compacting());
         assert!(!app.pending_compact_clear());
