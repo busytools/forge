@@ -501,14 +501,18 @@ impl WorkflowEntry {
             if state == "done"
                 && let Some(preview) = result_preview.as_deref().filter(|s| !s.is_empty())
             {
+                // Last writer wins. Snapshots are cumulative, so the
+                // walk ends on the terminating agent - which is the
+                // one this field is documented to carry.
                 self.final_result_summary = Some(preview.to_owned());
-                // Once we see a done state with a result preview,
-                // also recheck whether ALL phases are complete.
-                if self.phases.iter().all(|p| p.status == PhaseStatus::Completed) {
-                    self.status = WorkflowStatus::Completed;
-                }
-                return;
             }
+        }
+
+        // After the whole snapshot, not inside it: a phase finishing is
+        // not evidence about the phases ordered after it.
+        if !self.phases.is_empty() && self.phases.iter().all(|p| p.status == PhaseStatus::Completed)
+        {
+            self.status = WorkflowStatus::Completed;
         }
     }
 }
@@ -703,6 +707,59 @@ pub struct PasteSessionState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn agent_event(
+        phase_index: u32,
+        state: &str,
+        result_preview: Option<&str>,
+    ) -> forge_primitives::WorkflowProgressEvent {
+        forge_primitives::WorkflowProgressEvent::WorkflowAgent {
+            index: phase_index,
+            label: format!("agent-{phase_index}"),
+            phase_index,
+            phase_title: format!("phase {phase_index}"),
+            state: state.to_owned(),
+            last_tool_name: None,
+            last_tool_summary: None,
+            result_preview: result_preview.map(str::to_owned),
+        }
+    }
+
+    /// Snapshots are cumulative, so a finished agent reappears at the
+    /// same position in every later one. The walk used to return at the
+    /// first `done` carrying a preview, which meant it bailed at that
+    /// same position every time and never applied the events after it.
+    /// So the summary froze on the first finisher rather than the
+    /// terminating one, and every later phase stayed Pending.
+    #[test]
+    fn a_later_finisher_in_the_same_snapshot_is_not_stranded() {
+        let mut entry = WorkflowEntry {
+            tool_use_id: "toolu_wf".into(),
+            task_id: None,
+            meta_name: "sweep".into(),
+            meta_description: None,
+            phases: Vec::new(),
+            status: WorkflowStatus::InProgress,
+            final_result_summary: None,
+            expanded_in_inspector: false,
+        };
+
+        entry.apply_workflow_progress(&[
+            agent_event(1, "done", Some("first")),
+            agent_event(2, "progress", None),
+        ]);
+        entry.apply_workflow_progress(&[
+            agent_event(1, "done", Some("first")),
+            agent_event(2, "done", Some("second")),
+        ]);
+
+        let phase_two = entry.phases.iter().find(|p| p.index == 2).map(|p| p.status);
+        assert_eq!(
+            (phase_two, entry.status, entry.final_result_summary.as_deref()),
+            (Some(PhaseStatus::Completed), WorkflowStatus::Completed, Some("second")),
+            "the terminating agent completes its phase, the entry and the summary",
+        );
+    }
 
     #[test]
     fn schedule_entry_wakeup_expires_at_fire_time() {
