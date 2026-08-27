@@ -3542,6 +3542,47 @@ mod monitor_chat_block_tests {
         apply_tool_use_block(app, TOOL_USE_ID, "Monitor", &monitor_input(), None);
     }
 
+    /// The second observable of #558's fix, and the one that reaches a
+    /// live session. `Running` drops to `Thinking` once no tool call is
+    /// in progress; a re-statement used to stamp the settled call back
+    /// to `InProgress`, which held the spinner on `Running` on the
+    /// strength of a call that had already finished.
+    #[test]
+    fn a_restated_settled_call_does_not_hold_the_spinner_on_running() {
+        use crate::app::AppStatus;
+
+        let mut app = App::test_default();
+        arm_monitor(&mut app);
+        settle_every_tool_call(&mut app);
+        app.status = AppStatus::Running;
+
+        arm_monitor(&mut app);
+
+        assert_eq!(
+            app.status,
+            AppStatus::Thinking,
+            "a re-statement of a finished call leaves nothing in progress to report",
+        );
+    }
+
+    /// Drive both stores terminal, the way a `tool_result` would: the
+    /// turn-state entry the walk reads and the rendered block
+    /// `has_in_progress_tool_calls` counts.
+    fn settle_every_tool_call(app: &mut App) {
+        app.with_turn_state_mut(|ts| {
+            for tc in ts.tool_calls.values_mut() {
+                tc.status = forge_primitives::ToolCallStatus::Completed;
+            }
+        });
+        for msg in app.active_messages_mut() {
+            for block in &mut msg.blocks {
+                if let MessageBlock::ToolCall(tc) = block {
+                    tc.status = model::ToolCallStatus::Completed;
+                }
+            }
+        }
+    }
+
     fn task_started() -> Message {
         Message::TaskStarted {
             task_id: TASK_ID.to_owned(),
