@@ -10,7 +10,9 @@ pub enum Error {
     #[error("no cache directory available; set Config::models_dir explicitly")]
     NoCacheDir,
 
-    /// A filesystem operation on `path` failed.
+    /// A filesystem operation on `path` failed. A transfer that dies
+    /// mid-body lands here too rather than in [`Error::Http`], because
+    /// it surfaces while writing to the partial file.
     #[error("{}: {source}", path.display())]
     Io {
         path: PathBuf,
@@ -18,7 +20,8 @@ pub enum Error {
         source: std::io::Error,
     },
 
-    /// The transfer itself failed - connection, TLS, or a truncated body.
+    /// The request failed before any body arrived - connection, TLS, or
+    /// a refused handshake.
     #[error("could not fetch {url}: {source}")]
     Http {
         url: String,

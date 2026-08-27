@@ -138,7 +138,14 @@ fn download(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
         Err(source) => return Err(Error::Io { path: partial.into(), source }),
     };
-    if have >= spec.size {
+    // A partial at exactly the full length is a transfer that finished
+    // and never got renamed, so hand it to verification rather than
+    // fetching the whole thing again. Anything longer is not a prefix of
+    // anything and starts over.
+    if have == spec.size {
+        return Ok(());
+    }
+    if have > spec.size {
         have = 0;
     }
 
@@ -275,6 +282,27 @@ mod tests_cached_verification {
             sequence,
             ["verifying", "ready"],
             "a good cached model must be verified and announced without being fetched again"
+        );
+    }
+
+    #[test]
+    fn a_complete_partial_is_verified_rather_than_fetched_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = b"the complete model weights";
+        // A transfer that finished and died before the rename.
+        fs::write(dir.path().join("asr.gguf.part"), body).unwrap();
+
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .asr_model(offline_spec("asr.gguf", body))
+            .normalizer(None)
+            .build();
+
+        prepare(&cfg, |_| {}).expect("a complete partial must be adopted, not re-downloaded");
+        assert_eq!(
+            fs::read(dir.path().join("asr.gguf")).unwrap(),
+            body,
+            "the finished bytes must be promoted in place rather than thrown away"
         );
     }
 
