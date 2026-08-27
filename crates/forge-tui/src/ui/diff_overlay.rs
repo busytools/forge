@@ -3244,9 +3244,7 @@ mod tests {
         for lines in [9usize, 120] {
             let mut file = multi_line_file("a.rs", lines);
             // `multi_line_file` writes `line {i}`, far short of a half-pane
-            // text column, so without this the cut branch of
-            // `truncate_spans_to_width` never sits on the path to the
-            // divider - and long source lines are the ordinary case.
+            // column, so without this the truncation branch never runs.
             file.hunks[0].lines[0].text =
                 "let very_long_identifier_name = compute(other_long_name);".repeat(3);
             let gutter = gutter_width_for(&file);
@@ -3258,8 +3256,11 @@ mod tests {
             // drift from a filled one.
             let left_only = PairedDiffRow { right: None, ..both };
             let right_only = PairedDiffRow { left: None, ..both };
-            // Without the cache every half is pure padding, so a
-            // text-driven shift has nothing to shift.
+            // Real highlighted text rather than blank padding: with no
+            // cache `cached_line_spans` returns an empty slice, which is
+            // how this guard used to pass on every input. The divider
+            // lands on the nominal column either way, so it is the
+            // control below that turns the cache load-bearing.
             let cache = build_file_highlight(&file);
             for pair in [both, left_only, right_only] {
                 for pane_width in [101u16, 119, 160, 184] {
