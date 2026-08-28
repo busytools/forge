@@ -33,6 +33,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
 
+use forge_primitives::review::ReviewThread;
 use forge_workspace::SessionKey;
 
 use crate::app::App;
@@ -169,17 +170,22 @@ pub fn drain_events(app: &mut App) {
         // Every other writer is keyed to the branch it concerns and
         // deliberately leaves other branches alone, and the recompute
         // below answers for the branch the checkout is on - so a branch
-        // the checkout has since left is the one nothing revisits. The
-        // store returns nothing both for threads that were resolved and
-        // for a branch whose rows the dead-branch sweep dropped, so one
-        // read covers read-and-resolved and merged-and-deleted alike.
+        // the checkout has since left is the one nothing revisits. Both
+        // ways a branch stops owing a turn read the same here, since the
+        // store holds no waiting thread whether they were resolved or the
+        // dead-branch sweep dropped the rows.
+        //
+        // Reading the threads rather than asking for the tally, because
+        // the tally reports a read failure as `None` too, and retiring a
+        // live signal over a transient one would be the bug this fixes.
         let parked = app.sessions.get(&event.key).and_then(|s| {
             Some((s.review_replies_waiting.as_ref()?.branch.clone(), s.project.clone()?))
         });
         if let Some((branch, project)) = parked
-            && workspace
-                .as_ref()
-                .is_some_and(|ws| ws.review_replies_waiting(&project, &branch).is_none())
+            && let Some(ws) = workspace.as_ref()
+            && ws
+                .load_review_threads(&project, &branch)
+                .is_ok_and(|threads| !threads.iter().any(ReviewThread::awaits_reviewer))
             && let Some(session) = app.sessions.get_mut(&event.key)
         {
             session.review_replies_waiting = None;
@@ -393,6 +399,46 @@ mod tests {
             waiting(&app, &key),
             None,
             "nothing is owed on that branch any more, so the band must stop saying so",
+        );
+    }
+
+    /// A redb read failure is not an answer. `review_replies_waiting`
+    /// reports `None` for a read error exactly as it does for "nothing
+    /// owed", so a revalidation keyed on that alone retires a live signal
+    /// the moment the store hiccups.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_read_failure_does_not_retire_a_live_signal() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let db_dir = tempfile::tempdir().expect("tempdir");
+        init_repo(repo.path(), "main");
+        let db = forge_workspace::store::Db::open(&db_dir.path().join("db.redb")).expect("db");
+        forge_workspace::store::review::write_corrupt_row_for_test(&db, "forge", "feat/worker")
+            .expect("corrupt row");
+
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("test workspace");
+        workspace.install_db_for_test(db);
+        let key = SessionKey::from_session_id("restored-session");
+        let mut session = crate::app::session::UiSession::new(key.clone());
+        session.project = Some("forge".to_owned());
+        session.cwd_raw = repo.path().to_string_lossy().into_owned();
+        session.session_id = Some(crate::agent::model::SessionId::new("restored-session"));
+        app.sessions.insert(key.clone(), session);
+        app.active_session_key = Some(key.clone());
+        app.sessions.get_mut(&key).expect("session").review_replies_waiting =
+            crate::app::ReviewRepliesWaiting::merge(None, "feat/worker", 2);
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                hydrate_pending(&mut app);
+                settle(&mut app, &key).await;
+            })
+            .await;
+
+        assert_eq!(
+            waiting(&app, &key).map(|w| w.count),
+            Some(2),
+            "the store could not answer, so the signal stands rather than being retired",
         );
     }
 

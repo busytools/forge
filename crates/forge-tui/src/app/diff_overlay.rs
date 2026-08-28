@@ -2529,6 +2529,13 @@ fn set_thread_status_by_key(
     };
     thread.status = next;
     let id = thread.id.clone();
+    if next != ReviewStatus::Resolved {
+        // Expansion only means anything while a thread is collapsed by
+        // default, and it is remembered per thread - so a thread that
+        // leaves Resolved and comes back would otherwise return expanded
+        // while every other resolved one is a marker.
+        overlay.resolved_expanded.remove(&id);
+    }
     app.needs_redraw = true;
     if let Some(project) = project
         && let Some(workspace) = app.workspace.as_ref()
@@ -5592,7 +5599,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn a_commit_scope_ignores_the_diff_base() {
         // `sha^..sha` is numbered against the commit's own parent, not the
@@ -5617,7 +5623,6 @@ mod tests {
             "line numbers against another base would anchor onto unrelated code",
         );
     }
-
 
     #[test]
     fn toggling_a_card_open_makes_its_file_re_measure() {
@@ -5651,10 +5656,40 @@ mod tests {
     }
 
     #[test]
+    fn reopening_a_resolved_comment_lets_it_collapse_again_when_re_resolved() {
+        // Expansion is remembered per thread. Without clearing it on
+        // reopen, a thread that is resolved a second time renders as a
+        // full card while every other resolved one is a marker.
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        with_editor(&mut overlay, key, "rename tok to token");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+
+        let at = CommentRef { line: key, slot: 0 };
+        apply_thread_action(&mut app, at, ThreadAction::Resolve);
+        let overlay = app.diff_overlay.as_mut().expect("overlay");
+        assert!(overlay.toggle_comment_collapse(at), "the reviewer opens it to read the thread");
+
+        apply_thread_action(&mut app, at, ThreadAction::Reopen);
+        apply_thread_action(&mut app, at, ThreadAction::Resolve);
+
+        let overlay = app.diff_overlay.as_ref().expect("overlay");
+        assert!(
+            overlay.is_comment_collapsed(&overlay.comments[0]),
+            "resolving it again puts it away, as it would any other thread",
+        );
+    }
+
+    #[test]
     fn only_resolved_collapses() {
-        // Addressed is the state with an answer waiting to be read, so it
-        // is the last one that should ever be folded away. Outdated is
-        // this fix's own stale marker - hiding it recreates the bug.
+        // Addressed carries an answer nobody has read, and Outdated is
+        // how a comment reports that it lost its anchor. Folding either
+        // away hides the two states a reviewer most needs to see.
         let mut state = commit_mode_state();
         state.scope = DiffScope::WholeDiff;
         let line = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
@@ -7229,7 +7264,6 @@ mod tests {
         assert!(input.prior_comment.is_some(), "the thread is stashed for restore");
         assert!(input.editor.lines().join("\n").is_empty(), "the reply editor starts empty");
     }
-
 
     #[test]
     fn saving_a_comment_leaves_the_other_cards_on_that_line_alone() {
