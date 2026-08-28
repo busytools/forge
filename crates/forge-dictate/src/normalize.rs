@@ -175,7 +175,7 @@ impl Normalizer {
         text: &str,
         opts: NormalizeOptions,
     ) -> Result<String, NormalizeError> {
-        self.run(&prompt::build(text, opts.styling, opts.structure, opts.context), text, opts)
+        self.run(&prompt::for_options(text, opts), text, opts)
     }
 
     /// `source` is what speculation drafts from, and is the transcript

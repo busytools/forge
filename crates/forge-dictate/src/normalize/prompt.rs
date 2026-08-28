@@ -92,6 +92,16 @@ impl Context {
     }
 }
 
+/// Build the prompt from a whole [`NormalizeOptions`].
+///
+/// The seam that lets a test assert every field reaches the control
+/// line without a model. `normalize_with` calls this rather than
+/// unpacking the struct itself, so a field dropped on the way to the
+/// prompt is dropped here where it is checked.
+pub fn for_options(text: &str, opts: crate::normalize::NormalizeOptions) -> String {
+    build(text, opts.styling, opts.structure, opts.context)
+}
+
 pub fn build(text: &str, styling: Styling, structure: Structure, context: Context) -> String {
     let styling = styling.as_str();
     let structure = structure.as_str();
@@ -110,21 +120,43 @@ mod tests {
 
     /// Transcribed from the model card's hand-built-prompt section, not
     /// from `build`, so the two agree only if `build` is right.
+    const CARD_EXAMPLE: &str = "<|im_start|>system\nYou are a text normalizer for speech-to-text transcripts. The input begins with a control line specifying the styling, structure, and context settings; clean the transcript to match those settings and output only the cleaned text.<|im_end|>\n<|im_start|>user\n[Styling: semi-formal] [Structure: prose] [Context: general]\nso um send the report by uh friday<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n";
+
+    /// Every field of `NormalizeOptions` must reach the control line.
+    ///
+    /// Pinned as a SET rather than per field: a mutation dropping any one
+    /// of the three survived everything, including the weights-backed
+    /// suite, because only `styling` had ever been checked through this
+    /// path.
+    #[test]
+    fn every_option_field_reaches_the_control_line() {
+        let p = for_options(
+            "anything",
+            crate::normalize::NormalizeOptions {
+                styling: Styling::Formal,
+                structure: Structure::Lists,
+                context: Context::Email,
+                ..crate::normalize::NormalizeOptions::default()
+            },
+        );
+        assert!(
+            p.contains("[Styling: formal] [Structure: lists] [Context: email]"),
+            "a field dropped between the options and the prompt silently reverts a user's setting: {p}"
+        );
+    }
+
     /// The three shipped defaults, pinned in one assertion.
     ///
     /// Each enum's `#[default]` is otherwise checked by nothing, so
-    /// moving one while tuning would silently change every user's output
-    /// with the suite, clippy and CI all green.
+    /// moving one while tuning would silently change every user's output.
     #[test]
     fn the_default_control_line_is_the_shipped_one() {
-        let p = build("anything", Styling::default(), Structure::default(), Context::default());
+        let p = for_options("anything", crate::normalize::NormalizeOptions::default());
         assert!(
             p.contains("[Styling: semi-formal] [Structure: prose] [Context: general]"),
             "the shipped defaults must stay semi-formal / prose / general, got: {p}"
         );
     }
-
-    const CARD_EXAMPLE: &str = "<|im_start|>system\nYou are a text normalizer for speech-to-text transcripts. The input begins with a control line specifying the styling, structure, and context settings; clean the transcript to match those settings and output only the cleaned text.<|im_end|>\n<|im_start|>user\n[Styling: semi-formal] [Structure: prose] [Context: general]\nso um send the report by uh friday<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n";
 
     #[test]
     fn matches_the_trained_input_format() {

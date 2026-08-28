@@ -71,9 +71,11 @@ pub struct Transcript {
     /// its output budget. Carried here rather than only logged: a host
     /// cannot offer to keep going from a log line it may not be routing.
     ///
-    /// Deliberately does not say WHICH cut it: a host that wants to
-    /// distinguish them can compare [`Stages::audio`] against its
-    /// configured cap.
+    /// Which of the two it was depends on the path. Audio that arrived
+    /// through [`Engine::transcribe`] was never capped, so `true` there
+    /// always means the decode budget. Only on the capture path can it
+    /// be either, and there a host can compare [`Stages::audio`] against
+    /// its configured cap.
     pub truncated: bool,
 }
 
