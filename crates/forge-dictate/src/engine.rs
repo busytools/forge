@@ -38,9 +38,11 @@ pub struct Stages {
     pub encode: Duration,
     /// Decoder pass, as reported by the recognition runtime.
     pub decode: Duration,
-    /// Rewriting recognition output into clean text. Zero when no
-    /// normalizer is configured.
-    pub normalize: Duration,
+    /// Rewriting recognition output into clean text. `None` when
+    /// normalization did not happen - either none was configured, or it
+    /// failed and the raw text was returned instead. A caller knows
+    /// which, because it knows what it configured.
+    pub normalize: Option<Duration>,
     /// How much audio this run consumed, so a caller can derive a
     /// realtime factor without knowing where the audio came from.
     pub audio: Duration,
@@ -506,6 +508,13 @@ fn worker(
     };
 
     let cancellable = model.supports(Feature::Cancellation);
+    if !cancellable {
+        // Otherwise abandoning a ticket looks like it worked and silently
+        // does not, with nothing in the log to explain the wait.
+        tracing::info!(
+            "this model does not honour cancellation; abandoning a ticket discards the result but does not stop the work"
+        );
+    }
     let mut options = RunOptions::default();
     options.language.clone_from(&cfg.language);
     let mut first = true;
@@ -525,7 +534,17 @@ fn worker(
         if cancellable {
             session.set_cancel_token(&job.cancel);
         }
-        in_flight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replace(job.cancel);
+        in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(job.cancel.clone());
+        // Re-checked after installing the token, not only before: teardown
+        // between the first check and this line would have seen `None` in
+        // `in_flight`, cancelled nothing, and then waited out a full
+        // inference it believed it had aborted.
+        if stopping.load(Ordering::Relaxed) {
+            job.cancel.cancel();
+        }
         let answer = match session.run(&job.pcm, &options) {
             Ok(out) => {
                 stages.mel = Duration::from_secs_f64(f64::from(out.timings.mel_ms) / 1000.0);
@@ -541,7 +560,7 @@ fn worker(
                         let started = Instant::now();
                         match normalizer.normalize_with(&asr, job.options) {
                             Ok(clean) => {
-                                stages.normalize = started.elapsed();
+                                stages.normalize = Some(started.elapsed());
                                 clean
                             }
                             Err(error) => {
@@ -562,6 +581,23 @@ fn worker(
             // together would report a user's own abort as recognition
             // failing.
             Err(_) if session.was_aborted() => Err(Error::Cancelled),
+            // A decode that runs out of budget still recognised words,
+            // and the library hands them back on the error. The
+            // catch-all below would discard them, which is the same harm
+            // `Transcript::truncated` exists to prevent one layer up.
+            Err(source) if session.was_truncated() => match source.partial() {
+                Some(partial) => {
+                    let asr = partial.text.trim().to_owned();
+                    first = false;
+                    Ok(Outcome::Transcript(Transcript {
+                        text: asr.clone(),
+                        asr,
+                        stages,
+                        truncated: true,
+                    }))
+                }
+                None => Err(Error::Recognition { message: source.to_string() }),
+            },
             Err(source) => Err(Error::Recognition { message: source.to_string() }),
         };
         in_flight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
@@ -657,6 +693,29 @@ mod tests_engine {
             Outcome::Transcript(t) => {
                 panic!("silence must not come back as a transcript: {t:?}")
             }
+        }
+    }
+
+    /// The only CI-reachable test that puts jobs in the worker's queue.
+    ///
+    /// Both existing submit tests short-circuit on silence and return
+    /// before `jobs.send()`, so the queue loop is otherwise unexercised
+    /// without weights. Loud audio and a missing model means the worker's
+    /// load-failure drain answers both, which pins that every job
+    /// resolves on its OWN reply channel and that neither hangs.
+    #[test]
+    fn every_queued_job_is_answered_even_when_the_model_is_missing() {
+        let (_dir, engine) = engine_without_weights();
+        // Loud, so neither is short-circuited as silence.
+        let first = engine.transcribe(Samples::mono(vec![0.6; 512])).expect("queued");
+        let second = engine.transcribe(Samples::mono(vec![0.6; 512])).expect("queued");
+
+        for (nth, ticket) in [first, second].into_iter().enumerate() {
+            let answer = ticket.recv();
+            assert!(
+                matches!(answer, Err(Error::ModelLoad { .. })),
+                "queued job {nth} must be answered rather than left hanging, got: {answer:?}"
+            );
         }
     }
 

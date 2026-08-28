@@ -1,0 +1,5 @@
+[profile.default]
+# A wedged worker would otherwise run to the CI job timeout with no
+# attribution. The concurrency tests here are the ones that can hang, and
+# every test in the workspace finishes far inside this.
+slow-timeout = { period = "30s", terminate-after = 4 }

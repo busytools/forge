@@ -83,6 +83,11 @@ pub struct Config {
     pub language: Option<String>,
     /// Upper bound on a single capture. A capture nobody stops ends
     /// itself here rather than holding the input device indefinitely.
+    ///
+    /// Costs memory eagerly: the whole cap is reserved when recording
+    /// starts, at 4 bytes a sample, so 120 s is about 7 MiB and an hour
+    /// is 219 MiB whatever the utterance turns out to be. Clamped to an
+    /// hour.
     pub max_capture: Duration,
     /// Peak input level, in dBFS, below which a capture counts as
     /// silence rather than as an empty transcript.

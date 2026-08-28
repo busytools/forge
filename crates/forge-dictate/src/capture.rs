@@ -26,12 +26,18 @@ impl Recording {
     /// audio callback appends: growing a multi-megabyte buffer means a
     /// memcpy inside a realtime callback, which is a dropout.
     pub(crate) fn new(capacity: usize) -> Self {
-        Self {
+        let recording = Self {
             samples: Mutex::new(Vec::with_capacity(capacity)),
             peak_bits: AtomicU32::new(0.0f32.to_bits()),
             stop: AtomicBool::new(false),
             truncated: AtomicBool::new(false),
-        }
+        };
+        // `Mutex::lock` allocates on its FIRST acquisition on macOS, and
+        // the first one would otherwise happen inside the audio callback,
+        // where `push` is documented as allocation-free. Taking it once
+        // here moves that 64-byte malloc off the realtime thread.
+        drop(recording.samples.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        recording
     }
 
     /// Fold one callback's worth of audio in, downmixed to mono and
@@ -194,9 +200,18 @@ fn open_device(wanted: Option<&str>) -> Result<cpal::Device, Error> {
 /// The cap in samples. Integer maths so it cannot be a truncating float
 /// cast.
 pub(crate) fn sample_cap(max_capture: Duration) -> usize {
-    usize::try_from(max_capture.as_millis().saturating_mul(u128::from(SAMPLE_RATE)) / 1000)
-        .unwrap_or(usize::MAX)
+    let wanted =
+        usize::try_from(max_capture.as_millis().saturating_mul(u128::from(SAMPLE_RATE)) / 1000)
+            .unwrap_or(CAP_CEILING);
+    // Clamped because the whole cap is reserved eagerly, per capture: at
+    // 4 bytes a sample an hour is 219 MiB and `Duration::MAX` aborts the
+    // process inside `Vec::with_capacity`.
+    wanted.min(CAP_CEILING)
 }
+
+/// One hour of audio, the point past which reserving the cap costs more
+/// than any dictation could use.
+const CAP_CEILING: usize = SAMPLE_RATE as usize * 3600;
 
 /// Open the default input and record until asked to stop or until
 /// `max_capture` elapses.
@@ -355,6 +370,24 @@ mod tests_recording {
                 "a device with no id cannot be persisted or re-resolved"
             );
         }
+    }
+
+    #[test]
+    fn a_named_device_that_is_absent_never_falls_back() {
+        // Skipped where there is no audio stack at all, since then the
+        // absence proves nothing about the resolution path.
+        let Ok(found) = devices() else { return };
+        if found.is_empty() {
+            return;
+        }
+        assert!(
+            open_device(Some("forge-dictate-no-such-device")).is_err(),
+            "a named device that is not present must error, never quietly record on the default"
+        );
+        assert!(
+            open_device(None).is_ok(),
+            "naming nothing must still resolve to the system default"
+        );
     }
 
     #[test]

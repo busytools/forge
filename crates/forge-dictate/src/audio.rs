@@ -16,8 +16,11 @@ pub const SAMPLE_RATE: u32 = 16_000;
 /// plausible output rather than an error, which is the failure nobody
 /// notices.
 pub trait AudioSource: Send {
-    /// Next samples, or None once the source is exhausted. An empty
-    /// chunk means "nothing yet", not end of stream.
+    /// Next samples, or None once the source is exhausted.
+    ///
+    /// Return None to end the stream; do not return an empty chunk to
+    /// mean "nothing yet". The drain is synchronous and would spin on
+    /// it, and a pull-based source has nothing to wait for.
     fn next_chunk(&mut self) -> Option<Vec<f32>>;
 
     /// Samples per second, as the source knows it to be.

@@ -35,7 +35,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 t.stages.encode.as_secs_f64() * 1000.0,
                 t.stages.decode.as_secs_f64() * 1000.0,
             );
-            println!("-- normalize {:.0}ms", t.stages.normalize.as_secs_f64() * 1000.0);
+            match t.stages.normalize {
+                Some(d) => println!("-- normalize {:.0}ms", d.as_secs_f64() * 1000.0),
+                None => println!("-- normalize: did not run"),
+            }
         }
         Outcome::NoAudio { peak, audio } => {
             println!("no audio in {:.1}s (peak {peak:.1} dBFS)", audio.as_secs_f64());

@@ -39,10 +39,14 @@ pub enum Error {
     #[error("{} is {actual} bytes, expected {expected}", path.display())]
     SizeMismatch { path: PathBuf, expected: u64, actual: u64 },
 
-    /// The progress callback asked to stop. Whatever already finished is
-    /// kept - a model that reached [`crate::Progress::Ready`] is
-    /// installed - and any partial transfer is left where it is, so a
-    /// later call resumes rather than starting over.
+    /// Work was stopped on request rather than by a fault: a progress
+    /// callback returning `Break` during a fetch, or an abandoned
+    /// [`crate::Ticket`] aborting an inference.
+    ///
+    /// Whatever already finished is kept - a model that reached
+    /// [`crate::Progress::Ready`] is installed - and any partial transfer
+    /// is left where it is, so a later call resumes rather than starting
+    /// over.
     #[error("cancelled by the progress callback")]
     Cancelled,
 
