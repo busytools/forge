@@ -10,6 +10,20 @@
 //! bad build. Verifying first is what turns that into a sentence naming
 //! the file.
 //!
+//! # Capture needs a device that offers 16 kHz
+//!
+//! Recording negotiates 16 kHz directly and downmixes however many
+//! channels the device gives to mono. Rate conversion is not
+//! implemented, so a device offering only 44.1 or 48 kHz is refused with
+//! [`Error::UnsupportedInput`] listing what it did offer, rather than
+//! being silently resampled. Adding it means a real filtered resampler
+//! (`rubato`), because decimating without one folds everything above the
+//! new Nyquist back into the speech band and yields confident wrong
+//! words instead of obvious noise.
+//!
+//! Reading audio from an [`AudioSource`] has no such restriction: the
+//! source declares its own format and is checked against it.
+//!
 //! # Every entry point here blocks
 //!
 //! This crate is runtime-agnostic on purpose, so nothing in it is
