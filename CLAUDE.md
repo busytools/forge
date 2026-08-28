@@ -271,6 +271,70 @@ inspected.
     time, ask what a user would SEE that is different, and treat any
     non-empty answer on a perf or refactor change as a blocker until it
     is split out and decided on its own.
+17. **Behaviour forge depends on belongs in the text forge ships, and
+    gets there through an issue, never a direct edit.** A rule living
+    only in a contributor's own `CLAUDE.md` is not shipped: every other
+    install runs without it, and the text reaches every one of them.
+
+    The test has two halves and both must hold: **does forge machinery
+    depend on it, AND is it unknowable from outside forge - not merely
+    good advice a competent person reaches unaided?** Judge that at the
+    grain of the sentence that would ship, not the principle it sits
+    under, and never against text already shipped in a misleading form,
+    which qualifies regardless of whether the right behaviour was
+    independently reachable.
+
+    **Establish every claim about shipped text by grep, when you write
+    it.** The same instruction recurs across surfaces at different
+    strengths, so read every hit, not the first; these constants wrap
+    mid-sentence, so quote only what sits on one source line; and check
+    each surface's own history before calling the shipped side wrong.
+
+    **Divergence counts, not just absence - and a divergence can be the
+    correct state.** The despawn trigger is the worked example. Some
+    surfaces name a merged PR among examples; some stop at "truly done",
+    including `workers__spawn`, in the same file well above the hunk
+    #717 edited; and the charter separately says "once they have
+    delivered". #717 wrote both the first of those and the last: it
+    removed "once its work is merged" because that exempted every worker
+    whose output was not a PR, and cited `LEAD_DELEGATION_PREAMBLE`'s
+    softer wording without adopting it, leaving the preamble untouched.
+    An odd phrasing is not evidence it was overlooked; check each site's
+    history rather than its wording.
+
+    **Placement decides whether the text fires at all**, and the
+    audience is a forge SESSION at runtime. The shipped surfaces are a
+    SET; read all of them first, or the grep that finds nothing files a
+    duplicate. Always-on
+    blocks (`crates/forge-agent/src/forge_sdk_worker.rs`) carry what
+    every session needs; the charter
+    (`crates/forge-workspace/src/spawn/lead_charter.md`) and
+    `LEAD_DELEGATION_PREAMBLE` in
+    `crates/forge-workspace/src/workspace.rs` both append to a lead's
+    prompt; a tool description carries what a caller needs at the
+    moment it reaches for that tool, while its result and error prose
+    is read after it has already acted, which is where correction
+    belongs; and forge delivers some text as a turn, like
+    `DYNAMIC_WORKER_RESTART_NOTE` or forge-tui's `continuation_prompt`,
+    so the search is not confined to the crates named here. The
+    cross-project rule shows the cost: it lived only in peer tool
+    descriptions, read once a peer tool was already in hand, until #733
+    added an always-on copy stating it applies when you decide. The
+    peer copies stayed.
+
+    **Passing the test is not sufficient: contributor-facing text stays
+    in this file.** `perf.rs` runs enabled on a hot path, which
+    `scripts/install.sh` turns on rather than Cargo, and the unicode
+    gate passes both halves but only ever runs in this repo. Out for
+    failing the test itself: approval-scope tables, timezone
+    presentation, prose punctuation preferences, PR-body voice, commit
+    conventions, release workflow. Shipped text also never names a
+    user-scope skill, command or plugin, since a fresh install has none;
+    the charter is guarded token by token by
+    `bundled_lead_charter_assumes_no_local_environment`
+    (`crates/forge-workspace/src/spawn.rs`) and other surfaces are
+    guarded unevenly, so grep for an assertion rather than assuming
+    either way.
 
 ## Claude Code worktree interop
 
