@@ -1918,10 +1918,13 @@ fn thread_text(thread: &forge_primitives::ReviewThread) -> String {
 /// Whether a stored thread renders in the scope now on screen. The whole
 /// diff is a union over the branch, so a rewrite that erases the commit a
 /// thread was authored against cannot put it out of reach; a commit's own
-/// view takes only what was authored there. A thread anchored against a
-/// different diff base is excluded from both: its line numbers count
-/// against another base, so placing it here would anchor it onto
-/// unrelated code.
+/// view takes only what was authored there.
+///
+/// Only the whole diff checks `base_ref`, because only it is numbered
+/// against the target: a thread counted from another base would land on
+/// unrelated code. A commit's diff is `sha^..sha`, whose line numbers do
+/// not depend on the target at all, so filtering it by base would hide a
+/// thread from the one view that can place it correctly.
 fn thread_in_scope(thread: &ReviewThread, scope_commit: Option<&str>, target: &str) -> bool {
     match scope_commit {
         Some(sha) => thread.commit.as_deref() == Some(sha),
@@ -5586,6 +5589,22 @@ mod tests {
         assert!(
             !thread_in_scope(&orphan, Some("aaa"), "main"),
             "a thread authored elsewhere is not this commit's",
+        );
+    }
+
+
+    #[test]
+    fn a_commit_scope_ignores_the_diff_base() {
+        // `sha^..sha` is numbered against the commit's own parent, not the
+        // target, so a thread authored under another base still places
+        // correctly here. Filtering it out would hide it from the only
+        // view that can.
+        let mut thread = stock_thread();
+        thread.commit = Some("aaa".to_owned());
+        thread.anchor.base_ref = "HEAD".to_owned();
+        assert!(
+            thread_in_scope(&thread, Some("aaa"), "main"),
+            "a commit takes its own threads whatever base the overlay was opened against",
         );
     }
 
