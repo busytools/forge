@@ -30,10 +30,6 @@ pub struct PromptState {
     /// NEEDS ATTENTION band's wait-age. Stamped at construction, which
     /// in production is the same instant it is enqueued.
     pub enqueued_at: std::time::SystemTime,
-    /// Set once a key has expressed a choice on THIS prompt - moving
-    /// the focus or toggling an option. Gates the first Enter on a
-    /// Question, which would otherwise answer an unread one.
-    pub interacted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -106,7 +102,6 @@ impl PromptState {
             mode: PromptMode::OptionPicker,
             edited_input: None,
             enqueued_at: std::time::SystemTime::now(),
-            interacted: false,
         }
     }
 
@@ -159,24 +154,12 @@ impl PromptState {
             mode: PromptMode::OptionPicker,
             edited_input: None,
             enqueued_at: std::time::SystemTime::now(),
-            interacted: false,
         }
     }
 
     /// Is the prompt a multi-select Question?
     pub fn is_multi_select(&self) -> bool {
         matches!(&self.source, PromptSource::Question { prompt, .. } if prompt.multi_select)
-    }
-
-    /// A Question nobody has picked on yet. Enter must not answer one:
-    /// the prompt renders in its own session's dock, so it can be
-    /// sitting in a row that was never read, and the answer it sends
-    /// is indistinguishable from a decision the user made. Permission
-    /// prompts are excluded - they arrive in the session the user is
-    /// already driving, and authorise one visible tool call rather
-    /// than becoming an attributed choice.
-    pub fn awaits_first_choice(&self) -> bool {
-        !self.interacted && matches!(self.source, PromptSource::Question { .. })
     }
 }
 
@@ -238,22 +221,18 @@ pub fn handle_key_option_picker(prompt: &mut PromptState, key: KeyEvent) -> Prom
             } else {
                 prompt.focused_option_index - 1
             };
-            prompt.interacted = true;
             PromptKeyOutcome::Consumed
         }
         KeyCode::Down | KeyCode::Right => {
             prompt.focused_option_index = (prompt.focused_option_index + 1) % len;
-            prompt.interacted = true;
             PromptKeyOutcome::Consumed
         }
         KeyCode::Home => {
             prompt.focused_option_index = 0;
-            prompt.interacted = true;
             PromptKeyOutcome::Consumed
         }
         KeyCode::End => {
             prompt.focused_option_index = len - 1;
-            prompt.interacted = true;
             PromptKeyOutcome::Consumed
         }
         KeyCode::Char(' ') if prompt.is_multi_select() => {
@@ -261,7 +240,6 @@ pub fn handle_key_option_picker(prompt: &mut PromptState, key: KeyEvent) -> Prom
             if !prompt.selected_option_indices.insert(idx) {
                 prompt.selected_option_indices.remove(&idx);
             }
-            prompt.interacted = true;
             PromptKeyOutcome::Consumed
         }
         KeyCode::Enter => {
@@ -316,21 +294,11 @@ pub fn dispatch_key(app: &mut crate::app::App, key: KeyEvent) -> bool {
 
     // Short-lived read to capture focus state without holding the mut borrow
     // across an `app.input_mut()` call below.
-    let (focused_kind, awaits_first_choice) = {
+    let focused_kind = {
         let Some(session) = app.active_session() else { return false };
         let Some(prompt) = session.prompt_queue.front() else { return false };
-        (
-            prompt.options.get(prompt.focused_option_index).map(|o| o.kind),
-            prompt.awaits_first_choice(),
-        )
+        prompt.options.get(prompt.focused_option_index).map(|o| o.kind)
     };
-
-    // Swallowed rather than passed on: with a prompt up, Enter has no
-    // other job to fall through to, and letting it reach the chat
-    // input would submit into a session mid-question.
-    if awaits_first_choice && key.code == KeyCode::Enter {
-        return true;
-    }
 
     // Notes-kind focused → keys (incl. speech-to-text pastes) flow to the
     // canonical `App.input` editor. Navigation keys (Up/Down/Enter/Esc)
@@ -999,108 +967,33 @@ pub(crate) mod tests {
         );
     }
 
-    /// Enqueue `prompt` on the active session and send one key through
-    /// the top-level prompt dispatcher, the way a real keystroke
-    /// arrives.
-    fn press(app: &mut crate::app::App, prompt: PromptState, code: KeyCode) -> bool {
+    /// A question answers on the first Enter, with no arrow or space
+    /// first. No option here is recommended, so focus sits on the
+    /// fallback index 0.
+    #[test]
+    fn enter_answers_a_freshly_enqueued_question_on_the_first_press() {
+        let mut app = crate::app::App::test_default();
         let key = app.active_session_key.clone().expect("session");
         if let Some(session) = app.session_mut(&key) {
-            enqueue_prompt(session, prompt);
+            enqueue_prompt(
+                session,
+                PromptState::from_question("tc-q".into(), make_question_request(false)),
+            );
         }
-        dispatch_key(app, KeyEvent::from(code))
-    }
-
-    /// The prompt sits in its own session's dock, so a question can be
-    /// queued in a row nobody has read. Enter arrives for every other
-    /// reason too, and answering on it made an unread option 1 look
-    /// like a decision the user made.
-    #[test]
-    fn bare_enter_does_not_answer_an_untouched_question() {
-        let mut app = crate::app::App::test_default();
-        let prompt = PromptState::from_question("tc-q".into(), make_question_request(false));
-        assert!(press(&mut app, prompt, KeyCode::Enter), "the key is swallowed, not passed on");
-        assert!(
-            crate::app::events::turn::test_capture::try_take_dispatched_question_outcome(
-                &app, "tc-q"
-            )
-            .is_err(),
-            "an untouched question must not answer on a bare Enter",
-        );
-    }
-
-    /// Multi-select falls back to the focused option when nothing is
-    /// toggled, so it answers on a bare Enter by a second route.
-    #[test]
-    fn bare_enter_does_not_answer_an_untouched_multi_select_question() {
-        let mut app = crate::app::App::test_default();
-        let prompt = PromptState::from_question("tc-q".into(), make_question_request(true));
-        press(&mut app, prompt, KeyCode::Enter);
-        assert!(
-            crate::app::events::turn::test_capture::try_take_dispatched_question_outcome(
-                &app, "tc-q"
-            )
-            .is_err(),
-            "an untouched multi-select question must not answer on a bare Enter",
-        );
-    }
-
-    /// Moving the selection is the user reading the question. Once
-    /// that has happened Enter answers as it always did.
-    #[test]
-    fn enter_answers_a_question_once_the_selection_has_moved() {
-        let mut app = crate::app::App::test_default();
-        let prompt = PromptState::from_question("tc-q".into(), make_question_request(false));
-        press(&mut app, prompt, KeyCode::Down);
         dispatch_key(&mut app, KeyEvent::from(KeyCode::Enter));
         let outcome = crate::app::events::turn::test_capture::try_take_dispatched_question_outcome(
             &app, "tc-q",
         )
-        .expect("a moved selection answers on Enter");
+        .expect("a question answers on the first Enter, with no prior key");
         match outcome {
             forge_primitives::QuestionOutcome::Answered { selected_option_ids, .. } => {
                 assert_eq!(
                     selected_option_ids,
-                    vec!["q1".to_string()],
-                    "answers what was moved to"
+                    vec!["q0".to_string()],
+                    "the first Enter answers the pre-focused option",
                 );
             }
             forge_primitives::QuestionOutcome::Cancelled => panic!("expected Answered"),
-        }
-    }
-
-    /// Esc is the only way out of a question nobody wants to answer,
-    /// so the guard must not strand one in the dock.
-    #[test]
-    fn esc_still_cancels_an_untouched_question() {
-        let mut app = crate::app::App::test_default();
-        let prompt = PromptState::from_question("tc-q".into(), make_question_request(false));
-        press(&mut app, prompt, KeyCode::Esc);
-        let outcome = crate::app::events::turn::test_capture::try_take_dispatched_question_outcome(
-            &app, "tc-q",
-        )
-        .expect("an untouched question still cancels");
-        assert!(matches!(outcome, forge_primitives::QuestionOutcome::Cancelled));
-    }
-
-    /// The guard is deliberately question-only. A permission prompt
-    /// arrives in the session the user is already driving, many times
-    /// a turn, and its answer authorises one visible tool call rather
-    /// than becoming a decision attributed to the user.
-    #[test]
-    fn bare_enter_still_answers_an_untouched_permission() {
-        let mut app = crate::app::App::test_default();
-        let prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
-        press(&mut app, prompt, KeyCode::Enter);
-        let outcome =
-            crate::app::events::turn::test_capture::try_take_dispatched_permission_outcome(
-                &app, "tc-1",
-            )
-            .expect("a permission prompt still answers on a bare Enter");
-        match outcome {
-            forge_primitives::PermissionOutcome::Selected { option_id, .. } => {
-                assert_eq!(option_id, "allow_once", "the focused option is what submits");
-            }
-            forge_primitives::PermissionOutcome::Cancelled => panic!("expected Selected"),
         }
     }
 
