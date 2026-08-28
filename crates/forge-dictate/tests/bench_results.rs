@@ -172,6 +172,26 @@ fn an_absent_file_or_a_missing_key_is_a_first_run() {
     );
 }
 
+/// Same reasoning as the unparseable case one test down, and it needs its
+/// own coverage rather than inheriting it: a value that parses as TOML but
+/// is not a figure is still a file we cannot trust. Treating either of
+/// these as "absent" would overwrite the trend, and reading `-5` as `5`
+/// would hold the deadband against a number nobody wrote.
+#[test]
+fn a_figure_that_is_present_but_malformed_is_an_error() {
+    for (label, body) in [
+        ("not an integer", "[end_to_end]\nmedian_ms = \"fast\"\n"),
+        ("negative", "[end_to_end]\nmedian_ms = -5\n"),
+    ] {
+        let outcome = committed(Some(body), "end_to_end", "median_ms");
+        assert!(
+            outcome.is_err(),
+            "a {label} figure must be an error, not silently treated as absent or coerced; \
+             either way the committed trend is destroyed by the next write. got {outcome:?}"
+        );
+    }
+}
+
 /// The deliberate call: the file says do not hand-edit, so a file we cannot
 /// parse means someone did, or it is corrupt. Overwriting would destroy the
 /// trend and hide the corruption in the same step.
