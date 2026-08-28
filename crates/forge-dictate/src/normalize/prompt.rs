@@ -122,21 +122,27 @@ mod tests {
     /// from `build`, so the two agree only if `build` is right.
     const CARD_EXAMPLE: &str = "<|im_start|>system\nYou are a text normalizer for speech-to-text transcripts. The input begins with a control line specifying the styling, structure, and context settings; clean the transcript to match those settings and output only the cleaned text.<|im_end|>\n<|im_start|>user\n[Styling: semi-formal] [Structure: prose] [Context: general]\nso um send the report by uh friday<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n";
 
-    /// Every field of `NormalizeOptions` must reach the control line.
+    /// Every control-line option must reach the prompt.
     ///
-    /// Pinned as a SET rather than per field: a mutation dropping any one
-    /// of the three survived everything, including the weights-backed
-    /// suite, because only `styling` had ever been checked through this
-    /// path.
+    /// The literal is deliberately EXHAUSTIVE rather than `..default()`:
+    /// that makes a newly added field a compile error here, so whoever
+    /// adds one has to decide whether it belongs on the control line
+    /// instead of silently not being covered. A mutation that cannot
+    /// build cannot survive.
+    ///
+    /// `k` and `ngram` are listed for that reason alone - they are
+    /// decoder settings, do not appear in the control line, and are not
+    /// checked by the assertion below.
     #[test]
-    fn every_option_field_reaches_the_control_line() {
+    fn every_control_line_option_reaches_the_prompt() {
         let p = for_options(
             "anything",
             crate::normalize::NormalizeOptions {
                 styling: Styling::Formal,
                 structure: Structure::Lists,
                 context: Context::Email,
-                ..crate::normalize::NormalizeOptions::default()
+                k: 64,
+                ngram: 2,
             },
         );
         assert!(

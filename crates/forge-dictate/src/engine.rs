@@ -72,8 +72,8 @@ pub struct Transcript {
     /// cannot offer to keep going from a log line it may not be routing.
     ///
     /// Which of the two it was depends on the path. Audio that arrived
-    /// through [`Engine::transcribe`] was never capped, so `true` there
-    /// always means the decode budget. Only on the capture path can it
+    /// through [`Engine::transcribe`] or [`Engine::transcribe_with`] was
+    /// never capped, so `true` there always means the decode budget. Only on the capture path can it
     /// be either, and there a host can compare [`Stages::audio`] against
     /// its configured cap.
     pub truncated: bool,
@@ -987,10 +987,8 @@ mod tests_real_recognition {
 
     /// Teardown must abandon queued work rather than run it.
     ///
-    /// Counts completed jobs rather than timing the drop. A wall-clock
-    /// budget is a proxy for a discrete property, and it fails in both
-    /// directions: it flakes on a loaded machine, and on a fast enough
-    /// one it passes while the backlog drains. A count cannot do either.
+    /// Counts jobs rather than timing the drop, so machine load cannot
+    /// flake it and a fast machine cannot make it vacuous.
     #[test]
     #[ignore = "needs the ASR weights; run with --run-ignored all after `--example fetch`"]
     fn dropping_the_engine_discards_the_backlog_instead_of_draining_it() {
@@ -1012,7 +1010,15 @@ mod tests_real_recognition {
         // returns and each `recv` below answers immediately.
         drop(engine);
 
-        let completed = queued.into_iter().filter(|_| true).filter_map(|t| t.recv().ok()).count();
+        let answers: Vec<_> = queued.into_iter().map(Ticket::recv).collect();
+        // Weights load on the worker, so `Engine::new` succeeds with no
+        // model on disk - and then every job fails, every `ok()` is None,
+        // and the count below reads zero for the wrong reason.
+        let unloadable =
+            answers.iter().filter(|a| matches!(a, Err(Error::ModelLoad { .. }))).count();
+        assert_eq!(unloadable, 0, "the weights must actually be present, or this proves nothing");
+
+        let completed = answers.iter().filter(|a| a.is_ok()).count();
         assert!(
             completed <= 1,
             "teardown must discard the backlog: at most the in-flight job may finish, {completed} of 6 did"
