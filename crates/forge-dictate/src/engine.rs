@@ -521,6 +521,20 @@ fn worker(
     let loaded = Model::load(asr_path).and_then(|model| model.session().map(|s| (model, s)));
     let model_load = started.elapsed();
 
+    let loaded = loaded.and_then(|(model, session)| {
+        // The rate is baked into the weights, so a model that wants a
+        // different one does not fail - it silently transcribes worse.
+        // Reading what the GGUF declares turns that into a refusal.
+        let declared = model.capabilities().native_sample_rate;
+        if declared == i32::try_from(SAMPLE_RATE).unwrap_or(i32::MAX) {
+            Ok((model, session))
+        } else {
+            Err(transcribe_cpp::Error::ModelLoad(format!(
+                "model expects {declared} Hz audio; this crate captures and feeds {SAMPLE_RATE} Hz"
+            )))
+        }
+    });
+
     let (model, mut session) = match loaded {
         Ok(pair) => pair,
         Err(source) => {
