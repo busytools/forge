@@ -1,0 +1,6 @@
+[profile.default]
+# A wedged worker would otherwise run to the CI job timeout with no
+# attribution. Sized for the CI-reachable suite, which finishes far
+# inside it. The weights-backed tests behind `--run-ignored all` load
+# 3 GB and decode repeatedly, so they run closer to the limit.
+slow-timeout = { period = "30s", terminate-after = 4 }

@@ -99,12 +99,12 @@ is smaller and slightly incomplete.
 
 ## Where code goes
 
-The workspace is six crates with a strictly acyclic dependency graph,
+The workspace is seven crates with a strictly acyclic dependency graph,
 and putting something in the wrong one is the most common structural
 review comment. The
 [architecture page](https://busytools.github.io/forge/architecture.html)
-has the placement guide; the short version is that cross-crate types go
-in `forge-primitives`, anything speaking stream-json goes in
-`forge-sdk`, environment and I/O go in `forge-agent`, multi-session
-orchestration goes in `forge-workspace`, and only what the user sees
-goes in `forge-tui`.
+has the placement guide; the short version is that audio and speech go
+in `forge-dictate`, cross-crate types go in `forge-primitives`,
+anything speaking stream-json goes in `forge-sdk`, environment and I/O
+go in `forge-agent`, multi-session orchestration goes in
+`forge-workspace`, and only what the user sees goes in `forge-tui`.

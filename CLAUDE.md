@@ -1,10 +1,11 @@
 # forge - project guide
 
 A Rust workspace that wraps Anthropic's `claude` CLI in a multi-session
-terminal UI. Six crates, layered acyclically:
+terminal UI. Seven crates, layered acyclically:
 
 ```
 forge-primitives ───── leaf (pure data, no logic)
+forge-dictate    ───── leaf (dictation; depends on no forge-* crate)
 forge-sdk        ───→ primitives
 forge-agent      ───→ primitives + sdk
 forge-workspace  ───→ primitives + agent + sdk    (the MVVM orchestrator)
@@ -14,6 +15,11 @@ forge-test-harness ─→ primitives + sdk + workspace
 
 - **`forge-primitives`** - every type that crosses a forge-* crate
   boundary. No logic, no I/O, no async.
+- **`forge-dictate`** - the dictation primitive: audio in, text out.
+  Owns its model files, speech recognition and normalization. Depends
+  on no forge-* crate and knows nothing about a host, so it must not
+  grow one; a doc comment mentioning a keypress, a composer or a
+  session is a bug.
 - **`forge-sdk`** - owns the `claude` subprocess: stream-json codec,
   transport, control dispatch, in-process MCP host, Options.
 - **`forge-agent`** - drives one SDK Client behind a channel-based
@@ -49,24 +55,30 @@ the lock's inode must stay put.
 
 Work top-down; first match wins.
 
-1. **A type that crosses a crate boundary?** (envelope, snapshot
+1. **Audio, speech recognition, or turning either into text?** (capture,
+   model fetch, transcription, transcript normalization)
+   -> `forge-dictate`. A leaf: it may not depend on any forge-* crate,
+   and its own types stay there even once another crate reads them.
+   Wanting a forge-* dependency here is a design problem, not a
+   dependency problem.
+2. **A type that crosses a crate boundary?** (envelope, snapshot
    struct, hook payload, anything sent over a channel or touched by
    more than one crate) -> `forge-primitives`. Pure data shapes only.
-2. **Speaks stream-json to the `claude` subprocess?** (decoder,
+3. **Speaks stream-json to the `claude` subprocess?** (decoder,
    control_request subtype, transport, MCP host, OptionsBuilder)
    -> `forge-sdk`. Pair with a wire-conformance scenario.
-3. **Live state about the user's environment?** (git watcher, cwd
+4. **Live state about the user's environment?** (git watcher, cwd
    resolution, env probes, OAuth, plugins, settings IO, catalog scan)
    -> `forge-agent`: `env::*` for environment, `cloud::*` for Anthropic
    API / OAuth, `userdata::*` for `~/.claude*` files. Async, may shell
    out.
-4. **Orchestration across projects, sessions, accounts, `forge.toml`,
+5. **Orchestration across projects, sessions, accounts, `forge.toml`,
    or the command bus?** -> `forge-workspace`. Adds `Workspace` methods,
    `Command` variants, `SessionUpdate` events.
-5. **A widget, screen, key binding, mouse handler, or per-session
+6. **A widget, screen, key binding, mouse handler, or per-session
    presentation state?** -> `forge-tui`. Render in `ui/`, dispatch +
    state in `app/`.
-6. **A wire-conformance scenario?** -> `forge-test-harness`.
+7. **A wire-conformance scenario?** -> `forge-test-harness`.
 
 Legitimate splits are common (a git-diff feature touches agent +
 workspace + tui). Rule of thumb: logic/IO/subprocess -> agent;
@@ -85,7 +97,9 @@ much in forge-tui", so bias toward the deeper crate when unsure.
   producer and consumer are both in forge-tui, use a separate mpsc
   channel (see `git_diff_event_tx/rx`).
 - **Cross-crate type duplication.** Same-shaped `Foo` in two crates
-  means one is wrong; lift to primitives or import the re-export.
+  means one is wrong; lift to primitives or import the re-export. The
+  one exception is `forge-dictate`, which may not depend on primitives
+  at all: its types stay in it and consumers import them from there.
 - **Workspace methods bypassing the Command bus for user actions.**
   User-initiated actions go through `dispatch(Command)`; query-style
   refreshes are direct inherent methods. Don't conflate them.

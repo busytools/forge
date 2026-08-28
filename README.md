@@ -24,6 +24,7 @@ Strictly acyclic:
 
 ```
 forge-primitives      leaf: pure data, no logic, no I/O, no async
+forge-dictate         leaf: dictation, depends on no forge-* crate
 forge-sdk         ->  primitives
 forge-agent       ->  primitives + sdk
 forge-workspace   ->  primitives + agent + sdk
@@ -34,6 +35,7 @@ forge-test-harness->  primitives + sdk
 | Crate | Description |
 |---|---|
 | [`forge-primitives`](crates/forge-primitives) | Every type that crosses a crate boundary: message envelopes, content blocks, hook and permission payloads, IDs, render-side views. Pure data. |
+| [`forge-dictate`](crates/forge-dictate) | The dictation primitive: audio in, text out. Owns its model files, speech recognition and normalization. Depends on no forge-* crate and knows nothing about a host. |
 | [`forge-sdk`](crates/forge-sdk) | The `claude` subprocess. Stream-json codec, transport, control dispatch, in-process MCP host, options builder. |
 | [`forge-agent`](crates/forge-agent) | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. User-data reads, cloud calls, environment probes, event translation, tooling. |
 | [`forge-workspace`](crates/forge-workspace) | Multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml`, per-session actors, the machine-local state store, and the in-process MCP server forge exposes to every spawned session. |
