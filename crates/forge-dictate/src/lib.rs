@@ -29,7 +29,7 @@ pub mod normalize;
 pub use config::{Config, ConfigBuilder, ModelSpec};
 pub use error::Error;
 pub use fetch::{Progress, prepare};
-pub use normalize::{NormalizeError, Normalizer};
+pub use normalize::{NormalizeError, NormalizeOptions, Normalizer};
 
 #[cfg(test)]
 mod tests_leaf_invariant {

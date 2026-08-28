@@ -180,4 +180,20 @@ mod tests {
             "drafted from fewer generated tokens than the ngram width"
         );
     }
+
+    /// Both are documented as public ways to turn speculation off, so both
+    /// need to actually return nothing.
+    ///
+    /// `ngram = 0` does not fail loudly without its guard: the tail becomes
+    /// an empty slice, an empty slice matches at every position, and the
+    /// function then drafts the source's last token on every step forever.
+    /// That surfaces as wasted work and nonsense drafts, which reads as a
+    /// model-quality problem rather than an off-by-one.
+    #[test]
+    fn zero_turns_speculation_off() {
+        let source = tokens(&[1, 2, 3, 4, 5]);
+        let generated = tokens(&[1, 2]);
+        assert!(draft(&source, &generated, 0, 4).is_empty(), "ngram = 0 drafted something");
+        assert!(draft(&source, &generated, 2, 0).is_empty(), "k = 0 drafted something");
+    }
 }
