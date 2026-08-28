@@ -435,25 +435,36 @@ pub(crate) fn handle_marketplace_overlay_key(app: &mut App, key: KeyEvent) {
 }
 
 pub(crate) fn handle_add_marketplace_overlay_key(app: &mut App, key: KeyEvent) {
+    if let (KeyCode::Enter, KeyModifiers::NONE) = (key.code, key.modifiers) {
+        confirm_add_marketplace_overlay(app);
+        return;
+    }
+    if let (KeyCode::Esc, KeyModifiers::NONE) = (key.code, key.modifiers) {
+        app.config.overlay = None;
+        return;
+    }
+    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
+        return;
+    };
     match (key.code, key.modifiers) {
-        (KeyCode::Enter, KeyModifiers::NONE) => confirm_add_marketplace_overlay(app),
-        (KeyCode::Esc, KeyModifiers::NONE) => app.config.overlay = None,
-        (KeyCode::Left, KeyModifiers::NONE) => {
-            move_add_marketplace_cursor_left(app);
-        }
-        (KeyCode::Right, KeyModifiers::NONE) => {
-            move_add_marketplace_cursor_right(app);
-        }
-        (KeyCode::Home, KeyModifiers::NONE) => set_add_marketplace_cursor(app, 0),
-        (KeyCode::End, KeyModifiers::NONE) => move_add_marketplace_cursor_to_end(app),
-        (KeyCode::Backspace, KeyModifiers::NONE) => delete_add_marketplace_before_cursor(app),
-        (KeyCode::Delete, KeyModifiers::NONE) => delete_add_marketplace_at_cursor(app),
+        (KeyCode::Left, KeyModifiers::NONE) => overlay.editor.move_left(),
+        (KeyCode::Right, KeyModifiers::NONE) => overlay.editor.move_right(),
+        (KeyCode::Home, KeyModifiers::NONE) => overlay.editor.move_home(),
+        (KeyCode::End, KeyModifiers::NONE) => overlay.editor.move_end(),
+        (KeyCode::Backspace, KeyModifiers::NONE) => overlay.editor.delete_char_before(),
+        (KeyCode::Delete, KeyModifiers::NONE) => overlay.editor.delete_char_after(),
         (KeyCode::Char(ch), modifiers)
             if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT =>
         {
-            insert_add_marketplace_char(app, ch);
+            overlay.editor.insert_char(ch);
         }
         _ => {}
+    }
+}
+
+pub(crate) fn handle_add_marketplace_overlay_paste(app: &mut App, text: &str) {
+    if let Some(overlay) = app.config.add_marketplace_overlay_mut() {
+        overlay.editor.insert_str(&normalize_single_line_input(text));
     }
 }
 
@@ -528,9 +539,10 @@ fn open_marketplace_actions_overlay(app: &mut App) -> bool {
 }
 
 fn open_add_marketplace_overlay(app: &mut App) -> bool {
-    app.config.overlay = Some(ConfigOverlayState::AddMarketplace(
-        AddMarketplaceOverlayState::from_text_input(String::new(), 0),
-    ));
+    app.config.overlay =
+        Some(ConfigOverlayState::AddMarketplace(Box::new(AddMarketplaceOverlayState {
+            editor: InputState::new(),
+        })));
     app.config.last_error = None;
     true
 }
@@ -769,7 +781,7 @@ fn confirm_add_marketplace_overlay(app: &mut App) {
     let Some(overlay) = app.config.add_marketplace_overlay().cloned() else {
         return;
     };
-    let source = overlay.draft.trim().to_owned();
+    let source = overlay.editor.text().trim().to_owned();
     if source.is_empty() {
         app.config.last_error = Some("Marketplace source cannot be empty".to_owned());
         app.config.status_message = None;
@@ -1122,73 +1134,6 @@ fn normalize_single_line_input(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\r', "\n").replace('\n', " ")
 }
 
-fn move_add_marketplace_cursor_left(app: &mut App) {
-    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
-        return;
-    };
-    overlay.cursor = overlay.cursor.saturating_sub(1);
-}
-
-fn move_add_marketplace_cursor_right(app: &mut App) {
-    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
-        return;
-    };
-    overlay.cursor = overlay.cursor.saturating_add(1).min(overlay.draft.chars().count());
-}
-
-fn move_add_marketplace_cursor_to_end(app: &mut App) {
-    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
-        return;
-    };
-    overlay.cursor = overlay.draft.chars().count();
-}
-
-fn set_add_marketplace_cursor(app: &mut App, cursor: usize) {
-    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
-        return;
-    };
-    overlay.cursor = cursor.min(overlay.draft.chars().count());
-}
-
-fn insert_add_marketplace_char(app: &mut App, ch: char) {
-    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
-        return;
-    };
-    let byte_index = char_to_byte_index(&overlay.draft, overlay.cursor);
-    overlay.draft.insert(byte_index, ch);
-    overlay.cursor += 1;
-}
-
-fn delete_add_marketplace_before_cursor(app: &mut App) {
-    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
-        return;
-    };
-    if overlay.cursor == 0 {
-        return;
-    }
-    let end = char_to_byte_index(&overlay.draft, overlay.cursor);
-    let start = char_to_byte_index(&overlay.draft, overlay.cursor - 1);
-    overlay.draft.replace_range(start..end, "");
-    overlay.cursor -= 1;
-}
-
-fn delete_add_marketplace_at_cursor(app: &mut App) {
-    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
-        return;
-    };
-    let char_count = overlay.draft.chars().count();
-    if overlay.cursor >= char_count {
-        return;
-    }
-    let start = char_to_byte_index(&overlay.draft, overlay.cursor);
-    let end = char_to_byte_index(&overlay.draft, overlay.cursor + 1);
-    overlay.draft.replace_range(start..end, "");
-}
-
-fn char_to_byte_index(text: &str, char_index: usize) -> usize {
-    text.char_indices().nth(char_index).map_or(text.len(), |(idx, _)| idx)
-}
-
 fn reset_selection_for_active_tab(app: &mut App) {
     app.plugins.set_selected_index_for(app.plugins.active_tab, 0);
     clamp_selection(app);
@@ -1289,10 +1234,10 @@ mod tests {
 
     fn app_with_add_marketplace_open() -> crate::app::App {
         let mut app = crate::app::App::test_default();
-        app.config.overlay = Some(ConfigOverlayState::AddMarketplace(AddMarketplaceOverlayState {
-            draft: String::new(),
-            cursor: 0,
-        }));
+        app.config.overlay =
+            Some(ConfigOverlayState::AddMarketplace(Box::new(AddMarketplaceOverlayState {
+                editor: InputState::new(),
+            })));
         app
     }
 
@@ -1300,7 +1245,7 @@ mod tests {
     /// the overlay renderer consumes.
     fn add_marketplace_field(app: &crate::app::App) -> (String, usize) {
         let overlay = app.config.add_marketplace_overlay().expect("overlay open");
-        (overlay.draft.clone(), overlay.cursor)
+        (overlay.editor.text(), overlay.editor.cursor_char_offset())
     }
 
     fn press_add_marketplace(app: &mut crate::app::App, code: KeyCode) {

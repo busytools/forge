@@ -93,6 +93,13 @@ impl InputState {
         self.cursor().1
     }
 
+    /// The cursor's character offset into [`Self::text`], counting each
+    /// line break as one position.
+    pub fn cursor_char_offset(&self) -> usize {
+        let (row, col) = self.cursor();
+        self.lines().iter().take(row).map(|line| line.chars().count() + 1).sum::<usize>() + col
+    }
+
     pub fn set_cursor(&mut self, row: usize, col: usize) -> bool {
         self.apply_cursor_edit(|textarea| {
             textarea.move_cursor(CursorMove::Jump(

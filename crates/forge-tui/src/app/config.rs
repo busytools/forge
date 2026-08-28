@@ -201,22 +201,21 @@ pub struct MarketplaceActionsOverlayState {
     pub actions: Vec<MarketplaceActionKind>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct AddMarketplaceOverlayState {
-    pub draft: String,
-    pub cursor: usize,
+    pub editor: crate::app::input::InputState,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum ConfigOverlayState {
     InstalledPluginActions(InstalledPluginActionOverlayState),
     PluginInstallActions(PluginInstallOverlayState),
     MarketplaceActions(MarketplaceActionsOverlayState),
-    AddMarketplace(AddMarketplaceOverlayState),
+    AddMarketplace(Box<AddMarketplaceOverlayState>),
     McpDetails(McpDetailsOverlayState),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct ConfigState {
     pub mcp_selected_server_index: usize,
     pub overlay: Option<ConfigOverlayState>,
@@ -337,14 +336,14 @@ impl ConfigState {
 
     pub fn add_marketplace_overlay(&self) -> Option<&AddMarketplaceOverlayState> {
         match &self.overlay {
-            Some(ConfigOverlayState::AddMarketplace(overlay)) => Some(overlay),
+            Some(ConfigOverlayState::AddMarketplace(overlay)) => Some(overlay.as_ref()),
             _ => None,
         }
     }
 
     pub fn add_marketplace_overlay_mut(&mut self) -> Option<&mut AddMarketplaceOverlayState> {
         match &mut self.overlay {
-            Some(ConfigOverlayState::AddMarketplace(overlay)) => Some(overlay),
+            Some(ConfigOverlayState::AddMarketplace(overlay)) => Some(overlay.as_mut()),
             _ => None,
         }
     }

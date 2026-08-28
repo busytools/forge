@@ -307,13 +307,7 @@ fn render_add_marketplace_overlay(frame: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(add_marketplace_example_lines()).wrap(Wrap { trim: false }),
         sections[1],
     );
-    render_text_input_field(
-        frame,
-        sections[3],
-        &overlay.draft,
-        overlay.cursor,
-        "owner/repo or URL",
-    );
+    render_text_input_field(frame, sections[3], &overlay.editor, "owner/repo or URL");
 }
 
 fn installed_plugin_action_overlay_lines(app: &App) -> Vec<Line<'static>> {
@@ -688,7 +682,9 @@ mod tests {
 
         app.active_view = crate::app::ActiveView::Plugins;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::AddMarketplace(
-            crate::app::config::AddMarketplaceOverlayState { draft: String::new(), cursor: 0 },
+            Box::new(crate::app::config::AddMarketplaceOverlayState {
+                editor: crate::app::input::InputState::new(),
+            }),
         ));
 
         terminal
