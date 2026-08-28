@@ -68,6 +68,12 @@ pub enum Error {
     #[error("no input offers mono {wanted} Hz f32; the device offers {offered}")]
     UnsupportedInput { wanted: u32, offered: String },
 
+    /// A device was named and is not there. Never falls back to the
+    /// default: a silent substitution is the failure this crate exists
+    /// to avoid.
+    #[error("no input device with id {wanted}; available: {available}")]
+    DeviceNotFound { wanted: String, available: String },
+
     /// Opening or running the input stream failed.
     #[error("microphone capture failed: {message}")]
     Capture { message: String },

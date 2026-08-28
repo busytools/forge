@@ -124,6 +124,73 @@ impl Recording {
     }
 }
 
+/// An input the host can offer a user, and record from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Device {
+    /// Stable identity, and the value a host persists. cpal documents
+    /// this as the thing to store and re-resolve, which is why the
+    /// selection is keyed on it rather than on `name`: names collide
+    /// between two identical interfaces and change when a user renames
+    /// one, and neither should silently move the recording.
+    pub id: String,
+    /// Human label for a picker. Not an identity.
+    pub name: String,
+    /// Whether the system would pick this one when asked for no
+    /// particular device.
+    pub is_default: bool,
+}
+
+/// Every input the host could record from.
+///
+/// The crate never chooses: a caller that names nothing gets the system
+/// default, and one that names a device gets that device or an error.
+/// Same rule [`crate::AudioSource`] already establishes for audio that
+/// does not come from a microphone.
+pub fn devices() -> Result<Vec<Device>, Error> {
+    let host = cpal::default_host();
+    let default = host.default_input_device().and_then(|d| d.id().ok());
+    let found =
+        host.input_devices().map_err(|error| Error::Capture { message: error.to_string() })?;
+
+    Ok(found
+        .filter_map(|device| {
+            let id = device.id().ok()?;
+            Some(Device {
+                is_default: Some(&id) == default.as_ref(),
+                id: id.to_string(),
+                name: device.to_string(),
+            })
+        })
+        .collect())
+}
+
+/// Resolve a caller's choice to a cpal device.
+///
+/// A named device that has gone is an error rather than a fallback:
+/// someone who chose a USB interface and finds it unplugged needs to
+/// know, not to be quietly recorded on the built-in microphone.
+fn open_device(wanted: Option<&str>) -> Result<cpal::Device, Error> {
+    let host = cpal::default_host();
+    let Some(wanted) = wanted else {
+        return host.default_input_device().ok_or(Error::NoInputDevice);
+    };
+    let found =
+        host.input_devices().map_err(|error| Error::Capture { message: error.to_string() })?;
+    for device in found {
+        if device.id().is_ok_and(|id| id.to_string() == wanted) {
+            return Ok(device);
+        }
+    }
+    Err(Error::DeviceNotFound {
+        wanted: wanted.to_owned(),
+        available: devices()?
+            .into_iter()
+            .map(|d| format!("{} ({})", d.id, d.name))
+            .collect::<Vec<_>>()
+            .join(", "),
+    })
+}
+
 /// The cap in samples. Integer maths so it cannot be a truncating float
 /// cast.
 pub(crate) fn sample_cap(max_capture: Duration) -> usize {
@@ -140,12 +207,15 @@ pub(crate) fn sample_cap(max_capture: Duration) -> usize {
 pub(crate) fn record(
     shared: &Arc<Recording>,
     max_capture: Duration,
+    wanted: Option<&str>,
     ready: &std::sync::mpsc::Sender<Result<(), Error>>,
 ) {
-    let host = cpal::default_host();
-    let Some(device) = host.default_input_device() else {
-        let _ = ready.send(Err(Error::NoInputDevice));
-        return;
+    let device = match open_device(wanted) {
+        Ok(device) => device,
+        Err(error) => {
+            let _ = ready.send(Err(error));
+            return;
+        }
     };
 
     let config = match input_config(&device) {
@@ -269,6 +339,22 @@ mod tests_recording {
             recording.stop.load(Ordering::Relaxed),
             "a capture nobody stopped must free the microphone itself, not hold it open"
         );
+    }
+
+    #[test]
+    fn enumeration_names_at_most_one_default() {
+        // No audio hardware in CI, so an empty list is a valid answer;
+        // what must never happen is two devices both claiming default,
+        // which would make a host's picker ambiguous.
+        let Ok(found) = devices() else { return };
+        let defaults = found.iter().filter(|d| d.is_default).count();
+        assert!(defaults <= 1, "at most one input can be the system default, found {defaults}");
+        for device in &found {
+            assert!(
+                !device.id.is_empty(),
+                "a device with no id cannot be persisted or re-resolved"
+            );
+        }
     }
 
     #[test]

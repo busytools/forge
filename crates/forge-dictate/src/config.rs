@@ -64,6 +64,11 @@ pub struct Config {
     /// the two are equal, which is a supported configuration rather than
     /// a degraded one.
     pub normalizer: Option<ModelSpec>,
+    /// Input to record from, by [`crate::Device::id`]. None means the
+    /// system default, explicitly: a host that does not care never has
+    /// to enumerate. Keyed on the id rather than the name because the id
+    /// is what survives a restart and a rename.
+    pub device: Option<String>,
     /// Spoken language hint. None autodetects.
     pub language: Option<String>,
     /// Upper bound on a single capture. A capture nobody stops ends
@@ -80,6 +85,7 @@ impl Default for Config {
             models_dir: None,
             asr_model: ModelSpec::cohere_transcribe_q4_k_m(),
             normalizer: Some(ModelSpec::s1_mini_f16()),
+            device: None,
             language: None,
             max_capture: Duration::from_secs(120),
             silence_floor: -50.0,
@@ -115,6 +121,13 @@ impl ConfigBuilder {
     /// and its download.
     pub fn normalizer(mut self, spec: impl Into<Option<ModelSpec>>) -> Self {
         self.inner.normalizer = spec.into();
+        self
+    }
+
+    /// Record from a specific input rather than the system default,
+    /// identified by [`crate::Device::id`].
+    pub fn device(mut self, id: impl Into<String>) -> Self {
+        self.inner.device = Some(id.into());
         self
     }
 

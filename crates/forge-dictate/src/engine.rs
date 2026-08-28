@@ -106,6 +106,7 @@ struct Job {
 /// weights means one caller at a time whatever the API looks like.
 pub struct Engine {
     max_capture: Duration,
+    device: Option<String>,
     silence_floor: f32,
     /// Set before teardown. The worker checks it between jobs, so a
     /// backlog is DISCARDED rather than drained: shutdown should not wait
@@ -159,6 +160,7 @@ impl Engine {
         let dir = crate::fetch::models_dir(&cfg)?;
         let asr_path = dir.join(&cfg.asr_model.file);
         let max_capture = cfg.max_capture;
+        let device = cfg.device.clone();
         let silence_floor = cfg.silence_floor;
         let stopping = Arc::new(AtomicBool::new(false));
         let in_flight: Arc<Mutex<Option<CancelToken>>> = Arc::new(Mutex::new(None));
@@ -175,6 +177,7 @@ impl Engine {
 
         Ok(Arc::new(Engine {
             max_capture,
+            device,
             silence_floor,
             stopping,
             in_flight,
@@ -230,9 +233,10 @@ impl Engine {
         let (ready, started) = channel();
         let max_capture = self.max_capture;
         let shared = Arc::clone(&recording);
+        let wanted = self.device.clone();
         let recorder = std::thread::Builder::new()
             .name("forge-dictate-mic".into())
-            .spawn(move || crate::capture::record(&shared, max_capture, &ready))
+            .spawn(move || crate::capture::record(&shared, max_capture, wanted.as_deref(), &ready))
             .ok();
 
         // Carried on the capture rather than returned here: `Busy`
@@ -703,6 +707,68 @@ mod tests_real_recognition {
             transcript.stages.audio > Duration::from_secs(9),
             "the reported audio duration must match the clip, got {:?}",
             transcript.stages.audio
+        );
+    }
+
+    /// Two callers must each get their own words back.
+    ///
+    /// Crosstalk is structurally impossible today because every job
+    /// carries its own reply channel - which is the reason to pin it. A
+    /// later move to one shared channel keyed by id is a natural-looking
+    /// optimisation and is exactly what would break this.
+    #[test]
+    #[ignore = "needs the ASR weights; run with --run-ignored all after `--example fetch`"]
+    fn two_tickets_resolve_to_their_own_callers_text() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+        let (first_pcm, rate) = read_wav(&dir.join("08_009s.wav"));
+        let (second_pcm, _) = read_wav(&dir.join("04_005s.wav"));
+
+        let engine =
+            Engine::new(ConfigBuilder::new().normalizer(None).build()).expect("engine must start");
+        // Both queued before either is read, so the worker holds two at once.
+        let first = engine.transcribe(Samples::new(first_pcm, rate, 1)).expect("queued");
+        let second = engine.transcribe(Samples::new(second_pcm, rate, 1)).expect("queued");
+
+        let (Ok(Outcome::Transcript(a)), Ok(Outcome::Transcript(b))) =
+            (first.recv(), second.recv())
+        else {
+            panic!("both jobs must produce transcripts");
+        };
+        assert!(
+            a.text.contains("disallow"),
+            "the first ticket must carry the first caller's audio, got: {}",
+            a.text
+        );
+        assert!(
+            b.text.contains("PC games"),
+            "the second ticket must carry the second caller's audio, got: {}",
+            b.text
+        );
+    }
+
+    /// An abandoned ticket must not wedge the worker.
+    ///
+    /// The failure lands on the INNOCENT call: if dropping a ticket left
+    /// the worker blocked on a receiver nobody holds, or never cleared
+    /// `in_flight`, it is the next transcription that never returns.
+    #[test]
+    #[ignore = "needs the ASR weights; run with --run-ignored all after `--example fetch`"]
+    fn dropping_a_ticket_does_not_wedge_the_next_one() {
+        let clip = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/08_009s.wav");
+        let (pcm, rate) = read_wav(&clip);
+
+        let engine =
+            Engine::new(ConfigBuilder::new().normalizer(None).build()).expect("engine must start");
+        drop(engine.transcribe(Samples::new(pcm.clone(), rate, 1)).expect("queued"));
+
+        let after = engine
+            .transcribe(Samples::new(pcm, rate, 1))
+            .expect("queued")
+            .recv()
+            .expect("the call after an abandoned one must still complete");
+        assert!(
+            matches!(after, Outcome::Transcript(_)),
+            "an abandoned ticket must free the worker for the next caller, got: {after:?}"
         );
     }
 
