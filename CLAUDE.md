@@ -349,6 +349,78 @@ inspected.
     (`crates/forge-workspace/src/spawn.rs`) and other surfaces are
     guarded unevenly, so grep for an assertion rather than assuming
     either way.
+18. **The published documentation is a separate obligation from the
+    map, with a different audience.** Rule 11 owns
+    `docs/forge-map.html`, the maintainer's visual record. This rule
+    covers `docs/book/`, the site users read at
+    https://busytools.github.io/forge/.
+
+    **The publish is automatic and the content is not.**
+    `.github/workflows/docs.yml` builds `docs/book` and deploys to
+    Pages on every push to `main`, while a pull request skips the
+    deploy. mdbook renders hand-written markdown and no page
+    derives from the code, so a change that edits no page republishes
+    the old description within minutes of the merge, with a green
+    build and a green deploy beside it. The site is never out of date
+    with the repo, and it can be confidently wrong about the code.
+
+    The pages, and what falsifies each:
+
+    - `configuration.md` - every `forge.toml` key, its default and its
+      error strings. The most exposed page in the book: a new key, a
+      changed default or a reworded load failure falsifies it.
+    - `install.md` - prerequisites and the CLI flag table. A changed
+      flag or prerequisite falsifies it; a recipe missing from its
+      avowedly partial `just` list does not.
+    - `index.md` - what forge is, the surfaces it renders, the scope
+      caveats.
+    - `architecture.md` - crate count, layering diagram, crate table,
+      placement guide, the TUI-to-workspace contract, the MCP tool
+      groups, the single-instance guard, the pointer to the surface
+      map. Its content is mirrored in `README.md` and this file.
+    - `wire-contract.md` - capture and replay modes, baseline layout.
+    - `contributing.md` - the short-version house rules: `just check`'s
+      composition, the denied lints, the gates. A changed recipe, lint
+      or hard rule falsifies it, and it is the page nobody remembers.
+    - `SUMMARY.md` - when a page is added, removed or renamed. A
+      deleted page is the one case CI catches, since `book.toml` sets
+      `create-missing = false`. Nothing catches the deep links from
+      `CONTRIBUTING.md` and `README.md`, which a rename 404s.
+
+    `README.md` carries the crate table and layering diagram;
+    `CONTRIBUTING.md` the house rules and a prose placement summary
+    that links out; this file the diagram, the placement guide and the
+    hard rules. Not published, same test, same PR.
+
+    Rule 11's test, sharpened: **does the document now say something
+    false about main?** Not "could it be improved". Prose that is
+    merely old-fashioned is owed nothing.
+
+    **Same PR, never a follow-up.**
+
+    **Most changes owe the book nothing, and a rule read as owing
+    something every time produces noise forever.** #744 is the clean
+    example: a user-visible change to whether a question answers on the
+    first Enter, which did owe `docs/forge-map.html` and correctly
+    touched no book page, because no page describes per-key prompt
+    behaviour. User-visible is not the test; a page reading false is.
+
+    #751 is the other shape, and it is not clean. Adding the seventh
+    crate falsified `architecture.md`'s crate count, layering diagram,
+    crate table and placement guide: four edits on one page, where
+    stopping at the table leaves the other three reading false. It also
+    falsified `install.md` and did not update it. The crate builds
+    under every `--workspace` command and needs ALSA headers on Linux,
+    so CI grew a `libasound2-dev` step in four jobs while the
+    prerequisites list still names four things and not that one.
+
+    **The layering diagrams differ in grain deliberately. Do not
+    reconcile them.** This file draws `forge-test-harness` on
+    primitives + sdk + workspace; `README.md` and `architecture.md`
+    draw it on primitives + sdk. `forge-workspace` is a dev-dependency
+    of the harness, so both are true and neither is stale. Naming
+    these documents as a set is what invites someone to make them
+    agree, which would quietly change what two of them mean.
 
 ## Claude Code worktree interop
 
