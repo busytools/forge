@@ -343,8 +343,9 @@ mod tests_plan {
 ///
 /// The `budget` ceiling is weaker still: **a local run does not catch it
 /// either**, because both paths stop on an end-of-turn token long before
-/// reaching it. Measured headroom never fell below 135 tokens across every
-/// input class tried, under prose, lists and email alike.
+/// reaching it. `budget` scales on the whole prompt while the output tracks
+/// only the transcript, so the fixed scaffold alone puts the floor well
+/// above anything a run reaches.
 #[cfg(test)]
 mod tests_against_the_model {
     use super::*;
