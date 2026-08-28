@@ -58,9 +58,11 @@ pub struct Config {
     /// Model that rewrites raw recognition output into clean text. None
     /// leaves the recognition output as-is and fetches nothing for it.
     ///
-    /// Fetched by [`crate::prepare`] but not yet applied by the engine,
-    /// so setting one currently changes what is downloaded and not what
-    /// is returned.
+    /// When set, the engine loads it beside the recognition model and
+    /// rewrites every transcript: [`crate::Transcript::text`] carries the
+    /// result and `asr` the recognised text it came from. When `None`
+    /// the two are equal, which is a supported configuration rather than
+    /// a degraded one.
     pub normalizer: Option<ModelSpec>,
     /// Spoken language hint. None autodetects.
     pub language: Option<String>,

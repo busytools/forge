@@ -443,6 +443,28 @@ fn worker(
         }
     };
 
+    // Loaded here, on the worker, so a second set of weights never lands
+    // on the caller's thread.
+    let normalizer = match cfg.normalizer.as_ref() {
+        None => None,
+        Some(spec) => {
+            let path = asr_path.with_file_name(&spec.file);
+            match crate::normalize::Normalizer::load(&path) {
+                Ok(normalizer) => Some(normalizer),
+                Err(source) => {
+                    let message = source.to_string();
+                    while let Ok(job) = queue.recv() {
+                        let _ = job.reply.send(Err(Error::ModelLoad {
+                            path: path.clone(),
+                            message: message.clone(),
+                        }));
+                    }
+                    return;
+                }
+            }
+        }
+    };
+
     let cancellable = model.supports(Feature::Cancellation);
     let mut options = RunOptions::default();
     options.language.clone_from(&cfg.language);
@@ -469,17 +491,31 @@ fn worker(
                 stages.mel = Duration::from_secs_f64(f64::from(out.timings.mel_ms) / 1000.0);
                 stages.encode = Duration::from_secs_f64(f64::from(out.timings.encode_ms) / 1000.0);
                 stages.decode = Duration::from_secs_f64(f64::from(out.timings.decode_ms) / 1000.0);
-                let text = out.text.trim().to_owned();
+                let asr = out.text.trim().to_owned();
+                // A normalizer that fails mid-session must not cost the
+                // speaker their words: fall back to the recognised text
+                // and say so, where a load failure above is fatal.
+                let text = match normalizer.as_ref() {
+                    None => asr.clone(),
+                    Some(normalizer) => {
+                        let started = Instant::now();
+                        match normalizer.normalize(&asr) {
+                            Ok(clean) => {
+                                stages.normalize = started.elapsed();
+                                clean
+                            }
+                            Err(error) => {
+                                tracing::warn!(%error, "normalization failed; returning raw text");
+                                asr.clone()
+                            }
+                        }
+                    }
+                };
                 // Consumed here rather than where `stages` is built: an
                 // error or a cancel discards the stages, and taking the
                 // load cost there would lose it for the process.
                 first = false;
-                Ok(Outcome::Transcript(Transcript {
-                    asr: text.clone(),
-                    text,
-                    stages,
-                    truncated: job.truncated,
-                }))
+                Ok(Outcome::Transcript(Transcript { asr, text, stages, truncated: job.truncated }))
             }
             // `was_aborted` is what separates a cancellation from a real
             // fault: both arrive as an error from `run`, and folding them

@@ -1,0 +1,122 @@
+[
+ {
+  "file": "01_003s.wav",
+  "source_id": "1787802146",
+  "duration_ms": 3680,
+  "sha256": "5217e1a92785f511b08c8d44e2a4e7300fac123d3b14aee0d7d6c07e79850b1b",
+  "baseline_asr": "But if what you say is correct, then I have no issues. Thanks.",
+  "baseline_normalized": "But if what you say is correct, then I have no issues. Thanks."
+ },
+ {
+  "file": "02_004s.wav",
+  "source_id": "1787802786",
+  "duration_ms": 4800,
+  "sha256": "71263d7764f92b34614c6fceda0fd3e86166c8e6feabbd0381460565a97575e6",
+  "baseline_asr": "I don't think both of them apply to me here, right?",
+  "baseline_normalized": "I don't think both of them apply to me here, right?"
+ },
+ {
+  "file": "03_005s.wav",
+  "source_id": "1787806109",
+  "duration_ms": 5328,
+  "sha256": "e4ed5cea88ad9ba117b9eb627d48a99bc752943f413b669cac5e78136436224d",
+  "baseline_asr": "First, start with the zero production behavior changes and then report back.",
+  "baseline_normalized": "First, start with the zero production behavior changes and then report back."
+ },
+ {
+  "file": "04_005s.wav",
+  "source_id": "1787805873",
+  "duration_ms": 5940,
+  "sha256": "497b4ef51fccc295c321a46219d9704ba27b14143723545e84a8ff464ac7f3fb",
+  "baseline_asr": "What I'm essentially looking at is like how PC games work, uh, workflow is.",
+  "baseline_normalized": "What I'm essentially looking at is like how PC games work, workflow is."
+ },
+ {
+  "file": "05_006s.wav",
+  "source_id": "1787806118",
+  "duration_ms": 6120,
+  "sha256": "e2ed825114a8f194ae558a79c72695a64c4f9149aaddf695efdeb63cb7671906",
+  "baseline_asr": "Once you report back, then we'll look at what else is remaining and we'll go from there. Thanks.",
+  "baseline_normalized": "Once you report back, then we'll look at what else is remaining and we'll go from there. Thanks."
+ },
+ {
+  "file": "06_006s.wav",
+  "source_id": "1787759132",
+  "duration_ms": 6704,
+  "sha256": "3dafa6b885f0d1ef5a457e36ca2650323d363c160c503313d8f82947f50d98a4",
+  "baseline_asr": "Still not happy with this. Let's pack it for now. We'll come back to it later and clean up.",
+  "baseline_normalized": "Still not happy with this. Let's pack it for now. We'll come back to it later and clean up."
+ },
+ {
+  "file": "07_007s.wav",
+  "source_id": "1787813281",
+  "duration_ms": 7520,
+  "sha256": "7c74adc297bb33a3795d9fcc354361d1753bc47ef9f1ab29e925100cf436bbe1",
+  "baseline_asr": "You said something interesting, quantized weights. What is quantization? That's my next question.",
+  "baseline_normalized": "You said something interesting, quantized weights. What is quantization? That's my next question."
+ },
+ {
+  "file": "08_009s.wav",
+  "source_id": "1787756937",
+  "duration_ms": 9488,
+  "sha256": "55a9f56d959fa900cbf3f1ca456edcf1bdd8379106bb4b1b3476907ff9e438fd",
+  "baseline_asr": "But if there is a flag that we can pass to disallow these, that would be fantastic.",
+  "baseline_normalized": "But if there is a flag that we can pass to disallow these, that would be fantastic."
+ },
+ {
+  "file": "09_012s.wav",
+  "source_id": "1787762162",
+  "duration_ms": 12912,
+  "sha256": "9b5d57d1dc1bf580fedf70e1f5564171aa085ecd724443c7e1c15a27765bdfae",
+  "baseline_asr": "So, it doesn't structure in any way. MMAP just literally takes an entire data and puts it in a single area of data. That's it, right?",
+  "baseline_normalized": "So, it doesn't structure in any way. MMAP just literally takes an entire data and puts it in a single area of data. That's it, right?"
+ },
+ {
+  "file": "10_013s.wav",
+  "source_id": "1787805781",
+  "duration_ms": 13392,
+  "sha256": "b3de026efcaba302bd40b73a70a8a7cda80a5fc0e485d64cc469bf97ed461987",
+  "baseline_asr": "Just make sure there is no behavioral changes and there is no unexpected things. And if you need my opinion or recommendation or my expertise or anything, let me know. Only proceed once you are fully unblocked from me and.",
+  "baseline_normalized": "Just make sure there are no behavioral changes and there are no unexpected things. And if you need my opinion or recommendation or my expertise or anything, let me know. Only proceed once you are fully unblocked from me and"
+ },
+ {
+  "file": "11_013s.wav",
+  "source_id": "1787839331",
+  "duration_ms": 13760,
+  "sha256": "de9f151bbb975d9a757f0097b36093878c05ed7d7bc5f47a45b67704c18e28b2",
+  "baseline_asr": "Alright, let's plan this implementation. Let me know if you have any questions or if anything that needs to be rethinked before we jump on the implementation. Thanks.",
+  "baseline_normalized": "Alright, let's plan this implementation. Let me know if you have any questions or if anything that needs to be rethought before we jump on the implementation. Thanks."
+ },
+ {
+  "file": "12_014s.wav",
+  "source_id": "1787837603",
+  "duration_ms": 14976,
+  "sha256": "95cc15c2ce725dffa74791cc31d5c47ee39eb494d1235ec15566dba72eb3f74b",
+  "baseline_asr": "Okay, so finally for the crate, what did we finally decide on and give me full flow on all the dependencies and stuff?",
+  "baseline_normalized": "Okay, so finally for the crate, what did we finally decide on and give me full flow on all the dependencies and stuff?"
+ },
+ {
+  "file": "13_015s.wav",
+  "source_id": "1787762389",
+  "duration_ms": 15072,
+  "sha256": "be7e2d954acc059a956f811a4fb9ce6a72103aedce79b31ccd97aec6930da93f",
+  "baseline_asr": "Yeah, that's what I'm saying. So, MMAP just maps it, but it doesn't load it. It loads it lazily. Is that what it is? So, like the first load is slower, and the rest of the loads are usually faster, etc.",
+  "baseline_normalized": "Yeah, that's what I'm saying. So, MMAP just maps it, but it doesn't load it. It loads it lazily. Is that what it is? So, like the first load is slower, and the rest of the loads are usually faster, etc."
+ },
+ {
+  "file": "14_016s.wav",
+  "source_id": "1787759344",
+  "duration_ms": 16800,
+  "sha256": "dceff565eb27b083b90ae2641bc59d95277eeba9b0d249c6e6a7bb47d790fb10",
+  "baseline_asr": "I'm a little confused here in terms of like what exactly that MMAP does here, memory mapping, I'm assuming. Like what does memory mapping mapping here?",
+  "baseline_normalized": "I'm a little confused here in terms of what exactly that MMAP does here, memory mapping, I'm assuming. What does memory mapping mapping here?"
+ },
+ {
+  "file": "15_020s.wav",
+  "source_id": "1787763123",
+  "duration_ms": 20208,
+  "sha256": "04e6a99bf681fa279bc6768a6e4397658fec136d7f4586db7fa0cf91745a7d16",
+  "baseline_asr": "Okay, so I understand now. So the weights are loaded into a map like it is the data. So someone should understand that data standard and read that weights, right? I'm guessing that's where this GG, UF and all of that things comes into picture, right?",
+  "baseline_normalized": "Okay, so I understand now. So the weights are loaded into a map like it is the data. So someone should understand that data standard and read that weights, right? I'm guessing that's where this GG, UF and all of that things comes into picture, right?"
+ }
+]

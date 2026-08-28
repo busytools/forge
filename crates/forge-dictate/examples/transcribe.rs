@@ -20,10 +20,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|p| f32::from(i16::from_le_bytes([p[0], p[1]])) / 32768.0)
         .collect();
 
-    let engine = Engine::new(ConfigBuilder::new().normalizer(None).build())?;
+    let engine = Engine::new(ConfigBuilder::new().build())?;
     match engine.transcribe(Samples::new(pcm, rate, channels))?.recv()? {
         Outcome::Transcript(t) => {
             println!("{}", t.text);
+            if t.text != t.asr {
+                println!("-- before normalization:\n{}", t.asr);
+            }
             println!(
                 "-- {:.2}s audio in {:.0}ms (mel {:.0} encode {:.0} decode {:.0})",
                 t.stages.audio.as_secs_f64(),
@@ -32,6 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 t.stages.encode.as_secs_f64() * 1000.0,
                 t.stages.decode.as_secs_f64() * 1000.0,
             );
+            println!("-- normalize {:.0}ms", t.stages.normalize.as_secs_f64() * 1000.0);
         }
         Outcome::NoAudio { peak, audio } => {
             println!("no audio in {:.1}s (peak {peak:.1} dBFS)", audio.as_secs_f64());

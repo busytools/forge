@@ -41,12 +41,14 @@ mod config;
 mod engine;
 mod error;
 mod fetch;
+mod normalize;
 
 pub use audio::{AudioSource, SAMPLE_RATE, Samples};
 pub use config::{Config, ConfigBuilder, ModelSpec};
 pub use engine::{Busy, Capture, Engine, Outcome, Stages, Ticket, Transcript};
 pub use error::Error;
 pub use fetch::{Progress, prepare};
+pub use normalize::{NormalizeError, Normalizer};
 
 #[cfg(test)]
 mod tests_leaf_invariant {

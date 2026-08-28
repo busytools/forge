@@ -16,11 +16,9 @@ use forge_dictate::{ConfigBuilder, Engine, Outcome};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let seconds: u64 = std::env::args().nth(1).unwrap_or_else(|| "5".into()).parse()?;
 
-    // Normalization is not wired into the engine yet, so this prints raw
-    // recognition output: expect fillers and thin punctuation.
-    let engine = Engine::new(ConfigBuilder::new().normalizer(None).build())?;
+    let engine = Engine::new(ConfigBuilder::new().build())?;
     let capture = engine.try_capture("example")?;
-    println!("recording for {seconds}s (raw recognition, normalizer not yet applied)...");
+    println!("recording for {seconds}s...");
     for _ in 0..seconds {
         std::thread::sleep(Duration::from_secs(1));
         println!("  level {:.1} dBFS", capture.level());
@@ -29,6 +27,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match capture.finish()?.recv()? {
         Outcome::Transcript(t) => {
             println!("\n{}", t.text);
+            if t.text != t.asr {
+                println!("\n-- before normalization:\n{}", t.asr);
+            }
             if t.truncated {
                 println!("(cut short at the capture cap)");
             }

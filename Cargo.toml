@@ -39,6 +39,7 @@ dirs = "6"
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 crossterm = "0.29"
 image = { version = "0.25", default-features = false, features = ["png"] }
+hound = "3.5"
 
 # Tier A primitives lifted from claude-code-rust
 ansi-to-tui = "8"
@@ -58,6 +59,13 @@ futures = "0.3.31"
 arboard = { version = "3.6.1", features = ["image-data"] }
 which = "8.0.2"
 rlimit = "0.10"
+# Default features carry openmp, which has no system library to link
+# against on a stock macOS toolchain.
+llama-cpp-2 = { version = "0.1.154", default-features = false }
+# llama-cpp-2's current detokenizer takes a caller-owned decoder so it can
+# be held across tokens; the crate depends on encoding_rs but re-exports
+# nothing.
+encoding_rs = "0.8.35"
 # Cross-process advisory file lock (flock) for the single-instance boot
 # guard: forge refuses a second instance on the same config dir.
 rustix = { version = "1", features = ["fs"] }
