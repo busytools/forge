@@ -23,11 +23,13 @@
 
 mod audio;
 mod config;
+mod engine;
 mod error;
 mod fetch;
 
 pub use audio::{AudioSource, SAMPLE_RATE, Samples};
 pub use config::{Config, ConfigBuilder, ModelSpec};
+pub use engine::{Busy, Capture, Engine, Outcome, Stages, Ticket, Transcript};
 pub use error::Error;
 pub use fetch::{Progress, prepare};
 

@@ -24,6 +24,9 @@ hex = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 dirs = { workspace = true }
+# Speech recognition. `metal` is the Apple-Silicon backend; the crate
+# also offers cuda/vulkan/rocm for other hosts.
+transcribe-cpp = { version = "0.2.2", features = ["metal"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

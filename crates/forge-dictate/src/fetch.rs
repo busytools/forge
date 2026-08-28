@@ -71,7 +71,7 @@ pub fn prepare(
 /// The configured directory, else a subdirectory of the platform cache
 /// directory. Never derived from the working directory: a caller with
 /// no usable cache directory gets an error to act on.
-fn models_dir(cfg: &Config) -> Result<PathBuf, Error> {
+pub(crate) fn models_dir(cfg: &Config) -> Result<PathBuf, Error> {
     match &cfg.models_dir {
         Some(dir) => Ok(dir.clone()),
         None => dirs::cache_dir().map(|d| d.join("forge-dictate")).ok_or(Error::NoCacheDir),

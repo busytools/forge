@@ -46,6 +46,31 @@ pub enum Error {
     #[error("cancelled by the progress callback")]
     Cancelled,
 
+    /// The source declares a rate the models cannot read. Rejected
+    /// rather than resampled: a silent resample yields plausible text
+    /// from the wrong signal, and nothing downstream can detect that.
+    #[error("audio is {actual} Hz, expected {expected} Hz; resample before transcribing")]
+    SampleRate { expected: u32, actual: u32 },
+
+    /// The source declares more than one channel. Interleaved stereo
+    /// read as mono is a plausible doubled-rate signal, not an error, so
+    /// it is refused at the boundary.
+    #[error("audio has {actual} channels, expected mono; downmix before transcribing")]
+    Channels { actual: u16 },
+
+    /// The weights could not be loaded.
+    #[error("could not load the model at {}: {message}", path.display())]
+    ModelLoad { path: PathBuf, message: String },
+
+    /// Recognition itself failed.
+    #[error("recognition failed: {message}")]
+    Recognition { message: String },
+
+    /// The worker is gone, so nothing can be transcribed and no queued
+    /// result will ever arrive.
+    #[error("the transcription worker has stopped")]
+    EngineStopped,
+
     /// A partial does not match its spec and could not be removed, so
     /// every later call fails identically until someone clears it. The
     /// usual cause is a models directory that is not writable.
