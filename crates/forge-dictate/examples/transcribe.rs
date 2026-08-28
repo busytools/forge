@@ -33,7 +33,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 t.stages.decode.as_secs_f64() * 1000.0,
             );
         }
-        Outcome::NoAudio { peak } => println!("no audio (peak {peak:.1} dBFS)"),
+        Outcome::NoAudio { peak, audio } => {
+            println!("no audio in {:.1}s (peak {peak:.1} dBFS)", audio.as_secs_f64());
+        }
     }
     Ok(())
 }

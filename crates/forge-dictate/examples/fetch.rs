@@ -5,9 +5,6 @@
 //! cargo run -p forge-dictate --release --example fetch
 //! ```
 
-// Examples are illustrative; aborting on misuse is the right exit behaviour.
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-
 use std::ops::ControlFlow;
 
 use forge_dictate::{ConfigBuilder, Error, Progress};

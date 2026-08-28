@@ -72,6 +72,10 @@ pub enum Error {
     #[error("microphone capture failed: {message}")]
     Capture { message: String },
 
+    /// The transcription worker could not be started.
+    #[error("could not start the transcription worker: {message}")]
+    WorkerSpawn { message: String },
+
     /// The weights could not be loaded.
     #[error("could not load the model at {}: {message}", path.display())]
     ModelLoad { path: PathBuf, message: String },

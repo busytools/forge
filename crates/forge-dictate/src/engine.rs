@@ -1,5 +1,6 @@
 //! The transcription engine and the tickets it hands back.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, Once};
 use std::time::{Duration, Instant};
@@ -10,17 +11,19 @@ use crate::audio::{AudioSource, SAMPLE_RATE};
 use crate::{Config, Error};
 
 /// Native diagnostics are routed once per process, before any model is
-/// loaded. Unrouted, one load plus one inference writes 122 lines
-/// straight to stderr, which corrupts any full-screen terminal the host
-/// happens to be drawing. Routing rather than silencing keeps them
-/// reachable through the `log` facade instead of destroying them.
+/// loaded: unrouted, one load plus one inference writes 122 lines
+/// straight to stderr and corrupts any host that owns it.
+///
+/// Routed to the `log` facade rather than silenced, so the output still
+/// exists - but reaching it takes a `log`-to-tracing bridge the host
+/// installs (`tracing_log::LogTracer`). Without one these records are
+/// dropped, and this workspace does not install it today.
 static ROUTE_NATIVE_LOGS: Once = Once::new();
 
 /// Where the time went in one transcription.
 ///
-/// Part of the normal result rather than a test hook: which stage moved
-/// is the only thing that distinguishes "our code got slower" from "the
-/// model changed", and a caller rendering diagnostics wants it.
+/// Which stage moved is what separates "our code got slower" from "the
+/// model changed".
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Stages {
     /// Loading weights. Zero on every run but the first, which is why it
@@ -69,25 +72,42 @@ pub enum Outcome {
         /// Loudest sample seen, in dBFS. Negative infinity for digital
         /// silence.
         peak: f32,
+        /// How much audio was heard, so a caller can say "four seconds of
+        /// nothing" rather than just "nothing".
+        audio: Duration,
     },
+}
+
+/// Samples to wall-clock at the one rate the models accept. Integer
+/// maths so a long buffer cannot drift through a float cast.
+fn audio_duration(samples: usize) -> Duration {
+    Duration::from_micros((samples as u64).saturating_mul(1_000_000) / u64::from(SAMPLE_RATE))
 }
 
 /// One queued transcription.
 struct Job {
     pcm: Vec<f32>,
     resample: Duration,
+    audio: Duration,
     cancel: CancelToken,
     reply: Sender<Result<Outcome, Error>>,
 }
 
 /// Loads the models and runs transcriptions, one at a time.
 ///
-/// Serialized deliberately rather than for convenience: the recognition
-/// session needs `&mut self` to run, so one set of weights means one
-/// caller at a time whatever the API looks like.
+/// The recognition session needs `&mut self` to run, so one set of
+/// weights means one caller at a time whatever the API looks like.
 pub struct Engine {
     max_capture: Duration,
-    /// `None` only while dropping, which is what ends the worker's loop.
+    silence_floor: f32,
+    /// Set before teardown. The worker checks it between jobs, so a
+    /// backlog is DISCARDED rather than drained: shutdown should not wait
+    /// out work whose callers are going away with it.
+    stopping: Arc<AtomicBool>,
+    /// The running job's cancel token, so teardown can abort an inference
+    /// already in progress instead of waiting for it.
+    in_flight: Arc<Mutex<Option<CancelToken>>>,
+    /// `None` only while dropping.
     jobs: Option<Sender<Job>>,
     worker: Option<std::thread::JoinHandle<()>>,
     /// Label of whoever holds the microphone, if anyone.
@@ -96,13 +116,22 @@ pub struct Engine {
 
 impl Drop for Engine {
     fn drop(&mut self) {
-        // Dropping the queue ends the worker's loop; JOINING it is what
-        // makes the weights release before the process tears down the
-        // native backend. Without the join the two race, and ggml's
-        // Metal teardown aborts the process with
-        // `GGML_ASSERT([rsets->data count] == 0)` - after a clean run,
-        // so it reads as a crash on quit with no connection to dictation.
+        // Order matters. Dropping the sender alone does NOT end the loop:
+        // `recv` keeps yielding buffered jobs and only errors once the
+        // channel is empty, so a backlog would run to completion first.
+        // Flag the stop, abort whatever is mid-inference, and only then
+        // close the queue.
+        self.stopping.store(true, Ordering::Relaxed);
+        if let Some(token) =
+            self.in_flight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref()
+        {
+            token.cancel();
+        }
         self.jobs.take();
+
+        // The join is what releases the weights before the process tears
+        // down the native backend; without it ggml's Metal teardown trips
+        // `GGML_ASSERT([rsets->data count] == 0)`.
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -117,20 +146,28 @@ impl Engine {
     /// cannot be loaded surfaces from the first [`Ticket::recv`] rather
     /// than here, because that is where it is first used.
     pub fn new(cfg: Config) -> Result<Arc<Engine>, Error> {
-        ROUTE_NATIVE_LOGS.call_once(transcribe_cpp::init_logging);
-
         let dir = crate::fetch::models_dir(&cfg)?;
         let asr_path = dir.join(&cfg.asr_model.file);
         let max_capture = cfg.max_capture;
+        let silence_floor = cfg.silence_floor;
+        let stopping = Arc::new(AtomicBool::new(false));
+        let in_flight: Arc<Mutex<Option<CancelToken>>> = Arc::new(Mutex::new(None));
         let (jobs, queue) = channel();
 
         let handle = std::thread::Builder::new()
             .name("forge-dictate".into())
-            .spawn(move || worker(&asr_path, &cfg, &queue))
-            .map_err(|source| Error::Io { path: dir, source })?;
+            .spawn({
+                let stopping = Arc::clone(&stopping);
+                let in_flight = Arc::clone(&in_flight);
+                move || worker(&asr_path, &cfg, &queue, &stopping, &in_flight)
+            })
+            .map_err(|source| Error::WorkerSpawn { message: source.to_string() })?;
 
         Ok(Arc::new(Engine {
             max_capture,
+            silence_floor,
+            stopping,
+            in_flight,
             jobs: Some(jobs),
             worker: Some(handle),
             holder: Arc::new(Mutex::new(None)),
@@ -162,14 +199,7 @@ impl Engine {
         }
         let resample = started.elapsed();
 
-        let (reply, answer) = channel();
-        let cancel = CancelToken::new();
-        self.jobs
-            .as_ref()
-            .ok_or(Error::EngineStopped)?
-            .send(Job { pcm, resample, cancel: cancel.clone(), reply })
-            .map_err(|_| Error::EngineStopped)?;
-        Ok(Ticket { answer, cancel })
+        self.submit(pcm, resample)
     }
 
     /// Take the microphone, labelling the holder so a competing caller
@@ -218,13 +248,24 @@ impl Engine {
     }
 
     /// Queue already-captured audio.
-    fn submit(&self, pcm: Vec<f32>) -> Result<Ticket, Error> {
+    fn submit(&self, pcm: Vec<f32>, resample: Duration) -> Result<Ticket, Error> {
         let (reply, answer) = channel();
         let cancel = CancelToken::new();
+
+        // Silence is a property of the samples, so it is decided here
+        // rather than on the worker: a quiet capture needs no weights,
+        // should not load any, and should not queue behind a backlog.
+        let peak = Self::peak_dbfs(&pcm);
+        let audio = audio_duration(pcm.len());
+        if peak < self.silence_floor {
+            let _ = reply.send(Ok(Outcome::NoAudio { peak, audio }));
+            return Ok(Ticket { answer, cancel });
+        }
+
         self.jobs
             .as_ref()
             .ok_or(Error::EngineStopped)?
-            .send(Job { pcm, resample: Duration::ZERO, cancel: cancel.clone(), reply })
+            .send(Job { pcm, resample, audio, cancel: cancel.clone(), reply })
             .map_err(|_| Error::EngineStopped)?;
         Ok(Ticket { answer, cancel })
     }
@@ -238,13 +279,14 @@ impl Engine {
 
 /// Somebody else holds the microphone.
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("the microphone is held by {holder}")]
+#[error("the microphone is claimed by {holder}")]
 pub struct Busy {
     /// Label the current holder passed to [`Engine::try_capture`].
     pub holder: String,
 }
 
-/// Records from the microphone, and holds it until dropped.
+/// Records from the microphone, and holds the crate's claim on it until
+/// dropped.
 ///
 /// Release is tied to the value rather than to a method so a caller that
 /// panics mid-capture cannot wedge the input for everyone else in the
@@ -292,7 +334,7 @@ impl Capture {
                 "capture reached its cap and stopped itself"
             );
         }
-        self.engine.submit(pcm)
+        self.engine.submit(pcm, Duration::ZERO)
     }
 
     /// Stop recording and throw the audio away.
@@ -352,15 +394,6 @@ impl Ticket {
     pub fn recv(self) -> Result<Outcome, Error> {
         self.answer.recv().map_err(|_| Error::EngineStopped)?
     }
-
-    /// Give up on the result. Dropping a ticket does the same thing.
-    ///
-    /// The run really is aborted rather than merely ignored: the
-    /// recognition family in use reports `Feature::Cancellation`, so the
-    /// worker stops instead of finishing work nobody wants.
-    pub fn abandon(self) {
-        drop(self);
-    }
 }
 
 impl Drop for Ticket {
@@ -370,7 +403,18 @@ impl Drop for Ticket {
 }
 
 /// Owns the weights and drains the queue.
-fn worker(asr_path: &std::path::Path, cfg: &Config, queue: &Receiver<Job>) {
+fn worker(
+    asr_path: &std::path::Path,
+    cfg: &Config,
+    queue: &Receiver<Job>,
+    stopping: &AtomicBool,
+    in_flight: &Mutex<Option<CancelToken>>,
+) {
+    // Routed here rather than in `Engine::new` so the two cannot drift
+    // apart: this is the only place a model is loaded, and suppression
+    // has to precede that.
+    ROUTE_NATIVE_LOGS.call_once(transcribe_cpp::init_logging);
+
     let started = Instant::now();
     let loaded = Model::load(asr_path).and_then(|model| model.session().map(|s| (model, s)));
     let model_load = started.elapsed();
@@ -397,26 +441,22 @@ fn worker(asr_path: &std::path::Path, cfg: &Config, queue: &Receiver<Job>) {
     let mut first = true;
 
     while let Ok(job) = queue.recv() {
-        let samples = job.pcm.len() as u64;
+        if stopping.load(Ordering::Relaxed) {
+            let _ = job.reply.send(Err(Error::EngineStopped));
+            continue;
+        }
         let mut stages = Stages {
             model_load: if first { model_load } else { Duration::ZERO },
             resample: job.resample,
-            audio: Duration::from_micros(
-                samples.saturating_mul(1_000_000) / u64::from(SAMPLE_RATE),
-            ),
+            audio: job.audio,
             ..Stages::default()
         };
         first = false;
 
-        let peak = Engine::peak_dbfs(&job.pcm);
-        if peak < cfg.silence_floor {
-            let _ = job.reply.send(Ok(Outcome::NoAudio { peak }));
-            continue;
-        }
-
         if cancellable {
             session.set_cancel_token(&job.cancel);
         }
+        in_flight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replace(job.cancel);
         let answer = match session.run(&job.pcm, &options) {
             Ok(out) => {
                 stages.mel = Duration::from_secs_f64(f64::from(out.timings.mel_ms) / 1000.0);
@@ -425,8 +465,14 @@ fn worker(asr_path: &std::path::Path, cfg: &Config, queue: &Receiver<Job>) {
                 let text = out.text.trim().to_owned();
                 Ok(Outcome::Transcript(Transcript { asr: text.clone(), text, stages }))
             }
+            // `was_aborted` is what separates a cancellation from a real
+            // fault: both arrive as an error from `run`, and folding them
+            // together would report a user's own abort as recognition
+            // failing.
+            Err(_) if session.was_aborted() => Err(Error::Cancelled),
             Err(source) => Err(Error::Recognition { message: source.to_string() }),
         };
+        in_flight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
         let _ = job.reply.send(answer);
     }
 }
@@ -493,17 +539,55 @@ mod tests_engine {
         );
     }
 
+    /// The silence branch answers before the weights are touched, so it
+    /// is reachable with no model on disk.
     #[test]
-    fn silence_is_not_an_empty_transcript() {
-        let silent = Engine::peak_dbfs(&[0.0; 32]);
+    fn a_silent_job_returns_no_audio_rather_than_an_empty_transcript() {
+        let (_dir, engine) = engine_without_weights();
+        let outcome = engine
+            .transcribe(Samples::mono(vec![0.0; SAMPLE_RATE as usize * 2]))
+            .expect("silence is still a valid 16 kHz mono source")
+            .recv()
+            .expect("a silent job must be answered, not fail");
+
+        match outcome {
+            Outcome::NoAudio { peak, audio } => {
+                assert!(
+                    peak.is_infinite() && peak.is_sign_negative(),
+                    "digital silence must report no signal at all, got {peak}"
+                );
+                assert_eq!(
+                    audio.as_secs(),
+                    2,
+                    "NoAudio must say how much nothing was heard, or it cannot be diagnosed"
+                );
+            }
+            Outcome::Transcript(t) => {
+                panic!("silence must not come back as a transcript: {t:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn the_silence_floor_comes_from_the_config_not_a_constant() {
+        let dir = tempfile::tempdir().unwrap();
+        // A floor below digital silence can never be met, so even a loud
+        // signal must be judged against the configured value.
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .normalizer(None)
+            .silence_floor(-3.0)
+            .build();
+        let engine = Engine::new(cfg).expect("engine must start");
+
+        let outcome = engine
+            .transcribe(Samples::mono(vec![0.25; SAMPLE_RATE as usize]))
+            .expect("a valid source")
+            .recv()
+            .expect("must be answered");
         assert!(
-            silent.is_infinite() && silent.is_sign_negative(),
-            "digital silence must read as no signal at all, not as a quiet one, got {silent}"
-        );
-        // Half scale is -6 dBFS, comfortably above the -50 default.
-        assert!(
-            Engine::peak_dbfs(&[0.0, 0.5, -0.25]) > -50.0,
-            "audible speech must sit above the default floor, or every capture reads as silence"
+            matches!(outcome, Outcome::NoAudio { .. }),
+            "a -12 dBFS signal must fall below a -3 dBFS floor, so the config is what decides"
         );
     }
 }
@@ -567,6 +651,36 @@ mod tests_real_recognition {
             transcript.stages.audio > Duration::from_secs(9),
             "the reported audio duration must match the clip, got {:?}",
             transcript.stages.audio
+        );
+    }
+
+    /// Teardown must abandon queued work rather than run it. Only
+    /// checkable with real weights: without them every job is answered
+    /// instantly and drain and discard look identical.
+    #[test]
+    #[ignore = "needs the ASR weights; run with --run-ignored all after `--example fetch`"]
+    fn dropping_the_engine_discards_the_backlog_instead_of_draining_it() {
+        let clip = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/08_009s.wav");
+        assert!(clip.exists(), "fixture missing at {}", clip.display());
+        let (pcm, rate) = read_wav(&clip);
+
+        let engine =
+            Engine::new(ConfigBuilder::new().normalizer(None).build()).expect("engine must start");
+        let queued: Vec<_> = (0..6)
+            .map(|_| {
+                engine
+                    .transcribe(Samples::new(pcm.clone(), rate, 1))
+                    .expect("a valid source queues")
+            })
+            .collect();
+
+        let started = std::time::Instant::now();
+        drop(engine);
+        let elapsed = started.elapsed();
+        drop(queued);
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "six queued inferences must be discarded on teardown, not run; took {elapsed:?}"
         );
     }
 }

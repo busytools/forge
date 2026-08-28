@@ -76,6 +76,11 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 redb = "2.6"
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
 
+# Local speech recognition (ggml-backed) and microphone capture for
+# forge-dictate. `metal` is opted into per-target by the crate.
+transcribe-cpp = "0.2.2"
+cpal = "0.18"
+
 # Workspace-internal crates
 forge-primitives = { path = "crates/forge-primitives", version = "=1.0.19" }
 forge-sdk = { path = "crates/forge-sdk", version = "=1.0.19" }

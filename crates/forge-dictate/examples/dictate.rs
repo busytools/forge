@@ -26,7 +26,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match capture.finish()?.recv()? {
         Outcome::Transcript(t) => println!("\n{}", t.text),
-        Outcome::NoAudio { peak } => println!("\nno audio (peak {peak:.1} dBFS)"),
+        Outcome::NoAudio { peak, audio } => {
+            println!("\nno audio in {:.1}s (peak {peak:.1} dBFS)", audio.as_secs_f64());
+        }
     }
     Ok(())
 }
