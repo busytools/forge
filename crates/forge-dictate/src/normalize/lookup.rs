@@ -12,18 +12,17 @@
 //! because the longer accepted runs outweigh the wasted drafts: tune this
 //! on wall-clock, never on the acceptance rate.
 
-use llama_cpp_2::context::LlamaContext;
-use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::LlamaToken;
 
-use super::NormalizeError;
+use super::{NormalizeError, Session};
 
 /// Match width. Two beats one decisively; three gains nothing.
 pub const NGRAM: usize = 2;
 
-/// Draft length, chosen on wall-clock.
+/// Draft length, chosen on wall-clock. Acceptance FALLS as this rises while
+/// wall-clock keeps improving, so it is not tuned on the acceptance rate.
 pub const K: usize = 64;
 
 /// The tokens following the most recent occurrence of `generated`'s last
@@ -59,12 +58,13 @@ pub fn draft<'a>(
 /// the next token occupies.
 pub fn generate(
     model: &LlamaModel,
-    ctx: &mut LlamaContext,
-    batch: &mut LlamaBatch,
+    session: &mut Session<'_>,
     source: &[LlamaToken],
-    start: i32,
-    budget: usize,
+    ngram: usize,
+    k: usize,
 ) -> Result<String, NormalizeError> {
+    let Session { ctx, batch, start, budget } = session;
+    let (start, budget) = (*start, *budget);
     let mut sampler = LlamaSampler::greedy();
     let mut decoder = encoding_rs::UTF_8.new_decoder();
     let mut out = String::new();
@@ -80,7 +80,7 @@ pub fn generate(
         out.push_str(&model.token_to_piece(current, &mut decoder, false, None)?);
         emitted.push(current);
 
-        let guess = draft(source, &emitted, NGRAM, K);
+        let guess = draft(source, &emitted, ngram, k);
 
         // The confirmed token plus the entire draft in one decode. Every
         // position asks for logits, so one pass validates every guess.

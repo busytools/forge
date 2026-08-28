@@ -12,6 +12,8 @@
 mod lookup;
 mod prompt;
 
+pub use prompt::{Structure, Styling};
+
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -94,6 +96,34 @@ fn backend() -> Result<&'static LlamaBackend, NormalizeError> {
 /// silently does nothing without an accelerated backend compiled in.
 const GPU_LAYERS: u32 = 999;
 
+/// Per-call settings. [`Default`] is what ships, so a caller that does not
+/// care constructs it without naming an axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NormalizeOptions {
+    /// The register to rewrite into.
+    pub styling: prompt::Styling,
+    /// Whether the model may return a bulleted list.
+    pub structure: prompt::Structure,
+    /// Draft length for speculative decoding. Decoder tuning rather than a
+    /// user-facing choice, and `0` turns speculation off. The optimum is a
+    /// property of the text: speculation drafts from the input, so it pays
+    /// most when the output barely changes.
+    pub k: usize,
+    /// Match width for finding a draft. `0` turns speculation off.
+    pub ngram: usize,
+}
+
+impl Default for NormalizeOptions {
+    fn default() -> Self {
+        Self {
+            styling: prompt::Styling::default(),
+            structure: prompt::Structure::default(),
+            k: lookup::K,
+            ngram: lookup::NGRAM,
+        }
+    }
+}
+
 /// A loaded normalizer. Holds the weights; cheap to call repeatedly.
 pub struct Normalizer {
     model: LlamaModel,
@@ -116,34 +146,43 @@ impl Normalizer {
         Ok(Self { model })
     }
 
-    /// Rewrite one raw transcript as written text.
+    /// Rewrite one raw transcript as written text, at the shipped defaults.
     ///
     /// An empty result is a valid answer, not a failure: input that is
     /// nothing but filler normalizes to nothing.
     pub fn normalize(&self, text: &str) -> Result<String, NormalizeError> {
-        self.run(&prompt::build(text), text)
+        self.normalize_with(text, NormalizeOptions::default())
+    }
+
+    /// As [`Normalizer::normalize`], with the register and decoder settings
+    /// chosen per call. Nothing here is cached against them, so they cost a
+    /// string format and can change on every call.
+    pub fn normalize_with(
+        &self,
+        text: &str,
+        opts: NormalizeOptions,
+    ) -> Result<String, NormalizeError> {
+        self.run(&prompt::build(text, opts.styling, opts.structure), text, opts)
     }
 
     /// `source` is what speculation drafts from, and is the transcript
     /// rather than the prompt wrapped around it.
-    fn run(&self, prompt: &str, source: &str) -> Result<String, NormalizeError> {
-        let mut session = self.session(prompt)?;
+    fn run(
+        &self,
+        prompt: &str,
+        source: &str,
+        opts: NormalizeOptions,
+    ) -> Result<String, NormalizeError> {
+        let mut session = self.session(prompt, opts.k)?;
         // Tokenized alone rather than sliced out of the prompt: generation
         // starts fresh, so the output's token boundaries match a standalone
         // tokenization and not an embedded one.
         let source = self.model.str_to_token(source, AddBos::Never)?;
-        lookup::generate(
-            &self.model,
-            &mut session.ctx,
-            &mut session.batch,
-            &source,
-            session.start,
-            session.budget,
-        )
+        lookup::generate(&self.model, &mut session, &source, opts.ngram, opts.k)
     }
 
     /// Decode the prompt and hand back everything generation needs.
-    fn session(&self, prompt: &str) -> Result<Session<'_>, NormalizeError> {
+    fn session(&self, prompt: &str, k: usize) -> Result<Session<'_>, NormalizeError> {
         let tokens = self.model.str_to_token(prompt, AddBos::Never)?;
         // The card's ceiling, 1.3x the input plus 32, taken over the whole
         // prompt rather than the transcript, so it sits looser than the
@@ -152,13 +191,13 @@ impl Normalizer {
 
         // Drafted positions are written before they are judged, so the
         // context has to hold a whole rejected draft past the real end.
-        let n_ctx = u32::try_from(tokens.len() + budget + lookup::K + 1).unwrap_or(u32::MAX);
+        let n_ctx = u32::try_from(tokens.len() + budget + k + 1).unwrap_or(u32::MAX);
         let mut ctx = self.model.new_context(
             backend()?,
             LlamaContextParams::default().with_n_ctx(NonZeroU32::new(n_ctx)).with_n_batch(n_ctx),
         )?;
 
-        let mut batch = LlamaBatch::new(tokens.len().max(lookup::K + 1), 1);
+        let mut batch = LlamaBatch::new(tokens.len().max(k + 1), 1);
         let last = tokens.len().saturating_sub(1);
         for (i, token) in tokens.iter().enumerate() {
             batch.add(*token, i32::try_from(i).unwrap_or(i32::MAX), &[0], i == last)?;
@@ -208,8 +247,8 @@ mod tests_against_the_model {
     /// `session` decides is common to both sides and therefore invisible to
     /// the comparison: `budget`, `n_ctx`, batch capacity, which prompt
     /// position carries logits, and `AddBos::Never`.
-    fn greedy(n: &Normalizer, prompt: &str) -> String {
-        let mut s = n.session(prompt).expect("prompt decodes");
+    fn greedy(n: &Normalizer, prompt: &str, k: usize) -> String {
+        let mut s = n.session(prompt, k).expect("prompt decodes");
         let mut sampler = LlamaSampler::greedy();
         let mut decoder = encoding_rs::UTF_8.new_decoder();
         let mut out = String::new();
@@ -236,18 +275,34 @@ mod tests_against_the_model {
     /// of difference means a drafted position outlived its rejection, and
     /// that is a bug in the rollback rather than a quality regression to
     /// tune away.
+    ///
+    /// The property is claimed for **every** `(ngram, k)`, not for the
+    /// shipped pair, so a rollback fault that only appears at some other
+    /// draft length has somewhere to surface. `k = 0` is included as the
+    /// degenerate no-speculation case.
+    ///
+    /// Compared against the oracle rather than against another `k`: two
+    /// speculative runs share the drafting loop, so they would agree on a
+    /// fault they both have.
     #[test]
     #[ignore = "needs the s1-mini weights on disk"]
     fn speculative_output_is_byte_identical_to_greedy() {
         let n = normalizer();
-        let plain = greedy(&n, &prompt::build(TRANSCRIPT));
-        let spec = n.normalize(TRANSCRIPT).expect("speculative generation");
-        assert_eq!(
-            spec, plain,
-            "speculative output diverged from greedy; suspect the kv rollback \
-             leaving a rejected draft behind, not the model"
-        );
-        assert!(!plain.is_empty(), "the oracle produced nothing, so the comparison proves nothing");
+        for (ngram, k) in [(2, 64), (1, 4), (3, 16), (2, 0)] {
+            let opts = NormalizeOptions { k, ngram, ..Default::default() };
+            let plain = greedy(&n, &prompt::build(TRANSCRIPT, opts.styling, opts.structure), k);
+            let spec = n.normalize_with(TRANSCRIPT, opts).expect("speculative generation");
+            assert_eq!(
+                spec, plain,
+                "ngram {ngram} k {k} diverged from greedy; suspect the kv rollback \
+                 leaving a rejected draft behind, not the model"
+            );
+            assert!(
+                !plain.is_empty(),
+                "the oracle produced nothing at ngram {ngram} k {k}, so the comparison \
+                 proves nothing"
+            );
+        }
     }
 
     /// The trap, as behaviour rather than as a string. Note what it is NOT:
@@ -264,7 +319,7 @@ mod tests_against_the_model {
              {TRANSCRIPT}<|im_end|>\n<|im_start|>assistant\n",
             prompt::SYSTEM
         );
-        let out = greedy(&n, &crippled);
+        let out = greedy(&n, &crippled, lookup::K);
         assert!(
             out.contains("<think>"),
             "expected the think fragment that a missing think block produces, got {out:?}"

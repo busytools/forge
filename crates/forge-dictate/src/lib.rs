@@ -24,7 +24,7 @@
 mod config;
 mod error;
 mod fetch;
-mod normalize;
+pub mod normalize;
 
 pub use config::{Config, ConfigBuilder, ModelSpec};
 pub use error::Error;
