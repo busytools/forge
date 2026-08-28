@@ -125,11 +125,8 @@ pub fn generate(
         current = next;
     }
 
-    // Stopping here rather than on an end-of-generation token means the
-    // text is cut off mid-sentence. Nothing downstream can tell, and the
-    // byte-identical gate cannot either, because both paths share `budget`.
-    // Measured clear under `Structure: prose`; `lists` is the setting that
-    // expands output into bullets, so it is where this would first fire.
+    // Stopping here rather than on an end-of-generation token means the text
+    // is cut off mid-sentence, and nothing downstream can tell.
     if emitted.len() >= budget {
         tracing::warn!(budget, "normalization hit its token ceiling; output is truncated");
     }
