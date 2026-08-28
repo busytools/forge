@@ -6,9 +6,11 @@
 mod audio;
 mod config;
 mod error;
+mod fetch;
 pub mod normalize;
 
 pub use audio::{AudioSource, SAMPLE_RATE, Samples};
 pub use config::{Config, ConfigBuilder, ModelSpec};
 pub use error::Error;
+pub use fetch::{Progress, prepare};
 pub use normalize::{NormalizeError, NormalizeOptions, Normalizer};
