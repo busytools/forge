@@ -32,7 +32,7 @@ impl ModelSpec {
         }
     }
 
-    /// s1-mini, f16. The default normalizer.
+    /// S1-mini, f16. The default normalizer.
     pub fn s1_mini_f16() -> Self {
         Self {
             file: "s1-mini-f16.gguf".into(),
