@@ -272,11 +272,9 @@ inspected.
     non-empty answer on a perf or refactor change as a blocker until it
     is split out and decided on its own.
 17. **Behaviour forge depends on belongs in the text forge ships, and
-    gets there through an issue.** A rule living only in a
-    contributor's own `CLAUDE.md` is not shipped: every other install
-    runs without it. Promotion is never a direct edit - the text
-    reaches every user of every install, so it gets decided
-    deliberately rather than in-session.
+    gets there through an issue, never a direct edit.** A rule living
+    only in a contributor's own `CLAUDE.md` is not shipped: every other
+    install runs without it, and the text reaches every one of them.
 
     The test has two halves and both must hold: **does forge machinery
     depend on it, AND is it unknowable from outside forge?** A rule a
@@ -287,47 +285,49 @@ inspected.
     behaviour was independently reachable. A rule about how forge's own
     workers, peers, crons or sessions behave usually passes.
 
+    **Establish every claim about shipped text by grep, when you write
+    it.** The same instruction recurs across surfaces at different
+    strengths, so read every hit, not the first; these constants wrap
+    mid-sentence, so quote only what sits on one source line; and check
+    a divergence's history before calling the shipped side wrong. This
+    rule states no counts of its own: nothing asserts them, and the tree
+    moves.
+
     **Divergence counts, not just absence - and a divergence can be the
-    correct state.** The despawn trigger ships in three strengths: the
-    charter and the `workers__despawn` description offer a merged PR as
-    one example among several, while `LEAD_DELEGATION_PREAMBLE` says
-    only "truly done". Do not sharpen the charter back toward a merge
-    requirement: #717 deliberately removed "once its work is merged"
-    because it exempted every worker whose output is not a PR. The live
-    defect is the preamble's vagueness. Read a divergence's history
-    before calling the shipped side the wrong one.
+    correct state.** The despawn trigger is the worked example: some
+    surfaces name a merged PR among examples, others stop at "truly
+    done". Do not sharpen the vague ones toward a merge requirement.
+    #717 removed "once its work is merged" deliberately, because it
+    exempted every worker whose output was not a PR - and it did not
+    reach every surface, so the vague ones are leftovers, not intent.
 
     **Placement decides whether the text fires at all**, and the
     audience is a forge SESSION at runtime. The shipped surfaces are a
-    SET; read all of them first, or the grep that finds nothing files a
-    duplicate. Always-on blocks
+    SET; read all of them before filing. Always-on blocks
     (`crates/forge-agent/src/forge_sdk_worker.rs`) carry what every
-    session needs; lead-only behaviour has two homes appended to the
-    same session, the charter
+    session needs; lead-only behaviour is split between the charter
     (`crates/forge-workspace/src/spawn/lead_charter.md`) and
     `LEAD_DELEGATION_PREAMBLE`
-    (`crates/forge-workspace/src/workspace.rs`); a tool description
-    carries what a caller needs at the moment it reaches for that tool.
-    A fact only a contributor editing forge needs - `perf.rs` ships
-    enabled on a hot path, say - belongs in this file or project memory
-    instead. The cross-project rule is the worked example: it sat in two
-    peer tool descriptions, read only once a peer tool was in hand,
-    until it moved into the always-on block and gained "This applies at
-    the moment" you decide, rather than when a tool is reached for. The
-    peer copies remain, so a grep now finds it in both kinds of place.
-    Quote only what sits on one source line: these constants wrap across
-    string continuations, so a longer phrase greps to nothing.
+    (`crates/forge-workspace/src/workspace.rs`), both appended to the
+    same session; a tool description carries what a caller needs at the
+    moment it reaches for that tool. The cross-project rule shows the
+    cost: it lived only in peer tool descriptions, read once a peer tool
+    was already in hand, until #733 added an always-on copy stating it
+    applies when you decide. The peer copies stayed.
 
-    Shipped text never names a user-scope skill, command or plugin: a
-    fresh install has none, so describe the behaviour and leave the
-    tooling as an optional shortcut. In the charter that is enforced
-    token by token by
+    **Passing the test is not sufficient.** A candidate still does not
+    ship when it is contributor-facing - `perf.rs` runs enabled on a hot
+    path, which `scripts/install.sh` turns on rather than Cargo - or
+    when it is already stated elsewhere, like the unicode gate rule 8
+    owns, which is a duplicate rather than an exclusion. Both belong in
+    this file. Out for failing the test itself: approval-scope tables,
+    timezone presentation, prose punctuation preferences, PR-body voice,
+    commit conventions, release workflow. Shipped text also never names
+    a user-scope skill, command or plugin, since a fresh install has
+    none; in the charter that is enforced token by token by
     `bundled_lead_charter_assumes_no_local_environment`
-    (`crates/forge-workspace/src/spawn.rs`), so a promotion adds its
-    token there; no other surface has an equivalent guard. Also out -
-    approval-scope tables, timezone presentation, prose punctuation
-    preferences, PR-body voice, commit conventions, release workflow:
-    real preferences, none of them things forge breaks without.
+    (`crates/forge-workspace/src/spawn.rs`), and nothing guards the
+    other surfaces.
 
 ## Claude Code worktree interop
 
