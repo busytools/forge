@@ -63,7 +63,16 @@ pub enum NormalizeError {
     #[error("could not tokenize the input: {0}")]
     Tokenize(#[from] llama_cpp_2::StringToTokenError),
 
-    /// A token came back that is not valid UTF-8 on its own.
+    /// A control token reached detokenization, which asks for no bytes and
+    /// so returns `UnknownTokenType`. That is the only reachable cause here:
+    /// invalid UTF-8 cannot arise because bytes go through an incremental
+    /// decoder, and `InsufficientBufferSpace` is retried inside
+    /// `token_to_piece` at the size llama itself asked for.
+    ///
+    /// Only tokens the model sampled are ever detokenized, so speculation
+    /// cannot cause this on its own: a drafted token is emitted only when
+    /// the model independently predicts it. The end-of-turn guard in
+    /// `normalize::lookup` covers the end-of-turn token specifically.
     #[error("could not decode a generated token: {0}")]
     Detokenize(#[from] llama_cpp_2::TokenToStringError),
 
@@ -197,20 +206,14 @@ impl Normalizer {
     /// Decode the prompt and hand back everything generation needs.
     fn session(&self, prompt: &str, k: usize) -> Result<Session<'_>, NormalizeError> {
         let tokens = self.model.str_to_token(prompt, AddBos::Never)?;
-        // The card's ceiling, 1.3x the input plus 32, taken over the whole
-        // prompt rather than the transcript, so it sits looser than the
-        // figure it comes from.
-        let budget = (tokens.len() * 13) / 10 + 32;
+        let Plan { budget, n_ctx, batch_capacity } = plan(tokens.len(), k);
 
-        // Drafted positions are written before they are judged, so the
-        // context has to hold a whole rejected draft past the real end.
-        let n_ctx = u32::try_from(tokens.len() + budget + k + 1).unwrap_or(u32::MAX);
         let mut ctx = self.model.new_context(
             backend()?,
             LlamaContextParams::default().with_n_ctx(NonZeroU32::new(n_ctx)).with_n_batch(n_ctx),
         )?;
 
-        let mut batch = LlamaBatch::new(tokens.len().max(k + 1), 1);
+        let mut batch = LlamaBatch::new(batch_capacity, 1);
         let last = tokens.len().saturating_sub(1);
         for (i, token) in tokens.iter().enumerate() {
             batch.add(*token, i32::try_from(i).unwrap_or(i32::MAX), &[0], i == last)?;
@@ -222,6 +225,39 @@ impl Normalizer {
     }
 }
 
+/// How much room one call needs. Pure arithmetic, lifted out because both
+/// the speculative path and its oracle share it, which puts it outside what
+/// the byte-identity gate can see.
+struct Plan {
+    /// Generation stops here whatever the model does.
+    budget: usize,
+    /// Positions the context must hold.
+    n_ctx: u32,
+    /// Tokens one batch must hold.
+    batch_capacity: usize,
+}
+
+/// The card's ceiling is 1.3x the input plus 32, taken over the whole prompt
+/// rather than the transcript, so it sits looser than the figure it comes
+/// from.
+///
+/// `n_ctx` covers the highest position ever written: the prompt, then at most
+/// `budget` emitted tokens, then a whole `k`-token draft written speculatively
+/// past the last accepted one. That highest index is
+/// `n_prompt + budget + k - 1`, so the count needed is one more than that and
+/// this leaves exactly one slot spare.
+///
+/// A batch holds either the whole prompt on the first decode or one confirmed
+/// token plus a full draft on every later one, so it takes the larger.
+fn plan(n_prompt: usize, k: usize) -> Plan {
+    let budget = (n_prompt * 13) / 10 + 32;
+    Plan {
+        budget,
+        n_ctx: u32::try_from(n_prompt + budget + k + 1).unwrap_or(u32::MAX),
+        batch_capacity: n_prompt.max(k + 1),
+    }
+}
+
 /// A decoded prompt, ready to generate from.
 struct Session<'a> {
     ctx: llama_cpp_2::context::LlamaContext<'a>,
@@ -230,9 +266,86 @@ struct Session<'a> {
     budget: usize,
 }
 
+#[cfg(test)]
+mod tests_plan {
+    use super::*;
+
+    /// The headroom the whole design rests on, and nothing else checks it:
+    /// both the speculative path and its oracle take these numbers from
+    /// `plan`, so the byte-identity gate cannot see an error in them.
+    ///
+    /// One spare slot rather than none is the property. Zero would work
+    /// until the first full-length draft, and the failure would arrive as a
+    /// decode error deep in a run rather than at the call that sized it.
+    #[test]
+    fn a_context_holds_the_prompt_a_full_run_and_a_whole_rejected_draft() {
+        for n_prompt in [1usize, 2, 69, 100, 512, 4096] {
+            for k in [0usize, 1, 2, 64, 512] {
+                let p = plan(n_prompt, k);
+                // Highest position written: prompt, then budget emitted
+                // tokens, then a whole draft past the last accepted one.
+                let highest = n_prompt + p.budget + k - 1;
+                assert_eq!(
+                    u64::from(p.n_ctx),
+                    highest as u64 + 2,
+                    "n_prompt {n_prompt} k {k}: context must hold every position \
+                     written plus exactly one spare"
+                );
+            }
+        }
+    }
+
+    /// A batch is filled twice with different shapes: the whole prompt on the
+    /// first decode, then one confirmed token plus a full draft on each later
+    /// one. Sizing for either alone overflows on the other.
+    #[test]
+    fn a_batch_holds_the_prompt_and_the_widest_draft() {
+        for n_prompt in [1usize, 69, 4096] {
+            for k in [0usize, 64, 8192] {
+                let c = plan(n_prompt, k).batch_capacity;
+                let widest_generation_batch = k + 1;
+                assert!(
+                    c >= n_prompt,
+                    "n_prompt {n_prompt} k {k}: batch too small for the prompt decode"
+                );
+                assert!(
+                    c >= widest_generation_batch,
+                    "n_prompt {n_prompt} k {k}: batch too small for a confirmed token \
+                     plus a full draft"
+                );
+            }
+        }
+    }
+
+    /// Output length tracks input length, so the ceiling has to scale with
+    /// it rather than sitting at a constant.
+    #[test]
+    fn the_budget_grows_with_the_prompt() {
+        assert!(
+            plan(1000, 0).budget > plan(100, 0).budget,
+            "a longer prompt must be allowed a longer output"
+        );
+    }
+}
+
 /// Ignored by default because they need the 1.5 GB weights on disk, which
 /// CI has no copy of. Fetch them with [`crate::prepare`], then
 /// `cargo nextest run -p forge-dictate --run-ignored all`.
+///
+/// # What a green CI run does not tell you
+///
+/// Everything below is enforced only when someone runs it locally, so the
+/// KV rollback, the accept loop, the end-of-turn guard and the sampling
+/// index are unenforced in CI: severing any of them passes the whole
+/// automated suite. The byte-identity property is a claim about a local run
+/// rather than one the repository holds. `tests_plan` is model-free and
+/// does hold in CI, but it covers the sizing arithmetic only.
+///
+/// The `budget` ceiling is weaker still: **a local run does not catch it
+/// either**, because both paths stop on an end-of-turn token long before
+/// reaching it. `budget` scales on the whole prompt while the output tracks
+/// only the transcript, so the fixed scaffold alone puts the floor well
+/// above anything a run reaches.
 #[cfg(test)]
 mod tests_against_the_model {
     use super::*;
@@ -289,10 +402,11 @@ mod tests_against_the_model {
     /// that is a bug in the rollback rather than a quality regression to
     /// tune away.
     ///
-    /// The property is claimed for **every** `(ngram, k)`, not for the
-    /// shipped pair, so a rollback fault that only appears at some other
-    /// draft length has somewhere to surface. `k = 0` is included as the
-    /// degenerate no-speculation case.
+    /// The property is claimed for **every** `(ngram, k)`; the pairs below
+    /// are the sampled witnesses, not the extent of the claim, and `k = 0`
+    /// covers the degenerate no-speculation case. **Changing [`lookup::K`]
+    /// means adding a pair here**, or the shipped setting stops being one of
+    /// the witnesses.
     ///
     /// Compared against the oracle rather than against another `k`: two
     /// speculative runs share the drafting loop, so they would agree on a
