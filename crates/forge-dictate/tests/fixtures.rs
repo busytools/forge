@@ -40,20 +40,27 @@
 //! blind to one that quietly degrades into a PASSTHROUGH - bump s1-mini,
 //! have it stop cleaning entirely, and this corpus mostly goes green.
 //!
-//! # A locked baseline that captured the old model's mistake inverts
+//! # Clip 15 inverts, and this is MEASURED rather than predicted
 //!
 //! `15_020s.wav` is the most valuable single fixture: its ASR renders GGUF
-//! as "GG, UF", exactly the repair the normalizer exists to perform. But
-//! its locked `baseline_normalized` PRESERVES that error, so byte-equality
-//! against the baseline scores this clip backwards - our normalizer doing
-//! its job shows up as a diff, and our normalizer failing shows up as
-//! green.
+//! as "GG, UF", exactly the repair the normalizer exists to perform. Its
+//! locked `baseline_normalized` PRESERVES that error, and our ASR has been
+//! confirmed to reproduce "GG, UF" byte-identically. So once the
+//! normalizer lands, **this clip is EXPECTED to differ from its locked
+//! baseline when everything is working correctly**, and a naive gate reads
+//! that as a regression.
 //!
-//! That generalises past clip 15: any clip whose locked baseline captured
-//! the old model's mistake inverts the same way. The baselines are
-//! known-good, not correct. So the bench reports what changed for a human
-//! to read rather than grading it, and no accuracy assertion belongs in
-//! CI.
+//! It also inverts the corpus-wide limit above. On every other clip a
+//! normalizer that quietly stopped cleaning would go green because the
+//! input was already clean. On clip 15 a passthrough matches the baseline
+//! EXACTLY, so a stopped normalizer produces a FALSE GREEN here - the one
+//! clip whose green is evidence of failure rather than of nothing
+//! happening.
+//!
+//! That generalises: any clip whose locked baseline captured the old
+//! model's mistake inverts the same way. The baselines are known-good, not
+//! correct. So the bench reports what changed for a human to read rather
+//! than grading it, and no accuracy assertion belongs in CI.
 //!
 //! # Numbers discipline
 //!

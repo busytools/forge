@@ -18,9 +18,11 @@ mod results;
 
 use results::{Section, committed, render, settle};
 
-/// Measured end-to-end figure for `08_009s.wav`, used only as a plausible
-/// magnitude for these cases.
-const COMMITTED_MS: u64 = 160;
+/// An ARBITRARY magnitude for exercising the deadband. Deliberately not any
+/// figure anyone has measured: this crate has produced no timings yet, and a
+/// test constant that resembles a real reading is how an unsourced number
+/// acquires credibility and ends up seeded into the committed file.
+const FIXTURE_MS: u64 = 500;
 const DEADBAND_MS: u64 = 10;
 
 fn file_with(value: u64) -> String {
@@ -34,16 +36,16 @@ fn file_with(value: u64) -> String {
 
 #[test]
 fn jitter_inside_the_deadband_leaves_the_file_byte_identical() {
-    let committed = file_with(COMMITTED_MS);
+    let committed = file_with(FIXTURE_MS);
 
     for jitter in [0, 1, 5, 9, 10] {
-        let measured = COMMITTED_MS + jitter;
-        let settled = settle(measured, Some(COMMITTED_MS), DEADBAND_MS);
+        let measured = FIXTURE_MS + jitter;
+        let settled = settle(measured, Some(FIXTURE_MS), DEADBAND_MS);
         assert_eq!(
             file_with(settled),
             committed,
             "a measurement of {measured} ms is within the {DEADBAND_MS} ms deadband of the \
-             committed {COMMITTED_MS} ms, so the file must not change; otherwise every run dirties \
+             committed {FIXTURE_MS} ms, so the file must not change; otherwise every run dirties \
              the tree and the file earns a gitignore"
         );
     }
@@ -51,16 +53,16 @@ fn jitter_inside_the_deadband_leaves_the_file_byte_identical() {
 
 #[test]
 fn a_move_past_the_deadband_changes_the_file() {
-    let committed = file_with(COMMITTED_MS);
+    let committed = file_with(FIXTURE_MS);
 
     for excess in [11, 25, 100] {
-        let measured = COMMITTED_MS + excess;
-        let settled = settle(measured, Some(COMMITTED_MS), DEADBAND_MS);
+        let measured = FIXTURE_MS + excess;
+        let settled = settle(measured, Some(FIXTURE_MS), DEADBAND_MS);
         assert_ne!(
             file_with(settled),
             committed,
             "a measurement of {measured} ms exceeds the {DEADBAND_MS} ms deadband of the committed \
-             {COMMITTED_MS} ms, so the file MUST change; a writer that never updates hides every \
+             {FIXTURE_MS} ms, so the file MUST change; a writer that never updates hides every \
              regression"
         );
         assert_eq!(
@@ -76,9 +78,9 @@ fn the_deadband_is_measured_against_the_committed_value_not_zero() {
     // A drift that stays inside the deadband on every step still has to
     // hold the ORIGINAL committed value, or the file walks one deadband at
     // a time and the trend is lost.
-    let settled = settle(COMMITTED_MS + 9, Some(COMMITTED_MS), DEADBAND_MS);
+    let settled = settle(FIXTURE_MS + 9, Some(FIXTURE_MS), DEADBAND_MS);
     assert_eq!(
-        settled, COMMITTED_MS,
+        settled, FIXTURE_MS,
         "inside the deadband the committed value is preserved verbatim, so repeated small drift \
          cannot ratchet the number upward"
     );
@@ -92,14 +94,14 @@ fn the_deadband_is_measured_against_the_committed_value_not_zero() {
 /// that is actually checked.
 #[test]
 fn the_rendered_file_is_valid_toml_and_the_figure_is_retrievable() {
-    let rendered = file_with(160);
+    let rendered = file_with(FIXTURE_MS);
 
     let parsed: toml::Value = toml::from_str(&rendered)
         .unwrap_or_else(|e| panic!("committed results file must be valid TOML: {e}\n{rendered}"));
 
     assert_eq!(
         parsed["end_to_end"]["median_ms"].as_integer(),
-        Some(160),
+        Some(FIXTURE_MS.try_into().unwrap()),
         "the settled figure must be readable at its documented key, or the file is not the \
          machine-readable record TOML was chosen for"
     );
@@ -118,10 +120,10 @@ fn an_absent_file_or_a_missing_key_is_a_first_run() {
         "with no results file yet every figure is a first run"
     );
 
-    let existing = file_with(COMMITTED_MS);
+    let existing = file_with(FIXTURE_MS);
     assert_eq!(
         committed(Some(&existing), "end_to_end", "median_ms"),
-        Ok(Some(COMMITTED_MS)),
+        Ok(Some(FIXTURE_MS)),
         "an existing figure must be readable back, or the deadband has nothing to hold against"
     );
     assert_eq!(
