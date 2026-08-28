@@ -46,6 +46,49 @@ fn jitter_inside_the_deadband_leaves_the_file_byte_identical() {
     }
 }
 
+/// The deadband has a DIRECTION, and getting faster is the direction that
+/// matters. A band measured with `saturating_sub` instead of `abs_diff`
+/// passes every upward case and silently discards every improvement, so
+/// the committed number can only ratchet worse - in a file whose entire
+/// justification is that it records the trend.
+#[test]
+fn a_move_past_the_deadband_downward_changes_the_file_too() {
+    let committed = file_with(FIXTURE_MS);
+
+    for faster_by in [11, 25, 100] {
+        let measured = FIXTURE_MS - faster_by;
+        let settled = settle(measured, Some(FIXTURE_MS), DEADBAND_MS);
+        assert_ne!(
+            file_with(settled),
+            committed,
+            "a measurement of {measured} ms is {faster_by} ms FASTER than the committed \
+             {FIXTURE_MS} ms and past the {DEADBAND_MS} ms deadband, so the file must change; a \
+             band that only widens upward records every regression and no improvement"
+        );
+        assert_eq!(
+            settled, measured,
+            "an improvement past the deadband is committed as measured, not held at the older \
+             slower value"
+        );
+    }
+}
+
+#[test]
+fn jitter_inside_the_deadband_downward_leaves_the_file_byte_identical() {
+    let committed = file_with(FIXTURE_MS);
+
+    for jitter in [1, 5, 9, 10] {
+        let measured = FIXTURE_MS - jitter;
+        let settled = settle(measured, Some(FIXTURE_MS), DEADBAND_MS);
+        assert_eq!(
+            file_with(settled),
+            committed,
+            "a measurement {jitter} ms faster is still inside the {DEADBAND_MS} ms deadband, so \
+             the file must not change; jitter is symmetric and the band has to be too"
+        );
+    }
+}
+
 #[test]
 fn a_move_past_the_deadband_changes_the_file() {
     let committed = file_with(FIXTURE_MS);
