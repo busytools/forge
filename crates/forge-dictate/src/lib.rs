@@ -22,6 +22,7 @@
 //! smoke test passes while dev crashes.
 
 mod audio;
+mod capture;
 mod config;
 mod engine;
 mod error;

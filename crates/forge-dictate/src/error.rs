@@ -58,6 +58,20 @@ pub enum Error {
     #[error("audio has {actual} channels, expected mono; downmix before transcribing")]
     Channels { actual: u16 },
 
+    /// No input device is available at all.
+    #[error("no input device is available")]
+    NoInputDevice,
+
+    /// The input device could not deliver the one format the models
+    /// read. Reported rather than resampled, for the same reason a
+    /// mismatched [`Error::SampleRate`] is.
+    #[error("no input offers mono {wanted} Hz f32; the device offers {offered}")]
+    UnsupportedInput { wanted: u32, offered: String },
+
+    /// Opening or running the input stream failed.
+    #[error("microphone capture failed: {message}")]
+    Capture { message: String },
+
     /// The weights could not be loaded.
     #[error("could not load the model at {}: {message}", path.display())]
     ModelLoad { path: PathBuf, message: String },

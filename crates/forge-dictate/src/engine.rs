@@ -86,6 +86,7 @@ struct Job {
 /// session needs `&mut self` to run, so one set of weights means one
 /// caller at a time whatever the API looks like.
 pub struct Engine {
+    max_capture: Duration,
     /// `None` only while dropping, which is what ends the worker's loop.
     jobs: Option<Sender<Job>>,
     worker: Option<std::thread::JoinHandle<()>>,
@@ -120,6 +121,7 @@ impl Engine {
 
         let dir = crate::fetch::models_dir(&cfg)?;
         let asr_path = dir.join(&cfg.asr_model.file);
+        let max_capture = cfg.max_capture;
         let (jobs, queue) = channel();
 
         let handle = std::thread::Builder::new()
@@ -128,6 +130,7 @@ impl Engine {
             .map_err(|source| Error::Io { path: dir, source })?;
 
         Ok(Arc::new(Engine {
+            max_capture,
             jobs: Some(jobs),
             worker: Some(handle),
             holder: Arc::new(Mutex::new(None)),
@@ -175,14 +178,55 @@ impl Engine {
     /// Exclusive WITHIN THIS PROCESS ONLY. A second process running its
     /// own engine is not arbitrated; the operating system decides, and
     /// both may record.
-    pub fn try_capture(&self, holder: impl Into<String>) -> Result<Capture, Busy> {
+    pub fn try_capture(self: &Arc<Self>, holder: impl Into<String>) -> Result<Capture, Busy> {
         let mut lock = self.holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(held) = lock.as_deref() {
             return Err(Busy { holder: held.to_owned() });
         }
         *lock = Some(holder.into());
         drop(lock);
-        Ok(Capture { holder: Arc::clone(&self.holder) })
+
+        let recording = Arc::new(crate::capture::Recording::new());
+        let (ready, started) = channel();
+        let max_capture = self.max_capture;
+        let shared = Arc::clone(&recording);
+        let recorder = std::thread::Builder::new()
+            .name("forge-dictate-mic".into())
+            .spawn(move || crate::capture::record(&shared, max_capture, &ready))
+            .ok();
+
+        // Carried on the capture rather than returned here: `Busy`
+        // answers "who has the microphone", and a device that will not
+        // open is a different question with a different answer.
+        let failed_to_open = match started.recv() {
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "input device did not open");
+                Some(error)
+            }
+            Ok(Ok(())) => None,
+            Err(_) => Some(Error::Capture { message: "the recorder thread did not start".into() }),
+        };
+
+        Ok(Capture {
+            holder: Arc::clone(&self.holder),
+            engine: Arc::clone(self),
+            recording,
+            recorder,
+            max_capture,
+            failed_to_open,
+        })
+    }
+
+    /// Queue already-captured audio.
+    fn submit(&self, pcm: Vec<f32>) -> Result<Ticket, Error> {
+        let (reply, answer) = channel();
+        let cancel = CancelToken::new();
+        self.jobs
+            .as_ref()
+            .ok_or(Error::EngineStopped)?
+            .send(Job { pcm, resample: Duration::ZERO, cancel: cancel.clone(), reply })
+            .map_err(|_| Error::EngineStopped)?;
+        Ok(Ticket { answer, cancel })
     }
 
     /// Loudest sample in `pcm`, in dBFS.
@@ -200,13 +244,71 @@ pub struct Busy {
     pub holder: String,
 }
 
-/// Holds the microphone until dropped.
+/// Records from the microphone, and holds it until dropped.
 ///
 /// Release is tied to the value rather than to a method so a caller that
 /// panics mid-capture cannot wedge the input for everyone else in the
 /// process.
+///
+/// EXCLUSIVE WITHIN THIS PROCESS ONLY. A second process running its own
+/// engine is not arbitrated - the operating system decides and both may
+/// record - and forge's own single-instance lock is per config
+/// directory, so several of its profiles can be running at once. That
+/// contention is one of the cases [`Outcome::NoAudio`] exists to make
+/// legible, because the loser typically records silence.
 pub struct Capture {
     holder: Arc<Mutex<Option<String>>>,
+    engine: Arc<Engine>,
+    recording: Arc<crate::capture::Recording>,
+    /// Taken by `finish`/`cancel`; otherwise joined by `Drop`.
+    recorder: Option<std::thread::JoinHandle<()>>,
+    max_capture: Duration,
+    /// Why the input never opened, if it did not. Held rather than
+    /// logged-and-forgotten: an empty buffer and a refused device both
+    /// produce no samples, and reporting the second as
+    /// [`Outcome::NoAudio`] would hide a denied permission behind a
+    /// message about silence.
+    failed_to_open: Option<Error>,
+}
+
+impl Capture {
+    /// Loudest input so far, in dBFS. A lock-free atomic read, so it is
+    /// safe to call from a render loop.
+    pub fn level(&self) -> f32 {
+        self.recording.peak_dbfs()
+    }
+
+    /// Stop recording and queue what was captured. Releases the
+    /// microphone before the transcription starts, so the next caller
+    /// does not wait for inference.
+    pub fn finish(mut self) -> Result<Ticket, Error> {
+        if let Some(error) = self.failed_to_open.take() {
+            return Err(error);
+        }
+        let pcm = self.stop_recording();
+        if self.recording.was_truncated() {
+            tracing::warn!(
+                cap = ?self.max_capture,
+                "capture reached its cap and stopped itself"
+            );
+        }
+        self.engine.submit(pcm)
+    }
+
+    /// Stop recording and throw the audio away.
+    pub fn cancel(self) {
+        drop(self);
+    }
+
+    /// Stop the recorder and join it, so the device is released before
+    /// this returns rather than at some later point.
+    fn stop_recording(&mut self) -> Vec<f32> {
+        self.recording.stop();
+        if let Some(recorder) = self.recorder.take() {
+            let _ = recorder.join();
+        }
+        self.recording.take()
+    }
 }
 
 impl std::fmt::Debug for Capture {
@@ -218,6 +320,10 @@ impl std::fmt::Debug for Capture {
 
 impl Drop for Capture {
     fn drop(&mut self) {
+        // Device first, then the lock: releasing the label while the
+        // stream is still open would let the next caller open a second
+        // one against the same input.
+        let _ = self.stop_recording();
         let mut lock = self.holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         *lock = None;
     }
@@ -405,8 +511,11 @@ mod tests_engine {
 /// Real recognition against the real weights.
 ///
 /// Ignored by default because it needs a 1.5 GB model that CI does not
-/// have. It is not decoration: it is the only test that proves the crate
-/// transcribes rather than merely compiles.
+/// have. **A test that cannot run in CI looks like decoration right up
+/// until it is the only thing that catches a class of defect**, and this
+/// one already caught a process abort at exit that no unit test could
+/// reach: only real weights hold Metal resources, and only holding them
+/// races the teardown. Do not delete it for being unrunnable.
 ///
 /// ```bash
 /// cargo run -p forge-dictate --release --example fetch

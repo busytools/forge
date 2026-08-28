@@ -27,6 +27,9 @@ dirs = { workspace = true }
 # Speech recognition. `metal` is the Apple-Silicon backend; the crate
 # also offers cuda/vulkan/rocm for other hosts.
 transcribe-cpp = { version = "0.2.2", features = ["metal"] }
+# Microphone capture. The stream is !Send, which is why it lives on a
+# thread of its own rather than inside `Capture`.
+cpal = "0.18"
 
 [dev-dependencies]
 tempfile = { workspace = true }
