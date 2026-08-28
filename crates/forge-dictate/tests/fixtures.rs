@@ -40,6 +40,11 @@
 //! blind to one that quietly degrades into a PASSTHROUGH - bump s1-mini,
 //! have it stop cleaning entirely, and this corpus mostly goes green.
 //!
+//! **Do not stop reading here: `15_020s.wav` is the exception and it runs
+//! the other way.** On that one clip a passthrough goes green BECAUSE it
+//! failed, not because there was nothing to do. The next section says why,
+//! and it contradicts this one rather than extending it.
+//!
 //! # Clip 15 inverts, and this is MEASURED rather than predicted
 //!
 //! `15_020s.wav` is the most valuable single fixture: its ASR renders GGUF
