@@ -193,7 +193,9 @@ mod tests {
     fn zero_turns_speculation_off() {
         let source = tokens(&[1, 2, 3, 4, 5]);
         let generated = tokens(&[1, 2]);
-        assert!(draft(&source, &generated, 0, 4).is_empty(), "ngram = 0 drafted something");
-        assert!(draft(&source, &generated, 2, 0).is_empty(), "k = 0 drafted something");
+        let by_ngram = draft(&source, &generated, 0, 4);
+        assert!(by_ngram.is_empty(), "ngram = 0 drafted {by_ngram:?}");
+        let by_k = draft(&source, &generated, 2, 0);
+        assert!(by_k.is_empty(), "k = 0 drafted {by_k:?}");
     }
 }
