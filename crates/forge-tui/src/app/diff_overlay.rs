@@ -2987,9 +2987,10 @@ fn persist_active_input(app: &mut App) {
         anchor_note: None,
         persisted,
     };
-    // Replace any existing comment at the same key IN THIS SCOPE (saving an
-    // edited reopen); another scope's comment can share the key.
-    overlay.comments.retain(|c| c.key != key || c.commit != comment.commit);
+    // Replace this thread's own card (saving an edited reopen) and no
+    // other. A line carries as many cards as it has threads, so matching
+    // on the key would take the neighbours down with it.
+    overlay.comments.retain(|c| c.thread.id != comment.thread.id);
     overlay.comments.push(comment);
     overlay.recompute_comment_counts();
     app.needs_redraw = true;
@@ -7210,6 +7211,75 @@ mod tests {
         assert!(input.editor.lines().join("\n").is_empty(), "the reply editor starts empty");
     }
 
+
+    #[test]
+    fn saving_a_comment_leaves_the_other_cards_on_that_line_alone() {
+        // The whole diff stacks a line's threads, so saving onto a line
+        // that already carries one must replace that thread and nothing
+        // else. Dropping the neighbours makes them vanish until the next
+        // hydrate reinstates them from the store.
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        for id in ["neighbour-a", "neighbour-b"] {
+            let mut thread = stock_thread();
+            thread.id = id.to_owned();
+            overlay.comments.push(HunkComment {
+                key,
+                path: "src/x.rs".into(),
+                line: 5,
+                comment_text: id.into(),
+                commit: None,
+                thread,
+                authored_this_session: false,
+                anchor_note: None,
+                persisted: true,
+            });
+        }
+        with_editor(&mut overlay, key, "a third on the same line");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+
+        let overlay = app.diff_overlay.as_ref().expect("overlay");
+        let mut ids: Vec<&str> = overlay.comments.iter().map(|c| c.thread.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(
+            ids.iter().filter(|id| id.starts_with("neighbour")).count(),
+            2,
+            "both co-located cards survive a save on their line; got {ids:?}",
+        );
+        assert_eq!(overlay.comments.len(), 3, "and the new one joins them rather than replacing");
+    }
+
+    #[test]
+    fn editing_a_comment_replaces_that_thread_rather_than_adding_one() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        with_editor(&mut overlay, key, "first draft");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+        let id = app.diff_overlay.as_ref().expect("overlay").comments[0].thread.id.clone();
+
+        // Reopen that card and save it again.
+        let overlay = app.diff_overlay.as_mut().expect("overlay");
+        reopen_comment_for_turn(overlay, CommentRef { line: key, slot: 0 }, Some(0));
+        if let Some(input) = overlay.active_input.as_mut() {
+            input.editor.insert_str("second draft");
+        }
+        save_active_input(&mut app);
+
+        let overlay = app.diff_overlay.as_ref().expect("overlay");
+        assert_eq!(overlay.comments.len(), 1, "an edit replaces its own card");
+        assert_eq!(overlay.comments[0].thread.id, id, "and keeps the thread's identity");
+    }
+
     #[test]
     fn saved_thread_survives_overlay_drop() {
         let (mut app, _dir) = review_app();
@@ -8681,10 +8751,10 @@ mod tests {
     }
 
     #[test]
-    fn save_replaces_only_the_same_scope_at_a_key() {
-        // The save-path twin of the hydrate retain above: saving at a key
-        // must replace the comment in the SAVED scope and leave another
-        // scope's comment at that same key alone.
+    fn save_leaves_another_scopes_comment_at_the_key_alone() {
+        // The save-path twin of the hydrate retain above: a save replaces
+        // its own thread, so a comment belonging to another scope at that
+        // same key is untouched.
         let (mut app, _dir) = review_app();
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
         let mut overlay =
@@ -8702,13 +8772,15 @@ mod tests {
             anchor_note: None,
             persisted: false,
         });
+        let mut sibling = stock_thread();
+        sibling.id = "sibling".to_owned();
         overlay.comments.push(HunkComment {
             key,
             path: "src/x.rs".to_owned(),
             line: 5,
-            comment_text: "stale whole-diff".to_owned(),
+            comment_text: "another whole-diff thread".to_owned(),
             commit: None,
-            thread: stock_thread(),
+            thread: sibling,
             authored_this_session: true,
             anchor_note: None,
             persisted: false,
@@ -8726,11 +8798,15 @@ mod tests {
             Some("on sha1"),
             "the commit-scoped comment at the same key survives a whole-diff save",
         );
-        let whole: Vec<_> = comments.iter().filter(|c| c.commit.is_none()).collect();
-        assert_eq!(whole.len(), 1, "the saved scope keeps exactly one comment at the key");
+        let whole: Vec<&str> = comments
+            .iter()
+            .filter(|c| c.commit.is_none())
+            .map(|c| c.comment_text.as_str())
+            .collect();
         assert_eq!(
-            whole[0].comment_text, "fresh whole-diff",
-            "the stale same-scope comment was replaced by the save",
+            whole,
+            vec!["another whole-diff thread", "fresh whole-diff"],
+            "the save adds its own card without disturbing the thread beside it",
         );
     }
 
