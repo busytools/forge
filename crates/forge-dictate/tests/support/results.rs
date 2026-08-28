@@ -26,6 +26,46 @@ pub struct Section {
     pub resolution: u64,
 }
 
+/// The previously committed figure, if there is one.
+///
+/// Three cases, decided deliberately because the deadband makes this the
+/// writer's entry point:
+///
+/// - No file yet: every figure is a first run.
+/// - File present but not parseable: an ERROR. It means the file was
+///   hand-edited against its own instruction or corrupted, and silently
+///   overwriting would destroy the trend and hide the corruption in one
+///   step.
+/// - File parseable but missing this key: a first run for that figure.
+///   That is what adding a new stage looks like, so it must not fail.
+///
+/// A key that is present but is not a non-negative integer is an error for
+/// the same reason as an unparseable file, rather than being quietly
+/// treated as absent.
+pub fn committed(file: Option<&str>, section: &str, key: &str) -> Result<Option<u64>, String> {
+    let Some(text) = file else {
+        return Ok(None);
+    };
+
+    let parsed: toml::Value = toml::from_str(text).map_err(|e| {
+        format!(
+            "results file is not valid TOML ({e}); refusing to overwrite it, because that would \
+             destroy the trend and hide the corruption. Fix or delete it deliberately."
+        )
+    })?;
+
+    match parsed.get(section).and_then(|s| s.get(key)) {
+        None => Ok(None),
+        Some(value) => value
+            .as_integer()
+            .and_then(|i| u64::try_from(i).ok())
+            .map(Some)
+            .ok_or_else(|| {
+                format!("{section}.{key} is present but is not a non-negative integer: {value}")
+            }),
+    }
+}
+
 /// The value to commit: keep whatever is already committed while the new
 /// measurement stays inside the deadband, so jitter cannot rewrite the
 /// file.

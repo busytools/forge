@@ -16,7 +16,7 @@
 #[path = "support/results.rs"]
 mod results;
 
-use results::{Section, render, settle};
+use results::{Section, committed, render, settle};
 
 /// Measured end-to-end figure for `08_009s.wav`, used only as a plausible
 /// magnitude for these cases.
@@ -84,10 +84,12 @@ fn the_deadband_is_measured_against_the_committed_value_not_zero() {
     );
 }
 
-/// The other four tests compare `render` against itself, so a writer
-/// emitting consistent nonsense would satisfy all of them. TOML was chosen
-/// so the file is machine-readable; this is the only test that checks it
-/// actually is.
+/// Every deadband test above compares `render` against itself, so a writer
+/// emitting consistent nonsense satisfies all of them - proven by making it
+/// emit non-TOML and watching only this test fail. When a group of tests
+/// shares one instrument, at least one has to check the instrument from
+/// outside. TOML was chosen so the file is machine-readable; this is where
+/// that is actually checked.
 #[test]
 fn the_rendered_file_is_valid_toml_and_the_figure_is_retrievable() {
     let rendered = file_with(160);
@@ -105,6 +107,44 @@ fn the_rendered_file_is_valid_toml_and_the_figure_is_retrievable() {
         parsed["end_to_end"]["resolution"].as_integer(),
         Some(i64::try_from(DEADBAND_MS).unwrap()),
         "the deadband must travel with the figure so a reader can tell whether a move exceeded it"
+    );
+}
+
+#[test]
+fn an_absent_file_or_a_missing_key_is_a_first_run() {
+    assert_eq!(
+        committed(None, "end_to_end", "median_ms"),
+        Ok(None),
+        "with no results file yet every figure is a first run"
+    );
+
+    let existing = file_with(COMMITTED_MS);
+    assert_eq!(
+        committed(Some(&existing), "end_to_end", "median_ms"),
+        Ok(Some(COMMITTED_MS)),
+        "an existing figure must be readable back, or the deadband has nothing to hold against"
+    );
+    assert_eq!(
+        committed(Some(&existing), "normalize", "median_ms"),
+        Ok(None),
+        "a figure the file does not carry yet is a first run, which is what adding a new stage \
+         looks like; it must not be an error"
+    );
+}
+
+/// The deliberate call: the file says do not hand-edit, so a file we cannot
+/// parse means someone did, or it is corrupt. Overwriting would destroy the
+/// trend and hide the corruption in the same step.
+#[test]
+fn an_unparseable_results_file_is_an_error_not_a_fresh_start() {
+    let mangled = "[end_to_end\nmedian_ms = ";
+
+    let outcome = committed(Some(mangled), "end_to_end", "median_ms");
+
+    assert!(
+        outcome.is_err(),
+        "an unparseable results file must refuse to proceed rather than silently starting over, \
+         which would discard the committed trend; got {outcome:?}"
     );
 }
 
