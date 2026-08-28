@@ -31,9 +31,9 @@ use forge_primitives::{ReviewAuthor, ReviewSet, ReviewStatus};
 use forge_workspace::env::git_diff::hunks::{DiffLineKind, FileHunks, FileStatus, Hunk};
 
 use crate::app::diff_overlay::{
-    ActiveCommentInput, BodyRowKey, DiffScope, DiffViewMode, FileHighlight, HunkComment, LineKey,
-    RailRowKey, SPLIT_MARKER_COLS, effective_view_mode, gutter_width_for, rail_width_for,
-    split_layout,
+    ActiveCommentInput, BodyRowKey, CommentRef, DiffScope, DiffViewMode, FileHighlight,
+    HunkComment, LineKey, RailRowKey, SPLIT_MARKER_COLS, effective_view_mode, gutter_width_for,
+    rail_width_for, split_layout,
 };
 use pairing::{PairedDiffRow, pair_hunk_lines};
 use ratatui::Frame;
@@ -1772,10 +1772,12 @@ fn push_unified_body(
                 let spans = line_key.map_or(&[][..], |key| cached_line_spans(cache, key));
                 push_unified_diff_rows(&row, spans, gutter_width, content_width, lines, keys);
                 if let Some(key) = line_key {
-                    for comment in comments_by_key.get(&key).into_iter().flatten() {
+                    for (slot, comment) in
+                        comments_by_key.get(&key).into_iter().flatten().enumerate()
+                    {
                         render_comment_chip(
                             comment,
-                            key,
+                            CommentRef { line: key, slot },
                             gutter_width,
                             pane_width,
                             &overlay.reviews,
@@ -1885,10 +1887,12 @@ fn push_split_body(
                 sides.push(k);
             }
             for side_key in sides {
-                for comment in comments_by_key.get(&side_key).into_iter().flatten() {
+                for (slot, comment) in
+                    comments_by_key.get(&side_key).into_iter().flatten().enumerate()
+                {
                     render_comment_chip(
                         comment,
-                        side_key,
+                        CommentRef { line: side_key, slot },
                         gutter_width,
                         pane_width,
                         &overlay.reviews,
@@ -2066,7 +2070,7 @@ fn push_card_row(
 /// bottom border. Turns are the thread's comments in order.
 fn render_comment_chip(
     comment: &HunkComment,
-    key: LineKey,
+    at: CommentRef,
     gutter_width: usize,
     pane_width: u16,
     reviews: &[ReviewSet],
@@ -2106,7 +2110,7 @@ fn render_comment_chip(
         Span::styled(state, Style::default().fg(accent).bg(CHIP_BG).add_modifier(Modifier::BOLD)),
         Span::styled("\u{2500}\u{256e}", card_style),
     ]));
-    keys.push(BodyRowKey::CommentChip(key));
+    keys.push(BodyRowKey::CommentChip(at.line));
 
     let blank = |lines: &mut Vec<Line<'static>>, keys: &mut Vec<BodyRowKey>| {
         push_card_row(
@@ -2118,7 +2122,7 @@ fn render_comment_chip(
             content_width,
             Vec::new(),
             0,
-            BodyRowKey::CommentChip(key),
+            BodyRowKey::CommentChip(at.line),
         );
     };
     blank(lines, keys);
@@ -2140,7 +2144,7 @@ fn render_comment_chip(
                 content_width,
                 vec![Span::styled("  ", body_style), Span::styled(row, body_style)],
                 vis,
-                BodyRowKey::CommentChip(key),
+                BodyRowKey::CommentChip(at.line),
             );
         }
     }
@@ -2150,9 +2154,9 @@ fn render_comment_chip(
         // an agent's turn is read-only chrome.
         let editable = matches!(turn.author, ReviewAuthor::User);
         let row_key = if editable {
-            BodyRowKey::CommentTurn { key, turn_idx: i }
+            BodyRowKey::CommentTurn { at, turn_idx: i }
         } else {
-            BodyRowKey::CommentChip(key)
+            BodyRowKey::CommentChip(at.line)
         };
         let dot_style = Style::default().fg(voice).bg(CHIP_BG);
         let pencil = if editable { "  \u{270e}" } else { "" };
@@ -2204,7 +2208,7 @@ fn render_comment_chip(
             content_width,
             vec![Span::styled("  ", note_style), Span::styled(note, note_style)],
             vis,
-            BodyRowKey::CommentChip(key),
+            BodyRowKey::CommentChip(at.line),
         );
     }
 
@@ -2224,7 +2228,7 @@ fn render_comment_chip(
             Span::styled(reply_hint, note_style),
         ],
         reply_label.width() + reply_hint.width(),
-        BodyRowKey::CommentReply { key },
+        BodyRowKey::CommentReply { at },
     );
 
     blank(lines, keys);
@@ -2266,7 +2270,7 @@ fn render_comment_chip(
         ],
         content_w,
         BodyRowKey::CommentButton {
-            key,
+            at,
             resolve: resolve_ok.then_some((base, resolve_end)),
             reopen: reopen_ok.then_some((reopen_start, reopen_end)),
         },
@@ -2279,7 +2283,7 @@ fn render_comment_chip(
         Span::raw(indent),
         Span::styled(bottom, card_style),
     ]));
-    keys.push(BodyRowKey::CommentChip(key));
+    keys.push(BodyRowKey::CommentChip(at.line));
 }
 
 /// Wrap `text` into rows that fit within `max_chars`, respecting
@@ -4012,7 +4016,7 @@ mod tests {
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
         let mut lines = Vec::new();
         let mut keys = Vec::new();
-        render_comment_chip(comment, key, 4, 80, reviews, &mut lines, &mut keys);
+        render_comment_chip(comment, CommentRef { line: key, slot: 0 }, 4, 80, reviews, &mut lines, &mut keys);
         (lines, keys)
     }
 

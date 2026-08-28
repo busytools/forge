@@ -336,16 +336,16 @@ pub enum BodyRowKey {
     /// One of the reviewer's own turns in a comment card. Click →
     /// reopen the editor seeded with that turn's text to rewrite it in
     /// place. Only `User`-authored turns emit this key.
-    CommentTurn { key: LineKey, turn_idx: usize },
+    CommentTurn { at: CommentRef, turn_idx: usize },
     /// A comment card's reply line. Click → open an empty editor that
     /// appends a new user turn on save (no state change, no nudge).
-    CommentReply { key: LineKey },
+    CommentReply { at: CommentRef },
     /// A comment card's button row (`✓ Resolve` / `↺ Reopen`). Each
     /// action's pane-relative `[start, end)` column span is `Some` only
     /// when that action applies to the thread's current state; a click
     /// routes to whichever span it lands in, and a click on the padding or
     /// an inapplicable (dim) button no-ops.
-    CommentButton { key: LineKey, resolve: Option<(u16, u16)>, reopen: Option<(u16, u16)> },
+    CommentButton { at: CommentRef, resolve: Option<(u16, u16)>, reopen: Option<(u16, u16)> },
     /// Inline editor row for the currently-open comment editor.
     /// Multiple consecutive rows when the comment spans more than
     /// one visual line.
@@ -353,6 +353,18 @@ pub enum BodyRowKey {
     /// A row of the commit-message block shown above the diff in commit
     /// mode (the leading rule, subject, or a body line). Non-interactive.
     CommitMessage,
+}
+
+/// Which comment card a row belongs to. The whole diff is a union over
+/// the branch, so several threads can anchor to one line and stack
+/// there; `slot` is the card's position in that stack, counted over the
+/// comments in render scope. Without it a click routes to whichever
+/// thread the lookup reaches first, which is how a reviewer resolves a
+/// comment they were not looking at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CommentRef {
+    pub line: LineKey,
+    pub slot: usize,
 }
 
 /// The lifecycle transition a comment card's button fires. `Resolve`
@@ -1216,6 +1228,18 @@ impl DiffOverlayState {
         self.comments.iter().filter(|c| c.commit == sha).collect()
     }
 
+    /// Index into [`Self::comments`] of the card `at` refers to, counting
+    /// stacked cards on that line in render order.
+    pub fn comment_index_at(&self, at: CommentRef) -> Option<usize> {
+        let sha = self.current_commit_sha();
+        self.comments
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.commit == sha && c.key == at.line)
+            .map(|(i, _)| i)
+            .nth(at.slot)
+    }
+
     /// Cached scan for `scope`, if it has been fetched.
     fn cached_for(&self, scope: DiffScope) -> Option<&CachedScan> {
         match scope {
@@ -1843,6 +1867,20 @@ fn thread_text(thread: &forge_primitives::ReviewThread) -> String {
         .unwrap_or_default()
 }
 
+/// Whether a stored thread renders in the scope now on screen. The whole
+/// diff is a union over the branch, so a rewrite that erases the commit a
+/// thread was authored against cannot put it out of reach; a commit's own
+/// view takes only what was authored there. A thread anchored against a
+/// different diff base is excluded from both: its line numbers count
+/// against another base, so placing it here would anchor it onto
+/// unrelated code.
+fn thread_in_scope(thread: &ReviewThread, scope_commit: Option<&str>, target: &str) -> bool {
+    match scope_commit {
+        Some(sha) => thread.commit.as_deref() == Some(sha),
+        None => thread.anchor.base_ref == target,
+    }
+}
+
 /// Load persisted review threads for the current scope (the active
 /// commit's sha, or whole-diff when `None`), re-anchor each against the
 /// fresh scan, and install them as the overlay's comments for that scope
@@ -1894,10 +1932,8 @@ fn hydrate_threads(app: &mut App) {
     // silently dropping other scopes' threads.
     let scope_commit = overlay.current_commit_sha();
     let target = overlay.target.clone();
-    let (mine, others): (Vec<_>, Vec<_>) = loaded.into_iter().partition(|t| match &scope_commit {
-        Some(sha) => t.commit.as_deref() == Some(sha.as_str()),
-        None => t.commit.is_none() && t.anchor.base_ref == target,
-    });
+    let (mine, others): (Vec<_>, Vec<_>) =
+        loaded.into_iter().partition(|t| thread_in_scope(t, scope_commit.as_deref(), &target));
     let had_in_scope = overlay.comments.iter().any(|c| c.commit == scope_commit);
     if mine.is_empty() && !had_in_scope {
         // Nothing in scope to re-anchor, so `others` is already every
@@ -2357,7 +2393,7 @@ fn navigate_to_selected_review(app: &mut App) {
 /// Map a comment-button click to its transition and run it on the thread
 /// at `key`, so a click resolves exactly the card it landed on. A Reopen
 /// that actually flips re-nudges the worker to take another look.
-fn apply_thread_action(app: &mut App, key: LineKey, action: ThreadAction) {
+fn apply_thread_action(app: &mut App, at: CommentRef, action: ThreadAction) {
     let (next, allowed_from): (ReviewStatus, &[ReviewStatus]) = match action {
         ThreadAction::Resolve => (
             ReviewStatus::Resolved,
@@ -2367,21 +2403,22 @@ fn apply_thread_action(app: &mut App, key: LineKey, action: ThreadAction) {
             (ReviewStatus::Open, &[ReviewStatus::Addressed, ReviewStatus::Resolved])
         }
     };
-    if set_thread_status_by_key(app, key, next, allowed_from) {
+    if set_thread_status_by_key(app, at, next, allowed_from) {
         if matches!(action, ThreadAction::Reopen) {
-            renudge_reopened(app, key);
+            renudge_reopened(app, at);
         }
         refresh_replies_waiting(app);
     }
 }
 
-/// Flip the thread anchored at `key` to `next` when it is currently in
-/// one of `allowed_from`, updating the in-memory card and persisting the
-/// change. Returns whether it flipped. No-op (returns `false`) when the
-/// key has no durable thread or its status isn't a legal source.
+/// Flip the thread the card at `at` carries to `next` when it is
+/// currently in one of `allowed_from`, updating the in-memory card and
+/// persisting the change. Returns whether it flipped. No-op (returns
+/// `false`) when nothing is stacked there or its status isn't a legal
+/// source.
 fn set_thread_status_by_key(
     app: &mut App,
-    key: LineKey,
+    at: CommentRef,
     next: ReviewStatus,
     allowed_from: &[ReviewStatus],
 ) -> bool {
@@ -2392,15 +2429,12 @@ fn set_thread_status_by_key(
     let Some(branch) = overlay.branch.clone() else {
         return false;
     };
-    // Scope-qualify: on a single-commit branch the whole-diff and commit
-    // diffs are identical, so keys collide across scopes. Match the
-    // current scope's comment or the button lands on a co-located thread
-    // in another scope.
-    let sha = overlay.current_commit_sha();
+    let Some(idx) = overlay.comment_index_at(at) else {
+        return false;
+    };
     let Some(thread) = overlay
         .comments
-        .iter_mut()
-        .find(|c| c.key == key && c.commit == sha)
+        .get_mut(idx)
         .map(|c| &mut c.thread)
         .filter(|t| allowed_from.contains(&t.status))
     else {
@@ -2421,18 +2455,16 @@ fn set_thread_status_by_key(
 /// and addresses the reopened point. Names the review number when the
 /// reopened thread is filed. A no-op when there's no agent/session to
 /// receive it (the flip + persist already happened).
-fn renudge_reopened(app: &mut App, key: LineKey) {
+fn renudge_reopened(app: &mut App, at: CommentRef) {
     if !app.has_active_agent() || app.session_id().is_none() {
         return;
     }
     let review_tag = app.diff_overlay.as_ref().and_then(|overlay| {
-        let sha = overlay.current_commit_sha();
         // The latest round, not the origin: that is the exchange the
         // reviewer is unhappy with.
         let review_id = overlay
             .comments
-            .iter()
-            .find(|c| c.key == key && c.commit == sha)?
+            .get(overlay.comment_index_at(at)?)?
             .thread
             .latest_review()?;
         overlay.reviews.iter().find(|r| r.id == review_id).map(|r| r.number)
@@ -3080,7 +3112,7 @@ struct MouseEffect {
     /// A comment-button click: run `action` on the thread at this key.
     /// Surfaced to the outer handler because persisting the status needs
     /// the App's workspace, which the inner overlay borrow can't reach.
-    thread_action: Option<(LineKey, ThreadAction)>,
+    thread_action: Option<(CommentRef, ThreadAction)>,
 }
 
 /// Handle a mouse event while the diff overlay is active.
@@ -3137,8 +3169,8 @@ pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
     } else {
         MouseEffect::default()
     };
-    if let Some((key, action)) = effect.thread_action {
-        apply_thread_action(app, key, action);
+    if let Some((at, action)) = effect.thread_action {
+        apply_thread_action(app, at, action);
     }
     if effect.redraw {
         app.needs_redraw = true;
@@ -3318,11 +3350,11 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
                 None => MouseEffect::default(),
             }
         }
-        BodyRowKey::CommentTurn { key, turn_idx } => {
-            reopen_comment_for_turn(overlay, key, Some(turn_idx))
+        BodyRowKey::CommentTurn { at, turn_idx } => {
+            reopen_comment_for_turn(overlay, at, Some(turn_idx))
         }
-        BodyRowKey::CommentReply { key } => reopen_comment_for_turn(overlay, key, None),
-        BodyRowKey::CommentButton { key, resolve, reopen } => {
+        BodyRowKey::CommentReply { at } => reopen_comment_for_turn(overlay, at, None),
+        BodyRowKey::CommentButton { at, resolve, reopen } => {
             // Route to whichever applicable button the click lands in; a
             // click on the padding or a dim (inapplicable) action no-ops.
             let pane_col = column.saturating_sub(overlay.pane_origin_col);
@@ -3330,9 +3362,9 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
                 span.is_some_and(|(start, end)| pane_col >= start && pane_col < end)
             };
             if hits(resolve) {
-                MouseEffect { redraw: true, thread_action: Some((key, ThreadAction::Resolve)) }
+                MouseEffect { redraw: true, thread_action: Some((at, ThreadAction::Resolve)) }
             } else if hits(reopen) {
-                MouseEffect { redraw: true, thread_action: Some((key, ThreadAction::Reopen)) }
+                MouseEffect { redraw: true, thread_action: Some((at, ThreadAction::Reopen)) }
             } else {
                 MouseEffect::default()
             }
@@ -3403,14 +3435,10 @@ fn open_input_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffe
 /// work.
 fn reopen_comment_for_turn(
     overlay: &mut DiffOverlayState,
-    key: LineKey,
+    at: CommentRef,
     edit_turn: Option<usize>,
 ) -> MouseEffect {
-    // Scope-qualify, as the status-flip and re-nudge lookups do: keys
-    // collide across scopes on a single-commit branch, and reopening the
-    // wrong scope's comment re-stamps it with this scope on save.
-    let sha = overlay.current_commit_sha();
-    let Some(pos) = overlay.comments.iter().position(|c| c.key == key && c.commit == sha) else {
+    let Some(pos) = overlay.comment_index_at(at) else {
         return MouseEffect::default();
     };
     let comment = overlay.comments.remove(pos);
@@ -4008,7 +4036,7 @@ mod tests {
             BodyRowKey::FileHeader { file_idx: 0 },
             BodyRowKey::HunkHeader { file_idx: 0, hunk_idx: 0 },
             BodyRowKey::HunkRow { left: Some(key), right: Some(key) },
-            BodyRowKey::CommentTurn { key, turn_idx: 0 },
+            BodyRowKey::CommentTurn { at: CommentRef { line: key, slot: 0 }, turn_idx: 0 },
         ];
         state.pane_origin_row = 0;
         state.pane_origin_col = 41;
@@ -4316,7 +4344,7 @@ mod tests {
             persisted: false,
         });
         state.recompute_comment_counts();
-        state.body_keys = vec![BodyRowKey::CommentTurn { key, turn_idx: 0 }];
+        state.body_keys = vec![BodyRowKey::CommentTurn { at: CommentRef { line: key, slot: 0 }, turn_idx: 0 }];
         state.pane_origin_row = 0;
         state.pane_origin_col = 41;
         state.pane_width = 119;
@@ -4366,7 +4394,7 @@ mod tests {
         // hunk line at idx 2.
         let key_b = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 };
         state.body_keys = vec![
-            BodyRowKey::CommentTurn { key: key_a, turn_idx: 0 },
+            BodyRowKey::CommentTurn { at: CommentRef { line: key_a, slot: 0 }, turn_idx: 0 },
             BodyRowKey::HunkHeader { file_idx: 0, hunk_idx: 0 },
             BodyRowKey::HunkRow { left: Some(key_b), right: Some(key_b) },
         ];
@@ -4412,8 +4440,8 @@ mod tests {
         });
         state.recompute_comment_counts();
         state.body_keys = vec![
-            BodyRowKey::CommentTurn { key: key_a, turn_idx: 0 },
-            BodyRowKey::CommentTurn { key: key_b, turn_idx: 0 },
+            BodyRowKey::CommentTurn { at: CommentRef { line: key_a, slot: 0 }, turn_idx: 0 },
+            BodyRowKey::CommentTurn { at: CommentRef { line: key_b, slot: 0 }, turn_idx: 0 },
         ];
         state.pane_origin_row = 0;
         state.pane_origin_col = 41;
@@ -4442,7 +4470,7 @@ mod tests {
             persisted: false,
         });
         state.recompute_comment_counts();
-        state.body_keys = vec![BodyRowKey::CommentTurn { key: key_a, turn_idx: 0 }];
+        state.body_keys = vec![BodyRowKey::CommentTurn { at: CommentRef { line: key_a, slot: 0 }, turn_idx: 0 }];
         state.pane_origin_row = 0;
         state.pane_origin_col = 41;
         state.pane_width = 119;
@@ -5415,6 +5443,45 @@ mod tests {
         let scoped: Vec<&str> =
             state.scoped_comments().iter().map(|c| c.comment_text.as_str()).collect();
         assert_eq!(scoped, vec!["a"], "only the current commit's comment is in scope");
+    }
+
+    #[test]
+    fn whole_diff_takes_every_thread_and_a_commit_takes_only_its_own() {
+        let mut whole = stock_thread();
+        whole.commit = None;
+        let mut on_aaa = stock_thread();
+        on_aaa.commit = Some("aaa".to_owned());
+        // Authored against a commit a force-push rewrote away: its sha
+        // matches no entry in the rescanned commit list.
+        let mut orphan = stock_thread();
+        orphan.commit = Some("rewritten-away".to_owned());
+
+        for thread in [&whole, &on_aaa, &orphan] {
+            assert!(
+                thread_in_scope(thread, None, "main"),
+                "the whole diff is a union, so it takes every thread on the branch",
+            );
+        }
+
+        assert!(thread_in_scope(&on_aaa, Some("aaa"), "main"));
+        assert!(
+            !thread_in_scope(&whole, Some("aaa"), "main"),
+            "a whole-diff thread does not descend into an individual commit's view",
+        );
+        assert!(
+            !thread_in_scope(&orphan, Some("aaa"), "main"),
+            "a thread authored elsewhere is not this commit's",
+        );
+    }
+
+    #[test]
+    fn a_thread_against_another_diff_base_stays_out_of_the_union() {
+        let mut thread = stock_thread();
+        thread.anchor.base_ref = "HEAD".to_owned();
+        assert!(
+            !thread_in_scope(&thread, None, "main"),
+            "line numbers against another base would anchor onto unrelated code",
+        );
     }
 
     #[test]
@@ -6812,7 +6879,7 @@ mod tests {
 
         for reply in ["one", "two"] {
             if let Some(o) = app.diff_overlay.as_mut() {
-                reopen_comment_for_turn(o, key, None);
+                reopen_comment_for_turn(o, CommentRef { line: key, slot: 0 }, None);
                 if let Some(input) = o.active_input.as_mut() {
                     input.editor.insert_str(reply);
                 }
@@ -6875,7 +6942,7 @@ mod tests {
             BodyRowKey::FileHeader { file_idx: 0 },
             BodyRowKey::HunkHeader { file_idx: 0, hunk_idx: 0 },
             BodyRowKey::HunkRow { left: Some(key), right: Some(key) },
-            BodyRowKey::CommentReply { key },
+            BodyRowKey::CommentReply { at: CommentRef { line: key, slot: 0 } },
         ];
         state.pane_origin_row = 0;
         state.pane_origin_col = 41;
@@ -7005,6 +7072,102 @@ mod tests {
         assert_eq!(find("changed").status, ReviewStatus::Outdated, "outdated flip persisted");
         assert_eq!(find("vanished").status, ReviewStatus::Outdated, "outdated flip persisted");
         assert_eq!(find("keep").anchor.line, 5, "in-place line unchanged");
+    }
+
+    #[test]
+    fn resolving_a_stacked_comment_acts_on_the_card_that_was_clicked() {
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        let seed = |id: &str, commit: Option<&str>| forge_primitives::ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 5,
+                content_hash: resolver::content_hash("let a = 1;"),
+                context: Vec::new(),
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: id.to_owned(),
+                at: String::new(),
+                review_id: None,
+            }],
+            status: ReviewStatus::Open,
+            created_at: "t0".to_owned(),
+            updated_at: "t0".to_owned(),
+            commit: commit.map(str::to_owned),
+        };
+        // Two threads on the same line: the whole diff stacks them.
+        ws.save_review_threads("forge", "feat", &[seed("first", None), seed("second", Some("c0"))]);
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+        hydrate_threads(&mut app);
+
+        let line = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        apply_thread_action(&mut app, CommentRef { line, slot: 1 }, ThreadAction::Resolve);
+
+        let stored = ws.load_review_threads("forge", "feat").expect("load");
+        let status = |id: &str| stored.iter().find(|t| t.id == id).expect("thread").status;
+        assert_eq!(
+            status("second"),
+            ReviewStatus::Resolved,
+            "the second card's button resolves the second card's thread",
+        );
+        assert_eq!(
+            status("first"),
+            ReviewStatus::Open,
+            "the card above it is untouched - resolving the wrong thread is the bad failure",
+        );
+    }
+
+    #[test]
+    fn a_force_push_orphan_renders_in_the_whole_diff() {
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        let mut thread = stock_thread();
+        thread.id = "orphan".to_owned();
+        // The commit this was authored against no longer exists.
+        thread.commit = Some("rewritten-away".to_owned());
+        thread.anchor = ReviewAnchor {
+            path: "src/x.rs".to_owned(),
+            side: ReviewSide::New,
+            line: 5,
+            content_hash: resolver::content_hash("let a = 1;"),
+            context: Vec::new(),
+            base_ref: "main".to_owned(),
+        };
+        ws.save_review_threads("forge", "feat", &[thread]);
+
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        overlay.scope = DiffScope::WholeDiff;
+        app.diff_overlay = Some(overlay);
+
+        hydrate_threads(&mut app);
+
+        let overlay = app.diff_overlay.as_ref().expect("overlay");
+        let orphan = overlay
+            .comments
+            .iter()
+            .find(|c| c.thread.id == "orphan")
+            .expect("the whole diff renders a comment whose commit was rewritten away");
+        assert_eq!(
+            orphan.key,
+            LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            "re-anchored against the whole-diff scan, not its dead commit",
+        );
+        assert_eq!(orphan.thread.status, ReviewStatus::Open, "the line is still there");
+        assert!(
+            overlay.scoped_comments().iter().any(|c| c.thread.id == "orphan"),
+            "and it survives the render-scope filter",
+        );
     }
 
     #[test]
@@ -7182,7 +7345,7 @@ mod tests {
         save_active_input(&mut app);
         let ws = app.workspace.clone().expect("ws");
 
-        apply_thread_action(&mut app, key, ThreadAction::Resolve);
+        apply_thread_action(&mut app, CommentRef { line: key, slot: 0 }, ThreadAction::Resolve);
         assert_eq!(thread_status(&app), ReviewStatus::Resolved, "in-memory resolves");
         assert_eq!(
             ws.load_review_threads("forge", "feat").expect("load")[0].status,
@@ -7190,7 +7353,7 @@ mod tests {
             "persisted"
         );
 
-        apply_thread_action(&mut app, key, ThreadAction::Reopen);
+        apply_thread_action(&mut app, CommentRef { line: key, slot: 0 }, ThreadAction::Reopen);
         assert_eq!(thread_status(&app), ReviewStatus::Open, "in-memory reopens");
         assert_eq!(
             ws.load_review_threads("forge", "feat").expect("load")[0].status,
@@ -7229,7 +7392,7 @@ mod tests {
         });
         app.diff_overlay = Some(overlay);
 
-        apply_thread_action(&mut app, key, ThreadAction::Reopen);
+        apply_thread_action(&mut app, CommentRef { line: key, slot: 0 }, ThreadAction::Reopen);
 
         assert_eq!(
             app.diff_overlay.as_ref().expect("overlay").comments[0].thread.status,
@@ -7348,7 +7511,7 @@ mod tests {
         assert_eq!(waiting_count(&app), Some(2), "both answers await a look");
 
         let resolved_key = app.diff_overlay.as_ref().expect("overlay").comments[0].key;
-        apply_thread_action(&mut app, resolved_key, ThreadAction::Resolve);
+        apply_thread_action(&mut app, CommentRef { line: resolved_key, slot: 0 }, ThreadAction::Resolve);
 
         assert_eq!(waiting_count(&app), Some(1), "resolve is how a read answer is dismissed");
     }
@@ -7370,7 +7533,7 @@ mod tests {
 
         // Click B's Resolve button: it targets B by key, leaving A
         // untouched.
-        apply_thread_action(&mut app, kb, ThreadAction::Resolve);
+        apply_thread_action(&mut app, CommentRef { line: kb, slot: 0 }, ThreadAction::Resolve);
 
         let overlay = app.diff_overlay.as_ref().expect("overlay");
         let status_of =
@@ -7399,7 +7562,7 @@ mod tests {
         save_active_input(&mut app);
 
         // Reopen only moves a Resolved thread; an Open one is left alone.
-        apply_thread_action(&mut app, key, ThreadAction::Reopen);
+        apply_thread_action(&mut app, CommentRef { line: key, slot: 0 }, ThreadAction::Reopen);
         assert_eq!(thread_status(&app), ReviewStatus::Open, "reopen does not touch an open thread");
     }
 
@@ -7414,7 +7577,7 @@ mod tests {
         // No comment at the key: the button action must not panic or write.
         apply_thread_action(
             &mut app,
-            LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            CommentRef { line: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }, slot: 0 },
             ThreadAction::Resolve,
         );
         let ws = app.workspace.clone().expect("ws");
@@ -7434,20 +7597,18 @@ mod tests {
         state.body_head_rows = 0;
         state.body_tail_scroll = 0;
         // An addressed card offers both buttons at distinct spans.
-        state.body_keys = vec![BodyRowKey::CommentButton {
-            key,
-            resolve: Some((10, 19)),
-            reopen: Some((22, 30)),
-        }];
+        let at = CommentRef { line: key, slot: 0 };
+        state.body_keys =
+            vec![BodyRowKey::CommentButton { at, resolve: Some((10, 19)), reopen: Some((22, 30)) }];
 
         assert_eq!(
             handle_body_click(&mut state, 12, 0).thread_action,
-            Some((key, ThreadAction::Resolve)),
+            Some((at, ThreadAction::Resolve)),
             "a click in the Resolve span fires Resolve",
         );
         assert_eq!(
             handle_body_click(&mut state, 25, 0).thread_action,
-            Some((key, ThreadAction::Reopen)),
+            Some((at, ThreadAction::Reopen)),
             "a click in the Reopen span fires Reopen",
         );
         assert_eq!(
@@ -7536,7 +7697,7 @@ mod tests {
         app.diff_overlay = Some(overlay);
 
         // In whole-diff scope the button targets the commit==None thread.
-        apply_thread_action(&mut app, key, ThreadAction::Resolve);
+        apply_thread_action(&mut app, CommentRef { line: key, slot: 0 }, ThreadAction::Resolve);
 
         let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
         let durable = comments.iter().find(|c| c.commit.is_none()).expect("whole-diff comment");
@@ -7593,7 +7754,7 @@ mod tests {
 
         // Reopen the chip, clear the text, save empty -> delete.
         if let Some(o) = app.diff_overlay.as_mut() {
-            reopen_comment_for_turn(o, key, Some(0));
+            reopen_comment_for_turn(o, CommentRef { line: key, slot: 0 }, Some(0));
             if let Some(input) = o.active_input.as_mut() {
                 input.editor = InputState::new();
             }
@@ -7711,10 +7872,15 @@ mod tests {
         app.diff_overlay = Some(overlay);
         hydrate_threads(&mut app);
 
-        // Only the current-target thread renders.
+        // The union spans commits but not diff bases.
         let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
-        assert_eq!(comments.len(), 1, "only the main-target thread renders");
-        assert_eq!(comments[0].thread.id, "a");
+        let mut ids: Vec<&str> = comments.iter().map(|c| c.thread.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["a", "c"], "both main-target threads render, whatever their commit");
+        assert!(
+            !ids.contains(&"b"),
+            "a thread numbered against another base would land on unrelated code",
+        );
 
         let reloaded = ws.load_review_threads("forge", "feat").expect("load");
         assert_eq!(reloaded.len(), 3, "the other-target and commit-scoped threads survived");
@@ -8029,7 +8195,7 @@ mod tests {
     }
 
     #[test]
-    fn hydrate_whole_diff_ignores_commit_scoped() {
+    fn hydrate_whole_diff_takes_commit_scoped_threads_too() {
         let (mut app, _dir) = review_app();
         let ws = app.workspace.clone().expect("ws");
         let seed = |id: &str, commit: Option<&str>, text: &str| forge_primitives::ReviewThread {
@@ -8053,8 +8219,8 @@ mod tests {
             updated_at: "t0".to_owned(),
             commit: commit.map(str::to_owned),
         };
-        // The whole-diff thread drifts (line 5 -> 8) forcing a writeback;
-        // the commit-scoped thread must not render here and must survive.
+        // Both threads drift (line 5 -> 8) forcing a writeback. Same path
+        // and content, so they re-anchor onto one line and stack there.
         ws.save_review_threads(
             "forge",
             "feat",
@@ -8068,13 +8234,25 @@ mod tests {
         hydrate_threads(&mut app);
 
         let comments = &app.diff_overlay.as_ref().expect("overlay").comments;
-        assert_eq!(comments.len(), 1, "only the whole-diff thread renders in whole-diff scope");
-        assert_eq!(comments[0].commit, None);
-        assert_eq!(comments[0].thread.id, "wd");
+        let ids: Vec<&str> = comments.iter().map(|c| c.thread.id.as_str()).collect();
+        assert_eq!(ids, vec!["wd", "cs"], "the whole diff renders both, commit-scoped included");
+        assert!(
+            comments.iter().all(|c| c.commit.is_none()),
+            "a rendered comment carries the scope it is drawn in, not the one it was authored in",
+        );
+        assert_eq!(
+            comments[0].key, comments[1].key,
+            "same line, so they stack on one key and each needs its own click target",
+        );
 
         let reloaded = ws.load_review_threads("forge", "feat").expect("load");
         assert_eq!(reloaded.len(), 2, "both threads survive");
-        assert!(reloaded.iter().any(|t| t.id == "cs"), "the commit-scoped thread is preserved");
+        let cs = reloaded.iter().find(|t| t.id == "cs").expect("the commit-scoped thread");
+        assert_eq!(
+            cs.commit.as_deref(),
+            Some("sha0"),
+            "rendering it in the union does not rewrite which commit it was authored against",
+        );
     }
 
     #[test]
@@ -8318,7 +8496,7 @@ mod tests {
             persisted: false,
         });
 
-        reopen_comment_for_turn(&mut overlay, key, Some(0));
+        reopen_comment_for_turn(&mut overlay, CommentRef { line: key, slot: 0 }, Some(0));
 
         let input = overlay.active_input.as_ref().expect("the reopen opens an editor");
         assert_eq!(
@@ -8352,7 +8530,7 @@ mod tests {
         if let Some(o) = app.diff_overlay.as_mut() {
             o.comments[0].thread.status = ReviewStatus::Outdated;
         }
-        apply_thread_action(&mut app, key, ThreadAction::Resolve);
+        apply_thread_action(&mut app, CommentRef { line: key, slot: 0 }, ThreadAction::Resolve);
         assert_eq!(thread_status(&app), ReviewStatus::Resolved, "outdated resolves to resolved");
     }
 
@@ -8424,7 +8602,7 @@ mod tests {
 
         let key = app.diff_overlay.as_ref().expect("overlay").comments[0].key;
         if let Some(o) = app.diff_overlay.as_mut() {
-            reopen_comment_for_turn(o, key, Some(0));
+            reopen_comment_for_turn(o, CommentRef { line: key, slot: 0 }, Some(0));
         }
         cancel_active_input(&mut app);
 
