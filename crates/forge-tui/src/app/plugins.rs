@@ -6,6 +6,7 @@ use crate::app::config::{
     InstalledPluginActionOverlayState, MarketplaceActionKind, MarketplaceActionsOverlayState,
     PluginInstallActionKind, PluginInstallOverlayState,
 };
+use crate::app::input::InputState;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use forge_workspace::SessionUpdate;
 use std::path::PathBuf;
@@ -57,12 +58,12 @@ pub use forge_primitives::plugins::{
     PluginsCliActionSuccess, PluginsInventorySnapshot,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct PluginsState {
     pub active_tab: PluginsViewTab,
     pub search_focused: bool,
-    pub installed_search_query: String,
-    pub plugins_search_query: String,
+    pub installed_search_query: InputState,
+    pub plugins_search_query: InputState,
     pub installed_selected_index: usize,
     pub plugins_selected_index: usize,
     pub marketplace_selected_index: usize,
@@ -100,15 +101,15 @@ impl PluginsState {
         self.last_error = None;
     }
 
-    pub fn search_query_for(&self, tab: PluginsViewTab) -> &str {
+    pub fn search_query_for(&self, tab: PluginsViewTab) -> String {
         match tab {
-            PluginsViewTab::Installed => &self.installed_search_query,
-            PluginsViewTab::Plugins => &self.plugins_search_query,
-            PluginsViewTab::Marketplace => "",
+            PluginsViewTab::Installed => self.installed_search_query.text(),
+            PluginsViewTab::Plugins => self.plugins_search_query.text(),
+            PluginsViewTab::Marketplace => String::new(),
         }
     }
 
-    pub fn active_search_query_mut(&mut self) -> Option<&mut String> {
+    pub fn active_search_query_mut(&mut self) -> Option<&mut InputState> {
         match self.active_tab {
             PluginsViewTab::Installed => Some(&mut self.installed_search_query),
             PluginsViewTab::Plugins => Some(&mut self.plugins_search_query),
@@ -126,7 +127,7 @@ pub(crate) fn handle_paste(app: &mut App, text: &str) -> bool {
         return false;
     }
     if let Some(query) = app.plugins.active_search_query_mut() {
-        query.push_str(&normalized);
+        query.insert_str(&normalized);
         reset_selection_for_active_tab(app);
         return true;
     }
@@ -181,7 +182,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             if search_enabled(app.plugins.active_tab)
                 && app.plugins.search_focused
                 && let Some(query) = app.plugins.active_search_query_mut()
-                && query.pop().is_some()
+                && query.textarea_delete_char_before()
             {
                 reset_selection_for_active_tab(app);
             }
@@ -213,7 +214,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 && app.plugins.search_focused
                 && let Some(query) = app.plugins.active_search_query_mut()
             {
-                query.push(ch);
+                query.insert_char(ch);
                 reset_selection_for_active_tab(app);
             }
             true
@@ -339,13 +340,8 @@ pub(crate) fn clamp_selection(app: &mut App) {
 }
 
 pub(crate) fn filtered_installed(state: &PluginsState) -> Vec<&InstalledPluginEntry> {
-    state
-        .installed
-        .iter()
-        .filter(|entry| {
-            installed_entry_matches(entry, state.search_query_for(PluginsViewTab::Installed))
-        })
-        .collect()
+    let query = state.search_query_for(PluginsViewTab::Installed);
+    state.installed.iter().filter(|entry| installed_entry_matches(entry, &query)).collect()
 }
 
 pub(crate) fn ordered_installed<'a>(
@@ -377,13 +373,8 @@ pub(crate) fn relevant_installed_count(state: &PluginsState, current_project_raw
 }
 
 pub(crate) fn filtered_marketplace_plugins(state: &PluginsState) -> Vec<&MarketplaceEntry> {
-    state
-        .marketplace
-        .iter()
-        .filter(|entry| {
-            marketplace_plugin_matches(entry, state.search_query_for(PluginsViewTab::Plugins))
-        })
-        .collect()
+    let query = state.search_query_for(PluginsViewTab::Plugins);
+    state.marketplace.iter().filter(|entry| marketplace_plugin_matches(entry, &query)).collect()
 }
 
 pub(crate) fn visible_marketplaces(state: &PluginsState) -> Vec<&MarketplaceSourceEntry> {
@@ -1282,6 +1273,12 @@ mod tests {
     use super::*;
     use crate::agent::model;
 
+    fn query(text: &str) -> InputState {
+        let mut editor = InputState::new();
+        editor.set_text(text);
+        editor
+    }
+
     fn app_with_connection()
     -> (crate::app::App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         let mut app = crate::app::App::test_default();
@@ -1336,7 +1333,7 @@ mod tests {
     #[test]
     fn filtered_marketplace_plugins_match_on_name_description_and_marketplace() {
         let state = PluginsState {
-            plugins_search_query: "official".to_owned(),
+            plugins_search_query: query("official"),
             marketplace: vec![MarketplaceEntry {
                 plugin_id: "frontend-design@claude-plugins-official".to_owned(),
                 name: "frontend-design".to_owned(),
@@ -1436,8 +1433,8 @@ mod tests {
     #[test]
     fn installed_and_plugins_search_queries_are_independent() {
         let state = PluginsState {
-            installed_search_query: "installed".to_owned(),
-            plugins_search_query: "plugins".to_owned(),
+            installed_search_query: query("installed"),
+            plugins_search_query: query("plugins"),
             ..PluginsState::default()
         };
 
