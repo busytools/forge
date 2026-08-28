@@ -384,7 +384,7 @@
   <span class="dim bold">User</span>
   <span class="user-band">  Read the rate-limit code and add a softer wording branch.               </span>
 
-  <span class="accent-bold">Claude</span>
+  <span class="dim">8.7s</span>
   Assistant prose, full markdown rendering. Code blocks, lists, inline emphasis,
   links - all handled via <span class="dim">tui-markdown</span> / <span class="dim">syntect</span>.
 
@@ -1092,10 +1092,10 @@ chat continues here...
     <div class="when">visible: every assistant turn</div>
   </div>
   <div class="surface-body">
-    <p>Role banner is the literal text "<strong>Forge</strong>" in <code>theme::ROLE_ASSISTANT</code> (RUST_ORANGE) bold, followed by a DIM duration chip <code> · 12.4s</code> on completed turns (sourced from <code>Message::Result.duration_ms</code> - every Result event carries the turn duration). Body is full markdown via <code>tui-markdown</code> (which uses <code>pulldown-cmark</code>) with <code>syntect</code> for fenced code blocks.</p>
+    <p>There is no role banner. The header row is the DIM turn duration alone - <code>12.4s</code>, sourced from <code>Message::Result.duration_ms</code> - and it renders only once the turn completes; a streaming or resumed turn carries no duration and so renders no header row at all, with the body starting on the first line. Body is full markdown via <code>tui-markdown</code> (which uses <code>pulldown-cmark</code>) with <code>syntect</code> for fenced code blocks.</p>
     <div class="term">
       <pre class="indent">
-  <span class="accent-bold">Forge</span><span class="dim"> · 12.4s</span>
+  <span class="dim">12.4s</span>
   Looking at <span class="dim">crates/forge-tui/src/app/events/rate_limit.rs</span> - the warning chip
   has only one wording today. I'll add a quieter branch for the
   near-threshold-no-overage case.
@@ -1114,7 +1114,7 @@ chat continues here...
     </div>
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/message.rs::role_label_line</code> · markdown via <code>crates/forge-tui/src/ui/markdown.rs</code></dd>
-      <dt>color</dt><dd>banner: RUST_ORANGE bold  ·  duration chip: <code>theme::DIM</code>  ·  body: terminal default fg with markdown styles  ·  inline code: <code>theme::DIM</code> tint</dd>
+      <dt>color</dt><dd>duration row: <code>theme::DIM</code>  ·  body: terminal default fg with markdown styles  ·  inline code: <code>theme::DIM</code> tint</dd>
       <dt>duration formatting</dt><dd>&lt; 60s → <code>12.4s</code> (one decimal) · ≥ 60s → <code>1m 04s</code> · ≥ 1h → <code>1h 02m 04s</code></dd>
       <dt>stamp source</dt><dd>The chip is stamped from <code>Message::Result.duration_ms</code> by <code>stamp_turn_duration_on_latest_assistant</code> in <code>app/events/sdk_message.rs</code>. <code>system/turn_duration</code> never fires in 2.1.156 (verified across 43 baselines + 14 fresh captures, all zero); the prior chip read from that dead event and was deleted in #283. Same chip, different wire source.</dd>
     </dl>
@@ -1416,7 +1416,6 @@ chat continues here...
     <div class="term">
       <pre class="indent">
 <span class="dim italic">// user turn - inbound envelope from steward</span>
-<span class="accent bold">Forge</span>
   <span class="accent">&#x25B6;</span> <span class="bold">&#x2935;</span> <span class="bold">Message steward</span>
   <span class="dim">&#x2514;&#x2500;</span> the window is lost   <span class="dim">click or ctrl+x to expand</span>
 
@@ -1433,7 +1432,7 @@ chat continues here...
   <span class="success">✓</span> <span class="bold">▶ ⤴</span> <span class="bold">Tell lead</span>
   <span class="success">✓</span> <span class="bold">▶ ⤵</span> <span class="bold">Message from reviewer</span></pre>
     </div>
-    <p><strong>L0 expansion</strong> falls through to the standard <a href="#peer-block">peer-block render</a> per message - full body indented under <code>│  </code> / <code>└─</code> tree connectors, Forge role header introducing each direction transition. Individual row body can still be re-collapsed via the standard <code>collapsed_override</code> path.</p>
+    <p><strong>L0 expansion</strong> falls through to the standard <a href="#peer-block">peer-block render</a> per message - full body indented under <code>│  </code> / <code>└─</code> tree connectors, each row's own <code>▶ Verb name</code> header naming the direction and the peer. Individual row body can still be re-collapsed via the standard <code>collapsed_override</code> path.</p>
     <p>Click on a messaging group's summary row cycles its level (L2 → L1 → L0). <code>ctrl+x</code> (Cmd+X) is the binary global toggle: collapsed → L2, expanded → L0; the gesture also clears the per-group <code>messaging_group_collapse_levels</code> map alongside the tool-group map so a fresh resolve-from-global applies uniformly. <code>L1Titles</code> stays reachable only via the per-group click cycle.</p>
     <dl>
       <dt>code</dt><dd><code>partition_blocks_into_render_units</code> in <code>crates/forge-tui/src/ui/message/grouping.rs</code>: the tool-call pass runs first, then <code>merge_messaging_groups</code> folds runs of peer/worker blocks into <code>RenderUnit::MessagingGroup { segments, group_leader_id }</code>. Each segment carries <code>block_range</code>, <code>KindSummary::total()</code>, per-direction targets and <code>aggregate_status</code>. Tool-call run &rarr; <code>RenderUnit::Group</code>; adjacent peer + tool runs never merge. Collapse state lives in <code>UiSession.messaging_group_collapse_levels</code>, keyed on the group leader: the leading outbound block's <code>tool_use_id</code>, or for an inbound-led run the envelope's own correlation id (<code>inbound-&lt;id&gt;</code>). The id comes from the envelope rather than the block's position, so history pruning and index shifts cannot re-target a collapse level onto a different group.</dd>
@@ -1555,7 +1554,7 @@ chat continues here...
     <div class="when">visible: every <code>mcp__forge__peers__*</code> / <code>mcp__forge__workers__ask|tell</code> tool call the LLM emits, and every inbound wrapped envelope (<code>[Question ...]</code>, <code>[Message ...]</code>, <code>[Reply ...]</code>, <code>[Late reply ...]</code>, <code>[Ask ... timed out ...]</code>, <code>[Ask ... has expired ...]</code>, <code>[Ask ... failed to deliver: ...]</code>, <code>[Worker ... spawn failed ...]</code>)</div>
   </div>
   <div class="surface-body">
-    <p>Five TitleCase verbs cover every variant; the verb names the kind, a leading directional kind-icon names the direction. Outbound (<code>Tell</code>, <code>Ask</code>) carries <code>⤴</code> (U+2934); inbound (<code>Message</code>, <code>Question</code>, <code>Reply</code>) carries <code>⤵</code> (U+2935). Each row reads <code>▶ ⤴ Verb name</code> (outbound) or <code>▶ ⤵ Verb name</code> (inbound) with the body indented under the standard tool-card tree connectors (<code>│  </code> for continuation, <code>└─ </code> for the last line). Same <code>Forge</code> role header that introduces assistant streams introduces these too - one identity, not two.</p>
+    <p>Five TitleCase verbs cover every variant; the verb names the kind, a leading directional kind-icon names the direction. Outbound (<code>Tell</code>, <code>Ask</code>) carries <code>⤴</code> (U+2934); inbound (<code>Message</code>, <code>Question</code>, <code>Reply</code>) carries <code>⤵</code> (U+2935). Each row reads <code>▶ ⤴ Verb name</code> (outbound) or <code>▶ ⤵ Verb name</code> (inbound) with the body indented under the standard tool-card tree connectors (<code>│  </code> for continuation, <code>└─ </code> for the last line). No source label sits above them: the row names its own kind and peer, so a label restating it is redundant weight.</p>
     <table>
       <thead>
         <tr><th>Verb</th><th>Direction</th><th>Wire shape</th></tr>
@@ -1570,8 +1569,6 @@ chat continues here...
     </table>
     <div class="term">
       <pre class="indent">
-   <span class="accent bold">Forge</span>
-
      <span class="accent bold">▶</span> <span class="dim bold">⤴</span> <span class="bold">Tell planner</span>
      <span class="dim">└─ Re-stating tight: #178 go option A, #179+#180 brainstorm, #182 opt-in.</span>
 
@@ -1612,7 +1609,7 @@ chat continues here...
       <dt>collapse / expand</dt><dd>body ellipsed to one line by default (collapsed shape: <code>└─ &lt;first 60 chars&gt;...</code>); click the row to expand the full body inline. Same affordance pattern the existing peer block uses for collapsed-by-default</dd>
       <dt>same-worker streak</dt><dd>three consecutive envelopes from the same worker (per <code>chat::group_envelope_streak</code>) stack body lines under one header - no repeated <code>▶ Message &lt;same-name&gt;</code> rows. Same-project envelope streaks (different workers in the same project) still get one header per worker</dd>
       <dt>variants</dt><dd>5 main verbs (<code>Tell</code> · <code>Ask</code> · <code>Message</code> · <code>Question</code> · <code>Reply</code>) + 4 notice modifiers (<code>⚠ timed out</code> · <code>⚠ undeliverable</code> · <code>⚠ late</code> · <code>⚠ expired</code>) + 2 directional kind-icons (<code>⤴</code> outbound · <code>⤵</code> inbound) in the slot between the row glyph and the verb. Outbound covers <code>render_outbound</code> (Ask / Tell); inbound covers every <code>render_inbound</code> arm including the timeout / delivery-failure notices whose original asks were ours but whose notice envelopes arrived inbound. <code>[Worker ... spawn failed ...]</code> stays as a one-line system notice with no kind-icon (workspace-generated lifecycle event, not a peer comm)</dd>
-      <dt>dropped from prior shape</dt><dd>status glyph (<code>✓</code> / <code>⚠</code> / <code>✗</code>), kind icons (<code>←</code> / <code>→</code> / <code>↩</code>), correlation id chrome (<code>· q-...</code>), <code>(org)</code> meta on same-org rows, lowercase / TitleCase identity mismatch between <code>Forge</code> and <code>(worker in ...)</code>. <code>workers__spawn</code> / <code>workers__list</code> revert to standard tool_call rendering (they're worker lifecycle, not peer comm)</dd>
+      <dt>dropped from prior shape</dt><dd>status glyph (<code>✓</code> / <code>⚠</code> / <code>✗</code>), kind icons (<code>←</code> / <code>→</code> / <code>↩</code>), correlation id chrome (<code>· q-...</code>), <code>(org)</code> meta on same-org rows, the <code>(worker in ...)</code> identity suffix. <code>workers__spawn</code> / <code>workers__list</code> revert to standard tool_call rendering (they're worker lifecycle, not peer comm)</dd>
       <dt>parser shape</dt><dd>pure prefix string-match + manual field extraction (<code>take_until</code>, <code>rest_after_id</code>, <code>id_before</code>, <code>extract_from_agent_after</code>). No regex. Malformed envelopes fall through to the default user-message rendering rather than erroring</dd>
       <dt>suppression</dt><dd><code>crates/forge-tui/src/ui/tool_call.rs</code> sets <code>ToolCallInfo.hidden = true</code> for <code>mcp__forge__peers__*</code> and <code>mcp__forge__workers__ask</code> / <code>workers__tell</code>; <code>workers__spawn</code> / <code>workers__list</code> render as standard tool cards</dd>
       <dt>arrival order + running state</dt><dd>an inbound peer / worker turn appends at the <strong>tail</strong> in arrival order - never repositioned above the in-flight assistant turn that holds the outbound send. Delivery then mirrors <code>input_submit::dispatch_prompt</code> exactly: strip any stranded empty placeholder (so rapid back-to-back delivery - a Gotify flood - never leaves a blank bubble between turns), open a fresh empty assistant placeholder at the tail, and reparent the active-turn pointer onto it (<code>App::push_active_turn_assistant_placeholder</code>) so the thinking spinner pins to the bottom above the input - not on a stale earlier assistant near the top - then flip the session to a running state (chat spinner + <a href="#projects-pane">Projects pane</a> spin) so it reads as active rather than idle-then-burst. All live in <code>sdk_message::push_peer_envelope_user_turn_if_present</code> (gated on <code>!replay_in_progress</code> so a resumed history doesn't open a live turn or stick the spinner)</dd>
@@ -1626,7 +1623,7 @@ chat continues here...
     <div class="when">visible: every matched Gotify notification delivered into a subscribed session (project lead or a team worker), echoed as an inbound external-notification block at the tail, ahead of the response it triggers</div>
   </div>
   <div class="surface-body">
-    <p>A matched notification is delivered as a user turn (every notification is its own turn) and echoed into the chat so the user sees what arrived. It reads unambiguously as an external notification, not agent traffic: a <span class="gotify">Gotify</span> source label (not <span class="accent">Forge</span>), the ◈ gotify glyph (<span class="gotify bold">&#x25C8;</span>, not <span class="accent">&#x25B6;</span>), and an <code>app 'X' - priority N</code> header. The body carries the notification title then message under the standard tree connectors (<code>&#x2502;&nbsp;&nbsp;</code> continuation, <code>&#x2514;&#x2500;</code> last).</p>
+    <p>A matched notification is delivered as a user turn (every notification is its own turn) and echoed into the chat so the user sees what arrived. It reads unambiguously as an external notification, not agent traffic: a <span class="gotify">Gotify</span> source label where peer / worker traffic carries none, the ◈ gotify glyph (<span class="gotify bold">&#x25C8;</span>, not <span class="accent">&#x25B6;</span>), and an <code>app 'X' - priority N</code> header. The body carries the notification title then message under the standard tree connectors (<code>&#x2502;&nbsp;&nbsp;</code> continuation, <code>&#x2514;&#x2500;</code> last).</p>
     <div class="term">
       <pre class="indent">
    <span class="gotify bold">Gotify</span>
@@ -1656,7 +1653,7 @@ chat continues here...
     <div class="when">visible: every durable cron that fires into its owner (the project lead or a worker, woken if asleep), echoed as a cron block at the tail, ahead of the response it triggers</div>
   </div>
   <div class="surface-body">
-    <p>A due cron is delivered as a user turn (the session's LLM receives the raw prompt) and echoed into the chat so the user sees what fired instead of the agent bursting into a response from nowhere. It reads as an internal scheduled event, not typed input: a <span class="accent">Cron</span> source label (not <span class="accent">Forge</span>), the ◴ cron glyph (<span class="accent bold">&#x25F4;</span>, the same glyph the <a href="#inspector-pane">SCHEDULES</a> section uses, not <span class="accent">&#x25B6;</span>), and the fired prompt under the standard tree connectors (<code>&#x2502;&nbsp;&nbsp;</code> continuation, <code>&#x2514;&#x2500;</code> last). An overdue fire (forge or the owner was down through the scheduled minute) prefixes the prompt with a plain <code>[missed cron]</code> marker so a catch-up reads apart from an on-time fire.</p>
+    <p>A due cron is delivered as a user turn (the session's LLM receives the raw prompt) and echoed into the chat so the user sees what fired instead of the agent bursting into a response from nowhere. It reads as an internal scheduled event, not typed input: a <span class="accent">Cron</span> source label where peer / worker traffic carries none, the ◴ cron glyph (<span class="accent bold">&#x25F4;</span>, the same glyph the <a href="#inspector-pane">SCHEDULES</a> section uses, not <span class="accent">&#x25B6;</span>), and the fired prompt under the standard tree connectors (<code>&#x2502;&nbsp;&nbsp;</code> continuation, <code>&#x2514;&#x2500;</code> last). An overdue fire (forge or the owner was down through the scheduled minute) prefixes the prompt with a plain <code>[missed cron]</code> marker so a catch-up reads apart from an on-time fire.</p>
     <div class="term">
       <pre class="indent">
    <span class="accent bold">Cron</span>
