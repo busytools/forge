@@ -47,7 +47,7 @@ pub enum Error {
     /// [`crate::Progress::Ready`] is installed - and any partial transfer
     /// is left where it is, so a later call resumes rather than starting
     /// over.
-    #[error("cancelled by the progress callback")]
+    #[error("cancelled on request")]
     Cancelled,
 
     /// The source declares a rate the models cannot read. Rejected

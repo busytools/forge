@@ -110,6 +110,20 @@ mod tests {
 
     /// Transcribed from the model card's hand-built-prompt section, not
     /// from `build`, so the two agree only if `build` is right.
+    /// The three shipped defaults, pinned in one assertion.
+    ///
+    /// Each enum's `#[default]` is otherwise checked by nothing, so
+    /// moving one while tuning would silently change every user's output
+    /// with the suite, clippy and CI all green.
+    #[test]
+    fn the_default_control_line_is_the_shipped_one() {
+        let p = build("anything", Styling::default(), Structure::default(), Context::default());
+        assert!(
+            p.contains("[Styling: semi-formal] [Structure: prose] [Context: general]"),
+            "the shipped defaults must stay semi-formal / prose / general, got: {p}"
+        );
+    }
+
     const CARD_EXAMPLE: &str = "<|im_start|>system\nYou are a text normalizer for speech-to-text transcripts. The input begins with a control line specifying the styling, structure, and context settings; clean the transcript to match those settings and output only the cleaned text.<|im_end|>\n<|im_start|>user\n[Styling: semi-formal] [Structure: prose] [Context: general]\nso um send the report by uh friday<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n";
 
     #[test]
@@ -160,10 +174,10 @@ mod tests {
         }
     }
 
-    /// Insurance, not coverage: `CARD_EXAMPLE` already carries this prefix
-    /// verbatim, so no mutation kills this without also killing the test
-    /// above. It is kept for the failure message, which names the one
-    /// omission that makes the model answer `<think>` and stop.
+    /// Insurance, not coverage: `CARD_EXAMPLE` already carries this
+    /// prefix verbatim, so this cannot fail on its own. Kept for the
+    /// failure message, which names the one omission that makes the
+    /// model answer `<think>` and stop.
     ///
     /// Spelled out rather than compared against [`ASSISTANT_PREFIX`]: the
     /// constant is what builds the prompt, so checking one against the

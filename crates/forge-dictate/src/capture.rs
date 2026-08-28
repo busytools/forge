@@ -376,8 +376,11 @@ mod tests_recording {
     fn a_named_device_that_is_absent_never_falls_back() {
         // Skipped where there is no audio stack at all, since then the
         // absence proves nothing about the resolution path.
+        // Guarded on a DEFAULT existing, not merely on the list being
+        // non-empty: the second assertion needs `default_input_device()`
+        // to be Some, which is a different cpal call.
         let Ok(found) = devices() else { return };
-        if found.is_empty() {
+        if !found.iter().any(|d| d.is_default) {
             return;
         }
         assert!(

@@ -181,6 +181,7 @@ impl ConfigBuilder {
 #[cfg(test)]
 mod tests_config {
     use super::*;
+    use crate::normalize::Styling;
     use std::path::Path;
 
     #[test]
@@ -193,6 +194,11 @@ mod tests_config {
             "the default asr model is Cohere Transcribe at Q4_K_M"
         );
         assert!(cfg.normalizer.is_some(), "normalization is on by default");
+        assert_eq!(
+            cfg.normalize_options,
+            NormalizeOptions::default(),
+            "the shipped normalizer settings are the default ones; nothing else pins this"
+        );
         assert!(cfg.language.is_none(), "language defaults to autodetect");
         assert_eq!(cfg.max_capture, Duration::from_secs(120), "max_capture defaults to 120s");
         assert!(
@@ -211,6 +217,10 @@ mod tests_config {
             .max_capture(Duration::from_secs(5))
             .silence_floor(-30.0)
             .normalizer(ModelSpec::cohere_transcribe_q4_k_m())
+            .normalize_options(NormalizeOptions {
+                styling: Styling::Casual,
+                ..NormalizeOptions::default()
+            })
             .build();
 
         assert_eq!(
@@ -242,6 +252,12 @@ mod tests_config {
             cfg.normalizer.map(|n| n.file),
             Some(ModelSpec::cohere_transcribe_q4_k_m().file),
             "a bare ModelSpec must reach the Option field"
+        );
+
+        assert_eq!(
+            cfg.normalize_options.styling,
+            Styling::Casual,
+            "normalize_options must reach the field the engine reads, not be dropped by the builder"
         );
 
         let off = ConfigBuilder::new().normalizer(None).build();

@@ -66,11 +66,14 @@ pub struct Transcript {
     pub asr: String,
     /// Where the time went.
     pub stages: Stages,
-    /// The recording hit [`Config::max_capture`] and was cut short, so
-    /// this is what fitted rather than what was said. Carried here
-    /// rather than only logged: a host cannot offer to keep going, or
-    /// say "stopped at two minutes", from a log line it may not be
-    /// routing.
+    /// This is what fitted rather than what was said - either the
+    /// recording hit [`Config::max_capture`], or the decode ran out of
+    /// its output budget. Carried here rather than only logged: a host
+    /// cannot offer to keep going from a log line it may not be routing.
+    ///
+    /// Deliberately does not say WHICH cut it: a host that wants to
+    /// distinguish them can compare [`Stages::audio`] against its
+    /// configured cap.
     pub truncated: bool,
 }
 
@@ -104,11 +107,41 @@ pub enum Outcome {
         /// Also measured: that condition is sticky within a process. A
         /// second capture behaved identically with no second prompt, so
         /// a host should surface it rather than retry in a loop.
+        ///
+        /// None of that applies to an [`crate::AudioSource`] that yielded
+        /// no samples, which reaches the same value with no device in
+        /// play at all.
         peak: f32,
         /// How much audio was heard, so a caller can say "four seconds of
         /// nothing" rather than just "nothing".
         audio: Duration,
     },
+}
+
+/// Rewrite recognition output, recording what it cost.
+///
+/// A normalizer that fails mid-session must not cost the speaker their
+/// words: the raw text is returned and `stages.normalize` stays `None`,
+/// which is the same shape as no normalizer being configured. A caller
+/// knows which, because it knows what it configured.
+fn normalize_text(
+    normalizer: Option<&crate::normalize::Normalizer>,
+    asr: &str,
+    options: crate::normalize::NormalizeOptions,
+    stages: &mut Stages,
+) -> String {
+    let Some(normalizer) = normalizer else { return asr.to_owned() };
+    let started = Instant::now();
+    match normalizer.normalize_with(asr, options) {
+        Ok(clean) => {
+            stages.normalize = Some(started.elapsed());
+            clean
+        }
+        Err(error) => {
+            tracing::warn!(%error, "normalization failed; returning raw text");
+            asr.to_owned()
+        }
+    }
 }
 
 /// Samples to wall-clock at the one rate the models accept. Integer
@@ -571,50 +604,31 @@ fn worker(
                 // A normalizer that fails mid-session must not cost the
                 // speaker their words: fall back to the recognised text
                 // and say so, where a load failure above is fatal.
-                let text = match normalizer.as_ref() {
-                    None => asr.clone(),
-                    Some(normalizer) => {
-                        let started = Instant::now();
-                        match normalizer.normalize_with(&asr, job.options) {
-                            Ok(clean) => {
-                                stages.normalize = Some(started.elapsed());
-                                clean
-                            }
-                            Err(error) => {
-                                tracing::warn!(%error, "normalization failed; returning raw text");
-                                asr.clone()
-                            }
-                        }
-                    }
-                };
+                let text = normalize_text(normalizer.as_ref(), &asr, job.options, &mut stages);
                 // Consumed here rather than where `stages` is built: an
                 // error or a cancel discards the stages, and taking the
                 // load cost there would lose it for the process.
                 first = false;
                 Ok(Outcome::Transcript(Transcript { asr, text, stages, truncated: job.truncated }))
             }
-            // `was_aborted` is what separates a cancellation from a real
-            // fault: both arrive as an error from `run`, and folding them
-            // together would report a user's own abort as recognition
-            // failing.
-            Err(_) if session.was_aborted() => Err(Error::Cancelled),
-            // A decode that runs out of budget still recognised words,
-            // and the library hands them back on the error. The
-            // catch-all below would discard them, which is the same harm
-            // `Transcript::truncated` exists to prevent one layer up.
-            Err(source) if session.was_truncated() => match source.partial() {
-                Some(partial) => {
-                    let asr = partial.text.trim().to_owned();
-                    first = false;
-                    Ok(Outcome::Transcript(Transcript {
-                        text: asr.clone(),
-                        asr,
-                        stages,
-                        truncated: true,
-                    }))
-                }
-                None => Err(Error::Recognition { message: source.to_string() }),
-            },
+            // Discriminated on the ERROR VARIANT rather than on
+            // `was_aborted`/`was_truncated`. Those report "the most
+            // recent run", and `run` has early returns that never reach
+            // native at all - an interior NUL in the language string, an
+            // oversized buffer, a busy session - on which the flags still
+            // hold the PREVIOUS job's value. Per-error state cannot go
+            // stale.
+            Err(transcribe_cpp::Error::Aborted { .. }) => Err(Error::Cancelled),
+            // A decode that ran out of budget still recognised words, and
+            // the library hands them back on the error. Normalized like
+            // any other transcript: the only thing different about this
+            // path is that the audio outran the budget.
+            Err(transcribe_cpp::Error::OutputTruncated { partial: Some(partial), .. }) => {
+                let asr = partial.text.trim().to_owned();
+                let text = normalize_text(normalizer.as_ref(), &asr, job.options, &mut stages);
+                first = false;
+                Ok(Outcome::Transcript(Transcript { asr, text, stages, truncated: true }))
+            }
             Err(source) => Err(Error::Recognition { message: source.to_string() }),
         };
         in_flight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
@@ -713,11 +727,8 @@ mod tests_engine {
         }
     }
 
-    /// The only CI-reachable test that puts jobs in the worker's queue.
-    ///
-    /// Both existing submit tests short-circuit on silence and return
-    /// before `jobs.send()`, so the queue loop is otherwise unexercised
-    /// without weights. Loud audio and a missing model means the worker's
+    /// Loud audio, so the silence short-circuit is not taken and the
+    /// jobs genuinely reach the worker's queue. With no model on disk the
     /// load-failure drain answers both, which pins that every job
     /// resolves on its OWN reply channel and that neither hangs.
     #[test]
@@ -920,6 +931,54 @@ mod tests_real_recognition {
         assert_ne!(
             a.text, b.text,
             "a styling override that changes nothing is a decorative argument: {}",
+            a.text
+        );
+    }
+
+    /// The `Config` -> `Engine` settings leg, which is a DIFFERENT path
+    /// from the per-call override above.
+    ///
+    /// `a_styling_override_changes_the_text` goes through
+    /// `transcribe_with`; this one sets the styling on the config and
+    /// calls plain `transcribe`, so it is the only thing that catches
+    /// `Engine::new` dropping `cfg.normalize_options` on the floor.
+    #[test]
+    #[ignore = "needs both models; run with --run-ignored all after `--example fetch`"]
+    fn config_styling_reaches_the_model_without_a_per_call_override() {
+        use crate::normalize::{NormalizeOptions, Styling};
+
+        let clip = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/10_013s.wav");
+        let (pcm, rate) = read_wav(&clip);
+
+        let shipped = Engine::new(ConfigBuilder::new().build()).expect("engine must start");
+        let casual = Engine::new(
+            ConfigBuilder::new()
+                .normalize_options(NormalizeOptions {
+                    styling: Styling::Casual,
+                    ..NormalizeOptions::default()
+                })
+                .build(),
+        )
+        .expect("engine must start");
+
+        let a = shipped
+            .transcribe(Samples::new(pcm.clone(), rate, 1))
+            .expect("queued")
+            .recv()
+            .expect("must transcribe");
+        let b = casual
+            .transcribe(Samples::new(pcm, rate, 1))
+            .expect("queued")
+            .recv()
+            .expect("must transcribe");
+
+        let (Outcome::Transcript(a), Outcome::Transcript(b)) = (a, b) else {
+            panic!("both runs must produce transcripts");
+        };
+        assert_eq!(a.asr, b.asr, "the same audio must recognise identically; only styling differs");
+        assert_ne!(
+            a.text, b.text,
+            "config styling that never reaches the model is a setting in name only: {}",
             a.text
         );
     }
