@@ -101,9 +101,8 @@ fn text_matches(anchor: &ReviewAnchor, text: &str) -> bool {
 /// short call - so at least one neighbour must agree.
 fn neighbourhood_matches(anchor: &ReviewAnchor, hunk: &Hunk, line_idx: usize) -> bool {
     let recorded: HashSet<String> = anchor.context.iter().map(|l| normalise_ws(l)).collect();
-    let agrees = |i: usize| {
-        hunk.lines.get(i).is_some_and(|l| recorded.contains(&normalise_ws(&l.text)))
-    };
+    let agrees =
+        |i: usize| hunk.lines.get(i).is_some_and(|l| recorded.contains(&normalise_ws(&l.text)));
     let before = (line_idx.saturating_sub(CONTEXT_RADIUS)..line_idx).any(agrees);
     let after = (line_idx.saturating_add(1)
         ..line_idx.saturating_add(CONTEXT_RADIUS).saturating_add(1).min(hunk.lines.len()))
@@ -124,8 +123,7 @@ pub fn resolve_anchor(anchor: &ReviewAnchor, files: &[FileHunks]) -> AnchorResol
     // In place: the recorded line number still carrying the same content.
     for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
         for (line_idx, line) in hunk.lines.iter().enumerate() {
-            if side_line(line, anchor.side) == Some(anchor.line)
-                && text_matches(anchor, &line.text)
+            if side_line(line, anchor.side) == Some(anchor.line) && text_matches(anchor, &line.text)
             {
                 return AnchorResolution::InPlace { file_idx, hunk_idx, line_idx };
             }
@@ -400,7 +398,6 @@ mod tests {
             "only helper's brace has the recorded neighbours; the closer brace is not a candidate",
         );
     }
-
 
     #[test]
     fn a_reindented_line_is_the_same_anchor() {

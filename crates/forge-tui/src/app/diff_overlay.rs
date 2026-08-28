@@ -2542,11 +2542,8 @@ fn renudge_reopened(app: &mut App, at: CommentRef) {
     let review_tag = app.diff_overlay.as_ref().and_then(|overlay| {
         // The latest round, not the origin: that is the exchange the
         // reviewer is unhappy with.
-        let review_id = overlay
-            .comments
-            .get(overlay.comment_index_at(at)?)?
-            .thread
-            .latest_review()?;
+        let review_id =
+            overlay.comments.get(overlay.comment_index_at(at)?)?.thread.latest_review()?;
         overlay.reviews.iter().find(|r| r.id == review_id).map(|r| r.number)
     });
     let nudge = match review_tag {
@@ -4440,7 +4437,8 @@ mod tests {
             persisted: false,
         });
         state.recompute_comment_counts();
-        state.body_keys = vec![BodyRowKey::CommentTurn { at: CommentRef { line: key, slot: 0 }, turn_idx: 0 }];
+        state.body_keys =
+            vec![BodyRowKey::CommentTurn { at: CommentRef { line: key, slot: 0 }, turn_idx: 0 }];
         state.pane_origin_row = 0;
         state.pane_origin_col = 41;
         state.pane_width = 119;
@@ -4570,7 +4568,8 @@ mod tests {
             persisted: false,
         });
         state.recompute_comment_counts();
-        state.body_keys = vec![BodyRowKey::CommentTurn { at: CommentRef { line: key_a, slot: 0 }, turn_idx: 0 }];
+        state.body_keys =
+            vec![BodyRowKey::CommentTurn { at: CommentRef { line: key_a, slot: 0 }, turn_idx: 0 }];
         state.pane_origin_row = 0;
         state.pane_origin_col = 41;
         state.pane_width = 119;
@@ -5594,8 +5593,6 @@ mod tests {
             "line numbers against another base would anchor onto unrelated code",
         );
     }
-
-
 
     #[test]
     fn only_resolved_collapses() {
@@ -7206,29 +7203,28 @@ mod tests {
     fn hydrate_reanchors_in_place_moved_and_outdated() {
         let (mut app, _dir) = review_app();
         let ws = app.workspace.clone().expect("ws");
-        let seed = |id: &str, line: u32, text: &str, context: &[&str]| {
-            forge_primitives::ReviewThread {
-            id: id.to_owned(),
-            anchor: ReviewAnchor {
-                path: "src/x.rs".to_owned(),
-                side: ReviewSide::New,
-                line,
-                content_hash: resolver::anchor_hash(text),
-                context: context.iter().map(|c| (*c).to_owned()).collect(),
-                base_ref: "main".to_owned(),
-            },
-            comments: vec![ReviewComment {
-                author: ReviewAuthor::User,
-                text: text.to_owned(),
-                at: String::new(),
-                review_id: None,
-            }],
-            status: ReviewStatus::Open,
-            created_at: "t0".to_owned(),
-            updated_at: "t0".to_owned(),
-            commit: None,
-            }
-        };
+        let seed =
+            |id: &str, line: u32, text: &str, context: &[&str]| forge_primitives::ReviewThread {
+                id: id.to_owned(),
+                anchor: ReviewAnchor {
+                    path: "src/x.rs".to_owned(),
+                    side: ReviewSide::New,
+                    line,
+                    content_hash: resolver::anchor_hash(text),
+                    context: context.iter().map(|c| (*c).to_owned()).collect(),
+                    base_ref: "main".to_owned(),
+                },
+                comments: vec![ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: text.to_owned(),
+                    at: String::new(),
+                    review_id: None,
+                }],
+                status: ReviewStatus::Open,
+                created_at: "t0".to_owned(),
+                updated_at: "t0".to_owned(),
+                commit: None,
+            };
         ws.save_review_threads(
             "forge",
             "feat",
@@ -7737,7 +7733,11 @@ mod tests {
         assert_eq!(waiting_count(&app), Some(2), "both answers await a look");
 
         let resolved_key = app.diff_overlay.as_ref().expect("overlay").comments[0].key;
-        apply_thread_action(&mut app, CommentRef { line: resolved_key, slot: 0 }, ThreadAction::Resolve);
+        apply_thread_action(
+            &mut app,
+            CommentRef { line: resolved_key, slot: 0 },
+            ThreadAction::Resolve,
+        );
 
         assert_eq!(waiting_count(&app), Some(1), "resolve is how a read answer is dismissed");
     }
@@ -8096,11 +8096,7 @@ mod tests {
         // writeback. The "HEAD"-target thread must survive that writeback.
         let files = vec![single_hunk_file(
             "src/x.rs",
-            vec![
-                added_line("fn wrapper() {", 7),
-                added_line("let a = 1;", 8),
-                added_line("}", 9),
-            ],
+            vec![added_line("fn wrapper() {", 7), added_line("let a = 1;", 8), added_line("}", 9)],
         )];
         let mut overlay =
             DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
@@ -8213,11 +8209,7 @@ mod tests {
         );
         let files = vec![single_hunk_file(
             "src/x.rs",
-            vec![
-                added_line("fn wrapper() {", 7),
-                added_line("let a = 1;", 8),
-                added_line("}", 9),
-            ],
+            vec![added_line("fn wrapper() {", 7), added_line("let a = 1;", 8), added_line("}", 9)],
         )];
         let mut overlay =
             DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);

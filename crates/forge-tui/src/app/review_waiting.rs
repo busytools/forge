@@ -160,10 +160,31 @@ fn request_refresh(
 /// Drain finished recomputes onto their session buckets. Called from the
 /// main loop alongside the other drain pumps.
 pub fn drain_events(app: &mut App) {
+    let workspace = app.workspace.clone();
     for _ in 0..EVENT_DRAIN_BUDGET {
         let Ok(event) = app.review_waiting_event_rx.try_recv() else {
             return;
         };
+        // Retire a parked signal whose own branch is owed nothing now.
+        // Every other writer is keyed to the branch it concerns and
+        // deliberately leaves other branches alone, and the recompute
+        // below answers for the branch the checkout is on - so a branch
+        // the checkout has since left is the one nothing revisits. The
+        // store returns nothing both for threads that were resolved and
+        // for a branch whose rows the dead-branch sweep dropped, so one
+        // read covers read-and-resolved and merged-and-deleted alike.
+        let parked = app.sessions.get(&event.key).and_then(|s| {
+            Some((s.review_replies_waiting.as_ref()?.branch.clone(), s.project.clone()?))
+        });
+        if let Some((branch, project)) = parked
+            && workspace
+                .as_ref()
+                .is_some_and(|ws| ws.review_replies_waiting(&project, &branch).is_none())
+            && let Some(session) = app.sessions.get_mut(&event.key)
+        {
+            session.review_replies_waiting = None;
+            app.needs_redraw = true;
+        }
         let Some(session) = app.sessions.get_mut(&event.key) else {
             continue;
         };
@@ -344,6 +365,61 @@ mod tests {
         let restored = waiting(&app, &key).expect("the count is back");
         assert_eq!(restored.count, 2, "both answers are still owed a reviewer turn");
         assert_eq!(restored.branch, "feat/worker", "keyed on the branch the checkout is on");
+    }
+
+    /// The reported bug: the branch was read, resolved, merged and
+    /// deleted, and the band still said replies were waiting on it. The
+    /// checkout has moved to `main`, so the recompute asks about `main`
+    /// and nothing ever asks about the branch the signal belongs to.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_parked_count_for_a_branch_the_checkout_has_left_clears() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let db = tempfile::tempdir().expect("tempdir");
+        init_repo(repo.path(), "main");
+        let (mut app, key) = booted_app(repo.path(), db.path());
+        // The store holds nothing for feat/worker: its threads were
+        // resolved, or the boot sweep dropped the dead branch's rows.
+        app.sessions.get_mut(&key).expect("session").review_replies_waiting =
+            crate::app::ReviewRepliesWaiting::merge(None, "feat/worker", 2);
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                hydrate_pending(&mut app);
+                settle(&mut app, &key).await;
+            })
+            .await;
+
+        assert_eq!(
+            waiting(&app, &key),
+            None,
+            "nothing is owed on that branch any more, so the band must stop saying so",
+        );
+    }
+
+    /// The cross-branch rule this must not trample: a live count on
+    /// another branch is real work, and the checkout being elsewhere
+    /// says nothing about it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_signal_for_another_branch_that_is_still_owed_survives() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let db = tempfile::tempdir().expect("tempdir");
+        init_repo(repo.path(), "main");
+        let (mut app, key) = booted_app(repo.path(), db.path());
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads("forge", "feat/worker", &[answered_thread("a")]);
+        app.sessions.get_mut(&key).expect("session").review_replies_waiting =
+            crate::app::ReviewRepliesWaiting::merge(None, "feat/worker", 1);
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                hydrate_pending(&mut app);
+                settle(&mut app, &key).await;
+            })
+            .await;
+
+        let kept = waiting(&app, &key).expect("the other branch still owes a turn");
+        assert_eq!(kept.branch, "feat/worker");
+        assert_eq!(kept.count, 1, "being on main does not retire work on feat/worker");
     }
 
     /// The recompute only fills a gap. A count that arrived while it was

@@ -4309,7 +4309,6 @@ mod tests {
         }
     }
 
-
     /// The visible text of a rendered card, rows joined by newlines.
     fn chip_text(comment: &HunkComment) -> String {
         let (lines, _) = render_chip(comment);
@@ -4363,7 +4362,6 @@ mod tests {
         assert!(!text.contains("matched"), "the normal case is quiet");
         assert!(!text.contains("is gone"), "the normal case is quiet");
     }
-
 
     #[test]
     fn a_resolved_card_collapses_to_one_row() {
