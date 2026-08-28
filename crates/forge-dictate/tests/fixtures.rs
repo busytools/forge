@@ -3,15 +3,16 @@
 //! milliseconds and catches a corrupted or half-added clip at check time
 //! rather than later as a confusing transcript diff.
 //!
-//! Five properties, each with a negative control below so the gate is
-//! known to be able to return a negative: recorded `sha256` matches the
-//! bytes on disk, the manifest and the directory are in bijection,
-//! `duration_ms` matches the clip's own WAV header, every clip carries the
-//! audio format the ASR expects, and no baseline is blank.
+//! Every property below has a negative control, so the gate is known to be
+//! able to return a negative: recorded `sha256` matches the bytes on disk,
+//! the manifest and the directory are in bijection, `duration_ms` matches
+//! the clip's own WAV header, every clip carries the audio format the ASR
+//! expects, no baseline is blank, and the bytes decode as audio at all.
 //!
-//! Two of those exist because `sha256` cannot see them. A clip in the
-//! wrong sample rate has a perfectly valid hash, and so does a manifest
-//! whose baseline was blanked by hand. The duration check earns its place
+//! Three of those exist because `sha256` cannot see them, and that is the
+//! point of having them: a clip in the wrong sample rate has a perfectly
+//! valid hash, so does a manifest whose baseline was blanked by hand, and
+//! so do bytes that are not audio. The duration check earns its place
 //! separately: the bench divides by `duration_ms` to get a realtime
 //! factor, so a wrong duration silently corrupts that number.
 //!
@@ -70,8 +71,9 @@
 //!
 //! Speed figures are MEASURED and reproducible. Accuracy figures are
 //! DIRECTIONAL - scored against Superwhisper's own output, partly
-//! circular, 27 samples, one speaker, English. That split holds anywhere
-//! either number is written down.
+//! circular, one speaker, English, and over a SEPARATE 27-sample corpus
+//! from Superwhisper history rather than these 15 clips. That split holds
+//! anywhere either number is written down.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -382,6 +384,58 @@ fn unexpected_audio_format_is_reported() {
         ],
         "a clip whose channel count or sample rate is not what the ASR expects must be reported, \
          even though its sha256 and duration are both valid"
+    );
+}
+
+/// `UnreadableWav` is the gate's only defence for a clip whose recorded
+/// sha256 is correct over bytes that are not decodable audio: the duration
+/// and format checks both live inside the `Ok` arm and never run. Two
+/// paths reach it, and the second is worth having because hound ACCEPTS a
+/// declared sample rate of zero - measured - so that guard is live rather
+/// than defensive decoration.
+#[test]
+fn a_clip_that_is_not_decodable_audio_is_reported() {
+    let not_audio = Clip { name: "16_001s.wav".to_owned(), bytes: b"this is not a wav".to_vec() };
+    let entry = entry_for(&not_audio, 1000);
+
+    let problems = check(&[entry], &[not_audio]);
+
+    assert!(
+        matches!(problems.as_slice(), [Problem::UnreadableWav { file, .. }] if file == "16_001s.wav"),
+        "bytes that are not decodable audio must be reported; the sha256 over them is perfectly \
+         valid, so nothing else in the gate can see it. got {problems:#?}"
+    );
+}
+
+#[test]
+fn a_clip_declaring_a_zero_sample_rate_is_reported() {
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes.extend(b"RIFF");
+    bytes.extend(&36u32.to_le_bytes());
+    bytes.extend(b"WAVEfmt ");
+    bytes.extend(&16u32.to_le_bytes());
+    bytes.extend(&1u16.to_le_bytes()); // PCM
+    bytes.extend(&1u16.to_le_bytes()); // mono
+    bytes.extend(&0u32.to_le_bytes()); // sample rate, the point of this fixture
+    bytes.extend(&0u32.to_le_bytes()); // byte rate
+    bytes.extend(&2u16.to_le_bytes()); // block align
+    bytes.extend(&16u16.to_le_bytes()); // bits per sample
+    bytes.extend(b"data");
+    bytes.extend(&0u32.to_le_bytes());
+
+    let clip = Clip { name: "17_001s.wav".to_owned(), bytes };
+    let entry = entry_for(&clip, 0);
+
+    let problems = check(&[entry], &[clip]);
+
+    assert!(
+        matches!(
+            problems.as_slice(),
+            [Problem::UnreadableWav { file, error }]
+                if file == "17_001s.wav" && error.contains("sample rate is zero")
+        ),
+        "a declared sample rate of zero must be reported rather than dividing by it; hound parses \
+         such a header happily, so this guard is reachable. got {problems:#?}"
     );
 }
 
