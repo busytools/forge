@@ -37,19 +37,22 @@ impl Recording {
     /// Fold one callback's worth of audio in, downmixed to mono and
     /// keeping the running peak.
     ///
+    /// MUST NOT ALLOCATE. This runs on the realtime audio thread, where a
+    /// `malloc` can miss the deadline and drop a buffer, so the downmix
+    /// happens while extending the preallocated buffer rather than into
+    /// an intermediate.
+    ///
     /// Channels are averaged rather than one being chosen: discarding a
     /// capsule silently halves the signal on hardware where the speaker
     /// sits nearer one of them.
     fn push(&self, block: &[f32], channels: usize, limit: usize) {
-        // Channel counts are single digits; the cast cannot lose anything.
-        let scale = f32::from(u16::try_from(channels).unwrap_or(u16::MAX));
-        let mono: Vec<f32> = if channels <= 1 {
-            block.to_vec()
-        } else {
-            block.chunks_exact(channels).map(|frame| frame.iter().sum::<f32>() / scale).collect()
-        };
-        let block = mono.as_slice();
+        debug_assert!(
+            channels > 0 && block.len().is_multiple_of(channels),
+            "interleaved audio must divide evenly into frames"
+        );
 
+        // Peak over the RAW block, not the averages: a meter should show
+        // a channel clipping even when the mean of the channels does not.
         let mut loudest = 0.0f32;
         for sample in block {
             loudest = loudest.max(sample.abs());
@@ -79,8 +82,10 @@ impl Recording {
             self.stop.store(true, Ordering::Relaxed);
             return;
         }
+
         let room = limit - samples.len();
-        if block.len() > room {
+        let frames = block.len() / channels.max(1);
+        if frames > room {
             // The block that FIRST overruns is the one that loses its
             // tail, so the flag has to be set here. Setting it only on
             // the next callback leaves a `finish` in between reporting a
@@ -88,7 +93,16 @@ impl Recording {
             self.truncated.store(true, Ordering::Relaxed);
             self.stop.store(true, Ordering::Relaxed);
         }
-        samples.extend_from_slice(&block[..block.len().min(room)]);
+
+        if channels <= 1 {
+            samples.extend_from_slice(&block[..block.len().min(room)]);
+        } else {
+            // Channel counts are single digits; the cast cannot lose anything.
+            let scale = f32::from(u16::try_from(channels).unwrap_or(u16::MAX));
+            samples.extend(
+                block.chunks_exact(channels).take(room).map(|f| f.iter().sum::<f32>() / scale),
+            );
+        }
     }
 
     pub(crate) fn peak_dbfs(&self) -> f32 {
@@ -241,13 +255,45 @@ mod tests_recording {
     }
 
     #[test]
-    fn reaching_the_cap_asks_the_recorder_to_release_the_device() {
+    fn the_block_that_overruns_flags_it_without_waiting_for_the_next_one() {
         let recording = Recording::new(LIMIT);
+        // A single block that does not fit. Nothing follows it, which is
+        // the point: a `finish` landing here must not see the recording
+        // as complete when its tail was dropped.
         recording.push(&vec![0.5; LIMIT + 1], 1, LIMIT);
-        recording.push(&[0.5], 1, LIMIT);
+        assert!(
+            recording.was_truncated(),
+            "the block losing its tail must flag it, or a finish between callbacks reports a cut recording as whole"
+        );
         assert!(
             recording.stop.load(Ordering::Relaxed),
             "a capture nobody stopped must free the microphone itself, not hold it open"
+        );
+    }
+
+    #[test]
+    fn stereo_is_averaged_rather_than_half_of_it_discarded() {
+        let recording = Recording::new(LIMIT);
+        // Two frames, left and right deliberately different. Discarding
+        // either channel gives 1.0/1.0 or 0.0/0.0; averaging gives 0.5.
+        recording.push(&[1.0, 0.0, 1.0, 0.0], 2, LIMIT);
+        assert_eq!(
+            recording.take(),
+            vec![0.5, 0.5],
+            "both capsules must contribute, or the signal halves on hardware favouring one"
+        );
+    }
+
+    #[test]
+    fn the_level_meter_sees_a_clipping_channel_the_average_would_hide() {
+        let recording = Recording::new(LIMIT);
+        // One channel at full scale, the other silent: the mean is -6 dBFS
+        // but a meter must report the channel that is actually clipping.
+        recording.push(&[1.0, 0.0], 2, LIMIT);
+        assert!(
+            recording.peak_dbfs().abs() < 0.01,
+            "the meter must read the raw peak (0 dBFS), got {}",
+            recording.peak_dbfs()
         );
     }
 
