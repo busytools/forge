@@ -1287,6 +1287,104 @@ mod tests {
         (app, rx)
     }
 
+    fn app_with_add_marketplace_open() -> crate::app::App {
+        let mut app = crate::app::App::test_default();
+        app.config.overlay = Some(ConfigOverlayState::AddMarketplace(AddMarketplaceOverlayState {
+            draft: String::new(),
+            cursor: 0,
+        }));
+        app
+    }
+
+    /// The draft and the cursor's character offset into it - the pair
+    /// the overlay renderer consumes.
+    fn add_marketplace_field(app: &crate::app::App) -> (String, usize) {
+        let overlay = app.config.add_marketplace_overlay().expect("overlay open");
+        (overlay.draft.clone(), overlay.cursor)
+    }
+
+    fn press_add_marketplace(app: &mut crate::app::App, code: KeyCode) {
+        handle_add_marketplace_overlay_key(app, KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn add_marketplace_field_edits_mid_string() {
+        let mut app = app_with_add_marketplace_open();
+
+        for ch in ['a', 'c'] {
+            press_add_marketplace(&mut app, KeyCode::Char(ch));
+        }
+        press_add_marketplace(&mut app, KeyCode::Left);
+        press_add_marketplace(&mut app, KeyCode::Char('b'));
+        assert_eq!(
+            add_marketplace_field(&app),
+            ("abc".to_owned(), 2),
+            "a character typed after Left lands mid-string"
+        );
+
+        press_add_marketplace(&mut app, KeyCode::Home);
+        press_add_marketplace(&mut app, KeyCode::Delete);
+        assert_eq!(
+            add_marketplace_field(&app),
+            ("bc".to_owned(), 0),
+            "Delete takes the character under the cursor and leaves the cursor put"
+        );
+
+        press_add_marketplace(&mut app, KeyCode::End);
+        press_add_marketplace(&mut app, KeyCode::Backspace);
+        assert_eq!(
+            add_marketplace_field(&app),
+            ("b".to_owned(), 1),
+            "Backspace takes the character before the cursor"
+        );
+
+        press_add_marketplace(&mut app, KeyCode::Right);
+        assert_eq!(
+            add_marketplace_field(&app),
+            ("b".to_owned(), 1),
+            "Right stops at the end of the draft"
+        );
+    }
+
+    #[test]
+    fn add_marketplace_field_pastes_at_the_cursor_with_newlines_flattened() {
+        let mut app = app_with_add_marketplace_open();
+
+        for ch in ['a', 'z'] {
+            press_add_marketplace(&mut app, KeyCode::Char(ch));
+        }
+        press_add_marketplace(&mut app, KeyCode::Left);
+
+        assert!(
+            crate::app::config::handle_plugins_paste(&mut app, "b\nc"),
+            "the open overlay takes the paste"
+        );
+        assert_eq!(
+            add_marketplace_field(&app),
+            ("ab cz".to_owned(), 4),
+            "paste lands at the cursor with its newline flattened to a space"
+        );
+    }
+
+    /// A literal newline key reaches this field's printable-char arm, so
+    /// the draft can hold one. The cursor offset has to keep counting it.
+    #[test]
+    fn add_marketplace_field_counts_a_typed_newline_in_its_cursor_offset() {
+        let mut app = app_with_add_marketplace_open();
+
+        for ch in ['a', 'b'] {
+            press_add_marketplace(&mut app, KeyCode::Char(ch));
+        }
+        press_add_marketplace(&mut app, KeyCode::Char('\n'));
+        press_add_marketplace(&mut app, KeyCode::Char('c'));
+
+        assert_eq!(
+            add_marketplace_field(&app),
+            ("ab\nc".to_owned(), 4),
+            "the newline occupies one position in both the draft and the offset"
+        );
+    }
+
     fn sample_snapshot() -> PluginsInventorySnapshot {
         PluginsInventorySnapshot {
             installed: vec![InstalledPluginEntry {
