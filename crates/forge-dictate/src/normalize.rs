@@ -63,12 +63,16 @@ pub enum NormalizeError {
     #[error("could not tokenize the input: {0}")]
     Tokenize(#[from] llama_cpp_2::StringToTokenError),
 
-    /// A token could not be turned into text. Detokenizing runs bytes
-    /// through an incremental decoder, so invalid UTF-8 is not a cause here;
-    /// the reachable ones are `UnknownTokenType` for a control token and
-    /// `InsufficientBufferSpace`. A control token reaching this point means
-    /// the accept loop let one through - see the end-of-turn guard in
-    /// `normalize::lookup`.
+    /// A control token reached detokenization, which asks for no bytes and
+    /// so returns `UnknownTokenType`. That is the only reachable cause here:
+    /// invalid UTF-8 cannot arise because bytes go through an incremental
+    /// decoder, and `InsufficientBufferSpace` is retried inside
+    /// `token_to_piece` at the size llama itself asked for.
+    ///
+    /// Only tokens the model sampled are ever detokenized, so speculation
+    /// cannot cause this on its own: a drafted token is emitted only when
+    /// the model independently predicts it. The end-of-turn guard in
+    /// `normalize::lookup` covers the end-of-turn token specifically.
     #[error("could not decode a generated token: {0}")]
     Detokenize(#[from] llama_cpp_2::TokenToStringError),
 
@@ -336,6 +340,11 @@ mod tests_plan {
 /// automated suite. The byte-identity property is a claim about a local run
 /// rather than one the repository holds. `tests_plan` is model-free and
 /// does hold in CI, but it covers the sizing arithmetic only.
+///
+/// The `budget` ceiling is weaker still: **a local run does not catch it
+/// either**, because both paths stop on an end-of-turn token long before
+/// reaching it. Measured headroom never fell below 135 tokens across every
+/// input class tried, under prose, lists and email alike.
 #[cfg(test)]
 mod tests_against_the_model {
     use super::*;
