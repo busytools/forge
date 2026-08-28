@@ -41,7 +41,7 @@ mod config;
 mod engine;
 mod error;
 mod fetch;
-mod normalize;
+pub mod normalize;
 
 pub use audio::{AudioSource, SAMPLE_RATE, Samples};
 pub use capture::{Device, devices};
