@@ -28,20 +28,11 @@ pub struct Section {
 
 /// The previously committed figure, if there is one.
 ///
-/// Three cases, decided deliberately because the deadband makes this the
-/// writer's entry point:
-///
-/// - No file yet: every figure is a first run.
-/// - File present but not parseable: an ERROR. It means the file was
-///   hand-edited against its own instruction or corrupted, and silently
-///   overwriting would destroy the trend and hide the corruption in one
-///   step.
-/// - File parseable but missing this key: a first run for that figure.
-///   That is what adding a new stage looks like, so it must not fail.
-///
-/// A key that is present but is not a non-negative integer is an error for
-/// the same reason as an unparseable file, rather than being quietly
-/// treated as absent.
+/// A missing file or a missing key is a first run - the second is what
+/// adding a new stage looks like, so it must not fail. Anything else the
+/// file says but we cannot read is an ERROR rather than a first run,
+/// because overwriting it would destroy the trend and hide the corruption
+/// in one step.
 pub fn committed(file: Option<&str>, section: &str, key: &str) -> Result<Option<u64>, String> {
     let Some(text) = file else {
         return Ok(None);
