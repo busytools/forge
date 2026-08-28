@@ -72,13 +72,12 @@ pub enum NormalizeError {
 /// llama.cpp's backend is global to the process and may be initialized
 /// exactly once.
 ///
-/// Routing logs is inside this initializer because it has to happen before
-/// the backend starts: `send_logs_to_tracing` binds ggml's log sink as well
-/// as llama's, and once the backend is up, ggml's Metal device-init block
-/// has already gone to stderr. Running the identical call afterwards still
-/// leaks those 16 lines, which is enough to corrupt a full-screen terminal.
-/// `LlamaBackend::void_logs` never suppresses them at all: it binds only
-/// llama's sink, not ggml's.
+/// Log routing must precede the backend starting, or ggml's Metal
+/// device-init block has already reached stderr. Ordering here is documented
+/// rather than enforced: swapping the two lines below still compiles.
+///
+/// `LlamaBackend::void_logs` is not an alternative. It binds llama's sink
+/// only, leaving ggml's untouched.
 fn backend() -> Result<&'static LlamaBackend, NormalizeError> {
     static BACKEND: OnceLock<Result<LlamaBackend, String>> = OnceLock::new();
 
