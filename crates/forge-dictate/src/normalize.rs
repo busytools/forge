@@ -327,6 +327,15 @@ mod tests_plan {
 /// Ignored by default because they need the 1.5 GB weights on disk, which
 /// CI has no copy of. Fetch them with [`crate::prepare`], then
 /// `cargo nextest run -p forge-dictate --run-ignored all`.
+///
+/// # What a green CI run does not tell you
+///
+/// Everything below is enforced only when someone runs it locally, so the
+/// KV rollback, the accept loop, the end-of-turn guard and the sampling
+/// index are unenforced in CI: severing any of them passes the whole
+/// automated suite. The byte-identity property is a claim about a local run
+/// rather than one the repository holds. `tests_plan` is model-free and
+/// does hold in CI, but it covers the sizing arithmetic only.
 #[cfg(test)]
 mod tests_against_the_model {
     use super::*;
