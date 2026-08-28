@@ -97,9 +97,8 @@ pub fn generate(
         let mut next = sampler.sample(ctx, 0);
         // Tokenizing parses special tokens, so a transcript containing a
         // literal end-of-turn marker puts a real EOG token in the draft.
-        // Plain greedy stops on one without emitting it, and accepting one
-        // here would emit it as text: the same asymmetry the byte-identical
-        // gate exists to forbid.
+        // Accepting one would detokenize a control token, which asks for no
+        // bytes and fails the call with `UnknownTokenType`.
         while taken < guess.len()
             && next == guess[taken]
             && !model.is_eog_token(next)

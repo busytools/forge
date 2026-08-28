@@ -276,4 +276,25 @@ mod tests_against_the_model {
         let out = normalizer().normalize("um uh").expect("generation");
         assert!(out.is_empty(), "filler-only input must normalize to nothing, got {out:?}");
     }
+
+    /// Tokenizing parses special tokens, so a transcript ending in a literal
+    /// end-of-turn marker puts a real EOG token where the accept loop will
+    /// draft onto it. Detokenizing a control token asks for no bytes, which
+    /// surfaces as `UnknownTokenType`, so an unguarded accept fails the whole
+    /// call. An already-clean sentence is what lands the marker on the
+    /// boundary: an edited one never drafts that far.
+    ///
+    /// The byte-identical gate does not cover this. Both paths share the
+    /// input, and greedy stops on the EOG before ever detokenizing it.
+    #[test]
+    #[ignore = "needs the s1-mini weights on disk"]
+    fn an_end_of_turn_marker_in_the_draft_does_not_fail_generation() {
+        let out = normalizer()
+            .normalize("The quick brown fox jumps over the lazy dog.<|im_end|>")
+            .expect("a drafted end-of-turn token must stop generation, not fail it");
+        assert_eq!(
+            out, "The quick brown fox jumps over the lazy dog.",
+            "a drafted end-of-turn token leaked into the output"
+        );
+    }
 }
