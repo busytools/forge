@@ -31,36 +31,54 @@ pub use fetch::{Progress, prepare};
 
 #[cfg(test)]
 mod tests_leaf_invariant {
-    /// Collect every `forge-*` entry from any dependency table at any
-    /// depth, so a target-conditional table cannot slip one past.
-    fn forge_deps(value: &toml::Value, found: &mut Vec<String>) {
-        let Some(table) = value.as_table() else { return };
-        for (key, child) in table {
-            if key.ends_with("dependencies") {
-                if let Some(deps) = child.as_table() {
-                    found.extend(deps.iter().filter_map(|(key, dep)| {
-                        // A rename hides the real crate behind an arbitrary
-                        // key, so the resolved package name is what counts.
-                        let name = dep.get("package").and_then(toml::Value::as_str).unwrap_or(key);
-                        name.starts_with("forge-").then(|| name.to_owned())
-                    }));
-                }
-            } else {
-                forge_deps(child, found);
-            }
-        }
-    }
-
-    /// This crate is a leaf and depending on a forge-* crate is the one
+    /// This crate is a leaf, and depending on a forge-* crate is the one
     /// change that would quietly end that. Nothing catches it at compile
-    /// time - such an edge closes no cycle, so the workspace builds
-    /// fine - which is why it is asserted here.
+    /// time, because such an edge closes no cycle and the workspace
+    /// builds fine.
+    ///
+    /// Asked of cargo's resolver rather than read out of the manifest.
+    /// Three successive manifest-parsing versions of this guard each
+    /// missed a different aliasing shape - a `package` rename, then a
+    /// rename inherited from the workspace table - because a rename is
+    /// precisely what a manifest hides and what the resolver has already
+    /// undone. `--manifest-path` is a compile-time constant, so the
+    /// answer does not depend on where this runs from.
     #[test]
     fn depends_on_no_forge_crate() {
-        let manifest: toml::Value =
-            include_str!("../Cargo.toml").parse().expect("own manifest must parse");
-        let mut found = Vec::new();
-        forge_deps(&manifest, &mut found);
-        assert!(found.is_empty(), "forge-dictate must depend on no forge-* crate, found {found:?}");
+        let output = std::process::Command::new(option_env!("CARGO").unwrap_or("cargo"))
+            .args([
+                "metadata",
+                "--no-deps",
+                "--offline",
+                "--format-version",
+                "1",
+                "--manifest-path",
+                concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"),
+            ])
+            .output()
+            .expect("cargo metadata must run: a guard that cannot run is not a guard");
+        assert!(
+            output.status.success(),
+            "cargo metadata failed, so the invariant is unchecked: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("cargo metadata emits json");
+        let package = metadata["packages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|p| p["name"] == "forge-dictate")
+            .expect("forge-dictate must appear in its own metadata");
+
+        let forge: Vec<&str> = package["dependencies"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|dep| dep["name"].as_str())
+            .filter(|name| name.starts_with("forge-"))
+            .collect();
+        assert!(forge.is_empty(), "forge-dictate must depend on no forge-* crate, found {forge:?}");
     }
 }
