@@ -287,45 +287,47 @@ inspected.
     behaviour was independently reachable. A rule about how forge's own
     workers, peers, crons or sessions behave usually passes.
 
-    **Divergence counts, not just absence: present in both places but
-    SHARPER in one is the harder case.** The shipped charter carried the
-    worker-despawn merge requirement only inside an example ("a merged
-    PR") where the user-scope version stated it as the rule, so every
-    forge user but the author got the fragile phrasing - one adjective
-    from losing the behaviour, with no test asserting it.
+    **Divergence counts, not just absence - and a divergence can be the
+    correct state.** The despawn trigger ships in three strengths: the
+    charter and the `workers__despawn` description offer a merged PR as
+    one example among several, while `LEAD_DELEGATION_PREAMBLE` says
+    only "truly done". Do not sharpen the charter back toward a merge
+    requirement: #717 deliberately removed "once its work is merged"
+    because it exempted every worker whose output is not a PR. The live
+    defect is the preamble's vagueness. Read a divergence's history
+    before calling the shipped side the wrong one.
 
     **Placement decides whether the text fires at all**, and the
     audience is a forge SESSION at runtime. The shipped surfaces are a
     SET; read all of them first, or the grep that finds nothing files a
     duplicate. Always-on blocks
     (`crates/forge-agent/src/forge_sdk_worker.rs`) carry what every
-    session needs. Lead-only behaviour has two homes appended to the
+    session needs; lead-only behaviour has two homes appended to the
     same session, the charter
     (`crates/forge-workspace/src/spawn/lead_charter.md`) and
     `LEAD_DELEGATION_PREAMBLE`
-    (`crates/forge-workspace/src/workspace.rs`). An MCP tool
-    description carries a fact about that tool's own return value. The
-    despawn example above lives in all three of charter, preamble and
-    the `workers__despawn` description, so sharpening one leaves two. A
-    fact only a contributor editing forge needs - that `perf.rs` ships
+    (`crates/forge-workspace/src/workspace.rs`); a tool description
+    carries what a caller needs at the moment it reaches for that tool.
+    A fact only a contributor editing forge needs - `perf.rs` ships
     enabled on a hot path, say - belongs in this file or project memory
-    instead.
-
-    The cross-project handoff rule is the worked example of a placement
-    fix. It sat in a peer tool description, read only once a peer tool
-    was already in hand, until it moved into the always-on block and
-    gained "this applies at the moment you decide to make the change".
-    The peer-tool copies remain, so a grep finds both.
+    instead. The cross-project rule is the worked example: it sat in two
+    peer tool descriptions, read only once a peer tool was in hand,
+    until it moved into the always-on block and gained "This applies at
+    the moment" you decide, rather than when a tool is reached for. The
+    peer copies remain, so a grep now finds it in both kinds of place.
+    Quote only what sits on one source line: these constants wrap across
+    string continuations, so a longer phrase greps to nothing.
 
     Shipped text never names a user-scope skill, command or plugin: a
     fresh install has none, so describe the behaviour and leave the
-    tooling as an optional shortcut. That constraint is enforced by
-    `bundled_lead_charter_assumes_no_local_environment` in
-    `crates/forge-workspace/src/spawn.rs`, token by token, so a
-    promotion adds its own token there. Also out - approval-scope
-    tables, timezone presentation, prose punctuation preferences,
-    PR-body voice, commit conventions, release workflow: real
-    preferences, none of them things forge breaks without.
+    tooling as an optional shortcut. In the charter that is enforced
+    token by token by
+    `bundled_lead_charter_assumes_no_local_environment`
+    (`crates/forge-workspace/src/spawn.rs`), so a promotion adds its
+    token there; no other surface has an equivalent guard. Also out -
+    approval-scope tables, timezone presentation, prose punctuation
+    preferences, PR-body voice, commit conventions, release workflow:
+    real preferences, none of them things forge breaks without.
 
 ## Claude Code worktree interop
 
