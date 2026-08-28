@@ -32,7 +32,9 @@ use forge_workspace::env::git_diff::hunks::ScanOutcome;
 use forge_workspace::env::git_diff::hunks::{
     CommitMeta, DiffLine, DiffLineKind, FileHunks, FileStatus, Hunk,
 };
-use forge_workspace::env::git_diff::resolver::{self, AnchorResolution, CONTEXT_RADIUS};
+use forge_workspace::env::git_diff::resolver::{
+    self, AnchorResolution, CONTEXT_RADIUS, OutdatedReason,
+};
 use std::time::Instant;
 
 use super::App;
@@ -355,6 +357,17 @@ pub enum BodyRowKey {
     CommitMessage,
 }
 
+/// What the last re-anchor did to a comment, when it did not simply
+/// leave it in place. Rendered on the card, so neither a relocation nor a
+/// refusal to relocate is silent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnchorNote {
+    /// Re-anchored here from line `from`.
+    Moved { from: u32 },
+    /// Left where it was, and why.
+    Outdated(OutdatedReason),
+}
+
 /// Which comment card a row belongs to. The whole diff is a union over
 /// the branch, so several threads can anchor to one line and stack
 /// there; `slot` is the card's position in that stack, counted over the
@@ -405,6 +418,9 @@ pub struct HunkComment {
     /// session-authored comments are sealed into a review on Esc, so a
     /// read-only reopen of a branch's history never re-nudges the agent.
     pub authored_this_session: bool,
+    /// What the last re-anchor did to this comment, `None` when it was
+    /// simply still in place.
+    pub anchor_note: Option<AnchorNote>,
     /// Whether a redb write for this comment's thread has been confirmed.
     /// `false` for a comment whose write was skipped (no branch / no db)
     /// or failed - those stay in the at-risk bucket the force-clear path
@@ -1953,8 +1969,7 @@ fn hydrate_threads(app: &mut App) {
     let mut deferred_outdated = Vec::new();
     for mut thread in mine {
         match resolver::resolve_anchor(&thread.anchor, &overlay.files) {
-            AnchorResolution::InPlace { file_idx, hunk_idx, line_idx }
-            | AnchorResolution::Moved { file_idx, hunk_idx, line_idx } => {
+            AnchorResolution::InPlace { file_idx, hunk_idx, line_idx } => {
                 let resolved = overlay
                     .files
                     .get(file_idx)
@@ -1985,23 +2000,59 @@ fn hydrate_threads(app: &mut App) {
                     commit: scope_commit.clone(),
                     thread: thread.clone(),
                     authored_this_session: false,
+                    anchor_note: None,
                     persisted: true,
                 });
                 persist.push(thread);
             }
-            AnchorResolution::Outdated => {
+            AnchorResolution::Moved { file_idx, hunk_idx, line_idx, from } => {
+                let resolved = overlay
+                    .files
+                    .get(file_idx)
+                    .and_then(|f| f.hunks.get(hunk_idx))
+                    .and_then(|h| h.lines.get(line_idx));
+                let line = resolved
+                    .and_then(|dl| match thread.anchor.side {
+                        ReviewSide::Old => dl.old_line,
+                        ReviewSide::New => dl.new_line,
+                    })
+                    .unwrap_or(thread.anchor.line);
+                if thread.anchor.line != line {
+                    thread.anchor.line = line;
+                    changed = true;
+                }
+                if thread.status == ReviewStatus::Outdated {
+                    thread.status = ReviewStatus::Open;
+                    changed = true;
+                }
+                let key = LineKey { file_idx, hunk_idx, line_idx };
+                occupied.insert(key);
+                rebuilt.push(HunkComment {
+                    key,
+                    path: thread.anchor.path.clone(),
+                    line,
+                    comment_text: thread_text(&thread),
+                    commit: scope_commit.clone(),
+                    thread: thread.clone(),
+                    authored_this_session: false,
+                    anchor_note: Some(AnchorNote::Moved { from }),
+                    persisted: true,
+                });
+                persist.push(thread);
+            }
+            AnchorResolution::Outdated(reason) => {
                 if !matches!(thread.status, ReviewStatus::Resolved | ReviewStatus::Outdated) {
                     thread.status = ReviewStatus::Outdated;
                     changed = true;
                 }
-                deferred_outdated.push(thread);
+                deferred_outdated.push((thread, reason));
             }
         }
     }
     // Pass 2: place outdated threads on a surviving FREE line so they
     // render (yellow, against their captured context) without clobbering
     // a co-located live thread.
-    for thread in deferred_outdated {
+    for (thread, reason) in deferred_outdated {
         let Some(key) = outdated_placement(
             &overlay.files,
             &thread.anchor.path,
@@ -2023,6 +2074,7 @@ fn hydrate_threads(app: &mut App) {
             commit: scope_commit.clone(),
             thread: thread.clone(),
             authored_this_session: false,
+            anchor_note: Some(AnchorNote::Outdated(reason)),
             persisted: true,
         });
         persist.push(thread);
@@ -2852,7 +2904,7 @@ fn persist_active_input(app: &mut App) {
     let target = overlay.target.clone();
     let path = file.path.clone();
     let side = anchor_side(diff_line.kind);
-    let content_hash = resolver::content_hash(&diff_line.text);
+    let content_hash = resolver::anchor_hash(&diff_line.text);
     let context = resolver::capture_context(hunk, key.line_idx, CONTEXT_RADIUS);
     let prior_thread = input.prior_comment.as_ref().map(|c| c.thread.clone());
     // Every scope persists a durable thread; `commit` records the scope
@@ -2902,6 +2954,8 @@ fn persist_active_input(app: &mut App) {
         commit,
         thread,
         authored_this_session: true,
+        // Just anchored on the line the reviewer clicked.
+        anchor_note: None,
         persisted,
     };
     // Replace any existing comment at the same key IN THIS SCOPE (saving an
@@ -4030,6 +4084,7 @@ mod tests {
             commit: None,
             thread: user_thread("needs unwrap fix"),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         });
         state.body_keys = vec![
@@ -4061,6 +4116,7 @@ mod tests {
             commit: None,
             thread: stock_thread(),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         });
         state.comments.push(HunkComment {
@@ -4071,6 +4127,7 @@ mod tests {
             commit: None,
             thread: stock_thread(),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         });
         state.comments.push(HunkComment {
@@ -4081,6 +4138,7 @@ mod tests {
             commit: None,
             thread: stock_thread(),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         });
         state.recompute_comment_counts();
@@ -4119,6 +4177,7 @@ mod tests {
             commit: None,
             thread: stock_thread(),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         });
         app.diff_overlay = Some(state);
@@ -4144,6 +4203,7 @@ mod tests {
             commit: None,
             thread: stock_thread(),
             authored_this_session: false,
+            anchor_note: None,
             persisted: true,
         });
         app.diff_overlay = Some(state);
@@ -4174,6 +4234,7 @@ mod tests {
             commit: None,
             thread,
             authored_this_session: true,
+            anchor_note: None,
             persisted: true,
         });
         app.diff_overlay = Some(overlay);
@@ -4233,6 +4294,7 @@ mod tests {
             commit: None,
             thread: replied,
             authored_this_session: true,
+            anchor_note: None,
             persisted: true,
         });
         app.diff_overlay = Some(overlay);
@@ -4294,6 +4356,7 @@ mod tests {
             commit: None,
             thread: seeded,
             authored_this_session: true,
+            anchor_note: None,
             persisted: true,
         });
         app.diff_overlay = Some(overlay);
@@ -4341,6 +4404,7 @@ mod tests {
             commit: None,
             thread: user_thread("I want to keep this"),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         });
         state.recompute_comment_counts();
@@ -4387,6 +4451,7 @@ mod tests {
             commit: None,
             thread: user_thread("saved"),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         });
         state.recompute_comment_counts();
@@ -4426,6 +4491,7 @@ mod tests {
             commit: None,
             thread: user_thread("A"),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         });
         state.comments.push(HunkComment {
@@ -4436,6 +4502,7 @@ mod tests {
             commit: None,
             thread: user_thread("B"),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         });
         state.recompute_comment_counts();
@@ -4467,6 +4534,7 @@ mod tests {
             commit: None,
             thread: user_thread("A"),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         });
         state.recompute_comment_counts();
@@ -4503,6 +4571,7 @@ mod tests {
             commit: None,
             thread: stock_thread(),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         };
         let mut editor = InputState::new();
@@ -4534,6 +4603,7 @@ mod tests {
             commit: None,
             thread: stock_thread(),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         };
         let mut editor = InputState::new();
@@ -4784,6 +4854,7 @@ mod tests {
             commit: None,
             thread: user_thread("soon-to-be-deleted"),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         };
         state.active_input = Some(ActiveCommentInput {
@@ -4836,6 +4907,7 @@ mod tests {
             commit: None,
             thread,
             authored_this_session: true,
+            anchor_note: None,
             persisted: true,
         });
         app.diff_overlay = Some(overlay);
@@ -4877,6 +4949,7 @@ mod tests {
             commit: None,
             thread,
             authored_this_session: true,
+            anchor_note: None,
             persisted: true,
         });
         app.diff_overlay = Some(overlay);
@@ -4939,6 +5012,7 @@ mod tests {
             commit: None,
             thread,
             authored_this_session: true,
+            anchor_note: None,
             persisted: true,
         });
         app.diff_overlay = Some(overlay);
@@ -4970,6 +5044,7 @@ mod tests {
             commit: None,
             thread: stock_thread(),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         };
         let mut editor = InputState::new();
@@ -5023,6 +5098,7 @@ mod tests {
             commit: None,
             thread: stock_thread(),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         });
         app.diff_overlay = Some(state);
@@ -5405,6 +5481,7 @@ mod tests {
             commit: Some("aaa".into()),
             thread: stock_thread(),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         });
         state.recompute_comment_counts();
@@ -5428,6 +5505,7 @@ mod tests {
             commit: Some("aaa".into()),
             thread: stock_thread(),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         });
         state.comments.push(HunkComment {
@@ -5438,6 +5516,7 @@ mod tests {
             commit: Some("bbb".into()),
             thread: stock_thread(),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         });
         let scoped: Vec<&str> =
@@ -5660,6 +5739,7 @@ mod tests {
             commit: None,
             thread: stock_thread(),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         });
 
@@ -6322,6 +6402,7 @@ mod tests {
             commit: None,
             thread: seed(id),
             authored_this_session: authored,
+            anchor_note: None,
             persisted: true,
         };
         overlay.comments.push(comment(0, "authored", true));
@@ -6639,6 +6720,7 @@ mod tests {
             commit: None,
             thread: prior_thread,
             authored_this_session: true,
+            anchor_note: None,
             persisted: true,
         };
         let mut editor = InputState::new();
@@ -6694,6 +6776,7 @@ mod tests {
             commit: None,
             thread,
             authored_this_session: true,
+            anchor_note: None,
             persisted: true,
         };
         let mut editor = InputState::new();
@@ -6748,6 +6831,7 @@ mod tests {
             commit: None,
             thread,
             authored_this_session: true,
+            anchor_note: None,
             persisted: true,
         };
         overlay.active_input = Some(ActiveCommentInput {
@@ -6839,6 +6923,7 @@ mod tests {
             commit: None,
             thread: user_thread("first note"),
             authored_this_session: true,
+            anchor_note: None,
             persisted: true,
         };
         let mut editor = InputState::new();
@@ -6873,6 +6958,7 @@ mod tests {
             commit: None,
             thread: user_thread("note"),
             authored_this_session: true,
+            anchor_note: None,
             persisted: true,
         });
         app.diff_overlay = Some(overlay);
@@ -6905,6 +6991,7 @@ mod tests {
             commit: None,
             thread: user_thread("keep me"),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         };
         state.active_input = Some(ActiveCommentInput {
@@ -6936,6 +7023,7 @@ mod tests {
             commit: None,
             thread: user_thread("note"),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         });
         state.body_keys = vec![
@@ -6984,14 +7072,15 @@ mod tests {
     fn hydrate_reanchors_in_place_moved_and_outdated() {
         let (mut app, _dir) = review_app();
         let ws = app.workspace.clone().expect("ws");
-        let seed = |id: &str, line: u32, text: &str| forge_primitives::ReviewThread {
+        let seed = |id: &str, line: u32, text: &str, context: &[&str]| {
+            forge_primitives::ReviewThread {
             id: id.to_owned(),
             anchor: ReviewAnchor {
                 path: "src/x.rs".to_owned(),
                 side: ReviewSide::New,
                 line,
-                content_hash: resolver::content_hash(text),
-                context: Vec::new(),
+                content_hash: resolver::anchor_hash(text),
+                context: context.iter().map(|c| (*c).to_owned()).collect(),
                 base_ref: "main".to_owned(),
             },
             comments: vec![ReviewComment {
@@ -7004,15 +7093,17 @@ mod tests {
             created_at: "t0".to_owned(),
             updated_at: "t0".to_owned(),
             commit: None,
+            }
         };
         ws.save_review_threads(
             "forge",
             "feat",
             &[
-                seed("keep", 5, "let a = 1;"),
-                seed("move", 6, "let b = 2;"),
-                seed("changed", 20, "let c = 3;"),
-                seed("vanished", 99, "let d = 4;"),
+                seed("keep", 5, "let a = 1;", &["inserted"]),
+                // Its neighbours on both sides survive the insertion above.
+                seed("move", 6, "let b = 2;", &["inserted2", "let c = renamed();"]),
+                seed("changed", 20, "let c = 3;", &["let b = 2;"]),
+                seed("vanished", 99, "let d = 4;", &["gone one", "gone two"]),
             ],
         );
 
@@ -7388,6 +7479,7 @@ mod tests {
             commit: None,
             thread,
             authored_this_session: false,
+            anchor_note: None,
             persisted: true,
         });
         app.diff_overlay = Some(overlay);
@@ -7661,6 +7753,7 @@ mod tests {
                 commit: Some("aaa".to_owned()),
             },
             authored_this_session: false,
+            anchor_note: None,
             persisted: true,
         });
         // Durable whole-diff thread at the SAME key.
@@ -7692,6 +7785,7 @@ mod tests {
                 commit: None,
             },
             authored_this_session: false,
+            anchor_note: None,
             persisted: true,
         });
         app.diff_overlay = Some(overlay);
@@ -7817,6 +7911,7 @@ mod tests {
                 commit: None,
                 thread,
                 authored_this_session: authored,
+                anchor_note: None,
                 persisted: true,
             }
         };
@@ -7839,8 +7934,8 @@ mod tests {
                 path: "src/x.rs".to_owned(),
                 side: ReviewSide::New,
                 line: 5,
-                content_hash: resolver::content_hash(text),
-                context: Vec::new(),
+                content_hash: resolver::anchor_hash(text),
+                context: vec!["fn wrapper() {".to_owned(), "}".to_owned()],
                 base_ref: base_ref.to_owned(),
             },
             comments: vec![ReviewComment {
@@ -7865,7 +7960,14 @@ mod tests {
 
         // Open against "main"; its thread drifts (line 5 -> 8), forcing a
         // writeback. The "HEAD"-target thread must survive that writeback.
-        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 8)])];
+        let files = vec![single_hunk_file(
+            "src/x.rs",
+            vec![
+                added_line("fn wrapper() {", 7),
+                added_line("let a = 1;", 8),
+                added_line("}", 9),
+            ],
+        )];
         let mut overlay =
             DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
         overlay.branch = Some("feat".to_owned());
@@ -7953,8 +8055,8 @@ mod tests {
                 path: "src/x.rs".to_owned(),
                 side: ReviewSide::New,
                 line,
-                content_hash: resolver::content_hash(text),
-                context: Vec::new(),
+                content_hash: resolver::anchor_hash(text),
+                context: vec!["fn wrapper() {".to_owned(), "}".to_owned()],
                 base_ref: "main".to_owned(),
             },
             comments: vec![ReviewComment {
@@ -7975,7 +8077,14 @@ mod tests {
             "feat",
             &[seed("c0", "sha0", 5, "let a = 1;"), seed("c1", "sha1", 5, "let b = 2;")],
         );
-        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 8)])];
+        let files = vec![single_hunk_file(
+            "src/x.rs",
+            vec![
+                added_line("fn wrapper() {", 7),
+                added_line("let a = 1;", 8),
+                added_line("}", 9),
+            ],
+        )];
         let mut overlay =
             DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
         overlay.branch = Some("feat".to_owned());
@@ -8377,6 +8486,7 @@ mod tests {
             commit: Some("sha1".to_owned()),
             thread: stock_thread(),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         });
         overlay.comments.push(HunkComment {
@@ -8387,6 +8497,7 @@ mod tests {
             commit: None,
             thread: stock_thread(),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         });
         app.diff_overlay = Some(overlay);
@@ -8426,6 +8537,7 @@ mod tests {
             commit: Some("sha1".to_owned()),
             thread: stock_thread(),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         });
         overlay.comments.push(HunkComment {
@@ -8436,6 +8548,7 @@ mod tests {
             commit: None,
             thread: stock_thread(),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         });
         // Whole-diff scope, so the save's own scope is `None`.
@@ -8483,6 +8596,7 @@ mod tests {
             commit: None,
             thread: user_thread("whole-diff note"),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         });
         overlay.comments.push(HunkComment {
@@ -8493,6 +8607,7 @@ mod tests {
             commit: Some("aaa".to_owned()),
             thread: user_thread("commit note"),
             authored_this_session: true,
+            anchor_note: None,
             persisted: false,
         });
 

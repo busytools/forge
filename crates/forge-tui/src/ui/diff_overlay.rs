@@ -31,10 +31,11 @@ use forge_primitives::{ReviewAuthor, ReviewSet, ReviewStatus};
 use forge_workspace::env::git_diff::hunks::{DiffLineKind, FileHunks, FileStatus, Hunk};
 
 use crate::app::diff_overlay::{
-    ActiveCommentInput, BodyRowKey, CommentRef, DiffScope, DiffViewMode, FileHighlight,
+    ActiveCommentInput, AnchorNote, BodyRowKey, CommentRef, DiffScope, DiffViewMode, FileHighlight,
     HunkComment, LineKey, RailRowKey, SPLIT_MARKER_COLS, effective_view_mode, gutter_width_for,
     rail_width_for, split_layout,
 };
+use forge_workspace::env::git_diff::resolver::OutdatedReason;
 use pairing::{PairedDiffRow, pair_hunk_lines};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -2010,6 +2011,26 @@ fn index_comments_by_key<'a>(
 /// green/red tints.
 const CHIP_BG: Color = Color::Rgb(35, 23, 10);
 
+/// The card's one-line account of what re-anchoring did to it, or `None`
+/// when it simply stayed put. An `Outdated` thread always says something
+/// even when it was loaded without a fresh re-anchor, so the state is
+/// never shown without a reason.
+fn anchor_note_text(note: Option<AnchorNote>, status: ReviewStatus) -> Option<String> {
+    match note {
+        Some(AnchorNote::Moved { from }) => Some(format!("moved from line {from}")),
+        Some(AnchorNote::Outdated(OutdatedReason::Gone)) => {
+            Some("the code this was on is gone - resolve or re-comment".to_owned())
+        }
+        Some(AnchorNote::Outdated(OutdatedReason::Ambiguous { matches })) => Some(format!(
+            "matched {matches} locations, not relocating - resolve or re-comment"
+        )),
+        None if status == ReviewStatus::Outdated => {
+            Some("line changed - resolve, or re-comment on a live line".to_owned())
+        }
+        None => None,
+    }
+}
+
 /// Border colour + uppercase state label for a comment box, keyed off
 /// its durable review-thread status.
 fn review_state_style(status: ReviewStatus) -> (Color, &'static str) {
@@ -2195,9 +2216,7 @@ fn render_comment_chip(
         }
     }
 
-    if status == ReviewStatus::Outdated {
-        // The anchored line drifted; name that instead of implying it's live.
-        let note = "line changed - resolve, or re-comment on a live line";
+    if let Some(note) = anchor_note_text(comment.anchor_note, status) {
         let vis = 2 + note.width();
         push_card_row(
             lines,
@@ -4001,6 +4020,7 @@ mod tests {
             commit: None,
             thread,
             authored_this_session: false,
+            anchor_note: None,
             persisted: true,
         }
     }
@@ -4243,6 +4263,61 @@ mod tests {
                 "{status:?} carries a button row",
             );
         }
+    }
+
+
+    /// The visible text of a rendered card, rows joined by newlines.
+    fn chip_text(comment: &HunkComment) -> String {
+        let (lines, _) = render_chip(comment);
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_relocated_card_says_where_it_came_from() {
+        // Silent relocation is how a comment ends up attached to code it
+        // was never about while still looking anchored.
+        let mut comment = chip_comment(58, "guard the None case", ReviewStatus::Open);
+        comment.anchor_note = Some(AnchorNote::Moved { from: 41 });
+        assert!(
+            chip_text(&comment).contains("moved from line 41"),
+            "a move names the line it left; got: {}",
+            chip_text(&comment),
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_card_says_it_refused_to_guess() {
+        let mut comment = chip_comment(41, "guard the None case", ReviewStatus::Outdated);
+        comment.anchor_note = Some(AnchorNote::Outdated(OutdatedReason::Ambiguous { matches: 2 }));
+        let text = chip_text(&comment);
+        assert!(
+            text.contains("matched 2 locations"),
+            "an ambiguous anchor reports the count; got: {text}",
+        );
+    }
+
+    #[test]
+    fn a_vanished_card_says_the_code_is_gone() {
+        let mut comment = chip_comment(41, "guard the None case", ReviewStatus::Outdated);
+        comment.anchor_note = Some(AnchorNote::Outdated(OutdatedReason::Gone));
+        let text = chip_text(&comment);
+        assert!(
+            text.contains("the code this was on is gone"),
+            "a vanished anchor says so plainly; got: {text}",
+        );
+    }
+
+    #[test]
+    fn an_undisturbed_card_says_nothing_about_anchoring() {
+        let comment = chip_comment(41, "guard the None case", ReviewStatus::Open);
+        let text = chip_text(&comment);
+        assert!(!text.contains("moved from"), "the normal case is quiet");
+        assert!(!text.contains("matched"), "the normal case is quiet");
+        assert!(!text.contains("is gone"), "the normal case is quiet");
     }
 
     #[test]
