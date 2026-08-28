@@ -344,7 +344,7 @@ mod tests {
     /// `duration_ms` on the wire. The new stamp path in
     /// `handle_result` pulls it out of the destructure and writes
     /// it onto the latest Assistant ChatMessage so the
-    /// `Forge - N.Ns` chip in `role_label_line` re-renders. This test
+    /// duration row in `role_label_line` re-renders. This test
     /// drives a real captured baseline through the production reducer
     /// and asserts the stamp lands, comparing against the Result frame
     /// the same replay decoded so a recapture needs no edit here.

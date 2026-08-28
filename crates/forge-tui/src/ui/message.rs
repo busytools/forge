@@ -284,7 +284,7 @@ pub(crate) fn render_message(
 }
 
 /// True when an empty-blocks Assistant/System message would render only a
-/// bare "Forge"/"Info" role label with no body.
+/// bare header row - a turn duration or an "Info" label - with no body.
 fn renders_bare_role_label_only(
     msg: &ChatMessage,
     spinner: &SpinnerState,
@@ -314,8 +314,10 @@ fn build_message_layout(
     if renders_bare_role_label_only(msg, spinner, &render_context) {
         return layout;
     }
-    if !render_context.options.suppress_group_header {
-        layout.push_wrapped_line(role_label_line(msg), render_context.width);
+    if !render_context.options.suppress_group_header
+        && let Some(label) = role_label_line(msg)
+    {
+        layout.push_wrapped_line(label, render_context.width);
     }
 
     match msg.role {
@@ -1835,64 +1837,50 @@ fn should_skip_whole_block(
     false
 }
 
-fn role_label_line(msg: &ChatMessage) -> Line<'static> {
+/// The header row above a message body, or `None` when the message
+/// renders straight into its body with no header at all.
+///
+/// `None` covers two cases: a peer / worker envelope, whose own
+/// `▶ Verb name` row already names the kind and the sender, and an
+/// assistant turn with no duration yet (mid-stream, or resumed from a
+/// history that carried no Result frame).
+fn role_label_line(msg: &ChatMessage) -> Option<Line<'static>> {
     match msg.role {
-        MessageRole::Welcome => Line::from(Span::styled(
+        MessageRole::Welcome => Some(Line::from(Span::styled(
             "Overview",
             Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
-        )),
+        ))),
         MessageRole::User => {
-            // Peer / worker MCP envelopes ride on the User role at
-            // the SDK protocol level (claude treats them as user
-            // turns), but they're agent-to-agent traffic - the chat
-            // label "User" misrepresents them as human input.
-            // Distinguish: real human input keeps the "User" label;
-            // any User message whose first text block is a peer-
-            // envelope bracket re-labels as `Forge` to match the
-            // matching Assistant-side outbound label. Reserves the
-            // "User" treatment for things actually typed by the
-            // human at the prompt.
             if is_gotify_envelope_user_message(msg) {
                 // An external Gotify notification, not agent traffic - a
                 // distinct source label so it can't be mistaken for a
                 // message the forge agent itself sent.
-                Line::from(Span::styled(
+                Some(Line::from(Span::styled(
                     "Gotify",
                     Style::default().fg(theme::GOTIFY).add_modifier(Modifier::BOLD),
-                ))
+                )))
             } else if is_cron_envelope_user_message(msg) {
                 // A fired cron - a scheduled internal event, distinct from
                 // typed input and from peer traffic.
-                Line::from(Span::styled(
+                Some(Line::from(Span::styled(
                     "Cron",
                     Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
-                ))
+                )))
             } else if is_peer_envelope_user_message(msg) {
-                Line::from(Span::styled(
-                    "Forge",
-                    Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
-                ))
+                None
             } else {
-                Line::from(Span::styled(
+                Some(Line::from(Span::styled(
                     "User",
                     Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
-                ))
+                )))
             }
         }
-        MessageRole::Assistant => {
-            let mut spans = vec![Span::styled(
-                "Forge",
-                Style::default().fg(theme::ROLE_ASSISTANT).add_modifier(Modifier::BOLD),
-            )];
-            if let Some(ms) = msg.turn_duration_ms {
-                spans.push(Span::styled(
-                    format!(" \u{b7} {}", format_turn_duration(ms)),
-                    Style::default().fg(theme::DIM),
-                ));
-            }
-            Line::from(spans)
+        MessageRole::Assistant => msg.turn_duration_ms.map(|ms| {
+            Line::from(Span::styled(format_turn_duration(ms), Style::default().fg(theme::DIM)))
+        }),
+        MessageRole::System(_) => {
+            Some(system_role_label_line(system_severity_from_role(&msg.role)))
         }
-        MessageRole::System(_) => system_role_label_line(system_severity_from_role(&msg.role)),
     }
 }
 
@@ -3461,7 +3449,11 @@ mod tests {
             .position(|line| line.contains("Second paragraph"))
             .expect("second block");
 
-        assert_eq!(rendered.first().map(String::as_str), Some("Forge"));
+        assert_eq!(
+            rendered.first().map(String::as_str),
+            Some("First paragraph"),
+            "a no-duration assistant turn has no header row, so the body starts at row 0",
+        );
         assert!(second_idx > first_idx + 1);
         assert!(rendered[first_idx + 1].is_empty());
     }
@@ -3486,7 +3478,11 @@ mod tests {
         let after_idx =
             rendered.iter().position(|line| line.contains("After notice")).expect("after text");
 
-        assert_eq!(rendered.first().map(String::as_str), Some("Forge"));
+        assert_eq!(
+            rendered.first().map(String::as_str),
+            Some("Before notice"),
+            "a no-duration assistant turn has no header row, so the body starts at row 0",
+        );
         assert!(before_idx < notice_idx && notice_idx < after_idx);
     }
 
@@ -3536,7 +3532,7 @@ mod tests {
         let (h, _) = measure_message_height_cached(&mut measured, &spinner, 80, 1);
         let truth_h = ground_truth_height(&mut truth, &spinner, 80);
         assert_eq!(h, truth_h);
-        assert_eq!(h, 5);
+        assert_eq!(h, 4);
     }
 
     #[test]
@@ -3552,12 +3548,12 @@ mod tests {
             &mut lines,
         );
 
-        assert_eq!(render_lines_to_strings(&lines), vec!["Forge".to_owned(), "hello".to_owned()]);
+        assert_eq!(render_lines_to_strings(&lines), vec!["hello".to_owned()]);
 
         let (h, _) = measure_message_height_cached_with_tools_collapsed_and_separator(
             &mut msg, &spinner, 80, 1, false, false,
         );
-        assert_eq!(h, 2);
+        assert_eq!(h, 1);
     }
 
     #[test]
@@ -3578,14 +3574,13 @@ mod tests {
         );
 
         let rendered = render_lines_to_strings(&lines);
-        assert_eq!(rendered.len(), 2);
-        assert_eq!(rendered[0], "Forge");
-        assert!(rendered[1].contains("Thinking..."));
+        assert_eq!(rendered.len(), 1, "a live turn has no duration, so no header row precedes it");
+        assert!(rendered[0].contains("Thinking..."));
 
         let (h, _) = measure_message_height_cached_with_tools_collapsed_and_separator(
             &mut msg, &spinner, 80, 1, false, false,
         );
-        assert_eq!(h, 2);
+        assert_eq!(h, 1);
     }
 
     #[test]
@@ -3638,14 +3633,13 @@ mod tests {
         );
 
         let rendered = render_lines_to_strings(&lines);
-        assert_eq!(rendered.len(), 2);
-        assert_eq!(rendered[0], "Forge");
-        assert!(rendered[1].contains("Compacting context..."));
+        assert_eq!(rendered.len(), 1, "a live turn has no duration, so no header row precedes it");
+        assert!(rendered[0].contains("Compacting context..."));
 
         let (h, _) = measure_message_height_cached_with_tools_collapsed_and_separator(
             &mut msg, &spinner, 80, 1, false, false,
         );
-        assert_eq!(h, 2);
+        assert_eq!(h, 1);
     }
 
     #[test]
@@ -3676,8 +3670,10 @@ mod tests {
 
         assert_eq!(remaining, 0);
         let rendered = render_lines_to_strings(&out);
-        assert_eq!(rendered.first().map(String::as_str), Some("Forge"));
-        assert!(rendered[1].contains("Thinking..."));
+        assert!(
+            rendered[0].contains("Thinking..."),
+            "a live turn has no duration, so the offset render opens on the spinner row",
+        );
         assert!(!rendered.last().is_some_and(String::is_empty));
     }
 
@@ -3709,8 +3705,10 @@ mod tests {
 
         assert_eq!(remaining, 0);
         let rendered = render_lines_to_strings(&out);
-        assert_eq!(rendered.first().map(String::as_str), Some("Forge"));
-        assert!(rendered[1].contains("Compacting context..."));
+        assert!(
+            rendered[0].contains("Compacting context..."),
+            "a live turn has no duration, so the offset render opens on the spinner row",
+        );
         assert!(!rendered.last().is_some_and(String::is_empty));
     }
 
@@ -3720,7 +3718,7 @@ mod tests {
         let mut msg = make_assistant_split_message("First paragraph", "Second paragraph");
         let mut out = Vec::new();
 
-        let remaining = render_message_from_offset(&mut msg, &spinner, 80, 1, 2, &mut out);
+        let remaining = render_message_from_offset(&mut msg, &spinner, 80, 1, 1, &mut out);
 
         assert_eq!(remaining, 0);
         let rendered = render_lines_to_strings(&out);
@@ -3914,7 +3912,7 @@ mod tests {
     }
 
     #[test]
-    fn assistant_heading_at_start_does_not_render_blank_line_after_label() {
+    fn assistant_heading_at_start_does_not_render_a_leading_blank_line() {
         let spinner = idle_spinner();
         let mut msg = make_text_message(MessageRole::Assistant, "\n# Heading\nBody");
 
@@ -3927,10 +3925,9 @@ mod tests {
         );
         let rendered = render_lines_to_strings(&lines);
 
-        assert_eq!(rendered.first().map(String::as_str), Some("Forge"));
         let heading_idx =
             rendered.iter().position(|line| line.contains("Heading")).expect("heading");
-        assert_eq!(heading_idx, 1);
+        assert_eq!(heading_idx, 0, "the leading newline before a heading swallows no row");
         assert!(!rendered[heading_idx].is_empty());
     }
 
@@ -3956,10 +3953,9 @@ mod tests {
         let rendered = render_lines_to_strings(&out);
 
         assert_eq!(remaining, 0);
-        assert_eq!(rendered.first().map(String::as_str), Some("Forge"));
         let heading_idx =
             rendered.iter().position(|line| line.contains("Heading")).expect("heading");
-        assert_eq!(heading_idx, 1);
+        assert_eq!(heading_idx, 0, "the leading newline before a heading swallows no row");
         assert!(!rendered[heading_idx].is_empty());
     }
 
@@ -4356,12 +4352,12 @@ mod tests {
         assert!(!compute_suppress_group_header(&messages, 2));
     }
 
-    /// Render-time effect: with `suppress_group_header = true`, the
-    /// envelope render does NOT include the `Forge` role label line.
-    /// With it false, the label IS present. Same envelope text, only
-    /// the flag changes.
+    /// An envelope carries no role label to suppress, so the flag is
+    /// inert here and the two renders agree line for line. What names
+    /// the traffic is the envelope's own `▶ ⤵ Message <sender>` row -
+    /// the reason dropping the label is not a loss of identity.
     #[test]
-    fn render_envelope_with_suppress_group_header_omits_role_label() {
+    fn envelope_renders_its_own_sender_row_and_no_role_label() {
         let mut msg = make_peer_envelope_message("forge", "Personal", "hello");
         let spinner = idle_spinner();
         let options_with_label = MessageRenderOptions {
@@ -4399,9 +4395,14 @@ mod tests {
         );
         let without_label = render_lines_to_strings(&lines_without);
 
-        assert_eq!(with_label.first().map(String::as_str), Some("Forge"));
-        assert_ne!(without_label.first().map(String::as_str), Some("Forge"));
-        assert!(lines_without.len() < lines_with.len(), "suppressing the label drops one line");
+        assert_eq!(
+            with_label, without_label,
+            "an envelope has no role label, so suppress_group_header changes nothing",
+        );
+        assert!(
+            with_label.first().is_some_and(|row| row.contains("Message forge")),
+            "the envelope's own row names the kind and the sender: {with_label:?}",
+        );
     }
 
     /// Build an Assistant message that carries a peer-outbound
@@ -4423,8 +4424,8 @@ mod tests {
         // A worker's chat interleaves inbound envelopes (from lead)
         // with Assistant turns carrying the worker's own outbound
         // `workers__tell` / `workers__ask` tool_use cards. The
-        // streak should fold under one `Forge` header rather than
-        // re-printing the role label on every other row.
+        // streak should fold into one group rather than re-printing
+        // a header on every other row.
         let messages = vec![
             make_peer_envelope_message("forge", "Personal", "first inbound"),
             make_assistant_with_workers_tell("lead", "outbound to lead"),
@@ -4650,7 +4651,7 @@ mod tests {
 
     // ----------------------------------------------------------------
     // turn-duration formatter (used by `stop_hook_summary` rows) +
-    // the post-#279 bare-`Forge` role label assertion.
+    // the role-label header row.
     // ----------------------------------------------------------------
 
     #[test]
@@ -4670,48 +4671,74 @@ mod tests {
         assert_eq!(format_turn_duration(3_724_000), "1h 02m 04s");
     }
 
-    #[test]
-    fn assistant_role_label_renders_bare_forge_when_turn_duration_absent() {
-        let msg = make_text_message(MessageRole::Assistant, "anything");
-        // turn_duration_ms defaults to None.
-        let line = role_label_line(&msg);
-        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(rendered, "Forge");
+    /// Flatten a header row to its text, or `None` when the message
+    /// renders no header row at all.
+    fn header_row_text(msg: &ChatMessage) -> Option<String> {
+        role_label_line(msg)
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
     }
 
     #[test]
-    fn assistant_role_label_renders_chip_when_turn_duration_present() {
-        let mut msg = make_text_message(MessageRole::Assistant, "anything");
-        msg.turn_duration_ms = Some(12_400);
-        let line = role_label_line(&msg);
-        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(rendered.contains("Forge"), "role banner stays Forge: {rendered:?}");
-        assert!(rendered.contains("12.4s"), "chip carries formatted duration: {rendered:?}");
-        assert!(
-            rendered.contains('\u{b7}'),
-            "chip separator is the middle-dot \u{b7}: {rendered:?}"
+    fn assistant_header_row_is_absent_when_turn_duration_absent() {
+        // turn_duration_ms defaults to None - a mid-stream turn.
+        let msg = make_text_message(MessageRole::Assistant, "anything");
+        assert_eq!(
+            header_row_text(&msg),
+            None,
+            "an assistant turn with no duration renders no header row",
         );
     }
 
     #[test]
-    fn gotify_envelope_role_label_renders_distinct_gotify_source() {
-        let msg = ChatMessage::new_gotify_envelope(MessageRole::User, vec![]);
-        let rendered: String =
-            role_label_line(&msg).spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(rendered, "Gotify", "an external notification is never labeled Forge");
+    fn assistant_header_row_is_the_duration_alone() {
+        let mut msg = make_text_message(MessageRole::Assistant, "anything");
+        msg.turn_duration_ms = Some(12_400);
+        assert_eq!(
+            header_row_text(&msg).as_deref(),
+            Some("12.4s"),
+            "a completed assistant turn's header row is the duration alone - no label, \
+             no leading separator",
+        );
     }
 
     #[test]
-    fn peer_envelope_role_label_still_renders_forge() {
+    fn peer_envelope_renders_no_header_row() {
         let msg = ChatMessage::new_peer_envelope(MessageRole::User, vec![]);
-        let rendered: String =
-            role_label_line(&msg).spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(rendered, "Forge");
+        assert_eq!(
+            header_row_text(&msg),
+            None,
+            "a peer / worker envelope renders no header row - its own row names the sender",
+        );
+    }
+
+    #[test]
+    fn non_peer_roles_keep_their_source_labels() {
+        assert_eq!(
+            header_row_text(&ChatMessage::new_gotify_envelope(MessageRole::User, vec![]))
+                .as_deref(),
+            Some("Gotify"),
+            "an external notification keeps its Gotify source label",
+        );
+        assert_eq!(
+            header_row_text(&ChatMessage::new_cron_envelope(MessageRole::User, vec![])).as_deref(),
+            Some("Cron"),
+            "a fired cron keeps its Cron source label",
+        );
+        assert_eq!(
+            header_row_text(&make_text_message(MessageRole::User, "typed")).as_deref(),
+            Some("User"),
+            "real human input keeps its User label",
+        );
+        assert_eq!(
+            header_row_text(&ChatMessage::new(MessageRole::Welcome, vec![])).as_deref(),
+            Some("Overview"),
+            "the welcome message keeps its Overview label",
+        );
     }
 
     /// #383 follow-up (empty trailing bubble): an idle assistant with no
-    /// blocks would otherwise render only a bare "Forge" role label with
-    /// no body. Suppress it - an idle empty placeholder renders nothing.
+    /// blocks would otherwise render only a bare duration row with no
+    /// body. Suppress it - an idle empty placeholder renders nothing.
     #[test]
     fn empty_idle_assistant_placeholder_renders_nothing() {
         let mut msg = ChatMessage::new(MessageRole::Assistant, vec![]);
@@ -4880,8 +4907,6 @@ mod tests {
     #[test]
     fn stop_hook_summary_renders_collapsed_chip_when_actions_positive() {
         let rendered = render_assistant_with_stop_hook(3, false, &[]);
-        // Forge label + "done" body + chip line.
-        assert_eq!(rendered.first().map(String::as_str), Some("Forge"));
         assert!(rendered.iter().any(|line| line == "done"), "expected body line; got {rendered:?}");
         assert!(
             rendered.iter().any(|line| line.contains("↳ hook summary · 3 actions [▶ expand]")),
@@ -4906,7 +4931,7 @@ mod tests {
     #[test]
     fn stop_hook_summary_renders_nothing_when_actions_zero() {
         let rendered = render_assistant_with_stop_hook(0, false, &[]);
-        // Forge label + "done" only - no chip, no expand state.
+        // "done" only - no chip, no expand state.
         assert!(
             rendered.iter().all(|line| !line.contains("↳ hook summary")),
             "actions==0 must produce no chip; got {rendered:?}",

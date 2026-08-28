@@ -351,9 +351,9 @@ fn handle_user(app: &mut App, msg: Message) {
 }
 
 /// Which envelope constructor built a message. Merging is gated on this:
-/// `role_label_line` picks the `Gotify` / `Cron` / `Forge` source label
-/// from these per-message flags, so appending a notification to a peer
-/// message would render an external alert as agent traffic.
+/// `role_label_line` picks the `Gotify` / `Cron` source label from these
+/// per-message flags, so appending a notification to a peer message
+/// would render an external alert as agent traffic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EnvelopeKind {
     Peer,
@@ -367,7 +367,7 @@ impl EnvelopeKind {
             crate::ui::peer_block::PeerInboundKind::Gotify { .. } => Self::Gotify,
             crate::ui::peer_block::PeerInboundKind::Cron { .. } => Self::Cron,
             // Spelled out, not `_`: a new inbound kind must not silently
-            // inherit the `Forge` label and merge into peer traffic.
+            // inherit peer traffic's unlabelled treatment and merge into it.
             crate::ui::peer_block::PeerInboundKind::Message { .. }
             | crate::ui::peer_block::PeerInboundKind::Question { .. }
             | crate::ui::peer_block::PeerInboundKind::Reply { .. }
@@ -1649,7 +1649,7 @@ fn handle_result(app: &mut App, msg: Message) {
 
 /// Stamp `Message::Result.duration_ms` onto the latest Assistant
 /// ChatMessage in the active session, invalidating its render cache so
-/// the `Forge - N.Ns` chip in the role-label line re-renders.
+/// the duration row in the role-label line re-renders.
 ///
 /// No-op when no Assistant message is present (rare: Result fires
 /// before any assistant content has been pushed). The wire stamp +
@@ -2580,9 +2580,9 @@ mod inbound_message_surfacing_tests {
         let _ = tail;
     }
 
-    /// The kind gate: `role_label_line` picks Gotify / Cron / Forge from
-    /// per-MESSAGE flags, so a notification sharing a message with peer
-    /// traffic would render under the wrong source label.
+    /// The kind gate: `role_label_line` picks the Gotify / Cron source
+    /// label from per-MESSAGE flags, so a notification sharing a message
+    /// with peer traffic would lose its label to peer traffic's none.
     #[test]
     fn a_gotify_notification_never_merges_into_a_peer_envelope_message() {
         let mut app = App::test_default();
