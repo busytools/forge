@@ -115,8 +115,7 @@ fn disagreeing_about_how_to_edit_is_reported_with_both_texts() {
     );
 }
 
-/// The direction this corpus catches best, and the one that produced its
-/// first real signal.
+/// The direction this corpus catches best.
 #[test]
 fn editing_text_the_baseline_left_alone_is_reported_separately() {
     let entry = Entry {

@@ -46,25 +46,13 @@
 //! # `15_020s.wav` is an ASR fixture, not a normalizer one
 //!
 //! Its ASR renders GGUF as "GG, UF" and that survives the whole pipeline,
-//! which makes it a useful anchor for ASR drift: if the transcript ever
-//! changes there, something moved.
+//! which makes it an anchor for ASR drift: if the transcript changes
+//! there, something moved. Leaving it unchanged is correct - S1-mini
+//! normalizes styling, structure and context and does no vocabulary
+//! reconstruction, so given "P Y torch" it returns "P-Y torch".
 //!
-//! **An earlier version of this comment said the opposite, and the
-//! correction is worth stating because it inverted what a green means
-//! there.** It claimed the clip was the repair the normalizer exists to
-//! perform, so a match would be evidence of failure. Measured false:
-//! S1-mini normalizes styling, structure and context and does no
-//! vocabulary reconstruction - given "P Y torch" and "C U D A" it returns
-//! "P-Y torch" and "C-U-D-A". Superwhisper's own S1-mini left "GG, UF"
-//! alone too, which is why the locked `baseline_normalized` still carries
-//! it. The reference output had been saying so the whole time.
-//!
-//! Leaving that clip unchanged is correct behaviour. Nothing in the corpus
-//! inverts, and an assertion built on the claim that something did would
-//! have failed on a working normalizer forever.
-//!
-//! The baselines remain known-good rather than correct, so the bench still
-//! reports what changed for a human to read rather than grading it, and no
+//! The baselines are known-good rather than correct, so the bench reports
+//! what changed for a human to read rather than grading it, and no
 //! accuracy assertion belongs in CI.
 //!
 //! # Numbers discipline
