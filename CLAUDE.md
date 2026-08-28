@@ -283,37 +283,49 @@ inspected.
     competent person reaches unaided fails it, however good the advice.
     Judge that at the grain of the sentence that would ship, not the
     principle it sits under, and never against text already shipped in
-    a misleading form - that qualifies whether or not the right
-    behaviour was independently reachable, because the shipped wording
-    is what defeats competence. One about how forge's own workers,
-    peers, crons or sessions behave usually passes.
+    a misleading form, which qualifies regardless of whether the right
+    behaviour was independently reachable. A rule about how forge's own
+    workers, peers, crons or sessions behave usually passes.
 
-    **Divergence counts, not just absence.** Present in both places but
-    SHARPER in one is the harder case: the shipped charter carried the
-    worker-despawn merge requirement only inside an exemplar ("a merged
+    **Divergence counts, not just absence: present in both places but
+    SHARPER in one is the harder case.** The shipped charter carried the
+    worker-despawn merge requirement only inside an example ("a merged
     PR") where the user-scope version stated it as the rule, so every
     forge user but the author got the fragile phrasing - one adjective
     from losing the behaviour, with no test asserting it.
 
     **Placement decides whether the text fires at all**, and the
-    audience is a forge SESSION at runtime. Always-on blocks
-    (`forge-agent/src/forge_sdk_worker.rs`) for what every session
-    needs, the lead charter
-    (`forge-workspace/src/spawn/lead_charter.md`) for lead-only
-    behaviour, an MCP tool description for a fact about that tool's own
-    return value. A fact only a contributor editing forge needs - that
-    `perf.rs` ships enabled on a hot path, say - belongs in this file or
-    project memory instead, and is out of scope here. The cross-project
-    handoff rule sat in a peer tool description, so it was read only
-    once a peer tool was already in hand - after the decision it
-    governs.
+    audience is a forge SESSION at runtime. The shipped surfaces are a
+    SET; read all of them first, or the grep that finds nothing files a
+    duplicate. Always-on blocks
+    (`crates/forge-agent/src/forge_sdk_worker.rs`) carry what every
+    session needs. Lead-only behaviour has two homes appended to the
+    same session, the charter
+    (`crates/forge-workspace/src/spawn/lead_charter.md`) and
+    `LEAD_DELEGATION_PREAMBLE`
+    (`crates/forge-workspace/src/workspace.rs`). An MCP tool
+    description carries a fact about that tool's own return value. The
+    despawn example above lives in all three of charter, preamble and
+    the `workers__despawn` description, so sharpening one leaves two. A
+    fact only a contributor editing forge needs - that `perf.rs` ships
+    enabled on a hot path, say - belongs in this file or project memory
+    instead.
+
+    The cross-project handoff rule is the worked example of a placement
+    fix. It sat in a peer tool description, read only once a peer tool
+    was already in hand, until it moved into the always-on block and
+    gained "this applies at the moment you decide to make the change".
+    The peer-tool copies remain, so a grep finds both.
 
     Shipped text never names a user-scope skill, command or plugin: a
     fresh install has none, so describe the behaviour and leave the
-    tooling as an optional shortcut. Also out - approval-scope tables,
-    timezone presentation, prose punctuation preferences, PR-body voice,
-    commit conventions, release workflow: real preferences, none of them
-    things forge breaks without.
+    tooling as an optional shortcut. That constraint is enforced by
+    `bundled_lead_charter_assumes_no_local_environment` in
+    `crates/forge-workspace/src/spawn.rs`, token by token, so a
+    promotion adds its own token there. Also out - approval-scope
+    tables, timezone presentation, prose punctuation preferences,
+    PR-body voice, commit conventions, release workflow: real
+    preferences, none of them things forge breaks without.
 
 ## Claude Code worktree interop
 
