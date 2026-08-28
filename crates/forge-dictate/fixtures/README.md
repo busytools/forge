@@ -15,6 +15,25 @@ another model's errors. When output diverges, decide whether ours got worse or
 merely different, then either fix the regression or re-lock the baseline
 deliberately - with a note saying why.
 
+## Divergence is expected, and is not re-locked away
+
+Our normalizer does not reproduce every baseline, and that is the corpus
+working rather than failing. A locked baseline that gets updated whenever we
+disagree with it stops being a reference and becomes a mirror, so re-locking
+needs an argument that our output is *right* - not merely that it is ours.
+
+**The current set of divergences is not written down here on purpose.** The
+comparison run prints every one of them verbatim, with both texts, every time
+it runs:
+
+    cargo nextest run -p forge-dictate --test normalizer_baselines \
+        --run-ignored all --no-capture
+
+That output is a live record. A list in this file would be a second copy of it,
+and the copy is the one that goes stale - which is how the clip-15 claim
+corrected below survived long enough to be repeated. Read the run, not a
+summary of it.
+
 ## Known limit: this corpus is fully blind to a normalizer that stops working
 
 11 of 15 clips are correct no-ops - the ASR output was already clean and the
