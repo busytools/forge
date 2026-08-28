@@ -36,13 +36,13 @@ mod tests_leaf_invariant {
     /// time, because such an edge closes no cycle and the workspace
     /// builds fine.
     ///
-    /// Asked of cargo's resolver rather than read out of the manifest.
-    /// Three successive manifest-parsing versions of this guard each
-    /// missed a different aliasing shape - a `package` rename, then a
-    /// rename inherited from the workspace table - because a rename is
-    /// precisely what a manifest hides and what the resolver has already
-    /// undone. `--manifest-path` is a compile-time constant, so the
-    /// answer does not depend on where this runs from.
+    /// Asked of cargo's resolver rather than read out of the manifest,
+    /// because a rename is exactly what a manifest hides and what the
+    /// resolver has already undone. `--manifest-path` is a compile-time
+    /// constant, so the answer does not depend on where this runs from.
+    ///
+    /// Checks direct dependencies only: a forge crate reached through a
+    /// workspace crate not itself named `forge-*` is not caught.
     #[test]
     fn depends_on_no_forge_crate() {
         let output = std::process::Command::new(option_env!("CARGO").unwrap_or("cargo"))

@@ -104,17 +104,9 @@ fn ensure(dir: &Path, spec: &ModelSpec, on_progress: &mut Reporter<'_>) -> Resul
 
 /// Decide what a failed partial deserves, and say so in the log.
 ///
-/// Only a verdict on the BYTES earns a deletion. An io error is a
-/// statement about the filesystem, and a partial may predate this run
-/// or have been adopted from an earlier one, so deleting on a transient
-/// fault would throw away a correct multi-gigabyte file. That is the
-/// same reasoning the cached path already uses; adopting partials is
-/// what extended it here.
-///
-/// When the bytes really are wrong but the removal fails, the caller
-/// gets a different error on purpose: keeping the file poisons every
-/// later run identically, and a hash mismatch that clears on retry and
-/// one that never will need different things from whoever sees it.
+/// Only a verdict on the BYTES earns a deletion: an io error says
+/// nothing about them, and a partial may predate this run, so deleting
+/// on one would throw away a correct multi-gigabyte file.
 fn discard_unusable_partial(partial: &Path, failure: Error) -> Error {
     if !matches!(failure, Error::SizeMismatch { .. } | Error::HashMismatch { .. }) {
         tracing::warn!(
