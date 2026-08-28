@@ -56,6 +56,12 @@ pub struct Transcript {
     pub asr: String,
     /// Where the time went.
     pub stages: Stages,
+    /// The recording hit [`Config::max_capture`] and was cut short, so
+    /// this is what fitted rather than what was said. Carried here
+    /// rather than only logged: a host cannot offer to keep going, or
+    /// say "stopped at two minutes", from a log line it may not be
+    /// routing.
+    pub truncated: bool,
 }
 
 /// What a finished transcription produced.
@@ -89,6 +95,7 @@ struct Job {
     pcm: Vec<f32>,
     resample: Duration,
     audio: Duration,
+    truncated: bool,
     cancel: CancelToken,
     reply: Sender<Result<Outcome, Error>>,
 }
@@ -201,7 +208,7 @@ impl Engine {
         }
         let resample = started.elapsed();
 
-        self.submit(pcm, resample)
+        self.submit(pcm, resample, false)
     }
 
     /// Take the microphone, labelling the holder so a competing caller
@@ -251,7 +258,7 @@ impl Engine {
     }
 
     /// Queue already-captured audio.
-    fn submit(&self, pcm: Vec<f32>, resample: Duration) -> Result<Ticket, Error> {
+    fn submit(&self, pcm: Vec<f32>, resample: Duration, truncated: bool) -> Result<Ticket, Error> {
         let (reply, answer) = channel();
         let cancel = CancelToken::new();
 
@@ -268,7 +275,7 @@ impl Engine {
         self.jobs
             .as_ref()
             .ok_or(Error::EngineStopped)?
-            .send(Job { pcm, resample, audio, cancel: cancel.clone(), reply })
+            .send(Job { pcm, resample, audio, truncated, cancel: cancel.clone(), reply })
             .map_err(|_| Error::EngineStopped)?;
         Ok(Ticket { answer, cancel })
     }
@@ -331,13 +338,11 @@ impl Capture {
             return Err(error);
         }
         let pcm = self.stop_recording();
-        if self.recording.was_truncated() {
-            tracing::warn!(
-                cap = ?self.max_capture,
-                "capture reached its cap and stopped itself"
-            );
+        let truncated = self.recording.was_truncated();
+        if truncated {
+            tracing::warn!(cap = ?self.max_capture, "capture reached its cap and stopped itself");
         }
-        self.engine.submit(pcm, Duration::ZERO)
+        self.engine.submit(pcm, Duration::ZERO, truncated)
     }
 
     /// Stop recording and throw the audio away.
@@ -469,7 +474,12 @@ fn worker(
                 // error or a cancel discards the stages, and taking the
                 // load cost there would lose it for the process.
                 first = false;
-                Ok(Outcome::Transcript(Transcript { asr: text.clone(), text, stages }))
+                Ok(Outcome::Transcript(Transcript {
+                    asr: text.clone(),
+                    text,
+                    stages,
+                    truncated: job.truncated,
+                }))
             }
             // `was_aborted` is what separates a cancellation from a real
             // fault: both arrive as an error from `run`, and folding them
