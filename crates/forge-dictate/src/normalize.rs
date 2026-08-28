@@ -199,10 +199,16 @@ mod tests_against_the_model {
         Normalizer::load(&path).expect("weights must load; run prepare() first")
     }
 
-    /// The oracle, written out here rather than reached for in the
-    /// production module: a reference that shares code with the thing it
-    /// validates cannot detect a fault the two have in common. One token
-    /// per decode, no drafts, nothing to roll back.
+    /// The oracle: one token per decode, no drafts, nothing to roll back.
+    /// The loop is written out rather than reached for in the production
+    /// module, because a reference sharing code with what it validates
+    /// cannot detect a fault the two have in common.
+    ///
+    /// It does share [`Normalizer::session`], so what the gate covers is
+    /// divergence in the generation loop and nothing else. Everything
+    /// `session` decides is common to both sides and therefore invisible to
+    /// the comparison: `budget`, `n_ctx`, batch capacity, which prompt
+    /// position carries logits, and `AddBos::Never`.
     fn greedy(n: &Normalizer, prompt: &str) -> String {
         let mut s = n.session(prompt).expect("prompt decodes");
         let mut sampler = LlamaSampler::greedy();
