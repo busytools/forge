@@ -53,10 +53,10 @@ pub enum Structure {
     /// Sentences and paragraphs throughout.
     #[default]
     Prose,
-    /// Permits Markdown bullets, so the returned text can be multi-line.
-    /// The card describes the model as conservative about it: it wants at
-    /// least three items and leaves anything that is not an enumeration as
-    /// prose.
+    /// Permits Markdown bullets. **Returns multi-line text** when it forms
+    /// a list, so a host that assumes one line gets a surprise. Measured
+    /// more conservative than the card documents: the card's own three-item
+    /// example comes back as prose here, while a seven-item input bullets.
     Lists,
 }
 
@@ -69,16 +69,36 @@ impl Structure {
     }
 }
 
-/// Frozen pending a decision on exposing it. `email` would add greeting and
-/// sign-off blocks, changing the shape of the returned text.
-const CONTEXT: &str = "general";
+/// Destination conventions. Not a domain or vocabulary hint: it will not
+/// protect technical terms, which are a [`Styling`] concern.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Context {
+    /// Flowing text.
+    #[default]
+    General,
+    /// Email layout: a greeting line, the body and a sign-off block,
+    /// separated by blank lines. **Reliably returns multi-line text**, so a
+    /// host that assumes one line gets a surprise. Measured token-neutral
+    /// rather than longer, because the newlines replace connective prose.
+    Email,
+}
 
-pub fn build(text: &str, styling: Styling, structure: Structure) -> String {
+impl Context {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::General => "general",
+            Self::Email => "email",
+        }
+    }
+}
+
+pub fn build(text: &str, styling: Styling, structure: Structure, context: Context) -> String {
     let styling = styling.as_str();
     let structure = structure.as_str();
+    let context = context.as_str();
     format!(
         "<|im_start|>system\n{SYSTEM}<|im_end|>\n\
-         <|im_start|>user\n[Styling: {styling}] [Structure: {structure}] [Context: {CONTEXT}]\n\
+         <|im_start|>user\n[Styling: {styling}] [Structure: {structure}] [Context: {context}]\n\
          {text}<|im_end|>\n\
          {ASSISTANT_PREFIX}"
     )
@@ -95,7 +115,12 @@ mod tests {
     #[test]
     fn matches_the_trained_input_format() {
         assert_eq!(
-            build("so um send the report by uh friday", Styling::SemiFormal, Structure::Prose),
+            build(
+                "so um send the report by uh friday",
+                Styling::SemiFormal,
+                Structure::Prose,
+                Context::General,
+            ),
             CARD_EXAMPLE,
             "prompt diverged from the format S1-mini was trained on"
         );
@@ -113,17 +138,24 @@ mod tests {
             (Styling::SemiFormal, "semi-formal"),
             (Styling::Formal, "formal"),
         ] {
-            let p = build("anything", styling, Structure::Prose);
+            let p = build("anything", styling, Structure::Prose, Context::General);
             assert!(
                 p.contains(&format!("[Styling: {spelling}]")),
                 "{styling:?} did not reach the control line as {spelling:?}"
             );
         }
         for (structure, spelling) in [(Structure::Prose, "prose"), (Structure::Lists, "lists")] {
-            let p = build("anything", Styling::SemiFormal, structure);
+            let p = build("anything", Styling::SemiFormal, structure, Context::General);
             assert!(
                 p.contains(&format!("[Structure: {spelling}]")),
                 "{structure:?} did not reach the control line as {spelling:?}"
+            );
+        }
+        for (context, spelling) in [(Context::General, "general"), (Context::Email, "email")] {
+            let p = build("anything", Styling::SemiFormal, Structure::Prose, context);
+            assert!(
+                p.contains(&format!("[Context: {spelling}]")),
+                "{context:?} did not reach the control line as {spelling:?}"
             );
         }
     }
@@ -139,7 +171,7 @@ mod tests {
     #[test]
     fn carries_the_empty_think_block() {
         assert!(
-            build("anything", Styling::default(), Structure::default())
+            build("anything", Styling::default(), Structure::default(), Context::default())
                 .ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"),
             "prompt lost the empty think block; the model will answer \
              `<think>` and stop"

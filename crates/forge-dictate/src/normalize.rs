@@ -8,11 +8,21 @@
 //! plus a clause requiring it to keep that name and capitalization wherever
 //! it is used. llama.cpp reports 751632384 because the tied embedding is
 //! stored materialized and counted twice.
+//!
+//! # The model card describes intent, not measured behaviour
+//!
+//! Every behavioural claim in it that has been tested here has failed to
+//! reproduce: omitting the empty think block returns a `<think>` fragment
+//! rather than nothing, `formal` is not `semi-formal` plus expanded
+//! contractions, and the card's own three-item `lists` example comes back
+//! as prose. The input FORMAT it documents is exact and worth following to
+//! the byte; its statements about what the model will do are not. Run the
+//! claim before building on it.
 
 mod lookup;
 mod prompt;
 
-pub use prompt::{Structure, Styling};
+pub use prompt::{Context, Structure, Styling};
 
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
@@ -104,6 +114,8 @@ pub struct NormalizeOptions {
     pub styling: prompt::Styling,
     /// Whether the model may return a bulleted list.
     pub structure: prompt::Structure,
+    /// Destination conventions. `Email` returns multi-line text.
+    pub context: prompt::Context,
     /// Draft length for speculative decoding. Decoder tuning rather than a
     /// user-facing choice, and `0` turns speculation off. The optimum is a
     /// property of the text: speculation drafts from the input, so it pays
@@ -118,6 +130,7 @@ impl Default for NormalizeOptions {
         Self {
             styling: prompt::Styling::default(),
             structure: prompt::Structure::default(),
+            context: prompt::Context::default(),
             k: lookup::K,
             ngram: lookup::NGRAM,
         }
@@ -162,7 +175,7 @@ impl Normalizer {
         text: &str,
         opts: NormalizeOptions,
     ) -> Result<String, NormalizeError> {
-        self.run(&prompt::build(text, opts.styling, opts.structure), text, opts)
+        self.run(&prompt::build(text, opts.styling, opts.structure, opts.context), text, opts)
     }
 
     /// `source` is what speculation drafts from, and is the transcript
@@ -290,7 +303,11 @@ mod tests_against_the_model {
         let n = normalizer();
         for (ngram, k) in [(2, 64), (1, 4), (3, 16), (2, 0)] {
             let opts = NormalizeOptions { k, ngram, ..Default::default() };
-            let plain = greedy(&n, &prompt::build(TRANSCRIPT, opts.styling, opts.structure), k);
+            let plain = greedy(
+                &n,
+                &prompt::build(TRANSCRIPT, opts.styling, opts.structure, opts.context),
+                k,
+            );
             let spec = n.normalize_with(TRANSCRIPT, opts).expect("speculative generation");
             assert_eq!(
                 spec, plain,
