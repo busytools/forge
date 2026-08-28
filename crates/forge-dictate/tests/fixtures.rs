@@ -36,36 +36,35 @@
 //! Only 4 of the 15 clips exercise the normalizer at all; the other 11 are
 //! correct no-ops where the ASR output was already clean. So the corpus is
 //! a strong ASR regression gate and an ASYMMETRIC normalizer gate. It
-//! catches a normalizer that starts MANGLING clean input. It is close to
+//! catches a normalizer that starts MANGLING clean input, and it is FULLY
 //! blind to one that quietly degrades into a PASSTHROUGH - bump s1-mini,
-//! have it stop cleaning entirely, and this corpus mostly goes green.
+//! have it stop cleaning entirely, and 11 of 15 go green because a
+//! passthrough is the correct answer on them. There is no clip that
+//! catches that, and no exception to look for.
 //!
-//! **Do not stop reading here: `15_020s.wav` is the exception and it runs
-//! the other way.** On that one clip a passthrough goes green BECAUSE it
-//! failed, not because there was nothing to do. The next section says why,
-//! and it contradicts this one rather than extending it.
+//! # `15_020s.wav` is an ASR fixture, not a normalizer one
 //!
-//! # Clip 15 inverts, and this is MEASURED rather than predicted
+//! Its ASR renders GGUF as "GG, UF" and that survives the whole pipeline,
+//! which makes it a useful anchor for ASR drift: if the transcript ever
+//! changes there, something moved.
 //!
-//! `15_020s.wav` is the most valuable single fixture: its ASR renders GGUF
-//! as "GG, UF", exactly the repair the normalizer exists to perform. Its
-//! locked `baseline_normalized` PRESERVES that error, and our ASR has been
-//! confirmed to reproduce "GG, UF" byte-identically. So once the
-//! normalizer lands, **this clip is EXPECTED to differ from its locked
-//! baseline when everything is working correctly**, and a naive gate reads
-//! that as a regression.
+//! **An earlier version of this comment said the opposite, and the
+//! correction is worth stating because it inverted what a green means
+//! there.** It claimed the clip was the repair the normalizer exists to
+//! perform, so a match would be evidence of failure. Measured false:
+//! s1-mini normalizes styling, structure and context and does no
+//! vocabulary reconstruction - given "P Y torch" and "C U D A" it returns
+//! "P-Y torch" and "C-U-D-A". Superwhisper's own s1-mini left "GG, UF"
+//! alone too, which is why the locked `baseline_normalized` still carries
+//! it. The reference output had been saying so the whole time.
 //!
-//! It also inverts the corpus-wide limit above. On every other clip a
-//! normalizer that quietly stopped cleaning would go green because the
-//! input was already clean. On clip 15 a passthrough matches the baseline
-//! EXACTLY, so a stopped normalizer produces a FALSE GREEN here - the one
-//! clip whose green is evidence of failure rather than of nothing
-//! happening.
+//! Leaving that clip unchanged is correct behaviour. Nothing in the corpus
+//! inverts, and an assertion built on the claim that something did would
+//! have failed on a working normalizer forever.
 //!
-//! That generalises: any clip whose locked baseline captured the old
-//! model's mistake inverts the same way. The baselines are known-good, not
-//! correct. So the bench reports what changed for a human to read rather
-//! than grading it, and no accuracy assertion belongs in CI.
+//! The baselines remain known-good rather than correct, so the bench still
+//! reports what changed for a human to read rather than grading it, and no
+//! accuracy assertion belongs in CI.
 //!
 //! # Numbers discipline
 //!

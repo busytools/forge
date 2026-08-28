@@ -21,13 +21,24 @@ deliberately - with a note saying why.
 normalizer rightly changed nothing. Only 4 exercise it.
 
 That makes this a strong ASR gate and an asymmetric normalizer gate. It catches
-a normalizer that starts **mangling** clean input. It is close to blind to one
+a normalizer that starts **mangling** clean input. It is **fully** blind to one
 that quietly degrades into a **passthrough** - bump s1-mini, have it stop
-cleaning entirely, and this corpus mostly goes green.
+cleaning entirely, and 11 of 15 clips go green because a passthrough is the
+right answer on them. If you add clips, add change-heavy ones.
 
-`15_020s.wav` is the most valuable single fixture: the ASR renders GGUF as
-"GG, UF", which is exactly the repair the normalizer exists to perform and the
-only clip whose failure is unambiguous. If you add clips, add change-heavy ones.
+`15_020s.wav` is an **ASR** fixture, not a normalizer one. The ASR renders GGUF
+as "GG, UF" and that survives the whole pipeline intact, which makes it a useful
+anchor for ASR drift: if the transcript ever changes there, something moved.
+
+An earlier version of this file called it the repair the normalizer exists to
+perform, and the clip whose failure is unambiguous. **That is measured false and
+the correction matters, because it inverted what a green means.** s1-mini
+normalizes styling, structure and context; it does no vocabulary
+reconstruction. Given "P Y torch" and "C U D A" it returns "P-Y torch" and
+"C-U-D-A". Superwhisper's own s1-mini left "GG, UF" in place too, which is why
+the locked `baseline_normalized` still contains it - the reference output was
+telling us this the whole time. Leaving that clip unchanged is correct
+behaviour, not a defect.
 
 ## Screening rule: the exposure is MEANING, not format
 
