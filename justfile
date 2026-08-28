@@ -61,6 +61,24 @@ test-all:
 conformance:
     RUSTFLAGS="-D warnings" cargo nextest run -p forge-test-harness
 
+# Runs the 15-clip fixture corpus through the whole dictation pipeline and
+# rewrites `crates/forge-dictate/bench/<machine>.toml`. Commit the result:
+# the file is the trend, and its diff is the signal.
+#
+# NEVER FETCHES. Absent weights fail with a message rather than pulling 3 GB,
+# because a benchmark - or a cron - that quietly downloads that much is a
+# surprise. Run `prepare()` first if it complains.
+#
+# Non-interactive and roughly 5 seconds, so a scheduled run is cheap. Each
+# figure is held to a deadband measured from 14 runs on an unchanged tree, so
+# an unchanged pipeline leaves the file byte-identical and there is nothing
+# to commit. The raw unsettled numbers print on every run regardless - the
+# file is the trend, stdout is the truth.
+#
+# Benchmark the corpus and rewrite this machine's results file.
+bench:
+    RUSTFLAGS="-D warnings" cargo nextest run -p forge-dictate --test bench --run-ignored all --no-capture
+
 # Usage: `just conformance-capture-sdk wire_capture_trivial_prompt`
 # Burns API tokens. Baseline goes to target/wire-traces/; promote with
 # `cp target/wire-traces/capture-<scenario>-<ts>.jsonl \
