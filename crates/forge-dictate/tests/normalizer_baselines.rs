@@ -165,7 +165,7 @@ fn normalizer() -> Normalizer {
 /// The whole corpus through the real normalizer. Prints; asserts nothing
 /// about accuracy.
 #[test]
-#[ignore = "needs the s1-mini weights on disk; run with --run-ignored all"]
+#[ignore = "needs the S1-mini weights on disk; run with --run-ignored all"]
 fn corpus_through_the_real_normalizer() {
     let normalizer = normalizer();
     let manifest = load_manifest();

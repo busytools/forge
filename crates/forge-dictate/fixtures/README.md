@@ -35,7 +35,7 @@ perform, and the clip whose failure is unambiguous. **That is measured false and
 the correction matters, because it inverted what a green means.** S1-mini
 normalizes styling, structure and context; it does no vocabulary
 reconstruction. Given "P Y torch" and "C U D A" it returns "P-Y torch" and
-"C-U-D-A". Superwhisper's own s1-mini left "GG, UF" in place too, which is why
+"C-U-D-A". Superwhisper's own S1-mini left "GG, UF" in place too, which is why
 the locked `baseline_normalized` still contains it - the reference output was
 telling us this the whole time. Leaving that clip unchanged is correct
 behaviour, not a defect.

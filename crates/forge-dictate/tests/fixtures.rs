@@ -55,7 +55,7 @@
 //! perform, so a match would be evidence of failure. Measured false:
 //! S1-mini normalizes styling, structure and context and does no
 //! vocabulary reconstruction - given "P Y torch" and "C U D A" it returns
-//! "P-Y torch" and "C-U-D-A". Superwhisper's own s1-mini left "GG, UF"
+//! "P-Y torch" and "C-U-D-A". Superwhisper's own S1-mini left "GG, UF"
 //! alone too, which is why the locked `baseline_normalized` still carries
 //! it. The reference output had been saying so the whole time.
 //!

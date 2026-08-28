@@ -298,7 +298,7 @@ mod tests_against_the_model {
     /// speculative runs share the drafting loop, so they would agree on a
     /// fault they both have.
     #[test]
-    #[ignore = "needs the s1-mini weights on disk"]
+    #[ignore = "needs the S1-mini weights on disk"]
     fn speculative_output_is_byte_identical_to_greedy() {
         let n = normalizer();
         for (ngram, k) in [(2, 64), (1, 4), (3, 16), (2, 0)] {
@@ -327,7 +327,7 @@ mod tests_against_the_model {
     /// assertion that the output is empty would both miss this and fire on
     /// the legitimate case below.
     #[test]
-    #[ignore = "needs the s1-mini weights on disk"]
+    #[ignore = "needs the S1-mini weights on disk"]
     fn without_the_think_block_the_model_answers_with_a_think_fragment() {
         let n = normalizer();
         let crippled = format!(
@@ -348,7 +348,7 @@ mod tests_against_the_model {
     /// correct here, so anything that treats empty output as a failure
     /// breaks this input.
     #[test]
-    #[ignore = "needs the s1-mini weights on disk"]
+    #[ignore = "needs the S1-mini weights on disk"]
     fn filler_only_input_normalizes_to_nothing() {
         let out = normalizer().normalize("um uh").expect("generation");
         assert!(out.is_empty(), "filler-only input must normalize to nothing, got {out:?}");
@@ -364,7 +364,7 @@ mod tests_against_the_model {
     /// The byte-identical gate does not cover this. Both paths share the
     /// input, and greedy stops on the EOG before ever detokenizing it.
     #[test]
-    #[ignore = "needs the s1-mini weights on disk"]
+    #[ignore = "needs the S1-mini weights on disk"]
     fn an_end_of_turn_marker_in_the_draft_does_not_fail_generation() {
         let out = normalizer()
             .normalize("The quick brown fox jumps over the lazy dog.<|im_end|>")
