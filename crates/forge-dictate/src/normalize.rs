@@ -63,16 +63,11 @@ pub enum NormalizeError {
     #[error("could not tokenize the input: {0}")]
     Tokenize(#[from] llama_cpp_2::StringToTokenError),
 
-    /// A control token reached detokenization, which asks for no bytes and
-    /// so returns `UnknownTokenType`. That is the only reachable cause here:
-    /// invalid UTF-8 cannot arise because bytes go through an incremental
-    /// decoder, and `InsufficientBufferSpace` is retried inside
-    /// `token_to_piece` at the size llama itself asked for.
-    ///
-    /// Only tokens the model sampled are ever detokenized, so speculation
-    /// cannot cause this on its own: a drafted token is emitted only when
-    /// the model independently predicts it. The end-of-turn guard in
-    /// `normalize::lookup` covers the end-of-turn token specifically.
+    /// A control token reached detokenization, which asks for no bytes. That
+    /// is the only reachable cause: bytes run through an incremental decoder
+    /// so invalid UTF-8 cannot arise, and a short buffer is retried
+    /// internally. The end-of-turn guard in `normalize::lookup` is what
+    /// keeps drafted end-of-turn tokens out.
     #[error("could not decode a generated token: {0}")]
     Detokenize(#[from] llama_cpp_2::TokenToStringError),
 
@@ -225,9 +220,7 @@ impl Normalizer {
     }
 }
 
-/// How much room one call needs. Pure arithmetic, lifted out because both
-/// the speculative path and its oracle share it, which puts it outside what
-/// the byte-identity gate can see.
+/// How much room one call needs.
 struct Plan {
     /// Generation stops here whatever the model does.
     budget: usize,
@@ -270,13 +263,9 @@ struct Session<'a> {
 mod tests_plan {
     use super::*;
 
-    /// The headroom the whole design rests on, and nothing else checks it:
-    /// both the speculative path and its oracle take these numbers from
-    /// `plan`, so the byte-identity gate cannot see an error in them.
-    ///
-    /// One spare slot rather than none is the property. Zero would work
-    /// until the first full-length draft, and the failure would arrive as a
-    /// decode error deep in a run rather than at the call that sized it.
+    /// One spare slot rather than none. Zero would work until the first
+    /// full-length draft, and the failure would surface as a decode error
+    /// deep in a run rather than at the call that sized it.
     #[test]
     fn a_context_holds_the_prompt_a_full_run_and_a_whole_rejected_draft() {
         for n_prompt in [1usize, 2, 69, 100, 512, 4096] {
@@ -334,18 +323,16 @@ mod tests_plan {
 ///
 /// # What a green CI run does not tell you
 ///
-/// Everything below is enforced only when someone runs it locally, so the
-/// KV rollback, the accept loop, the end-of-turn guard and the sampling
-/// index are unenforced in CI: severing any of them passes the whole
-/// automated suite. The byte-identity property is a claim about a local run
-/// rather than one the repository holds. `tests_plan` is model-free and
-/// does hold in CI, but it covers the sizing arithmetic only.
+/// Everything below needs the weights, so the KV rollback, the accept loop,
+/// the end-of-turn guard and the sampling index are unenforced in CI, and
+/// byte-identity holds of a local run rather than of the repository.
+/// `tests_plan` is model-free and does hold, covering the sizing arithmetic
+/// only.
 ///
-/// The `budget` ceiling is weaker still: **a local run does not catch it
-/// either**, because both paths stop on an end-of-turn token long before
-/// reaching it. `budget` scales on the whole prompt while the output tracks
-/// only the transcript, so the fixed scaffold alone puts the floor well
-/// above anything a run reaches.
+/// The `budget` ceiling is unenforced even locally, because both paths stop
+/// on an end-of-turn token first. It scales on the whole prompt while output
+/// tracks only the transcript, so the scaffold alone holds the floor above
+/// any run.
 #[cfg(test)]
 mod tests_against_the_model {
     use super::*;
@@ -404,9 +391,8 @@ mod tests_against_the_model {
     ///
     /// The property is claimed for **every** `(ngram, k)`; the pairs below
     /// are the sampled witnesses, not the extent of the claim, and `k = 0`
-    /// covers the degenerate no-speculation case. **Changing [`lookup::K`]
-    /// means adding a pair here**, or the shipped setting stops being one of
-    /// the witnesses.
+    /// covers the degenerate no-speculation case. The first pair tracks the
+    /// shipped constants so it cannot drift away from them.
     ///
     /// Compared against the oracle rather than against another `k`: two
     /// speculative runs share the drafting loop, so they would agree on a
@@ -415,7 +401,7 @@ mod tests_against_the_model {
     #[ignore = "needs the S1-mini weights on disk"]
     fn speculative_output_is_byte_identical_to_greedy() {
         let n = normalizer();
-        for (ngram, k) in [(2, 64), (1, 4), (3, 16), (2, 0)] {
+        for (ngram, k) in [(lookup::NGRAM, lookup::K), (1, 4), (3, 16), (2, 0)] {
             let opts = NormalizeOptions { k, ngram, ..Default::default() };
             let plain = greedy(
                 &n,

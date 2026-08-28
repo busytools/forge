@@ -73,8 +73,9 @@ pub struct Transcript {
     ///
     /// Which of the two it was depends on the path. Audio that arrived
     /// through [`Engine::transcribe`] or [`Engine::transcribe_with`] was
-    /// never capped, so `true` there always means the decode budget. Only on the capture path can it
-    /// be either, and there a host can compare [`Stages::audio`] against
+    /// never capped, so `true` there always means the decode budget. Only
+    /// on the capture path can it be either, and there a host can compare
+    /// [`Stages::audio`] against
     /// its configured cap.
     pub truncated: bool,
 }

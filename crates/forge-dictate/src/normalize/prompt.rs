@@ -124,11 +124,9 @@ mod tests {
 
     /// Every control-line option must reach the prompt.
     ///
-    /// The literal is deliberately EXHAUSTIVE rather than `..default()`:
-    /// that makes a newly added field a compile error here, so whoever
-    /// adds one has to decide whether it belongs on the control line
-    /// instead of silently not being covered. A mutation that cannot
-    /// build cannot survive.
+    /// The literal is exhaustive rather than `..default()`, so a newly
+    /// added field is a compile error here and whoever adds one has to
+    /// decide whether it belongs on the control line.
     ///
     /// `k` and `ngram` are listed for that reason alone - they are
     /// decoder settings, do not appear in the control line, and are not
