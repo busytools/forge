@@ -85,9 +85,10 @@ pub struct Config {
     /// itself here rather than holding the input device indefinitely.
     ///
     /// Costs memory eagerly: the whole cap is reserved when recording
-    /// starts, at 4 bytes a sample, so 120 s is about 7 MiB and an hour
-    /// is 219 MiB whatever the utterance turns out to be. Clamped to an
-    /// hour.
+    /// starts, at 4 bytes a sample, so the 30 min default reserves about
+    /// 110 MiB and an hour reserves 219 MiB, whatever the utterance turns
+    /// out to be. Reserved rather than grown because the audio callback
+    /// must not allocate. Clamped to an hour.
     pub max_capture: Duration,
     /// Peak input level, in dBFS, below which a capture counts as
     /// silence rather than as an empty transcript.
@@ -103,7 +104,7 @@ impl Default for Config {
             normalize_options: NormalizeOptions::default(),
             device: None,
             language: None,
-            max_capture: Duration::from_secs(120),
+            max_capture: Duration::from_secs(30 * 60),
             silence_floor: -50.0,
         }
     }
@@ -200,7 +201,11 @@ mod tests_config {
             "the shipped normalizer settings are the default ones; nothing else pins this"
         );
         assert!(cfg.language.is_none(), "language defaults to autodetect");
-        assert_eq!(cfg.max_capture, Duration::from_secs(120), "max_capture defaults to 120s");
+        assert_eq!(
+            cfg.max_capture,
+            Duration::from_secs(30 * 60),
+            "max_capture defaults to 30 minutes"
+        );
         assert!(
             (cfg.silence_floor - -50.0).abs() < f32::EPSILON,
             "silence_floor defaults to -50 dBFS, got {}",
@@ -241,7 +246,7 @@ mod tests_config {
         assert_eq!(
             cfg.max_capture,
             Duration::from_secs(5),
-            "max_capture must carry the caller's cap, not the 120s default"
+            "max_capture must carry the caller's cap, not the default"
         );
         assert!(
             (cfg.silence_floor - -30.0).abs() < f32::EPSILON,
