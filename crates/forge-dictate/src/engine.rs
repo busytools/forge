@@ -51,9 +51,12 @@ pub struct Stages {
 pub struct Transcript {
     /// The text a caller should use.
     ///
-    /// Not necessarily one paragraph: under
-    /// [`crate::normalize::Structure::Lists`] this can be multi-line
-    /// markdown, which a fixed-height single-line surface will notice.
+    /// Not necessarily one paragraph. Long input produces paragraph
+    /// breaks even under the defaults, and
+    /// [`crate::normalize::Structure::Lists`] and
+    /// [`crate::normalize::Context::Email`] make multi-line output
+    /// likely - bullets and greeting/sign-off blocks respectively. A
+    /// fixed-height single-line surface will notice.
     pub text: String,
     /// Recognition output before normalization. Equal to `text` when no
     /// normalizer ran. Deliberately not named `raw`, which the
