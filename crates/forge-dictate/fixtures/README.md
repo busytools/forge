@@ -15,7 +15,7 @@ another model's errors. When output diverges, decide whether ours got worse or
 merely different, then either fix the regression or re-lock the baseline
 deliberately - with a note saying why.
 
-## Known limit: this corpus is nearly blind to a normalizer that stops working
+## Known limit: this corpus is fully blind to a normalizer that stops working
 
 11 of 15 clips are correct no-ops - the ASR output was already clean and the
 normalizer rightly changed nothing. Only 4 exercise it.

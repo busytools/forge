@@ -125,11 +125,12 @@ fn the_deadband_is_measured_against_the_committed_value_not_zero() {
 }
 
 /// Every deadband test above compares `render` against itself, so a writer
-/// emitting consistent nonsense satisfies all of them - proven by making it
-/// emit non-TOML and watching only this test fail. When a group of tests
-/// shares one instrument, at least one has to check the instrument from
-/// outside. TOML was chosen so the file is machine-readable; this is where
-/// that is actually checked.
+/// emitting consistent nonsense satisfies all of them. Proven by making
+/// `render` emit non-TOML: the deadband tests stayed green and only the
+/// two that parse the output failed. When a group of tests shares one
+/// instrument, at least one has to check that instrument from outside.
+/// TOML was chosen so the file is machine-readable; this is where that is
+/// actually checked.
 #[test]
 fn the_rendered_file_is_valid_toml_and_the_figure_is_retrievable() {
     let rendered = file_with(FIXTURE_MS);

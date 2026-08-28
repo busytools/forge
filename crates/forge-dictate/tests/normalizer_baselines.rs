@@ -148,9 +148,13 @@ fn editing_text_the_baseline_left_alone_is_reported_separately() {
 }
 
 /// Locates the weights the same way `normalize.rs`'s own model tests do.
-/// Duplicated rather than shared because `fetch::models_dir` is private;
-/// if the resolution changes, both copies break together, which is
-/// visible, and a test silently reading the wrong directory is not.
+/// Duplicated rather than shared because `fetch::models_dir` is private.
+///
+/// Note what that costs: both copies are `#[ignore]`d, so a change to how
+/// the models directory resolves breaks both SILENTLY and CI will not say
+/// so - it surfaces only when somebody runs `--run-ignored all`. The
+/// duplication is still preferable to widening the crate's public surface
+/// for a test, but it is not self-announcing.
 fn normalizer() -> Normalizer {
     let path = dirs::cache_dir()
         .map(|d| d.join("forge-dictate").join(ModelSpec::s1_mini_f16().file))
