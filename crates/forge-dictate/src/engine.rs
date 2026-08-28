@@ -85,8 +85,25 @@ pub enum Outcome {
     /// microphone all land here, and a caller that cannot tell them from
     /// "you said nothing" has nothing to report.
     NoAudio {
-        /// Loudest sample seen, in dBFS. Negative infinity for digital
-        /// silence.
+        /// Loudest sample seen, in dBFS. The two shapes mean different
+        /// things and a host should act on them differently.
+        ///
+        /// A finite value below the floor is a quiet room, a distant
+        /// speaker, or a muted input - ordinary, and retrying may work.
+        ///
+        /// Negative infinity means every sample was exactly zero, which
+        /// a live microphone does not produce. Measured: five captures
+        /// of an empty room read -38.2 to -27.5 dBFS and never reached
+        /// it, while a capture the operating system had refused produced
+        /// nothing else. So it says something structural sits between
+        /// the caller and the device - a denied permission, a hardware
+        /// mute switch, a disconnected interface - rather than that
+        /// nobody spoke. Which one is a host question; this crate
+        /// reports the observation.
+        ///
+        /// Also measured: that condition is sticky within a process. A
+        /// second capture behaved identically with no second prompt, so
+        /// a host should surface it rather than retry in a loop.
         peak: f32,
         /// How much audio was heard, so a caller can say "four seconds of
         /// nothing" rather than just "nothing".
