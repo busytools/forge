@@ -24,6 +24,13 @@ hex = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 dirs = { workspace = true }
+llama-cpp-2 = { workspace = true }
+encoding_rs = { workspace = true }
+
+# Metal is the only backend worth naming: elsewhere llama.cpp selects one
+# itself and falls back to CPU.
+[target.'cfg(target_os = "macos")'.dependencies]
+llama-cpp-2 = { workspace = true, features = ["metal"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
