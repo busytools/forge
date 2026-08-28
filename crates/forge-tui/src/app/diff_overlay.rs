@@ -2536,6 +2536,11 @@ fn set_thread_status_by_key(
         // while every other resolved one is a marker.
         overlay.resolved_expanded.remove(&id);
     }
+    // Entering or leaving Resolved swaps the card for a marker, so the
+    // file's row count changed; clear its height like a collapse toggle.
+    if let Some(slot) = overlay.measured_heights.get_mut(at.line.file_idx) {
+        *slot = None;
+    }
     app.needs_redraw = true;
     if let Some(project) = project
         && let Some(workspace) = app.workspace.as_ref()
@@ -5624,6 +5629,32 @@ mod tests {
         assert!(
             !thread_in_scope(&thread, None, "main"),
             "line numbers against another base would anchor onto unrelated code",
+        );
+    }
+
+
+    #[test]
+    fn resolving_a_comment_makes_its_file_re_measure() {
+        // Resolving folds the card to a marker, so the file loses rows
+        // exactly as a collapse toggle does. This is the commoner half:
+        // reviewers resolve far more often than they expand a marker.
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        with_editor(&mut overlay, key, "rename tok to token");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+        app.diff_overlay.as_mut().expect("overlay").measured_heights[0] = Some(40);
+
+        apply_thread_action(&mut app, CommentRef { line: key, slot: 0 }, ThreadAction::Resolve);
+
+        assert_eq!(
+            app.diff_overlay.as_ref().expect("overlay").measured_heights[0],
+            None,
+            "the file re-measures at its new row count, as a collapse toggle makes it",
         );
     }
 
