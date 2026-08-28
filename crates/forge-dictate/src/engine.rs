@@ -985,9 +985,12 @@ mod tests_real_recognition {
         );
     }
 
-    /// Teardown must abandon queued work rather than run it. Only
-    /// checkable with real weights: without them every job is answered
-    /// instantly and drain and discard look identical.
+    /// Teardown must abandon queued work rather than run it.
+    ///
+    /// Counts completed jobs rather than timing the drop. A wall-clock
+    /// budget is a proxy for a discrete property, and it fails in both
+    /// directions: it flakes on a loaded machine, and on a fast enough
+    /// one it passes while the backlog drains. A count cannot do either.
     #[test]
     #[ignore = "needs the ASR weights; run with --run-ignored all after `--example fetch`"]
     fn dropping_the_engine_discards_the_backlog_instead_of_draining_it() {
@@ -1005,13 +1008,14 @@ mod tests_real_recognition {
             })
             .collect();
 
-        let started = std::time::Instant::now();
+        // Joins the worker, so every job has resolved by the time this
+        // returns and each `recv` below answers immediately.
         drop(engine);
-        let elapsed = started.elapsed();
-        drop(queued);
+
+        let completed = queued.into_iter().filter(|_| true).filter_map(|t| t.recv().ok()).count();
         assert!(
-            elapsed < Duration::from_secs(3),
-            "six queued inferences must be discarded on teardown, not run; took {elapsed:?}"
+            completed <= 1,
+            "teardown must discard the backlog: at most the in-flight job may finish, {completed} of 6 did"
         );
     }
 }
