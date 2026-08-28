@@ -1352,6 +1352,87 @@ mod tests {
         assert_eq!(filtered_marketplace_plugins(&state).len(), 1);
     }
 
+    fn app_with_focused_search(tab: PluginsViewTab) -> crate::app::App {
+        let mut app = crate::app::App::test_default();
+        app.plugins.active_tab = tab;
+        app.plugins.search_focused = true;
+        app
+    }
+
+    fn press(app: &mut crate::app::App, code: KeyCode) -> bool {
+        handle_key(app, KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn search_filter_appends_pops_one_and_wipes_on_delete() {
+        let mut app = app_with_focused_search(PluginsViewTab::Installed);
+
+        for ch in ['a', 'b', 'c'] {
+            let _ = press(&mut app, KeyCode::Char(ch));
+        }
+        assert_eq!(
+            app.plugins.search_query_for(PluginsViewTab::Installed),
+            "abc",
+            "typing appends to the filter in order"
+        );
+
+        let _ = press(&mut app, KeyCode::Backspace);
+        assert_eq!(
+            app.plugins.search_query_for(PluginsViewTab::Installed),
+            "ab",
+            "Backspace drops exactly one character off the end"
+        );
+
+        let _ = press(&mut app, KeyCode::Delete);
+        assert_eq!(
+            app.plugins.search_query_for(PluginsViewTab::Installed),
+            "",
+            "Delete wipes the whole filter rather than one character"
+        );
+    }
+
+    /// Home and End fall through this view's keymap, so the filter has
+    /// no way to reposition where the next character lands. Routing
+    /// either into the editor would make this insert mid-string.
+    #[test]
+    fn search_filter_has_no_reachable_cursor_movement() {
+        let mut app = app_with_focused_search(PluginsViewTab::Installed);
+        for ch in ['a', 'b'] {
+            let _ = press(&mut app, KeyCode::Char(ch));
+        }
+
+        assert!(!press(&mut app, KeyCode::Home), "Home is unbound while the filter has focus");
+        assert!(!press(&mut app, KeyCode::End), "End is unbound while the filter has focus");
+
+        let _ = press(&mut app, KeyCode::Char('c'));
+        assert_eq!(
+            app.plugins.search_query_for(PluginsViewTab::Installed),
+            "abc",
+            "typing after Home/End still appends rather than inserting mid-string"
+        );
+    }
+
+    /// Paste collapses every newline flavour to a space, but a newline
+    /// delivered as a printable key lands in the filter verbatim.
+    #[test]
+    fn search_filter_keeps_a_typed_newline_and_flattens_a_pasted_one() {
+        let mut app = app_with_focused_search(PluginsViewTab::Installed);
+
+        assert!(handle_paste(&mut app, "a\nb\r\nc\rd"), "a focused filter accepts a paste");
+        assert_eq!(
+            app.plugins.search_query_for(PluginsViewTab::Installed),
+            "a b c d",
+            "pasted newlines collapse to spaces"
+        );
+
+        let _ = press(&mut app, KeyCode::Char('\n'));
+        assert_eq!(
+            app.plugins.search_query_for(PluginsViewTab::Installed),
+            "a b c d\n",
+            "a typed newline stays in the filter verbatim"
+        );
+    }
+
     #[test]
     fn installed_and_plugins_search_queries_are_independent() {
         let state = PluginsState {
