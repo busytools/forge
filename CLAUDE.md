@@ -291,19 +291,21 @@ inspected.
     each surface's own history before calling the shipped side wrong.
 
     **Divergence counts, not just absence - and a divergence can be the
-    correct state.** The despawn trigger is the worked example: some
-    surfaces name a merged PR among examples, others stop at "truly
-    done", including `workers__spawn` 150-odd lines above the hunk #717
-    edited in the same file. #717 removed "once its work is merged" from
-    the charter because it exempted every worker whose output was not a
-    PR; it cited `LEAD_DELEGATION_PREAMBLE`'s softer wording while
-    moving two other surfaces to a third phrasing, and left the preamble
-    untouched. That is all the history supports. It does not tell you
-    which of the rest were decided.
+    correct state.** The despawn trigger is the worked example. Some
+    surfaces name a merged PR among examples; some stop at "truly done",
+    including `workers__spawn`, in the same file well above the hunk
+    #717 edited; and the charter separately says "once they have
+    delivered". #717 wrote both the first of those and the last: it
+    removed "once its work is merged" because that exempted every worker
+    whose output was not a PR, and cited `LEAD_DELEGATION_PREAMBLE`'s
+    softer wording without adopting it, leaving the preamble untouched.
+    An odd phrasing is not evidence it was overlooked; check each site's
+    history rather than its wording.
 
     **Placement decides whether the text fires at all**, and the
     audience is a forge SESSION at runtime. The shipped surfaces are a
-    SET, or the grep that finds nothing files a duplicate. Always-on
+    SET; read all of them first, or the grep that finds nothing files a
+    duplicate. Always-on
     blocks (`crates/forge-agent/src/forge_sdk_worker.rs`) carry what
     every session needs; the charter
     (`crates/forge-workspace/src/spawn/lead_charter.md`) and
