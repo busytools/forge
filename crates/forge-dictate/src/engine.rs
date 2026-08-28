@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use transcribe_cpp::{CancelToken, Feature, Model, RunOptions};
 
 use crate::audio::{AudioSource, SAMPLE_RATE};
+use crate::normalize::NormalizeOptions;
 use crate::{Config, Error};
 
 /// Native diagnostics are routed once per process, before any model is
@@ -49,6 +50,10 @@ pub struct Stages {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Transcript {
     /// The text a caller should use.
+    ///
+    /// Not necessarily one paragraph: under
+    /// [`crate::normalize::Structure::Lists`] this can be multi-line
+    /// markdown, which a fixed-height single-line surface will notice.
     pub text: String,
     /// Recognition output before normalization. Equal to `text` when no
     /// normalizer ran. Deliberately not named `raw`, which the
@@ -96,6 +101,7 @@ struct Job {
     resample: Duration,
     audio: Duration,
     truncated: bool,
+    options: NormalizeOptions,
     cancel: CancelToken,
     reply: Sender<Result<Outcome, Error>>,
 }
@@ -107,6 +113,7 @@ struct Job {
 pub struct Engine {
     max_capture: Duration,
     device: Option<String>,
+    normalize_options: NormalizeOptions,
     silence_floor: f32,
     /// Set before teardown. The worker checks it between jobs, so a
     /// backlog is DISCARDED rather than drained: shutdown should not wait
@@ -161,6 +168,7 @@ impl Engine {
         let asr_path = dir.join(&cfg.asr_model.file);
         let max_capture = cfg.max_capture;
         let device = cfg.device.clone();
+        let normalize_options = cfg.normalize_options;
         let silence_floor = cfg.silence_floor;
         let stopping = Arc::new(AtomicBool::new(false));
         let in_flight: Arc<Mutex<Option<CancelToken>>> = Arc::new(Mutex::new(None));
@@ -178,6 +186,7 @@ impl Engine {
         Ok(Arc::new(Engine {
             max_capture,
             device,
+            normalize_options,
             silence_floor,
             stopping,
             in_flight,
@@ -193,7 +202,18 @@ impl Engine {
     /// A wrong sample rate or channel count is a caller mistake, knowable
     /// the moment the source is handed over, so it is refused here rather
     /// than arriving later mixed in with real runtime failures.
-    pub fn transcribe(&self, mut source: impl AudioSource) -> Result<Ticket, Error> {
+    pub fn transcribe(&self, source: impl AudioSource) -> Result<Ticket, Error> {
+        self.transcribe_with(source, self.normalize_options)
+    }
+
+    /// Queue `source`, overriding the configured normalizer options for
+    /// this transcription only. Styling is a per-recording choice, so it
+    /// belongs on the call rather than on the engine.
+    pub fn transcribe_with(
+        &self,
+        mut source: impl AudioSource,
+        options: NormalizeOptions,
+    ) -> Result<Ticket, Error> {
         if source.sample_rate() != SAMPLE_RATE {
             return Err(Error::SampleRate { expected: SAMPLE_RATE, actual: source.sample_rate() });
         }
@@ -211,7 +231,7 @@ impl Engine {
         }
         let resample = started.elapsed();
 
-        self.submit(pcm, resample, false)
+        self.submit(pcm, resample, false, options)
     }
 
     /// Take the microphone, labelling the holder so a competing caller
@@ -262,7 +282,13 @@ impl Engine {
     }
 
     /// Queue already-captured audio.
-    fn submit(&self, pcm: Vec<f32>, resample: Duration, truncated: bool) -> Result<Ticket, Error> {
+    fn submit(
+        &self,
+        pcm: Vec<f32>,
+        resample: Duration,
+        truncated: bool,
+        options: NormalizeOptions,
+    ) -> Result<Ticket, Error> {
         let (reply, answer) = channel();
         let cancel = CancelToken::new();
 
@@ -279,7 +305,7 @@ impl Engine {
         self.jobs
             .as_ref()
             .ok_or(Error::EngineStopped)?
-            .send(Job { pcm, resample, audio, truncated, cancel: cancel.clone(), reply })
+            .send(Job { pcm, resample, audio, truncated, options, cancel: cancel.clone(), reply })
             .map_err(|_| Error::EngineStopped)?;
         Ok(Ticket { answer, cancel })
     }
@@ -337,7 +363,14 @@ impl Capture {
     /// Stop recording and queue what was captured. Releases the
     /// microphone before the transcription starts, so the next caller
     /// does not wait for inference.
-    pub fn finish(mut self) -> Result<Ticket, Error> {
+    pub fn finish(self) -> Result<Ticket, Error> {
+        let options = self.engine.normalize_options;
+        self.finish_with(options)
+    }
+
+    /// Stop recording and queue what was captured, overriding the
+    /// configured normalizer options for this recording only.
+    pub fn finish_with(mut self, options: NormalizeOptions) -> Result<Ticket, Error> {
         if let Some(error) = self.failed_to_open.take() {
             return Err(error);
         }
@@ -346,7 +379,7 @@ impl Capture {
         if truncated {
             tracing::warn!(cap = ?self.max_capture, "capture reached its cap and stopped itself");
         }
-        self.engine.submit(pcm, Duration::ZERO, truncated)
+        self.engine.submit(pcm, Duration::ZERO, truncated, options)
     }
 
     /// Stop recording and throw the audio away.
@@ -503,7 +536,7 @@ fn worker(
                     None => asr.clone(),
                     Some(normalizer) => {
                         let started = Instant::now();
-                        match normalizer.normalize(&asr) {
+                        match normalizer.normalize_with(&asr, job.options) {
                             Ok(clean) => {
                                 stages.normalize = started.elapsed();
                                 clean
@@ -769,6 +802,46 @@ mod tests_real_recognition {
         assert!(
             matches!(after, Outcome::Transcript(_)),
             "an abandoned ticket must free the worker for the next caller, got: {after:?}"
+        );
+    }
+
+    /// A per-call styling override must reach the model.
+    ///
+    /// Asserted as a DIFFERENCE against the default rather than against
+    /// fixed text: the point is that the argument changes the output, and
+    /// pinning exact wording would break on any model change while
+    /// proving nothing extra.
+    #[test]
+    #[ignore = "needs both models; run with --run-ignored all after `--example fetch`"]
+    fn a_styling_override_changes_the_text() {
+        use crate::normalize::{NormalizeOptions, Styling};
+
+        let clip = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/10_013s.wav");
+        let (pcm, rate) = read_wav(&clip);
+
+        let engine = Engine::new(ConfigBuilder::new().build()).expect("engine must start");
+        let default = engine
+            .transcribe(Samples::new(pcm.clone(), rate, 1))
+            .expect("queued")
+            .recv()
+            .expect("must transcribe");
+        let casual = engine
+            .transcribe_with(
+                Samples::new(pcm, rate, 1),
+                NormalizeOptions { styling: Styling::Casual, ..NormalizeOptions::default() },
+            )
+            .expect("queued")
+            .recv()
+            .expect("must transcribe");
+
+        let (Outcome::Transcript(a), Outcome::Transcript(b)) = (default, casual) else {
+            panic!("both runs must produce transcripts");
+        };
+        assert_eq!(a.asr, b.asr, "the same audio must recognise identically; only styling differs");
+        assert_ne!(
+            a.text, b.text,
+            "a styling override that changes nothing is a decorative argument: {}",
+            a.text
         );
     }
 

@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::normalize::NormalizeOptions;
+
 /// One model file: where it comes from and what it must hash to.
 ///
 /// The size and digest are what let [`crate::prepare`] reject a
@@ -64,6 +66,14 @@ pub struct Config {
     /// the two are equal, which is a supported configuration rather than
     /// a degraded one.
     pub normalizer: Option<ModelSpec>,
+    /// How the normalizer rewrites text, when one is configured.
+    ///
+    /// `styling` is the axis a person picks per recording; `k` and
+    /// `ngram` are decoder tuning and do not belong in a user-facing
+    /// picker beside it. Overridable per call via
+    /// [`crate::Engine::transcribe_with`], so this is the default rather
+    /// than a fixed choice.
+    pub normalize_options: NormalizeOptions,
     /// Input to record from, by [`crate::Device::id`]. None means the
     /// system default, explicitly: a host that does not care never has
     /// to enumerate. Keyed on the id rather than the name because the id
@@ -85,6 +95,7 @@ impl Default for Config {
             models_dir: None,
             asr_model: ModelSpec::cohere_transcribe_q4_k_m(),
             normalizer: Some(ModelSpec::s1_mini_f16()),
+            normalize_options: NormalizeOptions::default(),
             device: None,
             language: None,
             max_capture: Duration::from_secs(120),
@@ -128,6 +139,13 @@ impl ConfigBuilder {
     /// identified by [`crate::Device::id`].
     pub fn device(mut self, id: impl Into<String>) -> Self {
         self.inner.device = Some(id.into());
+        self
+    }
+
+    /// Set the default normalizer options. Per-call overrides go
+    /// through [`crate::Engine::transcribe_with`].
+    pub fn normalize_options(mut self, options: NormalizeOptions) -> Self {
+        self.inner.normalize_options = options;
         self
     }
 
