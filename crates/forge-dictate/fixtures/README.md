@@ -22,7 +22,7 @@ normalizer rightly changed nothing. Only 4 exercise it.
 
 That makes this a strong ASR gate and an asymmetric normalizer gate. It catches
 a normalizer that starts **mangling** clean input. It is **fully** blind to one
-that quietly degrades into a **passthrough** - bump s1-mini, have it stop
+that quietly degrades into a **passthrough** - bump S1-mini, have it stop
 cleaning entirely, and 11 of 15 clips go green because a passthrough is the
 right answer on them. If you add clips, add change-heavy ones.
 
@@ -32,7 +32,7 @@ anchor for ASR drift: if the transcript ever changes there, something moved.
 
 An earlier version of this file called it the repair the normalizer exists to
 perform, and the clip whose failure is unambiguous. **That is measured false and
-the correction matters, because it inverted what a green means.** s1-mini
+the correction matters, because it inverted what a green means.** S1-mini
 normalizes styling, structure and context; it does no vocabulary
 reconstruction. Given "P Y torch" and "C U D A" it returns "P-Y torch" and
 "C-U-D-A". Superwhisper's own s1-mini left "GG, UF" in place too, which is why

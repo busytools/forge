@@ -38,7 +38,7 @@
 //! correct no-ops where the ASR output was already clean. So the corpus is
 //! a strong ASR regression gate and an ASYMMETRIC normalizer gate. It
 //! catches a normalizer that starts MANGLING clean input, and it is FULLY
-//! blind to one that quietly degrades into a PASSTHROUGH - bump s1-mini,
+//! blind to one that quietly degrades into a PASSTHROUGH - bump S1-mini,
 //! have it stop cleaning entirely, and 11 of 15 go green because a
 //! passthrough is the correct answer on them. There is no clip that
 //! catches that, and no exception to look for.
@@ -53,7 +53,7 @@
 //! correction is worth stating because it inverted what a green means
 //! there.** It claimed the clip was the repair the normalizer exists to
 //! perform, so a match would be evidence of failure. Measured false:
-//! s1-mini normalizes styling, structure and context and does no
+//! S1-mini normalizes styling, structure and context and does no
 //! vocabulary reconstruction - given "P Y torch" and "C U D A" it returns
 //! "P-Y torch" and "C-U-D-A". Superwhisper's own s1-mini left "GG, UF"
 //! alone too, which is why the locked `baseline_normalized` still carries
