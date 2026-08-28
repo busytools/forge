@@ -113,36 +113,13 @@ struct Clip {
 
 #[derive(Debug, PartialEq, Eq)]
 enum Problem {
-    ShaMismatch {
-        file: String,
-        recorded: String,
-        actual: String,
-    },
-    FileWithoutEntry {
-        file: String,
-    },
-    EntryWithoutFile {
-        file: String,
-    },
-    DurationDisagreesWithHeader {
-        file: String,
-        manifest_ms: u64,
-        header_ms: u64,
-    },
-    UnexpectedFormat {
-        file: String,
-        channels: u16,
-        sample_rate: u32,
-        bits_per_sample: u16,
-    },
-    BlankBaseline {
-        file: String,
-        field: &'static str,
-    },
-    UnreadableWav {
-        file: String,
-        error: String,
-    },
+    ShaMismatch { file: String, recorded: String, actual: String },
+    FileWithoutEntry { file: String },
+    EntryWithoutFile { file: String },
+    DurationDisagreesWithHeader { file: String, manifest_ms: u64, header_ms: u64 },
+    UnexpectedFormat { file: String, channels: u16, sample_rate: u32, bits_per_sample: u16 },
+    BlankBaseline { file: String, field: &'static str },
+    UnreadableWav { file: String, error: String },
 }
 
 /// What the clip's own WAV header says about it.
@@ -176,14 +153,10 @@ fn check(entries: &[Entry], clips: &[Clip]) -> Vec<Problem> {
     let clip_names: BTreeSet<&str> = clips.iter().map(|c| c.name.as_str()).collect();
 
     for name in clip_names.difference(&entry_names) {
-        problems.push(Problem::FileWithoutEntry {
-            file: (*name).to_owned(),
-        });
+        problems.push(Problem::FileWithoutEntry { file: (*name).to_owned() });
     }
     for name in entry_names.difference(&clip_names) {
-        problems.push(Problem::EntryWithoutFile {
-            file: (*name).to_owned(),
-        });
+        problems.push(Problem::EntryWithoutFile { file: (*name).to_owned() });
     }
 
     for entry in entries {
@@ -192,10 +165,7 @@ fn check(entries: &[Entry], clips: &[Clip]) -> Vec<Problem> {
             ("baseline_normalized", &entry.baseline_normalized),
         ] {
             if text.trim().is_empty() {
-                problems.push(Problem::BlankBaseline {
-                    file: entry.file.clone(),
-                    field,
-                });
+                problems.push(Problem::BlankBaseline { file: entry.file.clone(), field });
             }
         }
 
@@ -236,10 +206,7 @@ fn check(entries: &[Entry], clips: &[Clip]) -> Vec<Problem> {
                     });
                 }
             }
-            Err(error) => problems.push(Problem::UnreadableWav {
-                file: entry.file.clone(),
-                error,
-            }),
+            Err(error) => problems.push(Problem::UnreadableWav { file: entry.file.clone(), error }),
         }
     }
 
@@ -294,10 +261,7 @@ fn clip(name: &str) -> Clip {
 }
 
 fn clip_in_format(name: &str, channels: u16, sample_rate: u32) -> Clip {
-    Clip {
-        name: name.to_owned(),
-        bytes: synth_wav(channels, sample_rate),
-    }
+    Clip { name: name.to_owned(), bytes: synth_wav(channels, sample_rate) }
 }
 
 /// An entry that agrees with the clip on every property the gate checks.
@@ -314,18 +278,13 @@ fn entry_for(clip: &Clip, duration_ms: u64) -> Entry {
 #[test]
 fn corpus_matches_manifest() {
     let problems = check(&load_manifest(), &load_clips());
-    assert!(
-        problems.is_empty(),
-        "committed fixture corpus is not intact: {problems:#?}"
-    );
+    assert!(problems.is_empty(), "committed fixture corpus is not intact: {problems:#?}");
 }
 
 #[test]
 fn normalizer_coverage_is_still_what_the_docs_claim() {
-    let exercising = load_manifest()
-        .iter()
-        .filter(|e| e.baseline_asr != e.baseline_normalized)
-        .count();
+    let exercising =
+        load_manifest().iter().filter(|e| e.baseline_asr != e.baseline_normalized).count();
 
     assert_eq!(
         exercising, NORMALIZER_EXERCISING_CLIPS,
@@ -367,15 +326,11 @@ fn orphans_are_reported_in_both_directions() {
     let problems = check(&entries, &[present, unregistered]);
 
     assert!(
-        problems.contains(&Problem::FileWithoutEntry {
-            file: "99_099s.wav".to_owned()
-        }),
+        problems.contains(&Problem::FileWithoutEntry { file: "99_099s.wav".to_owned() }),
         "a wav on disk with no manifest entry must be reported: {problems:#?}"
     );
     assert!(
-        problems.contains(&Problem::EntryWithoutFile {
-            file: "98_098s.wav".to_owned()
-        }),
+        problems.contains(&Problem::EntryWithoutFile { file: "98_098s.wav".to_owned() }),
         "a manifest entry with no wav on disk must be reported: {problems:#?}"
     );
 }

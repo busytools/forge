@@ -26,12 +26,7 @@ const FIXTURE_MS: u64 = 500;
 const DEADBAND_MS: u64 = 10;
 
 fn file_with(value: u64) -> String {
-    render(&[Section {
-        name: "end_to_end",
-        key: "median_ms",
-        value,
-        resolution: DEADBAND_MS,
-    }])
+    render(&[Section { name: "end_to_end", key: "median_ms", value, resolution: DEADBAND_MS }])
 }
 
 #[test]

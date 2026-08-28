@@ -56,13 +56,11 @@ pub fn committed(file: Option<&str>, section: &str, key: &str) -> Result<Option<
 
     match parsed.get(section).and_then(|s| s.get(key)) {
         None => Ok(None),
-        Some(value) => value
-            .as_integer()
-            .and_then(|i| u64::try_from(i).ok())
-            .map(Some)
-            .ok_or_else(|| {
+        Some(value) => {
+            value.as_integer().and_then(|i| u64::try_from(i).ok()).map(Some).ok_or_else(|| {
                 format!("{section}.{key} is present but is not a non-negative integer: {value}")
-            }),
+            })
+        }
     }
 }
 
@@ -81,11 +79,8 @@ pub fn render(sections: &[Section]) -> String {
     let mut out = String::new();
     for s in sections {
         // Infallible: writing to a String cannot fail.
-        let _ = write!(
-            out,
-            "[{}]\n{} = {}\nresolution = {}\n\n",
-            s.name, s.key, s.value, s.resolution
-        );
+        let _ =
+            write!(out, "[{}]\n{} = {}\nresolution = {}\n\n", s.name, s.key, s.value, s.resolution);
     }
     out
 }

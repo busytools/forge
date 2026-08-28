@@ -35,3 +35,8 @@ llama-cpp-2 = { workspace = true, features = ["metal"] }
 [dev-dependencies]
 tempfile = { workspace = true }
 serde_json = { workspace = true }
+serde = { workspace = true }
+# WAV header reads for the fixture-corpus gate, and decoding fixtures for
+# the bench. Test-only: the crate ships no WAV handling.
+hound = { workspace = true }
+toml = { workspace = true }
