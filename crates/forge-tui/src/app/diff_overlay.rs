@@ -1568,13 +1568,17 @@ impl DiffOverlayState {
 
     /// Expand a collapsed resolved comment, or re-collapse an expanded
     /// one. Keyed on the thread id, so it survives a re-anchor moving the
-    /// card to another line.
+    /// card to another line. Clears the file's measured height so the next
+    /// frame re-measures it at the new row count.
     pub fn toggle_comment_collapse(&mut self, at: CommentRef) -> bool {
         let Some(id) = self.comment_index_at(at).map(|i| self.comments[i].thread.id.clone()) else {
             return false;
         };
         if !self.resolved_expanded.remove(&id) {
             self.resolved_expanded.insert(id);
+        }
+        if let Some(slot) = self.measured_heights.get_mut(at.line.file_idx) {
+            *slot = None;
         }
         true
     }
@@ -5591,6 +5595,38 @@ mod tests {
         assert!(
             !thread_in_scope(&thread, None, "main"),
             "line numbers against another base would anchor onto unrelated code",
+        );
+    }
+
+
+    #[test]
+    fn toggling_a_card_open_makes_its_file_re_measure() {
+        // `file_height` counts comment rows and `ensure_file_cached` only
+        // measures an empty slot, so a stale height leaves `doc_offsets`
+        // short by the rows the expansion added and rail jumps land off.
+        let mut state = commit_mode_state();
+        state.scope = DiffScope::WholeDiff;
+        let line = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let mut thread = stock_thread();
+        thread.id = "r1".to_owned();
+        thread.status = ReviewStatus::Resolved;
+        state.comments.push(HunkComment {
+            key: line,
+            path: "a.rs".into(),
+            line: 1,
+            comment_text: "rename tok to token".into(),
+            commit: None,
+            thread,
+            authored_this_session: false,
+            anchor_note: None,
+            persisted: true,
+        });
+        state.measured_heights[0] = Some(40);
+
+        assert!(state.toggle_comment_collapse(CommentRef { line, slot: 0 }));
+        assert_eq!(
+            state.measured_heights[0], None,
+            "the file re-measures at its new row count, as a deleted-file toggle does",
         );
     }
 
