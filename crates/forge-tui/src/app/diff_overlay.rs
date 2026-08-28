@@ -342,6 +342,9 @@ pub enum BodyRowKey {
     /// A comment card's reply line. Click → open an empty editor that
     /// appends a new user turn on save (no state change, no nudge).
     CommentReply { at: CommentRef },
+    /// A resolved comment's collapsed one-line marker, or the header of
+    /// one the reviewer expanded. Click toggles it.
+    CommentCollapsed { at: CommentRef },
     /// A comment card's button row (`✓ Resolve` / `↺ Reopen`). Each
     /// action's pane-relative `[start, end)` column span is `Some` only
     /// when that action applies to the thread's current state; a click
@@ -1014,6 +1017,10 @@ pub struct DiffOverlayState {
     /// membership here means "expanded". Non-deleted files are always
     /// expanded and never appear here.
     pub deleted_expanded: std::collections::HashSet<usize>,
+    /// Thread ids of resolved comments the reviewer expanded back open.
+    /// Resolved comments collapse by default: resolving is how something
+    /// leaves the working set, so keeping it full-height puts it back in.
+    pub resolved_expanded: std::collections::HashSet<String>,
     /// Scroll offset (in lines) for the left FILES rail. Wheel
     /// events with the cursor over the rail advance this; the
     /// renderer clamps it against `max(0, file_count - visible)`.
@@ -1553,6 +1560,25 @@ impl DiffOverlayState {
         }
     }
 
+    /// Whether the card for `comment` renders as a one-line marker.
+    pub fn is_comment_collapsed(&self, comment: &HunkComment) -> bool {
+        comment.thread.status == ReviewStatus::Resolved
+            && !self.resolved_expanded.contains(&comment.thread.id)
+    }
+
+    /// Expand a collapsed resolved comment, or re-collapse an expanded
+    /// one. Keyed on the thread id, so it survives a re-anchor moving the
+    /// card to another line.
+    pub fn toggle_comment_collapse(&mut self, at: CommentRef) -> bool {
+        let Some(id) = self.comment_index_at(at).map(|i| self.comments[i].thread.id.clone()) else {
+            return false;
+        };
+        if !self.resolved_expanded.remove(&id) {
+            self.resolved_expanded.insert(id);
+        }
+        true
+    }
+
     /// True when file `idx` renders as the one-line collapsed notice -
     /// a deleted file the user hasn't expanded.
     pub fn is_collapsed(&self, idx: usize) -> bool {
@@ -1604,6 +1630,7 @@ impl DiffOverlayState {
             doc_scroll: 0,
             view_mode: DiffViewMode::default(),
             deleted_expanded: std::collections::HashSet::new(),
+            resolved_expanded: std::collections::HashSet::new(),
             rail_scroll: 0,
             comments: Vec::new(),
             active_input: None,
@@ -1700,6 +1727,7 @@ impl DiffOverlayState {
             doc_scroll: 0,
             view_mode: DiffViewMode::default(),
             deleted_expanded: std::collections::HashSet::new(),
+            resolved_expanded: std::collections::HashSet::new(),
             rail_scroll: 0,
             comments: Vec::new(),
             active_input: None,
@@ -3408,6 +3436,10 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
             reopen_comment_for_turn(overlay, at, Some(turn_idx))
         }
         BodyRowKey::CommentReply { at } => reopen_comment_for_turn(overlay, at, None),
+        BodyRowKey::CommentCollapsed { at } => {
+            let toggled = overlay.toggle_comment_collapse(at);
+            MouseEffect { redraw: toggled, thread_action: None }
+        }
         BodyRowKey::CommentButton { at, resolve, reopen } => {
             // Route to whichever applicable button the click lands in; a
             // click on the padding or a dim (inapplicable) action no-ops.
@@ -5560,6 +5592,108 @@ mod tests {
         assert!(
             !thread_in_scope(&thread, None, "main"),
             "line numbers against another base would anchor onto unrelated code",
+        );
+    }
+
+
+
+    #[test]
+    fn only_resolved_collapses() {
+        // Addressed is the state with an answer waiting to be read, so it
+        // is the last one that should ever be folded away. Outdated is
+        // this fix's own stale marker - hiding it recreates the bug.
+        let mut state = commit_mode_state();
+        state.scope = DiffScope::WholeDiff;
+        let line = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let mut push = |id: &str, status: ReviewStatus| {
+            let mut thread = stock_thread();
+            thread.id = id.to_owned();
+            thread.status = status;
+            state.comments.push(HunkComment {
+                key: line,
+                path: "a.rs".into(),
+                line: 1,
+                comment_text: "note".into(),
+                commit: None,
+                thread,
+                authored_this_session: false,
+                anchor_note: None,
+                persisted: true,
+            });
+        };
+        push("open", ReviewStatus::Open);
+        push("addressed", ReviewStatus::Addressed);
+        push("outdated", ReviewStatus::Outdated);
+        push("resolved", ReviewStatus::Resolved);
+
+        let collapsed: Vec<&str> = state
+            .comments
+            .iter()
+            .filter(|c| state.is_comment_collapsed(c))
+            .map(|c| c.thread.id.as_str())
+            .collect();
+        assert_eq!(collapsed, vec!["resolved"], "resolved is the only state that folds away");
+    }
+
+    #[test]
+    fn clicking_a_collapsed_resolved_comment_expands_it_and_clicking_again_recollapses() {
+        let mut state = commit_mode_state();
+        state.scope = DiffScope::WholeDiff;
+        let line = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let mut thread = stock_thread();
+        thread.id = "r1".to_owned();
+        thread.status = ReviewStatus::Resolved;
+        state.comments.push(HunkComment {
+            key: line,
+            path: "a.rs".into(),
+            line: 1,
+            comment_text: "rename tok to token".into(),
+            commit: None,
+            thread,
+            authored_this_session: false,
+            anchor_note: None,
+            persisted: true,
+        });
+        let comment = &state.comments[0];
+        assert!(state.is_comment_collapsed(comment), "resolved starts collapsed");
+
+        let at = CommentRef { line, slot: 0 };
+        assert!(state.toggle_comment_collapse(at));
+        assert!(
+            !state.is_comment_collapsed(&state.comments[0]),
+            "clicking the marker opens the thread back up, which is how Reopen is reachable",
+        );
+        assert!(state.toggle_comment_collapse(at));
+        assert!(state.is_comment_collapsed(&state.comments[0]), "and clicking again puts it away");
+    }
+
+    #[test]
+    fn collapse_follows_the_thread_not_the_line() {
+        // Keyed on the thread id, so a re-anchor that moves the card to
+        // another line does not silently fold it shut again.
+        let mut state = commit_mode_state();
+        state.scope = DiffScope::WholeDiff;
+        let line = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let mut thread = stock_thread();
+        thread.id = "r1".to_owned();
+        thread.status = ReviewStatus::Resolved;
+        state.comments.push(HunkComment {
+            key: line,
+            path: "a.rs".into(),
+            line: 1,
+            comment_text: "rename tok to token".into(),
+            commit: None,
+            thread,
+            authored_this_session: false,
+            anchor_note: None,
+            persisted: true,
+        });
+        assert!(state.toggle_comment_collapse(CommentRef { line, slot: 0 }));
+        state.comments[0].key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 7 };
+        state.comments[0].line = 41;
+        assert!(
+            !state.is_comment_collapsed(&state.comments[0]),
+            "it is still the thread the reviewer opened",
         );
     }
 

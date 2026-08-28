@@ -1782,6 +1782,7 @@ fn push_unified_body(
                             gutter_width,
                             pane_width,
                             &overlay.reviews,
+                            overlay.is_comment_collapsed(comment),
                             lines,
                             keys,
                         );
@@ -1897,6 +1898,7 @@ fn push_split_body(
                         gutter_width,
                         pane_width,
                         &overlay.reviews,
+                        overlay.is_comment_collapsed(comment),
                         lines,
                         keys,
                     );
@@ -2011,6 +2013,11 @@ fn index_comments_by_key<'a>(
 /// green/red tints.
 const CHIP_BG: Color = Color::Rgb(35, 23, 10);
 
+/// The comment's first line, trimmed, for the collapsed marker.
+fn first_line_of(text: &str) -> String {
+    text.lines().next().unwrap_or_default().trim().to_owned()
+}
+
 /// The card's one-line account of what re-anchoring did to it, or `None`
 /// when it simply stayed put. An `Outdated` thread always says something
 /// even when it was loaded without a fresh re-anchor, so the state is
@@ -2019,11 +2026,11 @@ fn anchor_note_text(note: Option<AnchorNote>, status: ReviewStatus) -> Option<St
     match note {
         Some(AnchorNote::Moved { from }) => Some(format!("moved from line {from}")),
         Some(AnchorNote::Outdated(OutdatedReason::Gone)) => {
-            Some("the code this was on is gone - resolve or re-comment".to_owned())
+            Some("the code this was on is gone".to_owned())
         }
-        Some(AnchorNote::Outdated(OutdatedReason::Ambiguous { matches })) => Some(format!(
-            "matched {matches} locations, not relocating - resolve or re-comment"
-        )),
+        Some(AnchorNote::Outdated(OutdatedReason::Ambiguous { matches })) => {
+            Some(format!("matched {matches} locations, not relocating"))
+        }
         None if status == ReviewStatus::Outdated => {
             Some("line changed - resolve, or re-comment on a live line".to_owned())
         }
@@ -2095,10 +2102,26 @@ fn render_comment_chip(
     gutter_width: usize,
     pane_width: u16,
     reviews: &[ReviewSet],
+    collapsed: bool,
     lines: &mut Vec<Line<'static>>,
     keys: &mut Vec<BodyRowKey>,
 ) {
     let status = comment.thread.status;
+    if collapsed {
+        let indent = " ".repeat(gutter_width + 4);
+        let summary = first_line_of(&comment.comment_text);
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::raw(indent),
+            Span::styled(
+                format!("\u{2570}\u{2500} \u{2713} line {} resolved \u{b7} ", comment.line),
+                Style::default().fg(theme::REVIEW_RESOLVED),
+            ),
+            Span::styled(summary, Style::default().fg(theme::DIM)),
+        ]));
+        keys.push(BodyRowKey::CommentCollapsed { at });
+        return;
+    }
     let (accent, state_label) = review_state_style(status);
     let indent_cols = gutter_width + 4;
     let indent = " ".repeat(indent_cols);
@@ -2131,7 +2154,11 @@ fn render_comment_chip(
         Span::styled(state, Style::default().fg(accent).bg(CHIP_BG).add_modifier(Modifier::BOLD)),
         Span::styled("\u{2500}\u{256e}", card_style),
     ]));
-    keys.push(BodyRowKey::CommentChip(at.line));
+    keys.push(if status == ReviewStatus::Resolved {
+        BodyRowKey::CommentCollapsed { at }
+    } else {
+        BodyRowKey::CommentChip(at.line)
+    });
 
     let blank = |lines: &mut Vec<Line<'static>>, keys: &mut Vec<BodyRowKey>| {
         push_card_row(
@@ -4033,10 +4060,27 @@ mod tests {
         comment: &HunkComment,
         reviews: &[ReviewSet],
     ) -> (Vec<Line<'static>>, Vec<BodyRowKey>) {
+        render_chip_collapsed(comment, reviews, false)
+    }
+
+    fn render_chip_collapsed(
+        comment: &HunkComment,
+        reviews: &[ReviewSet],
+        collapsed: bool,
+    ) -> (Vec<Line<'static>>, Vec<BodyRowKey>) {
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
         let mut lines = Vec::new();
         let mut keys = Vec::new();
-        render_comment_chip(comment, CommentRef { line: key, slot: 0 }, 4, 80, reviews, &mut lines, &mut keys);
+        render_comment_chip(
+            comment,
+            CommentRef { line: key, slot: 0 },
+            4,
+            80,
+            reviews,
+            collapsed,
+            &mut lines,
+            &mut keys,
+        );
         (lines, keys)
     }
 
@@ -4318,6 +4362,34 @@ mod tests {
         assert!(!text.contains("moved from"), "the normal case is quiet");
         assert!(!text.contains("matched"), "the normal case is quiet");
         assert!(!text.contains("is gone"), "the normal case is quiet");
+    }
+
+
+    #[test]
+    fn a_resolved_card_collapses_to_one_row() {
+        // Twelve resolved comments beside two live ones should not read as
+        // fourteen things wanting attention.
+        let comment = chip_comment(88, "rename tok to token", ReviewStatus::Resolved);
+        let (lines, keys) = render_chip_collapsed(&comment, &[], true);
+        assert_eq!(lines.len(), 1, "a resolved comment collapses to a marker");
+        let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("line 88"), "the marker still names its line; got: {text}");
+        assert!(text.contains("resolved"), "and says why it is collapsed; got: {text}");
+        assert!(
+            keys.iter().any(|k| matches!(k, BodyRowKey::CommentCollapsed { .. })),
+            "the marker is clickable, or a resolved thread could never be reopened",
+        );
+    }
+
+    #[test]
+    fn an_expanded_resolved_card_can_still_be_reopened() {
+        let comment = chip_comment(88, "rename tok to token", ReviewStatus::Resolved);
+        let (lines, keys) = render_chip_collapsed(&comment, &[], false);
+        assert!(lines.len() > 1, "expanding shows the whole thread again");
+        assert!(
+            keys.iter().any(|k| matches!(k, BodyRowKey::CommentButton { reopen: Some(_), .. })),
+            "Reopen lives on the card, so expanding has to bring it back",
+        );
     }
 
     #[test]
