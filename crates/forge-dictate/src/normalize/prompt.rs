@@ -12,6 +12,10 @@ pub const ASSISTANT_PREFIX: &str = "<|im_start|>assistant\n<think>\n\n</think>\n
 /// The three control-line axes, at the card's documented defaults. Every
 /// combination was trained, but a value outside the trained sets is one of
 /// the two documented ways to get garbled output.
+///
+/// Before changing `STYLING`: `casual` mangles technical terms, rendering
+/// MMAP as "mmapped here" in one measured clip, on top of the apostrophe
+/// and sentence-capital stripping the card describes.
 const STYLING: &str = "semi-formal";
 const STRUCTURE: &str = "prose";
 const CONTEXT: &str = "general";
