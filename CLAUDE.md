@@ -412,7 +412,7 @@ inspected.
     falsified `install.md` and did not update it. The crate builds
     under every `--workspace` command and needs ALSA headers on Linux,
     so CI grew a `libasound2-dev` step in four jobs while the
-    prerequisites list still names four things and not that one.
+    prerequisites list named four things and not that one.
 
     **The layering diagrams differ in grain deliberately. Do not
     reconcile them.** This file draws `forge-test-harness` on
