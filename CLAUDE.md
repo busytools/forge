@@ -293,44 +293,46 @@ inspected.
     **Divergence counts, not just absence - and a divergence can be the
     correct state.** The despawn trigger is the worked example: some
     surfaces name a merged PR among examples, others stop at "truly
-    done". #717 removed "once its work is merged" from the charter
-    because it exempted every worker whose output was not a PR, and
-    cited `LEAD_DELEGATION_PREAMBLE`'s vaguer wording as the direction
-    to move toward - so that surface is deliberate and flattening it
-    would undo a decision. It settles nothing about the others, which
-    is the point: each surface has its own history.
+    done", including `workers__spawn` 150-odd lines above the hunk #717
+    edited in the same file. #717 removed "once its work is merged" from
+    the charter because it exempted every worker whose output was not a
+    PR; it cited `LEAD_DELEGATION_PREAMBLE`'s softer wording while
+    moving two other surfaces to a third phrasing, and left the preamble
+    untouched. That is all the history supports. It does not tell you
+    which of the rest were decided.
 
     **Placement decides whether the text fires at all**, and the
     audience is a forge SESSION at runtime. The shipped surfaces are a
-    SET; read all of them first, or the grep that finds nothing files a
-    duplicate. Always-on blocks
-    (`crates/forge-agent/src/forge_sdk_worker.rs`) carry what every
-    session needs; the charter
+    SET, or the grep that finds nothing files a duplicate. Always-on
+    blocks (`crates/forge-agent/src/forge_sdk_worker.rs`) carry what
+    every session needs; the charter
     (`crates/forge-workspace/src/spawn/lead_charter.md`) and
     `LEAD_DELEGATION_PREAMBLE` in
     `crates/forge-workspace/src/workspace.rs` both append to a lead's
     prompt; a tool description carries what a caller needs at the
-    moment it reaches for that tool; and forge delivers some text as a
-    turn rather than a prompt, like `DYNAMIC_WORKER_RESTART_NOTE`,
-    which a resuming worker reads first. The cross-project rule shows
-    the cost: it lived only in peer tool descriptions, read once a peer
-    tool was already in hand, until #733 added an always-on copy
-    stating it applies when you decide. The peer copies stayed.
+    moment it reaches for that tool, while its result and error prose
+    is read after it has already acted, which is where correction
+    belongs; and forge delivers some text as a turn, like
+    `DYNAMIC_WORKER_RESTART_NOTE` or forge-tui's `continuation_prompt`,
+    so the search is not confined to the crates named here. The
+    cross-project rule shows the cost: it lived only in peer tool
+    descriptions, read once a peer tool was already in hand, until #733
+    added an always-on copy stating it applies when you decide. The
+    peer copies stayed.
 
-    **Passing the test is not sufficient.** A candidate still does not
-    ship when it is contributor-facing - `perf.rs` runs enabled on a hot
-    path, which `scripts/install.sh` turns on rather than Cargo - or
-    when it is already stated elsewhere, like the unicode-punctuation
-    prohibition the style section carries - a duplicate rather than an
-    exclusion. Both belong in this file. Out for failing the test
-    itself: approval-scope tables, timezone presentation, prose
-    punctuation preferences, PR-body voice,
-    commit conventions, release workflow. Shipped text also never names
-    a user-scope skill, command or plugin, since a fresh install has
-    none; in the charter that is enforced token by token by
+    **Passing the test is not sufficient: contributor-facing text stays
+    in this file.** `perf.rs` runs enabled on a hot path, which
+    `scripts/install.sh` turns on rather than Cargo, and the unicode
+    gate passes both halves but only ever runs in this repo. Out for
+    failing the test itself: approval-scope tables, timezone
+    presentation, prose punctuation preferences, PR-body voice, commit
+    conventions, release workflow. Shipped text also never names a
+    user-scope skill, command or plugin, since a fresh install has none;
+    the charter is guarded token by token by
     `bundled_lead_charter_assumes_no_local_environment`
-    (`crates/forge-workspace/src/spawn.rs`), and nothing guards the
-    other surfaces.
+    (`crates/forge-workspace/src/spawn.rs`) and other surfaces are
+    guarded unevenly, so grep for an assertion rather than assuming
+    either way.
 
 ## Claude Code worktree interop
 
