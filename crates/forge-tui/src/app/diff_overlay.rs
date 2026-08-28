@@ -2997,10 +2997,13 @@ fn persist_active_input(app: &mut App) {
         anchor_note: None,
         persisted,
     };
-    // Replace this thread's own card (saving an edited reopen) and no
-    // other. A line carries as many cards as it has threads, so matching
-    // on the key would take the neighbours down with it.
-    overlay.comments.retain(|c| c.thread.id != comment.thread.id);
+    // Replace this thread's card in this scope, and only that one. A line
+    // carries as many cards as it has threads, so matching on the key
+    // alone takes the neighbours with it; and a thread authored on a
+    // commit renders in that commit AND in the whole diff, which
+    // `hydrate_threads` keeps on purpose, so matching on identity alone
+    // takes the other scope's card instead.
+    overlay.comments.retain(|c| c.commit != comment.commit || c.thread.id != comment.thread.id);
     overlay.comments.push(comment);
     overlay.recompute_comment_counts();
     app.needs_redraw = true;
@@ -7331,6 +7334,65 @@ mod tests {
         let overlay = app.diff_overlay.as_ref().expect("overlay");
         assert_eq!(overlay.comments.len(), 1, "an edit replaces its own card");
         assert_eq!(overlay.comments[0].thread.id, id, "and keeps the thread's identity");
+    }
+
+
+    #[test]
+    fn saving_in_one_scope_keeps_the_same_threads_card_in_the_other() {
+        // A thread authored on a commit is in scope for that commit AND
+        // for the whole diff, and `hydrate_threads` deliberately keeps
+        // both cards. Replacing by identity alone takes the other scope's
+        // card with it, and a cached scope switch never re-hydrates, so
+        // the comment is gone from the whole diff for the rest of the
+        // overlay session.
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files.clone());
+        overlay.branch = Some("feat".to_owned());
+        overlay.commits = vec![commit_meta("aaa", "first")];
+        overlay.commit_cache = vec![Some(CachedScan { files, scanner_ok: true })];
+        overlay.scope = DiffScope::Commit(0);
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let mut card = |commit: Option<&str>| {
+            let mut thread = stock_thread();
+            thread.id = "shared".to_owned();
+            thread.commit = Some("aaa".to_owned());
+            overlay.comments.push(HunkComment {
+                key,
+                path: "src/x.rs".into(),
+                line: 5,
+                comment_text: "shared".into(),
+                commit: commit.map(str::to_owned),
+                thread,
+                authored_this_session: false,
+                anchor_note: None,
+                persisted: true,
+            });
+        };
+        card(None);
+        card(Some("aaa"));
+
+        // Reply on the thread from the commit's own view and save.
+        reopen_comment_for_turn(&mut overlay, CommentRef { line: key, slot: 0 }, None);
+        if let Some(input) = overlay.active_input.as_mut() {
+            input.editor.insert_str("still not right");
+        }
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+
+        let overlay = app.diff_overlay.as_ref().expect("overlay");
+        let scopes: Vec<Option<&str>> =
+            overlay.comments.iter().map(|c| c.commit.as_deref()).collect();
+        assert!(
+            scopes.contains(&None),
+            "the whole diff's card for this thread survives a save made in the commit's view; got {scopes:?}",
+        );
+        assert_eq!(
+            overlay.comments.iter().filter(|c| c.commit.as_deref() == Some("aaa")).count(),
+            1,
+            "and the saved scope still holds exactly one card for it",
+        );
     }
 
     #[test]
