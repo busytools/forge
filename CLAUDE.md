@@ -290,26 +290,28 @@ inspected.
     strengths, so read every hit, not the first; these constants wrap
     mid-sentence, so quote only what sits on one source line; and check
     a divergence's history before calling the shipped side wrong. This
-    rule states no counts of its own: nothing asserts them, and the tree
-    moves.
+    rule counts nothing in the tree, deliberately: nothing asserts such
+    a count, and the tree moves.
 
     **Divergence counts, not just absence - and a divergence can be the
     correct state.** The despawn trigger is the worked example: some
     surfaces name a merged PR among examples, others stop at "truly
-    done". Do not sharpen the vague ones toward a merge requirement.
-    #717 removed "once its work is merged" deliberately, because it
-    exempted every worker whose output was not a PR - and it did not
-    reach every surface, so the vague ones are leftovers, not intent.
+    done". #717 removed "once its work is merged" from the charter
+    because it exempted every worker whose output was not a PR, and it
+    cited a vaguer surface as the wording to move toward. The spread is
+    the settled answer, not drift, so do not sharpen it flat.
 
     **Placement decides whether the text fires at all**, and the
     audience is a forge SESSION at runtime. The shipped surfaces are a
-    SET; read all of them before filing. Always-on blocks
+    SET; read all of them first, or the grep that finds nothing files a
+    duplicate. Always-on blocks
     (`crates/forge-agent/src/forge_sdk_worker.rs`) carry what every
-    session needs; lead-only behaviour is split between the charter
+    session needs; lead-only behaviour is appended from more than one
+    place into the same prompt, including the charter
     (`crates/forge-workspace/src/spawn/lead_charter.md`) and
     `LEAD_DELEGATION_PREAMBLE`
-    (`crates/forge-workspace/src/workspace.rs`), both appended to the
-    same session; a tool description carries what a caller needs at the
+    (`crates/forge-workspace/src/workspace.rs`); a tool description
+    carries what a caller needs at the
     moment it reaches for that tool. The cross-project rule shows the
     cost: it lived only in peer tool descriptions, read once a peer tool
     was already in hand, until #733 added an always-on copy stating it
@@ -318,9 +320,9 @@ inspected.
     **Passing the test is not sufficient.** A candidate still does not
     ship when it is contributor-facing - `perf.rs` runs enabled on a hot
     path, which `scripts/install.sh` turns on rather than Cargo - or
-    when it is already stated elsewhere, like the unicode gate rule 8
-    owns, which is a duplicate rather than an exclusion. Both belong in
-    this file. Out for failing the test itself: approval-scope tables,
+    when it is already stated elsewhere, like the unicode-punctuation
+    prohibition the style section carries - a duplicate rather than an
+    exclusion. Both belong in this file. Out for failing the test itself: approval-scope tables,
     timezone presentation, prose punctuation preferences, PR-body voice,
     commit conventions, release workflow. Shipped text also never names
     a user-scope skill, command or plugin, since a fresh install has
