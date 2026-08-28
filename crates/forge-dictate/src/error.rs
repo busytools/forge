@@ -11,8 +11,9 @@ pub enum Error {
     NoCacheDir,
 
     /// A filesystem operation on `path` failed. A transfer that dies
-    /// mid-body lands here too rather than in [`Error::Http`], because
-    /// it surfaces while writing to the partial file.
+    /// mid-body lands here too rather than in [`Error::Http`]: it
+    /// surfaces while reading the response, and `path` labels the
+    /// partial being written rather than naming what actually failed.
     #[error("{}: {source}", path.display())]
     Io {
         path: PathBuf,
@@ -35,7 +36,7 @@ pub enum Error {
 
     /// A file on disk is not the length the spec records. The usual
     /// cause is an interrupted download that was never resumed.
-    #[error("{} is {actual} bytes, expected {expected}; delete it and prepare again", path.display())]
+    #[error("{} is {actual} bytes, expected {expected}", path.display())]
     SizeMismatch { path: PathBuf, expected: u64, actual: u64 },
 
     /// The progress callback asked to stop. Any partial transfer is left
@@ -44,6 +45,6 @@ pub enum Error {
     Cancelled,
 
     /// A file on disk is the right length but the wrong bytes.
-    #[error("{} hashes to {actual}, expected {expected}; delete it and prepare again", path.display())]
+    #[error("{} hashes to {actual}, expected {expected}", path.display())]
     HashMismatch { path: PathBuf, expected: String, actual: String },
 }

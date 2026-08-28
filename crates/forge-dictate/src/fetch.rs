@@ -264,8 +264,11 @@ impl std::io::Write for ProgressWriter<'_, '_> {
         self.written += n as u64;
         if self.written - self.reported >= PROGRESS_INTERVAL && self.report().is_break() {
             self.cancelled = true;
-            // Deliberately not `Interrupted`: `io::copy` retries that
-            // kind and would spin here rather than stop.
+            // Deliberately not `Interrupted`. `write_all` retries that
+            // kind WITHOUT advancing the buffer, and these bytes are
+            // already on disk, so the transfer would run to completion
+            // writing every cancelled chunk twice and leave an oversized
+            // partial behind. It does not spin; it corrupts.
             return Err(std::io::Error::other("cancelled by the progress callback"));
         }
         Ok(n)
@@ -635,8 +638,11 @@ mod tests_download {
     }
 
     #[test]
-    fn a_callback_that_breaks_aborts_and_keeps_what_was_fetched() {
-        let body = b"pretend these are recognition weights".to_vec();
+    fn breaking_mid_transfer_leaves_a_resumable_prefix() {
+        // Past PROGRESS_INTERVAL, so the callback is reached from inside
+        // `write` rather than only from the final report. A body under
+        // the threshold never exercises the mid-write path at all.
+        let body: Vec<u8> = (0..1_572_864u32).map(|i| (i % 251) as u8).collect();
         let server = serve(vec![("/asr.gguf", body.clone())]);
         let dir = tempfile::tempdir().unwrap();
 
@@ -647,11 +653,43 @@ mod tests_download {
             .build();
 
         let err = prepare(&cfg, |_| ControlFlow::Break(()))
-            .expect_err("a callback that breaks must stop the operation");
+            .expect_err("a callback that breaks must stop the transfer");
+        assert!(matches!(err, Error::Cancelled), "a break must surface as Cancelled, got: {err:?}");
+
+        let partial = fs::read(dir.path().join("asr.gguf.part")).expect("the partial must remain");
+        assert!(
+            !partial.is_empty() && partial.len() < body.len(),
+            "cancelling must stop short: kept {} of {} bytes",
+            partial.len(),
+            body.len()
+        );
+        assert_eq!(
+            partial,
+            body[..partial.len()],
+            "what is kept must be a prefix of the file, or a later call resumes onto wrong bytes"
+        );
+    }
+
+    #[test]
+    fn breaking_after_the_last_byte_still_aborts() {
+        let body = b"pretend these are recognition weights".to_vec();
+        let server = serve(vec![("/asr.gguf", body.clone())]);
+        let dir = tempfile::tempdir().unwrap();
+
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .asr_model(spec_for(&server, "/asr.gguf", &body))
+            .normalizer(None)
+            .build();
+
+        // Under PROGRESS_INTERVAL, so the only callback is the final
+        // report after the whole body is already on disk.
+        let err = prepare(&cfg, |_| ControlFlow::Break(()))
+            .expect_err("a break at the closing report must still abort");
         assert!(matches!(err, Error::Cancelled), "a break must surface as Cancelled, got: {err:?}");
         assert!(
-            dir.path().join("asr.gguf.part").exists(),
-            "cancelling must leave the partial behind so a later call resumes rather than restarts"
+            !dir.path().join("asr.gguf").exists(),
+            "a cancelled transfer must not be promoted to the real file"
         );
     }
 
