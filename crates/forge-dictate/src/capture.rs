@@ -22,17 +22,34 @@ pub(crate) struct Recording {
 }
 
 impl Recording {
-    pub(crate) fn new() -> Self {
+    /// `capacity` is the cap in samples. Reserved up front because the
+    /// audio callback appends: growing a multi-megabyte buffer means a
+    /// memcpy inside a realtime callback, which is a dropout.
+    pub(crate) fn new(capacity: usize) -> Self {
         Self {
-            samples: Mutex::new(Vec::new()),
+            samples: Mutex::new(Vec::with_capacity(capacity)),
             peak_bits: AtomicU32::new(0.0f32.to_bits()),
             stop: AtomicBool::new(false),
             truncated: AtomicBool::new(false),
         }
     }
 
-    /// Fold one callback's worth of audio in, keeping the running peak.
-    fn push(&self, block: &[f32], limit: usize) {
+    /// Fold one callback's worth of audio in, downmixed to mono and
+    /// keeping the running peak.
+    ///
+    /// Channels are averaged rather than one being chosen: discarding a
+    /// capsule silently halves the signal on hardware where the speaker
+    /// sits nearer one of them.
+    fn push(&self, block: &[f32], channels: usize, limit: usize) {
+        // Channel counts are single digits; the cast cannot lose anything.
+        let scale = f32::from(u16::try_from(channels).unwrap_or(u16::MAX));
+        let mono: Vec<f32> = if channels <= 1 {
+            block.to_vec()
+        } else {
+            block.chunks_exact(channels).map(|frame| frame.iter().sum::<f32>() / scale).collect()
+        };
+        let block = mono.as_slice();
+
         let mut loudest = 0.0f32;
         for sample in block {
             loudest = loudest.max(sample.abs());
@@ -63,6 +80,14 @@ impl Recording {
             return;
         }
         let room = limit - samples.len();
+        if block.len() > room {
+            // The block that FIRST overruns is the one that loses its
+            // tail, so the flag has to be set here. Setting it only on
+            // the next callback leaves a `finish` in between reporting a
+            // recording that really was cut as complete.
+            self.truncated.store(true, Ordering::Relaxed);
+            self.stop.store(true, Ordering::Relaxed);
+        }
         samples.extend_from_slice(&block[..block.len().min(room)]);
     }
 
@@ -85,6 +110,13 @@ impl Recording {
     }
 }
 
+/// The cap in samples. Integer maths so it cannot be a truncating float
+/// cast.
+pub(crate) fn sample_cap(max_capture: Duration) -> usize {
+    usize::try_from(max_capture.as_millis().saturating_mul(u128::from(SAMPLE_RATE)) / 1000)
+        .unwrap_or(usize::MAX)
+}
+
 /// Open the default input and record until asked to stop or until
 /// `max_capture` elapses.
 ///
@@ -102,7 +134,7 @@ pub(crate) fn record(
         return;
     };
 
-    let config = match mono_16k(&device) {
+    let config = match input_config(&device) {
         Ok(config) => config,
         Err(e) => {
             let _ = ready.send(Err(e));
@@ -110,14 +142,13 @@ pub(crate) fn record(
         }
     };
 
-    // Integer maths so the cap cannot be a truncating float cast.
-    let limit =
-        usize::try_from(max_capture.as_millis().saturating_mul(u128::from(SAMPLE_RATE)) / 1000)
-            .unwrap_or(usize::MAX);
+    let limit = sample_cap(max_capture);
+    let channels = config.channels as usize;
+    tracing::debug!(channels, rate = SAMPLE_RATE, "input open");
     let sink = Arc::clone(shared);
     let stream = device.build_input_stream(
         config,
-        move |block: &[f32], _: &cpal::InputCallbackInfo| sink.push(block, limit),
+        move |block: &[f32], _: &cpal::InputCallbackInfo| sink.push(block, channels, limit),
         |error| tracing::warn!(%error, "input stream error"),
         None,
     );
@@ -141,17 +172,27 @@ pub(crate) fn record(
     drop(stream);
 }
 
-/// The one input format the models read. Negotiated rather than
-/// resampled: a device that cannot deliver it is reported, because
-/// silently rate-converting would hand the model a signal it was not
-/// trained on and produce plausible wrong text instead of an error.
-fn mono_16k(device: &cpal::Device) -> Result<cpal::StreamConfig, Error> {
+/// Pick an input the models can read.
+///
+/// The rate must be exactly [`SAMPLE_RATE`], because changing it means
+/// filtering and a naive decimation would alias speech down into the
+/// band the model listens to. Channel count is different: averaging
+/// channels at one rate is exact, so a stereo device is accepted and
+/// downmixed. Measured on the target hardware, which offers 16, 24 and
+/// 32 kHz and never fewer than two channels - so requiring mono here
+/// would have meant no microphone at all.
+///
+/// A device offering no 16 kHz config at all is reported rather than
+/// resampled; that is the case that needs a real filter, and no device
+/// we have has needed it.
+fn input_config(device: &cpal::Device) -> Result<cpal::StreamConfig, Error> {
     let wanted: cpal::SampleRate = SAMPLE_RATE;
     let supported = device
         .supported_input_configs()
         .map_err(|error| Error::Capture { message: error.to_string() })?;
 
     let mut offered = Vec::new();
+    let mut best: Option<cpal::StreamConfig> = None;
     for range in supported {
         offered.push(format!(
             "{}ch {}-{}Hz {:?}",
@@ -160,14 +201,18 @@ fn mono_16k(device: &cpal::Device) -> Result<cpal::StreamConfig, Error> {
             range.max_sample_rate(),
             range.sample_format()
         ));
-        if range.channels() == 1
-            && range.sample_format() == cpal::SampleFormat::F32
-            && let Some(config) = range.try_with_sample_rate(wanted)
-        {
-            return Ok(config.into());
+        if range.sample_format() != cpal::SampleFormat::F32 {
+            continue;
+        }
+        if let Some(config) = range.try_with_sample_rate(wanted) {
+            let config: cpal::StreamConfig = config.into();
+            // Fewest channels wins: less to average, less to go wrong.
+            if best.as_ref().is_none_or(|b| config.channels < b.channels) {
+                best = Some(config);
+            }
         }
     }
-    Err(Error::UnsupportedInput { wanted: SAMPLE_RATE, offered: offered.join(", ") })
+    best.ok_or(Error::UnsupportedInput { wanted: SAMPLE_RATE, offered: offered.join(", ") })
 }
 
 #[cfg(test)]
@@ -179,10 +224,10 @@ mod tests_recording {
 
     #[test]
     fn the_cap_truncates_rather_than_growing_without_bound() {
-        let recording = Recording::new();
+        let recording = Recording::new(LIMIT);
         // Three seconds of audio pushed into a one second cap.
         for _ in 0..3 {
-            recording.push(&vec![0.5; LIMIT], LIMIT);
+            recording.push(&vec![0.5; LIMIT], 1, LIMIT);
         }
         assert_eq!(
             recording.take().len(),
@@ -197,9 +242,9 @@ mod tests_recording {
 
     #[test]
     fn reaching_the_cap_asks_the_recorder_to_release_the_device() {
-        let recording = Recording::new();
-        recording.push(&vec![0.5; LIMIT + 1], LIMIT);
-        recording.push(&[0.5], LIMIT);
+        let recording = Recording::new(LIMIT);
+        recording.push(&vec![0.5; LIMIT + 1], 1, LIMIT);
+        recording.push(&[0.5], 1, LIMIT);
         assert!(
             recording.stop.load(Ordering::Relaxed),
             "a capture nobody stopped must free the microphone itself, not hold it open"
@@ -208,16 +253,16 @@ mod tests_recording {
 
     #[test]
     fn the_level_tracks_the_loudest_sample_so_far() {
-        let recording = Recording::new();
+        let recording = Recording::new(LIMIT);
         let silent = recording.peak_dbfs();
         assert!(
             silent.is_infinite() && silent.is_sign_negative(),
             "an untouched recording must read as no signal, got {silent}"
         );
 
-        recording.push(&[0.1, -0.5, 0.25], LIMIT);
+        recording.push(&[0.1, -0.5, 0.25], 1, LIMIT);
         let loud = recording.peak_dbfs();
-        recording.push(&[0.01], LIMIT);
+        recording.push(&[0.01], 1, LIMIT);
         assert!(
             (recording.peak_dbfs() - loud).abs() < f32::EPSILON,
             "the peak must hold rather than follow the signal down, or a meter flickers to silence"

@@ -131,7 +131,10 @@ impl Drop for Engine {
 
         // The join is what releases the weights before the process tears
         // down the native backend; without it ggml's Metal teardown trips
-        // `GGML_ASSERT([rsets->data count] == 0)`.
+        // `GGML_ASSERT([rsets->data count] == 0)`. It does NOT cover a
+        // load in progress: `Model::load` is a blocking FFI call with no
+        // cancellation, so dropping an engine that has just started waits
+        // the whole load out.
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -190,8 +193,7 @@ impl Engine {
 
         // Drained into one buffer because the recognition call takes the
         // whole signal contiguously. The chunking exists for the capture
-        // path and for sources with no hardware behind them, not because
-        // the runtime wants it.
+        // path and for sources with no hardware behind them.
         let started = Instant::now();
         let mut pcm = Vec::new();
         while let Some(chunk) = source.next_chunk() {
@@ -216,7 +218,8 @@ impl Engine {
         *lock = Some(holder.into());
         drop(lock);
 
-        let recording = Arc::new(crate::capture::Recording::new());
+        let recording =
+            Arc::new(crate::capture::Recording::new(crate::capture::sample_cap(self.max_capture)));
         let (ready, started) = channel();
         let max_capture = self.max_capture;
         let shared = Arc::clone(&recording);
@@ -451,7 +454,6 @@ fn worker(
             audio: job.audio,
             ..Stages::default()
         };
-        first = false;
 
         if cancellable {
             session.set_cancel_token(&job.cancel);
@@ -463,6 +465,10 @@ fn worker(
                 stages.encode = Duration::from_secs_f64(f64::from(out.timings.encode_ms) / 1000.0);
                 stages.decode = Duration::from_secs_f64(f64::from(out.timings.decode_ms) / 1000.0);
                 let text = out.text.trim().to_owned();
+                // Consumed here rather than where `stages` is built: an
+                // error or a cancel discards the stages, and taking the
+                // load cost there would lose it for the process.
+                first = false;
                 Ok(Outcome::Transcript(Transcript { asr: text.clone(), text, stages }))
             }
             // `was_aborted` is what separates a cancellation from a real
