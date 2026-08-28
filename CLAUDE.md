@@ -369,9 +369,10 @@ inspected.
     - `configuration.md` - every `forge.toml` key, its default and its
       error strings. The most exposed page in the book: a new key, a
       changed default or a reworded load failure falsifies it.
-    - `install.md` - prerequisites and the CLI flag table. A changed
-      flag or prerequisite falsifies it; a recipe missing from its
-      avowedly partial `just` list does not.
+    - `install.md` - prerequisites, the CLI flag table, and the fullest
+      copy of `just check`'s composition. A changed flag, prerequisite
+      or step falsifies it; a recipe missing from its avowedly partial
+      `just` list does not.
     - `index.md` - what forge is, the surfaces it renders, the scope
       caveats.
     - `architecture.md` - crate count, layering diagram, crate table,
