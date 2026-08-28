@@ -42,6 +42,11 @@ mod tests {
         );
     }
 
+    /// Insurance, not coverage: `CARD_EXAMPLE` already carries this prefix
+    /// verbatim, so no mutation kills this without also killing the test
+    /// above. It is kept for the failure message, which names the one
+    /// omission that makes the model answer `<think>` and stop.
+    ///
     /// Spelled out rather than compared against [`ASSISTANT_PREFIX`]: the
     /// constant is what builds the prompt, so checking one against the
     /// other passes for any value they happen to share.
