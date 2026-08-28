@@ -94,17 +94,55 @@ fn ensure(dir: &Path, spec: &ModelSpec, on_progress: &mut Reporter<'_>) -> Resul
     // read takes seconds, and a caller left on "100%" reads it as a hang.
     announce(on_progress, Progress::Verifying { file: spec.file.clone() })?;
 
-    // Deleted where a cached file would be rejected, because this one is
-    // ours and appending to bytes that already hash wrong can never
-    // converge, so keeping it would poison every later resume.
-    if let Err(e) = verify(&partial, spec) {
-        tracing::warn!(file = %spec.file, "downloaded model failed verification; discarding partial");
-        let _ = fs::remove_file(&partial);
-        return Err(e);
+    if let Err(failure) = verify(&partial, spec) {
+        return Err(discard_unusable_partial(&partial, failure));
     }
     fs::rename(&partial, &target).map_err(|source| Error::Io { path: target, source })?;
     announce(on_progress, Progress::Ready { file: spec.file.clone() })?;
     Ok(())
+}
+
+/// Decide what a failed partial deserves, and say so in the log.
+///
+/// Only a verdict on the BYTES earns a deletion. An io error is a
+/// statement about the filesystem, and a partial may predate this run
+/// or have been adopted from an earlier one, so deleting on a transient
+/// fault would throw away a correct multi-gigabyte file. That is the
+/// same reasoning the cached path already uses; adopting partials is
+/// what extended it here.
+///
+/// When the bytes really are wrong but the removal fails, the caller
+/// gets a different error on purpose: keeping the file poisons every
+/// later run identically, and a hash mismatch that clears on retry and
+/// one that never will need different things from whoever sees it.
+fn discard_unusable_partial(partial: &Path, failure: Error) -> Error {
+    if !matches!(failure, Error::SizeMismatch { .. } | Error::HashMismatch { .. }) {
+        tracing::warn!(
+            path = %partial.display(),
+            error = %failure,
+            "could not check the partial; leaving it in place"
+        );
+        return failure;
+    }
+    match fs::remove_file(partial) {
+        Ok(()) => {
+            tracing::warn!(
+                path = %partial.display(),
+                error = %failure,
+                "partial does not match its spec; removed"
+            );
+            failure
+        }
+        Err(source) => {
+            tracing::error!(
+                path = %partial.display(),
+                error = %failure,
+                remove_error = %source,
+                "partial does not match its spec and could not be removed"
+            );
+            Error::StalePartial { path: partial.into(), source }
+        }
+    }
 }
 
 /// Size first, then digest: a truncated file is the common case and
@@ -352,6 +390,68 @@ mod tests_cached_verification {
             body,
             "the finished bytes must be promoted in place rather than thrown away"
         );
+    }
+
+    /// An unreadable file is the cheapest way to make `verify` fail for
+    /// a reason that says nothing about the bytes.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_partial_is_reported_not_destroyed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let body = b"the complete model weights";
+        let partial = dir.path().join("asr.gguf.part");
+        // Right length, so the size check passes and hashing is reached.
+        fs::write(&partial, body).unwrap();
+        fs::set_permissions(&partial, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .asr_model(offline_spec("asr.gguf", body))
+            .normalizer(None)
+            .build();
+
+        let err = prepare(&cfg, |_| ControlFlow::Continue(()))
+            .expect_err("an unreadable partial cannot be verified");
+        assert!(
+            matches!(err, Error::Io { .. }),
+            "a filesystem fault must stay an io error, not become a verdict on the bytes, got: {err:?}"
+        );
+        assert!(
+            partial.exists(),
+            "an io error says nothing about the bytes, so the file must survive it"
+        );
+
+        fs::set_permissions(&partial, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    /// A models directory nobody can write to: the bytes really are
+    /// wrong, and the cleanup that would normally fix it cannot run.
+    #[cfg(unix)]
+    #[test]
+    fn a_partial_that_cannot_be_removed_is_a_different_error() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let partial = dir.path().join("asr.gguf.part");
+        fs::write(&partial, b"the corrupted model weight").unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
+
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .asr_model(offline_spec("asr.gguf", b"the complete model weights"))
+            .normalizer(None)
+            .build();
+
+        let err = prepare(&cfg, |_| ControlFlow::Continue(()))
+            .expect_err("a corrupt partial must not be accepted");
+        assert!(
+            matches!(err, Error::StalePartial { .. }),
+            "a corruption that will repeat forever must be distinguishable from one that clears on retry, got: {err:?}"
+        );
+
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
     }
 
     #[test]

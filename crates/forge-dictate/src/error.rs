@@ -39,10 +39,22 @@ pub enum Error {
     #[error("{} is {actual} bytes, expected {expected}", path.display())]
     SizeMismatch { path: PathBuf, expected: u64, actual: u64 },
 
-    /// The progress callback asked to stop. Any partial transfer is left
-    /// where it is, so a later call resumes rather than starting over.
+    /// The progress callback asked to stop. Whatever already finished is
+    /// kept - a model that reached [`crate::Progress::Ready`] is
+    /// installed - and any partial transfer is left where it is, so a
+    /// later call resumes rather than starting over.
     #[error("cancelled by the progress callback")]
     Cancelled,
+
+    /// A partial does not match its spec and could not be removed, so
+    /// every later call fails identically until someone clears it. The
+    /// usual cause is a models directory that is not writable.
+    #[error("{} does not match its spec and could not be removed ({source}); remove it to unblock", path.display())]
+    StalePartial {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
     /// A file on disk is the right length but the wrong bytes.
     #[error("{} hashes to {actual}, expected {expected}", path.display())]
