@@ -364,7 +364,7 @@ inspected.
     build and a green deploy beside it. The site is never out of date
     with the repo, and it can be confidently wrong about the code.
 
-    The pages, and what falsifies each:
+    The pages, and the usual way each goes false:
 
     - `configuration.md` - every `forge.toml` key, its default and its
       error strings. The most exposed page in the book: a new key, a
