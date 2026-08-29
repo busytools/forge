@@ -174,6 +174,34 @@ non-integer `fps` resolves to the default.
 The spinner set here is the default. A `/spinner` pick made inside
 forge is persisted separately and wins over it.
 
+## `[dictate]`
+
+Optional. Absent means dictation is off, which is also what an explicit
+`enabled = false` means.
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Off unless asked for. Turning it on costs a 3.07 GB model download the first time and holds about 1.8 GB of resident memory for the run. |
+| `models_dir` | string | platform cache dir | Where the model files live. `~` is expanded. |
+| `device` | string | system default | Input to record from, by device id rather than name. |
+| `language` | string | autodetect | Spoken language hint. |
+| `normalizer` | boolean | `true` | Rewrite recognition output into clean text. Off halves the download and skips a pass per utterance. |
+| `max_capture_minutes` | integer | `30` | Upper bound on one recording. A capture reserves memory eagerly, about 110 MiB at the default. |
+
+Unlike `[ui]`, an unrecognised key here fails the load rather than being
+ignored: a mistyped `models_dir` would otherwise fetch three gigabytes
+to the wrong volume with nothing said about it.
+
+With `enabled = true`, forge fetches, verifies and loads the models on
+the preflight screen before the project picker appears. A first run
+downloads 3.07 GB, resumable and SHA-256 verified; later runs re-hash
+what is on disk, which takes a few seconds, then load the weights.
+Pressing `esc` during a download keeps what has landed and quits.
+
+The model files themselves are not configurable. Each carries a URL, a
+byte length and a digest, and a hand-edited one is a file nothing can
+verify.
+
 ## `[gotify]`
 
 Optional. Absent means the Gotify integration stays dormant.
@@ -188,8 +216,9 @@ Both are mandatory once the section is present; neither has a default.
 ## Unknown keys
 
 The top-level document does not reject unknown tables, so a section
-forge no longer reads is ignored rather than failing the load. The one
-place that does reject unknown fields is `[projects.<name>]`.
+forge no longer reads is ignored rather than failing the load. The two
+places that do reject unknown fields are `[projects.<name>]` and
+`[dictate]`.
 
 ## A complete example
 
@@ -249,6 +278,11 @@ env_file = "~/.config/service/secrets.env"
 spinner = "phase_of_moon"
 fps = 120
 
+[dictate]
+enabled = true
+normalizer = true
+max_capture_minutes = 30
+
 [gotify]
 url = "https://gotify.example"
 client_token = "CxxxxxxxxxxxxxxxA"
@@ -259,10 +293,20 @@ client_token = "CxxxxxxxxxxxxxxxA"
 `forge <PROJECT>` opens the named project. The name must match a
 project's `name` exactly.
 
-With no argument, forge opens the launchpad picker instead of a chat
-tab. Every project carrying `auto_start = true` still spawns its lead
-session in the background, but none of them is focused: you pick one
-from the launchpad to enter chat.
+With no argument, forge opens the launchpad instead of a chat tab. The
+launchpad has two views. Preflight comes first: it resolves every
+`[[accounts]]` entry and, when `[dictate]` is on, fetches and loads the
+dictation models. It is shown once per run and hands over to the project
+picker when everything is ready.
+
+Preflight completes only on every account reaching a usable state.
+**forge will not start while an account in `forge.toml` cannot
+authenticate** - fix that account's auth, or remove its `[[accounts]]`
+block. The screen names both.
+
+Every project carrying `auto_start = true` still spawns its lead session
+in the background, but none of them is focused: you pick one from the
+picker to enter chat.
 
 `auto_start` therefore controls what is warm when you arrive, not what
 you land on.

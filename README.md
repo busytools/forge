@@ -27,7 +27,7 @@ forge-primitives      leaf: pure data, no logic, no I/O, no async
 forge-dictate         leaf: dictation, depends on no forge-* crate
 forge-sdk         ->  primitives
 forge-agent       ->  primitives + sdk
-forge-workspace   ->  primitives + agent + sdk
+forge-workspace   ->  primitives + agent + sdk + dictate
 forge-tui         ->  primitives + workspace
 forge-test-harness->  primitives + sdk
 ```

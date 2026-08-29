@@ -13,6 +13,11 @@
   than `cargo test`.
 - **`just`**, if you want the task recipes. Everything they run is a
   cargo invocation you can also type out.
+- **ALSA headers, on Linux only.** `forge-dictate` records through
+  `cpal`, whose Linux backend links against ALSA, and `forge-workspace`
+  depends on it - so this is needed to build the binary at all, not
+  only to run `--workspace`. On Debian and Ubuntu that is
+  `libasound2-dev`. macOS needs nothing extra.
 
 ### About the nightly pin
 
