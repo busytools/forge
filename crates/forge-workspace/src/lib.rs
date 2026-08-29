@@ -62,6 +62,7 @@ mod account_cache;
 mod account_loader;
 mod assignment_plan;
 mod config;
+mod dictate;
 mod domain_session;
 mod error;
 pub(crate) mod mcp;
@@ -76,6 +77,9 @@ mod views;
 mod workspace;
 
 pub use account::{LoadingState, UsageFetchStatus};
+pub use dictate::{
+    DictateFailure, DictateModel, DictateModelState, DictateRole, DictateSettings, DictateSnapshot,
+};
 pub use domain_session::DomainSession;
 pub use error::WorkspaceError;
 pub use protocol::{Command, DispatchError, SessionUpdate, TurnErrorClass};

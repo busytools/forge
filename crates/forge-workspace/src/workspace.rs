@@ -192,6 +192,11 @@ pub struct Workspace {
     /// project rows on it being `Some` AND the project having a
     /// non-empty pool. See `crate::assignment_plan`.
     assignment_plan: Mutex<Option<crate::assignment_plan::AssignmentPlan>>,
+    /// Dictation preflight: the per-model progress the launchpad
+    /// renders, the flag Escape sets, and the loaded engine held for
+    /// the run. Populated by `start_dictate_preflight`; inert when
+    /// `[dictate] enabled` is false.
+    dictate: Arc<crate::dictate::DictateState>,
     /// Fan-in [`SessionUpdate`] sender. Cloned and handed to TUI-side
     /// modules (slash executors, plugin install, service-status check)
     /// via [`Self::update_sender`] so they can emit presentation
@@ -721,6 +726,7 @@ impl Workspace {
 
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
+        let config_dictate = config.dictate.clone();
         let workspace = Self {
             config_dir,
             config,
@@ -728,6 +734,7 @@ impl Workspace {
             pool: Mutex::new(HashMap::new()),
             accounts: Mutex::new(accounts),
             assignment_plan: Mutex::new(None),
+            dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
             update_tx,
             update_rx_slot: Mutex::new(Some(update_rx)),
             command_senders: Mutex::new(HashMap::new()),
@@ -1349,6 +1356,39 @@ impl Workspace {
     pub fn account_loading_snapshot(&self) -> Vec<(String, crate::account::LoadingState)> {
         let accounts = self.accounts.lock();
         accounts.ordered_keys.iter().map(|k| (k.0.clone(), accounts.loading_state(k))).collect()
+    }
+
+    /// Per-model dictation progress for the preflight screen. Empty
+    /// `models` means `[dictate] enabled` is false and preflight has no
+    /// Dictation section to draw.
+    pub fn dictate_snapshot(&self) -> crate::dictate::DictateSnapshot {
+        self.dictate.snapshot.lock().clone()
+    }
+
+    /// Stop the in-flight model fetch. Whatever reached the disk stays
+    /// there as a `.part`, so the next run resumes; the snapshot then
+    /// carries [`crate::DictateFailure::Cancelled`] and forge quits,
+    /// because there is no dictation-less runtime to fall back to.
+    pub fn cancel_dictate_preflight(&self) {
+        self.dictate.cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Fetch, verify and load the dictation models. One task per forge
+    /// run, started beside the account loaders; a no-op when dictation
+    /// is switched off.
+    pub fn start_dictate_preflight(self: &Arc<Self>) {
+        let settings = self.config.dictate.clone();
+        if !settings.enabled {
+            return;
+        }
+        let state = Arc::clone(&self.dictate);
+        let span = tracing::info_span!("dictate_preflight");
+        tokio::spawn(
+            async move {
+                crate::dictate::run_dictate_preflight(settings, state).await;
+            }
+            .instrument(span),
+        );
     }
 
     /// Resolve `(project, session_label)` to the per-session chip
@@ -5905,6 +5945,7 @@ impl Workspace {
         let _ = crate::config::ensure_forge_data_dir(&config_dir);
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
+        let config_dictate = config.dictate.clone();
         let workspace = Self {
             config_dir,
             config,
@@ -5912,6 +5953,7 @@ impl Workspace {
             pool: Mutex::new(HashMap::new()),
             accounts: Mutex::new(AccountStateMap::empty_for_test()),
             assignment_plan: Mutex::new(None),
+            dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
             update_tx,
             update_rx_slot: Mutex::new(None),
             command_senders: Mutex::new(HashMap::new()),

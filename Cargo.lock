@@ -1365,6 +1365,7 @@ dependencies = [
  "croner",
  "dirs",
  "forge-agent",
+ "forge-dictate",
  "forge-primitives",
  "forge-sdk",
  "forge-workspace",
