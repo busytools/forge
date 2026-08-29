@@ -93,8 +93,10 @@ impl InputState {
         self.cursor().1
     }
 
-    /// The cursor's character offset into [`Self::text`], counting each
-    /// line break as one position.
+    /// The cursor's character offset into the joined [`Self::lines`],
+    /// counting each line break as one position. A paste placeholder
+    /// counts as its token, not its expansion, so this parts ways with
+    /// [`Self::text`] once a paste block exists.
     pub fn cursor_char_offset(&self) -> usize {
         let (row, col) = self.cursor();
         self.lines().iter().take(row).map(|line| line.chars().count() + 1).sum::<usize>() + col
