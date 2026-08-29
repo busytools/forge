@@ -16,7 +16,7 @@ pub(crate) const REDUCED_FLOOR_MS: u64 = 160;
 /// Frame index for `style` at `elapsed_ms` since the spinner epoch.
 /// `elapsed / cadence`, wrapped to the frame count. The cadence resolves
 /// through two clamps: reduced motion floors the style's intent, then
-/// `repaint` coarsens whatever is left to something paintable.
+/// `repaint` can coarsen whatever is left to something paintable.
 pub fn spinner_frame_index(
     style: SpinnerStyle,
     elapsed_ms: u128,
