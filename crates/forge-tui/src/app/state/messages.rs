@@ -42,8 +42,7 @@ pub struct ChatMessage {
     pub stop_hook_summary_height: usize,
     /// Per-turn duration in ms, stamped from `Message::Result.duration_ms`
     /// when the assistant's turn finishes. `None` until the Result event
-    /// arrives. Is the assistant's whole header row - absent until it
-    /// lands.
+    /// arrives. Renders as the message's trailing row once it lands.
     pub turn_duration_ms: Option<u64>,
 }
 

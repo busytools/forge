@@ -1650,18 +1650,15 @@ fn handle_result(app: &mut App, msg: Message) {
 /// Stamp `Message::Result.duration_ms` onto the latest Assistant
 /// ChatMessage in the active session.
 ///
-/// Invalidates the layout as well as the render cache: the duration
-/// appends a row, so the cached height is wrong until the viewport
-/// re-measures. Turn exit invalidates too, but relying on that leaves
-/// the stamp correct only by a neighbour's side effect.
+/// Invalidates the layout, not just the render cache: the duration
+/// appends a row, and turn exit invalidating too would leave this
+/// correct only by a neighbour's side effect.
 ///
 /// No-op when no Assistant message is present (rare: Result fires
 /// before any assistant content has been pushed).
 fn stamp_turn_duration_on_latest_assistant(app: &mut App, duration_ms: u64) {
-    let Some(idx) = app
-        .messages()
-        .iter()
-        .rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
+    let Some(idx) =
+        app.messages().iter().rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
     else {
         return;
     };

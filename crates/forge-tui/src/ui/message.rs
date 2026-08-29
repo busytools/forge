@@ -1857,13 +1857,10 @@ fn should_skip_whole_block(
     false
 }
 
-/// The header row above a message body, or `None` when the message
-/// renders straight into its body with no header at all.
-///
-/// `None` covers a peer / worker envelope, whose own `▶ Verb name` row
-/// already names the kind and the sender, and every assistant turn -
-/// what an assistant turn carries is a turn duration, and a duration
-/// is a result, so [`append_turn_duration`] puts it after the body.
+/// The header row above a message body, or `None` for a peer / worker
+/// envelope, whose own `▶ Verb name` row already names the kind and the
+/// sender, and for every assistant turn, which carries a trailing
+/// [`append_turn_duration`] row instead.
 fn role_label_line(msg: &ChatMessage) -> Option<Line<'static>> {
     match msg.role {
         MessageRole::Welcome => Some(Line::from(Span::styled(
@@ -4371,9 +4368,7 @@ mod tests {
     }
 
     /// An envelope carries no role label to suppress, so the flag is
-    /// inert here and the two renders agree line for line. What names
-    /// the traffic is the envelope's own `▶ ⤵ Message <sender>` row -
-    /// the reason dropping the label is not a loss of identity.
+    /// inert here and the two renders agree line for line.
     #[test]
     fn envelope_renders_its_own_sender_row_and_no_role_label() {
         let mut msg = make_peer_envelope_message("forge", "Personal", "hello");

@@ -1117,7 +1117,7 @@ chat continues here...
       <dt>color</dt><dd>trailing duration row: <code>theme::DIM</code>  ·  body: terminal default fg with markdown styles  ·  inline code: <code>theme::DIM</code> tint</dd>
       <dt>order</dt><dd>body &rarr; stop-hook summary chip &rarr; duration &rarr; separator. The duration carries no leading blank, so it reads as a footer on the message rather than floating between two; the unconditional trailing separator still follows it, so messages stay one blank line apart and the row does not double it.</dd>
       <dt>duration formatting</dt><dd>&lt; 60s → <code>12.4s</code> (one decimal) · ≥ 60s → <code>1m 04s</code> · ≥ 1h → <code>1h 02m 04s</code></dd>
-      <dt>stamp source</dt><dd>The chip is stamped from <code>Message::Result.duration_ms</code> by <code>stamp_turn_duration_on_latest_assistant</code> in <code>app/events/sdk_message.rs</code>. <code>system/turn_duration</code> never fires in 2.1.156 (verified across 43 baselines + 14 fresh captures, all zero); the prior chip read from that dead event and was deleted in #283. Same chip, different wire source.</dd>
+      <dt>stamp source</dt><dd>The row is stamped from <code>Message::Result.duration_ms</code> by <code>stamp_turn_duration_on_latest_assistant</code> in <code>app/events/sdk_message.rs</code>, which invalidates the layout as well as the render cache because the row changes the message's height. <code>system/turn_duration</code> never fires in 2.1.156 (verified across 43 baselines + 14 fresh captures, all zero); the prior chip read from that dead event and was deleted in #283.</dd>
     </dl>
   </div>
 </div>
