@@ -266,6 +266,13 @@ pub struct App {
     pub settings_home_override: Option<PathBuf>,
     pub status: AppStatus,
     pub should_quit: bool,
+    /// `true` once preflight has handed the launchpad over to the
+    /// projects view. Latches for the run: see
+    /// [`crate::app::preflight::hand_over_when_ready`].
+    pub preflight_done: bool,
+    /// `true` once preflight has painted a cancelled model fetch, which
+    /// is what lets forge quit having said what it kept and where.
+    pub preflight_cancel_drawn: bool,
     /// Optional fatal app error that should be surfaced at CLI boundary.
     pub exit_error: Option<crate::error::AppError>,
     /// Boot-wave fresh-start flag from the `--new` launch flag. When
@@ -3390,6 +3397,8 @@ impl App {
             settings_home_override: None,
             status: AppStatus::Ready,
             should_quit: false,
+            preflight_done: false,
+            preflight_cancel_drawn: false,
             exit_error: None,
             start_new_run: false,
             workspace: Some(workspace),

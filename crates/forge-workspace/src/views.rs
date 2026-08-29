@@ -116,6 +116,18 @@ pub struct AccountRow {
     pub experimental: bool,
 }
 
+/// One account's place in preflight: what it is called, how far it
+/// has got, and the config dir a failed one has to be fixed in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccountLoadingRow {
+    /// forge.toml `[[accounts]]` display name.
+    pub display_name: String,
+    pub state: crate::account::LoadingState,
+    /// `CLAUDE_CONFIG_DIR` for this account, which is what preflight
+    /// puts in the `/login` line when it will not authenticate.
+    pub config_dir: std::path::PathBuf,
+}
+
 /// One session under a project.
 #[derive(Clone, Debug)]
 pub struct SessionView {

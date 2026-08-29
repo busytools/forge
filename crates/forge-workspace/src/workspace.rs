@@ -25,7 +25,7 @@ use crate::protocol::{Command, DispatchError, SessionUpdate};
 use crate::session_task::SessionTask;
 use crate::spawn;
 use crate::target::{ProjectKey, SessionKey, SessionTarget};
-use crate::views::{ProjectView, SessionView};
+use crate::views::{AccountLoadingRow, ProjectView, SessionView};
 
 /// How often the background poller refreshes account usage. The
 /// TUI's bottom panel + the spawn-path account picker both read
@@ -1353,9 +1353,24 @@ impl Workspace {
     /// account loading glyph row from this; the order matches
     /// `forge.toml`'s `[[accounts]]` declarations so the glyphs sit
     /// next to the user's mental model of which-account-is-which.
-    pub fn account_loading_snapshot(&self) -> Vec<(String, crate::account::LoadingState)> {
+    pub fn account_loading_snapshot(&self) -> Vec<AccountLoadingRow> {
         let accounts = self.accounts.lock();
-        accounts.ordered_keys.iter().map(|k| (k.0.clone(), accounts.loading_state(k))).collect()
+        accounts
+            .ordered_keys
+            .iter()
+            .map(|k| AccountLoadingRow {
+                display_name: k.0.clone(),
+                state: accounts.loading_state(k),
+                config_dir: accounts.config_dir(k).cloned().unwrap_or_default(),
+            })
+            .collect()
+    }
+
+    /// The `forge.toml` this workspace loaded. Preflight names it: an
+    /// account that will not authenticate stops forge starting, and a
+    /// config edit is the only way past that.
+    pub fn config_path(&self) -> PathBuf {
+        crate::config::forge_data_dir(&self.config_dir).join("forge.toml")
     }
 
     /// Per-model dictation progress for the preflight screen. Empty
@@ -1363,6 +1378,12 @@ impl Workspace {
     /// Dictation section to draw.
     pub fn dictate_snapshot(&self) -> crate::dictate::DictateSnapshot {
         self.dictate.snapshot.lock().clone()
+    }
+
+    /// Where the dictation models land. `None` when the platform has no
+    /// usable cache directory and none was configured.
+    pub fn dictate_models_dir(&self) -> Option<PathBuf> {
+        self.config.dictate.models_dir()
     }
 
     /// Stop the in-flight model fetch. Whatever reached the disk stays
@@ -6041,6 +6062,21 @@ impl Workspace {
             .lock()
             .set_loading(&AccountKey(account.to_owned()), crate::account::LoadingState::Ready);
         self.recompute_plan_if_ready();
+    }
+
+    /// Drive `account` to `state` directly, so a cross-crate test can
+    /// render a mid-flight or bailed preflight screen without the real
+    /// loader. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_account_state(&self, account: &str, state: crate::account::LoadingState) {
+        self.accounts.lock().set_loading(&AccountKey(account.to_owned()), state);
+    }
+
+    /// Replace the dictation preflight snapshot, so a cross-crate test
+    /// can render any of its states without fetching 3 GB. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_dictate_snapshot(&self, snapshot: crate::dictate::DictateSnapshot) {
+        *self.dictate.snapshot.lock() = snapshot;
     }
 
     /// Give `label` an assignment-plan entry the way a spawn does, so a

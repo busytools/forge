@@ -100,6 +100,16 @@ impl DictateSettings {
         builder.build()
     }
 
+    /// Where the model files land. Preflight says it while fetching,
+    /// because cancelling keeps what has arrived and a reader needs to
+    /// know where.
+    pub(crate) fn models_dir(&self) -> Option<PathBuf> {
+        match self.models_dir.as_deref() {
+            Some(dir) => Some(crate::config::expand_home(dir)),
+            None => dirs::cache_dir().map(|dir| dir.join("forge-dictate")),
+        }
+    }
+
     /// The rows preflight draws before any work has started.
     fn initial_models(&self) -> Vec<DictateModel> {
         let cfg = self.to_config();
@@ -169,6 +179,14 @@ pub enum DictateFailure {
     Cancelled { kept: u64 },
     /// Everything else, worded as the crate worded it.
     Other { message: String },
+}
+
+impl DictateFailure {
+    /// `true` when the user stopped preflight rather than something
+    /// going wrong. The screen wording and forge's exit differ.
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled { .. })
+    }
 }
 
 /// One model's row in preflight.

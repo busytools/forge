@@ -196,6 +196,8 @@ fn create_app_impl(
         settings_home_override: None,
         status: AppStatus::Connecting,
         should_quit: false,
+        preflight_done: false,
+        preflight_cancel_drawn: false,
         exit_error: None,
         start_new_run: cli.new,
         workspace: Some(workspace),

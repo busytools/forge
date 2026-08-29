@@ -21,6 +21,7 @@ pub(crate) mod monitor_output;
 mod notify;
 pub(crate) mod paste_burst;
 pub(crate) mod plugins;
+pub mod preflight;
 pub(crate) mod process_scanner;
 pub(crate) mod processes;
 pub(crate) mod prompt;
@@ -288,6 +289,12 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // Wall-clock polled per tick for the same reason - nothing
         // arrives on the wire to tell us the delay is up.
         events::auto_continue::maybe_fire(app);
+
+        // A cancelled model fetch quits forge - there is no
+        // dictation-less runtime to fall back to - but only once the
+        // cancelled screen has been painted, so it gets to say what it
+        // kept and where before the terminal goes back.
+        crate::app::preflight::quit_after_cancel(app);
 
         // The Projects pane's account/status panel renders 5h + 7d
         // usage bars on every frame. Keep the snapshot live by
