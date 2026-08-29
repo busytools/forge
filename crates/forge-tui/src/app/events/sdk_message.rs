@@ -1648,24 +1648,28 @@ fn handle_result(app: &mut App, msg: Message) {
 }
 
 /// Stamp `Message::Result.duration_ms` onto the latest Assistant
-/// ChatMessage in the active session, invalidating its render cache so
-/// the duration row in the role-label line re-renders.
+/// ChatMessage in the active session.
+///
+/// Invalidates the layout as well as the render cache: the duration
+/// appends a row, so the cached height is wrong until the viewport
+/// re-measures. Turn exit invalidates too, but relying on that leaves
+/// the stamp correct only by a neighbour's side effect.
 ///
 /// No-op when no Assistant message is present (rare: Result fires
-/// before any assistant content has been pushed). The wire stamp +
-/// chip render are decoupled - the chip just won't appear that turn,
-/// no panic.
+/// before any assistant content has been pushed).
 fn stamp_turn_duration_on_latest_assistant(app: &mut App, duration_ms: u64) {
-    let Some(msg) = app
-        .active_messages_mut()
-        .iter_mut()
-        .rev()
-        .find(|m| matches!(m.role, crate::app::MessageRole::Assistant))
+    let Some(idx) = app
+        .messages()
+        .iter()
+        .rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
     else {
         return;
     };
-    msg.turn_duration_ms = Some(duration_ms);
-    msg.invalidate_render_cache();
+    if let Some(msg) = app.active_messages_mut().get_mut(idx) {
+        msg.turn_duration_ms = Some(duration_ms);
+        msg.invalidate_render_cache();
+    }
+    app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(idx));
 }
 
 /// On a successful Result, finalise any still-open tool_calls
@@ -1910,6 +1914,37 @@ mod stamp_turn_duration_tests {
             .map(|m| m.turn_duration_ms)
             .collect();
         assert_eq!(assistants, vec![None, Some(5_000)]);
+    }
+
+    /// The duration appends a row, so the stamp has to invalidate the
+    /// layout and not just the render cache. Turn exit invalidates too
+    /// and would mask a missing call, so this drives the stamp alone
+    /// against a viewport whose heights start valid.
+    #[test]
+    fn stamping_marks_its_message_stale_so_the_new_row_is_measured() {
+        use crate::app::{MessageBlock, TextBlock};
+
+        let mut app = App::test_default();
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::Text(TextBlock::from_complete("hello"))],
+        ));
+        let _ = app.active_viewport_mut().on_frame(40, 8);
+        app.active_viewport_mut().set_message_height(0, 1);
+        app.active_viewport_mut().mark_heights_valid();
+        assert_eq!(
+            app.active_viewport_mut().oldest_stale_index(),
+            None,
+            "fixture guard: heights start valid, so a stale index can only come from the stamp",
+        );
+
+        stamp_turn_duration_on_latest_assistant(&mut app, 12_400);
+
+        assert_eq!(
+            app.active_viewport_mut().oldest_stale_index(),
+            Some(0),
+            "the stamp must invalidate the layout itself, not lean on turn exit doing it",
+        );
     }
 }
 
