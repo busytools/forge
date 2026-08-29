@@ -33,6 +33,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
 
+use forge_primitives::review::ReviewThread;
 use forge_workspace::SessionKey;
 
 use crate::app::App;
@@ -160,10 +161,31 @@ fn request_refresh(
 /// Drain finished recomputes onto their session buckets. Called from the
 /// main loop alongside the other drain pumps.
 pub fn drain_events(app: &mut App) {
+    let workspace = app.workspace.clone();
     for _ in 0..EVENT_DRAIN_BUDGET {
         let Ok(event) = app.review_waiting_event_rx.try_recv() else {
             return;
         };
+        // Retire a parked signal whose own branch is owed nothing now -
+        // the recompute below only answers for the branch the checkout
+        // is on, and every other writer leaves other branches alone.
+        //
+        // Reading the threads rather than the tally, because the tally
+        // reports a read failure as `None` too, and a transient one must
+        // not retire a live signal.
+        let parked = app.sessions.get(&event.key).and_then(|s| {
+            Some((s.review_replies_waiting.as_ref()?.branch.clone(), s.project.clone()?))
+        });
+        if let Some((branch, project)) = parked
+            && let Some(ws) = workspace.as_ref()
+            && ws
+                .load_review_threads(&project, &branch)
+                .is_ok_and(|threads| !threads.iter().any(ReviewThread::awaits_reviewer))
+            && let Some(session) = app.sessions.get_mut(&event.key)
+        {
+            session.review_replies_waiting = None;
+            app.needs_redraw = true;
+        }
         let Some(session) = app.sessions.get_mut(&event.key) else {
             continue;
         };
@@ -344,6 +366,100 @@ mod tests {
         let restored = waiting(&app, &key).expect("the count is back");
         assert_eq!(restored.count, 2, "both answers are still owed a reviewer turn");
         assert_eq!(restored.branch, "feat/worker", "keyed on the branch the checkout is on");
+    }
+
+    /// The checkout has moved to `main`, so the recompute asks about
+    /// `main` and nothing asks about the branch the parked signal belongs
+    /// to - which is how a branch that was resolved, merged and deleted
+    /// keeps the band lit.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_parked_count_for_a_branch_the_checkout_has_left_clears() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let db = tempfile::tempdir().expect("tempdir");
+        init_repo(repo.path(), "main");
+        let (mut app, key) = booted_app(repo.path(), db.path());
+        // The store holds nothing for feat/worker: its threads were
+        // resolved, or the boot sweep dropped the dead branch's rows.
+        app.sessions.get_mut(&key).expect("session").review_replies_waiting =
+            crate::app::ReviewRepliesWaiting::merge(None, "feat/worker", 2);
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                hydrate_pending(&mut app);
+                settle(&mut app, &key).await;
+            })
+            .await;
+
+        assert_eq!(
+            waiting(&app, &key),
+            None,
+            "nothing is owed on that branch any more, so the band must stop saying so",
+        );
+    }
+
+    /// A redb read failure is not an answer. `review_replies_waiting`
+    /// reports `None` for a read error exactly as it does for "nothing
+    /// owed", so the two have to be told apart before anything is retired.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_read_failure_does_not_retire_a_live_signal() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let db_dir = tempfile::tempdir().expect("tempdir");
+        init_repo(repo.path(), "main");
+        let db = forge_workspace::store::Db::open(&db_dir.path().join("db.redb")).expect("db");
+        forge_workspace::store::review::write_corrupt_row_for_test(&db, "forge", "feat/worker")
+            .expect("corrupt row");
+
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("test workspace");
+        workspace.install_db_for_test(db);
+        let key = SessionKey::from_session_id("restored-session");
+        let mut session = crate::app::session::UiSession::new(key.clone());
+        session.project = Some("forge".to_owned());
+        session.cwd_raw = repo.path().to_string_lossy().into_owned();
+        session.session_id = Some(crate::agent::model::SessionId::new("restored-session"));
+        app.sessions.insert(key.clone(), session);
+        app.active_session_key = Some(key.clone());
+        app.sessions.get_mut(&key).expect("session").review_replies_waiting =
+            crate::app::ReviewRepliesWaiting::merge(None, "feat/worker", 2);
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                hydrate_pending(&mut app);
+                settle(&mut app, &key).await;
+            })
+            .await;
+
+        assert_eq!(
+            waiting(&app, &key).map(|w| w.count),
+            Some(2),
+            "the store could not answer, so the signal stands rather than being retired",
+        );
+    }
+
+    /// The cross-branch rule this must not trample: a live count on
+    /// another branch is real work, and the checkout being elsewhere
+    /// says nothing about it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_signal_for_another_branch_that_is_still_owed_survives() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let db = tempfile::tempdir().expect("tempdir");
+        init_repo(repo.path(), "main");
+        let (mut app, key) = booted_app(repo.path(), db.path());
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads("forge", "feat/worker", &[answered_thread("a")]);
+        app.sessions.get_mut(&key).expect("session").review_replies_waiting =
+            crate::app::ReviewRepliesWaiting::merge(None, "feat/worker", 1);
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                hydrate_pending(&mut app);
+                settle(&mut app, &key).await;
+            })
+            .await;
+
+        let kept = waiting(&app, &key).expect("the other branch still owes a turn");
+        assert_eq!(kept.branch, "feat/worker");
+        assert_eq!(kept.count, 1, "being on main does not retire work on feat/worker");
     }
 
     /// The recompute only fills a gap. A count that arrived while it was

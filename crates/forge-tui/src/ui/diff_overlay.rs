@@ -31,10 +31,11 @@ use forge_primitives::{ReviewAuthor, ReviewSet, ReviewStatus};
 use forge_workspace::env::git_diff::hunks::{DiffLineKind, FileHunks, FileStatus, Hunk};
 
 use crate::app::diff_overlay::{
-    ActiveCommentInput, BodyRowKey, DiffScope, DiffViewMode, FileHighlight, HunkComment, LineKey,
-    RailRowKey, SPLIT_MARKER_COLS, effective_view_mode, gutter_width_for, rail_width_for,
-    split_layout,
+    ActiveCommentInput, AnchorNote, BodyRowKey, CommentRef, DiffScope, DiffViewMode, FileHighlight,
+    HunkComment, LineKey, RailRowKey, SPLIT_MARKER_COLS, effective_view_mode, gutter_width_for,
+    rail_width_for, split_layout,
 };
+use forge_workspace::env::git_diff::resolver::OutdatedReason;
 use pairing::{PairedDiffRow, pair_hunk_lines};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -80,8 +81,15 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let rail_width = rail_width_for(body_width);
     let sep = u16::from(rail_width > 0);
     let pane_width = body_width.saturating_sub(rail_width).saturating_sub(sep);
+    // Asked of the same source Esc will consult, not of the cards: a
+    // thread deleted from another view still has a card standing here,
+    // and the hint must not offer a review that Esc will not open. The
+    // card check is a necessary condition for the store one, so a session
+    // that has written nothing never reaches the store.
+    let seals = overlay.comments.iter().any(|c| c.authored_this_session)
+        && crate::app::diff_overlay::would_file(app);
     let footer =
-        footer_line(overlay, effective_view_mode(overlay.view_mode, pane_width), body_width);
+        footer_line(overlay, effective_view_mode(overlay.view_mode, pane_width), body_width, seals);
 
     super::page::render_page(frame, "Diff review", None, footer, |frame, body| {
         render_diff_body(frame, body, app);
@@ -385,7 +393,14 @@ fn render_stepper(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlayState)
         Rect { x: area.x, y: title_y, width: area.width, height: 1 },
     );
 
-    let total = overlay.comments.len();
+    // Threads, not cards: one comment draws in every scope it belongs to,
+    // so counting cards reports it once per scope visited.
+    let total = {
+        let mut ids: Vec<&str> = overlay.comments.iter().map(|c| c.thread.id.as_str()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids.len()
+    };
     let mut spans: Vec<Span<'static>> = vec![Span::raw("  ")];
     match overlay.scope {
         DiffScope::Commit(i) => {
@@ -605,8 +620,25 @@ fn render_finish_review(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlay
     let accent_bold = orange.add_modifier(Modifier::BOLD);
     let plain = Style::default();
 
-    let authored: Vec<&HunkComment> =
-        overlay.comments.iter().filter(|c| c.authored_this_session).collect();
+    // One row per thread, and the row has to be the card the last rebuild
+    // touched: hydrate leaves out-of-scope cards first, so taking the
+    // earliest shows the copy that never saw the reviewer's latest edit.
+    let scope = overlay.current_commit_sha();
+    let authored: Vec<&HunkComment> = overlay
+        .comments
+        .iter()
+        .filter(|c| c.authored_this_session)
+        .fold(Vec::new(), |mut acc: Vec<&HunkComment>, c| {
+            match acc.iter_mut().find(|e| e.thread.id == c.thread.id) {
+                // On-screen wins outright. With no card in this scope the
+                // latest wins, since hydrate appends what it rebuilt and
+                // the earlier entry is the one it did not touch.
+                Some(seen) if c.commit == scope || seen.commit != scope => *seen = c,
+                Some(_) => {}
+                None => acc.push(c),
+            }
+            acc
+        });
     let count = authored.len();
 
     let box_width = area.width.saturating_sub(8).clamp(44, 68);
@@ -1110,7 +1142,16 @@ fn render_separator(frame: &mut Frame, area: Rect) {
 /// toggle / click-to-comment / click-to-jump / Esc, with the effective
 /// mode (unified / split) right-justified to `width`. With a comment
 /// editor open it shows the editor's Enter/Esc hints instead.
-fn footer_line(overlay: &DiffOverlayState, mode: DiffViewMode, width: u16) -> Line<'static> {
+///
+/// `seals` has to be answered from the same source Esc consults; taken
+/// from the cards it offers a review for a thread another view has
+/// already deleted, and Esc then closes without one.
+fn footer_line(
+    overlay: &DiffOverlayState,
+    mode: DiffViewMode,
+    width: u16,
+    seals: bool,
+) -> Line<'static> {
     let dim = Style::default().fg(theme::DIM);
     let orange = Style::default().fg(theme::RUST_ORANGE);
     let count = overlay.comments.len();
@@ -1133,18 +1174,7 @@ fn footer_line(overlay: &DiffOverlayState, mode: DiffViewMode, width: u16) -> Li
         spans.push(Span::styled("cancel input", dim));
     } else {
         let commit_mode = !overlay.commits.is_empty();
-        // Esc opens the Finish-review modal only when a comment would file
-        // (authored this session AND holding an unsealed user turn) - mirror
-        // that trigger so an edit-only session doesn't read "finish review".
-        let esc_label = if overlay
-            .comments
-            .iter()
-            .any(|c| c.authored_this_session && c.thread.has_unfiled_user_turn())
-        {
-            "finish review"
-        } else {
-            "close"
-        };
+        let esc_label = if seals { "finish review" } else { "close" };
         // Commit mode swaps the page / rail-jump hints for the commit
         // navigation ones (matching the approved mockup); both still work.
         let mut hints: Vec<(&str, &str)> = vec![("\u{2191}\u{2193}", "scroll")];
@@ -1772,13 +1802,16 @@ fn push_unified_body(
                 let spans = line_key.map_or(&[][..], |key| cached_line_spans(cache, key));
                 push_unified_diff_rows(&row, spans, gutter_width, content_width, lines, keys);
                 if let Some(key) = line_key {
-                    for comment in comments_by_key.get(&key).into_iter().flatten() {
+                    for (slot, comment) in
+                        comments_by_key.get(&key).into_iter().flatten().enumerate()
+                    {
                         render_comment_chip(
                             comment,
-                            key,
+                            CommentRef { line: key, slot },
                             gutter_width,
                             pane_width,
                             &overlay.reviews,
+                            overlay.is_comment_collapsed(comment),
                             lines,
                             keys,
                         );
@@ -1885,13 +1918,16 @@ fn push_split_body(
                 sides.push(k);
             }
             for side_key in sides {
-                for comment in comments_by_key.get(&side_key).into_iter().flatten() {
+                for (slot, comment) in
+                    comments_by_key.get(&side_key).into_iter().flatten().enumerate()
+                {
                     render_comment_chip(
                         comment,
-                        side_key,
+                        CommentRef { line: side_key, slot },
                         gutter_width,
                         pane_width,
                         &overlay.reviews,
+                        overlay.is_comment_collapsed(comment),
                         lines,
                         keys,
                     );
@@ -2006,6 +2042,31 @@ fn index_comments_by_key<'a>(
 /// green/red tints.
 const CHIP_BG: Color = Color::Rgb(35, 23, 10);
 
+/// The comment's first line, trimmed, for the collapsed marker.
+fn first_line_of(text: &str) -> String {
+    text.lines().next().unwrap_or_default().trim().to_owned()
+}
+
+/// The card's one-line account of what re-anchoring did to it, or `None`
+/// when it simply stayed put. An `Outdated` thread always says something
+/// even when it was loaded without a fresh re-anchor, so the state is
+/// never shown without a reason.
+fn anchor_note_text(note: Option<AnchorNote>, status: ReviewStatus) -> Option<String> {
+    match note {
+        Some(AnchorNote::Moved { from }) => Some(format!("moved from line {from}")),
+        Some(AnchorNote::Outdated(OutdatedReason::Gone)) => {
+            Some("the code this was on is gone".to_owned())
+        }
+        Some(AnchorNote::Outdated(OutdatedReason::Ambiguous { matches })) => {
+            Some(format!("matched {matches} locations, not relocating"))
+        }
+        None if status == ReviewStatus::Outdated => {
+            Some("line changed - resolve, or re-comment on a live line".to_owned())
+        }
+        None => None,
+    }
+}
+
 /// Border colour + uppercase state label for a comment box, keyed off
 /// its durable review-thread status.
 fn review_state_style(status: ReviewStatus) -> (Color, &'static str) {
@@ -2066,14 +2127,30 @@ fn push_card_row(
 /// bottom border. Turns are the thread's comments in order.
 fn render_comment_chip(
     comment: &HunkComment,
-    key: LineKey,
+    at: CommentRef,
     gutter_width: usize,
     pane_width: u16,
     reviews: &[ReviewSet],
+    collapsed: bool,
     lines: &mut Vec<Line<'static>>,
     keys: &mut Vec<BodyRowKey>,
 ) {
     let status = comment.thread.status;
+    if collapsed {
+        let indent = " ".repeat(gutter_width + 4);
+        let summary = first_line_of(&comment.comment_text);
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::raw(indent),
+            Span::styled(
+                format!("\u{2570}\u{2500} \u{2713} line {} resolved \u{b7} ", comment.line),
+                Style::default().fg(theme::REVIEW_RESOLVED),
+            ),
+            Span::styled(summary, Style::default().fg(theme::DIM)),
+        ]));
+        keys.push(BodyRowKey::CommentCollapsed { at });
+        return;
+    }
     let (accent, state_label) = review_state_style(status);
     let indent_cols = gutter_width + 4;
     let indent = " ".repeat(indent_cols);
@@ -2106,7 +2183,11 @@ fn render_comment_chip(
         Span::styled(state, Style::default().fg(accent).bg(CHIP_BG).add_modifier(Modifier::BOLD)),
         Span::styled("\u{2500}\u{256e}", card_style),
     ]));
-    keys.push(BodyRowKey::CommentChip(key));
+    keys.push(if status == ReviewStatus::Resolved {
+        BodyRowKey::CommentCollapsed { at }
+    } else {
+        BodyRowKey::CommentChip(at.line)
+    });
 
     let blank = |lines: &mut Vec<Line<'static>>, keys: &mut Vec<BodyRowKey>| {
         push_card_row(
@@ -2118,7 +2199,7 @@ fn render_comment_chip(
             content_width,
             Vec::new(),
             0,
-            BodyRowKey::CommentChip(key),
+            BodyRowKey::CommentChip(at.line),
         );
     };
     blank(lines, keys);
@@ -2140,7 +2221,7 @@ fn render_comment_chip(
                 content_width,
                 vec![Span::styled("  ", body_style), Span::styled(row, body_style)],
                 vis,
-                BodyRowKey::CommentChip(key),
+                BodyRowKey::CommentChip(at.line),
             );
         }
     }
@@ -2150,9 +2231,9 @@ fn render_comment_chip(
         // an agent's turn is read-only chrome.
         let editable = matches!(turn.author, ReviewAuthor::User);
         let row_key = if editable {
-            BodyRowKey::CommentTurn { key, turn_idx: i }
+            BodyRowKey::CommentTurn { at, turn_idx: i }
         } else {
-            BodyRowKey::CommentChip(key)
+            BodyRowKey::CommentChip(at.line)
         };
         let dot_style = Style::default().fg(voice).bg(CHIP_BG);
         let pencil = if editable { "  \u{270e}" } else { "" };
@@ -2191,9 +2272,7 @@ fn render_comment_chip(
         }
     }
 
-    if status == ReviewStatus::Outdated {
-        // The anchored line drifted; name that instead of implying it's live.
-        let note = "line changed - resolve, or re-comment on a live line";
+    if let Some(note) = anchor_note_text(comment.anchor_note, status) {
         let vis = 2 + note.width();
         push_card_row(
             lines,
@@ -2204,7 +2283,7 @@ fn render_comment_chip(
             content_width,
             vec![Span::styled("  ", note_style), Span::styled(note, note_style)],
             vis,
-            BodyRowKey::CommentChip(key),
+            BodyRowKey::CommentChip(at.line),
         );
     }
 
@@ -2224,7 +2303,7 @@ fn render_comment_chip(
             Span::styled(reply_hint, note_style),
         ],
         reply_label.width() + reply_hint.width(),
-        BodyRowKey::CommentReply { key },
+        BodyRowKey::CommentReply { at },
     );
 
     blank(lines, keys);
@@ -2266,7 +2345,7 @@ fn render_comment_chip(
         ],
         content_w,
         BodyRowKey::CommentButton {
-            key,
+            at,
             resolve: resolve_ok.then_some((base, resolve_end)),
             reopen: reopen_ok.then_some((reopen_start, reopen_end)),
         },
@@ -2279,7 +2358,7 @@ fn render_comment_chip(
         Span::raw(indent),
         Span::styled(bottom, card_style),
     ]));
-    keys.push(BodyRowKey::CommentChip(key));
+    keys.push(BodyRowKey::CommentChip(at.line));
 }
 
 /// Wrap `text` into rows that fit within `max_chars`, respecting
@@ -3997,6 +4076,7 @@ mod tests {
             commit: None,
             thread,
             authored_this_session: false,
+            anchor_note: None,
             persisted: true,
         }
     }
@@ -4009,10 +4089,27 @@ mod tests {
         comment: &HunkComment,
         reviews: &[ReviewSet],
     ) -> (Vec<Line<'static>>, Vec<BodyRowKey>) {
+        render_chip_collapsed(comment, reviews, false)
+    }
+
+    fn render_chip_collapsed(
+        comment: &HunkComment,
+        reviews: &[ReviewSet],
+        collapsed: bool,
+    ) -> (Vec<Line<'static>>, Vec<BodyRowKey>) {
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
         let mut lines = Vec::new();
         let mut keys = Vec::new();
-        render_comment_chip(comment, key, 4, 80, reviews, &mut lines, &mut keys);
+        render_comment_chip(
+            comment,
+            CommentRef { line: key, slot: 0 },
+            4,
+            80,
+            reviews,
+            collapsed,
+            &mut lines,
+            &mut keys,
+        );
         (lines, keys)
     }
 
@@ -4241,6 +4338,242 @@ mod tests {
         }
     }
 
+    /// The visible text of a rendered card, rows joined by newlines.
+    fn chip_text(comment: &HunkComment) -> String {
+        let (lines, _) = render_chip(comment);
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_relocated_card_says_where_it_came_from() {
+        // Silent relocation is how a comment ends up attached to code it
+        // was never about while still looking anchored.
+        let mut comment = chip_comment(58, "guard the None case", ReviewStatus::Open);
+        comment.anchor_note = Some(AnchorNote::Moved { from: 41 });
+        assert!(
+            chip_text(&comment).contains("moved from line 41"),
+            "a move names the line it left; got: {}",
+            chip_text(&comment),
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_card_says_it_refused_to_guess() {
+        let mut comment = chip_comment(41, "guard the None case", ReviewStatus::Outdated);
+        comment.anchor_note = Some(AnchorNote::Outdated(OutdatedReason::Ambiguous { matches: 2 }));
+        let text = chip_text(&comment);
+        assert!(
+            text.contains("matched 2 locations"),
+            "an ambiguous anchor reports the count; got: {text}",
+        );
+    }
+
+    #[test]
+    fn a_vanished_card_says_the_code_is_gone() {
+        let mut comment = chip_comment(41, "guard the None case", ReviewStatus::Outdated);
+        comment.anchor_note = Some(AnchorNote::Outdated(OutdatedReason::Gone));
+        let text = chip_text(&comment);
+        assert!(
+            text.contains("the code this was on is gone"),
+            "a vanished anchor says so plainly; got: {text}",
+        );
+    }
+
+    #[test]
+    fn an_undisturbed_card_says_nothing_about_anchoring() {
+        let comment = chip_comment(41, "guard the None case", ReviewStatus::Open);
+        let text = chip_text(&comment);
+        assert!(!text.contains("moved from"), "the normal case is quiet");
+        assert!(!text.contains("matched"), "the normal case is quiet");
+        assert!(!text.contains("is gone"), "the normal case is quiet");
+    }
+
+    #[test]
+    fn a_resolved_card_collapses_to_one_row() {
+        // Twelve resolved comments beside two live ones should not read as
+        // fourteen things wanting attention.
+        let comment = chip_comment(88, "rename tok to token", ReviewStatus::Resolved);
+        let (lines, keys) = render_chip_collapsed(&comment, &[], true);
+        assert_eq!(lines.len(), 1, "a resolved comment collapses to a marker");
+        let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("line 88"), "the marker still names its line; got: {text}");
+        assert!(text.contains("resolved"), "and says why it is collapsed; got: {text}");
+        assert!(
+            keys.iter().any(|k| matches!(k, BodyRowKey::CommentCollapsed { .. })),
+            "the marker is clickable, or a resolved thread could never be reopened",
+        );
+    }
+
+    #[test]
+    fn an_expanded_resolved_card_can_still_be_reopened() {
+        let comment = chip_comment(88, "rename tok to token", ReviewStatus::Resolved);
+        let (lines, keys) = render_chip_collapsed(&comment, &[], false);
+        assert!(lines.len() > 1, "expanding shows the whole thread again");
+        assert!(
+            keys.iter().any(|k| matches!(k, BodyRowKey::CommentButton { reopen: Some(_), .. })),
+            "Reopen lives on the card, so expanding has to bring it back",
+        );
+    }
+
+    #[test]
+    fn the_stepper_counts_comments_not_the_cards_they_draw_as() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        // One thread shows in its commit and in the whole diff, so the
+        // running total counted it once per scope the reviewer had
+        // visited.
+        let mut state =
+            DiffOverlayState::new(std::path::PathBuf::from("/tmp/repo"), "main".to_owned(), vec![]);
+        state.branch = Some("feat/x".to_owned());
+        state.commits = vec![forge_workspace::env::git_diff::hunks::CommitMeta {
+            sha: "aaa".into(),
+            short_sha: "aaa".into(),
+            subject: "first".into(),
+            body: String::new(),
+        }];
+        state.scope = DiffScope::Commit(0);
+        // Interleaved, as hydrate leaves them: dedup alone would not
+        // collapse these, so the sort is load-bearing.
+        for (id, scope) in [
+            ("one", None),
+            ("two", None),
+            ("one", Some("aaa".to_owned())),
+            ("two", Some("aaa".to_owned())),
+        ] {
+            let mut c = chip_comment(5, "a comment", ReviewStatus::Open);
+            c.thread.id = id.to_owned();
+            c.commit = scope;
+            state.comments.push(c);
+        }
+
+        let width = 100u16;
+        let backend = TestBackend::new(width, STEPPER_HEIGHT);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                render_stepper(
+                    frame,
+                    ratatui::layout::Rect { x: 0, y: 0, width, height: STEPPER_HEIGHT },
+                    &mut state,
+                );
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let w = usize::from(width);
+        let rows: String = (0..usize::from(STEPPER_HEIGHT))
+            .map(|r| (0..w).map(|x| buffer.content[r * w + x].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            rows.contains("2 comments"),
+            "two comments drawn twice each are still two; got:\n{rows}",
+        );
+    }
+
+    #[test]
+    fn the_finish_review_list_shows_each_comment_once_and_shows_the_current_text() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        // Two cards for one thread, the out-of-scope one first as hydrate
+        // leaves them. The reviewer reads this list before sealing, so it
+        // must show one row, carrying the edit they just made.
+        let mut state =
+            DiffOverlayState::new(std::path::PathBuf::from("/tmp/repo"), "main".to_owned(), vec![]);
+        state.finish_review = Some(crate::app::diff_overlay::FinishReviewState {
+            editor: crate::app::input::InputState::new(),
+        });
+        for (scope, text) in [(Some("aaa".to_owned()), "FIRSTTEXT"), (None, "SECONDTEXT")] {
+            let mut c = chip_comment(5, text, ReviewStatus::Open);
+            c.thread.id = "shared".to_owned();
+            c.comment_text = text.to_owned();
+            c.commit = scope;
+            c.authored_this_session = true;
+            state.comments.push(c);
+        }
+
+        let (width, height) = (80u16, 20u16);
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                render_finish_review(
+                    frame,
+                    ratatui::layout::Rect { x: 0, y: 0, width, height },
+                    &mut state,
+                );
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let w = usize::from(width);
+        let rows: String = (0..usize::from(height))
+            .map(|r| (0..w).map(|x| buffer.content[r * w + x].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rows.contains("1 comment"), "one thread is one comment; got:\n{rows}");
+        assert!(rows.contains("SECONDTEXT"), "and it reads as the scope on screen has it");
+        assert!(!rows.contains("FIRSTTEXT"), "not as the card the rebuild did not touch");
+    }
+
+    #[test]
+    fn with_no_card_in_this_scope_the_finish_review_list_takes_the_later_one() {
+        // Reachable by commenting on one commit, editing from the whole
+        // diff, then stepping to a third scope: neither card matches, and
+        // "whichever came first" is what the winner rule exists to stop.
+        let mut state =
+            DiffOverlayState::new(std::path::PathBuf::from("/tmp/repo"), "main".to_owned(), vec![]);
+        state.commits = vec![
+            forge_workspace::env::git_diff::hunks::CommitMeta {
+                sha: "aaa".into(),
+                short_sha: "aaa".into(),
+                subject: "first".into(),
+                body: String::new(),
+            },
+            forge_workspace::env::git_diff::hunks::CommitMeta {
+                sha: "bbb".into(),
+                short_sha: "bbb".into(),
+                subject: "second".into(),
+                body: String::new(),
+            },
+        ];
+        state.scope = DiffScope::Commit(1);
+        state.finish_review = Some(crate::app::diff_overlay::FinishReviewState {
+            editor: crate::app::input::InputState::new(),
+        });
+        for (scope, text) in [(Some("aaa".to_owned()), "FIRSTTEXT"), (None, "SECONDTEXT")] {
+            let mut c = chip_comment(5, text, ReviewStatus::Open);
+            c.thread.id = "shared".to_owned();
+            c.comment_text = text.to_owned();
+            c.commit = scope;
+            c.authored_this_session = true;
+            state.comments.push(c);
+        }
+
+        let (width, height) = (80u16, 20u16);
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                render_finish_review(
+                    frame,
+                    ratatui::layout::Rect { x: 0, y: 0, width, height },
+                    &mut state,
+                );
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let w = usize::from(width);
+        let rows: String = (0..usize::from(height))
+            .map(|r| (0..w).map(|x| buffer.content[r * w + x].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rows.contains("SECONDTEXT"), "the later card wins; got:\n{rows}");
+        assert!(!rows.contains("FIRSTTEXT"), "not the one hydrate left in front");
+    }
+
     #[test]
     fn multiple_comments_on_one_line_all_index() {
         // An outdated thread re-placed onto a line that already carries a
@@ -4267,44 +4600,27 @@ mod tests {
                 hunks: Vec::new(),
             }],
         );
-        let text = line_text(&footer_line(&state, DiffViewMode::Unified, 160));
+        let text = line_text(&footer_line(&state, DiffViewMode::Unified, 160, false));
         assert!(text.contains("comment"), "still hints click-to-comment");
         assert!(!text.contains("resolve"), "no global resolve hint");
         assert!(!text.contains("reopen"), "no global reopen hint");
     }
 
     #[test]
-    fn footer_esc_label_matches_the_would_file_trigger() {
-        let mut state = DiffOverlayState::new(
+    fn the_footer_esc_label_follows_the_seal_flag() {
+        // Whether a review would seal is decided by the caller, against
+        // the store - see the app-side test that the hint and Esc agree.
+        // All this surface does is say which of the two it was.
+        let state = DiffOverlayState::new(
             std::path::PathBuf::from("/tmp/repo"),
             "HEAD".to_owned(),
             Vec::new(),
         );
-        let mut comment = chip_comment(1, "note", ReviewStatus::Open);
-        comment.authored_this_session = true;
+        let closing = line_text(&footer_line(&state, DiffViewMode::Unified, 200, false));
+        assert!(closing.contains("close"), "nothing to seal reads close; got: {closing}");
+        assert!(!closing.contains("finish review"), "and must not offer a review");
 
-        // Edit-only (already filed): Esc closes straight through, not "finish review".
-        comment.thread.comments[0].review_id = Some("rev".to_owned());
-        state.comments = vec![comment];
-        let text = line_text(&footer_line(&state, DiffViewMode::Unified, 200));
-        assert!(text.contains("close"), "edit-only footer reads close; got: {text}");
-        assert!(!text.contains("finish review"), "edit-only must not read finish review");
-
-        // A reply on the filed thread is unsealed work again, so the label
-        // flips back even though the thread already belongs to a review.
-        state.comments[0].thread.comments.push(forge_primitives::ReviewComment {
-            author: ReviewAuthor::User,
-            text: "still wrong".to_owned(),
-            at: String::new(),
-            review_id: None,
-        });
-        let text = line_text(&footer_line(&state, DiffViewMode::Unified, 200));
-        assert!(text.contains("finish review"), "a reply on a filed thread reads finish review");
-
-        // Unfiled authored comment: the modal will open, so read "finish review".
-        state.comments[0].thread.comments[0].review_id = None;
-        state.comments[0].thread.comments.truncate(1);
-        let text = line_text(&footer_line(&state, DiffViewMode::Unified, 200));
-        assert!(text.contains("finish review"), "an unfiled authored comment reads finish review");
+        let sealing = line_text(&footer_line(&state, DiffViewMode::Unified, 200, true));
+        assert!(sealing.contains("finish review"), "work to seal reads finish review");
     }
 }
