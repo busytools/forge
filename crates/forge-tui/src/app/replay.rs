@@ -341,6 +341,48 @@ mod tests {
         insta::assert_snapshot!(snapshot);
     }
 
+    /// `compact.jsonl` ends with a compaction Result - 44.4 s of wall
+    /// clock, no attributed API time, an all-zero usage block -
+    /// arriving with no assistant message of its own, so it reaches
+    /// the previous turn's already-settled message.
+    ///
+    /// Driven through the real reducer because a hand-built message
+    /// cannot reproduce it: its token fields start unset, so leaving
+    /// them alone and clearing them are indistinguishable. Every
+    /// assistant frame in every baseline carries usage, so the fields
+    /// are always populated by the time a Result lands.
+    #[test]
+    fn replay_compact_leaves_a_settled_turn_alone() {
+        use crate::app::MessageRole;
+
+        let harness = replay_baseline("compact");
+        let compaction_wall = harness.result_duration_ms();
+        let session = harness.default_session();
+        let settled: Vec<_> = session
+            .messages
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::Assistant) && m.turn_info.is_settled())
+            .collect();
+
+        assert!(
+            !settled.is_empty(),
+            "fixture guard: the baseline must settle at least one turn, or the assertions \
+             below are vacuous",
+        );
+        assert!(
+            settled.iter().all(|m| m.turn_info.duration_ms != Some(compaction_wall)),
+            "the compaction's {compaction_wall}ms clock must not land on a turn that already \
+             settled - it would sit over that turn's own token counts and read as one \
+             measurement",
+        );
+        let last = settled.last().expect("checked non-empty above");
+        assert!(
+            last.turn_info.api_ms.is_some(),
+            "and the settled turn keeps its own API time rather than having it erased by the \
+             compaction's unattributed zero",
+        );
+    }
+
     /// Turn-duration restore: every `Message::Result` carries
     /// `duration_ms` on the wire. The new stamp path in
     /// `handle_result` pulls it out of the destructure and writes

@@ -26,4 +26,4 @@ The TaskStop call returned "No task found" - the loop had already finished and
 the monitor exited on its own right as I issued the stop (the completion
 notification for bpwt1thgf landed immediately after). So the watch is
 terminated either way, just by natural exit rather than by my cancel.
-↳ turn info · 9.7s · 4↑ 186↓ · 99% cached · 825 written [▶ expand]
+↳ turn info · 3.1s · 2↑ 24↓ · 99% cached · 376 written [▶ expand]

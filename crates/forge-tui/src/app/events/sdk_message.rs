@@ -1689,6 +1689,17 @@ fn stamp_turn_info_on_latest_assistant(
     let model = app.observed_assistant_model().map(ToOwned::to_owned);
     if let Some(msg) = app.active_messages_mut().get_mut(idx) {
         let info = &mut msg.turn_info;
+        // A settled row belongs to a turn that has already ended, so
+        // this Result reached a message that is not its own - a
+        // compaction emits one with no assistant message in between.
+        // Writing any field would merge two turns' accounting into a
+        // row that reads as one measurement.
+        //
+        // `record_live_turn_usage` guards the same way; this is the
+        // other writer.
+        if info.is_settled() {
+            return;
+        }
         info.duration_ms = Some(duration_ms);
         info.api_ms = api_ms;
         info.ended_at_local = Some(local_clock_now());
@@ -1714,11 +1725,21 @@ fn stamp_turn_info_on_latest_assistant(
 /// turn consumed none. Compaction and interrupt results both arrive
 /// this way. Only the whole block counts: an individual zero - no new
 /// cache writes, say - is a real measurement and is rendered.
+///
+/// Destructured rather than read field by field, so a counter added
+/// to `Usage` fails to build here instead of silently sitting outside
+/// the test.
 fn is_unattributed_usage(usage: forge_primitives::Usage) -> bool {
-    usage.input_tokens == 0
-        && usage.output_tokens == 0
-        && usage.cache_read_input_tokens == 0
-        && usage.cache_creation_input_tokens == 0
+    let forge_primitives::Usage {
+        input_tokens,
+        output_tokens,
+        cache_read_input_tokens,
+        cache_creation_input_tokens,
+    } = usage;
+    input_tokens == 0
+        && output_tokens == 0
+        && cache_read_input_tokens == 0
+        && cache_creation_input_tokens == 0
 }
 
 /// Local wall-clock `HH:MM:SS` for the turn's end stamp.
@@ -1974,8 +1995,19 @@ mod stamp_turn_info_tests {
     //! for buffered-next-turn anticipation, so this module tests the
     //! stamp helper in isolation; the wire-driven end-to-end path is
     //! pinned in `replay.rs`.
-    use super::stamp_turn_info_on_latest_assistant;
+    use super::{is_unattributed_usage, stamp_turn_info_on_latest_assistant};
     use crate::app::{App, ChatMessage, MessageRole};
+
+    /// The turn_info the stamp targets: latest Assistant in the bucket.
+    fn latest_turn_info(app: &App) -> crate::app::TurnInfo {
+        app.messages()
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, MessageRole::Assistant))
+            .expect("stamping must not drop the assistant message it targets")
+            .turn_info
+            .clone()
+    }
 
     #[test]
     fn stamps_duration_on_latest_assistant_message() {
@@ -2097,6 +2129,81 @@ mod stamp_turn_info_tests {
             info.cache_written_tokens, None,
             "the whole block is dropped together; a lone surviving 0 would still be a claim",
         );
+    }
+
+    /// The guard fails safe in one direction and dangerously in the
+    /// other: were `is_settled()` true more often than intended, every
+    /// row would quietly stop appearing, and an absent row looks like
+    /// a turn that had nothing to report. So pin both directions.
+    #[test]
+    fn a_live_turn_still_stamps_but_a_settled_one_is_left_alone() {
+        let mut app = App::test_default();
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new()));
+        stamp_turn_info_on_latest_assistant(
+            &mut app,
+            4_675,
+            Some(3_807),
+            Some(forge_primitives::Usage {
+                input_tokens: 2,
+                output_tokens: 5,
+                cache_read_input_tokens: 15_262,
+                cache_creation_input_tokens: 62_706,
+            }),
+            Some(0.634_826),
+        );
+
+        let settled = latest_turn_info(&app);
+        assert_eq!(settled.duration_ms, Some(4_675), "a live turn's Result still stamps its row");
+        assert_eq!(settled.api_ms, Some(3_807), "including its API time");
+        assert_eq!(settled.output_tokens, Some(5), "and its token counts");
+
+        stamp_turn_info_on_latest_assistant(&mut app, 44_410, None, None, None);
+
+        let after = latest_turn_info(&app);
+        assert_eq!(
+            after.duration_ms,
+            Some(4_675),
+            "a second Result reaching an already-settled row belongs to a different turn, so \
+             it must not overwrite the clock",
+        );
+        assert_eq!(
+            after.output_tokens,
+            Some(5),
+            "nor leave that turn's tokens under the other turn's clock",
+        );
+    }
+
+    /// Each counter has to be able to keep a block attributed on its
+    /// own; otherwise a conjunct could be dropped and nothing would
+    /// notice, because every other case supplies a non-zero input.
+    #[test]
+    fn any_single_non_zero_counter_keeps_a_usage_block_attributed() {
+        let zero = forge_primitives::Usage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+        };
+        assert!(is_unattributed_usage(zero), "an all-zero block carries no information");
+
+        for (field, usage) in [
+            ("input_tokens", forge_primitives::Usage { input_tokens: 2, ..zero }),
+            ("output_tokens", forge_primitives::Usage { output_tokens: 5, ..zero }),
+            (
+                "cache_read_input_tokens",
+                forge_primitives::Usage { cache_read_input_tokens: 15_262, ..zero },
+            ),
+            (
+                "cache_creation_input_tokens",
+                forge_primitives::Usage { cache_creation_input_tokens: 22, ..zero },
+            ),
+        ] {
+            assert!(
+                !is_unattributed_usage(usage),
+                "a non-zero {field} alone makes the block a measurement, so dropping that \
+                 conjunct would suppress a real count",
+            );
+        }
     }
 
     /// The all-zero rule keys on the WHOLE block: a turn that really

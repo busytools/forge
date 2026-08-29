@@ -5061,9 +5061,6 @@ mod tests {
         );
         let rows = render_lines_to_strings(&lines);
         let body = rows.join("\n");
-        // Assert on whole rows: `out` is an always-printed label and
-        // `-` appears in five cells, so a substring probe would pass
-        // without ever reaching the branch that fills those cells.
         let row_starting = |label: &str| {
             rows.iter()
                 .find(|row| row.trim_start().starts_with(label))
@@ -5100,6 +5097,43 @@ mod tests {
         assert!(
             !body.contains("written cache") && !body.contains("out cache"),
             "both cache counters are input tokens; neither may be labelled as output: {body}",
+        );
+    }
+
+    /// Every cell that can render a dash, rendering one. Supplying a
+    /// value for a cell means its dash branch is never reached, so a
+    /// fixture that fills most of them leaves the rest unpinned.
+    #[test]
+    fn every_absent_cell_in_the_expanded_body_renders_a_dash() {
+        let mut msg = make_text_message(MessageRole::Assistant, "hello");
+        msg.turn_info = TurnInfo { expanded: true, ..settled_turn_info(12_400) };
+
+        let mut lines = Vec::new();
+        render_message(
+            &mut msg,
+            &idle_spinner(),
+            MessageRenderContext::new(None, 100, 0, options_without_separator()),
+            &mut lines,
+        );
+        let rows: Vec<String> =
+            render_lines_to_strings(&lines).iter().map(|r| r.trim_end().to_owned()).collect();
+
+        for expected in [
+            "    ended     -               model   -",
+            "    elapsed   12.4s           api     -",
+            "    in        -               out     -",
+            "    cache     -               wrote   -",
+        ] {
+            assert!(
+                rows.iter().any(|row| row == expected),
+                "every unknown cell renders a dash of its own; missing `{expected}` in {rows:?}",
+            );
+        }
+        assert!(
+            !rows.iter().any(|row| row.contains('0')
+                && !row.contains("12.4s")
+                && row.trim_start().starts_with(|c: char| c.is_alphabetic())),
+            "no cell substitutes a zero for an unknown value: {rows:?}",
         );
     }
 
