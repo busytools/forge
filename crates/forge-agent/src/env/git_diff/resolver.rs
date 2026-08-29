@@ -116,18 +116,30 @@ fn neighbourhood_matches(anchor: &ReviewAnchor, hunk: &Hunk, line_idx: usize) ->
 }
 
 /// Re-resolve `anchor` against a fresh `files` scan.
-pub fn resolve_anchor(anchor: &ReviewAnchor, files: &[FileHunks]) -> AnchorResolution {
+/// `trust_line_number` says whether `files` is numbered the same way the
+/// anchor was recorded in. Only then does the recorded line carry
+/// information; from another scope's diff that number addresses whatever
+/// happens to sit there, so the match has to be earned by content and
+/// neighbours like any other.
+pub fn resolve_anchor(
+    anchor: &ReviewAnchor,
+    files: &[FileHunks],
+    trust_line_number: bool,
+) -> AnchorResolution {
     let Some(file_idx) = files.iter().position(|f| f.path == anchor.path) else {
         return AnchorResolution::Outdated(OutdatedReason::Gone);
     };
     let file = &files[file_idx];
 
     // In place: the recorded line number still carrying the same content.
-    for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
-        for (line_idx, line) in hunk.lines.iter().enumerate() {
-            if side_line(line, anchor.side) == Some(anchor.line) && text_matches(anchor, &line.text)
-            {
-                return AnchorResolution::InPlace { file_idx, hunk_idx, line_idx };
+    if trust_line_number {
+        for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+            for (line_idx, line) in hunk.lines.iter().enumerate() {
+                if side_line(line, anchor.side) == Some(anchor.line)
+                    && text_matches(anchor, &line.text)
+                {
+                    return AnchorResolution::InPlace { file_idx, hunk_idx, line_idx };
+                }
             }
         }
     }
@@ -221,7 +233,7 @@ mod tests {
         let mut legacy = anchor("src/x.rs", ReviewSide::New, 5, "    body();", &["fn a() {", "}"]);
         legacy.content_hash = content_hash("    body();");
         assert_eq!(
-            resolve_anchor(&legacy, &files),
+            resolve_anchor(&legacy, &files, true),
             AnchorResolution::InPlace { file_idx: 0, hunk_idx: 0, line_idx: 1 },
             "a raw-hash anchor still resolves rather than reading as gone",
         );
@@ -270,7 +282,7 @@ mod tests {
         )];
         let a = anchor("src/x.rs", ReviewSide::New, 5, "    body();", &["fn a() {", "}"]);
         assert_eq!(
-            resolve_anchor(&a, &files),
+            resolve_anchor(&a, &files, true),
             AnchorResolution::InPlace { file_idx: 0, hunk_idx: 0, line_idx: 1 },
         );
     }
@@ -291,7 +303,7 @@ mod tests {
         // Recorded at line 6, content unchanged.
         let a = anchor("src/x.rs", ReviewSide::New, 6, "    body();", &["fn a() {", "}"]);
         assert_eq!(
-            resolve_anchor(&a, &files),
+            resolve_anchor(&a, &files, true),
             AnchorResolution::Moved { file_idx: 0, hunk_idx: 0, line_idx: 3, from: 6 },
         );
     }
@@ -304,14 +316,20 @@ mod tests {
             vec![new_line("fn a() {", 4), new_line("    renamed_body();", 5), new_line("}", 6)],
         )];
         let a = anchor("src/x.rs", ReviewSide::New, 5, "    body();", &["fn a() {", "}"]);
-        assert_eq!(resolve_anchor(&a, &files), AnchorResolution::Outdated(OutdatedReason::Gone));
+        assert_eq!(
+            resolve_anchor(&a, &files, true),
+            AnchorResolution::Outdated(OutdatedReason::Gone)
+        );
     }
 
     #[test]
     fn absent_or_renamed_file_is_outdated() {
         let files = vec![file("src/y.rs", vec![new_line("    body();", 5)])];
         let a = anchor("src/x.rs", ReviewSide::New, 5, "    body();", &[]);
-        assert_eq!(resolve_anchor(&a, &files), AnchorResolution::Outdated(OutdatedReason::Gone));
+        assert_eq!(
+            resolve_anchor(&a, &files, true),
+            AnchorResolution::Outdated(OutdatedReason::Gone)
+        );
     }
 
     #[test]
@@ -323,7 +341,7 @@ mod tests {
         ];
         let a = anchor("b.rs", ReviewSide::New, 5, "target", &[]);
         assert_eq!(
-            resolve_anchor(&a, &files),
+            resolve_anchor(&a, &files, true),
             AnchorResolution::InPlace { file_idx: 1, hunk_idx: 0, line_idx: 0 },
         );
         // hunk_idx 1: the target lives in the second hunk.
@@ -350,7 +368,7 @@ mod tests {
         }];
         let b = anchor("c.rs", ReviewSide::New, 10, "h1", &[]);
         assert_eq!(
-            resolve_anchor(&b, &two_hunk),
+            resolve_anchor(&b, &two_hunk, true),
             AnchorResolution::InPlace { file_idx: 0, hunk_idx: 1, line_idx: 0 },
         );
     }
@@ -363,7 +381,7 @@ mod tests {
         )];
         let a = anchor("src/x.rs", ReviewSide::Old, 4, "removed_b", &["removed_a"]);
         assert_eq!(
-            resolve_anchor(&a, &files),
+            resolve_anchor(&a, &files, true),
             AnchorResolution::InPlace { file_idx: 0, hunk_idx: 0, line_idx: 1 },
         );
     }
@@ -395,7 +413,7 @@ mod tests {
             &["    let y = other();", "    log(y);", "    return y;"],
         );
         assert_eq!(
-            resolve_anchor(&a, &files),
+            resolve_anchor(&a, &files, true),
             AnchorResolution::Moved { file_idx: 0, hunk_idx: 0, line_idx: 8, from: 14 },
             "only helper's brace has the recorded neighbours; the closer brace is not a candidate",
         );
@@ -411,7 +429,7 @@ mod tests {
         )];
         let a = anchor("src/x.rs", ReviewSide::New, 5, "    body();", &["fn a() {", "}"]);
         assert_eq!(
-            resolve_anchor(&a, &files),
+            resolve_anchor(&a, &files, true),
             AnchorResolution::InPlace { file_idx: 0, hunk_idx: 0, line_idx: 1 },
             "indentation is not identity",
         );
@@ -435,7 +453,7 @@ mod tests {
         )];
         let a = anchor("src/x.rs", ReviewSide::New, 40, "    log(x);", &["fn helper() {", "}"]);
         assert_eq!(
-            resolve_anchor(&a, &files),
+            resolve_anchor(&a, &files, true),
             AnchorResolution::Outdated(OutdatedReason::Ambiguous { matches: 2 }),
             "two candidates is not a relocation, it is a coin toss",
         );
@@ -457,7 +475,7 @@ mod tests {
             &["    let x = compute();", "    return x;"],
         );
         assert_eq!(
-            resolve_anchor(&a, &files),
+            resolve_anchor(&a, &files, true),
             AnchorResolution::Outdated(OutdatedReason::Gone),
             "the line alone is not enough to move a comment onto",
         );
@@ -473,9 +491,47 @@ mod tests {
         )];
         let a = anchor("src/x.rs", ReviewSide::New, 5, "    body();", &["fn a() {", "}"]);
         assert_eq!(
-            resolve_anchor(&a, &files),
+            resolve_anchor(&a, &files, true),
             AnchorResolution::Moved { file_idx: 0, hunk_idx: 0, line_idx: 1, from: 5 },
             "a unique match relocates however far it travelled, and names where it came from",
+        );
+    }
+
+    #[test]
+    fn a_line_number_from_another_numbering_is_not_evidence() {
+        // A commit-scoped anchor counts lines against `sha^..sha`. In the
+        // whole-branch diff that number addresses unrelated code, so the
+        // in-place shortcut - which trusts the number and skips the
+        // neighbour check - lands the comment inside a different
+        // function. Braces and short lines collide constantly.
+        let files = vec![file(
+            "src/x.rs",
+            vec![
+                new_line("fn zzz() {", 6),
+                new_line("}", 7),
+                new_line("fn helper() {", 20),
+                new_line("    log(x);", 21),
+                new_line("}", 22),
+            ],
+        )];
+        let a = anchor("src/x.rs", ReviewSide::New, 7, "}", &["fn helper() {", "    log(x);"]);
+        assert_eq!(
+            resolve_anchor(&a, &files, false),
+            AnchorResolution::Moved { file_idx: 0, hunk_idx: 0, line_idx: 4, from: 7 },
+            "the neighbours decide, not a line number counted in another space",
+        );
+    }
+
+    #[test]
+    fn a_line_number_from_the_threads_own_view_is_still_trusted() {
+        // In its own numbering the recorded line means what it says, so
+        // an unchanged line resolves without needing neighbours - which
+        // is what keeps a one-line hunk working.
+        let files = vec![file("src/x.rs", vec![new_line("    body();", 5)])];
+        let a = anchor("src/x.rs", ReviewSide::New, 5, "    body();", &[]);
+        assert_eq!(
+            resolve_anchor(&a, &files, true),
+            AnchorResolution::InPlace { file_idx: 0, hunk_idx: 0, line_idx: 0 },
         );
     }
 }

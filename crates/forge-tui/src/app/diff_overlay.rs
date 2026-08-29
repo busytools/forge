@@ -2019,7 +2019,7 @@ fn hydrate_threads(app: &mut App) {
         // about the thread - so only its own view writes either back, or
         // reports it as having moved.
         let home = thread.commit.as_deref() == scope_commit.as_deref();
-        match resolver::resolve_anchor(&thread.anchor, &overlay.files) {
+        match resolver::resolve_anchor(&thread.anchor, &overlay.files, home) {
             AnchorResolution::InPlace { file_idx, hunk_idx, line_idx } => {
                 let resolved = overlay
                     .files
@@ -2101,14 +2101,14 @@ fn hydrate_threads(app: &mut App) {
                     thread.status = ReviewStatus::Outdated;
                     changed = true;
                 }
-                deferred_outdated.push((thread, reason, home));
+                deferred_outdated.push((thread, reason));
             }
         }
     }
     // Pass 2: place outdated threads on a surviving FREE line so they
     // render (yellow, against their captured context) without clobbering
     // a co-located live thread.
-    for (thread, reason, home) in deferred_outdated {
+    for (thread, reason) in deferred_outdated {
         let Some(key) = outdated_placement(
             &overlay.files,
             &thread.anchor.path,
@@ -2130,7 +2130,11 @@ fn hydrate_threads(app: &mut App) {
             commit: scope_commit.clone(),
             thread: thread.clone(),
             authored_this_session: false,
-            anchor_note: home.then_some(AnchorNote::Outdated(reason)),
+            // Said from any view. That a thread cannot be placed is a
+            // fact about THIS diff, not a claim about the numbering it
+            // was recorded in - and a card parked on a surviving line
+            // without it reads as though it belongs there.
+            anchor_note: Some(AnchorNote::Outdated(reason)),
             persisted: true,
         });
         persist.push(thread);
@@ -7934,6 +7938,42 @@ mod tests {
             own.anchor.content_hash,
             resolver::anchor_hash("let a = 1;"),
             "and what is on it",
+        );
+    }
+
+    #[test]
+    fn a_view_that_cannot_place_a_thread_says_so_rather_than_parking_it_silently() {
+        // Not placing a thread is a fact about THIS diff, not a claim
+        // about another view's numbering - so every view may say it, and
+        // must. Otherwise the card is parked on whatever line survived
+        // nearby and reads as though it belongs there, which is the
+        // failure the whole feature is built to avoid. A worker fixing
+        // the commented line is exactly what removes it from the
+        // whole-branch diff, so this is the main loop.
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads("forge", "feat", &[cross_numbered_thread()]);
+        let mut overlay = cross_numbered_overlay();
+        overlay.files = vec![single_hunk_file(
+            "src/x.rs",
+            vec![added_line("fn other() {", 4), added_line("    unrelated();", 5)],
+        )];
+        overlay.whole_diff_cache =
+            Some(CachedScan { files: overlay.files.clone(), scanner_ok: true });
+        app.diff_overlay = Some(overlay);
+
+        hydrate_threads(&mut app);
+
+        let overlay = app.diff_overlay.as_ref().expect("overlay");
+        let card = overlay
+            .scoped_comments()
+            .into_iter()
+            .find(|c| c.thread.id == "homed")
+            .expect("the card is still shown");
+        assert_eq!(
+            card.anchor_note,
+            Some(AnchorNote::Outdated(OutdatedReason::Gone)),
+            "this diff does not carry the line, and saying so is not a claim about any other view",
         );
     }
 
