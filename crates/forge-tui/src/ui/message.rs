@@ -283,8 +283,9 @@ pub(crate) fn render_message(
     render_cached_message(cache.segments(), out);
 }
 
-/// True when an empty-blocks Assistant/System message would render only a
-/// bare header row - a turn duration or an "Info" label - with no body.
+/// True when an empty-blocks Assistant/System message would render only
+/// chrome with no body - a System severity label, or the blank a bare
+/// trailing separator would leave behind on an idle assistant.
 fn renders_bare_role_label_only(
     msg: &ChatMessage,
     spinner: &SpinnerState,
@@ -324,6 +325,7 @@ fn build_message_layout(
         MessageRole::Welcome => append_welcome_blocks(msg, render_context.width, &mut layout),
         MessageRole::User => append_user_blocks(msg, spinner, render_context, &mut layout),
         MessageRole::Assistant => {
+            let before_body = layout.height;
             append_assistant_blocks(msg, spinner, render_context, &mut layout);
             // #273: stop_hook_summary chip sits between the
             // assistant body and the trailing separator so the
@@ -343,6 +345,7 @@ fn build_message_layout(
                 msg.stop_hook_summary_y_in_msg = 0;
                 msg.stop_hook_summary_height = 0;
             }
+            append_turn_duration(msg, before_body, render_context.width, &mut layout);
         }
         MessageRole::System(_) => append_system_blocks(msg, render_context.width, &mut layout),
     }
@@ -352,6 +355,35 @@ fn build_message_layout(
     }
 
     layout
+}
+
+/// Append the completed turn's duration as the message's last row.
+///
+/// After the body rather than before it: the duration lands only when
+/// `handle_result` stamps it, so a header row would insert above prose
+/// the user is already reading at every turn end. Appending shifts
+/// nothing read.
+///
+/// Skipped when the body produced no rows (`before_body == layout
+/// .height`) - a turn whose only block is a hidden tool call has
+/// blocks yet renders nothing, and the duration would be left over an
+/// empty message with nothing to measure.
+fn append_turn_duration(
+    msg: &ChatMessage,
+    before_body: usize,
+    width: u16,
+    layout: &mut MessageLayout,
+) {
+    let Some(ms) = msg.turn_duration_ms else {
+        return;
+    };
+    if layout.height == before_body {
+        return;
+    }
+    layout.push_wrapped_line(
+        Line::from(Span::styled(format_turn_duration(ms), Style::default().fg(theme::DIM))),
+        width,
+    );
 }
 
 /// #273: Render a `Message::StopHookSummary` as a collapsed
@@ -1840,10 +1872,10 @@ fn should_skip_whole_block(
 /// The header row above a message body, or `None` when the message
 /// renders straight into its body with no header at all.
 ///
-/// `None` covers two cases: a peer / worker envelope, whose own
-/// `▶ Verb name` row already names the kind and the sender, and an
-/// assistant turn with no duration yet (mid-stream, or resumed from a
-/// history that carried no Result frame).
+/// `None` covers a peer / worker envelope, whose own `▶ Verb name` row
+/// already names the kind and the sender, and every assistant turn -
+/// what an assistant turn carries is a turn duration, and a duration
+/// is a result, so [`append_turn_duration`] puts it after the body.
 fn role_label_line(msg: &ChatMessage) -> Option<Line<'static>> {
     match msg.role {
         MessageRole::Welcome => Some(Line::from(Span::styled(
@@ -1875,9 +1907,7 @@ fn role_label_line(msg: &ChatMessage) -> Option<Line<'static>> {
                 )))
             }
         }
-        MessageRole::Assistant => msg.turn_duration_ms.map(|ms| {
-            Line::from(Span::styled(format_turn_duration(ms), Style::default().fg(theme::DIM)))
-        }),
+        MessageRole::Assistant => None,
         MessageRole::System(_) => {
             Some(system_role_label_line(system_severity_from_role(&msg.role)))
         }
@@ -4678,26 +4708,112 @@ mod tests {
             .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
     }
 
+    /// Render an assistant turn carrying `duration`, with the trailing
+    /// separator on so the duration's position relative to it is visible.
+    fn render_assistant_turn(body: &str, duration: Option<u64>) -> Vec<String> {
+        let mut msg = make_text_message(MessageRole::Assistant, body);
+        msg.turn_duration_ms = duration;
+        let mut lines = Vec::new();
+        render_message(
+            &mut msg,
+            &idle_spinner(),
+            MessageRenderContext::new(None, 80, 0, default_options()),
+            &mut lines,
+        );
+        render_lines_to_strings(&lines)
+    }
+
     #[test]
-    fn assistant_header_row_is_absent_when_turn_duration_absent() {
-        // turn_duration_ms defaults to None - a mid-stream turn.
-        let msg = make_text_message(MessageRole::Assistant, "anything");
+    fn assistant_turn_never_renders_a_header_row() {
+        let mut msg = make_text_message(MessageRole::Assistant, "anything");
         assert_eq!(
             header_row_text(&msg),
             None,
-            "an assistant turn with no duration renders no header row",
+            "a mid-stream assistant turn renders no header row",
+        );
+        msg.turn_duration_ms = Some(12_400);
+        assert_eq!(
+            header_row_text(&msg),
+            None,
+            "a completed assistant turn renders no header row either - the duration trails \
+             the body instead",
         );
     }
 
     #[test]
-    fn assistant_header_row_is_the_duration_alone() {
-        let mut msg = make_text_message(MessageRole::Assistant, "anything");
-        msg.turn_duration_ms = Some(12_400);
+    fn assistant_duration_is_the_last_row_after_the_body() {
+        let rendered = render_assistant_turn("hello", Some(12_400));
         assert_eq!(
-            header_row_text(&msg).as_deref(),
-            Some("12.4s"),
-            "a completed assistant turn's header row is the duration alone - no label, \
-             no leading separator",
+            rendered,
+            vec!["hello".to_owned(), "12.4s".to_owned(), String::new()],
+            "the duration trails the body, and the separator still follows it",
+        );
+    }
+
+    #[test]
+    fn assistant_duration_does_not_double_the_separator() {
+        let with = render_assistant_turn("hello", Some(12_400));
+        let without = render_assistant_turn("hello", None);
+        assert_eq!(
+            with.iter().filter(|row| row.is_empty()).count(),
+            without.iter().filter(|row| row.is_empty()).count(),
+            "the duration is a content row, so it adds no blank of its own: {with:?}",
+        );
+        assert_eq!(
+            with.len(),
+            without.len() + 1,
+            "a completed turn is exactly one row taller than a streaming one",
+        );
+    }
+
+    #[test]
+    fn assistant_duration_is_dim() {
+        let mut msg = make_text_message(MessageRole::Assistant, "hello");
+        msg.turn_duration_ms = Some(12_400);
+        let mut lines = Vec::new();
+        render_message(
+            &mut msg,
+            &idle_spinner(),
+            MessageRenderContext::new(None, 80, 0, default_options()),
+            &mut lines,
+        );
+        let row = lines
+            .iter()
+            .find(|line| line.spans.iter().any(|s| s.content == "12.4s"))
+            .expect("duration row");
+        assert!(
+            row.spans.iter().all(|s| s.style.fg == Some(theme::DIM)),
+            "the duration row is DIM so it reads as a footer, not content",
+        );
+    }
+
+    #[test]
+    fn a_turn_that_renders_no_body_renders_no_duration() {
+        // A hidden tool call leaves `blocks` non-empty while rendering
+        // nothing, so the duration would otherwise be left alone.
+        let mut hidden = make_tool_call_info(
+            "hidden-child",
+            "Bash",
+            crate::agent::model::ToolCallStatus::Completed,
+            "child output",
+        );
+        hidden.hidden = true;
+        let mut msg = ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(hidden))],
+        );
+        msg.turn_duration_ms = Some(12_400);
+
+        let mut lines = Vec::new();
+        render_message(
+            &mut msg,
+            &idle_spinner(),
+            MessageRenderContext::new(None, 120, 0, options_without_separator()),
+            &mut lines,
+        );
+        assert!(
+            !render_lines_to_strings(&lines).iter().any(|row| row.contains("12.4s")),
+            "a turn whose body rendered nothing has nothing to hang a duration under",
         );
     }
 

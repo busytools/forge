@@ -384,7 +384,6 @@
   <span class="dim bold">User</span>
   <span class="user-band">  Read the rate-limit code and add a softer wording branch.               </span>
 
-  <span class="dim">8.7s</span>
   Assistant prose, full markdown rendering. Code blocks, lists, inline emphasis,
   links - all handled via <span class="dim">tui-markdown</span> / <span class="dim">syntect</span>.
 
@@ -395,6 +394,7 @@
   <span class="dim">│  </span>$ cargo nextest run -p forge-tui
   <span class="dim">│  </span>   <span class="dim">Compiling forge-tui v0.14.2</span>
   <span class="dim">└─ </span><span class="success">Summary [4.2s] 1565 tests run: 1565 passed</span>
+  <span class="dim">8.7s</span>
   <span class="muted-c">────────────────────────────────────────────────────────────────────────────</span>
   <span class="accent">❯</span> <span class="dim italic">Type your message...</span>
   <span class="muted-c">────────────────────────────────────────────────────────────────────────────</span>
@@ -1092,10 +1092,9 @@ chat continues here...
     <div class="when">visible: every assistant turn</div>
   </div>
   <div class="surface-body">
-    <p>There is no role banner. The header row is the DIM turn duration alone - <code>12.4s</code>, sourced from <code>Message::Result.duration_ms</code> - and it renders only once the turn completes; a streaming or resumed turn carries no duration and so renders no header row at all, with the body starting on the first line. Body is full markdown via <code>tui-markdown</code> (which uses <code>pulldown-cmark</code>) with <code>syntect</code> for fenced code blocks.</p>
+    <p>An assistant turn has no header row: the body starts on the first line. The turn duration - <code>12.4s</code> in DIM, sourced from <code>Message::Result.duration_ms</code> - trails the body as the last row, because a duration is a result and belongs after the thing it measures. It lands only once the turn completes, and appending it shifts nothing the user has already read; a header row would insert above the body at every turn end. A streaming or resumed turn carries no duration and renders no such row, and neither does a turn whose body rendered nothing visible - there is nothing to hang it under. Body is full markdown via <code>tui-markdown</code> (which uses <code>pulldown-cmark</code>) with <code>syntect</code> for fenced code blocks.</p>
     <div class="term">
       <pre class="indent">
-  <span class="dim">12.4s</span>
   Looking at <span class="dim">crates/forge-tui/src/app/events/rate_limit.rs</span> - the warning chip
   has only one wording today. I'll add a quieter branch for the
   near-threshold-no-overage case.
@@ -1110,11 +1109,13 @@ chat continues here...
       <span class="dim">        &amp;&amp; update.surpassed_threshold.is_some_and(|t| t &gt; 0.0)</span>
       <span class="dim">}</span>
 
-  Tests pass. Want me to push?</pre>
+  Tests pass. Want me to push?
+  <span class="dim">12.4s</span></pre>
     </div>
     <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/message.rs::role_label_line</code> · markdown via <code>crates/forge-tui/src/ui/markdown.rs</code></dd>
-      <dt>color</dt><dd>duration row: <code>theme::DIM</code>  ·  body: terminal default fg with markdown styles  ·  inline code: <code>theme::DIM</code> tint</dd>
+      <dt>code</dt><dd><code>role_label_line</code> in <code>crates/forge-tui/src/ui/message.rs</code> returns <code>None</code> for Assistant, so no header row is pushed; <code>append_turn_duration</code> appends the trailing row from <code>build_message_layout</code>, gated on the body having produced rows · markdown via <code>crates/forge-tui/src/ui/markdown.rs</code></dd>
+      <dt>color</dt><dd>trailing duration row: <code>theme::DIM</code>  ·  body: terminal default fg with markdown styles  ·  inline code: <code>theme::DIM</code> tint</dd>
+      <dt>order</dt><dd>body &rarr; stop-hook summary chip &rarr; duration &rarr; separator. The duration is last because it measures the whole turn, hooks included. It carries no leading blank, so it reads as a footer on the message rather than floating between two; the unconditional trailing separator still follows it, so messages stay one blank line apart and the row does not double it.</dd>
       <dt>duration formatting</dt><dd>&lt; 60s → <code>12.4s</code> (one decimal) · ≥ 60s → <code>1m 04s</code> · ≥ 1h → <code>1h 02m 04s</code></dd>
       <dt>stamp source</dt><dd>The chip is stamped from <code>Message::Result.duration_ms</code> by <code>stamp_turn_duration_on_latest_assistant</code> in <code>app/events/sdk_message.rs</code>. <code>system/turn_duration</code> never fires in 2.1.156 (verified across 43 baselines + 14 fresh captures, all zero); the prior chip read from that dead event and was deleted in #283. Same chip, different wire source.</dd>
     </dl>
