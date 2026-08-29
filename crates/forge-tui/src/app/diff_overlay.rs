@@ -75,7 +75,11 @@ pub struct CachedScan {
 /// Result of pointing the overlay at a scope: either its hunks were
 /// cached (files already swapped) or an async scan must be spawned by
 /// the caller (which has the event channel).
+/// `must_use` because dropping one skips both halves of a scope change:
+/// the scan an uncached scope needs, and the card rebuild a cached one
+/// needs. Neither failure is visible at the point it happens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
 pub enum NavOutcome {
     /// Scope's hunks were cached; the file set is already swapped in.
     Ready,
@@ -1333,6 +1337,10 @@ impl DiffOverlayState {
     /// the caller can spawn the lazy fetch. Commit scopes never carry
     /// untracked files (a commit's diff is closed over its own changes),
     /// so the untracked count is 0.
+    /// The only place `scope` is assigned. Assigning it anywhere else
+    /// renders the previous visit's cards against the new scope, and no
+    /// test fails - the cards are rebuilt by [`after_nav`] consuming the
+    /// outcome this returns, not by the assignment.
     pub fn select_scope(&mut self, scope: DiffScope) -> NavOutcome {
         self.scope = scope;
         self.jump_open = false;
@@ -2642,8 +2650,13 @@ fn open_jump(app: &mut App) {
 /// request a redraw. The scan lands back through the overlay event
 /// channel (see [`spawn_scope_fetch`] / [`drain_events`]).
 fn after_nav(app: &mut App, outcome: NavOutcome) {
-    if let NavOutcome::NeedsScan(scope) = outcome {
-        spawn_scope_scan(app, scope);
+    match outcome {
+        NavOutcome::NeedsScan(scope) => spawn_scope_scan(app, scope),
+        // A cached scope installs its files without a scan, so this is
+        // the only chance to rebuild its cards. They are a projection of
+        // the store, and the copy left over from the last visit predates
+        // whatever happened in the scope just left.
+        NavOutcome::Ready => hydrate_threads(app),
     }
     app.needs_redraw = true;
 }
@@ -5466,7 +5479,7 @@ mod tests {
         let mut state = commit_mode_state();
         assert_eq!(state.step_commit(false), None, "prev at first is a no-op");
         assert_eq!(state.scope, DiffScope::Commit(0));
-        state.select_scope(DiffScope::Commit(2));
+        let _ = state.select_scope(DiffScope::Commit(2));
         assert_eq!(state.step_commit(true), None, "next at last is a no-op");
         assert_eq!(state.scope, DiffScope::Commit(2));
     }
@@ -5486,7 +5499,7 @@ mod tests {
             files: vec![one_file("x.rs", FileStatus::Modified)],
             scanner_ok: true,
         });
-        state.select_scope(DiffScope::WholeDiff);
+        let _ = state.select_scope(DiffScope::WholeDiff);
         assert_eq!(state.scope, DiffScope::WholeDiff);
         // Backward from the whole-diff view re-enters the stepper at the
         // first commit (the one WholeDiff → Commit path).
@@ -5503,7 +5516,7 @@ mod tests {
     fn toggle_all_changes_from_commit_remembers_and_returns() {
         let mut state = commit_mode_state();
         state.whole_diff_cache = Some(cached_whole_diff()); // synchronous toggle
-        state.select_scope(DiffScope::Commit(1));
+        let _ = state.select_scope(DiffScope::Commit(1));
         assert_eq!(state.toggle_all_changes(), Some(NavOutcome::Ready));
         assert_eq!(state.scope, DiffScope::WholeDiff, "toggling off a commit shows all changes");
         assert_eq!(state.last_commit, Some(1), "the commit is remembered");
@@ -5517,7 +5530,7 @@ mod tests {
         state.whole_diff_cache = Some(cached_whole_diff());
         // Reach whole-diff via the jump path (not `a`), so no commit is
         // remembered - the toggle falls back to the first commit.
-        state.select_scope(DiffScope::WholeDiff);
+        let _ = state.select_scope(DiffScope::WholeDiff);
         assert_eq!(state.last_commit, None);
         assert_eq!(state.toggle_all_changes(), Some(NavOutcome::Ready));
         assert_eq!(state.scope, DiffScope::Commit(0), "no memory → first commit");
@@ -6024,7 +6037,7 @@ mod tests {
     #[test]
     fn open_jump_seeds_highlight_and_move_clamps() {
         let mut state = commit_mode_state();
-        state.select_scope(DiffScope::Commit(1));
+        let _ = state.select_scope(DiffScope::Commit(1));
         state.open_jump();
         assert!(state.jump_open);
         assert_eq!(state.jump_selected, 2, "commit 1 → row 2 (row 0 is All changes)");
@@ -7503,6 +7516,69 @@ mod tests {
             stored[0].commit.as_deref(),
             Some("aaa"),
             "a new thread takes the scope it was authored in as its home",
+        );
+    }
+
+
+    #[test]
+    fn switching_back_to_a_cached_scope_rebuilds_its_cards_from_the_store() {
+        // A thread rendered in two scopes is two cards, each owning its
+        // own clone. Resolving through one leaves the other reading the
+        // old status, and a cached scope switch installs files without a
+        // scan - so nothing rebuilt the stale card for the rest of the
+        // overlay session.
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let ws = app.workspace.clone().expect("ws");
+        let mut thread = stock_thread();
+        thread.id = "shared".to_owned();
+        thread.commit = Some("aaa".to_owned());
+        thread.anchor = ReviewAnchor {
+            path: "src/x.rs".to_owned(),
+            side: ReviewSide::New,
+            line: 5,
+            content_hash: resolver::anchor_hash("let a = 1;"),
+            context: Vec::new(),
+            base_ref: "main".to_owned(),
+        };
+        ws.save_review_threads("forge", "feat", &[thread]);
+
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files.clone());
+        overlay.branch = Some("feat".to_owned());
+        overlay.commits = vec![commit_meta("aaa", "first")];
+        overlay.commit_cache = vec![Some(CachedScan { files: files.clone(), scanner_ok: true })];
+        overlay.whole_diff_cache = Some(CachedScan { files, scanner_ok: true });
+        overlay.scope = DiffScope::WholeDiff;
+        app.diff_overlay = Some(overlay);
+        hydrate_threads(&mut app);
+
+        // Step into the commit, resolve there, and step back.
+        let outcome = app.diff_overlay.as_mut().expect("overlay").select_scope(DiffScope::Commit(0));
+        assert_eq!(outcome, NavOutcome::Ready, "the commit's diff is cached");
+        after_nav(&mut app, outcome);
+        let line = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        apply_thread_action(&mut app, CommentRef { line, slot: 0 }, ThreadAction::Resolve);
+
+        let outcome =
+            app.diff_overlay.as_mut().expect("overlay").select_scope(DiffScope::WholeDiff);
+        assert_eq!(outcome, NavOutcome::Ready, "and so is the whole diff");
+        after_nav(&mut app, outcome);
+
+        let overlay = app.diff_overlay.as_ref().expect("overlay");
+        let card = overlay
+            .scoped_comments()
+            .into_iter()
+            .find(|c| c.thread.id == "shared")
+            .expect("the whole diff still shows it");
+        assert_eq!(
+            card.thread.status,
+            ReviewStatus::Resolved,
+            "the card is rebuilt from the store, so it carries the status resolved elsewhere",
+        );
+        assert!(
+            overlay.is_comment_collapsed(card),
+            "and therefore collapses, which is the bug this PR fixes still live in the other view",
         );
     }
 
