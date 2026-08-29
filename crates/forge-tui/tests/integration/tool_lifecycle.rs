@@ -1,5 +1,5 @@
 // =====
-// TESTS: 21
+// TESTS: 22
 // =====
 //
 // Tool call lifecycle integration tests.
@@ -1273,5 +1273,109 @@ async fn subagent_assistant_narration_does_not_leak_into_main_chat() {
     assert!(
         !chat_text.contains("subagent narration leaking"),
         "subagent narration must not leak into the main chat; got {chat_text:?}",
+    );
+}
+
+/// A backgrounded subagent keeps streaming its child tool calls into the
+/// parent session after that turn's `Result`. Each one re-binds the turn
+/// anchor onto the finished assistant message, so the indicators must be
+/// keyed on the message having ended rather than on the app being busy.
+///
+/// Asserts the painted frame rather than `SpinnerState`: the indicators
+/// reach the message through `..base.clone()`, so a field added there
+/// without the turn-end guard is invisible to a state-level assertion.
+#[tokio::test]
+async fn turn_end_drops_thinking_and_subagent_lines_while_subagent_runs_on() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+
+    send_msg(&mut app, assistant_message(vec![text_block("dispatched the agent")]));
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_root",
+            "Agent",
+            serde_json::json!({
+                "subagent_type": "general-purpose",
+                "description": "enumerate app.status readers",
+                "prompt": "enumerate app.status readers",
+            }),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-root".to_owned(),
+            description: "enumerate app.status readers".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_root".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+        },
+    );
+    send_msg(
+        &mut app,
+        user_message(vec![tool_result_block(
+            "toolu_root",
+            serde_json::json!("Agent launched in background. Task ID: task-root"),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![serde_json::json!({
+                "task_id": "task-root",
+                "task_type": "local_agent",
+                "description": "enumerate app.status readers",
+            })],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+
+    let mut result = result_success_message();
+    if let forge_primitives::Message::Result { ref mut duration_ms, .. } = result {
+        *duration_ms = 55_300;
+    }
+    send_msg(&mut app, result);
+
+    // The subagent works on: one of ITS tool calls lands after the Result.
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block(
+                "toolu_child",
+                "Bash",
+                serde_json::json!({"command": "rg status"}),
+            )],
+            "toolu_root",
+        ),
+    );
+
+    assert_eq!(
+        app.subagents_view().len(),
+        1,
+        "the subagent is still live - the Inspector keeps it, only the chat goes quiet",
+    );
+
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).expect("create test terminal");
+    terminal.draw(|f| forge_tui::ui::render(f, &mut app)).expect("draw frame");
+    let buffer = terminal.backend().buffer();
+    let painted: String = (0..40)
+        .map(|y| (0..120).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n")
+        .collect();
+
+    assert!(painted.contains("55.3s"), "the ended turn still stamps its duration; got:\n{painted}");
+    assert!(
+        !painted.contains("Thinking..."),
+        "no thinking line on a turn that ended; got:\n{painted}",
+    );
+    assert!(
+        !painted.contains("running subagent"),
+        "no running-subagent line on a turn that ended; got:\n{painted}",
     );
 }

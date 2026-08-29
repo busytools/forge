@@ -104,11 +104,17 @@ fn msg_spinner(
     let is_assistant = matches!(msg.role, MessageRole::Assistant);
     let is_active_turn_assistant = is_assistant && active_turn_assistant == Some(index);
     let has_blocks = !msg.blocks.is_empty();
+    // A stamped duration means the turn ended, so no in-flight
+    // indicator belongs here; a genuine next turn always opens a fresh
+    // placeholder, which carries none.
+    let turn_ended = msg.turn_duration_ms.is_some();
+    let live = is_active_turn_assistant && !turn_ended;
     SpinnerState {
         is_active_turn_assistant,
-        show_empty_thinking: is_active_turn_assistant && base.show_empty_thinking,
-        show_thinking: is_active_turn_assistant && base.show_thinking && has_blocks,
+        show_empty_thinking: live && base.show_empty_thinking,
+        show_thinking: live && base.show_thinking && has_blocks,
         show_compacting: is_active_turn_assistant && base.show_compacting,
+        running_subagents: if turn_ended { None } else { base.running_subagents.clone() },
         ..base.clone()
     }
 }
