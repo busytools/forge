@@ -1250,8 +1250,6 @@ mod tests {
         app
     }
 
-    /// The draft and the cursor's character offset into it - the pair
-    /// the overlay renderer consumes.
     fn add_marketplace_field(app: &crate::app::App) -> (String, usize) {
         let overlay = app.config.add_marketplace_overlay().expect("overlay open");
         (overlay.editor.text(), overlay.editor.cursor_char_offset())
