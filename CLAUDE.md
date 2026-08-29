@@ -470,13 +470,21 @@ inspected.
     **Where no multiplexer-independent path exists, state the
     requirement and detect its absence.** Depending on a sequence is
     allowed. Depending on it silently is not, because a feature that
-    quietly does nothing reads as forge being broken. The keyboard
-    protocol is the case forge already gets right: `resume_terminal`
-    (`crates/forge-tui/src/app.rs`) negotiates the kitty enhanced
-    flags at startup because `SUPER` arrives no other way, and
-    `keys.rs` says so where `CMD_MOD` is defined, names the case that
-    cannot send it, and accepts `CONTROL` as an equivalent rather
-    than dropping Cmd+C on the floor.
+    quietly does nothing reads as forge being broken rather than as
+    the multiplexer eating it.
+
+    **forge has no example of that clause to copy, and #767 is the
+    gap.** `resume_terminal` (`crates/forge-tui/src/app.rs`) pushes
+    the kitty enhancement flags because `SUPER` arrives no other way,
+    discards the result, and never asks whether they took;
+    `supports_keyboard_enhancement` is crossterm public API and
+    appears nowhere in `crates/`. #767 is open on exactly that: under
+    a byte-transparent session manager the flags live on the terminal
+    rather than the session, so a reattach silently stops delivering
+    what the protocol provides. The nearby `CMD_MOD` fallback to
+    `CONTROL` is worth reading but is the clause above this one - a
+    fallback is not a detection, and treating one as the other is how
+    this rule gets satisfied on paper.
 
     **Where the implementation must be multiplexer-specific, it owes
     three things**: why the generic path was not possible, which
