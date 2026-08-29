@@ -75,9 +75,11 @@ pub struct CachedScan {
 /// Result of pointing the overlay at a scope: either its hunks were
 /// cached (files already swapped) or an async scan must be spawned by
 /// the caller (which has the event channel).
-/// `must_use` because dropping one skips both halves of a scope change:
-/// the scan an uncached scope needs, and the card rebuild a cached one
-/// needs. Neither failure is visible at the point it happens.
+/// `must_use` guards a call site that does not exist yet: every current
+/// one binds the outcome and passes it on. It is here because dropping
+/// one skips the rest of a scope change - the scan an uncached scope
+/// needs, or the card rebuild a cached one needs - and neither absence
+/// is visible where it happens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
 pub enum NavOutcome {
@@ -1337,10 +1339,10 @@ impl DiffOverlayState {
     /// the caller can spawn the lazy fetch. Commit scopes never carry
     /// untracked files (a commit's diff is closed over its own changes),
     /// so the untracked count is 0.
-    /// The only place `scope` is assigned. Assigning it anywhere else
-    /// renders the previous visit's cards against the new scope, and no
-    /// test fails - the cards are rebuilt by whoever consumes the outcome
-    /// this returns, not by the assignment.
+    /// The only place production assigns `scope`. The rest of a scope
+    /// change happens when the caller passes on the returned outcome, so
+    /// assigning it directly leaves the previous visit's cards rendering
+    /// against the new scope with nothing to catch it.
     pub fn select_scope(&mut self, scope: DiffScope) -> NavOutcome {
         self.scope = scope;
         self.jump_open = false;
@@ -2143,10 +2145,10 @@ fn hydrate_threads(app: &mut App) {
     let mut unwritten = Vec::new();
     for card in overlay.comments.iter().filter(|c| c.commit == scope_commit) {
         match rebuilt.iter_mut().find(|r| r.thread.id == card.thread.id) {
-            Some(fresh) => {
-                fresh.authored_this_session = card.authored_this_session;
-                fresh.persisted = card.persisted;
-            }
+            // Only the session flag: a card the rebuild reinstates came
+            // from the store, so it is durable by definition and the old
+            // card's `persisted` can only contradict that.
+            Some(fresh) => fresh.authored_this_session = card.authored_this_session,
             None if !card.persisted => unwritten.push(card.clone()),
             None => {}
         }
@@ -2514,8 +2516,8 @@ fn navigate_to_selected_review(app: &mut App) {
     }
 }
 
-/// Map a comment-button click to its transition and run it on the thread
-/// at `key`, so a click resolves exactly the card it landed on. A Reopen
+/// Map a comment-button click to its transition and run it on the card
+/// `at` names, so a click resolves exactly the one it landed on. A Reopen
 /// that actually flips re-nudges the worker to take another look.
 fn apply_thread_action(app: &mut App, at: CommentRef, action: ThreadAction) {
     let (next, allowed_from): (ReviewStatus, &[ReviewStatus]) = match action {
@@ -3004,12 +3006,11 @@ fn persist_active_input(app: &mut App) {
         context,
         base_ref: target,
     };
+    // A thread's home is the scope it was authored in, so only a new one
+    // takes the scope being saved from; an edit keeps whatever it has.
     let is_new = prior_thread.is_none();
     let mut thread = build_thread(prior_thread, anchor, &text, input.edit_turn);
     if is_new {
-        // A thread's home is where it was authored, and the whole diff
-        // shows threads homed on a commit - so restamping it with the
-        // view being edited from would evict it from its own commit.
         thread.commit.clone_from(&commit);
     }
     // The chip snippet / editor fallback mirror the first user turn, which
@@ -3577,7 +3578,7 @@ fn open_input_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffe
     MouseEffect { redraw: true, thread_action: None }
 }
 
-/// Reopen the saved comment at `key` for either a turn rewrite
+/// Reopen the saved comment `at` names for either a turn rewrite
 /// (`edit_turn = Some(idx)` seeds the editor with that turn's text) or
 /// a reply (`edit_turn = None` opens an empty editor that appends on
 /// save). The saved entry is dropped so its chip vanishes WHILE editing
@@ -7397,7 +7398,6 @@ mod tests {
         save_active_input(&mut app);
         let id = app.diff_overlay.as_ref().expect("overlay").comments[0].thread.id.clone();
 
-        // Reopen that card and save it again.
         let overlay = app.diff_overlay.as_mut().expect("overlay");
         reopen_comment_for_turn(overlay, CommentRef { line: key, slot: 0 }, Some(0));
         if let Some(input) = overlay.active_input.as_mut() {
@@ -7446,7 +7446,6 @@ mod tests {
         card(None);
         card(Some("aaa"));
 
-        // Reply on the thread from the commit's own view and save.
         reopen_comment_for_turn(&mut overlay, CommentRef { line: key, slot: 0 }, None);
         if let Some(input) = overlay.active_input.as_mut() {
             input.editor.insert_str("still not right");
@@ -7471,8 +7470,8 @@ mod tests {
     #[test]
     fn replying_from_the_whole_diff_leaves_a_thread_in_its_own_commit() {
         // A thread's `commit` is where it was authored, not the view you
-        // are looking at. The whole diff now shows commit-homed threads,
-        // so restamping it on save evicts the thread from its own
+        // are looking at. The whole diff shows commit-homed threads, so
+        // restamping it on save would evict the thread from its own
         // commit's view - durably, since the save persists it.
         let (mut app, _dir) = review_app();
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
@@ -7497,7 +7496,6 @@ mod tests {
             persisted: true,
         });
 
-        // Reply to it from "All changes".
         reopen_comment_for_turn(&mut overlay, CommentRef { line: key, slot: 0 }, None);
         if let Some(input) = overlay.active_input.as_mut() {
             input.editor.insert_str("still not right");
@@ -7576,7 +7574,6 @@ mod tests {
         app.diff_overlay = Some(overlay);
         hydrate_threads(&mut app);
 
-        // Step into the commit, resolve there, and step back.
         let outcome =
             app.diff_overlay.as_mut().expect("overlay").select_scope(DiffScope::Commit(0));
         assert_eq!(outcome, NavOutcome::Ready, "the commit's diff is cached");
@@ -7631,7 +7628,6 @@ mod tests {
             "the comment is submittable the moment it is written",
         );
 
-        // Step into the commit and back out again.
         for scope in [DiffScope::Commit(0), DiffScope::WholeDiff] {
             let outcome = app.diff_overlay.as_mut().expect("overlay").select_scope(scope);
             after_nav(&mut app, outcome);
@@ -7707,7 +7703,6 @@ mod tests {
         assert!(!overlay.comments.iter().any(is_actionable), "nothing here is this session's work");
     }
 
-
     /// A thread homed on a commit, whose content sits at a different line
     /// number in the whole-branch diff than in the commit's own diff.
     fn cross_numbered_thread() -> forge_primitives::ReviewThread {
@@ -7731,11 +7726,7 @@ mod tests {
     fn cross_numbered_overlay() -> DiffOverlayState {
         let whole = vec![single_hunk_file(
             "src/x.rs",
-            vec![
-                added_line("fn wrapper() {", 4),
-                added_line("let a = 1;", 5),
-                added_line("}", 6),
-            ],
+            vec![added_line("fn wrapper() {", 4), added_line("let a = 1;", 5), added_line("}", 6)],
         )];
         let commit = vec![single_hunk_file(
             "src/x.rs",
@@ -7804,7 +7795,6 @@ mod tests {
             assert_eq!(stored_line(), 41, "and neither does stepping between them");
         }
     }
-
 
     #[test]
     fn a_view_that_cannot_place_a_thread_does_not_mark_it_outdated() {
@@ -9115,8 +9105,10 @@ mod tests {
             updated_at: "t0".to_owned(),
             commit: commit.map(str::to_owned),
         };
-        // Both threads drift (line 5 -> 8) forcing a writeback. Same path
-        // and content, so they re-anchor onto one line and stack there.
+        // Neither seed records context, and the hunk is one line, so
+        // neither re-anchors: both land through the outdated fallback and
+        // stack on the only line there is. The writeback is the resulting
+        // Open-to-Outdated flip, not a change of line.
         ws.save_review_threads(
             "forge",
             "feat",
@@ -9343,7 +9335,6 @@ mod tests {
             anchor_note: None,
             persisted: false,
         });
-        // Whole-diff scope, so the save's own scope is `None`.
         with_editor(&mut overlay, key, "fresh whole-diff");
         app.diff_overlay = Some(overlay);
 

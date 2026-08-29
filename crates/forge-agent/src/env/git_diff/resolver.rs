@@ -12,10 +12,10 @@
 //! outdated, because a comment silently attached to the wrong code costs
 //! far more than one the reviewer has to go looking for.
 //!
-//! Do not reintroduce a distance bound to make this safer. The one that
-//! was here took the best of several candidates within it, breaking ties
-//! on proximity even where no context matched at all, so it permitted
-//! strictly more guessing than uniqueness does.
+//! A distance bound does not make that safer. Bounding how far a match
+//! may be found still leaves several candidates inside the bound, and
+//! choosing among them by proximity is exactly the guess uniqueness
+//! refuses to make.
 
 use std::collections::HashSet;
 
@@ -96,9 +96,10 @@ fn text_matches(anchor: &ReviewAnchor, text: &str) -> bool {
 }
 
 /// Whether the code around `line_idx` still looks like where the comment
-/// was left: a recorded context line adjacent on each side the candidate
-/// has one. A line on its own matches far too easily - a closing brace, a
-/// short call - so at least one neighbour must agree.
+/// was left. Each side the candidate has neighbours on must carry one of
+/// the anchor's recorded lines within [`CONTEXT_RADIUS`], in any order. A
+/// line on its own matches far too easily - a closing brace, a short
+/// call - so a neighbour has to agree.
 fn neighbourhood_matches(anchor: &ReviewAnchor, hunk: &Hunk, line_idx: usize) -> bool {
     let recorded: HashSet<String> = anchor.context.iter().map(|l| normalise_ws(l)).collect();
     let agrees =

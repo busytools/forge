@@ -166,14 +166,13 @@ pub fn drain_events(app: &mut App) {
         let Ok(event) = app.review_waiting_event_rx.try_recv() else {
             return;
         };
-        // Retire a parked signal whose own branch is owed nothing now.
-        // The recompute below answers for the branch the checkout is on,
-        // and every other writer leaves other branches alone, so a branch
-        // the checkout has left is the one nothing revisits.
+        // Retire a parked signal whose own branch is owed nothing now -
+        // the recompute below only answers for the branch the checkout
+        // is on, and every other writer leaves other branches alone.
         //
-        // Reading the threads rather than asking for the tally, because
-        // the tally reports a read failure as `None` too, and a transient
-        // one must not retire a live signal.
+        // Reading the threads rather than the tally, because the tally
+        // reports a read failure as `None` too, and a transient one must
+        // not retire a live signal.
         let parked = app.sessions.get(&event.key).and_then(|s| {
             Some((s.review_replies_waiting.as_ref()?.branch.clone(), s.project.clone()?))
         });
@@ -369,10 +368,10 @@ mod tests {
         assert_eq!(restored.branch, "feat/worker", "keyed on the branch the checkout is on");
     }
 
-    /// The reported bug: the branch was read, resolved, merged and
-    /// deleted, and the band still said replies were waiting on it. The
-    /// checkout has moved to `main`, so the recompute asks about `main`
-    /// and nothing ever asks about the branch the signal belongs to.
+    /// The checkout has moved to `main`, so the recompute asks about
+    /// `main` and nothing asks about the branch the parked signal belongs
+    /// to - which is how a branch that was resolved, merged and deleted
+    /// keeps the band lit.
     #[tokio::test(flavor = "current_thread")]
     async fn a_parked_count_for_a_branch_the_checkout_has_left_clears() {
         let repo = tempfile::tempdir().expect("tempdir");
@@ -400,8 +399,7 @@ mod tests {
 
     /// A redb read failure is not an answer. `review_replies_waiting`
     /// reports `None` for a read error exactly as it does for "nothing
-    /// owed", so a revalidation keyed on that alone retires a live signal
-    /// the moment the store hiccups.
+    /// owed", so the two have to be told apart before anything is retired.
     #[tokio::test(flavor = "current_thread")]
     async fn a_read_failure_does_not_retire_a_live_signal() {
         let repo = tempfile::tempdir().expect("tempdir");
