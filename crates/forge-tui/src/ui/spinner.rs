@@ -7,7 +7,7 @@ use forge_workspace::{RepaintCadence, SpinnerStyle};
 
 use crate::app::App;
 
-/// Reduced-motion cadence floor (ms). The quicker styles (braille 24,
+/// Reduced-motion cadence floor (ms). The quicker styles (braille 32,
 /// bars_v 70, phase_of_moon 90, star 130) clamp up to this so a
 /// reduced-motion preference visibly slows them; ember and sparkle
 /// already sit on the floor.
@@ -59,34 +59,19 @@ mod tests {
         // The default 120fps paints quicker than any style asks, so
         // every style runs at its own intent there.
         let quick = RepaintCadence::default();
-        let s = SpinnerStyle::Braille; // 10 frames, 24ms
+        let s = SpinnerStyle::Braille; // 10 frames, 32ms
         assert_eq!(spinner_frame_index(s, 0, false, quick), 0);
-        assert_eq!(spinner_frame_index(s, 24, false, quick), 1);
-        assert_eq!(spinner_frame_index(s, 240, false, quick), 0); // wraps at len*cadence
+        assert_eq!(spinner_frame_index(s, 32, false, quick), 1);
+        assert_eq!(spinner_frame_index(s, 320, false, quick), 0); // wraps at len*cadence
     }
 
     #[test]
     fn spinner_index_reduced_motion_is_slower() {
         let quick = RepaintCadence::default();
         let s = SpinnerStyle::Braille;
-        // At 24ms elapsed: normal shows frame 1; reduced (floored to
+        // At 32ms elapsed: normal shows frame 1; reduced (floored to
         // 160ms) is still on frame 0.
-        assert_eq!(spinner_frame_index(s, 24, true, quick), 0);
-        assert_eq!(spinner_frame_index(s, 24, false, quick), 1);
-    }
-
-    /// A slow `[ui] fps` coarsens the glyph rather than making it skip:
-    /// at the 30ms floor braille steps on 30ms, so the frame it would
-    /// have shown at 24ms is never asked for.
-    #[test]
-    fn a_slow_repaint_rate_coarsens_the_glyph_instead_of_dropping_frames() {
-        let s = SpinnerStyle::Braille;
-        let slow = RepaintCadence::from_fps(30);
-        assert_eq!(spinner_frame_index(s, 24, false, slow), 0, "24ms is not paintable at fps=30");
-        assert_eq!(spinner_frame_index(s, 30, false, slow), 1);
-        // Every step is reachable - no glyph is skipped by the clamp.
-        let seen: Vec<usize> =
-            (0..10).map(|step| spinner_frame_index(s, step * 30, false, slow)).collect();
-        assert_eq!(seen, (0..10).collect::<Vec<usize>>());
+        assert_eq!(spinner_frame_index(s, 32, true, quick), 0);
+        assert_eq!(spinner_frame_index(s, 32, false, quick), 1);
     }
 }

@@ -88,10 +88,12 @@ impl RepaintCadence {
     /// coarser of design intent and what this repaint rate can paint.
     ///
     /// A style expresses intent, the repaint rate expresses capability.
-    /// Asking for a 24ms step while frames land every 30ms would not
-    /// produce a quicker spinner, only a stuttering one that skips
-    /// glyphs, so intent gives way. Nothing is lost by the clamp - the
-    /// frames it removes were never paintable.
+    /// Asking for a step quicker than frames land would not produce a
+    /// quicker spinner, only a stuttering one that skips glyphs, so
+    /// intent gives way. Nothing is lost by the clamp - the frames it
+    /// removes were never paintable. It is currently dormant: the
+    /// quickest style asks 32ms against a gate that never exceeds
+    /// `COARSEST_REPAINT_INTERVAL`.
     pub fn effective_cadence_ms(self, requested_ms: u64) -> u128 {
         u128::from(requested_ms).max(self.interval.as_millis())
     }
@@ -210,13 +212,13 @@ impl SpinnerStyle {
     }
 
     /// Per-style frame cadence in milliseconds - the style's design
-    /// intent, not necessarily what it runs at. A slow `[ui] fps`
-    /// coarsens it; [`RepaintCadence::effective_cadence_ms`] resolves
+    /// intent, not necessarily what it runs at. A slow `[ui] fps` can
+    /// coarsen it; [`RepaintCadence::effective_cadence_ms`] resolves
     /// the two, and that is what the frame index must divide by.
     /// Braille is the fast default; the rest are tuned per glyph set.
     pub fn cadence_ms(self) -> u64 {
         match self {
-            Self::Braille => 24,
+            Self::Braille => 32,
             Self::PhaseOfMoon => 90,
             Self::BarsV => 70,
             Self::Star => 130,
@@ -321,7 +323,7 @@ mod tests {
     fn cadence_ms_is_per_style() {
         // Each style has its own cadence - drift means a surface no
         // longer ticks at the design-spec frequency.
-        assert_eq!(SpinnerStyle::Braille.cadence_ms(), 24);
+        assert_eq!(SpinnerStyle::Braille.cadence_ms(), 32);
         assert_eq!(SpinnerStyle::PhaseOfMoon.cadence_ms(), 90);
         assert_eq!(SpinnerStyle::Ember.cadence_ms(), 160);
         assert_eq!(SpinnerStyle::BarsV.cadence_ms(), 70);
@@ -432,17 +434,28 @@ mod tests {
         }
     }
 
-    /// The point of the change: braille runs at its own 24ms once frames
-    /// are quick enough, and quietly coarsens to 30ms at the fps floor
-    /// rather than being disallowed.
+    /// The clamp on its own terms. It takes a synthetic cadence rather
+    /// than a style because no shipped style is quick enough to reach
+    /// it: the quickest asks 32ms and the gate stops at 30ms, so
+    /// `ALL_STYLES` holds nothing that could stand in for one.
     #[test]
-    fn braille_runs_at_intent_by_default_and_coarsens_at_the_fps_floor() {
-        let braille = SpinnerStyle::Braille.cadence_ms();
-        assert_eq!(braille, 24);
-        assert_eq!(RepaintCadence::default().effective_cadence_ms(braille), 24);
-        assert_eq!(RepaintCadence::from_fps(120).effective_cadence_ms(braille), 24);
-        assert_eq!(RepaintCadence::from_fps(60).effective_cadence_ms(braille), 24);
-        assert_eq!(RepaintCadence::from_fps(30).effective_cadence_ms(braille), 30);
+    fn a_cadence_quicker_than_the_repaint_floor_coarsens_to_it() {
+        let floor = RepaintCadence::from_fps(*FPS_RANGE.start());
+        assert_eq!(
+            floor.frame_interval(),
+            COARSEST_REPAINT_INTERVAL,
+            "the slowest accepted fps must sit on the floor, or this tests nothing",
+        );
+        assert_eq!(
+            floor.effective_cadence_ms(24),
+            30,
+            "a 24ms step is not paintable at a 30ms interval, so it coarsens to 30ms",
+        );
+        assert_eq!(
+            floor.effective_cadence_ms(32),
+            32,
+            "a 32ms step outruns the floor and keeps its own intent",
+        );
     }
 
     #[test]
