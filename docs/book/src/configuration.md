@@ -193,7 +193,7 @@ ignored: a mistyped `models_dir` would otherwise fetch three gigabytes
 to the wrong volume with nothing said about it.
 
 With `enabled = true`, forge fetches, verifies and loads the models on
-the preflight screen before the project picker appears. A first run
+the preflight screen before forge hands over. A first run
 downloads 3.07 GB, resumable and SHA-256 verified; later runs re-hash
 what is on disk, which takes a few seconds, then load the weights.
 Pressing `esc` during a download keeps what has landed and quits.

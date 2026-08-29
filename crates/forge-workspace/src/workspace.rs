@@ -1348,6 +1348,20 @@ impl Workspace {
         plan.as_ref().is_some_and(|p| !p.project_has_no_assignments(project_key))
     }
 
+    /// `true` once the deterministic per-session account assignment has
+    /// been computed. Monotonic: `recompute_plan_if_ready` stores on the
+    /// first pass and merges a frozen overlay on every later one, so a
+    /// populated plan never goes back to unpopulated.
+    ///
+    /// The boot spawn gates on this rather than on
+    /// [`Self::all_accounts_loaded`]. The map is published on one lock
+    /// acquisition and the plan is written on a second, so an observer
+    /// can see every account settled while the plan is still absent -
+    /// which is the round-robin fallback the gate exists to prevent.
+    pub fn assignment_plan_ready(&self) -> bool {
+        self.assignment_plan.lock().is_some()
+    }
+
     /// Snapshot of `(AccountKey display name, LoadingState)` pairs in
     /// declaration order. Forge-tui's launchpad renders the per-
     /// account loading glyph row from this; the order matches
@@ -6004,11 +6018,10 @@ impl Workspace {
     }
 }
 
-/// Kept apart from the `testing`-feature block below: these two are
-/// consumed only by this crate's own test mods, so they need neither
-/// `pub` nor the feature arm. The seeds in that block do - forge-tui's
-/// tests call them.
-#[cfg(test)]
+/// Test-mode command interception. Feature-gated and `pub` for the same
+/// reason the seeds below are: forge-tui's tests reach for these to
+/// assert what boot WOULD have spawned, without starting a subprocess.
+#[cfg(any(test, feature = "testing"))]
 impl Workspace {
     /// Enable test-mode app-level command interception. After this
     /// call, every `Command` routed through the app-level branch of
@@ -6016,7 +6029,7 @@ impl Workspace {
     /// drain via `drain_test_dispatch_buffer`. No-op if already
     /// enabled. Test-only - tests use this to assert what would
     /// have been dispatched without spinning up real subprocesses.
-    pub(crate) fn enable_test_dispatch_intercept(&self) {
+    pub fn enable_test_dispatch_intercept(&self) {
         let mut intercept = self.command_intercept.lock();
         if intercept.is_none() {
             *intercept = Some(Vec::new());
@@ -6026,7 +6039,7 @@ impl Workspace {
     /// Drain every app-level `Command` captured since the last call.
     /// Returns empty when no intercept was enabled or no commands
     /// were dispatched. Test-only.
-    pub(crate) fn drain_test_dispatch_buffer(&self) -> Vec<crate::protocol::Command> {
+    pub fn drain_test_dispatch_buffer(&self) -> Vec<crate::protocol::Command> {
         let mut intercept = self.command_intercept.lock();
         match intercept.as_mut() {
             Some(buffer) => std::mem::take(buffer),

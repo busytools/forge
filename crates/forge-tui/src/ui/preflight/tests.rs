@@ -273,14 +273,14 @@ async fn preflight_renders_on_both_routes_and_hands_over_to_each() {
             painted.contains("Accounts") && painted.contains("resolving"),
             "preflight is what renders while accounts resolve, on every route:\n{painted}",
         );
-        crate::app::preflight::advance(&mut app);
+        crate::app::preflight::tick(&mut app);
         assert!(!app.preflight_done, "and it does not hand over while one is still resolving");
 
         app.workspace
             .as_ref()
             .expect("workspace")
             .seed_test_account_state("Subspace", LoadingState::Ready);
-        crate::app::preflight::advance(&mut app);
+        crate::app::preflight::tick(&mut app);
         assert!(app.preflight_done, "once every account is ready it hands over");
 
         let expected = if startup_project.is_some() {
@@ -294,13 +294,17 @@ async fn preflight_renders_on_both_routes_and_hands_over_to_each() {
              startup_project was {startup_project:?}",
         );
 
-        if startup_project.is_none() {
-            let painted = paint(&mut app, 100, 34);
-            assert!(
-                !painted.contains("resolving"),
-                "and the picker is what renders afterwards, not preflight:\n{painted}",
-            );
-        }
+        // Keyed on preflight's own heading, which the picker never
+        // draws. The obvious needle is "resolving", and it discriminates
+        // the ACCOUNT STATE rather than the view: by this point the
+        // account is Ready, so preflight would print "ready" and the
+        // assertion would pass whichever view painted.
+        let painted = paint(&mut app, 100, 34);
+        assert!(
+            !painted.contains("Accounts"),
+            "the handover has to change what renders, not just what it says; \
+             startup_project was {startup_project:?}:\n{painted}",
+        );
     }
 }
 
@@ -344,7 +348,7 @@ async fn forge_does_not_quit_on_cancel_until_the_copy_is_on_screen() {
         !app.preflight_cancel_drawn,
         "a frame that could not paint the body has not said anything to quit on",
     );
-    crate::app::preflight::quit_after_cancel(&mut app);
+    crate::app::preflight::tick(&mut app);
     assert!(!app.should_quit, "so forge waits rather than vanishing with the message unshown");
 
     let painted = paint(&mut app, 100, 34);
@@ -353,7 +357,7 @@ async fn forge_does_not_quit_on_cancel_until_the_copy_is_on_screen() {
         "at a normal size the copy is on screen:\n{painted}",
     );
     assert!(app.preflight_cancel_drawn, "and the flag follows what was painted");
-    crate::app::preflight::quit_after_cancel(&mut app);
+    crate::app::preflight::tick(&mut app);
     assert!(app.should_quit, "having said it, forge goes");
 }
 

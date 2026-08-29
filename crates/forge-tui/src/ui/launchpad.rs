@@ -1,5 +1,6 @@
-//! Launchpad view - project picker shown as the floor of the UI when
-//! forge is invoked without a project argv.
+//! Launchpad view - the project picker, and the floor of the UI. Shown
+//! once [`super::preflight`] has handed over, which it does on every
+//! route.
 //!
 //! Three vertical zones: identity block (wordmark + version lines +
 //! optional update indicator), picker frame (org-grouped project

@@ -10,6 +10,18 @@ use crossterm::event::{KeyCode, KeyEvent};
 use super::App;
 use super::view::{ActiveView, set_active_view};
 
+/// Everything preflight does per tick of the run loop.
+///
+/// One entry point rather than two calls, so a test can exercise what
+/// the loop exercises. Both of these used to run from the renderer,
+/// where every `paint()` in the preflight tests reached them for free;
+/// moving them here was right - handing over is a view transition - and
+/// it silently took that coverage with it.
+pub fn tick(app: &mut App) {
+    advance(app);
+    quit_after_cancel(app);
+}
+
 /// Hand over once preflight has nothing left to wait for: to chat when
 /// forge was given a project, to the project picker when it was not.
 ///
@@ -89,12 +101,12 @@ mod tests {
         // No workspace, so the readiness condition is false.
         app.workspace = None;
         app.active_view = ActiveView::Launchpad;
-        advance(&mut app);
+        tick(&mut app);
         assert!(!app.preflight_done, "an unready preflight does not hand over");
 
         app.preflight_done = true;
         app.active_view = ActiveView::Chat;
-        advance(&mut app);
+        tick(&mut app);
         assert!(
             app.preflight_done,
             "the handover must survive the readiness condition going false again",

@@ -273,6 +273,10 @@ pub struct App {
     /// `true` once preflight has painted a cancelled model fetch, which
     /// is what lets forge quit having said what it kept and where.
     pub preflight_cancel_drawn: bool,
+    /// `true` once the boot spawn has logged that it is waiting on the
+    /// account plan. Keeps that line to one, rather than one per frame
+    /// of a 120fps loop.
+    pub spawn_deferred_logged: bool,
     /// Optional fatal app error that should be surfaced at CLI boundary.
     pub exit_error: Option<crate::error::AppError>,
     /// Boot-wave fresh-start flag from the `--new` launch flag. When
@@ -3399,6 +3403,7 @@ impl App {
             should_quit: false,
             preflight_done: false,
             preflight_cancel_drawn: false,
+            spawn_deferred_logged: false,
             exit_error: None,
             start_new_run: false,
             workspace: Some(workspace),
