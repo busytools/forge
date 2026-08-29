@@ -2962,8 +2962,14 @@ fn persist_active_input(app: &mut App) {
         context,
         base_ref: target,
     };
+    let is_new = prior_thread.is_none();
     let mut thread = build_thread(prior_thread, anchor, &text, input.edit_turn);
-    thread.commit.clone_from(&commit);
+    if is_new {
+        // A thread's home is where it was authored, and the whole diff
+        // shows threads homed on a commit - so restamping it with the
+        // view being edited from would evict it from its own commit.
+        thread.commit.clone_from(&commit);
+    }
     // The chip snippet / editor fallback mirror the first user turn, which
     // stays stable whether this save edited a later turn or appended a reply.
     let comment_text = thread
@@ -7421,6 +7427,82 @@ mod tests {
             overlay.comments.iter().filter(|c| c.commit.as_deref() == Some("aaa")).count(),
             1,
             "and the saved scope still holds exactly one card for it",
+        );
+    }
+
+
+    #[test]
+    fn replying_from_the_whole_diff_leaves_a_thread_in_its_own_commit() {
+        // A thread's `commit` is where it was authored, not the view you
+        // are looking at. The whole diff now shows commit-homed threads,
+        // so restamping it on save evicts the thread from its own
+        // commit's view - durably, since the save persists it.
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        overlay.commits = vec![commit_meta("aaa", "first")];
+        overlay.scope = DiffScope::WholeDiff;
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let mut thread = stock_thread();
+        thread.id = "homed".to_owned();
+        thread.commit = Some("aaa".to_owned());
+        overlay.comments.push(HunkComment {
+            key,
+            path: "src/x.rs".into(),
+            line: 5,
+            comment_text: "why this cast?".into(),
+            commit: None,
+            thread,
+            authored_this_session: false,
+            anchor_note: None,
+            persisted: true,
+        });
+
+        // Reply to it from "All changes".
+        reopen_comment_for_turn(&mut overlay, CommentRef { line: key, slot: 0 }, None);
+        if let Some(input) = overlay.active_input.as_mut() {
+            input.editor.insert_str("still not right");
+        }
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+
+        let ws = app.workspace.clone().expect("ws");
+        let stored = ws.load_review_threads("forge", "feat").expect("load");
+        let homed = stored.iter().find(|t| t.id == "homed").expect("thread persisted");
+        assert_eq!(
+            homed.commit.as_deref(),
+            Some("aaa"),
+            "the thread stays homed on the commit it was authored against",
+        );
+        assert!(
+            thread_in_scope(homed, Some("aaa"), "main"),
+            "so it still renders in that commit's own view",
+        );
+    }
+
+    #[test]
+    fn a_comment_authored_in_a_commit_is_homed_there() {
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files.clone());
+        overlay.branch = Some("feat".to_owned());
+        overlay.commits = vec![commit_meta("aaa", "first")];
+        overlay.commit_cache = vec![Some(CachedScan { files, scanner_ok: true })];
+        overlay.scope = DiffScope::Commit(0);
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        with_editor(&mut overlay, key, "a fresh comment here");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+
+        let ws = app.workspace.clone().expect("ws");
+        let stored = ws.load_review_threads("forge", "feat").expect("load");
+        assert_eq!(
+            stored[0].commit.as_deref(),
+            Some("aaa"),
+            "a new thread takes the scope it was authored in as its home",
         );
     }
 
