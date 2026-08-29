@@ -2123,8 +2123,26 @@ fn hydrate_threads(app: &mut App) {
         persist.push(thread);
     }
 
+    // The store knows nothing about this overlay session, so a rebuild
+    // would reinstate a card the reviewer just wrote as if it had been
+    // loaded - dropping it out of the review it should seal into while
+    // still rendering it. Carry that state across, and keep a card the
+    // store has never seen: its write was skipped or failed, so a
+    // rebuild is not evidence that it is gone.
+    let mut unwritten = Vec::new();
+    for card in overlay.comments.iter().filter(|c| c.commit == scope_commit) {
+        match rebuilt.iter_mut().find(|r| r.thread.id == card.thread.id) {
+            Some(fresh) => {
+                fresh.authored_this_session = card.authored_this_session;
+                fresh.persisted = card.persisted;
+            }
+            None if !card.persisted => unwritten.push(card.clone()),
+            None => {}
+        }
+    }
     overlay.comments.retain(|c| c.commit != scope_commit);
     overlay.comments.extend(rebuilt);
+    overlay.comments.extend(unwritten);
     overlay.recompute_comment_counts();
     if changed {
         workspace.save_review_threads(&project, &branch, &persist);
@@ -7578,6 +7596,107 @@ mod tests {
     }
 
     #[test]
+    fn a_comment_written_this_session_stays_submittable_across_a_scope_round_trip() {
+        // The rebuild reinstates cards from the store, and the store has
+        // no notion of "written in this overlay session". Losing that flag
+        // takes the comment out of the Finish-review modal and out of the
+        // review it should seal into - silently, since the card still
+        // renders.
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files.clone());
+        overlay.branch = Some("feat".to_owned());
+        overlay.commits = vec![commit_meta("aaa", "first")];
+        overlay.commit_cache = vec![Some(CachedScan { files: files.clone(), scanner_ok: true })];
+        overlay.whole_diff_cache = Some(CachedScan { files, scanner_ok: true });
+        overlay.scope = DiffScope::WholeDiff;
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        with_editor(&mut overlay, key, "worth a second look");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+        assert!(
+            app.diff_overlay.as_ref().expect("overlay").comments.iter().any(is_actionable),
+            "the comment is submittable the moment it is written",
+        );
+
+        // Step into the commit and back out again.
+        for scope in [DiffScope::Commit(0), DiffScope::WholeDiff] {
+            let outcome = app.diff_overlay.as_mut().expect("overlay").select_scope(scope);
+            after_nav(&mut app, outcome);
+        }
+
+        assert!(
+            app.diff_overlay.as_ref().expect("overlay").comments.iter().any(is_actionable),
+            "and still is after looking at a commit and coming back",
+        );
+    }
+
+    #[test]
+    fn a_rebuild_keeps_a_comment_whose_write_never_landed() {
+        // `persisted: false` means the store never took it, so its
+        // absence from a rebuild is not evidence that it is gone - it is
+        // the only copy.
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        let mut thread = stock_thread();
+        thread.id = "unwritten".to_owned();
+        overlay.comments.push(HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "src/x.rs".into(),
+            line: 5,
+            comment_text: "the redb write failed".into(),
+            commit: None,
+            thread,
+            authored_this_session: true,
+            anchor_note: None,
+            persisted: false,
+        });
+        app.diff_overlay = Some(overlay);
+
+        hydrate_threads(&mut app);
+
+        let overlay = app.diff_overlay.as_ref().expect("overlay");
+        assert!(
+            overlay.comments.iter().any(|c| c.thread.id == "unwritten"),
+            "the only copy of an at-risk comment survives the rebuild",
+        );
+    }
+
+    #[test]
+    fn a_thread_loaded_from_history_is_not_session_work() {
+        // The other half: a rebuild must not promote a thread the
+        // reviewer never touched, or reopening a branch would re-nudge
+        // the agent about comments from an earlier pass.
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        let mut thread = stock_thread();
+        thread.id = "from-history".to_owned();
+        thread.anchor = ReviewAnchor {
+            path: "src/x.rs".to_owned(),
+            side: ReviewSide::New,
+            line: 5,
+            content_hash: resolver::anchor_hash("let a = 1;"),
+            context: Vec::new(),
+            base_ref: "main".to_owned(),
+        };
+        ws.save_review_threads("forge", "feat", &[thread]);
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+
+        hydrate_threads(&mut app);
+
+        let overlay = app.diff_overlay.as_ref().expect("overlay");
+        assert!(!overlay.comments.iter().any(is_actionable), "nothing here is this session's work");
+    }
+
+    #[test]
     fn saved_thread_survives_overlay_drop() {
         let (mut app, _dir) = review_app();
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])];
@@ -8365,7 +8484,10 @@ mod tests {
         let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
         assert_eq!(comment.key, LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }, "InPlace");
         assert_eq!(comment.thread.status, ReviewStatus::Open);
-        assert!(!comment.authored_this_session, "hydrated, not authored this session");
+        assert!(
+            comment.authored_this_session,
+            "a rebuild over a comment written this session keeps it session work",
+        );
         assert!(comment.persisted, "hydrated comment is durable");
     }
 
@@ -9027,7 +9149,8 @@ mod tests {
             thread: stock_thread(),
             authored_this_session: true,
             anchor_note: None,
-            persisted: false,
+            // Written to the store, and no longer in it: superseded.
+            persisted: true,
         });
         app.diff_overlay = Some(overlay);
 
