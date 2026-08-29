@@ -5632,7 +5632,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn resolving_a_comment_makes_its_file_re_measure() {
         // Resolving folds the card to a marker, so the file loses rows
@@ -7367,7 +7366,6 @@ mod tests {
         assert_eq!(overlay.comments[0].thread.id, id, "and keeps the thread's identity");
     }
 
-
     #[test]
     fn saving_in_one_scope_keeps_the_same_threads_card_in_the_other() {
         // A thread authored on a commit is in scope for that commit AND
@@ -8897,10 +8895,12 @@ mod tests {
     }
 
     #[test]
-    fn save_leaves_another_scopes_comment_at_the_key_alone() {
-        // The save-path twin of the hydrate retain above: a save replaces
-        // its own thread, so a comment belonging to another scope at that
-        // same key is untouched.
+    fn save_leaves_a_different_thread_in_another_scope_alone() {
+        // The save-path twin of the hydrate retain above. This is the
+        // different-thread half; `saving_in_one_scope_keeps_the_same_
+        // threads_card_in_the_other` covers the same thread rendered in
+        // two scopes, which is the case a retain keyed on identity alone
+        // gets wrong.
         let (mut app, _dir) = review_app();
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
         let mut overlay =
