@@ -955,6 +955,28 @@ mod tests {
         assert!(app.input().is_empty(), "the chat draft must not absorb dictated review text");
     }
 
+    /// The prompt's notes field writes into the same `App.input` a
+    /// bracketed paste already reaches, so a keystroke-delivered paste
+    /// has to coalesce there too rather than arriving character by
+    /// character.
+    #[test]
+    fn paste_burst_flush_reaches_the_prompt_notes_field() {
+        let mut app = crate::app::prompt::tests::app_with_focused_notes();
+
+        for ch in ['h', 'i', '!'] {
+            events::handle_terminal_event(
+                &mut app,
+                Event::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
+            );
+        }
+        assert!(app.paste_burst.is_buffering(), "the notes field must feed the burst detector");
+
+        flush_paste_burst(&mut app, Instant::now() + Duration::from_millis(200));
+        finalize_pending_paste_event(&mut app);
+
+        assert_eq!(app.input().text(), "hi!", "the coalesced burst lands in the notes editor");
+    }
+
     #[test]
     fn deferred_submit_stays_chat_only() {
         let mut app = app_with_open_comment_editor();

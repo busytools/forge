@@ -6,6 +6,7 @@ use crate::app::config::{
     InstalledPluginActionOverlayState, MarketplaceActionKind, MarketplaceActionsOverlayState,
     PluginInstallActionKind, PluginInstallOverlayState,
 };
+use crate::app::input::InputState;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use forge_workspace::SessionUpdate;
 use std::path::PathBuf;
@@ -57,12 +58,12 @@ pub use forge_primitives::plugins::{
     PluginsCliActionSuccess, PluginsInventorySnapshot,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct PluginsState {
     pub active_tab: PluginsViewTab,
     pub search_focused: bool,
-    pub installed_search_query: String,
-    pub plugins_search_query: String,
+    pub installed_search_query: InputState,
+    pub plugins_search_query: InputState,
     pub installed_selected_index: usize,
     pub plugins_selected_index: usize,
     pub marketplace_selected_index: usize,
@@ -100,15 +101,15 @@ impl PluginsState {
         self.last_error = None;
     }
 
-    pub fn search_query_for(&self, tab: PluginsViewTab) -> &str {
+    pub fn search_query_for(&self, tab: PluginsViewTab) -> String {
         match tab {
-            PluginsViewTab::Installed => &self.installed_search_query,
-            PluginsViewTab::Plugins => &self.plugins_search_query,
-            PluginsViewTab::Marketplace => "",
+            PluginsViewTab::Installed => self.installed_search_query.text(),
+            PluginsViewTab::Plugins => self.plugins_search_query.text(),
+            PluginsViewTab::Marketplace => String::new(),
         }
     }
 
-    pub fn active_search_query_mut(&mut self) -> Option<&mut String> {
+    pub fn active_search_query_mut(&mut self) -> Option<&mut InputState> {
         match self.active_tab {
             PluginsViewTab::Installed => Some(&mut self.installed_search_query),
             PluginsViewTab::Plugins => Some(&mut self.plugins_search_query),
@@ -126,7 +127,7 @@ pub(crate) fn handle_paste(app: &mut App, text: &str) -> bool {
         return false;
     }
     if let Some(query) = app.plugins.active_search_query_mut() {
-        query.push_str(&normalized);
+        query.insert_str(&normalized);
         reset_selection_for_active_tab(app);
         return true;
     }
@@ -181,7 +182,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             if search_enabled(app.plugins.active_tab)
                 && app.plugins.search_focused
                 && let Some(query) = app.plugins.active_search_query_mut()
-                && query.pop().is_some()
+                && query.textarea_delete_char_before()
             {
                 reset_selection_for_active_tab(app);
             }
@@ -213,7 +214,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 && app.plugins.search_focused
                 && let Some(query) = app.plugins.active_search_query_mut()
             {
-                query.push(ch);
+                query.insert_char(ch);
                 reset_selection_for_active_tab(app);
             }
             true
@@ -339,13 +340,8 @@ pub(crate) fn clamp_selection(app: &mut App) {
 }
 
 pub(crate) fn filtered_installed(state: &PluginsState) -> Vec<&InstalledPluginEntry> {
-    state
-        .installed
-        .iter()
-        .filter(|entry| {
-            installed_entry_matches(entry, state.search_query_for(PluginsViewTab::Installed))
-        })
-        .collect()
+    let query = state.search_query_for(PluginsViewTab::Installed);
+    state.installed.iter().filter(|entry| installed_entry_matches(entry, &query)).collect()
 }
 
 pub(crate) fn ordered_installed<'a>(
@@ -377,13 +373,8 @@ pub(crate) fn relevant_installed_count(state: &PluginsState, current_project_raw
 }
 
 pub(crate) fn filtered_marketplace_plugins(state: &PluginsState) -> Vec<&MarketplaceEntry> {
-    state
-        .marketplace
-        .iter()
-        .filter(|entry| {
-            marketplace_plugin_matches(entry, state.search_query_for(PluginsViewTab::Plugins))
-        })
-        .collect()
+    let query = state.search_query_for(PluginsViewTab::Plugins);
+    state.marketplace.iter().filter(|entry| marketplace_plugin_matches(entry, &query)).collect()
 }
 
 pub(crate) fn visible_marketplaces(state: &PluginsState) -> Vec<&MarketplaceSourceEntry> {
@@ -444,25 +435,45 @@ pub(crate) fn handle_marketplace_overlay_key(app: &mut App, key: KeyEvent) {
 }
 
 pub(crate) fn handle_add_marketplace_overlay_key(app: &mut App, key: KeyEvent) {
+    if let (KeyCode::Enter, KeyModifiers::NONE) = (key.code, key.modifiers) {
+        confirm_add_marketplace_overlay(app);
+        return;
+    }
+    if let (KeyCode::Esc, KeyModifiers::NONE) = (key.code, key.modifiers) {
+        app.config.overlay = None;
+        return;
+    }
+    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
+        return;
+    };
     match (key.code, key.modifiers) {
-        (KeyCode::Enter, KeyModifiers::NONE) => confirm_add_marketplace_overlay(app),
-        (KeyCode::Esc, KeyModifiers::NONE) => app.config.overlay = None,
-        (KeyCode::Left, KeyModifiers::NONE) => {
-            move_add_marketplace_cursor_left(app);
+        (KeyCode::Left, KeyModifiers::NONE) => overlay.editor.move_left(),
+        (KeyCode::Right, KeyModifiers::NONE) => overlay.editor.move_right(),
+        // Home and End address the field, not the line: a typed newline
+        // splits the draft into rows the user never asked for, and
+        // tui_textarea's own Head/End would stop at the split.
+        (KeyCode::Home, KeyModifiers::NONE) => {
+            let _ = overlay.editor.set_cursor(0, 0);
         }
-        (KeyCode::Right, KeyModifiers::NONE) => {
-            move_add_marketplace_cursor_right(app);
+        (KeyCode::End, KeyModifiers::NONE) => {
+            let row = overlay.editor.lines().len().saturating_sub(1);
+            let col = overlay.editor.lines().last().map_or(0, |line| line.chars().count());
+            let _ = overlay.editor.set_cursor(row, col);
         }
-        (KeyCode::Home, KeyModifiers::NONE) => set_add_marketplace_cursor(app, 0),
-        (KeyCode::End, KeyModifiers::NONE) => move_add_marketplace_cursor_to_end(app),
-        (KeyCode::Backspace, KeyModifiers::NONE) => delete_add_marketplace_before_cursor(app),
-        (KeyCode::Delete, KeyModifiers::NONE) => delete_add_marketplace_at_cursor(app),
+        (KeyCode::Backspace, KeyModifiers::NONE) => overlay.editor.delete_char_before(),
+        (KeyCode::Delete, KeyModifiers::NONE) => overlay.editor.delete_char_after(),
         (KeyCode::Char(ch), modifiers)
             if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT =>
         {
-            insert_add_marketplace_char(app, ch);
+            overlay.editor.insert_char(ch);
         }
         _ => {}
+    }
+}
+
+pub(crate) fn handle_add_marketplace_overlay_paste(app: &mut App, text: &str) {
+    if let Some(overlay) = app.config.add_marketplace_overlay_mut() {
+        overlay.editor.insert_str(&normalize_single_line_input(text));
     }
 }
 
@@ -537,9 +548,10 @@ fn open_marketplace_actions_overlay(app: &mut App) -> bool {
 }
 
 fn open_add_marketplace_overlay(app: &mut App) -> bool {
-    app.config.overlay = Some(ConfigOverlayState::AddMarketplace(
-        AddMarketplaceOverlayState::from_text_input(String::new(), 0),
-    ));
+    app.config.overlay =
+        Some(ConfigOverlayState::AddMarketplace(Box::new(AddMarketplaceOverlayState {
+            editor: InputState::new(),
+        })));
     app.config.last_error = None;
     true
 }
@@ -778,7 +790,7 @@ fn confirm_add_marketplace_overlay(app: &mut App) {
     let Some(overlay) = app.config.add_marketplace_overlay().cloned() else {
         return;
     };
-    let source = overlay.draft.trim().to_owned();
+    let source = overlay.editor.text().trim().to_owned();
     if source.is_empty() {
         app.config.last_error = Some("Marketplace source cannot be empty".to_owned());
         app.config.status_message = None;
@@ -1131,73 +1143,6 @@ fn normalize_single_line_input(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\r', "\n").replace('\n', " ")
 }
 
-fn move_add_marketplace_cursor_left(app: &mut App) {
-    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
-        return;
-    };
-    overlay.cursor = overlay.cursor.saturating_sub(1);
-}
-
-fn move_add_marketplace_cursor_right(app: &mut App) {
-    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
-        return;
-    };
-    overlay.cursor = overlay.cursor.saturating_add(1).min(overlay.draft.chars().count());
-}
-
-fn move_add_marketplace_cursor_to_end(app: &mut App) {
-    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
-        return;
-    };
-    overlay.cursor = overlay.draft.chars().count();
-}
-
-fn set_add_marketplace_cursor(app: &mut App, cursor: usize) {
-    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
-        return;
-    };
-    overlay.cursor = cursor.min(overlay.draft.chars().count());
-}
-
-fn insert_add_marketplace_char(app: &mut App, ch: char) {
-    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
-        return;
-    };
-    let byte_index = char_to_byte_index(&overlay.draft, overlay.cursor);
-    overlay.draft.insert(byte_index, ch);
-    overlay.cursor += 1;
-}
-
-fn delete_add_marketplace_before_cursor(app: &mut App) {
-    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
-        return;
-    };
-    if overlay.cursor == 0 {
-        return;
-    }
-    let end = char_to_byte_index(&overlay.draft, overlay.cursor);
-    let start = char_to_byte_index(&overlay.draft, overlay.cursor - 1);
-    overlay.draft.replace_range(start..end, "");
-    overlay.cursor -= 1;
-}
-
-fn delete_add_marketplace_at_cursor(app: &mut App) {
-    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
-        return;
-    };
-    let char_count = overlay.draft.chars().count();
-    if overlay.cursor >= char_count {
-        return;
-    }
-    let start = char_to_byte_index(&overlay.draft, overlay.cursor);
-    let end = char_to_byte_index(&overlay.draft, overlay.cursor + 1);
-    overlay.draft.replace_range(start..end, "");
-}
-
-fn char_to_byte_index(text: &str, char_index: usize) -> usize {
-    text.char_indices().nth(char_index).map_or(text.len(), |(idx, _)| idx)
-}
-
 fn reset_selection_for_active_tab(app: &mut App) {
     app.plugins.set_selected_index_for(app.plugins.active_tab, 0);
     clamp_selection(app);
@@ -1282,12 +1227,205 @@ mod tests {
     use super::*;
     use crate::agent::model;
 
+    fn query(text: &str) -> InputState {
+        let mut editor = InputState::new();
+        editor.set_text(text);
+        editor
+    }
+
     fn app_with_connection()
     -> (crate::app::App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         let mut app = crate::app::App::test_default();
         let rx = app.install_testing_stub();
         app.set_session_id(Some(model::SessionId::new("session-1")));
         (app, rx)
+    }
+
+    fn app_with_add_marketplace_open() -> crate::app::App {
+        let mut app = crate::app::App::test_default();
+        app.config.overlay =
+            Some(ConfigOverlayState::AddMarketplace(Box::new(AddMarketplaceOverlayState {
+                editor: InputState::new(),
+            })));
+        app
+    }
+
+    fn add_marketplace_field(app: &crate::app::App) -> (String, usize) {
+        let overlay = app.config.add_marketplace_overlay().expect("overlay open");
+        (overlay.editor.text(), overlay.editor.cursor_char_offset())
+    }
+
+    fn press_add_marketplace(app: &mut crate::app::App, code: KeyCode) {
+        handle_add_marketplace_overlay_key(app, KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn add_marketplace_field_edits_mid_string() {
+        let mut app = app_with_add_marketplace_open();
+
+        for ch in ['a', 'c'] {
+            press_add_marketplace(&mut app, KeyCode::Char(ch));
+        }
+        press_add_marketplace(&mut app, KeyCode::Left);
+        press_add_marketplace(&mut app, KeyCode::Char('b'));
+        assert_eq!(
+            add_marketplace_field(&app),
+            ("abc".to_owned(), 2),
+            "a character typed after Left lands mid-string"
+        );
+
+        press_add_marketplace(&mut app, KeyCode::Home);
+        press_add_marketplace(&mut app, KeyCode::Delete);
+        assert_eq!(
+            add_marketplace_field(&app),
+            ("bc".to_owned(), 0),
+            "Delete takes the character under the cursor and leaves the cursor put"
+        );
+
+        press_add_marketplace(&mut app, KeyCode::End);
+        press_add_marketplace(&mut app, KeyCode::Backspace);
+        assert_eq!(
+            add_marketplace_field(&app),
+            ("b".to_owned(), 1),
+            "Backspace takes the character before the cursor"
+        );
+
+        press_add_marketplace(&mut app, KeyCode::Right);
+        assert_eq!(
+            add_marketplace_field(&app),
+            ("b".to_owned(), 1),
+            "Right stops at the end of the draft"
+        );
+    }
+
+    #[test]
+    fn add_marketplace_field_pastes_at_the_cursor_with_newlines_flattened() {
+        let mut app = app_with_add_marketplace_open();
+
+        for ch in ['a', 'z'] {
+            press_add_marketplace(&mut app, KeyCode::Char(ch));
+        }
+        press_add_marketplace(&mut app, KeyCode::Left);
+
+        assert!(
+            crate::app::config::handle_plugins_paste(&mut app, "b\nc"),
+            "the open overlay takes the paste"
+        );
+        assert_eq!(
+            add_marketplace_field(&app),
+            ("ab cz".to_owned(), 4),
+            "paste lands at the cursor with its newline flattened to a space"
+        );
+    }
+
+    /// A literal newline key reaches this field's printable-char arm, so
+    /// the draft can hold one. The cursor offset has to keep counting it.
+    #[test]
+    fn add_marketplace_field_counts_a_typed_newline_in_its_cursor_offset() {
+        let mut app = app_with_add_marketplace_open();
+
+        for ch in ['a', 'b'] {
+            press_add_marketplace(&mut app, KeyCode::Char(ch));
+        }
+        press_add_marketplace(&mut app, KeyCode::Char('\n'));
+        press_add_marketplace(&mut app, KeyCode::Char('c'));
+
+        assert_eq!(
+            add_marketplace_field(&app),
+            ("ab\nc".to_owned(), 4),
+            "the newline occupies one position in both the draft and the offset"
+        );
+    }
+
+    /// Cursor keys address the whole field, not the line the cursor
+    /// happens to sit on. A typed newline is the only input that can
+    /// tell the two apart.
+    #[test]
+    fn add_marketplace_field_cursor_keys_span_a_typed_newline() {
+        let mut app = app_with_add_marketplace_open();
+        for code in [
+            KeyCode::Char('a'),
+            KeyCode::Char('\n'),
+            KeyCode::Char('b'),
+            KeyCode::Home,
+            KeyCode::Char('X'),
+        ] {
+            press_add_marketplace(&mut app, code);
+        }
+        assert_eq!(
+            add_marketplace_field(&app),
+            ("Xa\nb".to_owned(), 1),
+            "Home reaches the start of the field, not the start of the line"
+        );
+
+        let mut app = app_with_add_marketplace_open();
+        for code in [
+            KeyCode::Char('a'),
+            KeyCode::Char('b'),
+            KeyCode::Char('\n'),
+            KeyCode::Char('c'),
+            KeyCode::Left,
+            KeyCode::Left,
+            KeyCode::End,
+            KeyCode::Char('X'),
+        ] {
+            press_add_marketplace(&mut app, code);
+        }
+        assert_eq!(
+            add_marketplace_field(&app),
+            ("ab\ncX".to_owned(), 5),
+            "End reaches the end of the field, not the end of the line"
+        );
+
+        let mut app = app_with_add_marketplace_open();
+        for code in [
+            KeyCode::Char('a'),
+            KeyCode::Char('\n'),
+            KeyCode::Char('b'),
+            KeyCode::Home,
+            KeyCode::Backspace,
+            KeyCode::Char('X'),
+        ] {
+            press_add_marketplace(&mut app, code);
+        }
+        assert_eq!(
+            add_marketplace_field(&app),
+            ("Xa\nb".to_owned(), 1),
+            "Backspace at the start of the field leaves the newline alone"
+        );
+
+        let mut app = app_with_add_marketplace_open();
+        for code in [
+            KeyCode::Char('a'),
+            KeyCode::Char('\n'),
+            KeyCode::Char('b'),
+            KeyCode::Left,
+            KeyCode::Backspace,
+        ] {
+            press_add_marketplace(&mut app, code);
+        }
+        assert_eq!(
+            add_marketplace_field(&app),
+            ("ab".to_owned(), 1),
+            "Backspace across the newline takes the newline itself"
+        );
+
+        let mut app = app_with_add_marketplace_open();
+        for code in [
+            KeyCode::Char('a'),
+            KeyCode::Char('\n'),
+            KeyCode::Char('b'),
+            KeyCode::Home,
+            KeyCode::Right,
+            KeyCode::Delete,
+        ] {
+            press_add_marketplace(&mut app, code);
+        }
+        assert_eq!(
+            add_marketplace_field(&app),
+            ("ab".to_owned(), 1),
+            "Delete at the end of a line takes the newline itself"
+        );
     }
 
     fn sample_snapshot() -> PluginsInventorySnapshot {
@@ -1336,7 +1474,7 @@ mod tests {
     #[test]
     fn filtered_marketplace_plugins_match_on_name_description_and_marketplace() {
         let state = PluginsState {
-            plugins_search_query: "official".to_owned(),
+            plugins_search_query: query("official"),
             marketplace: vec![MarketplaceEntry {
                 plugin_id: "frontend-design@claude-plugins-official".to_owned(),
                 name: "frontend-design".to_owned(),
@@ -1352,11 +1490,92 @@ mod tests {
         assert_eq!(filtered_marketplace_plugins(&state).len(), 1);
     }
 
+    fn app_with_focused_search(tab: PluginsViewTab) -> crate::app::App {
+        let mut app = crate::app::App::test_default();
+        app.plugins.active_tab = tab;
+        app.plugins.search_focused = true;
+        app
+    }
+
+    fn press(app: &mut crate::app::App, code: KeyCode) -> bool {
+        handle_key(app, KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn search_filter_appends_pops_one_and_wipes_on_delete() {
+        let mut app = app_with_focused_search(PluginsViewTab::Installed);
+
+        for ch in ['a', 'b', 'c'] {
+            let _ = press(&mut app, KeyCode::Char(ch));
+        }
+        assert_eq!(
+            app.plugins.search_query_for(PluginsViewTab::Installed),
+            "abc",
+            "typing appends to the filter in order"
+        );
+
+        let _ = press(&mut app, KeyCode::Backspace);
+        assert_eq!(
+            app.plugins.search_query_for(PluginsViewTab::Installed),
+            "ab",
+            "Backspace drops exactly one character off the end"
+        );
+
+        let _ = press(&mut app, KeyCode::Delete);
+        assert_eq!(
+            app.plugins.search_query_for(PluginsViewTab::Installed),
+            "",
+            "Delete wipes the whole filter rather than one character"
+        );
+    }
+
+    /// Home and End fall through this view's keymap, so the filter has
+    /// no way to reposition where the next character lands. Routing
+    /// either into the editor would make this insert mid-string.
+    #[test]
+    fn search_filter_has_no_reachable_cursor_movement() {
+        let mut app = app_with_focused_search(PluginsViewTab::Installed);
+        for ch in ['a', 'b'] {
+            let _ = press(&mut app, KeyCode::Char(ch));
+        }
+
+        assert!(!press(&mut app, KeyCode::Home), "Home is unbound while the filter has focus");
+        assert!(!press(&mut app, KeyCode::End), "End is unbound while the filter has focus");
+
+        let _ = press(&mut app, KeyCode::Char('c'));
+        assert_eq!(
+            app.plugins.search_query_for(PluginsViewTab::Installed),
+            "abc",
+            "typing after Home/End still appends rather than inserting mid-string"
+        );
+    }
+
+    /// Paste collapses every newline flavour to a space, but a newline
+    /// delivered as a printable key lands in the filter verbatim.
+    #[test]
+    fn search_filter_keeps_a_typed_newline_and_flattens_a_pasted_one() {
+        let mut app = app_with_focused_search(PluginsViewTab::Installed);
+
+        assert!(handle_paste(&mut app, "a\nb\r\nc\rd"), "a focused filter accepts a paste");
+        assert_eq!(
+            app.plugins.search_query_for(PluginsViewTab::Installed),
+            "a b c d",
+            "pasted newlines collapse to spaces"
+        );
+
+        let _ = press(&mut app, KeyCode::Char('\n'));
+        assert_eq!(
+            app.plugins.search_query_for(PluginsViewTab::Installed),
+            "a b c d\n",
+            "a typed newline stays in the filter verbatim"
+        );
+    }
+
     #[test]
     fn installed_and_plugins_search_queries_are_independent() {
         let state = PluginsState {
-            installed_search_query: "installed".to_owned(),
-            plugins_search_query: "plugins".to_owned(),
+            installed_search_query: query("installed"),
+            plugins_search_query: query("plugins"),
             ..PluginsState::default()
         };
 

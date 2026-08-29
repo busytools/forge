@@ -1,3 +1,4 @@
+use crate::app::input::InputState;
 use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -43,11 +44,10 @@ pub(super) fn text_input_line(draft: &str, cursor: usize, placeholder: &str) -> 
 pub(super) fn render_text_input_field(
     frame: &mut Frame,
     area: Rect,
-    draft: &str,
-    cursor: usize,
+    editor: &InputState,
     placeholder: &str,
 ) {
-    let content = text_input_line(draft, cursor, placeholder);
+    let content = text_input_line(&editor.text(), editor.cursor_char_offset(), placeholder);
     let mut spans = Vec::with_capacity(content.spans.len().saturating_add(2));
     spans.push(Span::styled(" ", Style::default().bg(theme::USER_MSG_BG)));
     spans.extend(content.spans);

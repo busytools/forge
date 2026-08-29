@@ -142,12 +142,12 @@ fn search_field_line(app: &App) -> Line<'static> {
 
     if app.plugins.search_focused {
         return Line::from(vec![
-            Span::styled(query.to_owned(), text_style),
+            Span::styled(query, text_style),
             Span::styled(" ".to_owned(), cursor_style),
         ]);
     }
 
-    Line::from(Span::styled(query.to_owned(), text_style))
+    Line::from(Span::styled(query, text_style))
 }
 
 fn installed_list(app: &App, viewport_width: u16, viewport_height: u16) -> RenderedList {
@@ -477,8 +477,9 @@ mod tests {
         let mut app = App::test_default();
         app.plugins.active_tab = PluginsViewTab::Installed;
         app.plugins.search_focused = true;
-        app.plugins.installed_search_query =
-            "search query that should wrap across multiple lines".to_owned();
+        app.plugins
+            .installed_search_query
+            .set_text("search query that should wrap across multiple lines");
 
         let expected = Paragraph::new(search_field_line(&app))
             .wrap(Wrap { trim: false })

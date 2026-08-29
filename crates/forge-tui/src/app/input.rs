@@ -93,6 +93,17 @@ impl InputState {
         self.cursor().1
     }
 
+    /// The cursor's character offset into the joined [`Self::lines`],
+    /// counting each line break as one position. A placeholder counts as
+    /// its token rather than its expansion, so this stops being an offset
+    /// into [`Self::text`] once a placeholder sits at or before the
+    /// cursor - a paste block alone does not do it, since a block can
+    /// outlive its token.
+    pub fn cursor_char_offset(&self) -> usize {
+        let (row, col) = self.cursor();
+        self.lines().iter().take(row).map(|line| line.chars().count() + 1).sum::<usize>() + col
+    }
+
     pub fn set_cursor(&mut self, row: usize, col: usize) -> bool {
         self.apply_cursor_edit(|textarea| {
             textarea.move_cursor(CursorMove::Jump(

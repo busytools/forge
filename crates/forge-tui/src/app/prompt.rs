@@ -320,10 +320,19 @@ pub fn dispatch_key(app: &mut crate::app::App, key: KeyEvent) -> bool {
                 return true;
             }
             _ => {
-                // Route printable chars, Backspace, Delete, Left/Right,
-                // Home/End, paste bursts, etc. straight to the canonical
-                // chat-input editor. tui_textarea handles cursor + unicode.
-                let _ = app.input_mut().editor_mut().input(crossterm::event::Event::Key(key));
+                // Printable chars go through the shared burst detector, so
+                // a keystroke-delivered paste coalesces here exactly as it
+                // does in the composer. Everything else - Backspace,
+                // Delete, Left/Right, Home/End - is tui_textarea's own
+                // cursor and unicode handling.
+                if let KeyCode::Char(c) = key.code
+                    && super::keys::is_printable_text_modifiers(key.modifiers)
+                {
+                    let _ = app.type_char(c, std::time::Instant::now());
+                } else {
+                    app.paste_burst.on_non_char_key(std::time::Instant::now());
+                    let _ = app.input_mut().editor_mut().input(crossterm::event::Event::Key(key));
+                }
                 return true;
             }
         }
@@ -549,6 +558,24 @@ pub(crate) mod tests {
     use super::*;
     use forge_primitives::permission_ui::{PermissionAction, PermissionOptionKind};
     use forge_primitives::session_update::ToolCall;
+
+    /// A session whose queue head is a permission prompt with its
+    /// Notes option focused - the "Tell Claude something else" field.
+    pub(crate) fn app_with_focused_notes() -> crate::app::App {
+        let mut app = crate::app::App::test_default();
+        let key = app.active_session_key.clone().expect("active session");
+        let mut prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
+        prompt.focused_option_index = prompt.options.len() - 1;
+        assert_eq!(
+            prompt.options[prompt.focused_option_index].kind,
+            PermissionOptionKind::Notes,
+            "the fixture must focus the Notes option"
+        );
+        if let Some(session) = app.session_mut(&key) {
+            enqueue_prompt(session, prompt);
+        }
+        app
+    }
 
     pub(crate) fn make_question_request(multi_select: bool) -> QuestionRequest {
         QuestionRequest {
@@ -908,6 +935,27 @@ pub(crate) mod tests {
         let mut app = crate::app::App::test_default();
         let handled = dispatch_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert!(!handled);
+    }
+
+    /// Routing printable characters through the burst detector must not
+    /// cost the notes field its ordinary editing keys.
+    #[test]
+    fn notes_field_still_takes_editing_keys() {
+        let mut app = app_with_focused_notes();
+        app.input_mut().set_text("abd");
+
+        for code in [KeyCode::Backspace, KeyCode::Left, KeyCode::Char('X')] {
+            assert!(
+                dispatch_key(&mut app, KeyEvent::new(code, KeyModifiers::NONE)),
+                "the notes field consumes {code:?}"
+            );
+        }
+
+        assert_eq!(
+            app.input().text(),
+            "aXb",
+            "Backspace, Left and a typed character all still reach the notes editor"
+        );
     }
 
     // ── submit_prompt / cancel_prompt ──────────────────────────────
