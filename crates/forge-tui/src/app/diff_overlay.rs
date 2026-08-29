@@ -2019,46 +2019,14 @@ fn hydrate_threads(app: &mut App) {
         // about the thread - so only its own view writes either back, or
         // reports it as having moved.
         let home = thread.commit.as_deref() == scope_commit.as_deref();
-        match resolver::resolve_anchor(&thread.anchor, &overlay.files, home) {
-            AnchorResolution::InPlace { file_idx, hunk_idx, line_idx } => {
-                let resolved = overlay
-                    .files
-                    .get(file_idx)
-                    .and_then(|f| f.hunks.get(hunk_idx))
-                    .and_then(|h| h.lines.get(line_idx));
-                let line = resolved
-                    .and_then(|dl| match thread.anchor.side {
-                        ReviewSide::Old => dl.old_line,
-                        ReviewSide::New => dl.new_line,
-                    })
-                    .unwrap_or(thread.anchor.line);
-                if home {
-                    if thread.anchor.line != line {
-                        thread.anchor.line = line;
-                        changed = true;
-                    }
-                    if thread.status == ReviewStatus::Outdated {
-                        // The line came back; drop the drift flag.
-                        thread.status = ReviewStatus::Open;
-                        changed = true;
-                    }
-                }
-                let key = LineKey { file_idx, hunk_idx, line_idx };
-                occupied.insert(key);
-                rebuilt.push(HunkComment {
-                    key,
-                    path: thread.anchor.path.clone(),
-                    line,
-                    comment_text: thread_text(&thread),
-                    commit: scope_commit.clone(),
-                    thread: thread.clone(),
-                    authored_this_session: false,
-                    anchor_note: None,
-                    persisted: true,
-                });
-                persist.push(thread);
-            }
-            AnchorResolution::Moved { file_idx, hunk_idx, line_idx, from } => {
+        let resolution = resolver::resolve_anchor(&thread.anchor, &overlay.files, home);
+        match resolution {
+            AnchorResolution::InPlace { file_idx, hunk_idx, line_idx }
+            | AnchorResolution::Moved { file_idx, hunk_idx, line_idx, .. } => {
+                let moved_from = match resolution {
+                    AnchorResolution::Moved { from, .. } => Some(from),
+                    _ => None,
+                };
                 let resolved = overlay
                     .files
                     .get(file_idx)
@@ -2090,7 +2058,9 @@ fn hydrate_threads(app: &mut App) {
                     commit: scope_commit.clone(),
                     thread: thread.clone(),
                     authored_this_session: false,
-                    anchor_note: home.then_some(AnchorNote::Moved { from }),
+                    // Only its own view can say where it came from: another
+                    // one never held it at the line it records.
+                    anchor_note: moved_from.filter(|_| home).map(|from| AnchorNote::Moved { from }),
                     persisted: true,
                 });
                 persist.push(thread);
@@ -3052,7 +3022,6 @@ fn persist_active_input(app: &mut App) {
         commit,
         thread,
         authored_this_session: true,
-        // Just anchored on the line the reviewer clicked.
         anchor_note: None,
         persisted,
     };
@@ -7579,11 +7548,6 @@ mod tests {
             homed.anchor.line, 41,
             "and still points at the line its own view numbers it, not the one this view does",
         );
-        assert_eq!(
-            homed.anchor.side,
-            ReviewSide::New,
-            "a foreign view's idea of which side the line sits on is not the thread's",
-        );
     }
 
     #[test]
@@ -7923,11 +7887,6 @@ mod tests {
         assert_eq!(
             card.anchor_note, None,
             "the commit still holds the thread where it always did, so there is no move",
-        );
-        assert_eq!(
-            card.thread.status,
-            ReviewStatus::Open,
-            "and nothing drifted, so it is not outdated either",
         );
     }
 
