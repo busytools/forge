@@ -1511,11 +1511,10 @@ pub(crate) struct MessageRenderOptions {
     pub include_trailing_separator: bool,
     /// True when this message is a peer-MCP / worker-MCP envelope and
     /// the prior message in the FULL chat list had the same
-    /// `sender_org`. Suppresses the `forge` role label at the top so
-    /// consecutive same-project envelopes read as a group-chat-style
-    /// streak (one label, N bodies) instead of repeating the label per
-    /// envelope. Computed by the chat iterator (see `crate::ui::chat`)
-    /// from the chat-wide previous message's envelope org.
+    /// `sender_org`. Suppressed a `forge` role label at the top that no
+    /// longer exists, so the flag has no render effect today (#769).
+    /// Computed by the chat iterator (see `crate::ui::chat`) from the
+    /// chat-wide previous message's envelope org.
     ///
     /// Sticky-header for scroll-back is NOT implemented: when the user
     /// scrolls past a streak's first envelope, the new first-visible
@@ -1976,12 +1975,15 @@ pub(crate) fn message_envelope_org(msg: &ChatMessage) -> Option<String> {
     }
 }
 
-/// Decide whether `messages[idx]` should suppress its role-label line.
-/// Group-chat-style collapse: returns `true` iff the message AND its
-/// immediate predecessor are both peer/worker envelopes carrying the
-/// same `sender_org`. Used by chat.rs to thread `suppress_group_header`
-/// through both the measure and render passes consistently so the
-/// `MessageRenderCacheKey` stays stable per message.
+/// Returns `true` iff the message AND its immediate predecessor are
+/// both peer/worker envelopes carrying the same `sender_org`. Threaded
+/// by chat.rs as `suppress_group_header` through both the measure and
+/// render passes so the `MessageRenderCacheKey` stays stable per
+/// message.
+///
+/// Suppressed the envelope role label, which no longer exists - the
+/// only kinds this can fire for are the ones `role_label_line` now
+/// returns `None` for, so nothing downstream reads it (#769).
 pub(crate) fn compute_suppress_group_header(messages: &[ChatMessage], idx: usize) -> bool {
     if idx == 0 {
         return false;

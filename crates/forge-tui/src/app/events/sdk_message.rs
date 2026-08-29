@@ -1651,8 +1651,10 @@ fn handle_result(app: &mut App, msg: Message) {
 /// ChatMessage in the active session.
 ///
 /// Invalidates the layout, not just the render cache: the duration
-/// appends a row, and turn exit invalidating too would leave this
-/// correct only by a neighbour's side effect.
+/// appends a row, and turn exit only invalidates when the turn was
+/// active - which reads the App-global status, so a background
+/// session's turn ending while the visible one sits idle takes
+/// neither path.
 ///
 /// No-op when no Assistant message is present (rare: Result fires
 /// before any assistant content has been pushed).

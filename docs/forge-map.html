@@ -1092,7 +1092,7 @@ chat continues here...
     <div class="when">visible: every assistant turn</div>
   </div>
   <div class="surface-body">
-    <p>An assistant turn has no header row: the body starts on the first line. The turn duration - <code>12.4s</code> in DIM, sourced from <code>Message::Result.duration_ms</code> - trails the body as the last row, because a duration is a result and belongs after the thing it measures. It lands only once the turn completes, and appending it shifts nothing the user has already read; a header row would insert above the body at every turn end. A streaming or resumed turn carries no duration and renders no such row, and neither does a turn whose body rendered nothing visible - there is nothing to hang it under. Body is full markdown via <code>tui-markdown</code> (which uses <code>pulldown-cmark</code>) with <code>syntect</code> for fenced code blocks.</p>
+    <p>An assistant turn has no header row: the body starts on the first line. The turn duration - <code>12.4s</code> in DIM, sourced from <code>Message::Result.duration_ms</code> - trails the body as the last row, because a duration is a result and belongs after the thing it measures. It lands only once the turn completes, and appending it shifts nothing the user has already read. A streaming or resumed turn carries no duration and renders no such row, and neither does a turn whose body rendered nothing visible - there is nothing to hang it under. Body is full markdown via <code>tui-markdown</code> (which uses <code>pulldown-cmark</code>) with <code>syntect</code> for fenced code blocks.</p>
     <div class="term">
       <pre class="indent">
   Looking at <span class="dim">crates/forge-tui/src/app/events/rate_limit.rs</span> - the warning chip
