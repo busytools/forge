@@ -266,9 +266,9 @@ pub struct App {
     pub settings_home_override: Option<PathBuf>,
     pub status: AppStatus,
     pub should_quit: bool,
-    /// `true` once preflight has handed the launchpad over to the
-    /// projects view. Latches for the run: see
-    /// [`crate::app::preflight::hand_over_when_ready`].
+    /// `true` once preflight has handed over to wherever the invocation
+    /// was headed. Latches for the run: see
+    /// [`crate::app::preflight::advance`].
     pub preflight_done: bool,
     /// `true` once preflight has painted a cancelled model fetch, which
     /// is what lets forge quit having said what it kept and where.
