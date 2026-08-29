@@ -198,6 +198,12 @@ fn walk_assistant_content(
     use crate::agent::model;
     use forge_primitives::ContentBlock;
 
+    // Unrecognised block types decode to `ContentBlock::Unknown` rather
+    // than being dropped, so an empty slice is genuinely no content.
+    if !content.is_empty() {
+        super::clear_compaction_state(app, true);
+    }
+
     // A subagent message (parent_tool_use_id set) belongs in the
     // SUBAGENTS inspector, so its narration/thinking must not leak into
     // the main chat (2.1.204 local agents stream it into the parent wire).
@@ -209,7 +215,6 @@ fn walk_assistant_content(
                 if is_subagent || text.is_empty() {
                     continue;
                 }
-                super::clear_compaction_state(app, true);
                 let chunk = model::ContentChunk::new(model::ContentBlock::Text(
                     model::TextContent::new(text.clone()),
                 ));

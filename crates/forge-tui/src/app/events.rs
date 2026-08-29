@@ -1036,6 +1036,18 @@ mod tests {
         }
     }
 
+    /// `assistant_message` with `parent_tool_use_id` set - content a
+    /// subagent streamed into the parent session's wire.
+    fn subagent_assistant_message(
+        content: Vec<forge_primitives::ContentBlock>,
+    ) -> forge_primitives::Message {
+        let mut msg = assistant_message(content);
+        if let forge_primitives::Message::Assistant { parent_tool_use_id, .. } = &mut msg {
+            *parent_tool_use_id = Some("toolu_parent".to_owned());
+        }
+        msg
+    }
+
     fn user_message(content: Vec<forge_primitives::ContentBlock>) -> forge_primitives::Message {
         forge_primitives::Message::User {
             message: forge_primitives::UserEnvelope { role: "user".to_owned(), content },
@@ -2906,6 +2918,56 @@ mod tests {
                 ChatMessage { role: MessageRole::System(Some(SystemSeverity::Info)), .. }
             )
         }));
+    }
+
+    #[test]
+    fn tool_use_only_assistant_message_clears_compacting() {
+        let mut app = make_test_app();
+        send_msg(&mut app, system_message("status", serde_json::json!({"status": "compacting"})));
+        assert!(app.is_compacting(), "precondition: wire status=compacting must arm the indicator");
+
+        send_msg(
+            &mut app,
+            assistant_message(vec![tool_use_block(
+                "toolu_1",
+                "Bash",
+                serde_json::json!({"command": "ls"}),
+            )]),
+        );
+
+        assert!(
+            !app.is_compacting(),
+            "assistant content of any kind ends compaction; a tool_use-only message must clear it"
+        );
+    }
+
+    #[test]
+    fn empty_assistant_message_leaves_compacting_alone() {
+        let mut app = make_test_app();
+        send_msg(&mut app, system_message("status", serde_json::json!({"status": "compacting"})));
+        assert!(app.is_compacting(), "precondition: wire status=compacting must arm the indicator");
+
+        send_msg(&mut app, assistant_message(vec![]));
+
+        assert!(
+            app.is_compacting(),
+            "an envelope carrying no content is not the model producing; only content ends compaction"
+        );
+    }
+
+    #[test]
+    fn subagent_assistant_message_clears_compacting() {
+        let mut app = make_test_app();
+        send_msg(&mut app, system_message("status", serde_json::json!({"status": "compacting"})));
+        assert!(app.is_compacting(), "precondition: wire status=compacting must arm the indicator");
+
+        send_msg(&mut app, subagent_assistant_message(vec![text_block("subagent narration")]));
+
+        assert!(
+            !app.is_compacting(),
+            "a subagent block reaches this wire only while the parent turn runs, so it ends \
+             compaction even though the chat suppresses it"
+        );
     }
 
     #[test]
