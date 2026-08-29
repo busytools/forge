@@ -89,6 +89,37 @@ mod tests {
         );
     }
 
+    /// Preflight has to repaint on its own. Account state and dictation
+    /// progress are polled rather than pushed, so nothing else in the
+    /// run loop marks the screen dirty - without this the spinner is
+    /// painted once and stops, and the screen never updates while
+    /// accounts resolve or three gigabytes download.
+    ///
+    /// The change this catches is someone tightening the animation gate
+    /// for a repaint-cost reason, which is exactly how it got here.
+    #[test]
+    fn preflight_animates_until_it_hands_over() {
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Chat;
+        app.status = crate::app::AppStatus::Ready;
+        assert!(
+            !crate::app::is_animating(&app),
+            "an idle chat has nothing animating, or this test proves nothing",
+        );
+
+        app.active_view = crate::app::ActiveView::Launchpad;
+        assert!(
+            crate::app::is_animating(&app),
+            "preflight must earn a repaint on its own; nothing else marks it dirty",
+        );
+
+        app.preflight_done = true;
+        assert!(
+            !crate::app::is_animating(&app),
+            "the projects view is static again once preflight has handed over",
+        );
+    }
+
     #[test]
     fn every_key_is_consumed() {
         let mut app = App::test_default();

@@ -338,15 +338,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // is_animating clause keeps the per-row spinners on background
         // sessions animating; the active session already drives ticks
         // via `app.status` above.
-        let any_background_running = any_background_activity(app);
-        let is_animating = matches!(
-            app.status,
-            AppStatus::Connecting
-                | AppStatus::CommandPending
-                | AppStatus::Thinking
-                | AppStatus::Running
-        ) || app.is_compacting()
-            || any_background_running;
+        let is_animating = is_animating(app);
         if is_animating {
             advance_spinner_frame(app, Instant::now());
             tab_title::update_tab_title(&app.status, app.spinner_frame, app.cwd());
@@ -475,6 +467,29 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 /// -active row keeps ticking while an Attention/triangle row with a live
 /// task does not - no wasted redraws, and no drift from the glyph. The
 /// active session already drives ticks via `app.status`.
+/// Whether anything on screen is mid-animation, which is what earns a
+/// repaint on a tick nothing else changed.
+///
+/// The preflight clause is not decoration. Account state and dictation
+/// progress are both POLLED by the renderer rather than pushed, so
+/// neither emits a `SessionUpdate` and neither marks `needs_redraw`; and
+/// `any_background_activity` reads `app.sessions`, which is empty at
+/// boot. Without this, preflight paints once with a spinner that never
+/// moves and a screen that never updates while 3.07 GB downloads.
+pub(crate) fn is_animating(app: &App) -> bool {
+    if app.active_view == crate::app::ActiveView::Launchpad && !app.preflight_done {
+        return true;
+    }
+    matches!(
+        app.status,
+        AppStatus::Connecting
+            | AppStatus::CommandPending
+            | AppStatus::Thinking
+            | AppStatus::Running
+    ) || app.is_compacting()
+        || any_background_activity(app)
+}
+
 fn any_background_activity(app: &App) -> bool {
     app.sessions.values().any(|s| {
         crate::app::session::session_shows_spinner(s.lifecycle_state, s.has_live_background_work())

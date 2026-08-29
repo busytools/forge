@@ -330,15 +330,6 @@ fn block_top_offset(
     available.saturating_sub(total_block) / 2
 }
 
-/// `true` when the per-account glyph row has something to say: some
-/// account is not `Ready`, so the launchpad's rows are blocked and the
-/// row is what explains why. All-`Ready` hides it rather than showing a
-/// permanently green line.
-///
-/// Not a boot-time condition. A token expiring mid-session takes an
-/// account `Ready -> Bailed` on the usage poll, and the recovery poll
-/// then takes it to `Loading`, so the row reappears whenever that
-/// happens.
 /// `true` when `needle` appears in a wordmark row. Exists so a test
 /// asserting the wordmark is absent can first prove its needle would
 /// have matched a present one.
@@ -347,6 +338,20 @@ pub(super) fn wordmark_contains(needle: &str) -> bool {
     FORGE_WORDMARK.iter().any(|row| row.contains(needle))
 }
 
+/// `true` when the per-account glyph row has something to say: some
+/// account is not `Ready`. All-`Ready` hides it rather than showing a
+/// permanently green line.
+///
+/// **Deliberately wider than the click gate, not the same condition.**
+/// `all_accounts_loaded()` counts `Bailed` as terminal, so a bailed
+/// account lifts the gate and leaves the rows clickable - and is still
+/// worth surfacing. The row covers that as well as the mid-flight
+/// window, where the rows really are blocked and this is what says why.
+///
+/// Not a boot-time condition either. A token expiring mid-session takes
+/// an account `Ready -> Bailed` on the usage poll, and the recovery poll
+/// then takes it to `Loading`, so the row reappears whenever that
+/// happens.
 pub(super) fn account_row_visible(app: &App) -> bool {
     app.workspace.as_ref().is_some_and(|ws| {
         ws.account_loading_snapshot()
