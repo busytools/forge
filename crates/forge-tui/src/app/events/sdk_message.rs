@@ -1677,7 +1677,7 @@ fn handle_result(app: &mut App, msg: Message) {
 fn stamp_turn_info_on_latest_assistant(
     app: &mut App,
     duration_ms: u64,
-    api_ms: u64,
+    api_ms: Option<u64>,
     usage: Option<forge_primitives::Usage>,
     total_cost_usd: Option<f64>,
 ) {
@@ -1690,13 +1690,13 @@ fn stamp_turn_info_on_latest_assistant(
     if let Some(msg) = app.active_messages_mut().get_mut(idx) {
         let info = &mut msg.turn_info;
         info.duration_ms = Some(duration_ms);
-        info.api_ms = Some(api_ms);
+        info.api_ms = api_ms;
         info.ended_at_local = Some(local_clock_now());
         info.session_cost_usd = total_cost_usd;
         if model.is_some() {
             info.model = model;
         }
-        if let Some(usage) = usage {
+        if let Some(usage) = usage.filter(|u| !is_unattributed_usage(*u)) {
             info.input_tokens = Some(usage.input_tokens);
             info.output_tokens = Some(usage.output_tokens);
             info.cache_read_tokens = Some(usage.cache_read_input_tokens);
@@ -1705,6 +1705,20 @@ fn stamp_turn_info_on_latest_assistant(
         msg.invalidate_render_cache();
     }
     app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(idx));
+}
+
+/// True when a present `usage` block carries no information.
+///
+/// A turn that reached the API always spends input tokens, so an
+/// all-zero block means the CLI attributed none rather than that the
+/// turn consumed none. Compaction and interrupt results both arrive
+/// this way. Only the whole block counts: an individual zero - no new
+/// cache writes, say - is a real measurement and is rendered.
+fn is_unattributed_usage(usage: forge_primitives::Usage) -> bool {
+    usage.input_tokens == 0
+        && usage.output_tokens == 0
+        && usage.cache_read_input_tokens == 0
+        && usage.cache_creation_input_tokens == 0
 }
 
 /// Local wall-clock `HH:MM:SS` for the turn's end stamp.
@@ -1968,15 +1982,19 @@ mod stamp_turn_info_tests {
         let mut app = App::test_default();
         app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new()));
 
-        stamp_turn_info_on_latest_assistant(&mut app, 12_768, 9_000, None, None);
+        stamp_turn_info_on_latest_assistant(&mut app, 12_768, Some(9_000), None, None);
 
         let latest = app
             .messages()
             .iter()
             .rev()
             .find(|m| matches!(m.role, MessageRole::Assistant))
-            .expect("seeded assistant message present");
-        assert_eq!(latest.turn_info.duration_ms, Some(12_768));
+            .expect("stamping must not drop the assistant message it targets");
+        assert_eq!(
+            latest.turn_info.duration_ms,
+            Some(12_768),
+            "Result.duration_ms lands on the latest assistant message verbatim",
+        );
     }
 
     /// `Result.duration_api_ms` counts up across the session while
@@ -1987,9 +2005,24 @@ mod stamp_turn_info_tests {
     fn api_time_is_the_delta_of_a_session_cumulative_counter() {
         let mut app = App::test_default();
 
-        assert_eq!(app.settle_live_turn(3_403), 3_403, "the first turn has nothing to subtract");
-        assert_eq!(app.settle_live_turn(6_504), 3_101, "later turns are the delta, not the total");
-        assert_eq!(app.settle_live_turn(9_020), 2_516);
+        assert_eq!(
+            app.settle_live_turn(3_403),
+            Some(3_403),
+            "the first turn has nothing to subtract",
+        );
+        assert_eq!(
+            app.settle_live_turn(6_504),
+            Some(3_101),
+            "later turns are the delta, not the total",
+        );
+        assert_eq!(app.settle_live_turn(9_020), Some(2_516));
+        assert_eq!(
+            app.settle_live_turn(9_020),
+            None,
+            "a turn that advanced the counter by nothing spent no attributable API time; \
+             treating the unchanged counter as a fresh start would report the session's \
+             entire 9020ms as this turn's",
+        );
 
         let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new());
         msg.turn_info.duration_ms = Some(2_569);
@@ -2002,19 +2035,10 @@ mod stamp_turn_info_tests {
         );
     }
 
-    /// The counter restarts after a compaction, and concurrent
-    /// subagent calls can sum past wall clock. Neither may render as a
-    /// zero local time.
+    /// Concurrent subagent calls can sum past wall clock, leaving no
+    /// local time to derive. It must read as absent, not as zero.
     #[test]
     fn an_unsound_api_split_is_suppressed_rather_than_clamped() {
-        let mut app = App::test_default();
-        let _ = app.settle_live_turn(16_244);
-        assert_eq!(
-            app.settle_live_turn(0),
-            0,
-            "a counter below the previous one restarted, so it is already per-turn",
-        );
-
         let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new());
         msg.turn_info.duration_ms = Some(11_973);
         msg.turn_info.api_ms = Some(18_486);
@@ -2023,6 +2047,90 @@ mod stamp_turn_info_tests {
             None,
             "parallel subagent calls outran wall clock, so there is no local time to claim",
         );
+    }
+
+    /// A compaction Result arrives with `duration_api_ms: 0` and an
+    /// all-zero `usage` block. Both are the CLI attributing nothing,
+    /// not measurements of zero, and rendering either would have forge
+    /// assert that a 44-second compaction used no API time and no
+    /// tokens. Figures are `compact.jsonl`'s final Result.
+    #[test]
+    fn an_unattributed_compaction_result_stamps_nothing_rather_than_zeros() {
+        let mut app = App::test_default();
+        let _ = app.settle_live_turn(16_244);
+        assert_eq!(
+            app.settle_live_turn(0),
+            None,
+            "the counter restarted to zero, which attributes no API time to this turn",
+        );
+
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new()));
+        stamp_turn_info_on_latest_assistant(
+            &mut app,
+            44_410,
+            None,
+            Some(forge_primitives::Usage {
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            }),
+            Some(1.164_956_5),
+        );
+
+        let info = &app
+            .messages()
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, MessageRole::Assistant))
+            .expect("stamping must not drop the assistant message it targets")
+            .turn_info;
+        assert_eq!(info.duration_ms, Some(44_410), "the wall clock is real and is kept");
+        assert_eq!(info.api_ms, None, "an unattributed API time is absent, not 0");
+        assert_eq!(info.local_ms(), None, "with no API time there is no local time to derive");
+        assert_eq!(
+            (info.input_tokens, info.output_tokens, info.cache_read_tokens),
+            (None, None, None),
+            "an all-zero usage block carries no information, so no token count is claimed",
+        );
+        assert_eq!(
+            info.cache_written_tokens, None,
+            "the whole block is dropped together; a lone surviving 0 would still be a claim",
+        );
+    }
+
+    /// The all-zero rule keys on the WHOLE block: a turn that really
+    /// wrote nothing to the cache still reports that truthfully.
+    #[test]
+    fn a_lone_zero_inside_a_real_usage_block_is_a_measurement_and_survives() {
+        let mut app = App::test_default();
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new()));
+        stamp_turn_info_on_latest_assistant(
+            &mut app,
+            4_675,
+            Some(3_807),
+            Some(forge_primitives::Usage {
+                input_tokens: 2,
+                output_tokens: 5,
+                cache_read_input_tokens: 15_262,
+                cache_creation_input_tokens: 0,
+            }),
+            None,
+        );
+
+        let info = &app
+            .messages()
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, MessageRole::Assistant))
+            .expect("stamping must not drop the assistant message it targets")
+            .turn_info;
+        assert_eq!(
+            info.cache_written_tokens,
+            Some(0),
+            "writing nothing to the cache is a real measurement and must not be suppressed",
+        );
+        assert_eq!(info.input_tokens, Some(2), "the rest of a real block is untouched");
     }
 
     /// The CLI emits one assistant frame per content block, all
@@ -2057,7 +2165,7 @@ mod stamp_turn_info_tests {
         // No assistant messages seeded; helper's rev().find() returns
         // None and the stamp call is a no-op. Verifying no panic +
         // no spurious mutation is the contract.
-        stamp_turn_info_on_latest_assistant(&mut app, 99, 0, None, None);
+        stamp_turn_info_on_latest_assistant(&mut app, 99, None, None, None);
         assert!(app.messages().is_empty());
     }
 
@@ -2069,7 +2177,7 @@ mod stamp_turn_info_tests {
         app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new()));
         app.push_message_tracked(ChatMessage::new(MessageRole::User, Vec::new()));
 
-        stamp_turn_info_on_latest_assistant(&mut app, 5_000, 0, None, None);
+        stamp_turn_info_on_latest_assistant(&mut app, 5_000, None, None, None);
 
         // Latest (idx 2) Assistant gets the stamp; earlier (idx 0) stays None.
         let assistants: Vec<Option<u64>> = app
@@ -2103,7 +2211,7 @@ mod stamp_turn_info_tests {
             "fixture guard: heights start valid, so a stale index can only come from the stamp",
         );
 
-        stamp_turn_info_on_latest_assistant(&mut app, 12_400, 0, None, None);
+        stamp_turn_info_on_latest_assistant(&mut app, 12_400, None, None, None);
 
         assert_eq!(
             app.active_viewport_mut().oldest_stale_index(),

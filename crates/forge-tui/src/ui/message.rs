@@ -5059,20 +5059,79 @@ mod tests {
             MessageRenderContext::new(None, 100, 0, options_without_separator()),
             &mut lines,
         );
-        let body = render_lines_to_strings(&lines).join("\n");
+        let rows = render_lines_to_strings(&lines);
+        let body = rows.join("\n");
+        // Assert on whole rows: `out` is an always-printed label and
+        // `-` appears in five cells, so a substring probe would pass
+        // without ever reaching the branch that fills those cells.
+        let row_starting = |label: &str| {
+            rows.iter()
+                .find(|row| row.trim_start().starts_with(label))
+                .cloned()
+                .unwrap_or_else(|| format!("<no row starting {label}> in {body}"))
+        };
 
-        assert!(
-            body.contains("out") && body.contains('-'),
-            "an omitted output count reads as absent, not as zero: {body}",
+        assert_eq!(
+            row_starting("in").trim_end(),
+            "    in        4,231           out     -",
+            "an omitted output count fills its own cell with a dash; rendering it as 0 would \
+             claim the turn produced nothing",
+        );
+        assert_eq!(
+            row_starting("elapsed").trim_end(),
+            "    elapsed   1m 19s          api     -",
+            "an unattributed API time fills its own cell with a dash rather than 0.0s",
         );
         assert!(
-            body.contains("108,442 read") && body.contains("93% of input served from cache"),
+            !body.contains("local"),
+            "with no API time there is no local time to derive, so the row is absent rather \
+             than claiming the whole wall clock: {body}",
+        );
+        assert_eq!(
+            row_starting("cache").trim_end(),
+            "    cache     108,442 read    wrote   3,180",
+            "cache read and write are separate cells and both are input-side counts",
+        );
+        assert!(
+            body.contains("93% of input served from cache"),
             "the percentage is cache_read over every input-side counter, and the expanded \
-             body says so rather than leaving the denominator to be guessed: {body}",
+             body names the denominator rather than leaving it to be guessed: {body}",
         );
         assert!(
             !body.contains("written cache") && !body.contains("out cache"),
             "both cache counters are input tokens; neither may be labelled as output: {body}",
+        );
+    }
+
+    /// A compaction Result carries `duration_api_ms: 0` and an
+    /// all-zero `usage`, which is the CLI attributing nothing rather
+    /// than the turn having consumed nothing. Wall clock is
+    /// `compact.jsonl`'s final Result; the reducer that drops both is
+    /// pinned in `stamp_turn_info_tests`.
+    #[test]
+    fn a_compaction_result_claims_no_measurement_it_does_not_have() {
+        let mut msg = make_text_message(MessageRole::Assistant, "hello");
+        msg.turn_info = TurnInfo { expanded: true, ..settled_turn_info(44_410) };
+
+        let row = turn_info_row_text(&mut msg, 100);
+        assert_eq!(
+            row, "\u{21b3} turn info \u{b7} 44.4s [\u{25bc} collapse]",
+            "no token field may appear: a compaction reporting `0\u{2191} 0\u{2193}` states that \
+             it consumed nothing, which is false",
+        );
+
+        let mut lines = Vec::new();
+        render_message(
+            &mut msg,
+            &idle_spinner(),
+            MessageRenderContext::new(None, 100, 0, options_without_separator()),
+            &mut lines,
+        );
+        let body = render_lines_to_strings(&lines).join("\n");
+        assert!(
+            !body.contains("local") && !body.contains("0.0s"),
+            "44.4s of local time and 0.0s of API time are both claims the wire did not make: \
+             {body}",
         );
     }
 
@@ -5104,6 +5163,23 @@ mod tests {
             narrower.starts_with("\u{21b3} turn info \u{b7} 1m 19s")
                 && narrower.ends_with("[\u{25b6} expand]"),
             "the label, the elapsed and the toggle are never shed: {narrower}",
+        );
+
+        // Counted independently of the code: 14 for the prefix, 39 of
+        // field text, 9 of separators, 1 space before the toggle and
+        // 10 for the toggle. An off-by-one in that space is invisible
+        // at any width except this one.
+        let exact = turn_info_row_text(&mut msg, 73);
+        assert_eq!(
+            exact.chars().count(),
+            73,
+            "at its exact width the full row is kept and fills the line: {exact}",
+        );
+        let one_short = turn_info_row_text(&mut msg, 72);
+        assert!(
+            !one_short.contains("written"),
+            "one column narrower than an exact fit must shed a field, not overflow: \
+             {one_short}",
         );
     }
 

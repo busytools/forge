@@ -1917,13 +1917,19 @@ impl App {
     }
 
     /// Close the live turn and return the API time attributable to
-    /// it.
+    /// it, or `None` when the wire attributed none.
     ///
     /// `Message::Result.duration_api_ms` counts up across the whole
     /// session, so the turn's own figure is the delta. A value below
     /// the previous one means the counter restarted (it does after a
     /// compaction), in which case it is already per-turn.
-    pub fn settle_live_turn(&mut self, duration_api_ms: u64) -> u64 {
+    ///
+    /// A resulting zero is "not attributed", not "took no time": the
+    /// counter is millisecond-granular, so a turn that reached the API
+    /// cannot register zero. Compaction and interrupt results both
+    /// arrive that way, and reporting the whole wall clock as local
+    /// time would be a claim rather than a measurement.
+    pub fn settle_live_turn(&mut self, duration_api_ms: u64) -> Option<u64> {
         let bucket = self.active_bucket_mut();
         let per_turn = match bucket.prev_duration_api_ms {
             Some(prev) if duration_api_ms >= prev => duration_api_ms - prev,
@@ -1931,7 +1937,7 @@ impl App {
         };
         bucket.prev_duration_api_ms = Some(duration_api_ms);
         bucket.live_turn = crate::app::state::messages::LiveTurn::default();
-        per_turn
+        (per_turn > 0).then_some(per_turn)
     }
 
     /// Active session's most recent `Message::StopHookSummary`
