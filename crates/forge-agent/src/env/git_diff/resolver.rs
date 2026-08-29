@@ -7,10 +7,11 @@
 //! [`resolve_anchor`] reports whether the line is still in place, moved,
 //! or could not be placed at all.
 //!
-//! Relocation requires one unambiguous match: the line plus a neighbour
-//! on each side it has one. Anything less is left where it was and marked
-//! outdated, because a comment silently attached to the wrong code costs
-//! far more than one the reviewer has to go looking for.
+//! Relocation requires one unambiguous match: the line, plus at least
+//! one recorded neighbour agreeing within [`CONTEXT_RADIUS`] on each
+//! side the candidate has neighbours. Anything less is left where it was
+//! and marked outdated, because a comment silently attached to the wrong
+//! code costs far more than one the reviewer has to go looking for.
 //!
 //! A distance bound does not make that safer. Bounding how far a match
 //! may be found still leaves several candidates inside the bound, and
