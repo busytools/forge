@@ -1339,8 +1339,8 @@ impl DiffOverlayState {
     /// so the untracked count is 0.
     /// The only place `scope` is assigned. Assigning it anywhere else
     /// renders the previous visit's cards against the new scope, and no
-    /// test fails - the cards are rebuilt by [`after_nav`] consuming the
-    /// outcome this returns, not by the assignment.
+    /// test fails - the cards are rebuilt by whoever consumes the outcome
+    /// this returns, not by the assignment.
     pub fn select_scope(&mut self, scope: DiffScope) -> NavOutcome {
         self.scope = scope;
         self.jump_open = false;
@@ -3021,13 +3021,10 @@ fn persist_active_input(app: &mut App) {
         anchor_note: None,
         persisted,
     };
-    // Replace this thread's card in this scope, and only that one. A line
-    // carries as many cards as it has threads, so matching on the key
-    // alone takes the neighbours with it; and a thread authored on a
-    // commit renders in that commit AND in the whole diff, which
-    // `hydrate_threads` keeps on purpose, so matching on identity alone
-    // takes the other scope's card instead.
-    overlay.comments.retain(|c| c.commit != comment.commit || c.thread.id != comment.thread.id);
+    // No dedup here: the card's lifetime while its editor is open belongs
+    // to `reopen_comment_for_turn`, which takes it out of `comments` and
+    // parks it, and puts it back if the edit is abandoned. So a save is
+    // always an addition.
     overlay.comments.push(comment);
     overlay.recompute_comment_counts();
     app.needs_redraw = true;
@@ -5654,8 +5651,7 @@ mod tests {
     #[test]
     fn resolving_a_comment_makes_its_file_re_measure() {
         // Resolving folds the card to a marker, so the file loses rows
-        // exactly as a collapse toggle does. This is the commoner half:
-        // reviewers resolve far more often than they expand a marker.
+        // exactly as a collapse toggle does.
         let (mut app, _dir) = review_app();
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
         let mut overlay =
@@ -7443,7 +7439,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn replying_from_the_whole_diff_leaves_a_thread_in_its_own_commit() {
         // A thread's `commit` is where it was authored, not the view you
@@ -7519,7 +7514,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn switching_back_to_a_cached_scope_rebuilds_its_cards_from_the_store() {
         // A thread rendered in two scopes is two cards, each owning its
@@ -7554,7 +7548,8 @@ mod tests {
         hydrate_threads(&mut app);
 
         // Step into the commit, resolve there, and step back.
-        let outcome = app.diff_overlay.as_mut().expect("overlay").select_scope(DiffScope::Commit(0));
+        let outcome =
+            app.diff_overlay.as_mut().expect("overlay").select_scope(DiffScope::Commit(0));
         assert_eq!(outcome, NavOutcome::Ready, "the commit's diff is cached");
         after_nav(&mut app, outcome);
         let line = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };

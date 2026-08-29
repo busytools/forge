@@ -167,13 +167,9 @@ pub fn drain_events(app: &mut App) {
             return;
         };
         // Retire a parked signal whose own branch is owed nothing now.
-        // Every other writer is keyed to the branch it concerns and
-        // deliberately leaves other branches alone, and the recompute
-        // below answers for the branch the checkout is on - so a branch
-        // the checkout has since left is the one nothing revisits. Both
-        // ways a branch stops owing a turn read the same here, since the
-        // store holds no waiting thread whether they were resolved or the
-        // dead-branch sweep dropped the rows.
+        // The recompute below answers for the branch the checkout is on,
+        // and every other writer leaves other branches alone, so a branch
+        // the checkout has left is the one nothing revisits.
         //
         // Reading the threads rather than asking for the tally, because
         // the tally reports a read failure as `None` too, and a transient
