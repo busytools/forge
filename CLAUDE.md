@@ -493,8 +493,8 @@ inspected.
     is a config entry and an implementation rather than a rewrite.
     Hardcoding one multiplexer's behaviour with no way to add another
     is the thing this forbids. The first two belong in the pull
-    request and beside the `forge.toml` key, never as a per-mux
-    support matrix in a comment, which rots exactly as hard rule 13
+    request and beside the `forge.toml` key, never as a support
+    matrix in a comment, which rots exactly as hard rule 13
     describes.
 
     The binary test: when a terminal multiplexer intercepts it, does
