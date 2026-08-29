@@ -422,6 +422,65 @@ inspected.
     of the harness, so both are true and neither is stale. Naming
     these documents as a set is what invites someone to make them
     agree, which would quietly change what two of them mean.
+19. **A terminal multiplexer is the common case, not the edge case.**
+    forge is expected to run behind one, so a capability forge detects
+    is not a capability forge has. Recommending a particular
+    multiplexer is not the same as depending on one.
+
+    **Build the multiplexer-independent path first.** Where one
+    exists it is the primary and an escape sequence is the fallback,
+    never the preference. An escape sequence is a request to whatever
+    sits between forge and the terminal, and the env vars that gate it
+    describe the far end of that pipe rather than its middle.
+
+    #778 is the worked example, and it is a good one because forge
+    already had the right path and skipped it. `notification_plan`
+    (`crates/forge-tui/src/app/notify.rs`) sets `send_desktop:
+    osc9_text.is_none()`, so believing the terminal speaks OSC 9
+    suppresses the `notify-rust` desktop notification, which reaches
+    the OS without crossing the terminal at all. That belief comes
+    from `terminal_capabilities_from_env` reading `TERM_PROGRAM` and
+    `ITERM_SESSION_ID`. Measured: both reach a pane under zellij
+    0.44.3 and under GNU screen 4.00.03 unchanged, while an OSC 9
+    emitted inside either does not reach the outer pty, with plain
+    text written on both sides of it arriving normally. shpool 0.9.8
+    drops it deliberately; its vendored vterm carries the literals
+    `ignoring OSC 9 (desktop notification)` and `ignoring OSC 777`.
+    So the check answers whether the terminal supports OSC 9 when the
+    question is whether an OSC 9 survives to it, and the user gets a
+    dock bounce and no banner.
+
+    tmux is why no capability flag settles this. No OSC leaves a pane
+    at all: `screen_write_rawstring` is the only path from pane bytes
+    to the outer terminal and `input_dcs_dispatch` is its only
+    caller. The one route out is a DCS `tmux;` envelope needing
+    `allow-passthrough`, off by default since 3.3, and every ESC in
+    the payload doubled, which `input.c`'s state tables require and
+    `tmux.1` does not mention. Surviving tmux means re-encoding the
+    sequence, not emitting it.
+
+    **Where no multiplexer-independent path exists, state the
+    requirement and detect its absence.** Depending on a sequence is
+    allowed. Depending on it silently is not, because a feature that
+    quietly does nothing reads as forge being broken. The keyboard
+    protocol is the case forge already gets right: `resume_terminal`
+    (`crates/forge-tui/src/app.rs`) negotiates the kitty enhanced
+    flags at startup because `SUPER` arrives no other way, and
+    `keys.rs` says so where `CMD_MOD` is defined, names the case that
+    cannot send it, and accepts `CONTROL` as an equivalent rather
+    than dropping Cmd+C on the floor.
+
+    **Where the implementation must be multiplexer-specific, it owes
+    three things**: why the generic path was not possible, which
+    multiplexers it works under and which it does not, and a seam - a
+    `forge.toml` key plus enough structure that a second multiplexer
+    is a config entry and an implementation rather than a rewrite.
+    Hardcoding one multiplexer's behaviour with no way to add another
+    is the thing this forbids.
+
+    The binary test: when a multiplexer intercepts it, does the user
+    get a degraded experience or an explained one? Silence is the
+    failure.
 
 ## Claude Code worktree interop
 
