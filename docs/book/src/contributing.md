@@ -29,6 +29,9 @@ before you open a pull request.
 - **New wire surface ships with a captured baseline.** See
   [the wire contract](./wire-contract.md).
 - **UI changes update `docs/forge-map.html` in the same pull request.**
+- **Changes that make a page here false update it in the same pull
+  request.** This site deploys on every push to `main`, so a page left
+  behind is republished wrong within minutes of the merge.
 
 ## Where does my code go?
 
