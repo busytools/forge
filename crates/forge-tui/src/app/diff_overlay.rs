@@ -75,11 +75,9 @@ pub struct CachedScan {
 /// Result of pointing the overlay at a scope: either its hunks were
 /// cached (files already swapped) or an async scan must be spawned by
 /// the caller (which has the event channel).
-/// `must_use` guards a call site that does not exist yet: every current
-/// one binds the outcome and passes it on. It is here because dropping
-/// one skips the rest of a scope change - the scan an uncached scope
-/// needs, or the card rebuild a cached one needs - and neither absence
-/// is visible where it happens.
+/// `must_use` because dropping one skips the rest of a scope change -
+/// the scan, or the card rebuild - and neither absence shows where it
+/// happens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
 pub enum NavOutcome {
@@ -2100,10 +2098,8 @@ fn hydrate_threads(app: &mut App) {
             commit: scope_commit.clone(),
             thread: thread.clone(),
             authored_this_session: false,
-            // Said from any view. That a thread cannot be placed is a
-            // fact about THIS diff, not a claim about the numbering it
-            // was recorded in - and a card parked on a surviving line
-            // without it reads as though it belongs there.
+            // Said from any view: a card parked on a surviving line
+            // without this reads as though it belongs there.
             anchor_note: Some(AnchorNote::Outdated(reason)),
             persisted: true,
         });
@@ -3617,28 +3613,32 @@ fn authored_threads(app: &App) -> Vec<ReviewThread> {
     let Some(overlay) = app.diff_overlay.as_ref() else {
         return Vec::new();
     };
-    let stored = overlay
+    // `Some` only when the store answered. An answer that does not list a
+    // thread means it was deleted; no answer - no store, or a read that
+    // failed - means the cards are all there is, and dropping them would
+    // close over work that was never sealed.
+    let answered: Option<Vec<ReviewThread>> = overlay
         .branch
         .as_ref()
         .zip(app.active_session().and_then(|s| s.project.clone()))
         .zip(app.workspace.as_ref())
-        .and_then(|((branch, project), ws)| ws.load_review_threads(&project, branch).ok())
-        .unwrap_or_default();
+        .and_then(|((branch, project), ws)| ws.load_review_threads(&project, branch).ok());
     let mut out: Vec<ReviewThread> = Vec::new();
     for card in overlay.comments.iter().filter(|c| c.authored_this_session) {
         if out.iter().any(|t| t.id == card.thread.id) {
             continue;
         }
-        // The store's copy, or the card's when the store has never seen
-        // it - a comment whose write did not land is real work, and the
-        // card is the only record of it.
-        out.push(
-            stored
-                .iter()
-                .find(|t| t.id == card.thread.id)
-                .cloned()
-                .unwrap_or_else(|| card.thread.clone()),
-        );
+        match answered.as_ref() {
+            Some(stored) => match stored.iter().find(|t| t.id == card.thread.id) {
+                Some(t) => out.push(t.clone()),
+                // Absent from an answer that was given: deleted if it was
+                // ever written, and never written otherwise - in which
+                // case the card is still the only record of it.
+                None if !card.persisted => out.push(card.thread.clone()),
+                None => {}
+            },
+            None => out.push(card.thread.clone()),
+        }
     }
     out
 }
@@ -8076,6 +8076,124 @@ mod tests {
         assert!(
             !session_work_pending(&app),
             "the thread is resolved in the store; a card left in another scope does not outvote it",
+        );
+    }
+
+    #[test]
+    fn deleting_a_comment_from_one_view_does_not_leave_it_owed_by_the_other() {
+        // Clearing a comment's only turn removes the thread from the
+        // store, but reopening removes one card and a thread drawing in
+        // two views leaves the other standing. Resurrecting from that
+        // card mints a review with no members.
+        let (mut app, _dir) = review_app();
+        let mut overlay = cross_numbered_overlay();
+        overlay.scope = DiffScope::Commit(0);
+        overlay.files = overlay.commit_cache[0].as_ref().expect("cached").files.clone();
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 };
+        with_editor(&mut overlay, key, "why this cast?");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+        let outcome = app.diff_overlay.as_mut().expect("o").select_scope(DiffScope::WholeDiff);
+        after_nav(&mut app, outcome);
+
+        // Clear its only turn from the whole diff: the thread is deleted.
+        let overlay = app.diff_overlay.as_mut().expect("o");
+        reopen_comment_for_turn(overlay, CommentRef { line: key, slot: 0 }, Some(0));
+        if let Some(input) = overlay.active_input.as_mut() {
+            input.editor = InputState::new();
+        }
+        save_active_input(&mut app);
+
+        let ws = app.workspace.clone().expect("ws");
+        assert!(
+            ws.load_review_threads("forge", "feat").expect("load").is_empty(),
+            "the thread is gone from the store",
+        );
+        assert!(
+            !would_file(&app),
+            "so nothing is owed - a card left in another view must not bring it back",
+        );
+    }
+
+    #[test]
+    fn a_store_that_cannot_answer_leaves_the_cards_standing() {
+        // The opposite direction. A read failure is not an answer, so it
+        // must not read as "every thread was deleted" and close over work
+        // that was never sealed. The card is `persisted`, so a rule that
+        // only rescued unwritten cards would drop this one.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = App::test_default();
+        let ws = app.workspace.clone().expect("ws");
+        let db = forge_workspace::store::Db::open(&dir.path().join("db.redb")).expect("open db");
+        forge_workspace::store::review::write_corrupt_row_for_test(&db, "forge", "feat")
+            .expect("corrupt row");
+        ws.install_db_for_test(db);
+        if let Some(key) = app.active_session_key.clone()
+            && let Some(session) = app.sessions.get_mut(&key)
+        {
+            session.project = Some("forge".to_owned());
+        }
+        let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        let mut thread = stock_thread();
+        thread.id = "written-earlier".to_owned();
+        overlay.comments.push(HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "src/x.rs".into(),
+            line: 5,
+            comment_text: "worth a second look".into(),
+            commit: None,
+            thread,
+            authored_this_session: true,
+            anchor_note: None,
+            persisted: true,
+        });
+        app.diff_overlay = Some(overlay);
+
+        assert!(
+            would_file(&app),
+            "the store could not answer, so the cards stand rather than reading as deleted",
+        );
+    }
+
+    #[test]
+    fn a_relocated_comment_announces_where_it_came_from() {
+        // #752's whole point: a comment that moves says so. Every other
+        // anchor-note assertion here checks a note is ABSENT, so the
+        // producer could stop emitting one and nothing would notice.
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        let mut thread = stock_thread();
+        thread.id = "moved".to_owned();
+        thread.commit = None;
+        thread.anchor = ReviewAnchor {
+            path: "src/x.rs".to_owned(),
+            side: ReviewSide::New,
+            line: 41,
+            content_hash: resolver::anchor_hash("let a = 1;"),
+            context: vec!["fn wrapper() {".to_owned(), "}".to_owned()],
+            base_ref: "main".to_owned(),
+        };
+        ws.save_review_threads("forge", "feat", &[thread]);
+        let files = vec![single_hunk_file(
+            "src/x.rs",
+            vec![added_line("fn wrapper() {", 4), added_line("let a = 1;", 5), added_line("}", 6)],
+        )];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        app.diff_overlay = Some(overlay);
+
+        hydrate_threads(&mut app);
+
+        let overlay = app.diff_overlay.as_ref().expect("overlay");
+        let card = overlay.comments.iter().find(|c| c.thread.id == "moved").expect("card");
+        assert_eq!(
+            card.anchor_note,
+            Some(AnchorNote::Moved { from: 41 }),
+            "the code moved and the card names the line it left",
         );
     }
 

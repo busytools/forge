@@ -613,16 +613,19 @@ fn render_finish_review(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlay
     let accent_bold = orange.add_modifier(Modifier::BOLD);
     let plain = Style::default();
 
+    // One row per thread, and the row has to be the card the last rebuild
+    // touched: hydrate leaves out-of-scope cards first, so taking the
+    // earliest shows the copy that never saw the reviewer's latest edit.
+    let scope = overlay.current_commit_sha();
     let authored: Vec<&HunkComment> = overlay
         .comments
         .iter()
         .filter(|c| c.authored_this_session)
         .fold(Vec::new(), |mut acc: Vec<&HunkComment>, c| {
-            // One row per thread: the same comment draws in every
-            // scope it belongs to, and this is the list the reviewer
-            // reads before sealing.
-            if !acc.iter().any(|e| e.thread.id == c.thread.id) {
-                acc.push(c);
+            match acc.iter_mut().find(|e| e.thread.id == c.thread.id) {
+                Some(seen) if c.commit == scope => *seen = c,
+                Some(_) => {}
+                None => acc.push(c),
             }
             acc
         });
@@ -4425,9 +4428,16 @@ mod tests {
             body: String::new(),
         }];
         state.scope = DiffScope::Commit(0);
-        for scope in [None, Some("aaa".to_owned())] {
-            let mut c = chip_comment(5, "one comment", ReviewStatus::Open);
-            c.thread.id = "shared".to_owned();
+        // Interleaved, as hydrate leaves them: dedup alone would not
+        // collapse these, so the sort is load-bearing.
+        for (id, scope) in [
+            ("one", None),
+            ("two", None),
+            ("one", Some("aaa".to_owned())),
+            ("two", Some("aaa".to_owned())),
+        ] {
+            let mut c = chip_comment(5, "a comment", ReviewStatus::Open);
+            c.thread.id = id.to_owned();
             c.commit = scope;
             state.comments.push(c);
         }
@@ -4451,9 +4461,53 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            rows.contains("1 comment"),
-            "one comment drawn twice is still one comment; got:\n{rows}",
+            rows.contains("2 comments"),
+            "two comments drawn twice each are still two; got:\n{rows}",
         );
+    }
+
+    #[test]
+    fn the_finish_review_list_shows_each_comment_once_and_shows_the_current_text() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        // Two cards for one thread, the out-of-scope one first as hydrate
+        // leaves them. The reviewer reads this list before sealing, so it
+        // must show one row, carrying the edit they just made.
+        let mut state =
+            DiffOverlayState::new(std::path::PathBuf::from("/tmp/repo"), "main".to_owned(), vec![]);
+        state.finish_review = Some(crate::app::diff_overlay::FinishReviewState {
+            editor: crate::app::input::InputState::new(),
+        });
+        for (scope, text) in [(Some("aaa".to_owned()), "FIRSTTEXT"), (None, "SECONDTEXT")] {
+            let mut c = chip_comment(5, text, ReviewStatus::Open);
+            c.thread.id = "shared".to_owned();
+            c.comment_text = text.to_owned();
+            c.commit = scope;
+            c.authored_this_session = true;
+            state.comments.push(c);
+        }
+
+        let (width, height) = (80u16, 20u16);
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                render_finish_review(
+                    frame,
+                    ratatui::layout::Rect { x: 0, y: 0, width, height },
+                    &mut state,
+                );
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let w = usize::from(width);
+        let rows: String = (0..usize::from(height))
+            .map(|r| (0..w).map(|x| buffer.content[r * w + x].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rows.contains("1 comment"), "one thread is one comment; got:\n{rows}");
+        assert!(rows.contains("SECONDTEXT"), "and it reads as the scope on screen has it");
+        assert!(!rows.contains("FIRSTTEXT"), "not as the card the rebuild did not touch");
     }
 
     #[test]
