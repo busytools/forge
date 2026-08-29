@@ -3009,7 +3009,8 @@ fn persist_active_input(app: &mut App) {
     // A thread's home is the scope it was authored in, so only a new one
     // takes the scope being saved from; an edit keeps whatever it has.
     let is_new = prior_thread.is_none();
-    let mut thread = build_thread(prior_thread, anchor, &text, input.edit_turn);
+    let home = is_new || prior_thread.as_ref().is_some_and(|t| t.commit == commit);
+    let mut thread = build_thread(prior_thread, anchor, &text, input.edit_turn, home);
     if is_new {
         thread.commit.clone_from(&commit);
     }
@@ -3083,10 +3084,18 @@ fn build_thread(
     anchor: ReviewAnchor,
     text: &str,
     edit_turn: Option<usize>,
+    home: bool,
 ) -> forge_primitives::ReviewThread {
     match prior {
         Some(mut thread) => {
-            thread.anchor = anchor;
+            // The anchor is built from the view being saved from, and
+            // every field of it - line, side, hash, context - is that
+            // view's account of the code. Only the thread's own view may
+            // replace it; from anywhere else the reply is a new turn on a
+            // thread that has not moved.
+            if home {
+                thread.anchor = anchor;
+            }
             match edit_turn {
                 // Rewrite the targeted turn in place; an agent turn or an
                 // out-of-range index is rejected - warn so the dropped text
@@ -6963,7 +6972,7 @@ mod tests {
             at: String::new(),
             review_id: None,
         });
-        let thread = build_thread(Some(prior), test_anchor(), "C!", Some(2));
+        let thread = build_thread(Some(prior), test_anchor(), "C!", Some(2), true);
         assert_eq!(thread.comments[0].text, "a", "the first turn is untouched");
         assert_eq!(thread.comments[1].text, "x", "the agent turn is untouched");
         assert_eq!(thread.comments[2].text, "C!", "only the targeted turn is rewritten");
@@ -6973,7 +6982,7 @@ mod tests {
     fn build_thread_rejects_editing_an_agent_turn() {
         let mut prior = user_thread("a");
         prior.comments.push(agent_turn("x"));
-        let thread = build_thread(Some(prior), test_anchor(), "hijack", Some(1));
+        let thread = build_thread(Some(prior), test_anchor(), "hijack", Some(1), true);
         assert_eq!(thread.comments.len(), 2, "no turn is added on a rejected edit");
         assert_eq!(thread.comments[1].text, "x", "an agent turn is not editable");
     }
@@ -6982,7 +6991,7 @@ mod tests {
     fn build_thread_appends_a_reply_when_edit_turn_is_none() {
         let mut prior = user_thread("a");
         prior.comments.push(agent_turn("x"));
-        let thread = build_thread(Some(prior), test_anchor(), "thanks", None);
+        let thread = build_thread(Some(prior), test_anchor(), "thanks", None, true);
         assert_eq!(thread.comments.len(), 3, "a reply appends a new turn");
         assert!(matches!(thread.comments[2].author, ReviewAuthor::User));
         assert_eq!(thread.comments[2].text, "thanks");
@@ -6990,7 +6999,7 @@ mod tests {
 
     #[test]
     fn build_thread_mints_a_fresh_thread_without_a_prior() {
-        let thread = build_thread(None, test_anchor(), "new note", None);
+        let thread = build_thread(None, test_anchor(), "new note", None, true);
         assert_eq!(thread.comments.len(), 1);
         assert!(matches!(thread.comments[0].author, ReviewAuthor::User));
         assert_eq!(thread.comments[0].text, "new note");
@@ -7481,9 +7490,7 @@ mod tests {
         overlay.commits = vec![commit_meta("aaa", "first")];
         overlay.scope = DiffScope::WholeDiff;
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
-        let mut thread = stock_thread();
-        thread.id = "homed".to_owned();
-        thread.commit = Some("aaa".to_owned());
+        let thread = cross_numbered_thread();
         overlay.comments.push(HunkComment {
             key,
             path: "src/x.rs".into(),
@@ -7514,6 +7521,15 @@ mod tests {
         assert!(
             thread_in_scope(homed, Some("aaa"), "main"),
             "so it still renders in that commit's own view",
+        );
+        assert_eq!(
+            homed.anchor.line, 41,
+            "and still points at the line its own view numbers it, not the one this view does",
+        );
+        assert_eq!(
+            homed.anchor.side,
+            ReviewSide::New,
+            "a foreign view's idea of which side the line sits on is not the thread's",
         );
     }
 
@@ -7819,6 +7835,105 @@ mod tests {
             stored[0].status,
             ReviewStatus::Open,
             "the commit that owns it still shows it; this view just cannot see it",
+        );
+    }
+
+    #[test]
+    fn a_reply_from_another_view_does_not_make_the_commits_own_view_see_a_move() {
+        // The second half of the same defect: once a foreign reply has
+        // rewritten the anchor, the thread's own view finds its content
+        // somewhere other than where the anchor now says, and reports a
+        // move that never happened - which is the spurious note and the
+        // redb writeback arriving through the save path instead.
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads("forge", "feat", &[cross_numbered_thread()]);
+        app.diff_overlay = Some(cross_numbered_overlay());
+        hydrate_threads(&mut app);
+
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 };
+        let overlay = app.diff_overlay.as_mut().expect("overlay");
+        reopen_comment_for_turn(overlay, CommentRef { line: key, slot: 0 }, None);
+        if let Some(input) = overlay.active_input.as_mut() {
+            input.editor.insert_str("one more thing");
+        }
+        save_active_input(&mut app);
+
+        let outcome =
+            app.diff_overlay.as_mut().expect("overlay").select_scope(DiffScope::Commit(0));
+        after_nav(&mut app, outcome);
+
+        let overlay = app.diff_overlay.as_ref().expect("overlay");
+        // Scoped, not the whole list: the leftover whole-diff card is
+        // still present here and is not what this view draws.
+        let card = overlay
+            .scoped_comments()
+            .into_iter()
+            .find(|c| c.thread.id == "homed")
+            .expect("the commit draws its own card");
+        assert_eq!(
+            card.anchor_note, None,
+            "the commit still holds the thread where it always did, so there is no move",
+        );
+        assert_eq!(
+            card.thread.status,
+            ReviewStatus::Open,
+            "and nothing drifted, so it is not outdated either",
+        );
+    }
+
+    #[test]
+    fn editing_in_a_threads_own_view_refreshes_its_anchor() {
+        // The other direction: its own view is the one that gets to say
+        // where the thread now sits, so an edit there re-reads the line,
+        // its context and its hash from what is on screen.
+        let (mut app, _dir) = review_app();
+        let files = vec![single_hunk_file(
+            "src/x.rs",
+            vec![added_line("fn wrapper() {", 4), added_line("let a = 1;", 5), added_line("}", 6)],
+        )];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), files);
+        overlay.branch = Some("feat".to_owned());
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 };
+        let mut thread = stock_thread();
+        thread.id = "own".to_owned();
+        thread.commit = None;
+        thread.anchor = ReviewAnchor {
+            path: "src/x.rs".to_owned(),
+            side: ReviewSide::New,
+            // Stale: nothing re-anchored it before this edit.
+            line: 99,
+            content_hash: 0,
+            context: Vec::new(),
+            base_ref: "main".to_owned(),
+        };
+        overlay.comments.push(HunkComment {
+            key,
+            path: "src/x.rs".into(),
+            line: 5,
+            comment_text: "why this cast?".into(),
+            commit: None,
+            thread,
+            authored_this_session: false,
+            anchor_note: None,
+            persisted: true,
+        });
+        reopen_comment_for_turn(&mut overlay, CommentRef { line: key, slot: 0 }, None);
+        if let Some(input) = overlay.active_input.as_mut() {
+            input.editor.insert_str("still unclear");
+        }
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+
+        let ws = app.workspace.clone().expect("ws");
+        let stored = ws.load_review_threads("forge", "feat").expect("load");
+        let own = stored.iter().find(|t| t.id == "own").expect("thread");
+        assert_eq!(own.anchor.line, 5, "its own view re-reads where the line now is");
+        assert_eq!(
+            own.anchor.content_hash,
+            resolver::anchor_hash("let a = 1;"),
+            "and what is on it",
         );
     }
 
