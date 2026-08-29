@@ -81,8 +81,15 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let rail_width = rail_width_for(body_width);
     let sep = u16::from(rail_width > 0);
     let pane_width = body_width.saturating_sub(rail_width).saturating_sub(sep);
+    // Asked of the same source Esc will consult, not of the cards: a
+    // thread deleted from another view still has a card standing here,
+    // and the hint must not offer a review that Esc will not open. The
+    // card check is a necessary condition for the store one, so a session
+    // that has written nothing never reaches the store.
+    let seals = overlay.comments.iter().any(|c| c.authored_this_session)
+        && crate::app::diff_overlay::would_file(app);
     let footer =
-        footer_line(overlay, effective_view_mode(overlay.view_mode, pane_width), body_width);
+        footer_line(overlay, effective_view_mode(overlay.view_mode, pane_width), body_width, seals);
 
     super::page::render_page(frame, "Diff review", None, footer, |frame, body| {
         render_diff_body(frame, body, app);
@@ -623,7 +630,10 @@ fn render_finish_review(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlay
         .filter(|c| c.authored_this_session)
         .fold(Vec::new(), |mut acc: Vec<&HunkComment>, c| {
             match acc.iter_mut().find(|e| e.thread.id == c.thread.id) {
-                Some(seen) if c.commit == scope => *seen = c,
+                // On-screen wins outright. With no card in this scope the
+                // latest wins, since hydrate appends what it rebuilt and
+                // the earlier entry is the one it did not touch.
+                Some(seen) if c.commit == scope || seen.commit != scope => *seen = c,
                 Some(_) => {}
                 None => acc.push(c),
             }
@@ -1132,7 +1142,12 @@ fn render_separator(frame: &mut Frame, area: Rect) {
 /// toggle / click-to-comment / click-to-jump / Esc, with the effective
 /// mode (unified / split) right-justified to `width`. With a comment
 /// editor open it shows the editor's Enter/Esc hints instead.
-fn footer_line(overlay: &DiffOverlayState, mode: DiffViewMode, width: u16) -> Line<'static> {
+fn footer_line(
+    overlay: &DiffOverlayState,
+    mode: DiffViewMode,
+    width: u16,
+    seals: bool,
+) -> Line<'static> {
     let dim = Style::default().fg(theme::DIM);
     let orange = Style::default().fg(theme::RUST_ORANGE);
     let count = overlay.comments.len();
@@ -1155,18 +1170,7 @@ fn footer_line(overlay: &DiffOverlayState, mode: DiffViewMode, width: u16) -> Li
         spans.push(Span::styled("cancel input", dim));
     } else {
         let commit_mode = !overlay.commits.is_empty();
-        // Esc opens the Finish-review modal only when a comment would file
-        // (authored this session AND holding an unsealed user turn) - mirror
-        // that trigger so an edit-only session doesn't read "finish review".
-        let esc_label = if overlay
-            .comments
-            .iter()
-            .any(|c| c.authored_this_session && c.thread.has_unfiled_user_turn())
-        {
-            "finish review"
-        } else {
-            "close"
-        };
+        let esc_label = if seals { "finish review" } else { "close" };
         // Commit mode swaps the page / rail-jump hints for the commit
         // navigation ones (matching the approved mockup); both still work.
         let mut hints: Vec<(&str, &str)> = vec![("\u{2191}\u{2193}", "scroll")];
@@ -4511,6 +4515,62 @@ mod tests {
     }
 
     #[test]
+    fn with_no_card_in_this_scope_the_finish_review_list_takes_the_later_one() {
+        // Reachable by commenting on one commit, editing from the whole
+        // diff, then stepping to a third scope: neither card matches, and
+        // "whichever came first" is what the winner rule exists to stop.
+        let mut state =
+            DiffOverlayState::new(std::path::PathBuf::from("/tmp/repo"), "main".to_owned(), vec![]);
+        state.commits = vec![
+            forge_workspace::env::git_diff::hunks::CommitMeta {
+                sha: "aaa".into(),
+                short_sha: "aaa".into(),
+                subject: "first".into(),
+                body: String::new(),
+            },
+            forge_workspace::env::git_diff::hunks::CommitMeta {
+                sha: "bbb".into(),
+                short_sha: "bbb".into(),
+                subject: "second".into(),
+                body: String::new(),
+            },
+        ];
+        state.scope = DiffScope::Commit(1);
+        state.finish_review = Some(crate::app::diff_overlay::FinishReviewState {
+            editor: crate::app::input::InputState::new(),
+        });
+        for (scope, text) in [(Some("aaa".to_owned()), "FIRSTTEXT"), (None, "SECONDTEXT")] {
+            let mut c = chip_comment(5, text, ReviewStatus::Open);
+            c.thread.id = "shared".to_owned();
+            c.comment_text = text.to_owned();
+            c.commit = scope;
+            c.authored_this_session = true;
+            state.comments.push(c);
+        }
+
+        let (width, height) = (80u16, 20u16);
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                render_finish_review(
+                    frame,
+                    ratatui::layout::Rect { x: 0, y: 0, width, height },
+                    &mut state,
+                );
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let w = usize::from(width);
+        let rows: String = (0..usize::from(height))
+            .map(|r| (0..w).map(|x| buffer.content[r * w + x].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rows.contains("SECONDTEXT"), "the later card wins; got:\n{rows}");
+        assert!(!rows.contains("FIRSTTEXT"), "not the one hydrate left in front");
+    }
+
+    #[test]
     fn multiple_comments_on_one_line_all_index() {
         // An outdated thread re-placed onto a line that already carries a
         // comment must not clobber it - both live under the shared key.
@@ -4536,44 +4596,27 @@ mod tests {
                 hunks: Vec::new(),
             }],
         );
-        let text = line_text(&footer_line(&state, DiffViewMode::Unified, 160));
+        let text = line_text(&footer_line(&state, DiffViewMode::Unified, 160, false));
         assert!(text.contains("comment"), "still hints click-to-comment");
         assert!(!text.contains("resolve"), "no global resolve hint");
         assert!(!text.contains("reopen"), "no global reopen hint");
     }
 
     #[test]
-    fn footer_esc_label_matches_the_would_file_trigger() {
-        let mut state = DiffOverlayState::new(
+    fn the_footer_esc_label_follows_the_seal_flag() {
+        // Whether a review would seal is decided by the caller, against
+        // the store - see the app-side test that the hint and Esc agree.
+        // All this surface does is say which of the two it was.
+        let state = DiffOverlayState::new(
             std::path::PathBuf::from("/tmp/repo"),
             "HEAD".to_owned(),
             Vec::new(),
         );
-        let mut comment = chip_comment(1, "note", ReviewStatus::Open);
-        comment.authored_this_session = true;
+        let closing = line_text(&footer_line(&state, DiffViewMode::Unified, 200, false));
+        assert!(closing.contains("close"), "nothing to seal reads close; got: {closing}");
+        assert!(!closing.contains("finish review"), "and must not offer a review");
 
-        // Edit-only (already filed): Esc closes straight through, not "finish review".
-        comment.thread.comments[0].review_id = Some("rev".to_owned());
-        state.comments = vec![comment];
-        let text = line_text(&footer_line(&state, DiffViewMode::Unified, 200));
-        assert!(text.contains("close"), "edit-only footer reads close; got: {text}");
-        assert!(!text.contains("finish review"), "edit-only must not read finish review");
-
-        // A reply on the filed thread is unsealed work again, so the label
-        // flips back even though the thread already belongs to a review.
-        state.comments[0].thread.comments.push(forge_primitives::ReviewComment {
-            author: ReviewAuthor::User,
-            text: "still wrong".to_owned(),
-            at: String::new(),
-            review_id: None,
-        });
-        let text = line_text(&footer_line(&state, DiffViewMode::Unified, 200));
-        assert!(text.contains("finish review"), "a reply on a filed thread reads finish review");
-
-        // Unfiled authored comment: the modal will open, so read "finish review".
-        state.comments[0].thread.comments[0].review_id = None;
-        state.comments[0].thread.comments.truncate(1);
-        let text = line_text(&footer_line(&state, DiffViewMode::Unified, 200));
-        assert!(text.contains("finish review"), "an unfiled authored comment reads finish review");
+        let sealing = line_text(&footer_line(&state, DiffViewMode::Unified, 200, true));
+        assert!(sealing.contains("finish review"), "work to seal reads finish review");
     }
 }

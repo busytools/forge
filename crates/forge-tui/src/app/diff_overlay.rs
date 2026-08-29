@@ -3603,7 +3603,7 @@ fn reopen_comment_for_turn(
 /// comment resolved a moment ago still reads as work waiting to be filed.
 /// `authored_this_session` is the one fact the store does not hold, so it
 /// still comes off the card.
-fn would_file(app: &App) -> bool {
+pub(crate) fn would_file(app: &App) -> bool {
     authored_threads(app).iter().any(ReviewThread::has_unfiled_user_turn)
 }
 
@@ -8160,9 +8160,9 @@ mod tests {
 
     #[test]
     fn a_relocated_comment_announces_where_it_came_from() {
-        // #752's whole point: a comment that moves says so. Every other
-        // anchor-note assertion here checks a note is ABSENT, so the
-        // producer could stop emitting one and nothing would notice.
+        // A comment that moves says so. Every other anchor-note assertion
+        // here checks a note is ABSENT, so the producer could stop
+        // emitting one and nothing would notice.
         let (mut app, _dir) = review_app();
         let ws = app.workspace.clone().expect("ws");
         let mut thread = stock_thread();
@@ -8195,6 +8195,38 @@ mod tests {
             Some(AnchorNote::Moved { from: 41 }),
             "the code moved and the card names the line it left",
         );
+    }
+
+    #[test]
+    fn the_footer_offers_a_review_only_when_esc_would_open_one() {
+        // The hint and the key have to agree. A thread deleted from
+        // another view leaves its card standing here, so reading the
+        // cards offered a review that Esc then declined to open.
+        let (mut app, _dir) = review_app();
+        let mut overlay = cross_numbered_overlay();
+        overlay.scope = DiffScope::Commit(0);
+        overlay.files = overlay.commit_cache[0].as_ref().expect("cached").files.clone();
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 };
+        with_editor(&mut overlay, key, "why this cast?");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+        assert!(would_file(&app), "written and unsealed");
+
+        let outcome = app.diff_overlay.as_mut().expect("o").select_scope(DiffScope::WholeDiff);
+        after_nav(&mut app, outcome);
+        let overlay = app.diff_overlay.as_mut().expect("o");
+        reopen_comment_for_turn(overlay, CommentRef { line: key, slot: 0 }, Some(0));
+        if let Some(input) = overlay.active_input.as_mut() {
+            input.editor = InputState::new();
+        }
+        save_active_input(&mut app);
+
+        let overlay = app.diff_overlay.as_ref().expect("o");
+        assert!(
+            overlay.comments.iter().any(|c| c.authored_this_session),
+            "a card is still standing, which is what made the footer disagree",
+        );
+        assert!(!would_file(&app), "but the thread is gone, so Esc will just close");
     }
 
     #[test]
