@@ -113,6 +113,9 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
             if try_toggle_stop_hook_summary_at_click(app, mouse) {
                 return;
             }
+            if try_toggle_turn_info_at_click(app, mouse) {
+                return;
+            }
             if let Some(pt) = mouse_point_to_selection(app, mouse) {
                 *app.selection_mut() = Some(super::super::SelectionState {
                     kind: pt.kind,
@@ -760,6 +763,65 @@ fn try_toggle_stop_hook_summary_at_click(app: &mut App, mouse: MouseEvent) -> bo
         "click toggled stop_hook_summary expanded state"
     );
     true
+}
+
+/// If the click landed on an assistant turn's turn-info row, flip its
+/// expanded state and consume the event.
+fn try_toggle_turn_info_at_click(app: &mut App, mouse: MouseEvent) -> bool {
+    let Some(msg_idx) = locate_turn_info_at_click(app, mouse) else {
+        return false;
+    };
+    if let Some(msg) = app.active_messages_mut().get_mut(msg_idx) {
+        msg.turn_info.expanded = !msg.turn_info.expanded;
+        msg.invalidate_render_cache();
+    }
+    app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(msg_idx));
+    tracing::debug!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "turn_info_click_toggled",
+        msg_idx,
+        "click toggled turn_info expanded state"
+    );
+    true
+}
+
+/// Map the chat-area click to the `message_idx` whose turn-info row
+/// contains it.
+///
+/// The renderer stamps the row's line range only, so clicks on the
+/// expanded body do NOT toggle. The width guard drops a click routed
+/// against a rect measured at a different width, which is otherwise
+/// how a resize sends a click to the wrong row.
+fn locate_turn_info_at_click(app: &App, mouse: MouseEvent) -> Option<usize> {
+    let chat_area = app.rendered_chat_area;
+    if chat_area.width == 0 || chat_area.height == 0 {
+        return None;
+    }
+    if mouse.column < chat_area.x
+        || mouse.column >= chat_area.right()
+        || mouse.row < chat_area.y
+        || mouse.row >= chat_area.bottom()
+    {
+        return None;
+    }
+    let local_row = (mouse.row - chat_area.y) as usize;
+    let absolute_row = local_row.checked_add(app.viewport().scroll_offset)?;
+    if app.messages().is_empty() {
+        return None;
+    }
+    let msg_idx = app.viewport().find_first_visible(absolute_row);
+    if msg_idx >= app.messages().len() {
+        return None;
+    }
+    let msg_start = app.viewport().cumulative_height_before(msg_idx);
+    let row_within_msg = absolute_row.checked_sub(msg_start)?;
+    let msg = &app.messages()[msg_idx];
+    if msg.turn_info_height == 0 || msg.turn_info_width != chat_area.width {
+        return None;
+    }
+    let y_start = msg.turn_info_y_in_msg;
+    let y_end = y_start.saturating_add(msg.turn_info_height);
+    if row_within_msg >= y_start && row_within_msg < y_end { Some(msg_idx) } else { None }
 }
 
 /// #273: Map the chat-area click to the `message_idx` whose

@@ -363,10 +363,10 @@ mod tests {
             .find(|m| matches!(m.role, MessageRole::Assistant))
             .expect("baseline produces at least one assistant message");
         assert_eq!(
-            latest.turn_duration_ms,
+            latest.turn_info.duration_ms,
             Some(expected),
             "Result.duration_ms must stamp onto the latest assistant; got {:?}",
-            latest.turn_duration_ms,
+            latest.turn_info.duration_ms,
         );
     }
 

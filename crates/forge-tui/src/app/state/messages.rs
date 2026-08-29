@@ -6,7 +6,7 @@ use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub struct ChatMessage {
     pub role: MessageRole,
@@ -40,10 +40,163 @@ pub struct ChatMessage {
     /// the clickable chip line(s) (excludes the leading blank and
     /// any expanded hook rows). `0` when no chip is rendered.
     pub stop_hook_summary_height: usize,
-    /// Per-turn duration in ms, stamped from `Message::Result.duration_ms`
-    /// when the assistant's turn finishes. `None` until the Result event
-    /// arrives. Renders as the message's trailing row once it lands.
-    pub turn_duration_ms: Option<u64>,
+    /// Accounting for the turn this message closes, rendered as the
+    /// message's trailing turn-info row.
+    pub turn_info: TurnInfo,
+    /// Turn-info row hit-test: wrapped-row offset inside this message
+    /// of the clickable row. `0` when no row is rendered.
+    pub turn_info_y_in_msg: usize,
+    /// Turn-info row hit-test: wrapped-row height of the clickable
+    /// row, excluding the expanded body. `0` when no row is rendered.
+    pub turn_info_height: usize,
+    /// Width the hit rect above was measured at. A click arriving
+    /// against a stale width is dropped rather than routed to the
+    /// wrong row.
+    pub turn_info_width: u16,
+}
+
+/// Per-turn accounting behind the trailing turn-info row.
+///
+/// Every field is optional because the row starts rendering when the
+/// turn starts and fills in as data arrives: elapsed and the input
+/// side tick during the turn, output and cost only exist once
+/// `Message::Result` lands. An absent field renders as absent, never
+/// as zero.
+///
+/// The wire mixes scopes, so two fields are NOT verbatim copies:
+/// `api_ms` is a delta (`Result.duration_api_ms` is
+/// session-cumulative) and `session_cost_usd` keeps its cumulative
+/// name so it cannot be misread as this turn's cost.
+#[derive(Debug, Clone, Default)]
+pub struct TurnInfo {
+    /// When forge dispatched the prompt, copied off the session's live
+    /// accumulator. Drives the counting-up elapsed until `duration_ms`
+    /// supersedes it.
+    pub started_at: Option<Instant>,
+    /// Whole seconds since `started_at`, refreshed once per render so
+    /// the cache key and the layout it guards cannot disagree
+    /// mid-frame.
+    pub elapsed_secs: u64,
+    /// Settled wall clock for the turn, from `Result.duration_ms`.
+    pub duration_ms: Option<u64>,
+    /// This turn's API time. `Result.duration_api_ms` counts up across
+    /// the whole session, so the per-turn figure is its delta against
+    /// the previous Result.
+    pub api_ms: Option<u64>,
+    /// Local wall-clock `HH:MM:SS` at which the Result arrived,
+    /// resolved on the event path because the wire carries no
+    /// wall-clock time and the renderer should not be reading the
+    /// system timezone.
+    pub ended_at_local: Option<String>,
+    pub model: Option<String>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    /// Input tokens read back from the prompt cache. There is no
+    /// output cache; both cache counters are input.
+    pub cache_read_tokens: Option<u64>,
+    /// Input tokens written into the prompt cache at a premium.
+    pub cache_written_tokens: Option<u64>,
+    /// Cost for the whole session so far, not this turn.
+    pub session_cost_usd: Option<f64>,
+    /// Click-to-expand flag. Lives on the message rather than in a
+    /// position-keyed side map so it survives a re-render.
+    pub expanded: bool,
+}
+
+/// Accumulator for the turn currently in flight, feeding the live
+/// half of [`TurnInfo`].
+///
+/// The CLI splits one assistant message across a frame per content
+/// block and repeats the same usage on each, so totals are keyed by
+/// message id rather than summed frame by frame. Deduplicated that
+/// way, the input and cache sums match `Result.usage` exactly.
+#[derive(Debug, Clone, Default)]
+pub struct LiveTurn {
+    pub started_at: Option<Instant>,
+    by_message: std::collections::HashMap<String, LiveUsage>,
+}
+
+/// The input-side counters forge can trust from an assistant frame.
+///
+/// `output_tokens` is absent by design: on an assistant frame it is
+/// the streaming `message_start` placeholder, not a count.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LiveUsage {
+    pub input_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_written_tokens: u64,
+}
+
+impl LiveTurn {
+    /// Begin a new turn, discarding the previous turn's frames.
+    pub fn start(&mut self, at: Instant) {
+        self.started_at = Some(at);
+        self.by_message.clear();
+    }
+
+    /// Record one assistant frame's usage. Repeat frames for the same
+    /// `message_id` overwrite rather than add.
+    pub fn record(&mut self, message_id: String, usage: LiveUsage) {
+        self.by_message.insert(message_id, usage);
+    }
+
+    /// Running totals across the distinct assistant messages seen so
+    /// far, or `None` before any frame has carried usage.
+    pub fn totals(&self) -> Option<LiveUsage> {
+        if self.by_message.is_empty() {
+            return None;
+        }
+        Some(self.by_message.values().fold(LiveUsage::default(), |acc, u| LiveUsage {
+            input_tokens: acc.input_tokens.saturating_add(u.input_tokens),
+            cache_read_tokens: acc.cache_read_tokens.saturating_add(u.cache_read_tokens),
+            cache_written_tokens: acc.cache_written_tokens.saturating_add(u.cache_written_tokens),
+        }))
+    }
+}
+
+impl TurnInfo {
+    /// True when nothing is known yet, so the row is not rendered at
+    /// all. A turn that has started always has `started_at`.
+    pub fn is_empty(&self) -> bool {
+        self.started_at.is_none() && self.duration_ms.is_none()
+    }
+
+    /// True once `Message::Result` has landed and the row has stopped
+    /// counting up.
+    pub fn is_settled(&self) -> bool {
+        self.duration_ms.is_some()
+    }
+
+    /// Wall-clock ms to display: the settled duration once it exists,
+    /// otherwise the live elapsed.
+    pub fn elapsed_ms(&self) -> u64 {
+        self.duration_ms.unwrap_or(self.elapsed_secs.saturating_mul(1_000))
+    }
+
+    /// Time spent outside the API - tools and hooks.
+    ///
+    /// `None` when the split is not sound rather than clamped to zero:
+    /// concurrent subagent calls can sum past wall clock, and the
+    /// API counter resets after a compaction.
+    pub fn local_ms(&self) -> Option<u64> {
+        self.duration_ms?.checked_sub(self.api_ms?)
+    }
+
+    /// Share of this turn's input tokens served from the cache.
+    ///
+    /// Denominator is every input-side counter -
+    /// `input + cache_written + cache_read` - so the figure answers
+    /// "how much of the input did we avoid paying full price for".
+    pub fn cache_hit_percent(&self) -> Option<u64> {
+        let read = self.cache_read_tokens?;
+        let total = read
+            .checked_add(self.input_tokens.unwrap_or(0))?
+            .checked_add(self.cache_written_tokens.unwrap_or(0))?;
+        if total == 0 {
+            return None;
+        }
+        Some(read.saturating_mul(100) / total)
+    }
 }
 
 impl ChatMessage {
@@ -57,7 +210,10 @@ impl ChatMessage {
             is_cron_envelope: false,
             stop_hook_summary_y_in_msg: 0,
             stop_hook_summary_height: 0,
-            turn_duration_ms: None,
+            turn_info: TurnInfo::default(),
+            turn_info_y_in_msg: 0,
+            turn_info_height: 0,
+            turn_info_width: 0,
         }
     }
 
@@ -76,7 +232,10 @@ impl ChatMessage {
             is_cron_envelope: false,
             stop_hook_summary_y_in_msg: 0,
             stop_hook_summary_height: 0,
-            turn_duration_ms: None,
+            turn_info: TurnInfo::default(),
+            turn_info_y_in_msg: 0,
+            turn_info_height: 0,
+            turn_info_width: 0,
         }
     }
 
@@ -93,7 +252,10 @@ impl ChatMessage {
             is_cron_envelope: false,
             stop_hook_summary_y_in_msg: 0,
             stop_hook_summary_height: 0,
-            turn_duration_ms: None,
+            turn_info: TurnInfo::default(),
+            turn_info_y_in_msg: 0,
+            turn_info_height: 0,
+            turn_info_width: 0,
         }
     }
 
@@ -110,7 +272,10 @@ impl ChatMessage {
             is_cron_envelope: true,
             stop_hook_summary_y_in_msg: 0,
             stop_hook_summary_height: 0,
-            turn_duration_ms: None,
+            turn_info: TurnInfo::default(),
+            turn_info_y_in_msg: 0,
+            turn_info_height: 0,
+            turn_info_width: 0,
         }
     }
 

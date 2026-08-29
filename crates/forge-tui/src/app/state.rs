@@ -14,7 +14,7 @@ pub(crate) use messages::MarkdownRenderKey;
 pub use messages::{
     CachedMessageSegment, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRenderCache,
     MessageRenderCacheKey, MessageRenderSignature, MessageRole, NoticeBlock, NoticeDedupKey,
-    RateLimitIncidentKey, SystemSeverity, TextBlock, TextBlockSpacing, WelcomeBlock,
+    RateLimitIncidentKey, SystemSeverity, TextBlock, TextBlockSpacing, TurnInfo, WelcomeBlock,
     hash_text_block_content, hash_welcome_block_content,
 };
 pub use tool_call_info::{
@@ -1868,6 +1868,70 @@ impl App {
     /// `None` on turn end to clear the chip.
     pub fn set_latest_thinking_tokens(&mut self, value: Option<u64>) {
         self.active_bucket_mut().latest_thinking_tokens = value;
+    }
+
+    /// Start the active session's live turn accounting, so the
+    /// turn-info row appears with the turn and counts from the moment
+    /// forge dispatched the prompt rather than from the first
+    /// assistant frame.
+    ///
+    /// A settled message is left alone: it belongs to a turn that has
+    /// already ended.
+    pub fn start_live_turn(&mut self, at: std::time::Instant) {
+        self.active_bucket_mut().live_turn.start(at);
+        let Some(idx) = self
+            .messages()
+            .iter()
+            .rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
+        else {
+            return;
+        };
+        if let Some(msg) = self.active_messages_mut().get_mut(idx)
+            && !msg.turn_info.is_settled()
+        {
+            msg.turn_info = crate::app::state::messages::TurnInfo {
+                started_at: Some(at),
+                ..crate::app::state::messages::TurnInfo::default()
+            };
+            msg.invalidate_render_cache();
+        }
+    }
+
+    /// Fold one assistant frame's usage into the live turn, returning
+    /// the turn's start and its running totals for the row.
+    ///
+    /// Starts the turn if nothing did: forge dispatches most prompts
+    /// itself, but cron, auto-continue and peer traffic all arrive
+    /// with the turn already under way.
+    pub fn record_live_turn_usage(
+        &mut self,
+        message_id: String,
+        usage: crate::app::state::messages::LiveUsage,
+    ) -> (Option<std::time::Instant>, Option<crate::app::state::messages::LiveUsage>) {
+        let live = &mut self.active_bucket_mut().live_turn;
+        if live.started_at.is_none() {
+            live.start(std::time::Instant::now());
+        }
+        live.record(message_id, usage);
+        (live.started_at, live.totals())
+    }
+
+    /// Close the live turn and return the API time attributable to
+    /// it.
+    ///
+    /// `Message::Result.duration_api_ms` counts up across the whole
+    /// session, so the turn's own figure is the delta. A value below
+    /// the previous one means the counter restarted (it does after a
+    /// compaction), in which case it is already per-turn.
+    pub fn settle_live_turn(&mut self, duration_api_ms: u64) -> u64 {
+        let bucket = self.active_bucket_mut();
+        let per_turn = match bucket.prev_duration_api_ms {
+            Some(prev) if duration_api_ms >= prev => duration_api_ms - prev,
+            _ => duration_api_ms,
+        };
+        bucket.prev_duration_api_ms = Some(duration_api_ms);
+        bucket.live_turn = crate::app::state::messages::LiveTurn::default();
+        per_turn
     }
 
     /// Active session's most recent `Message::StopHookSummary`

@@ -8,10 +8,10 @@ expression: snapshot
   ✓ Monitor · forge-monitor-test · completed
 
 Monitor armed. Waiting for the three events.
-11.9s
+↳ turn info · 11.9s · 6↑ 291↓ · 72% cached · 67k written [▶ expand]
 
 Event 1 received (monitor-line-1). Waiting for the remaining two.
-3.6s
+↳ turn info · 3.6s · 2↑ 48↓ · 99% cached · 346 written [▶ expand]
 
 Event 2 received (monitor-line-2). One more to go.
 All three events arrived:
@@ -26,4 +26,4 @@ The TaskStop call returned "No task found" - the loop had already finished and
 the monitor exited on its own right as I issued the stop (the completion
 notification for bpwt1thgf landed immediately after). So the watch is
 terminated either way, just by natural exit rather than by my cancel.
-9.7s
+↳ turn info · 9.7s · 4↑ 186↓ · 99% cached · 825 written [▶ expand]
