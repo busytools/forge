@@ -308,6 +308,42 @@ fn a_command_too_long_for_the_panel_wraps_instead_of_truncating() {
     );
 }
 
+/// Wrapping must terminate on non-ASCII, at every width the panel can
+/// reach. Measuring the row budget in characters and cutting with a byte
+/// index agrees on ASCII and diverges the moment a path is not: the cut
+/// lands at zero, the remainder never shrinks, and the render thread
+/// spins pushing empty rows with the terminal in raw mode.
+///
+/// A config dir, a models dir or a home directory with one accented or
+/// CJK character is all it takes, and `panel_width` follows the terminal
+/// down to nothing.
+#[test]
+fn wrapping_terminates_and_rejoins_on_non_ascii_paths() {
+    for text in [
+        "rm ~/\u{c9}t\u{e9}/mod\u{e8}les/forge-dictate/s1-mini-f16.gguf",
+        "rm ~/\u{30e2}\u{30c7}\u{30eb}/forge-dictate/s1-mini-f16.gguf",
+        "rm ~/Models/forge-dictate/s1-mini-f16.gguf",
+    ] {
+        for width in [1u16, 2, 4, 6, 8, 10, 12, 16, 20, 32, PICKER_WIDTH] {
+            let rows = command_rows(4, text, width);
+            // The payload span, not the whole row: at a width of one the
+            // command's own space character IS a row, and trimming rows
+            // would drop it and read as loss.
+            let payloads: Vec<&str> =
+                rows.iter().map(|row| row.spans[1].content.as_ref()).collect();
+            assert_eq!(
+                payloads.concat(),
+                text,
+                "every character must survive the wrap at width {width}; got {payloads:#?}",
+            );
+            assert!(
+                !payloads.iter().any(|p| p.is_empty()),
+                "an empty row means the cut did not advance at width {width}; got {payloads:#?}",
+            );
+        }
+    }
+}
+
 /// The three-gigabyte note belongs to a fresh fetch. A resume is
 /// finishing a download that already started, and telling that reader
 /// they are about to fetch 3.07 GB is wrong about what is happening.

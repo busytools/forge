@@ -503,39 +503,50 @@ fn text_row(indent: usize, text: &str, style: Style, width: u16) -> Line<'static
 /// Never elided: every one of these is on screen because the reader has
 /// to run it, and half a path is worse than none.
 fn command_rows(indent: usize, text: &str, width: u16) -> Vec<Line<'static>> {
-    let budget = usize::from(width).saturating_sub(indent + 2).max(1);
-    if text.chars().count() <= budget {
-        return vec![text_row(indent, text, Style::default(), width)];
-    }
     let mut lines = Vec::new();
     let mut rest = text;
     let mut current = indent;
-    while rest.chars().count() > usize::from(width).saturating_sub(current + 2).max(1) {
-        let room = usize::from(width).saturating_sub(current + 2).max(1);
+    loop {
+        let (lead, room) = command_row_budget(current, width);
+        if rest.chars().count() <= room {
+            break;
+        }
+        // Byte offset of the character after the last one that fits.
+        // `rest` is longer than `room` characters and `room` is at least
+        // one, so this always lands past the first character - which is
+        // what makes every branch below advance. Counted in characters
+        // and cut on the boundary that count resolves to: mixing the two
+        // agrees on ASCII, then cuts at zero on the first accented path
+        // and spins here forever.
+        let hard = rest.char_indices().nth(room).map_or(rest.len(), |(offset, _)| offset);
         // Break after the last separator that fits, so a continuation
         // line starts on a path segment rather than mid-word.
-        let hard = char_boundary_at_or_before(rest, room);
-        let cut = rest[..hard].rfind('/').map_or(hard, |i| i + 1);
-        let cut = if cut == 0 { hard } else { cut };
-        lines.push(text_row(current, &rest[..cut], Style::default(), width));
+        let cut = rest[..hard].rfind('/').map_or(hard, |offset| offset + 1);
+        lines.push(command_row(lead, &rest[..cut]));
         rest = &rest[cut..];
         // Continuation sits deeper, so a wrapped command still reads as
         // one command rather than as two.
         current = indent + 3;
     }
-    if !rest.is_empty() {
-        lines.push(text_row(current, rest, Style::default(), width));
+    if !rest.is_empty() || lines.is_empty() {
+        lines.push(command_row(command_row_budget(current, width).0, rest));
     }
     lines
 }
 
-/// The largest char boundary at or before `at` bytes.
-fn char_boundary_at_or_before(text: &str, at: usize) -> usize {
-    let mut cut = at.min(text.len());
-    while cut > 0 && !text.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    cut
+/// Indent and character budget for one command row. A panel too narrow
+/// to afford the indent gives it up rather than the text: alignment is
+/// worth less than being able to read the command.
+fn command_row_budget(indent: usize, width: u16) -> (usize, usize) {
+    let width = usize::from(width);
+    let lead = indent.min(width.saturating_sub(1));
+    (lead, width.saturating_sub(lead + 2).max(1))
+}
+
+/// One row of a command, laid out but never shortened. [`text_row`]
+/// truncates, and a truncated command is one the reader cannot run.
+fn command_row(indent: usize, text: &str) -> Line<'static> {
+    Line::from(vec![Span::raw(" ".repeat(indent)), Span::raw(text.to_owned())])
 }
 
 /// Prose across as many rows as it takes. Truncating a sentence that
