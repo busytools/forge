@@ -430,15 +430,16 @@ inspected.
     **Build the multiplexer-independent path first.** Where one
     exists it is the primary and an escape sequence is the fallback,
     never the preference. An escape sequence is a request to whatever
-    sits between forge and the terminal, and the env vars that gate it
-    describe the far end of that pipe rather than its middle.
+    sits between forge and the terminal. The middle does announce
+    itself - `ZELLIJ`, `STY`, `TMUX`, `SHPOOL_SESSION_NAME` - so the
+    undetectable part is never its presence, it is what it forwards.
 
     #778 is the worked example, and it is a good one because forge
     already had the right path and skipped it. `notification_plan`
-    (`crates/forge-tui/src/app/notify.rs`) sets `send_desktop:
-    osc9_text.is_none()`, so believing the terminal speaks OSC 9
-    suppresses the `notify-rust` desktop notification, which reaches
-    the OS without crossing the terminal at all. That belief comes
+    (`crates/forge-tui/src/app/notify.rs`) set `send_desktop:
+    osc9_text.is_none()`, so believing the terminal spoke OSC 9
+    suppressed the `notify-rust` desktop notification, which reaches
+    the OS without crossing the terminal at all. That belief came
     from `terminal_capabilities_from_env` reading `TERM_PROGRAM` and
     `ITERM_SESSION_ID`. Measured: both reach a pane under zellij
     0.44.3 and under GNU screen 4.00.03 unchanged, while an OSC 9
@@ -446,18 +447,25 @@ inspected.
     text written on both sides of it arriving normally. shpool 0.9.8
     drops it deliberately; its vendored vterm carries the literals
     `ignoring OSC 9 (desktop notification)` and `ignoring OSC 777`.
-    So the check answers whether the terminal supports OSC 9 when the
-    question is whether an OSC 9 survives to it, and the user gets a
-    dock bounce and no banner.
+    So the check answered whether the terminal supports OSC 9 when
+    the question was whether an OSC 9 survives to it. Under the
+    default channel that is silence rather than a degraded
+    notification: `Iterm2` with OSC 9 believed available sets
+    `ring_bell` and `send_desktop` both false, so an eaten escape
+    leaves nothing at all.
 
-    tmux is why no capability flag settles this. No OSC leaves a pane
-    at all: `screen_write_rawstring` is the only path from pane bytes
-    to the outer terminal and `input_dcs_dispatch` is its only
-    caller. The one route out is a DCS `tmux;` envelope needing
-    `allow-passthrough`, off by default since 3.3, and every ESC in
-    the payload doubled, which `input.c`'s state tables require and
-    `tmux.1` does not mention. Surviving tmux means re-encoding the
-    sequence, not emitting it.
+    What crosses is decided per sequence by the thing in the middle,
+    not by the terminal, so no single capability answers it. tmux
+    re-emits some pane-originated OSC from its own terminfo - OSC 8
+    leaves via the `Hls` capability whenever the outer terminal
+    advertises `hyperlinks` (`tty_hyperlink`) - while dropping
+    others, OSC 9 among them. Carrying an arbitrary sequence out
+    verbatim takes a DCS envelope, and the price differs per
+    multiplexer: tmux wants a `tmux;` prefix, `allow-passthrough` set
+    (off by default since 3.3) and every ESC in the payload doubled,
+    a rule that lives in `input.c`'s state tables and not in
+    `tmux.1`, while screen forwards a bare DCS-wrapped OSC 9 with no
+    opt-in and no doubling. Both measured.
 
     **Where no multiplexer-independent path exists, state the
     requirement and detect its absence.** Depending on a sequence is
@@ -476,11 +484,14 @@ inspected.
     `forge.toml` key plus enough structure that a second multiplexer
     is a config entry and an implementation rather than a rewrite.
     Hardcoding one multiplexer's behaviour with no way to add another
-    is the thing this forbids.
+    is the thing this forbids. The first two belong in the pull
+    request and beside the `forge.toml` key, never as a per-mux
+    support matrix in a comment, which rots exactly as hard rule 13
+    describes.
 
-    The binary test: when a multiplexer intercepts it, does the user
-    get a degraded experience or an explained one? Silence is the
-    failure.
+    The binary test: when a terminal multiplexer intercepts it, does
+    the user get a degraded experience or an explained one? Silence
+    is the failure.
 
 ## Claude Code worktree interop
 
