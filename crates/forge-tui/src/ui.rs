@@ -48,7 +48,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         ActiveView::Plugins => config::render_plugins(frame, app),
         ActiveView::Mcp => config::render_mcp(frame, app),
         ActiveView::Launchpad => {
-            if crate::app::preflight::hand_over_when_ready(app) {
+            if app.preflight_done {
                 launchpad::render(frame, app);
             } else {
                 preflight::render(frame, app);

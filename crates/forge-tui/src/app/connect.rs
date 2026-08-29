@@ -176,12 +176,14 @@ fn create_app_impl(
     let panes_visible_by_default = initial_term_width >= crate::ui::layout::WIDE_TIER_MIN_WIDTH;
     let projects_pane_visible = panes_visible_by_default;
     let inspector_pane_visible = panes_visible_by_default;
-    // Boot view: `forge` (no argv) → launchpad picker; `forge <project>`
-    // → chat directly. Argv selection is final - no remembered-last-
-    // pick. Snapshot launchpad state from `[ui]` settings up-front so
-    // the picker doesn't shift if the user edits forge.toml mid-
-    // session.
-    let active_view = if cli.project.is_none() { ActiveView::Launchpad } else { ActiveView::Chat };
+    // Boot view: preflight, on every route. It hands over to the
+    // launchpad picker for `forge` and straight into chat for
+    // `forge <project>`; `startup_project` is what decides which, and
+    // it is the only thing that decides it - argv selection is final,
+    // with no remembered-last-pick. Snapshot launchpad state from
+    // `[ui]` settings up-front so the picker doesn't shift if the user
+    // edits forge.toml mid-session.
+    let active_view = ActiveView::Launchpad;
     let ui_settings = workspace.ui_settings();
     let spinner_style = ui_settings.spinner;
     let initial_launchpad_state = crate::app::LaunchpadState {
@@ -320,6 +322,19 @@ pub fn start_connection(app: &mut App) {
         return;
     };
 
+    // Every account has to have authenticated before anything spawns.
+    // The assignment plan is only computed once they have, so a spawn
+    // before that falls back to round-robin and can land a session on
+    // an account the project's org does not even allow - which nothing
+    // gated on this path before preflight existed.
+    //
+    // Accounts rather than the whole of preflight: the plan needs them
+    // and does not need the dictation weights, so the models keep
+    // loading alongside the session rather than delaying it.
+    if !crate::ui::preflight::accounts_ready(app) {
+        return;
+    }
+
     app.connection_started = true;
     let mut launch_settings = session_start::session_launch_settings_for_reason(
         app,
@@ -341,7 +356,7 @@ pub fn start_connection(app: &mut App) {
     // the cache is empty (cold install) the picker falls through to
     // forge.toml definition order; once data lands, subsequent spawns
     // see the right tier.
-    if app.active_view == crate::app::ActiveView::Launchpad {
+    if app.startup_project.is_none() {
         let auto_start = workspace.auto_start_project_names();
         for project_name in auto_start {
             let cmd = forge_workspace::Command::SpawnProject {
@@ -361,11 +376,13 @@ pub fn start_connection(app: &mut App) {
         return;
     }
 
-    // Chat branch. Only reachable with a project argv: `active_view`
-    // is Chat exactly when `cli.project.is_some()`, and
-    // `startup_project` IS `cli.project`, so the first arm always wins
-    // here and that project is the focused spawn. The `None` arms are
+    // Chat branch. Only reachable with a project argv - the arm above
+    // takes every other case - so the first match arm always wins here
+    // and that project is the focused spawn. The `None` arms are
     // exhaustiveness over `Option<String>`, not a reachable path.
+    //
+    // Keyed on `startup_project` rather than on `active_view`, which
+    // now reads Launchpad on both routes while preflight is up.
     let auto_start = workspace.auto_start_project_names();
     let dispatch_targets: Vec<Option<String>> = match (&app.startup_project, auto_start.as_slice())
     {
@@ -527,8 +544,16 @@ mod tests {
         assert_eq!(app.active_view, crate::app::ActiveView::Launchpad);
     }
 
+    /// Preflight runs on every route, so `forge <project>` boots into
+    /// it too rather than straight into chat - and `startup_project`,
+    /// not the view, is what says where it hands over afterwards.
+    ///
+    /// This replaces an argv-implies-never-the-launchpad assertion.
+    /// That invariant is what `start_connection` used to branch on, and
+    /// leaving the two coupled would take the no-project arm for
+    /// `forge <project>` and never spawn the named project at all.
     #[tokio::test(flavor = "current_thread")]
-    async fn create_app_boots_into_non_launchpad_view_when_argv_supplied() {
+    async fn create_app_boots_into_preflight_with_argv_and_remembers_the_project() {
         let config_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("project tempdir");
         write_default_forge_toml(config_dir.path(), project_dir.path());
@@ -540,10 +565,18 @@ mod tests {
         let app = local
             .run_until(async { create_app_for_test(&cli, Arc::new(workspace), config_dir.path()) })
             .await;
-        // With argv supplied the boot view is NOT Launchpad. The
-        // invariant the launchpad change cares about is just
-        // "argv supplied ⇒ never the launchpad."
-        assert_ne!(app.active_view, crate::app::ActiveView::Launchpad);
+
+        assert_eq!(
+            app.active_view,
+            crate::app::ActiveView::Launchpad,
+            "every route boots into preflight, argv or not",
+        );
+        assert!(!app.preflight_done, "and nothing seeds the latch; it is earned by completing");
+        assert_eq!(
+            app.startup_project.as_deref(),
+            Some("forge-test"),
+            "the named project is what the handover reads to land in chat rather than the picker",
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

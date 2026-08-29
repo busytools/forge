@@ -8,25 +8,33 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
 use super::App;
+use super::view::{ActiveView, set_active_view};
 
-/// `true` once the projects view owns the launchpad. Latches: preflight
-/// is shown once per run and never comes back.
+/// Hand over once preflight has nothing left to wait for: to chat when
+/// forge was given a project, to the project picker when it was not.
+///
+/// Called per tick rather than from the renderer, because handing over
+/// is a view transition and the renderer is not where those belong.
 ///
 /// The latch is load-bearing rather than an optimisation. A token
 /// expiring mid-session takes an account `Ready -> Bailed -> Loading`,
 /// so the readiness condition genuinely goes false again while the user
-/// is working - and without the latch that would throw them back onto a
-/// boot screen. The launchpad's own gate handles that window by making
-/// rows unclickable and saying why.
-pub fn hand_over_when_ready(app: &mut App) -> bool {
-    if app.preflight_done {
-        return true;
+/// is working - and without the latch that would drop them back onto a
+/// boot screen from whatever they were doing. The launchpad's own gate
+/// covers that window instead, by making rows unclickable and saying
+/// why.
+pub fn advance(app: &mut App) {
+    if app.preflight_done
+        || app.active_view != ActiveView::Launchpad
+        || !crate::ui::preflight::is_complete(app)
+    {
+        return;
     }
-    if crate::ui::preflight::is_complete(app) {
-        app.preflight_done = true;
-        app.needs_redraw = true;
+    app.preflight_done = true;
+    app.needs_redraw = true;
+    if app.startup_project.is_some() {
+        set_active_view(app, ActiveView::Chat);
     }
-    app.preflight_done
 }
 
 /// Handle a key while preflight is up. Always returns `true`: nothing
@@ -74,18 +82,22 @@ mod tests {
     /// Once preflight is done it must stay done. Accounts go
     /// `Ready -> Bailed -> Loading` on a mid-session token expiry, so a
     /// condition re-evaluated every frame would drop the user back onto
-    /// a boot screen while they were working.
+    /// a boot screen out of whatever they were doing.
     #[test]
     fn handing_over_latches() {
         let mut app = App::test_default();
         // No workspace, so the readiness condition is false.
         app.workspace = None;
-        assert!(!hand_over_when_ready(&mut app), "an unready preflight does not hand over");
+        app.active_view = ActiveView::Launchpad;
+        advance(&mut app);
+        assert!(!app.preflight_done, "an unready preflight does not hand over");
 
         app.preflight_done = true;
+        app.active_view = ActiveView::Chat;
+        advance(&mut app);
         assert!(
-            hand_over_when_ready(&mut app),
-            "the projects view must survive the readiness condition going false again",
+            app.preflight_done,
+            "the handover must survive the readiness condition going false again",
         );
     }
 

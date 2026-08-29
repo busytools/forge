@@ -25,8 +25,11 @@ fn paint(app: &mut App, width: u16, height: u16) -> String {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
-    terminal.draw(|f| render(f, app)).expect("draw");
-    let buf = terminal.backend().buffer();
+    terminal.draw(|f| crate::ui::render(f, app)).expect("draw");
+    flatten_buffer(terminal.backend().buffer(), width, height)
+}
+
+fn flatten_buffer(buf: &ratatui::buffer::Buffer, width: u16, height: u16) -> String {
     (0..height)
         .map(|y| {
             (0..width)
@@ -228,6 +231,79 @@ fn cancelling_says_what_it_kept_and_where() {
     assert!(text.contains("forge is quitting"), "and that forge is going; got: {text}");
 }
 
+/// Preflight runs on every route and hands over to wherever the user
+/// was headed: the project picker for `forge`, chat for
+/// `forge <project>`.
+///
+/// Driven through `crate::ui::render` rather than through
+/// `preflight::render` directly, because the whole family of defects
+/// this closes lived in the branch that chooses between the two views -
+/// a screen frozen with a dead spinner, a boot screen reachable
+/// mid-session with no way out, and exits clipped off the bottom all hid
+/// in the one gap where nothing exercised it.
+#[tokio::test]
+async fn preflight_renders_on_both_routes_and_hands_over_to_each() {
+    for startup_project in [None, Some("forge".to_owned())] {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let forge = config_dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/");
+        std::fs::write(
+            forge.join("forge.toml"),
+            "[[orgs]]\nname = \"Personal\"\naccounts = [\"Subspace\"]\n\n\
+             [[orgs.projects]]\nname = \"forge\"\npath = \"/tmp\"\n\n\
+             [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\n",
+        )
+        .expect("write forge.toml");
+        let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
+            .await
+            .expect("workspace");
+
+        let mut app = App::test_default();
+        app.workspace = Some(std::sync::Arc::new(workspace));
+        app.active_view = crate::app::ActiveView::Launchpad;
+        app.startup_project = startup_project.clone();
+
+        // A fresh account map starts every account Loading, so preflight
+        // has something to wait on.
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 34)).expect("terminal");
+        terminal.draw(|f| crate::ui::render(f, &mut app)).expect("draw");
+        let painted = flatten_buffer(terminal.backend().buffer(), 100, 34);
+        assert!(
+            painted.contains("Accounts") && painted.contains("resolving"),
+            "preflight is what renders while accounts resolve, on every route:\n{painted}",
+        );
+        crate::app::preflight::advance(&mut app);
+        assert!(!app.preflight_done, "and it does not hand over while one is still resolving");
+
+        app.workspace
+            .as_ref()
+            .expect("workspace")
+            .seed_test_account_state("Subspace", LoadingState::Ready);
+        crate::app::preflight::advance(&mut app);
+        assert!(app.preflight_done, "once every account is ready it hands over");
+
+        let expected = if startup_project.is_some() {
+            crate::app::ActiveView::Chat
+        } else {
+            crate::app::ActiveView::Launchpad
+        };
+        assert_eq!(
+            app.active_view, expected,
+            "a named project lands in chat and no project lands on the picker; \
+             startup_project was {startup_project:?}",
+        );
+
+        if startup_project.is_none() {
+            let painted = paint(&mut app, 100, 34);
+            assert!(
+                !painted.contains("resolving"),
+                "and the picker is what renders afterwards, not preflight:\n{painted}",
+            );
+        }
+    }
+}
+
 /// Cancelling quits forge, so the frame that says what was kept has to
 /// have reached the buffer first. Setting the flag from having RUN
 /// rather than from having PAINTED lets a panel too small to draw its
@@ -255,6 +331,7 @@ async fn forge_does_not_quit_on_cancel_until_the_copy_is_on_screen() {
     });
     let mut app = App::test_default();
     app.workspace = Some(std::sync::Arc::new(workspace));
+    app.active_view = crate::app::ActiveView::Launchpad;
 
     // Two rows of panel is the framing rules and nothing between them.
     let painted = paint(&mut app, 100, 4);
@@ -529,6 +606,7 @@ async fn a_short_terminal_drops_the_wordmark_rather_than_the_exits() {
     });
     let mut app = App::test_default();
     app.workspace = Some(std::sync::Arc::new(workspace));
+    app.active_view = crate::app::ActiveView::Launchpad;
 
     // Swept rather than checked at one size: the bailed screen is taller
     // than the terminal well before 34 rows, and clipping took the END

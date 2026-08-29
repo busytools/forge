@@ -293,11 +293,14 @@ client_token = "CxxxxxxxxxxxxxxxA"
 `forge <PROJECT>` opens the named project. The name must match a
 project's `name` exactly.
 
-With no argument, forge opens the launchpad instead of a chat tab. The
-launchpad has two views. Preflight comes first: it resolves every
+**Preflight runs first on every route.** It resolves every
 `[[accounts]]` entry and, when `[dictate]` is on, fetches and loads the
-dictation models. It is shown once per run and hands over to the project
-picker when everything is ready.
+dictation models, then hands over to wherever you were headed: the
+project picker for `forge`, straight into that project's chat for
+`forge <PROJECT>`. It is shown once per run.
+
+Nothing spawns until every account has authenticated, because the
+account-assignment plan is only computed once they have.
 
 Preflight completes only on every account reaching a usable state.
 **forge will not start while an account in `forge.toml` cannot

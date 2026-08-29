@@ -923,13 +923,25 @@ chat continues here...
 <h2 class="section-title" id="preflight">Preflight - the launchpad's first view</h2>
 
 <p class="intro">
-  The launchpad is two views. <strong>Preflight</strong> resolves the
+  The launchpad is two views, and <strong>preflight</strong> is the first
+  thing forge renders <strong>on every route</strong>. It resolves the
   accounts and, when dictation is switched on, fetches, verifies and
-  loads its models. It is shown once per forge run; every later
-  <code>/launchpad</code> in that run goes straight to the projects
-  view. Nothing proceeds until every account is <code>Ready</code> and
-  every configured model is loaded, so the projects view can no longer
-  be reached mid-load.
+  loads its models, then hands over to wherever the invocation was
+  headed: the projects view for <code>forge</code>, straight into chat
+  for <code>forge &lt;project&gt;</code>. Shown once per run; every later
+  <code>/launchpad</code> goes straight to the projects view.
+</p>
+
+<p class="intro">
+  <strong>Nothing spawns until every account has authenticated.</strong>
+  The assignment plan is only computed once they have, so a session
+  started before that falls back to round-robin and can land on an
+  account the project's org does not allow. The launchpad has gated
+  clicks on this since #246; the startup spawn was never gated at all,
+  on either route, and now is. Accounts rather than the whole of
+  preflight, because the plan needs them and does not need the
+  dictation weights - so the models keep loading alongside the session
+  rather than delaying it.
 </p>
 
 <p class="intro">
@@ -1130,8 +1142,10 @@ chat continues here...
 </p>
 
 <p class="intro">
-  Boot rule is argv-only: <code>forge</code> ⇒ launchpad, <code>forge
-  &lt;project-name&gt;</code> ⇒ that project's chat. No
+  Boot rule is argv-only, and now runs behind
+  <a href="#preflight">preflight</a> on both branches:
+  <code>forge</code> ⇒ preflight ⇒ this picker, <code>forge
+  &lt;project-name&gt;</code> ⇒ preflight ⇒ that project's chat. No
   "remember last picked" persistence, no <code>focus = true</code>
   override (the field is still parsed for back-compat but no longer
   affects routing).
