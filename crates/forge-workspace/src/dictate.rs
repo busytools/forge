@@ -171,12 +171,14 @@ pub enum DictateModelState {
 pub enum DictateFailure {
     /// A file is the right length and the wrong bytes. Reported rather
     /// than repaired - discarding a multi-gigabyte file somebody put
-    /// there is not forge's call.
-    HashMismatch { path: PathBuf, expected: String, actual: String },
-    /// The user asked preflight to stop. `kept` is what is already on
+    /// there is not forge's call, and `size` is what makes that
+    /// sentence concrete rather than abstract on screen.
+    HashMismatch { path: PathBuf, expected: String, actual: String, size: u64 },
+    /// The user asked preflight to stop. `kept` of `total` bytes are on
     /// disk for the file that was in flight, which the screen says
-    /// before forge goes.
-    Cancelled { kept: u64 },
+    /// before forge goes. `total` is carried so the bar can stay a
+    /// fraction: a full bar beside `cancelled` reads as finished.
+    Cancelled { kept: u64, total: u64 },
     /// Everything else, worded as the crate worded it.
     Other { message: String },
 }
@@ -284,6 +286,7 @@ pub(crate) async fn run_dictate_preflight(settings: DictateSettings, state: Arc<
     // `Engine::new` returns in microseconds having handed the load to a
     // worker; `wait_ready` is the part that takes the second.
     let load_state = Arc::clone(&state);
+    let load_cfg = cfg.clone();
     let loaded = tokio::task::spawn_blocking(move || {
         let engine = forge_dictate::Engine::new(cfg)?;
         engine.wait_ready()?;
@@ -298,7 +301,7 @@ pub(crate) async fn run_dictate_preflight(settings: DictateSettings, state: Arc<
                 model.state = DictateModelState::Ready;
             }
         }
-        Ok(Err(error)) => state.fail(failure_for(&error), failing_file(&error)),
+        Ok(Err(error)) => state.fail(failure_for(&load_cfg, &error), failing_file(&error)),
         Err(source) => state.fail(DictateFailure::Other { message: source.to_string() }, None),
     }
 }
@@ -311,7 +314,7 @@ fn prepare(cfg: &forge_dictate::Config, state: &DictateState) -> Result<(), ()> 
     // What a `.part` held when the transfer opened, per file. A bar that
     // starts at 38% with nothing said about it reads as a bug.
     let mut resumed_from: Option<u64> = None;
-    let mut in_flight: Option<(String, u64)> = None;
+    let mut in_flight: Option<(String, u64, u64)> = None;
 
     let outcome = forge_dictate::prepare(cfg, |progress| {
         if state.cancelled.load(Ordering::Relaxed) {
@@ -326,10 +329,10 @@ fn prepare(cfg: &forge_dictate::Config, state: &DictateState) -> Result<(), ()> 
                 // The first report of a transfer carries whatever was
                 // already on disk, so it is the only chance to learn
                 // that this is a resume rather than a fresh fetch.
-                if in_flight.as_ref().is_none_or(|(name, _)| name != &file) {
+                if in_flight.as_ref().is_none_or(|(name, ..)| name != &file) {
                     resumed_from = (downloaded > 0).then_some(downloaded);
                 }
-                in_flight = Some((file.clone(), downloaded));
+                in_flight = Some((file.clone(), downloaded, total));
                 state.set_state(
                     &file,
                     DictateModelState::Downloading { downloaded, total, resumed_from },
@@ -347,12 +350,12 @@ fn prepare(cfg: &forge_dictate::Config, state: &DictateState) -> Result<(), ()> 
     match outcome {
         Ok(()) => Ok(()),
         Err(forge_dictate::Error::Cancelled) => {
-            let (file, kept) = in_flight.unwrap_or_default();
-            state.fail(DictateFailure::Cancelled { kept }, Some(&file));
+            let (file, kept, total) = in_flight.unwrap_or_default();
+            state.fail(DictateFailure::Cancelled { kept, total }, Some(&file));
             Err(())
         }
         Err(error) => {
-            state.fail(failure_for(&error), failing_file(&error));
+            state.fail(failure_for(cfg, &error), failing_file(&error));
             Err(())
         }
     }
@@ -375,13 +378,26 @@ fn failing_file(error: &forge_dictate::Error) -> Option<&str> {
     path.file_name()?.to_str().map(|name| name.trim_end_matches(".part"))
 }
 
-fn failure_for(error: &forge_dictate::Error) -> DictateFailure {
+/// Byte length the config records for the model at `path`, or zero when
+/// the error is about a file no spec names.
+fn spec_size(cfg: &forge_dictate::Config, path: &std::path::Path) -> u64 {
+    let name = path.file_name().and_then(|n| n.to_str()).map(|n| n.trim_end_matches(".part"));
+    std::iter::once(&cfg.asr_model)
+        .chain(cfg.normalizer.as_ref())
+        .find(|spec| Some(spec.file.as_str()) == name)
+        .map_or(0, |spec| spec.size)
+}
+
+fn failure_for(cfg: &forge_dictate::Config, error: &forge_dictate::Error) -> DictateFailure {
     match error {
         forge_dictate::Error::HashMismatch { path, expected, actual } => {
             DictateFailure::HashMismatch {
                 path: path.clone(),
                 expected: expected.clone(),
                 actual: actual.clone(),
+                // A hash mismatch means the length already matched, so
+                // the spec's size is what is on disk.
+                size: spec_size(cfg, path),
             }
         }
         other => DictateFailure::Other { message: other.to_string() },

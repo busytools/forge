@@ -82,17 +82,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let panel_width = PICKER_WIDTH.min(area.width.saturating_sub(8));
     let body = panel_lines(app, panel_width);
-
-    // Recorded here rather than at the key press, so forge only quits
-    // once this frame has actually said what the cancelled transfer
-    // kept and where it left it.
-    if app
+    let cancelled = app
         .workspace
         .as_ref()
-        .is_some_and(|ws| ws.dictate_snapshot().failure.is_some_and(|f| f.is_cancelled()))
-    {
-        app.preflight_cancel_drawn = true;
-    }
+        .is_some_and(|ws| ws.dictate_snapshot().failure.is_some_and(|f| f.is_cancelled()));
 
     let footer_height: u16 = 1;
     let available = area.height.saturating_sub(footer_height);
@@ -127,7 +120,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         width: panel_width,
         height: panel_height.min(available.saturating_sub(y - area.y)),
     };
-    render_panel(frame, panel, body);
+    let painted = render_panel(frame, panel, body);
+
+    // Set from what actually reached the buffer, not from having run:
+    // a panel too small to paint its body would otherwise let forge quit
+    // having said nothing about what the cancelled transfer kept.
+    if cancelled && painted {
+        app.preflight_cancel_drawn = true;
+    }
 
     let footer = footer_hint(app);
     frame.render_widget(
@@ -136,10 +136,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     );
 }
 
-/// Paint the framing rules and whatever fits between them.
-fn render_panel(frame: &mut Frame, area: Rect, body: Vec<Line<'static>>) {
+/// Paint the framing rules and whatever fits between them. Reports
+/// whether the whole body reached the buffer, which is what
+/// [`crate::app::preflight::quit_after_cancel`] waits on.
+fn render_panel(frame: &mut Frame, area: Rect, body: Vec<Line<'static>>) -> bool {
     if area.width == 0 || area.height < 2 {
-        return;
+        return false;
     }
     let dim = Style::default().fg(theme::DIM);
     let rule = || Line::from(Span::styled("\u{2500}".repeat(usize::from(area.width)), dim));
@@ -148,9 +150,10 @@ fn render_panel(frame: &mut Frame, area: Rect, body: Vec<Line<'static>>) {
         Paragraph::new(rule()),
         Rect { x: area.x, y: area.y, width: area.width, height: 1 },
     );
+    let complete = body.len() <= usize::from(inner);
     if inner > 0 {
         frame.render_widget(
-            Paragraph::new(body),
+            Paragraph::new(keep_the_tail(body, inner)),
             Rect { x: area.x, y: area.y + 1, width: area.width, height: inner },
         );
     }
@@ -158,6 +161,33 @@ fn render_panel(frame: &mut Frame, area: Rect, body: Vec<Line<'static>>) {
         Paragraph::new(rule()),
         Rect { x: area.x, y: area.y + 1 + inner, width: area.width, height: 1 },
     );
+    complete
+}
+
+/// Drop from the TOP when the body overflows, and say how much went.
+///
+/// Everything this screen cannot afford to lose - the failure detail and
+/// the exits it names - is appended last, so a paragraph that simply
+/// clips takes exactly the wrong end. Measured before this existed: at
+/// 100x24 the bailed screen lost the second exit, and at 100x20 both
+/// commands, on the one screen whose whole job is to state a way out.
+fn keep_the_tail(mut body: Vec<Line<'static>>, height: u16) -> Vec<Line<'static>> {
+    let height = usize::from(height);
+    if height == 0 || body.len() <= height {
+        return body;
+    }
+    // One row of the budget goes to saying what was dropped, so nothing
+    // vanishes without a mark.
+    let dropped = body.len() - height + 1;
+    body.drain(..dropped);
+    body.insert(
+        0,
+        Line::from(Span::styled(
+            format!("  \u{2026} {dropped} more above"),
+            Style::default().fg(theme::DIM).add_modifier(Modifier::DIM),
+        )),
+    );
+    body
 }
 
 /// Everything between the two framing rules.
@@ -284,9 +314,9 @@ fn model_rows(
     // A cancelled transfer keeps its bar, so the screen can say how much
     // of the 3 GB is already on disk rather than only that it stopped.
     if model.state == DictateModelState::Failed
-        && let Some(DictateFailure::Cancelled { kept }) = snapshot.failure.as_ref()
+        && let Some(DictateFailure::Cancelled { kept, total }) = snapshot.failure.as_ref()
     {
-        rows.push(bar_row(*kept, 0));
+        rows.push(bar_row(*kept, *total));
     }
     rows
 }
@@ -343,7 +373,7 @@ fn dictate_detail(failure: &DictateFailure, width: u16) -> Vec<Line<'static>> {
     let error = Style::default().fg(theme::STATUS_ERROR);
     let head = Style::default().add_modifier(Modifier::BOLD);
     match failure {
-        DictateFailure::HashMismatch { path, expected, actual } => {
+        DictateFailure::HashMismatch { path, expected, actual, size } => {
             let name = file_name(path);
             let mut lines = vec![
                 text_row(2, &format!("{name} hashes to"), error, width),
@@ -354,9 +384,12 @@ fn dictate_detail(failure: &DictateFailure, width: u16) -> Vec<Line<'static>> {
             ];
             lines.extend(wrapped(
                 2,
-                "It is the right length, so this is corruption and not a half-finished \
-                 download. forge reports it rather than deleting it: throwing away a file you \
-                 put there is not forge's call.",
+                &format!(
+                    "It is the right length, so this is corruption and not a half-finished \
+                     download. forge reports it rather than deleting it: throwing away a {} \
+                     file you put there is not forge's call.",
+                    bytes(*size)
+                ),
                 Style::default(),
                 width,
             ));
@@ -365,7 +398,7 @@ fn dictate_detail(failure: &DictateFailure, width: u16) -> Vec<Line<'static>> {
             lines.extend(command_rows(4, &format!("rm {}", home_relative(path)), width));
             lines
         }
-        DictateFailure::Cancelled { kept } => {
+        DictateFailure::Cancelled { kept, .. } => {
             let mut lines = wrapped(
                 2,
                 &format!(
@@ -405,6 +438,9 @@ fn footer_hint(app: &App) -> String {
     // Escape only means something while bytes are moving: there is
     // nothing to cancel once every transfer has finished, and a hint
     // for a key that does nothing is worse than no hint.
+    if dictate.failure.as_ref().is_some_and(DictateFailure::is_cancelled) {
+        return " quitting\u{2026}".to_owned();
+    }
     if dictate.failure.is_none() && dictate.models.iter().any(is_transferring) {
         let esc = if dictate.models.iter().any(is_first_run_transfer) {
             "esc  cancel and quit"
@@ -466,12 +502,13 @@ fn file_row(file: &str, width: u16) -> Line<'static> {
     text_row(4, &format!("({stem})"), dimmer(), width)
 }
 
-/// `total` of zero draws a full bar: a cancelled transfer reports what
-/// is on disk, not a fraction of a download that is no longer running.
+/// A bar with no known total draws empty rather than full: it is
+/// reached only when nothing was in flight, and a full bar would read as
+/// a transfer that finished.
 fn bar_row(downloaded: u64, total: u64) -> Line<'static> {
     let bar = u64::try_from(BAR_WIDTH).unwrap_or(u64::MAX);
     let (filled, label) = if total == 0 {
-        (BAR_WIDTH, bytes(downloaded))
+        (0, bytes(downloaded))
     } else {
         let done = downloaded.min(total);
         // Rounded rather than truncated: 37.99% reading as 37 is off

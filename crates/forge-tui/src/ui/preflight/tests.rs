@@ -20,6 +20,23 @@ fn row_containing<'a>(rows: &'a [String], needle: &str) -> &'a str {
         .unwrap_or_else(|| panic!("no row contains {needle:?}; got {rows:#?}"))
 }
 
+/// Draw preflight into a fixed backend and flatten it to text.
+fn paint(app: &mut App, width: u16, height: u16) -> String {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+    terminal.draw(|f| render(f, app)).expect("draw");
+    let buf = terminal.backend().buffer();
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buf.cell((x, y)).map_or(' ', |c| c.symbol().chars().next().unwrap_or(' ')))
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn model(role: DictateRole, file: &str, state: DictateModelState) -> DictateModel {
     DictateModel { role, file: file.to_owned(), state }
 }
@@ -194,9 +211,11 @@ fn a_resumed_transfer_says_what_it_found() {
 /// goes - "cancelled" alone reads as "that 600 MB is gone".
 #[test]
 fn cancelling_says_what_it_kept_and_where() {
-    let text =
-        flatten(&dictate_detail(&DictateFailure::Cancelled { kept: 612_000_000 }, PICKER_WIDTH))
-            .join(" ");
+    let text = flatten(&dictate_detail(
+        &DictateFailure::Cancelled { kept: 612_000_000, total: 1_558_162_944 },
+        PICKER_WIDTH,
+    ))
+    .join(" ");
 
     assert!(
         text.contains("Nothing was thrown away") && text.contains("612 MB"),
@@ -209,6 +228,82 @@ fn cancelling_says_what_it_kept_and_where() {
     assert!(text.contains("forge is quitting"), "and that forge is going; got: {text}");
 }
 
+/// Cancelling quits forge, so the frame that says what was kept has to
+/// have reached the buffer first. Setting the flag from having RUN
+/// rather than from having PAINTED lets a panel too small to draw its
+/// body quit having said nothing - which is the whole of what the user
+/// pressed escape to be told.
+#[tokio::test]
+async fn forge_does_not_quit_on_cancel_until_the_copy_is_on_screen() {
+    let config_dir = tempfile::tempdir().expect("tempdir");
+    let forge = config_dir.path().join("forge");
+    std::fs::create_dir_all(&forge).expect("forge/");
+    std::fs::write(
+        forge.join("forge.toml"),
+        "[[orgs]]\nname = \"Personal\"\naccounts = [\"Subspace\"]\n\n\
+         [[orgs.projects]]\nname = \"forge\"\npath = \"/tmp\"\n\n\
+         [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\n",
+    )
+    .expect("write forge.toml");
+    let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
+        .await
+        .expect("workspace");
+    workspace.seed_test_account_state("Subspace", LoadingState::Ready);
+    workspace.seed_test_dictate_snapshot(DictateSnapshot {
+        models: vec![model(DictateRole::Transcribing, "asr.gguf", DictateModelState::Failed)],
+        failure: Some(DictateFailure::Cancelled { kept: 612_000_000, total: 1_558_162_944 }),
+    });
+    let mut app = App::test_default();
+    app.workspace = Some(std::sync::Arc::new(workspace));
+
+    // Two rows of panel is the framing rules and nothing between them.
+    let painted = paint(&mut app, 100, 4);
+    assert!(
+        !painted.contains("Nothing was thrown away"),
+        "this size must genuinely fail to show the copy, or the assertion below is vacuous:\n\
+         {painted}",
+    );
+    assert!(
+        !app.preflight_cancel_drawn,
+        "a frame that could not paint the body has not said anything to quit on",
+    );
+    crate::app::preflight::quit_after_cancel(&mut app);
+    assert!(!app.should_quit, "so forge waits rather than vanishing with the message unshown");
+
+    let painted = paint(&mut app, 100, 34);
+    assert!(
+        painted.contains("Nothing was thrown away") && painted.contains("612 MB"),
+        "at a normal size the copy is on screen:\n{painted}",
+    );
+    assert!(app.preflight_cancel_drawn, "and the flag follows what was painted");
+    crate::app::preflight::quit_after_cancel(&mut app);
+    assert!(app.should_quit, "having said it, forge goes");
+}
+
+/// A cancelled transfer must not read as a finished one. The bar keeps
+/// the fraction it reached and the footer stops offering keys - a full
+/// orange bar beside `cancelled`, or an `esc  cancel` under it, both say
+/// the opposite of what happened.
+#[test]
+fn a_cancelled_transfer_does_not_read_as_a_finished_one() {
+    let snapshot = DictateSnapshot {
+        models: vec![model(DictateRole::Transcribing, "asr.gguf", DictateModelState::Failed)],
+        failure: Some(DictateFailure::Cancelled { kept: 592_000_000, total: 1_558_162_944 }),
+    };
+    let flat =
+        flatten(&model_rows(&App::test_default(), &snapshot.models[0], &snapshot, PICKER_WIDTH));
+
+    let bar = row_containing(&flat, "\u{2588}");
+    assert!(
+        bar.contains("38%") && bar.contains("592 MB / 1.56 GB"),
+        "the bar keeps the fraction it reached, so the screen agrees with the prose; got {bar:?}",
+    );
+    assert!(
+        bar.contains('\u{2591}'),
+        "a bar with no empty cells left reads as a completed download; got {bar:?}",
+    );
+}
+
 /// A hash mismatch is reported rather than repaired, so the screen owes
 /// the reader the command that clears it. Without that this is a screen
 /// forge will not leave and will not say how to.
@@ -219,6 +314,7 @@ fn a_bad_hash_hands_back_the_command_that_clears_it() {
             path: std::path::PathBuf::from("/models/s1-mini-f16.gguf"),
             expected: "0370da4f1bae19e3150bcafa33c5d396".to_owned(),
             actual: "4f2b9c1a77e0aaaaaaaaaaaaaaaaaaaa".to_owned(),
+            size: 1_509_347_232,
         },
         PICKER_WIDTH,
     ))
@@ -239,6 +335,13 @@ fn a_bad_hash_hands_back_the_command_that_clears_it() {
     assert!(
         !text.contains("0370da4f1bae19e3150bcafa33c5d396"),
         "64 hex characters do not fit the panel, so both digests are cut; got:\n{text}",
+    );
+    // Whitespace-normalised: the prose wraps to the panel, so a phrase
+    // that straddles a line break is still present.
+    let flowed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flowed.contains("throwing away a 1.51 GB file"),
+        "the size is what makes 'not forge's call' a reason rather than an assertion; got:\n{text}",
     );
 }
 
@@ -263,7 +366,7 @@ fn a_pending_model_under_a_failure_is_not_queued() {
         &waiting,
         &DictateSnapshot {
             models: Vec::new(),
-            failure: Some(DictateFailure::Cancelled { kept: 0 }),
+            failure: Some(DictateFailure::Cancelled { kept: 0, total: 0 }),
         },
         PICKER_WIDTH,
     ));
@@ -390,9 +493,6 @@ fn the_handover_is_a_content_swap_not_a_resize() {
 /// the bottom, which is the one outcome this screen cannot have.
 #[tokio::test]
 async fn a_short_terminal_drops_the_wordmark_rather_than_the_exits() {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
     let config_dir = tempfile::tempdir().expect("tempdir");
     let forge = config_dir.path().join("forge");
     std::fs::create_dir_all(&forge).expect("forge/");
@@ -430,26 +530,23 @@ async fn a_short_terminal_drops_the_wordmark_rather_than_the_exits() {
     let mut app = App::test_default();
     app.workspace = Some(std::sync::Arc::new(workspace));
 
-    let mut terminal = Terminal::new(TestBackend::new(100, 34)).expect("terminal");
-    terminal.draw(|f| render(f, &mut app)).expect("draw");
-    let buf = terminal.backend().buffer();
-    let painted: String = (0..34)
-        .map(|y| {
-            (0..100)
-                .map(|x| buf.cell((x, y)).map_or(' ', |c| c.symbol().chars().next().unwrap_or(' ')))
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    assert!(
-        painted.contains("Fix the auth"),
-        "the first exit has to be painted, not merely built:\n{painted}",
-    );
-    assert!(
-        painted.contains("Or drop the account") && painted.contains("[[accounts]]"),
-        "and so does the second, which is the one that gets clipped:\n{painted}",
-    );
+    // Swept rather than checked at one size: the bailed screen is taller
+    // than the terminal well before 34 rows, and clipping took the END
+    // of the body - which is where the exits are. Measured before the
+    // fix: 100x24 lost the second exit, 100x20 lost both commands.
+    for height in [20u16, 24, 28, 34, 50] {
+        let painted = paint(&mut app, 100, height);
+        assert!(
+            painted.contains("Fix the auth"),
+            "the first exit has to be painted, not merely built, at {height} rows:\n{painted}",
+        );
+        assert!(
+            painted.contains("Or drop the account") && painted.contains("[[accounts]]"),
+            "and so does the second, which is the one that got clipped, at {height} rows:\n\
+             {painted}",
+        );
+    }
+    let painted = paint(&mut app, 100, 34);
     // Asserted against a row the wordmark genuinely contains - the
     // obvious hand-typed box-drawing needle matches nothing and the
     // assertion silently passes whatever the layout does.

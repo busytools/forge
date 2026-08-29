@@ -13,11 +13,20 @@
   than `cargo test`.
 - **`just`**, if you want the task recipes. Everything they run is a
   cargo invocation you can also type out.
-- **ALSA headers, on Linux only.** `forge-dictate` records through
-  `cpal`, whose Linux backend links against ALSA, and `forge-workspace`
-  depends on it - so this is needed to build the binary at all, not
-  only to run `--workspace`. On Debian and Ubuntu that is
-  `libasound2-dev`. macOS needs nothing extra.
+- **A C and C++ toolchain, `cmake`, and `libclang`.** `forge-workspace`
+  depends on `forge-dictate`, which builds two native model runtimes
+  (`transcribe-cpp-sys`, `llama-cpp-sys-2`) - so these are needed to
+  build the binary at all, not only to run `--workspace`. `cmake` and a
+  C compiler were already required before that, through `aws-lc-sys`;
+  the C++ compiler and `libclang` (for `bindgen`) are what the dictation
+  runtimes add.
+
+  On macOS: Xcode Command Line Tools cover the compilers and
+  `libclang`, and `cmake` comes from Homebrew. On Debian and Ubuntu:
+  `build-essential cmake libclang-dev`.
+- **ALSA headers, on Linux only.** `cpal`'s Linux backend links against
+  ALSA. On Debian and Ubuntu that is `libasound2-dev`; macOS needs no
+  audio package.
 
 ### About the nightly pin
 
