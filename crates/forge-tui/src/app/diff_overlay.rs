@@ -7978,6 +7978,73 @@ mod tests {
     }
 
     #[test]
+    fn an_at_risk_card_survives_entering_a_scope_that_has_threads() {
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        // The entered scope HAS a thread, so hydrate does not early-return.
+        let mut homed = cross_numbered_thread();
+        homed.id = "in-target-scope".to_owned();
+        ws.save_review_threads("forge", "feat", &[homed]);
+        let mut overlay = cross_numbered_overlay();
+        // A whole-diff card whose redb write never landed: only copy.
+        let mut lost = stock_thread();
+        lost.id = "at-risk".to_owned();
+        overlay.comments.push(HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "src/x.rs".into(),
+            line: 5,
+            comment_text: "write failed, this is the only copy".into(),
+            commit: None,
+            thread: lost,
+            authored_this_session: true,
+            anchor_note: None,
+            persisted: false,
+        });
+        app.diff_overlay = Some(overlay);
+
+        let outcome =
+            app.diff_overlay.as_mut().expect("overlay").select_scope(DiffScope::Commit(0));
+        after_nav(&mut app, outcome);
+
+        let overlay = app.diff_overlay.as_ref().expect("overlay");
+        assert!(
+            overlay.comments.iter().any(|c| c.thread.id == "at-risk"),
+            "the only copy of an at-risk comment survives entering another scope",
+        );
+    }
+
+    #[test]
+    fn session_work_survives_a_round_trip_through_a_scope_that_has_threads() {
+        // The R4 property, but stepping through a scope that HAS a thread
+        // so hydrate cannot take its nothing-in-scope early return.
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        let mut homed = cross_numbered_thread();
+        homed.id = "in-target-scope".to_owned();
+        ws.save_review_threads("forge", "feat", &[homed]);
+        let mut overlay = cross_numbered_overlay();
+        overlay.branch = Some("feat".to_owned());
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 };
+        with_editor(&mut overlay, key, "worth a second look");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+        assert!(
+            app.diff_overlay.as_ref().expect("o").comments.iter().any(is_actionable),
+            "submittable when written",
+        );
+
+        for scope in [DiffScope::Commit(0), DiffScope::WholeDiff] {
+            let outcome = app.diff_overlay.as_mut().expect("o").select_scope(scope);
+            after_nav(&mut app, outcome);
+        }
+
+        assert!(
+            app.diff_overlay.as_ref().expect("o").comments.iter().any(is_actionable),
+            "still session work after a round trip through a scope that has its own threads",
+        );
+    }
+
+    #[test]
     fn saved_thread_survives_overlay_drop() {
         let (mut app, _dir) = review_app();
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("let y = compute();", 10)])];
