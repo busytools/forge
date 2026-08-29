@@ -325,7 +325,6 @@ fn build_message_layout(
         MessageRole::Welcome => append_welcome_blocks(msg, render_context.width, &mut layout),
         MessageRole::User => append_user_blocks(msg, spinner, render_context, &mut layout),
         MessageRole::Assistant => {
-            let before_body = layout.height;
             append_assistant_blocks(msg, spinner, render_context, &mut layout);
             // #273: stop_hook_summary chip sits between the
             // assistant body and the trailing separator so the
@@ -345,7 +344,7 @@ fn build_message_layout(
                 msg.stop_hook_summary_y_in_msg = 0;
                 msg.stop_hook_summary_height = 0;
             }
-            append_turn_duration(msg, before_body, render_context.width, &mut layout);
+            append_turn_duration(msg, render_context.width, &mut layout);
         }
         MessageRole::System(_) => append_system_blocks(msg, render_context.width, &mut layout),
     }
@@ -359,25 +358,14 @@ fn build_message_layout(
 
 /// Append the completed turn's duration as the message's last row.
 ///
-/// After the body rather than before it: the duration lands only when
-/// `handle_result` stamps it, so a header row would insert above prose
-/// the user is already reading at every turn end. Appending shifts
-/// nothing read.
-///
-/// Skipped when the body produced no rows (`before_body == layout
-/// .height`) - a turn whose only block is a hidden tool call has
-/// blocks yet renders nothing, and the duration would be left over an
-/// empty message with nothing to measure.
-fn append_turn_duration(
-    msg: &ChatMessage,
-    before_body: usize,
-    width: u16,
-    layout: &mut MessageLayout,
-) {
+/// Skipped when the message rendered nothing: a turn whose only block
+/// is a hidden tool call has blocks yet paints no rows, and the
+/// duration would sit alone with nothing to measure.
+fn append_turn_duration(msg: &ChatMessage, width: u16, layout: &mut MessageLayout) {
     let Some(ms) = msg.turn_duration_ms else {
         return;
     };
-    if layout.height == before_body {
+    if layout.height == 0 {
         return;
     }
     layout.push_wrapped_line(
