@@ -176,8 +176,8 @@ pub fn drain_events(app: &mut App) {
         // dead-branch sweep dropped the rows.
         //
         // Reading the threads rather than asking for the tally, because
-        // the tally reports a read failure as `None` too, and retiring a
-        // live signal over a transient one would be the bug this fixes.
+        // the tally reports a read failure as `None` too, and a transient
+        // one must not retire a live signal.
         let parked = app.sessions.get(&event.key).and_then(|s| {
             Some((s.review_replies_waiting.as_ref()?.branch.clone(), s.project.clone()?))
         });
