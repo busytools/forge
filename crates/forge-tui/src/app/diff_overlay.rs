@@ -2011,6 +2011,12 @@ fn hydrate_threads(app: &mut App) {
     let mut occupied: std::collections::HashSet<LineKey> = std::collections::HashSet::new();
     let mut deferred_outdated = Vec::new();
     for mut thread in mine {
+        // A thread's anchor line and its drift state are recorded in the
+        // numbering of the scope it was authored in. Another view may
+        // place the card, but the row it lands on there is not a fact
+        // about the thread - so only its own view writes either back, or
+        // reports it as having moved.
+        let home = thread.commit.as_deref() == scope_commit.as_deref();
         match resolver::resolve_anchor(&thread.anchor, &overlay.files) {
             AnchorResolution::InPlace { file_idx, hunk_idx, line_idx } => {
                 let resolved = overlay
@@ -2024,14 +2030,16 @@ fn hydrate_threads(app: &mut App) {
                         ReviewSide::New => dl.new_line,
                     })
                     .unwrap_or(thread.anchor.line);
-                if thread.anchor.line != line {
-                    thread.anchor.line = line;
-                    changed = true;
-                }
-                if thread.status == ReviewStatus::Outdated {
-                    // The line came back; drop the drift flag.
-                    thread.status = ReviewStatus::Open;
-                    changed = true;
+                if home {
+                    if thread.anchor.line != line {
+                        thread.anchor.line = line;
+                        changed = true;
+                    }
+                    if thread.status == ReviewStatus::Outdated {
+                        // The line came back; drop the drift flag.
+                        thread.status = ReviewStatus::Open;
+                        changed = true;
+                    }
                 }
                 let key = LineKey { file_idx, hunk_idx, line_idx };
                 occupied.insert(key);
@@ -2060,13 +2068,15 @@ fn hydrate_threads(app: &mut App) {
                         ReviewSide::New => dl.new_line,
                     })
                     .unwrap_or(thread.anchor.line);
-                if thread.anchor.line != line {
-                    thread.anchor.line = line;
-                    changed = true;
-                }
-                if thread.status == ReviewStatus::Outdated {
-                    thread.status = ReviewStatus::Open;
-                    changed = true;
+                if home {
+                    if thread.anchor.line != line {
+                        thread.anchor.line = line;
+                        changed = true;
+                    }
+                    if thread.status == ReviewStatus::Outdated {
+                        thread.status = ReviewStatus::Open;
+                        changed = true;
+                    }
                 }
                 let key = LineKey { file_idx, hunk_idx, line_idx };
                 occupied.insert(key);
@@ -2078,24 +2088,25 @@ fn hydrate_threads(app: &mut App) {
                     commit: scope_commit.clone(),
                     thread: thread.clone(),
                     authored_this_session: false,
-                    anchor_note: Some(AnchorNote::Moved { from }),
+                    anchor_note: home.then_some(AnchorNote::Moved { from }),
                     persisted: true,
                 });
                 persist.push(thread);
             }
             AnchorResolution::Outdated(reason) => {
-                if !matches!(thread.status, ReviewStatus::Resolved | ReviewStatus::Outdated) {
+                if home && !matches!(thread.status, ReviewStatus::Resolved | ReviewStatus::Outdated)
+                {
                     thread.status = ReviewStatus::Outdated;
                     changed = true;
                 }
-                deferred_outdated.push((thread, reason));
+                deferred_outdated.push((thread, reason, home));
             }
         }
     }
     // Pass 2: place outdated threads on a surviving FREE line so they
     // render (yellow, against their captured context) without clobbering
     // a co-located live thread.
-    for (thread, reason) in deferred_outdated {
+    for (thread, reason, home) in deferred_outdated {
         let Some(key) = outdated_placement(
             &overlay.files,
             &thread.anchor.path,
@@ -2117,7 +2128,7 @@ fn hydrate_threads(app: &mut App) {
             commit: scope_commit.clone(),
             thread: thread.clone(),
             authored_this_session: false,
-            anchor_note: Some(AnchorNote::Outdated(reason)),
+            anchor_note: home.then_some(AnchorNote::Outdated(reason)),
             persisted: true,
         });
         persist.push(thread);
@@ -7694,6 +7705,131 @@ mod tests {
 
         let overlay = app.diff_overlay.as_ref().expect("overlay");
         assert!(!overlay.comments.iter().any(is_actionable), "nothing here is this session's work");
+    }
+
+
+    /// A thread homed on a commit, whose content sits at a different line
+    /// number in the whole-branch diff than in the commit's own diff.
+    fn cross_numbered_thread() -> forge_primitives::ReviewThread {
+        let mut thread = stock_thread();
+        thread.id = "homed".to_owned();
+        thread.commit = Some("aaa".to_owned());
+        thread.anchor = ReviewAnchor {
+            path: "src/x.rs".to_owned(),
+            side: ReviewSide::New,
+            // The commit's own diff numbers this line 41.
+            line: 41,
+            content_hash: resolver::anchor_hash("let a = 1;"),
+            context: vec!["fn wrapper() {".to_owned(), "}".to_owned()],
+            base_ref: "main".to_owned(),
+        };
+        thread
+    }
+
+    /// Whole-diff scan where the same content is numbered 5, with the
+    /// commit's own scan numbering it 41.
+    fn cross_numbered_overlay() -> DiffOverlayState {
+        let whole = vec![single_hunk_file(
+            "src/x.rs",
+            vec![
+                added_line("fn wrapper() {", 4),
+                added_line("let a = 1;", 5),
+                added_line("}", 6),
+            ],
+        )];
+        let commit = vec![single_hunk_file(
+            "src/x.rs",
+            vec![
+                added_line("fn wrapper() {", 40),
+                added_line("let a = 1;", 41),
+                added_line("}", 42),
+            ],
+        )];
+        let mut overlay =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), whole.clone());
+        overlay.branch = Some("feat".to_owned());
+        overlay.commits = vec![commit_meta("aaa", "first")];
+        overlay.commit_cache = vec![Some(CachedScan { files: commit, scanner_ok: true })];
+        overlay.whole_diff_cache = Some(CachedScan { files: whole, scanner_ok: true });
+        overlay.scope = DiffScope::WholeDiff;
+        overlay
+    }
+
+    #[test]
+    fn viewing_a_commits_thread_from_the_whole_diff_does_not_claim_it_moved() {
+        // The two views number the same line differently. That is not a
+        // move, and reporting one puts a confident false claim about
+        // where the comment used to be on the card.
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads("forge", "feat", &[cross_numbered_thread()]);
+        app.diff_overlay = Some(cross_numbered_overlay());
+
+        hydrate_threads(&mut app);
+
+        let overlay = app.diff_overlay.as_ref().expect("overlay");
+        let card = overlay.comments.iter().find(|c| c.thread.id == "homed").expect("card");
+        assert_eq!(
+            card.anchor_note, None,
+            "this view never held the thread at its recorded line, so there is no origin \
+             line it could truthfully report - absent is the only honest note here",
+        );
+    }
+
+    #[test]
+    fn switching_scopes_does_not_rewrite_a_threads_stored_anchor() {
+        // The anchor line is recorded in the numbering of the scope the
+        // thread was authored in. A view that counts differently may read
+        // it, but writing to it makes the two views fight over the row.
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads("forge", "feat", &[cross_numbered_thread()]);
+        app.diff_overlay = Some(cross_numbered_overlay());
+        hydrate_threads(&mut app);
+
+        let stored_line = || {
+            ws.load_review_threads("forge", "feat")
+                .expect("load")
+                .into_iter()
+                .find(|t| t.id == "homed")
+                .expect("thread")
+                .anchor
+                .line
+        };
+        assert_eq!(stored_line(), 41, "the whole diff must not renumber it");
+
+        for scope in [DiffScope::Commit(0), DiffScope::WholeDiff, DiffScope::Commit(0)] {
+            let outcome = app.diff_overlay.as_mut().expect("overlay").select_scope(scope);
+            after_nav(&mut app, outcome);
+            assert_eq!(stored_line(), 41, "and neither does stepping between them");
+        }
+    }
+
+
+    #[test]
+    fn a_view_that_cannot_place_a_thread_does_not_mark_it_outdated() {
+        // A commit's line may be changed again by a later commit, so it
+        // can be absent from the whole-branch diff while being perfectly
+        // live in the commit that owns it. Recording that as drift there
+        // makes one view's blind spot the thread's durable state.
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        ws.save_review_threads("forge", "feat", &[cross_numbered_thread()]);
+        let mut overlay = cross_numbered_overlay();
+        // The whole diff no longer carries that line at all.
+        overlay.files = vec![single_hunk_file("src/x.rs", vec![added_line("let z = 9;", 5)])];
+        overlay.whole_diff_cache =
+            Some(CachedScan { files: overlay.files.clone(), scanner_ok: true });
+        app.diff_overlay = Some(overlay);
+
+        hydrate_threads(&mut app);
+
+        let stored = ws.load_review_threads("forge", "feat").expect("load");
+        assert_eq!(
+            stored[0].status,
+            ReviewStatus::Open,
+            "the commit that owns it still shows it; this view just cannot see it",
+        );
     }
 
     #[test]
