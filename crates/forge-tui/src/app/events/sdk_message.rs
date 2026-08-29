@@ -351,9 +351,9 @@ fn handle_user(app: &mut App, msg: Message) {
 }
 
 /// Which envelope constructor built a message. Merging is gated on this:
-/// `role_label_line` picks the `Gotify` / `Cron` / `Forge` source label
-/// from these per-message flags, so appending a notification to a peer
-/// message would render an external alert as agent traffic.
+/// `role_label_line` picks the `Gotify` / `Cron` source label from these
+/// per-message flags, so appending a notification to a peer message
+/// would render an external alert as agent traffic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EnvelopeKind {
     Peer,
@@ -367,7 +367,7 @@ impl EnvelopeKind {
             crate::ui::peer_block::PeerInboundKind::Gotify { .. } => Self::Gotify,
             crate::ui::peer_block::PeerInboundKind::Cron { .. } => Self::Cron,
             // Spelled out, not `_`: a new inbound kind must not silently
-            // inherit the `Forge` label and merge into peer traffic.
+            // inherit peer traffic's unlabelled treatment and merge into it.
             crate::ui::peer_block::PeerInboundKind::Message { .. }
             | crate::ui::peer_block::PeerInboundKind::Question { .. }
             | crate::ui::peer_block::PeerInboundKind::Reply { .. }
@@ -1648,24 +1648,27 @@ fn handle_result(app: &mut App, msg: Message) {
 }
 
 /// Stamp `Message::Result.duration_ms` onto the latest Assistant
-/// ChatMessage in the active session, invalidating its render cache so
-/// the `Forge - N.Ns` chip in the role-label line re-renders.
+/// ChatMessage in the active session.
+///
+/// Invalidates the layout, not just the render cache: the duration
+/// appends a row, and turn exit only invalidates when the turn was
+/// active - which reads the App-global status, so a background
+/// session's turn ending while the visible one sits idle takes
+/// neither path.
 ///
 /// No-op when no Assistant message is present (rare: Result fires
-/// before any assistant content has been pushed). The wire stamp +
-/// chip render are decoupled - the chip just won't appear that turn,
-/// no panic.
+/// before any assistant content has been pushed).
 fn stamp_turn_duration_on_latest_assistant(app: &mut App, duration_ms: u64) {
-    let Some(msg) = app
-        .active_messages_mut()
-        .iter_mut()
-        .rev()
-        .find(|m| matches!(m.role, crate::app::MessageRole::Assistant))
+    let Some(idx) =
+        app.messages().iter().rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
     else {
         return;
     };
-    msg.turn_duration_ms = Some(duration_ms);
-    msg.invalidate_render_cache();
+    if let Some(msg) = app.active_messages_mut().get_mut(idx) {
+        msg.turn_duration_ms = Some(duration_ms);
+        msg.invalidate_render_cache();
+    }
+    app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(idx));
 }
 
 /// On a successful Result, finalise any still-open tool_calls
@@ -1910,6 +1913,37 @@ mod stamp_turn_duration_tests {
             .map(|m| m.turn_duration_ms)
             .collect();
         assert_eq!(assistants, vec![None, Some(5_000)]);
+    }
+
+    /// The duration appends a row, so the stamp has to invalidate the
+    /// layout and not just the render cache. Turn exit invalidates too
+    /// and would mask a missing call, so this drives the stamp alone
+    /// against a viewport whose heights start valid.
+    #[test]
+    fn stamping_marks_its_message_stale_so_the_new_row_is_measured() {
+        use crate::app::{MessageBlock, TextBlock};
+
+        let mut app = App::test_default();
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::Text(TextBlock::from_complete("hello"))],
+        ));
+        let _ = app.active_viewport_mut().on_frame(40, 8);
+        app.active_viewport_mut().set_message_height(0, 1);
+        app.active_viewport_mut().mark_heights_valid();
+        assert_eq!(
+            app.active_viewport_mut().oldest_stale_index(),
+            None,
+            "fixture guard: heights start valid, so a stale index can only come from the stamp",
+        );
+
+        stamp_turn_duration_on_latest_assistant(&mut app, 12_400);
+
+        assert_eq!(
+            app.active_viewport_mut().oldest_stale_index(),
+            Some(0),
+            "the stamp must invalidate the layout itself, not lean on turn exit doing it",
+        );
     }
 }
 
@@ -2580,9 +2614,9 @@ mod inbound_message_surfacing_tests {
         let _ = tail;
     }
 
-    /// The kind gate: `role_label_line` picks Gotify / Cron / Forge from
-    /// per-MESSAGE flags, so a notification sharing a message with peer
-    /// traffic would render under the wrong source label.
+    /// The kind gate: `role_label_line` picks the Gotify / Cron source
+    /// label from per-MESSAGE flags, so a notification sharing a message
+    /// with peer traffic would lose its label to peer traffic's none.
     #[test]
     fn a_gotify_notification_never_merges_into_a_peer_envelope_message() {
         let mut app = App::test_default();

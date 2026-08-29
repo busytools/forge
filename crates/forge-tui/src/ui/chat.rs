@@ -2586,8 +2586,8 @@ mod tests {
         update_visual_heights(&mut app, &spinner, 40, 8);
         app.active_viewport_mut().rebuild_prefix_sums();
 
-        assert_eq!(app.active_viewport_mut().message_height(0), 2);
-        assert_eq!(app.active_viewport_mut().total_message_height(), 2);
+        assert_eq!(app.active_viewport_mut().message_height(0), 1);
+        assert_eq!(app.active_viewport_mut().total_message_height(), 1);
     }
 
     #[test]
@@ -2612,8 +2612,8 @@ mod tests {
 
         assert_eq!(
             app.active_viewport_mut().message_height(2),
-            3,
-            "active assistant should render label + thinking + separator even when a system row trails"
+            2,
+            "active assistant should render thinking + separator even when a system row trails"
         );
     }
 
@@ -2642,16 +2642,16 @@ mod tests {
 
         update_visual_heights(&mut app, &spinner, 40, 8);
         app.active_viewport_mut().rebuild_prefix_sums();
-        assert_eq!(app.active_viewport_mut().message_height(0), 2);
-        assert_eq!(app.active_viewport_mut().total_message_height(), 2);
+        assert_eq!(app.active_viewport_mut().message_height(0), 1);
+        assert_eq!(app.active_viewport_mut().total_message_height(), 1);
 
         app.push_message_tracked(user_message("follow-up"));
 
         update_visual_heights(&mut app, &spinner, 40, 8);
         app.active_viewport_mut().rebuild_prefix_sums();
-        assert_eq!(app.active_viewport_mut().message_height(0), 3);
+        assert_eq!(app.active_viewport_mut().message_height(0), 2);
         assert_eq!(app.active_viewport_mut().message_height(1), 2);
-        assert_eq!(app.active_viewport_mut().total_message_height(), 5);
+        assert_eq!(app.active_viewport_mut().total_message_height(), 4);
     }
 
     #[test]
@@ -2666,7 +2666,7 @@ mod tests {
 
         update_visual_heights(&mut app, &spinner, 40, 8);
         app.active_viewport_mut().rebuild_prefix_sums();
-        assert_eq!(app.active_viewport_mut().message_height(0), 3);
+        assert_eq!(app.active_viewport_mut().message_height(0), 2);
         assert_eq!(app.active_viewport_mut().message_height(1), 2);
 
         let removed = app.remove_message_tracked(1);
@@ -2674,8 +2674,8 @@ mod tests {
 
         update_visual_heights(&mut app, &spinner, 40, 8);
         app.active_viewport_mut().rebuild_prefix_sums();
-        assert_eq!(app.active_viewport_mut().message_height(0), 2);
-        assert_eq!(app.active_viewport_mut().total_message_height(), 2);
+        assert_eq!(app.active_viewport_mut().message_height(0), 1);
+        assert_eq!(app.active_viewport_mut().total_message_height(), 1);
     }
 
     #[test]
@@ -2781,8 +2781,19 @@ mod tests {
     #[test]
     fn render_culled_messages_matches_full_render_when_scrolled_inside_message() {
         let mut app = App::test_default();
-        let text = (0..160).map(|i| format!("line {i:03}")).collect::<Vec<_>>().join("\n");
-        *app.active_messages_mut() = vec![assistant_text_message(&text)];
+        // Two blocks, the first shorter than the scroll, so the skip has
+        // a whole block to drop - culling works at block granularity and
+        // never part-skips one.
+        let para = |from: usize, count: usize| {
+            MessageBlock::Text(TextBlock::from_complete(
+                &(from..from + count)
+                    .map(|i| format!("line {i:03}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ))
+        };
+        *app.active_messages_mut() =
+            vec![ChatMessage::new(MessageRole::Assistant, vec![para(0, 40), para(40, 120)])];
         let width = 24u16;
         let viewport_height_u16 = 8u16;
         let viewport_height = usize::from(viewport_height_u16);

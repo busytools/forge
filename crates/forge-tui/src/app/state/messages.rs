@@ -25,12 +25,12 @@ pub struct ChatMessage {
     /// Companion to [`Self::is_peer_envelope`] for the Gotify external-
     /// notification variant (`[Gotify - app '...']`). Stamped at push
     /// time by the `GotifyNotificationAppended` path so the role label
-    /// renders a distinct `Gotify` source (not the peer `Forge`) without
-    /// a per-frame `detect_inbound` walk.
+    /// renders a distinct `Gotify` source where peer traffic renders
+    /// none, without a per-frame `detect_inbound` walk.
     pub is_gotify_envelope: bool,
     /// Companion flag for a fired-cron turn (`[Cron]`). Stamped at push
     /// time by the `CronPromptAppended` path so the role label renders a
-    /// distinct `Cron` source, not the peer `Forge`.
+    /// distinct `Cron` source where peer traffic renders none.
     pub is_cron_envelope: bool,
     /// #273: stop_hook_summary chip hit-test - wrapped-row offset
     /// inside this message of the clickable chip line(s). `0` when
@@ -42,8 +42,7 @@ pub struct ChatMessage {
     pub stop_hook_summary_height: usize,
     /// Per-turn duration in ms, stamped from `Message::Result.duration_ms`
     /// when the assistant's turn finishes. `None` until the Result event
-    /// arrives. Drives the `Forge - N.Ns` chip in the assistant role-
-    /// label line.
+    /// arrives. Renders as the message's trailing row once it lands.
     pub turn_duration_ms: Option<u64>,
 }
 

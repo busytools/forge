@@ -2,7 +2,6 @@
 source: crates/forge-tui/src/app/events/sdk_message.rs
 expression: rendered_chat(&mut app).trim_end()
 ---
-Forge
   ◉ Monitor · tail-order probe
      │ $ for i in 1 2 3; do echo line-$i; done
      │ build step 1

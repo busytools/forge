@@ -329,10 +329,11 @@ mod tests {
     }
 
     /// Chat block render at the post-replay end-state. Catches the
-    /// "stop-hook chip" / role-banner / spinner-glyph layout class.
-    /// Drift here is a UX-visible chat regression: extra blank line,
-    /// missing chip, wrong role colour. Reviewer accepts deliberately
-    /// via `cargo insta accept`; otherwise it's a real regression.
+    /// stop-hook chip / source-label / duration-row / spinner-glyph
+    /// layout class. Drift here is a UX-visible chat regression: extra
+    /// blank line, missing row, wrong label colour. Reviewer accepts
+    /// deliberately via `cargo insta accept`; otherwise it's a real
+    /// regression.
     #[test]
     fn replay_monitor_persistent_stream_chat_render() {
         let mut harness = replay_baseline("monitor_persistent_stream");
@@ -340,11 +341,11 @@ mod tests {
         insta::assert_snapshot!(snapshot);
     }
 
-    /// Turn-duration chip restore: every `Message::Result` carries
+    /// Turn-duration restore: every `Message::Result` carries
     /// `duration_ms` on the wire. The new stamp path in
     /// `handle_result` pulls it out of the destructure and writes
     /// it onto the latest Assistant ChatMessage so the
-    /// `Forge - N.Ns` chip in `role_label_line` re-renders. This test
+    /// trailing duration row re-renders. This test
     /// drives a real captured baseline through the production reducer
     /// and asserts the stamp lands, comparing against the Result frame
     /// the same replay decoded so a recapture needs no edit here.
