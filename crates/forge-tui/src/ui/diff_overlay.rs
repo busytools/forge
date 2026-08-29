@@ -386,7 +386,14 @@ fn render_stepper(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlayState)
         Rect { x: area.x, y: title_y, width: area.width, height: 1 },
     );
 
-    let total = overlay.comments.len();
+    // Threads, not cards: one comment draws in every scope it belongs to,
+    // so counting cards reports it once per scope visited.
+    let total = {
+        let mut ids: Vec<&str> = overlay.comments.iter().map(|c| c.thread.id.as_str()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids.len()
+    };
     let mut spans: Vec<Span<'static>> = vec![Span::raw("  ")];
     match overlay.scope {
         DiffScope::Commit(i) => {
@@ -606,8 +613,19 @@ fn render_finish_review(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlay
     let accent_bold = orange.add_modifier(Modifier::BOLD);
     let plain = Style::default();
 
-    let authored: Vec<&HunkComment> =
-        overlay.comments.iter().filter(|c| c.authored_this_session).collect();
+    let authored: Vec<&HunkComment> = overlay
+        .comments
+        .iter()
+        .filter(|c| c.authored_this_session)
+        .fold(Vec::new(), |mut acc: Vec<&HunkComment>, c| {
+            // One row per thread: the same comment draws in every
+            // scope it belongs to, and this is the list the reviewer
+            // reads before sealing.
+            if !acc.iter().any(|e| e.thread.id == c.thread.id) {
+                acc.push(c);
+            }
+            acc
+        });
     let count = authored.len();
 
     let box_width = area.width.saturating_sub(8).clamp(44, 68);
@@ -4387,6 +4405,54 @@ mod tests {
         assert!(
             keys.iter().any(|k| matches!(k, BodyRowKey::CommentButton { reopen: Some(_), .. })),
             "Reopen lives on the card, so expanding has to bring it back",
+        );
+    }
+
+    #[test]
+    fn the_stepper_counts_comments_not_the_cards_they_draw_as() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        // One thread shows in its commit and in the whole diff, so the
+        // running total counted it once per scope the reviewer had
+        // visited.
+        let mut state =
+            DiffOverlayState::new(std::path::PathBuf::from("/tmp/repo"), "main".to_owned(), vec![]);
+        state.branch = Some("feat/x".to_owned());
+        state.commits = vec![forge_workspace::env::git_diff::hunks::CommitMeta {
+            sha: "aaa".into(),
+            short_sha: "aaa".into(),
+            subject: "first".into(),
+            body: String::new(),
+        }];
+        state.scope = DiffScope::Commit(0);
+        for scope in [None, Some("aaa".to_owned())] {
+            let mut c = chip_comment(5, "one comment", ReviewStatus::Open);
+            c.thread.id = "shared".to_owned();
+            c.commit = scope;
+            state.comments.push(c);
+        }
+
+        let width = 100u16;
+        let backend = TestBackend::new(width, STEPPER_HEIGHT);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                render_stepper(
+                    frame,
+                    ratatui::layout::Rect { x: 0, y: 0, width, height: STEPPER_HEIGHT },
+                    &mut state,
+                );
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let w = usize::from(width);
+        let rows: String = (0..usize::from(STEPPER_HEIGHT))
+            .map(|r| (0..w).map(|x| buffer.content[r * w + x].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            rows.contains("1 comment"),
+            "one comment drawn twice is still one comment; got:\n{rows}",
         );
     }
 

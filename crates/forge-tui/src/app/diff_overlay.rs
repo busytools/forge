@@ -3630,13 +3630,57 @@ fn reopen_comment_for_turn(
     MouseEffect { redraw: true, thread_action: None }
 }
 
-/// Whether a comment is actionable on submit: authored or edited THIS
-/// session (a hydrated thread from a prior review isn't re-nudged) and not
-/// already Resolved / Outdated. A review with at least one such comment
-/// nudges the agent on submit.
-fn is_actionable(comment: &HunkComment) -> bool {
-    comment.authored_this_session
-        && !matches!(comment.thread.status, ReviewStatus::Resolved | ReviewStatus::Outdated)
+/// Whether this session has written a comment no review has sealed yet.
+///
+/// Read per thread and from the store, not from the cards. A thread shows
+/// in every scope it belongs to and only the scope last entered was
+/// rebuilt, so another scope's card can be a round behind - which is how a
+/// comment resolved a moment ago still reads as work waiting to be filed.
+/// `authored_this_session` is the one fact the store does not hold, so it
+/// still comes off the card.
+fn would_file(app: &App) -> bool {
+    authored_threads(app).iter().any(ReviewThread::has_unfiled_user_turn)
+}
+
+/// This session's own threads, one per thread, each re-read from the
+/// store so its state is the branch's rather than a card's.
+fn authored_threads(app: &App) -> Vec<ReviewThread> {
+    let Some(overlay) = app.diff_overlay.as_ref() else {
+        return Vec::new();
+    };
+    let stored = overlay
+        .branch
+        .as_ref()
+        .zip(app.active_session().and_then(|s| s.project.clone()))
+        .zip(app.workspace.as_ref())
+        .and_then(|((branch, project), ws)| ws.load_review_threads(&project, branch).ok())
+        .unwrap_or_default();
+    let mut out: Vec<ReviewThread> = Vec::new();
+    for card in overlay.comments.iter().filter(|c| c.authored_this_session) {
+        if out.iter().any(|t| t.id == card.thread.id) {
+            continue;
+        }
+        // The store's copy, or the card's when the store has never seen
+        // it - a comment whose write did not land is real work, and the
+        // card is the only record of it.
+        out.push(
+            stored
+                .iter()
+                .find(|t| t.id == card.thread.id)
+                .cloned()
+                .unwrap_or_else(|| card.thread.clone()),
+        );
+    }
+    out
+}
+
+/// Whether this session wrote a comment that still wants attention on
+/// submit: not resolved, and not drifted out from under its line. Read
+/// per thread from the store for the same reason [`would_file`] is.
+fn session_work_pending(app: &App) -> bool {
+    authored_threads(app)
+        .iter()
+        .any(|t| !matches!(t.status, ReviewStatus::Resolved | ReviewStatus::Outdated))
 }
 
 /// Close path for the overlay (banner ✕ click and `handle_key`'s Esc).
@@ -3655,10 +3699,7 @@ pub(super) fn close_with_submit(app: &mut App) {
     if let Some(o) = app.diff_overlay.as_mut() {
         let _ = close_active_input_preserving_prior(o);
     }
-    let would_file = app.diff_overlay.as_ref().is_some_and(|o| {
-        o.comments.iter().any(|c| c.authored_this_session && c.thread.has_unfiled_user_turn())
-    });
-    if would_file {
+    if would_file(app) {
         if let Some(o) = app.diff_overlay.as_mut() {
             o.finish_review = Some(FinishReviewState { editor: InputState::new() });
             app.needs_redraw = true;
@@ -3676,7 +3717,15 @@ pub(super) fn submit_finish_review(app: &mut App) {
         app.diff_overlay.as_ref().and_then(|o| o.finish_review.as_ref()).map(|f| f.editor.text());
     let overview = overview.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
     let seal_ids: Vec<String> = app.diff_overlay.as_ref().map_or_else(Vec::new, |o| {
-        o.comments.iter().filter(|c| c.authored_this_session).map(|c| c.thread.id.clone()).collect()
+        let mut ids: Vec<String> = o
+            .comments
+            .iter()
+            .filter(|c| c.authored_this_session)
+            .map(|c| c.thread.id.clone())
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
     });
     finalize_review_close(app, overview.as_deref(), &seal_ids);
 }
@@ -3691,7 +3740,7 @@ pub(super) fn submit_finish_review(app: &mut App) {
 /// a branch / store still closes; only the local reviews-list record and
 /// the nudge are lost.
 fn finalize_review_close(app: &mut App, overview: Option<&str>, seal_ids: &[String]) {
-    let pending = app.diff_overlay.as_ref().is_some_and(|o| o.comments.iter().any(is_actionable));
+    let pending = session_work_pending(app);
     if pending && (!app.has_active_agent() || app.session_id().is_none()) {
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
@@ -7643,10 +7692,7 @@ mod tests {
         with_editor(&mut overlay, key, "worth a second look");
         app.diff_overlay = Some(overlay);
         save_active_input(&mut app);
-        assert!(
-            app.diff_overlay.as_ref().expect("overlay").comments.iter().any(is_actionable),
-            "the comment is submittable the moment it is written",
-        );
+        assert!(session_work_pending(&app), "the comment is submittable the moment it is written");
 
         for scope in [DiffScope::Commit(0), DiffScope::WholeDiff] {
             let outcome = app.diff_overlay.as_mut().expect("overlay").select_scope(scope);
@@ -7654,7 +7700,7 @@ mod tests {
         }
 
         assert!(
-            app.diff_overlay.as_ref().expect("overlay").comments.iter().any(is_actionable),
+            session_work_pending(&app),
             "and still is after looking at a commit and coming back",
         );
     }
@@ -7719,8 +7765,7 @@ mod tests {
 
         hydrate_threads(&mut app);
 
-        let overlay = app.diff_overlay.as_ref().expect("overlay");
-        assert!(!overlay.comments.iter().any(is_actionable), "nothing here is this session's work");
+        assert!(!session_work_pending(&app), "nothing here is this session's work");
     }
 
     /// A thread homed on a commit, whose content sits at a different line
@@ -8028,10 +8073,7 @@ mod tests {
         with_editor(&mut overlay, key, "worth a second look");
         app.diff_overlay = Some(overlay);
         save_active_input(&mut app);
-        assert!(
-            app.diff_overlay.as_ref().expect("o").comments.iter().any(is_actionable),
-            "submittable when written",
-        );
+        assert!(session_work_pending(&app), "submittable when written");
 
         for scope in [DiffScope::Commit(0), DiffScope::WholeDiff] {
             let outcome = app.diff_overlay.as_mut().expect("o").select_scope(scope);
@@ -8039,8 +8081,42 @@ mod tests {
         }
 
         assert!(
-            app.diff_overlay.as_ref().expect("o").comments.iter().any(is_actionable),
+            session_work_pending(&app),
             "still session work after a round trip through a scope that has its own threads",
+        );
+    }
+
+    #[test]
+    fn a_resolved_comment_does_not_keep_the_overlay_open_from_a_stale_card() {
+        // The reported journey. Comment on a commit, look at All changes
+        // (which draws the same thread as a second card), go back to the
+        // commit and resolve. The whole-diff card is a scope behind and
+        // still reads Open, so the close path sees work to file for a
+        // review whose only comment is resolved.
+        let (mut app, _dir) = review_app();
+        let mut overlay = cross_numbered_overlay();
+        overlay.scope = DiffScope::Commit(0);
+        overlay.files = overlay.commit_cache[0].as_ref().expect("cached").files.clone();
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 };
+        with_editor(&mut overlay, key, "why this cast?");
+        app.diff_overlay = Some(overlay);
+        save_active_input(&mut app);
+
+        for scope in [DiffScope::WholeDiff, DiffScope::Commit(0)] {
+            let outcome = app.diff_overlay.as_mut().expect("o").select_scope(scope);
+            after_nav(&mut app, outcome);
+        }
+        let overlay = app.diff_overlay.as_ref().expect("o");
+        assert!(
+            overlay.comments.len() >= 2,
+            "the thread has a card in each scope visited; got {}",
+            overlay.comments.len(),
+        );
+        apply_thread_action(&mut app, CommentRef { line: key, slot: 0 }, ThreadAction::Resolve);
+
+        assert!(
+            !session_work_pending(&app),
+            "the thread is resolved in the store; a card left in another scope does not outvote it",
         );
     }
 
@@ -8892,43 +8968,46 @@ mod tests {
     }
 
     #[test]
-    fn actionable_excludes_hydrated_and_resolved_comments() {
-        let make = |authored: bool, status: ReviewStatus| {
-            let thread = forge_primitives::ReviewThread {
-                id: "t".to_owned(),
-                anchor: ReviewAnchor {
-                    path: "a.rs".to_owned(),
-                    side: ReviewSide::New,
-                    line: 1,
-                    content_hash: 0,
-                    context: Vec::new(),
-                    base_ref: "main".to_owned(),
-                },
-                comments: Vec::new(),
-                status,
-                created_at: String::new(),
-                updated_at: String::new(),
-                commit: None,
-            };
-            HunkComment {
-                key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
-                path: "a.rs".to_owned(),
-                line: 1,
-                comment_text: "c".to_owned(),
+    fn session_work_pending_covers_who_wrote_it_and_what_state_it_is_in() {
+        let (mut app, _dir) = review_app();
+        let ws = app.workspace.clone().expect("ws");
+        let seed = |id: &str, status: ReviewStatus| {
+            let mut t = cross_numbered_thread();
+            t.id = id.to_owned();
+            t.commit = None;
+            t.status = status;
+            t
+        };
+        let case = |app: &mut App, authored: bool, status: ReviewStatus| {
+            ws.save_review_threads("forge", "feat", &[seed("t", status)]);
+            let mut overlay = cross_numbered_overlay();
+            let mut thread = seed("t", status);
+            thread.status = ReviewStatus::Open; // a card can lag the store
+            overlay.comments.push(HunkComment {
+                key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 },
+                path: "src/x.rs".into(),
+                line: 5,
+                comment_text: "c".into(),
                 commit: None,
                 thread,
                 authored_this_session: authored,
                 anchor_note: None,
                 persisted: true,
-            }
+            });
+            app.diff_overlay = Some(overlay);
+            session_work_pending(app)
         };
-        // Fresh open thread, authored this session: actionable.
-        assert!(is_actionable(&make(true, ReviewStatus::Open)));
-        // Hydrated from a prior session: never re-nudged.
-        assert!(!is_actionable(&make(false, ReviewStatus::Open)));
-        // Resolved / outdated: never actionable even if touched this session.
-        assert!(!is_actionable(&make(true, ReviewStatus::Resolved)));
-        assert!(!is_actionable(&make(true, ReviewStatus::Outdated)));
+
+        assert!(case(&mut app, true, ReviewStatus::Open), "written here and open: wants attention");
+        assert!(
+            !case(&mut app, false, ReviewStatus::Open),
+            "loaded from an earlier pass: never re-nudged however open it is",
+        );
+        assert!(
+            !case(&mut app, true, ReviewStatus::Resolved),
+            "resolved in the store outranks a card that has not caught up",
+        );
+        assert!(!case(&mut app, true, ReviewStatus::Outdated), "and so does drift");
     }
 
     #[test]
@@ -9732,7 +9811,7 @@ mod tests {
 
         let comment = &app.diff_overlay.as_ref().expect("overlay").comments[0];
         assert!(!comment.authored_this_session, "reopen + cancel keeps the chip hydrated");
-        assert!(!is_actionable(comment), "and never nudges the agent");
+        assert!(!session_work_pending(&app), "and never nudges the agent");
     }
 
     #[test]
