@@ -1142,6 +1142,10 @@ fn render_separator(frame: &mut Frame, area: Rect) {
 /// toggle / click-to-comment / click-to-jump / Esc, with the effective
 /// mode (unified / split) right-justified to `width`. With a comment
 /// editor open it shows the editor's Enter/Esc hints instead.
+///
+/// `seals` has to be answered from the same source Esc consults; taken
+/// from the cards it offers a review for a thread another view has
+/// already deleted, and Esc then closes without one.
 fn footer_line(
     overlay: &DiffOverlayState,
     mode: DiffViewMode,
