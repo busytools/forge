@@ -1,11 +1,12 @@
 //! The transcription engine and the tickets it hands back.
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Condvar, Mutex, Once, PoisonError};
 use std::time::{Duration, Instant};
 
-use transcribe_cpp::{CancelToken, Feature, Model, RunOptions};
+use transcribe_cpp::{CancelToken, Feature, Model, RunOptions, Session};
 
 use crate::audio::{AudioSource, SAMPLE_RATE};
 use crate::normalize::NormalizeOptions;
@@ -163,6 +164,39 @@ struct Job {
     reply: Sender<Result<Outcome, Error>>,
 }
 
+/// How the weights ended up, once the worker has resolved them.
+///
+/// A failure is held as the parts of [`Error::ModelLoad`] rather than
+/// the error itself, because every waiter needs its own copy and
+/// `Error` is not `Clone`.
+#[derive(Default)]
+struct Readiness {
+    outcome: Mutex<Option<Result<(), (PathBuf, String)>>>,
+    settled: Condvar,
+}
+
+impl Readiness {
+    fn settle(&self, outcome: Result<(), (PathBuf, String)>) {
+        *self.outcome.lock().unwrap_or_else(PoisonError::into_inner) = Some(outcome);
+        self.settled.notify_all();
+    }
+
+    fn wait(&self) -> Result<(), Error> {
+        let mut outcome = self.outcome.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            match outcome.as_ref() {
+                Some(Ok(())) => return Ok(()),
+                Some(Err((path, message))) => {
+                    return Err(Error::ModelLoad { path: path.clone(), message: message.clone() });
+                }
+                None => {
+                    outcome = self.settled.wait(outcome).unwrap_or_else(PoisonError::into_inner);
+                }
+            }
+        }
+    }
+}
+
 /// Loads the models and runs transcriptions, one at a time.
 ///
 /// The recognition session needs `&mut self` to run, so one set of
@@ -184,6 +218,8 @@ pub struct Engine {
     worker: Option<std::thread::JoinHandle<()>>,
     /// Label of whoever holds the microphone, if anyone.
     holder: Arc<Mutex<Option<String>>>,
+    /// Answers [`Engine::wait_ready`] once the worker has the weights.
+    readiness: Arc<Readiness>,
 }
 
 impl Drop for Engine {
@@ -229,6 +265,7 @@ impl Engine {
         let silence_floor = cfg.silence_floor;
         let stopping = Arc::new(AtomicBool::new(false));
         let in_flight: Arc<Mutex<Option<CancelToken>>> = Arc::new(Mutex::new(None));
+        let readiness = Arc::new(Readiness::default());
         let (jobs, queue) = channel();
 
         let handle = std::thread::Builder::new()
@@ -236,7 +273,8 @@ impl Engine {
             .spawn({
                 let stopping = Arc::clone(&stopping);
                 let in_flight = Arc::clone(&in_flight);
-                move || worker(&asr_path, &cfg, &queue, &stopping, &in_flight)
+                let readiness = Arc::clone(&readiness);
+                move || worker(&asr_path, &cfg, &queue, &stopping, &in_flight, &readiness)
             })
             .map_err(|source| Error::WorkerSpawn { message: source.to_string() })?;
 
@@ -250,7 +288,24 @@ impl Engine {
             jobs: Some(jobs),
             worker: Some(handle),
             holder: Arc::new(Mutex::new(None)),
+            readiness,
         }))
+    }
+
+    /// Wait for the weights to be in memory.
+    ///
+    /// [`Engine::new`] hands the load to the worker and returns without
+    /// it, so an engine over a model that cannot be read looks healthy
+    /// until somebody speaks. This is how a caller learns which one it
+    /// has before asking anyone to.
+    ///
+    /// Blocking, like everything else here. Returns once every
+    /// configured model is loaded, or with the [`Error::ModelLoad`] a
+    /// transcription would have failed with, naming the file. Idempotent
+    /// and safe from several threads: the answer is kept and handed to
+    /// each caller.
+    pub fn wait_ready(&self) -> Result<(), Error> {
+        self.readiness.wait()
     }
 
     /// Queue `source` for transcription.
@@ -504,19 +559,23 @@ impl Drop for Ticket {
     }
 }
 
-/// Owns the weights and drains the queue.
-fn worker(
-    asr_path: &std::path::Path,
-    cfg: &Config,
-    queue: &Receiver<Job>,
-    stopping: &AtomicBool,
-    in_flight: &Mutex<Option<CancelToken>>,
-) {
-    // Routed here rather than in `Engine::new` so the two cannot drift
-    // apart: this is the only place a model is loaded, and suppression
-    // has to precede that.
-    ROUTE_NATIVE_LOGS.call_once(transcribe_cpp::init_logging);
+/// Every configured model, in memory.
+struct Loaded {
+    model: Model,
+    session: Session,
+    normalizer: Option<crate::normalize::Normalizer>,
+    /// What the recognition weights cost, for the first transcript's
+    /// [`Stages`].
+    model_load: Duration,
+}
 
+/// Load the recognition model, and the normalizer when one is
+/// configured.
+///
+/// Failure is the parts of [`Error::ModelLoad`] rather than the error,
+/// because the queue drain and every [`Engine::wait_ready`] caller each
+/// need their own copy.
+fn load_models(asr_path: &Path, cfg: &Config) -> Result<Loaded, (PathBuf, String)> {
     let started = Instant::now();
     let loaded = Model::load(asr_path).and_then(|model| model.session().map(|s| (model, s)));
     let model_load = started.elapsed();
@@ -534,22 +593,7 @@ fn worker(
             )))
         }
     });
-
-    let (model, mut session) = match loaded {
-        Ok(pair) => pair,
-        Err(source) => {
-            // Every waiting caller hears the same thing, rather than
-            // blocking forever on a worker that never started.
-            let message = source.to_string();
-            while let Ok(job) = queue.recv() {
-                let _ = job.reply.send(Err(Error::ModelLoad {
-                    path: asr_path.into(),
-                    message: message.clone(),
-                }));
-            }
-            return;
-        }
-    };
+    let (model, session) = loaded.map_err(|source| (asr_path.to_path_buf(), source.to_string()))?;
 
     // Loaded here, on the worker, so a second set of weights never lands
     // on the caller's thread.
@@ -557,19 +601,49 @@ fn worker(
         None => None,
         Some(spec) => {
             let path = asr_path.with_file_name(&spec.file);
-            match crate::normalize::Normalizer::load(&path) {
-                Ok(normalizer) => Some(normalizer),
-                Err(source) => {
-                    let message = source.to_string();
-                    while let Ok(job) = queue.recv() {
-                        let _ = job.reply.send(Err(Error::ModelLoad {
-                            path: path.clone(),
-                            message: message.clone(),
-                        }));
-                    }
-                    return;
-                }
+            Some(
+                crate::normalize::Normalizer::load(&path)
+                    .map_err(|source| (path, source.to_string()))?,
+            )
+        }
+    };
+
+    Ok(Loaded { model, session, normalizer, model_load })
+}
+
+/// Owns the weights and drains the queue.
+fn worker(
+    asr_path: &Path,
+    cfg: &Config,
+    queue: &Receiver<Job>,
+    stopping: &AtomicBool,
+    in_flight: &Mutex<Option<CancelToken>>,
+    readiness: &Readiness,
+) {
+    // Routed here rather than in `Engine::new` so the two cannot drift
+    // apart: this is the only place a model is loaded, and suppression
+    // has to precede that.
+    ROUTE_NATIVE_LOGS.call_once(transcribe_cpp::init_logging);
+
+    let loaded = load_models(asr_path, cfg);
+    // Settled before the branch below can return, so a caller waiting on
+    // the weights hears what a queued job would have been told.
+    readiness.settle(match &loaded {
+        Ok(_) => Ok(()),
+        Err(failure) => Err(failure.clone()),
+    });
+
+    let Loaded { model, mut session, normalizer, model_load } = match loaded {
+        Ok(loaded) => loaded,
+        Err((path, message)) => {
+            // Every waiting caller hears the same thing, rather than
+            // blocking forever on a worker that never started.
+            while let Ok(job) = queue.recv() {
+                let _ = job
+                    .reply
+                    .send(Err(Error::ModelLoad { path: path.clone(), message: message.clone() }));
             }
+            return;
         }
     };
 
@@ -714,6 +788,29 @@ mod tests_engine {
         );
     }
 
+    /// A load failure has to reach a waiter, and it has to keep reaching
+    /// them. Both halves are load-bearing for a host that gates its
+    /// startup on this: settling `Ok` regardless of the load would let it
+    /// proceed over a model that will fail on the first word, and an
+    /// answer consumed by whoever asked first would hang the second
+    /// caller forever.
+    #[test]
+    fn wait_ready_reports_the_model_that_would_not_load_to_every_caller() {
+        let (dir, engine) = engine_without_weights();
+
+        let first = engine.wait_ready().expect_err("an empty directory holds no weights");
+        assert!(
+            matches!(&first, Error::ModelLoad { path, .. } if path.starts_with(dir.path())),
+            "readiness must carry the load failure and name the file it tried, got: {first:?}"
+        );
+
+        let again = engine.wait_ready().expect_err("the answer must outlive the first caller");
+        assert!(
+            matches!(again, Error::ModelLoad { .. }),
+            "the outcome must be kept rather than consumed, got: {again:?}"
+        );
+    }
+
     /// The silence branch answers before the weights are touched, so it
     /// is reachable with no model on disk.
     #[test]
@@ -846,6 +943,31 @@ mod tests_real_recognition {
             transcript.stages.audio > Duration::from_secs(9),
             "the reported audio duration must match the clip, got {:?}",
             transcript.stages.audio
+        );
+    }
+
+    /// The success arm of [`Engine::wait_ready`], which no test without
+    /// weights can reach: with an empty models directory every waiter
+    /// gets a failure, so settling `Err` unconditionally passes the unit
+    /// test above and refuses to start over a perfectly good pair.
+    #[test]
+    #[ignore = "needs the ASR weights; run with --run-ignored all after `--example fetch`"]
+    fn wait_ready_succeeds_before_anything_is_transcribed() {
+        let clip = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/08_009s.wav");
+        let (pcm, rate) = read_wav(&clip);
+
+        let engine =
+            Engine::new(ConfigBuilder::new().normalizer(None).build()).expect("engine must start");
+        engine.wait_ready().expect("the configured weights are on disk and must load");
+
+        let outcome = engine
+            .transcribe(Samples::new(pcm, rate, 1))
+            .expect("queued")
+            .recv()
+            .expect("recognition must succeed");
+        assert!(
+            matches!(outcome, Outcome::Transcript(_)),
+            "readiness must mean the engine can transcribe, not merely that it answered: {outcome:?}"
         );
     }
 

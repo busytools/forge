@@ -36,6 +36,10 @@ struct ForgeToml {
     /// section → all defaults.
     #[serde(default)]
     ui: UiSettings,
+    /// Optional `[dictate]` section - local dictation. Absent section
+    /// -> disabled, which is what keeps a 3 GB model download opt-in.
+    #[serde(default)]
+    dictate: crate::dictate::DictateSettings,
     /// Optional `[gotify]` section - the inbound-notification server
     /// connection. Absent section → `None` → the Gotify subsystem
     /// stays dormant.
@@ -135,6 +139,9 @@ pub(crate) struct LoadedConfig {
     /// `[ui]` section knobs. All fields have defaults; absent
     /// section means every field is at its default.
     pub ui: UiSettings,
+    /// `[dictate]` section knobs. Absent section means dictation is
+    /// off and preflight skips it entirely.
+    pub dictate: crate::dictate::DictateSettings,
     /// `[gotify]` server connection, or `None` when the section is
     /// absent (Gotify disabled).
     pub gotify: Option<GotifyConfig>,
@@ -212,6 +219,7 @@ impl LoadedConfig {
             default_index: 0,
             accounts: Vec::new(),
             ui: UiSettings::default(),
+            dictate: crate::dictate::DictateSettings::default(),
             gotify: None,
         }
     }
@@ -377,7 +385,14 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         alpha.iter().copied().find(|&i| projects[i].auto_start).unwrap_or_else(|| alpha[0])
     };
 
-    Ok(LoadedConfig { projects, default_index, accounts, ui: parsed.ui, gotify: parsed.gotify })
+    Ok(LoadedConfig {
+        projects,
+        default_index,
+        accounts,
+        ui: parsed.ui,
+        dictate: parsed.dictate,
+        gotify: parsed.gotify,
+    })
 }
 
 /// A project's env: the `env_file` entries with the inline `env` table
@@ -1014,6 +1029,27 @@ config_dir = "~/.claude"
                 client_token: "Cabc".to_owned(),
             })
         );
+    }
+
+    /// The `[dictate]` plumbing leg, which the section's own serde tests
+    /// cannot reach: a `parsed.dictate` never threaded into
+    /// `LoadedConfig` leaves dictation off however the user writes
+    /// forge.toml, and every one of those tests still passes.
+    #[test]
+    fn the_dictate_section_reaches_the_loaded_config() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!("{}\n[dictate]\nenabled = true\nlanguage = \"en\"\n", minimal_config()),
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        assert!(config.dictate.enabled, "an explicit `enabled = true` must survive the load");
+        assert_eq!(config.dictate.language.as_deref(), Some("en"));
+
+        let bare = tempdir().expect("tempdir");
+        write_config(bare.path(), minimal_config());
+        let config = load_from_dir(bare.path()).expect("happy path");
+        assert!(!config.dictate.enabled, "an absent section must leave dictation off");
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! Launchpad view state + keyboard handling.
 //!
-//! The launchpad is the floor of the UI shown when forge is invoked
-//! without a project argv (the renderer lives in
-//! [`crate::ui::launchpad`]). It owns:
+//! The launchpad is the floor of the UI, and the second of its two
+//! views - [`crate::app::preflight`] runs first on every route (the
+//! renderer lives in [`crate::ui::launchpad`]). It owns:
 //!
 //! - The selection cursor over the picker rows.
 //! - The open-time anchor (`opened_at`) used to detect the first
