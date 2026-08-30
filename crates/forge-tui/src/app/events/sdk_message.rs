@@ -175,6 +175,7 @@ fn handle_assistant(app: &mut App, msg: Message) {
     if !message.model.is_empty() {
         app.set_observed_assistant_model(Some(message.model.clone()));
     }
+    record_live_turn_usage(app, &message, parent_tool_use_id.as_deref());
     // Outer-envelope error capture - `app.turn_state.last_assistant_error`
     // is consulted by `apply_result_finalize` to classify TurnError
     // variants.
@@ -1646,11 +1647,22 @@ fn handle_rate_limit_event(app: &mut App, msg: Message) {
 }
 
 fn handle_result(app: &mut App, msg: Message) {
-    let Message::Result { duration_ms, is_error, subtype, errors, terminal_reason, .. } = msg
+    let Message::Result {
+        duration_ms,
+        duration_api_ms,
+        usage,
+        total_cost_usd,
+        is_error,
+        subtype,
+        errors,
+        terminal_reason,
+        ..
+    } = msg
     else {
         return;
     };
-    stamp_turn_duration_on_latest_assistant(app, duration_ms);
+    let api_ms = app.settle_live_turn(duration_api_ms);
+    stamp_turn_info_on_latest_assistant(app, duration_ms, api_ms, usage, total_cost_usd);
     // #273: Turn ended - clear per-turn thinking-token chip so the
     // next in-progress turn starts with a bare spinner (it'll
     // re-populate once `Message::ThinkingTokens` fires for the new
@@ -1660,25 +1672,129 @@ fn handle_result(app: &mut App, msg: Message) {
     apply_result_finalize(app, is_error, &subtype, errors.unwrap_or_default(), terminal_reason);
 }
 
-/// Stamp `Message::Result.duration_ms` onto the latest Assistant
-/// ChatMessage in the active session.
+/// Settle the turn-info row on the latest Assistant ChatMessage, or
+/// decline if the Result would leave that row describing two
+/// different turns.
 ///
-/// Invalidates the layout, not just the render cache: the duration
-/// appends a row, and turn exit only invalidates when the turn was
-/// active - which reads the App-global status, so a background
-/// session's turn ending while the visible one sits idle takes
-/// neither path.
-///
-/// No-op when no Assistant message is present (rare: Result fires
-/// before any assistant content has been pushed).
-fn stamp_turn_duration_on_latest_assistant(app: &mut App, duration_ms: u64) {
+/// Invalidates the layout rather than just the render cache: the row
+/// can change height, and turn exit reads the App-global status, so a
+/// background session's turn ending takes neither path.
+fn stamp_turn_info_on_latest_assistant(
+    app: &mut App,
+    duration_ms: u64,
+    api_ms: Option<u64>,
+    usage: Option<forge_primitives::Usage>,
+    total_cost_usd: Option<f64>,
+) {
     let Some(idx) =
         app.messages().iter().rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
     else {
         return;
     };
+    let model = app.observed_assistant_model().map(ToOwned::to_owned);
+    let usage = usage.filter(|u| !is_unattributed_usage(*u));
     if let Some(msg) = app.active_messages_mut().get_mut(idx) {
-        msg.turn_duration_ms = Some(duration_ms);
+        let info = &mut msg.turn_info;
+        // A Result with no usable token counts cannot replace the ones
+        // already on a settled row, so writing its clock there would
+        // leave another turn's figures sitting underneath it.
+        if usage.is_none() && info.is_settled() {
+            return;
+        }
+        info.duration_ms = Some(duration_ms);
+        info.api_ms = api_ms;
+        info.ended_at_local = Some(local_clock_now());
+        info.session_cost_usd = total_cost_usd;
+        if model.is_some() {
+            info.model = model;
+        }
+        if let Some(usage) = usage {
+            info.input_tokens = Some(usage.input_tokens);
+            info.output_tokens = Some(usage.output_tokens);
+            info.cache_read_tokens = Some(usage.cache_read_input_tokens);
+            info.cache_written_tokens = Some(usage.cache_creation_input_tokens);
+        }
+        msg.invalidate_render_cache();
+    }
+    app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(idx));
+}
+
+/// True when a present `usage` block carries no information.
+///
+/// A turn that reached the API always spends input tokens, so an
+/// all-zero block means the CLI attributed none - which is why only
+/// the whole block counts, an individual zero being a real
+/// measurement. Destructured so a counter added to `Usage` fails to
+/// build here.
+fn is_unattributed_usage(usage: forge_primitives::Usage) -> bool {
+    let forge_primitives::Usage {
+        input_tokens,
+        output_tokens,
+        cache_read_input_tokens,
+        cache_creation_input_tokens,
+    } = usage;
+    input_tokens == 0
+        && output_tokens == 0
+        && cache_read_input_tokens == 0
+        && cache_creation_input_tokens == 0
+}
+
+/// Local wall-clock `HH:MM:SS` for the turn's end stamp.
+fn local_clock_now() -> String {
+    use time_tz::OffsetDateTimeExt;
+    let tz = forge_workspace::env::timezone::system_timezone();
+    let now = time::OffsetDateTime::now_utc().to_timezone(tz);
+    format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second())
+}
+
+/// Fold one assistant frame's input-side usage into the live turn and
+/// re-stamp the running totals onto its message, so the row counts up.
+///
+/// Skipped for a subagent frame, whose usage is not part of the
+/// parent turn's `Result.usage`, and during resume replay. A settled
+/// message bails after the fold, so the frame still counts toward the
+/// session totals and only the re-stamp onto it is skipped - which is
+/// why a turn appended to one shows nothing of its own until its
+/// Result lands.
+fn record_live_turn_usage(
+    app: &mut App,
+    message: &forge_primitives::AssistantEnvelope,
+    parent_tool_use_id: Option<&str>,
+) {
+    if app.replay_in_progress || parent_tool_use_id.is_some() {
+        return;
+    }
+    let Some(usage) = message.usage else {
+        return;
+    };
+    let (started_at, totals) = app.record_live_turn_usage(
+        message.id.clone(),
+        crate::app::state::messages::LiveUsage {
+            input_tokens: usage.input_tokens,
+            cache_read_tokens: usage.cache_read_input_tokens,
+            cache_written_tokens: usage.cache_creation_input_tokens,
+        },
+    );
+    let Some(idx) =
+        app.messages().iter().rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
+    else {
+        return;
+    };
+    let model = (!message.model.is_empty()).then(|| message.model.clone());
+    if let Some(msg) = app.active_messages_mut().get_mut(idx) {
+        let info = &mut msg.turn_info;
+        if info.is_settled() {
+            return;
+        }
+        info.started_at = started_at;
+        if model.is_some() {
+            info.model = model;
+        }
+        if let Some(totals) = totals {
+            info.input_tokens = Some(totals.input_tokens);
+            info.cache_read_tokens = Some(totals.cache_read_tokens);
+            info.cache_written_tokens = Some(totals.cache_written_tokens);
+        }
         msg.invalidate_render_cache();
     }
     app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(idx));
@@ -1871,31 +1987,222 @@ mod persistent_guard_tests {
 }
 
 #[cfg(test)]
-mod stamp_turn_duration_tests {
-    //! Unit coverage for `stamp_turn_duration_on_latest_assistant`,
-    //! the helper called from `handle_result` when a `Message::Result`
-    //! frame arrives carrying the wire `duration_ms`. The full
-    //! handle_result -> finalize chain pushes a placeholder Assistant
-    //! for buffered-next-turn anticipation, so this module tests the
-    //! stamp helper in isolation; the wire-driven end-to-end path is
+mod stamp_turn_info_tests {
+    //! Unit coverage for `stamp_turn_info_on_latest_assistant`. The
+    //! full handle_result chain pushes a placeholder Assistant, so the
+    //! stamp is tested in isolation here; the wire-driven path is
     //! pinned in `replay.rs`.
-    use super::stamp_turn_duration_on_latest_assistant;
-    use crate::app::{App, ChatMessage, MessageRole};
+    use super::stamp_turn_info_on_latest_assistant;
+    use super::stamp_turn_info_on_latest_assistant as stamp;
+    use crate::app::{App, ChatMessage, MessageRole, TurnInfo};
+
+    fn usage(input: u64, output: u64, read: u64, written: u64) -> forge_primitives::Usage {
+        forge_primitives::Usage {
+            input_tokens: input,
+            output_tokens: output,
+            cache_read_input_tokens: read,
+            cache_creation_input_tokens: written,
+        }
+    }
+
+    /// An app holding one assistant message, ready to be stamped.
+    fn app_with_assistant() -> App {
+        let mut app = App::test_default();
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new()));
+        app
+    }
+
+    fn latest_turn_info(app: &App) -> TurnInfo {
+        app.messages()
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, MessageRole::Assistant))
+            .expect("stamping must not drop the assistant message it targets")
+            .turn_info
+            .clone()
+    }
+
+    /// `Result.duration_api_ms` counts up across the session while
+    /// `duration_ms` is per turn, so reading it directly makes the
+    /// local split negative from the second turn onward. Figures are
+    /// `compact.jsonl`'s first three results.
+    #[test]
+    fn api_time_is_the_delta_of_a_session_cumulative_counter() {
+        let mut app = App::test_default();
+        assert_eq!(
+            app.settle_live_turn(3_403),
+            Some(3_403),
+            "the first turn has nothing to subtract"
+        );
+        assert_eq!(
+            app.settle_live_turn(6_504),
+            Some(3_101),
+            "later turns are the delta, not the total"
+        );
+        assert_eq!(app.settle_live_turn(9_020), Some(2_516));
+        assert_eq!(
+            app.settle_live_turn(9_020),
+            None,
+            "a turn that advanced the counter by nothing spent no attributable API time; \
+             treating the unchanged counter as a fresh start would report the session's \
+             entire 9020ms as this turn's",
+        );
+
+        let mut info =
+            TurnInfo { duration_ms: Some(2_569), api_ms: Some(2_516), ..TurnInfo::default() };
+        assert_eq!(
+            info.local_ms(),
+            Some(53),
+            "wall clock minus the delta is a plausible local overhead; minus the raw counter \
+             it would be -6451",
+        );
+        // workflow.jsonl's first result: concurrent subagent calls
+        // outran wall clock, so there is no local time to claim.
+        info = TurnInfo { duration_ms: Some(11_973), api_ms: Some(18_486), ..TurnInfo::default() };
+        assert_eq!(info.local_ms(), None, "an unsound split reads as absent, not as zero");
+    }
+
+    /// A compaction Result arrives with `duration_api_ms: 0` and an
+    /// all-zero `usage`: the CLI attributing nothing, not measuring
+    /// zero. The rule keys on the WHOLE block, so a real block
+    /// carrying one zero still reports it.
+    #[test]
+    fn an_unattributed_result_stamps_nothing_but_a_real_zero_survives() {
+        let mut app = App::test_default();
+        let _ = app.settle_live_turn(16_244);
+        assert_eq!(
+            app.settle_live_turn(0),
+            None,
+            "the counter restarted to zero, which attributes no API time to this turn",
+        );
+
+        let mut app = app_with_assistant();
+        stamp(&mut app, 44_410, None, Some(usage(0, 0, 0, 0)), Some(1.164_956_5));
+        let info = latest_turn_info(&app);
+        assert_eq!(info.duration_ms, Some(44_410), "the wall clock is real and is kept");
+        assert_eq!(info.api_ms, None, "an unattributed API time is absent, not 0");
+        assert_eq!(info.local_ms(), None, "with no API time there is no local time to derive");
+        assert_eq!(
+            (
+                info.input_tokens,
+                info.output_tokens,
+                info.cache_read_tokens,
+                info.cache_written_tokens
+            ),
+            (None, None, None, None),
+            "an all-zero usage block carries no information, so no count is claimed",
+        );
+
+        let mut app = app_with_assistant();
+        stamp(&mut app, 4_675, Some(3_807), Some(usage(2, 5, 15_262, 0)), None);
+        assert_eq!(
+            latest_turn_info(&app).cache_written_tokens,
+            Some(0),
+            "writing nothing to the cache is a real measurement and must not be suppressed",
+        );
+    }
+
+    /// The refusal is narrow on purpose: an unattributed Result has no
+    /// counts to replace the row's, so its clock would sit over
+    /// another turn's figures. One carrying usage replaces every field
+    /// together and is let through even onto a settled row, which is
+    /// what a turn appended to one needs.
+    #[test]
+    fn only_a_result_with_no_token_counts_is_refused_by_a_settled_row() {
+        let mut app = app_with_assistant();
+        stamp(&mut app, 4_675, Some(3_807), Some(usage(2, 5, 15_262, 62_706)), Some(0.634_826));
+        let settled = latest_turn_info(&app);
+        assert_eq!(settled.duration_ms, Some(4_675), "a live turn's Result still stamps its row");
+        assert_eq!(settled.api_ms, Some(3_807), "including its API time");
+
+        stamp(&mut app, 44_410, None, None, None);
+        let refused = latest_turn_info(&app);
+        assert_eq!(
+            (refused.duration_ms, refused.output_tokens),
+            (Some(4_675), Some(5)),
+            "an unattributed Result cannot supply tokens, so its clock must not land over the \
+             counts already on the row",
+        );
+
+        stamp(&mut app, 9_717, Some(9_668), Some(usage(4, 186, 167_802, 825)), Some(0.961_126));
+        let replaced = latest_turn_info(&app);
+        assert_eq!(
+            (replaced.duration_ms, replaced.output_tokens, replaced.cache_written_tokens),
+            (Some(9_717), Some(186), Some(825)),
+            "a Result carrying usage overwrites every field together, so it stays coherent \
+             and is not refused",
+        );
+    }
+
+    /// The row's defining behaviour is that it appears when the turn
+    /// starts, and `start_live_turn`'s stamp is the only thing that
+    /// makes it: deleting it leaves the whole suite green while the
+    /// row silently stops rendering until the Result lands.
+    #[test]
+    fn starting_a_turn_stamps_the_row_but_leaves_a_settled_one_alone() {
+        let mut app = app_with_assistant();
+        let at = std::time::Instant::now();
+        app.start_live_turn(at);
+        let started = latest_turn_info(&app);
+        assert!(started.started_at.is_some(), "the turn's start is stamped onto its row");
+        assert!(!started.is_empty(), "so the row renders before any Result arrives");
+
+        stamp(&mut app, 4_675, Some(3_807), Some(usage(2, 5, 15_262, 62_706)), None);
+        app.start_live_turn(std::time::Instant::now());
+        assert_eq!(
+            latest_turn_info(&app).duration_ms,
+            Some(4_675),
+            "a settled row belongs to a finished turn and is not reset by the next start",
+        );
+    }
+
+    /// The CLI emits one assistant frame per content block, all sharing
+    /// a `message.id` and repeating the same usage, so summing frame by
+    /// frame double-counts. Figures are `permission_deny`'s three
+    /// distinct messages, whose totals match its Result exactly.
+    #[test]
+    fn repeated_frames_for_one_message_do_not_double_count() {
+        use crate::app::state::messages::LiveUsage;
+        let mut app = App::test_default();
+        let frame = |input, read, written| LiveUsage {
+            input_tokens: input,
+            cache_read_tokens: read,
+            cache_written_tokens: written,
+        };
+        for (id, f) in [
+            ("msg_a", frame(2, 16_726, 62_767)),
+            ("msg_a", frame(2, 16_726, 62_767)),
+            ("msg_b", frame(2, 79_493, 123)),
+            ("msg_b", frame(2, 79_493, 123)),
+        ] {
+            app.record_live_turn_usage(id.to_owned(), f);
+        }
+        let (_, totals) = app.record_live_turn_usage("msg_c".to_owned(), frame(2, 79_616, 1_605));
+
+        let totals = totals.expect("three frames recorded");
+        assert_eq!(totals.input_tokens, 6, "input is per distinct message, not per frame");
+        assert_eq!(totals.cache_read_tokens, 175_835, "cache read matches Result.usage exactly");
+        assert_eq!(totals.cache_written_tokens, 64_495, "cache write matches Result.usage exactly");
+    }
 
     #[test]
     fn stamps_duration_on_latest_assistant_message() {
         let mut app = App::test_default();
         app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new()));
 
-        stamp_turn_duration_on_latest_assistant(&mut app, 12_768);
+        stamp_turn_info_on_latest_assistant(&mut app, 12_768, Some(9_000), None, None);
 
         let latest = app
             .messages()
             .iter()
             .rev()
             .find(|m| matches!(m.role, MessageRole::Assistant))
-            .expect("seeded assistant message present");
-        assert_eq!(latest.turn_duration_ms, Some(12_768));
+            .expect("stamping must not drop the assistant message it targets");
+        assert_eq!(
+            latest.turn_info.duration_ms,
+            Some(12_768),
+            "Result.duration_ms lands on the latest assistant message verbatim",
+        );
     }
 
     #[test]
@@ -1904,7 +2211,7 @@ mod stamp_turn_duration_tests {
         // No assistant messages seeded; helper's rev().find() returns
         // None and the stamp call is a no-op. Verifying no panic +
         // no spurious mutation is the contract.
-        stamp_turn_duration_on_latest_assistant(&mut app, 99);
+        stamp_turn_info_on_latest_assistant(&mut app, 99, None, None, None);
         assert!(app.messages().is_empty());
     }
 
@@ -1916,19 +2223,23 @@ mod stamp_turn_duration_tests {
         app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new()));
         app.push_message_tracked(ChatMessage::new(MessageRole::User, Vec::new()));
 
-        stamp_turn_duration_on_latest_assistant(&mut app, 5_000);
+        stamp_turn_info_on_latest_assistant(&mut app, 5_000, None, None, None);
 
         // Latest (idx 2) Assistant gets the stamp; earlier (idx 0) stays None.
         let assistants: Vec<Option<u64>> = app
             .messages()
             .iter()
             .filter(|m| matches!(m.role, MessageRole::Assistant))
-            .map(|m| m.turn_duration_ms)
+            .map(|m| m.turn_info.duration_ms)
             .collect();
-        assert_eq!(assistants, vec![None, Some(5_000)]);
+        assert_eq!(
+            assistants,
+            vec![None, Some(5_000)],
+            "the stamp targets the LATEST assistant, so an earlier one keeps its own row",
+        );
     }
 
-    /// The duration appends a row, so the stamp has to invalidate the
+    /// The row can change height, so the stamp has to invalidate the
     /// layout and not just the render cache. Turn exit invalidates too
     /// and would mask a missing call, so this drives the stamp alone
     /// against a viewport whose heights start valid.
@@ -1950,7 +2261,7 @@ mod stamp_turn_duration_tests {
             "fixture guard: heights start valid, so a stale index can only come from the stamp",
         );
 
-        stamp_turn_duration_on_latest_assistant(&mut app, 12_400);
+        stamp_turn_info_on_latest_assistant(&mut app, 12_400, None, None, None);
 
         assert_eq!(
             app.active_viewport_mut().oldest_stale_index(),

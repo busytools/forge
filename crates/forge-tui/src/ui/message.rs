@@ -1,7 +1,7 @@
 use crate::app::{
     BlockCache, CachedMessageSegment, ChatMessage, IncrementalMarkdown, MarkdownRenderKey,
     MessageBlock, MessageRenderCache, MessageRenderCacheKey, MessageRenderSignature, MessageRole,
-    StopHookEntry, SystemSeverity, TextBlock, WelcomeBlock, hash_text_block_content,
+    StopHookEntry, SystemSeverity, TextBlock, TurnInfo, WelcomeBlock, hash_text_block_content,
     hash_welcome_block_content,
 };
 use crate::ui::peer_block;
@@ -344,7 +344,10 @@ fn build_message_layout(
                 msg.stop_hook_summary_y_in_msg = 0;
                 msg.stop_hook_summary_height = 0;
             }
-            append_turn_duration(msg, render_context.width, &mut layout);
+            let (row_y, row_h) = append_turn_info(msg, render_context.width, &mut layout);
+            msg.turn_info_y_in_msg = row_y;
+            msg.turn_info_height = row_h;
+            msg.turn_info_width = render_context.width;
         }
         MessageRole::System(_) => append_system_blocks(msg, render_context.width, &mut layout),
     }
@@ -356,22 +359,174 @@ fn build_message_layout(
     layout
 }
 
-/// Append the completed turn's duration as the message's last row.
-///
-/// Skipped when the message rendered nothing: a turn whose only block
-/// is a hidden tool call has blocks yet paints no rows, and the
-/// duration would sit alone with nothing to measure.
-fn append_turn_duration(msg: &ChatMessage, width: u16, layout: &mut MessageLayout) {
-    let Some(ms) = msg.turn_duration_ms else {
-        return;
-    };
-    if layout.height == 0 {
+/// Re-read the running turn's elapsed into whole seconds before the
+/// cache key is built, so the key and the layout it guards agree and
+/// the row re-lays out at most once a second. No new clock: a running
+/// turn already forces a repaint on the existing cadence.
+fn refresh_live_turn_elapsed(msg: &mut ChatMessage) {
+    if msg.turn_info.is_settled() {
         return;
     }
-    layout.push_wrapped_line(
-        Line::from(Span::styled(format_turn_duration(ms), Style::default().fg(theme::DIM))),
-        width,
-    );
+    if let Some(started_at) = msg.turn_info.started_at {
+        msg.turn_info.elapsed_secs = started_at.elapsed().as_secs();
+    }
+}
+
+/// Fold the turn-info row's inputs into the message render signature.
+/// `elapsed_secs` rather than the start instant, so a rebuild happens
+/// on a second boundary instead of every frame.
+fn hash_turn_info(info: &TurnInfo, hasher: &mut impl std::hash::Hasher) {
+    use std::hash::Hash;
+    info.elapsed_secs.hash(hasher);
+    info.duration_ms.hash(hasher);
+    info.api_ms.hash(hasher);
+    info.ended_at_local.hash(hasher);
+    info.model.hash(hasher);
+    info.input_tokens.hash(hasher);
+    info.output_tokens.hash(hasher);
+    info.cache_read_tokens.hash(hasher);
+    info.cache_written_tokens.hash(hasher);
+    info.session_cost_usd.map(f64::to_bits).hash(hasher);
+    info.expanded.hash(hasher);
+}
+
+/// Append the turn-info row as the message's last row, plus its
+/// expanded body when open. Returns the clickable row's offset and
+/// height, excluding that body, for the caller's hit rect.
+///
+/// Skipped when the message rendered nothing - a hidden tool call
+/// leaves blocks but paints no rows, and the row would sit alone.
+fn append_turn_info(msg: &ChatMessage, width: u16, layout: &mut MessageLayout) -> (usize, usize) {
+    let info = &msg.turn_info;
+    if info.is_empty() || layout.height == 0 {
+        return (0, 0);
+    }
+    let row_y = layout.height;
+    layout.push_wrapped_line(turn_info_row(info, width), width);
+    let row_height = layout.height.saturating_sub(row_y);
+    if info.expanded {
+        for line in turn_info_expanded_rows(info) {
+            layout.push_wrapped_line(line, width);
+        }
+    }
+    (row_y, row_height)
+}
+
+/// Build the collapsed row, dropping fields right to left until it
+/// fits `width`. The label, elapsed and toggle are never dropped;
+/// below that width the row wraps like any other line.
+fn turn_info_row(info: &TurnInfo, width: u16) -> Line<'static> {
+    let toggle = if info.expanded { "[▼ collapse]" } else { "[▶ expand]" };
+    let mut fields: Vec<String> = Vec::new();
+    fields.push(format_turn_duration(info.elapsed_ms()));
+    if let Some(tokens) = turn_info_token_field(info) {
+        fields.push(tokens);
+    }
+    if let Some(pct) = info.cache_hit_percent() {
+        fields.push(format!("{pct}% cached"));
+    }
+    if let Some(written) = info.cache_written_tokens {
+        fields.push(format!("{} written", format_token_count_short(written)));
+    }
+    // Elapsed is index 0 and stays; everything after it is optional.
+    while fields.len() > 1 && turn_info_row_width(&fields, toggle) > usize::from(width) {
+        fields.pop();
+    }
+    Line::from(vec![
+        Span::styled(
+            format!("↳ turn info · {} ", fields.join(" · ")),
+            Style::default().fg(theme::DIM),
+        ),
+        Span::styled(toggle.to_owned(), Style::default().fg(theme::DIM)),
+    ])
+}
+
+/// Rendered column count of the collapsed row for a given field set.
+fn turn_info_row_width(fields: &[String], toggle: &str) -> usize {
+    let prefix = "↳ turn info · ".chars().count();
+    let separators = fields.len().saturating_sub(1) * " · ".chars().count();
+    let body: usize = fields.iter().map(|f| f.chars().count()).sum();
+    // One space sits between the last field and the toggle.
+    prefix + body + separators + 1 + toggle.chars().count()
+}
+
+/// The `4.2k↑ 1.1k↓` pair, or just the input side while the turn is
+/// still running - a mid-turn `output_tokens` is a streaming
+/// placeholder, not a count, so there is nothing to show yet.
+fn turn_info_token_field(info: &TurnInfo) -> Option<String> {
+    let input = info.input_tokens?;
+    let input = format_token_count_short(input);
+    match info.output_tokens {
+        Some(output) => Some(format!("{input}↑ {}↓", format_token_count_short(output))),
+        None => Some(format!("{input}↑")),
+    }
+}
+
+/// The indented two-column body shown under an expanded row.
+///
+/// An unknown cell renders `-`, except for `local`, the cache
+/// percentage and `session`, which own their row and drop it instead.
+/// A zero the wire reported is a measurement and renders as `0`.
+fn turn_info_expanded_rows(info: &TurnInfo) -> Vec<Line<'static>> {
+    let dim = Style::default().fg(theme::DIM);
+    let mut rows: Vec<String> = Vec::new();
+    rows.push(turn_info_pair(
+        "ended",
+        info.ended_at_local.as_deref().unwrap_or("-"),
+        "model",
+        info.model.as_deref().unwrap_or("-"),
+    ));
+    rows.push(turn_info_pair(
+        "elapsed",
+        &format_turn_duration(info.elapsed_ms()),
+        "api",
+        &info.api_ms.map_or_else(|| "-".to_owned(), format_turn_duration),
+    ));
+    if let Some(local) = info.local_ms() {
+        rows.push(format!("    {:<10}{} tools + hooks", "local", format_turn_duration(local)));
+    }
+    rows.push(String::new());
+    rows.push(turn_info_pair(
+        "in",
+        &info.input_tokens.map_or_else(|| "-".to_owned(), format_token_count_grouped),
+        "out",
+        &info.output_tokens.map_or_else(|| "-".to_owned(), format_token_count_grouped),
+    ));
+    rows.push(turn_info_pair(
+        "cache",
+        &info
+            .cache_read_tokens
+            .map_or_else(|| "-".to_owned(), |n| format!("{} read", format_token_count_grouped(n))),
+        "wrote",
+        &info.cache_written_tokens.map_or_else(|| "-".to_owned(), format_token_count_grouped),
+    ));
+    if let Some(pct) = info.cache_hit_percent() {
+        rows.push(format!("    {:<10}{pct}% of input served from cache", ""));
+    }
+    if let Some(cost) = info.session_cost_usd {
+        rows.push(String::new());
+        rows.push(format!("    {:<10}${cost:.2} cumulative", "session"));
+    }
+    rows.into_iter().map(|row| Line::from(Span::styled(row, dim))).collect()
+}
+
+/// One `label value   label value` row of the expanded body.
+fn turn_info_pair(left_label: &str, left: &str, right_label: &str, right: &str) -> String {
+    format!("    {left_label:<10}{left:<16}{right_label:<8}{right}")
+}
+
+/// Thousands-grouped token count for the expanded body, where the
+/// exact number is the point (`108,442`).
+fn format_token_count_grouped(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// #273: Render a `Message::StopHookSummary` as a collapsed
@@ -1542,6 +1697,7 @@ fn get_or_build_message_render_cache<'a>(
     spinner: &SpinnerState,
     render_context: MessageRenderContext<'_>,
 ) -> &'a MessageRenderCache {
+    refresh_live_turn_elapsed(msg);
     let key = build_message_render_cache_key(msg, spinner, render_context);
     if !msg.render_cache.matches(&key) {
         let layout = build_message_layout(msg, spinner, render_context);
@@ -1588,7 +1744,7 @@ fn build_message_render_signature(
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
     msg.role.hash(&mut hasher);
-    msg.turn_duration_ms.hash(&mut hasher);
+    hash_turn_info(&msg.turn_info, &mut hasher);
     spinner.show_empty_thinking.hash(&mut hasher);
     spinner.show_thinking.hash(&mut hasher);
     spinner.show_compacting.hash(&mut hasher);
@@ -1859,7 +2015,7 @@ fn should_skip_whole_block(
 /// The header row above a message body, or `None` for a peer / worker
 /// envelope, whose own `▶ Verb name` row already names the kind and the
 /// sender, and for every assistant turn, which carries a trailing
-/// [`append_turn_duration`] row instead.
+/// [`append_turn_info`] row instead.
 fn role_label_line(msg: &ChatMessage) -> Option<Line<'static>> {
     match msg.role {
         MessageRole::Welcome => Some(Line::from(Span::styled(
@@ -4695,11 +4851,17 @@ mod tests {
             .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
     }
 
+    /// A turn-info carrying only a settled wall clock - the shape a
+    /// turn takes when the CLI omitted `usage` and `total_cost_usd`.
+    fn settled_turn_info(duration_ms: u64) -> TurnInfo {
+        TurnInfo { duration_ms: Some(duration_ms), ..TurnInfo::default() }
+    }
+
     /// Render an assistant turn carrying `duration`, with the trailing
-    /// separator on so the duration's position relative to it is visible.
+    /// separator on so the row's position relative to it is visible.
     fn render_assistant_turn(body: &str, duration: Option<u64>) -> Vec<String> {
         let mut msg = make_text_message(MessageRole::Assistant, body);
-        msg.turn_duration_ms = duration;
+        msg.turn_info = duration.map(settled_turn_info).unwrap_or_default();
         let mut lines = Vec::new();
         render_message(
             &mut msg,
@@ -4718,33 +4880,37 @@ mod tests {
             None,
             "a mid-stream assistant turn renders no header row",
         );
-        msg.turn_duration_ms = Some(12_400);
+        msg.turn_info = settled_turn_info(12_400);
         assert_eq!(
             header_row_text(&msg),
             None,
-            "a completed assistant turn renders no header row either - the duration trails \
-             the body instead",
+            "a completed assistant turn renders no header row either - the turn-info row \
+             trails the body instead",
         );
     }
 
     #[test]
-    fn assistant_duration_is_the_last_row_after_the_body() {
+    fn assistant_turn_info_is_the_last_row_after_the_body() {
         let rendered = render_assistant_turn("hello", Some(12_400));
         assert_eq!(
             rendered,
-            vec!["hello".to_owned(), "12.4s".to_owned(), String::new()],
-            "the duration trails the body, and the separator still follows it",
+            vec![
+                "hello".to_owned(),
+                "\u{21b3} turn info \u{b7} 12.4s [\u{25b6} expand]".to_owned(),
+                String::new(),
+            ],
+            "the row trails the body, and the separator still follows it",
         );
     }
 
     #[test]
-    fn assistant_duration_does_not_double_the_separator() {
+    fn assistant_turn_info_does_not_double_the_separator() {
         let with = render_assistant_turn("hello", Some(12_400));
         let without = render_assistant_turn("hello", None);
         assert_eq!(
             with.iter().filter(|row| row.is_empty()).count(),
             without.iter().filter(|row| row.is_empty()).count(),
-            "the duration is a content row, so it adds no blank of its own: {with:?}",
+            "the row is a content row, so it adds no blank of its own: {with:?}",
         );
         assert_eq!(
             with.len(),
@@ -4754,9 +4920,9 @@ mod tests {
     }
 
     #[test]
-    fn assistant_duration_is_dim() {
+    fn assistant_turn_info_is_dim() {
         let mut msg = make_text_message(MessageRole::Assistant, "hello");
-        msg.turn_duration_ms = Some(12_400);
+        msg.turn_info = settled_turn_info(12_400);
         let mut lines = Vec::new();
         render_message(
             &mut msg,
@@ -4766,18 +4932,18 @@ mod tests {
         );
         let row = lines
             .iter()
-            .find(|line| line.spans.iter().any(|s| s.content == "12.4s"))
-            .expect("duration row");
+            .find(|line| line.spans.iter().any(|s| s.content.contains("turn info")))
+            .expect("turn-info row");
         assert!(
             row.spans.iter().all(|s| s.style.fg == Some(theme::DIM)),
-            "the duration row is DIM so it reads as a footer, not content",
+            "every span on the turn-info row is DIM so it reads as a footer, not content",
         );
     }
 
     #[test]
-    fn a_turn_that_renders_no_body_renders_no_duration() {
+    fn a_turn_that_renders_no_body_renders_no_turn_info() {
         // A hidden tool call leaves `blocks` non-empty while rendering
-        // nothing, so the duration would otherwise be left alone.
+        // nothing, so the row would otherwise be left alone.
         let mut hidden = make_tool_call_info(
             "hidden-child",
             "Bash",
@@ -4789,7 +4955,7 @@ mod tests {
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(hidden))],
         );
-        msg.turn_duration_ms = Some(12_400);
+        msg.turn_info = settled_turn_info(12_400);
 
         let mut lines = Vec::new();
         render_message(
@@ -4799,8 +4965,162 @@ mod tests {
             &mut lines,
         );
         assert!(
-            !render_lines_to_strings(&lines).iter().any(|row| row.contains("12.4s")),
-            "a turn whose body rendered nothing has nothing to hang a duration under",
+            !render_lines_to_strings(&lines).iter().any(|row| row.contains("turn info")),
+            "a turn whose body rendered nothing has nothing to hang the row under",
+        );
+    }
+
+    /// The collapsed row's text, at `width` columns.
+    fn turn_info_row_text(msg: &mut ChatMessage, width: u16) -> String {
+        let mut lines = Vec::new();
+        render_message(
+            msg,
+            &idle_spinner(),
+            MessageRenderContext::new(None, width, 0, options_without_separator()),
+            &mut lines,
+        );
+        render_lines_to_strings(&lines)
+            .into_iter()
+            .find(|row| row.contains("turn info"))
+            .unwrap_or_default()
+    }
+
+    /// A turn seven seconds in, with the input side known and no
+    /// Result yet.
+    fn running_turn_info() -> TurnInfo {
+        TurnInfo {
+            started_at: std::time::Instant::now().checked_sub(std::time::Duration::from_secs(7)),
+            input_tokens: Some(4_231),
+            cache_read_tokens: Some(108_442),
+            cache_written_tokens: Some(3_180),
+            ..TurnInfo::default()
+        }
+    }
+
+    #[test]
+    fn the_row_counts_up_before_the_result_and_settles_after() {
+        let mut msg = make_text_message(MessageRole::Assistant, "hello");
+        msg.turn_info = running_turn_info();
+
+        let running = turn_info_row_text(&mut msg, 100);
+        assert!(
+            running.contains("7.0s"),
+            "the row renders mid-turn with a live elapsed, so it is familiar by the time it \
+             settles: {running}",
+        );
+        assert!(
+            running.contains("4.2k\u{2191}") && !running.contains('\u{2193}'),
+            "mid-turn output_tokens is a streaming placeholder, not a count, so only the \
+             input side is shown: {running}",
+        );
+
+        msg.turn_info.duration_ms = Some(79_000);
+        msg.turn_info.output_tokens = Some(1_102);
+        let settled = turn_info_row_text(&mut msg, 100);
+        assert!(
+            settled.contains("1m 19s") && settled.contains("1.1k\u{2193}"),
+            "the same row settles onto the Result's wall clock and output count: {settled}",
+        );
+    }
+
+    /// Every cell that can render a dash, rendering one. Supplying a
+    /// value means that cell's dash branch is never reached, so a
+    /// fixture filling most of them leaves the rest unpinned.
+    #[test]
+    fn absent_cells_render_dashes_and_present_ones_render_counts() {
+        let render_body = |info: TurnInfo| {
+            let mut msg = make_text_message(MessageRole::Assistant, "hello");
+            msg.turn_info = info;
+            let mut lines = Vec::new();
+            render_message(
+                &mut msg,
+                &idle_spinner(),
+                MessageRenderContext::new(None, 100, 0, options_without_separator()),
+                &mut lines,
+            );
+            render_lines_to_strings(&lines)
+        };
+
+        let rows = render_body(TurnInfo { expanded: true, ..settled_turn_info(12_400) });
+        for expected in [
+            "    ended     -               model   -",
+            "    elapsed   12.4s           api     -",
+            "    in        -               out     -",
+            "    cache     -               wrote   -",
+        ] {
+            assert!(
+                rows.iter().any(|row| row.trim_end() == expected),
+                "every unknown cell renders a dash of its own; missing `{expected}` in {rows:?}",
+            );
+        }
+        assert!(
+            !rows.iter().any(|r| r.contains("local")),
+            "and a row whose value is unknown drops out rather than showing one: {rows:?}",
+        );
+
+        // A populated fixture: the percentage is the one figure derived
+        // rather than copied, so it needs its own inputs.
+        let body = render_body(TurnInfo {
+            expanded: true,
+            input_tokens: Some(4_231),
+            cache_read_tokens: Some(108_442),
+            cache_written_tokens: Some(3_180),
+            ..settled_turn_info(79_000)
+        })
+        .join("\n");
+        assert!(
+            body.contains("    cache     108,442 read    wrote   3,180")
+                && body.contains("93% of input served from cache"),
+            "cache read and write are separate input-side cells, and the percentage names the \
+             denominator it used: {body}",
+        );
+    }
+
+    #[test]
+    fn the_collapsed_row_sheds_fields_right_to_left_to_fit() {
+        let mut msg = make_text_message(MessageRole::Assistant, "hello");
+        msg.turn_info = TurnInfo {
+            output_tokens: Some(1_102),
+            ..TurnInfo { expanded: false, ..running_turn_info() }
+        };
+        msg.turn_info.duration_ms = Some(79_000);
+
+        let wide = turn_info_row_text(&mut msg, 100);
+        assert!(
+            wide.contains("written") && wide.contains("cached"),
+            "fixture guard: at 100 columns every field fits, so a narrower render can only \
+             lose them to the ladder: {wide}",
+        );
+
+        let narrow = turn_info_row_text(&mut msg, 58);
+        assert!(
+            !narrow.contains("written") && narrow.contains("cached"),
+            "`written` is the first field shed, being the least likely to change what the \
+             reader does next: {narrow}",
+        );
+
+        let narrower = turn_info_row_text(&mut msg, 30);
+        assert!(
+            narrower.starts_with("\u{21b3} turn info \u{b7} 1m 19s")
+                && narrower.ends_with("[\u{25b6} expand]"),
+            "the label, the elapsed and the toggle are never shed: {narrower}",
+        );
+
+        // Counted independently of the code: 14 for the prefix, 39 of
+        // field text, 9 of separators, 1 space before the toggle and
+        // 10 for the toggle. An off-by-one in that space is invisible
+        // at any width except this one.
+        let exact = turn_info_row_text(&mut msg, 73);
+        assert_eq!(
+            exact.chars().count(),
+            73,
+            "at its exact width the full row is kept and fills the line: {exact}",
+        );
+        let one_short = turn_info_row_text(&mut msg, 72);
+        assert!(
+            !one_short.contains("written"),
+            "one column narrower than an exact fit must shed a field, not overflow: \
+             {one_short}",
         );
     }
 

@@ -12,7 +12,7 @@ use crate::app::file_index::FileIndexState;
 use crate::app::input::InputSnapshot;
 use crate::app::input::InputState;
 use crate::app::state::cache_metrics::CacheMetrics;
-use crate::app::state::messages::ChatMessage;
+use crate::app::state::messages::{ChatMessage, LiveTurn};
 use crate::app::state::render_budget::{RenderCacheEvictionKey, RenderCacheSlotState};
 use crate::app::state::types::{
     BackgroundTask, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeState,
@@ -281,6 +281,16 @@ pub struct UiSession {
     /// Per-message expansion state for the stop-hook summary
     /// surface (#273). Click `[▶ expand]` toggles the entry.
     pub stop_hook_summary_expanded: std::collections::HashMap<usize, bool>,
+
+    /// Live accounting for the turn in flight, feeding the turn-info
+    /// row while it counts up. Reset when a turn starts and again when
+    /// its Result settles.
+    pub live_turn: LiveTurn,
+
+    /// `Message::Result.duration_api_ms` from the previous Result in
+    /// this session. That counter is cumulative over the session, so
+    /// the next turn's API time is its delta against this.
+    pub prev_duration_api_ms: Option<u64>,
 
     /// In-flight Monitor entries surfaced as the
     /// Inspector MONITORS section + the chat one-liner notices.
@@ -663,6 +673,8 @@ impl Default for UiSession {
             latest_thinking_tokens: None,
             last_stop_hook_summary: None,
             stop_hook_summary_expanded: std::collections::HashMap::default(),
+            live_turn: LiveTurn::default(),
+            prev_duration_api_ms: None,
             monitors: Vec::default(),
             background_tasks: Vec::default(),
             session_task_tool_use_ids: std::collections::HashMap::default(),

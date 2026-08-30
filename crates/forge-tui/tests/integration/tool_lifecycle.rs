@@ -1440,12 +1440,12 @@ async fn a_turn_opening_with_a_tool_use_does_not_land_on_the_previous_turn() {
 
     assert_eq!(app.messages().len(), 2, "the second turn owns its own message");
     assert_eq!(
-        app.messages()[1].turn_duration_ms,
+        app.messages()[1].turn_info.duration_ms,
         None,
         "the new turn must not inherit the finished turn's duration",
     );
     assert_eq!(
-        app.messages()[0].turn_duration_ms,
+        app.messages()[0].turn_info.duration_ms,
         Some(3_174),
         "and the finished turn keeps its own",
     );

@@ -14,7 +14,7 @@ pub(crate) use messages::MarkdownRenderKey;
 pub use messages::{
     CachedMessageSegment, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRenderCache,
     MessageRenderCacheKey, MessageRenderSignature, MessageRole, NoticeBlock, NoticeDedupKey,
-    RateLimitIncidentKey, SystemSeverity, TextBlock, TextBlockSpacing, WelcomeBlock,
+    RateLimitIncidentKey, SystemSeverity, TextBlock, TextBlockSpacing, TurnInfo, WelcomeBlock,
     hash_text_block_content, hash_welcome_block_content,
 };
 pub use tool_call_info::{
@@ -577,12 +577,11 @@ pub struct App {
     /// dispatcher. Replay reuses the live walker so content blocks,
     /// tool_use, todos, and plans land in the bucket via the same code
     /// path - but the walker also has side effects that are wrong for
-    /// replay (most notably the lifecycle `Running` write in
-    /// `handle_assistant`, added so a mid-turn click flips the
-    /// Projects-pane spinner on). Replay messages are historical, not
-    /// live wire content, so the lifecycle write must be skipped while
-    /// this flag is true. Cleared at end of replay so subsequent live
-    /// messages on the same session behave normally.
+    /// replay, most notably the lifecycle `Running` write in
+    /// `handle_assistant`. Replay messages are historical rather than
+    /// live wire content, so every such side effect checks this flag.
+    /// Cleared at end of replay so subsequent live messages on the
+    /// same session behave normally.
     pub replay_in_progress: bool,
 }
 
@@ -1904,6 +1903,66 @@ impl App {
     /// `None` on turn end to clear the chip.
     pub fn set_latest_thinking_tokens(&mut self, value: Option<u64>) {
         self.active_bucket_mut().latest_thinking_tokens = value;
+    }
+
+    /// Start the active session's live turn accounting, so the row
+    /// counts from prompt dispatch rather than from the first
+    /// assistant frame. A settled message is left alone.
+    pub fn start_live_turn(&mut self, at: std::time::Instant) {
+        self.active_bucket_mut().live_turn.start(at);
+        let Some(idx) = self
+            .messages()
+            .iter()
+            .rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
+        else {
+            return;
+        };
+        if let Some(msg) = self.active_messages_mut().get_mut(idx)
+            && !msg.turn_info.is_settled()
+        {
+            msg.turn_info = crate::app::state::messages::TurnInfo {
+                started_at: Some(at),
+                ..crate::app::state::messages::TurnInfo::default()
+            };
+            msg.invalidate_render_cache();
+        }
+    }
+
+    /// Fold one assistant frame's usage into the live turn, returning
+    /// the turn's start and running totals. Starts the turn if nothing
+    /// did - cron, auto-continue and peer traffic arrive with it
+    /// already under way.
+    pub fn record_live_turn_usage(
+        &mut self,
+        message_id: String,
+        usage: crate::app::state::messages::LiveUsage,
+    ) -> (Option<std::time::Instant>, Option<crate::app::state::messages::LiveUsage>) {
+        let live = &mut self.active_bucket_mut().live_turn;
+        if live.started_at.is_none() {
+            live.start(std::time::Instant::now());
+        }
+        live.record(message_id, usage);
+        (live.started_at, live.totals())
+    }
+
+    /// Close the live turn and return the API time attributable to
+    /// it, or `None` when the wire attributed none.
+    ///
+    /// `Result.duration_api_ms` counts up across the session, so the
+    /// turn's figure is the delta; a value below the previous one
+    /// means the counter restarted and is already per-turn. A
+    /// resulting zero is "not attributed" rather than "took no time" -
+    /// the counter is millisecond-granular, so a turn that reached the
+    /// API cannot register zero.
+    pub fn settle_live_turn(&mut self, duration_api_ms: u64) -> Option<u64> {
+        let bucket = self.active_bucket_mut();
+        let per_turn = match bucket.prev_duration_api_ms {
+            Some(prev) if duration_api_ms >= prev => duration_api_ms - prev,
+            _ => duration_api_ms,
+        };
+        bucket.prev_duration_api_ms = Some(duration_api_ms);
+        bucket.live_turn = crate::app::state::messages::LiveTurn::default();
+        (per_turn > 0).then_some(per_turn)
     }
 
     /// Active session's most recent `Message::StopHookSummary`

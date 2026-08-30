@@ -341,11 +341,48 @@ mod tests {
         insta::assert_snapshot!(snapshot);
     }
 
+    /// `compact.jsonl` ends with a Result that has no assistant
+    /// message of its own, so it reaches the previous turn's settled
+    /// one. Driven through the real reducer because a hand-built
+    /// message starts with its token fields unset, which makes
+    /// leaving them alone and clearing them indistinguishable.
+    #[test]
+    fn replay_compact_leaves_a_settled_turn_alone() {
+        use crate::app::MessageRole;
+
+        let harness = replay_baseline("compact");
+        let compaction_wall = harness.result_duration_ms();
+        let session = harness.default_session();
+        let settled: Vec<_> = session
+            .messages
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::Assistant) && m.turn_info.is_settled())
+            .collect();
+
+        assert!(
+            !settled.is_empty(),
+            "fixture guard: the baseline must settle at least one turn, or the assertions \
+             below are vacuous",
+        );
+        assert!(
+            settled.iter().all(|m| m.turn_info.duration_ms != Some(compaction_wall)),
+            "the compaction's {compaction_wall}ms clock must not land on a turn that already \
+             settled - it would sit over that turn's own token counts and read as one \
+             measurement",
+        );
+        let last = settled.last().expect("checked non-empty above");
+        assert!(
+            last.turn_info.api_ms.is_some(),
+            "and the settled turn keeps its own API time rather than having it erased by the \
+             compaction's unattributed zero",
+        );
+    }
+
     /// Turn-duration restore: every `Message::Result` carries
     /// `duration_ms` on the wire. The new stamp path in
     /// `handle_result` pulls it out of the destructure and writes
     /// it onto the latest Assistant ChatMessage so the
-    /// trailing duration row re-renders. This test
+    /// trailing turn-info row re-renders. This test
     /// drives a real captured baseline through the production reducer
     /// and asserts the stamp lands, comparing against the Result frame
     /// the same replay decoded so a recapture needs no edit here.
@@ -363,10 +400,10 @@ mod tests {
             .find(|m| matches!(m.role, MessageRole::Assistant))
             .expect("baseline produces at least one assistant message");
         assert_eq!(
-            latest.turn_duration_ms,
+            latest.turn_info.duration_ms,
             Some(expected),
             "Result.duration_ms must stamp onto the latest assistant; got {:?}",
-            latest.turn_duration_ms,
+            latest.turn_info.duration_ms,
         );
     }
 

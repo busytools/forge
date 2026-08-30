@@ -354,7 +354,7 @@ pub(super) fn upsert_tool_call_into_assistant_message(
     // on a message whose turn already ended.
     let tail_is_assistant =
         app.messages().last().is_some_and(|m| matches!(m.role, MessageRole::Assistant));
-    let tail_turn_ended = app.messages().last().is_some_and(|m| m.turn_duration_ms.is_some());
+    let tail_turn_ended = app.messages().last().is_some_and(|m| m.turn_info.is_settled());
     let append_to_tail = tail_is_assistant && !tail_turn_ended;
 
     if append_to_tail {

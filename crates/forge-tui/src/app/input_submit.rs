@@ -180,6 +180,7 @@ fn dispatch_prompt(app: &mut App, text: String) {
     // claude's continuing tokens land below the new user bubble
     // instead of above it.
     app.push_active_turn_assistant_placeholder();
+    app.start_live_turn(std::time::Instant::now());
     app.status = AppStatus::Thinking;
     if let Some(key) = app.active_session_key.clone() {
         crate::app::events::set_bucket_lifecycle_state(
