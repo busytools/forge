@@ -1376,6 +1376,12 @@ impl Workspace {
                 display_name: k.0.clone(),
                 state: accounts.loading_state(k),
                 config_dir: accounts.config_dir(k).cloned().unwrap_or_default(),
+                auth: match accounts.env(k).map(forge_agent::cloud::oauth_usage::probe_plan) {
+                    Some(forge_agent::cloud::oauth_usage::ProbePlan::BaseUrl { .. }) => {
+                        crate::views::AccountAuth::BaseUrl
+                    }
+                    _ => crate::views::AccountAuth::Keychain,
+                },
             })
             .collect()
     }

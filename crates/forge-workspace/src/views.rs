@@ -116,8 +116,28 @@ pub struct AccountRow {
     pub experimental: bool,
 }
 
+/// How an account proves who it is, which is the only thing that
+/// changes what preflight tells you to do about a failed one.
+///
+/// Deliberately not [`forge_agent::cloud::oauth_usage::ProbePlan`],
+/// whose `BaseUrl` variant carries the bearer: this crosses into a view
+/// the TUI renders, so it carries the distinction and none of the
+/// secret.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccountAuth {
+    /// Credentials in the macOS keychain. Repaired with `claude /login`,
+    /// and picked up by the 30 s recovery poll.
+    Keychain,
+    /// `ANTHROPIC_BASE_URL` in the account's `[accounts.env]`, so its
+    /// credential is the `ANTHROPIC_AUTH_TOKEN` beside it and there is
+    /// no keychain entry for `/login` to write. The recovery poll skips
+    /// these; the 60 s usage poll recovers them.
+    BaseUrl,
+}
+
 /// One account's place in preflight: what it is called, how far it
-/// has got, and the config dir a failed one has to be fixed in.
+/// has got, the config dir a failed one has to be fixed in, and how it
+/// authenticates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountLoadingRow {
     /// forge.toml `[[accounts]]` display name.
@@ -126,6 +146,8 @@ pub struct AccountLoadingRow {
     /// `CLAUDE_CONFIG_DIR` for this account, which is what preflight
     /// puts in the `/login` line when it will not authenticate.
     pub config_dir: std::path::PathBuf,
+    /// Which repair instruction a bailed row earns.
+    pub auth: AccountAuth,
 }
 
 /// One session under a project.

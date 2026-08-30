@@ -25,8 +25,8 @@
 //! only the picker handover is a geometry claim.
 
 use forge_workspace::{
-    AccountLoadingRow, DictateFailure, DictateModel, DictateModelState, DictateSnapshot,
-    LoadingState,
+    AccountAuth, AccountLoadingRow, DictateFailure, DictateModel, DictateModelState,
+    DictateSnapshot, LoadingState,
 };
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -344,11 +344,11 @@ fn failure_label(failure: Option<&DictateFailure>) -> &'static str {
 /// config, which is read at boot and so needs a restart. Naming only one
 /// would leave a reader who cannot take that route with nowhere to go.
 ///
-/// The retry line states no interval on purpose. A keychain account
-/// recovers on the 30 s recovery poll; a base-url account is skipped by
-/// that poll and recovers on the 60 s usage poll, subject to probe
-/// backoff. No single number is true of both, and this row cannot tell
-/// them apart - `AccountLoadingRow` carries no probe plan.
+/// The retry line states no interval on purpose, and is the same in
+/// both. A keychain account recovers on the 30 s recovery poll; a
+/// base-url account is skipped by that poll and recovers on the 60 s
+/// usage poll, subject to probe backoff. No single number is true of
+/// both, while "no restart needed" is true of each.
 fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'static>> {
     let error = Style::default().fg(theme::STATUS_ERROR);
     let head = Style::default().add_modifier(Modifier::BOLD);
@@ -369,12 +369,27 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
     );
     lines.push(Line::default());
     lines.push(text_row(2, "Fix the auth", head, width));
-    lines.extend(command_rows(
-        4,
-        &format!("CLAUDE_CONFIG_DIR={} claude", home_relative(&row.config_dir)),
-        width,
-    ));
-    lines.push(text_row(4, "/login", Style::default(), width));
+    // The only thing that differs by account class. A base-url account
+    // has no keychain entry for `/login` to write - its credential is
+    // the token beside it in `[accounts.env]`.
+    match row.auth {
+        AccountAuth::Keychain => {
+            lines.extend(command_rows(
+                4,
+                &format!("CLAUDE_CONFIG_DIR={} claude", home_relative(&row.config_dir)),
+                width,
+            ));
+            lines.push(text_row(4, "/login", Style::default(), width));
+        }
+        AccountAuth::BaseUrl => {
+            lines.push(text_row(
+                4,
+                "ANTHROPIC_AUTH_TOKEN in [accounts.env]",
+                Style::default(),
+                width,
+            ));
+        }
+    }
     // Without this a reader who fixes their auth has no way of knowing
     // whether to restart, and the answer is no.
     lines.push(text_row(4, "forge retries on its own - no restart needed", dim(), width));

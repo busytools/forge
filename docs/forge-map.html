@@ -1046,6 +1046,18 @@ chat continues here...
 
  <span class="dim">ctrl+q  quit</span></pre>
     </div>
+    <p>The repair instruction is the only thing that branches, because it is the only thing that differs. An account carrying <code>ANTHROPIC_BASE_URL</code> in its <code>[accounts.env]</code> has no keychain entry at all, so <code>claude /login</code> cannot repair it - its credential is the <code>ANTHROPIC_AUTH_TOKEN</code> beside it:</p>
+    <div class="term">
+      <pre class="indent">
+        <span class="bold">Fix the auth</span>
+          ANTHROPIC_AUTH_TOKEN in [accounts.env]
+          <span class="dim">forge retries on its own - no restart needed</span>
+
+        <span class="bold">Or drop the account</span>
+          delete its [[accounts]] block from
+          ~/.claude/forge/forge.toml</pre>
+    </div>
+    <p>The retry line is identical in both, and deliberately so: both classes recover without a restart, and neither shares the other's interval - a keychain account on the 30 s recovery poll, a base-url account on the 60 s usage poll under probe backoff - so it names none.</p>
   </div>
 </div>
 

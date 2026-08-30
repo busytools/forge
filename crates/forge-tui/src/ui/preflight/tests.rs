@@ -45,10 +45,20 @@ fn model(role: DictateRole, file: &str, state: DictateModelState) -> DictateMode
 }
 
 fn account(name: &str, state: LoadingState, dir: &str) -> AccountLoadingRow {
+    account_with(name, state, dir, forge_workspace::AccountAuth::Keychain)
+}
+
+fn account_with(
+    name: &str,
+    state: LoadingState,
+    dir: &str,
+    auth: forge_workspace::AccountAuth,
+) -> AccountLoadingRow {
     AccountLoadingRow {
         display_name: name.to_owned(),
         state,
         config_dir: std::path::PathBuf::from(dir),
+        auth,
     }
 }
 
@@ -165,6 +175,49 @@ fn a_bailed_account_names_both_exits() {
         !text.contains("30s") && !text.contains("30 s") && !text.contains("60s"),
         "no interval belongs here: the two account classes do not share one; got:\n{text}",
     );
+}
+
+/// The repair instruction is the one thing that differs by account
+/// class, and `claude /login` is actively wrong for a base-url account:
+/// it has no keychain entry to write, its credential being the token in
+/// its own `[accounts.env]`.
+///
+/// **Asserted as a DIFFERENCE, not as two independent contents.** Two
+/// `contains` checks would both keep passing if the branch were
+/// collapsed and one arm's copy were shown to everyone - which is the
+/// state this screen was in before, and the one worth catching.
+#[test]
+fn the_repair_instruction_differs_by_account_class_and_the_retry_line_does_not() {
+    let render = |auth| {
+        flatten(&bail_detail(
+            &App::test_default(),
+            &account_with("Granite1", LoadingState::Bailed, "/home/x/.claude-granite1", auth),
+            PICKER_WIDTH,
+        ))
+        .join("\n")
+    };
+    let keychain = render(forge_workspace::AccountAuth::Keychain);
+    let base_url = render(forge_workspace::AccountAuth::BaseUrl);
+
+    assert_ne!(
+        keychain, base_url,
+        "collapsing the classes shows one arm's repair instruction to both; got:\n{keychain}",
+    );
+    assert!(
+        keychain.contains("/login") && !keychain.contains("ANTHROPIC_AUTH_TOKEN"),
+        "a keychain account is repaired with /login; got:\n{keychain}",
+    );
+    assert!(
+        base_url.contains("ANTHROPIC_AUTH_TOKEN in [accounts.env]") && !base_url.contains("/login"),
+        "a base-url account has no keychain entry for /login to write; got:\n{base_url}",
+    );
+    for text in [&keychain, &base_url] {
+        assert!(
+            text.contains("forge retries on its own - no restart needed"),
+            "the retry line is class-agnostic and appears in both; got:\n{text}",
+        );
+        assert!(text.contains("Or drop the account"), "and so is the second exit; got:\n{text}");
+    }
 }
 
 /// `Bailed` is red rather than the shipped warning yellow. On the one
