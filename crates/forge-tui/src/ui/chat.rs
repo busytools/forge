@@ -105,8 +105,7 @@ fn msg_spinner(
     let is_active_turn_assistant = is_assistant && active_turn_assistant == Some(index);
     let has_blocks = !msg.blocks.is_empty();
     // A stamped duration means the turn ended, so no in-flight
-    // indicator belongs here; a genuine next turn always opens a fresh
-    // placeholder, which carries none.
+    // indicator belongs here.
     let turn_ended = msg.turn_duration_ms.is_some();
     let live = is_active_turn_assistant && !turn_ended;
     SpinnerState {
