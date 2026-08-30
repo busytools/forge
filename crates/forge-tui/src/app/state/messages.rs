@@ -74,10 +74,10 @@ pub struct ChatMessage {
 /// name so it cannot be misread as this turn's cost.
 #[derive(Debug, Clone, Default)]
 pub struct TurnInfo {
-    /// When the turn began, copied off the session's live accumulator
-    /// - stamped at prompt dispatch, or on the first assistant frame
-    /// for a turn forge did not dispatch. Drives the counting-up
-    /// elapsed until `duration_ms` supersedes it.
+    /// When the turn began, copied off the session's live accumulator:
+    /// stamped at prompt dispatch, or on the first assistant frame for
+    /// a turn forge did not dispatch. Drives the counting-up elapsed
+    /// until `duration_ms` supersedes it.
     pub started_at: Option<Instant>,
     /// Whole seconds since `started_at`, refreshed once per render so
     /// the cache key and the layout it guards cannot disagree
