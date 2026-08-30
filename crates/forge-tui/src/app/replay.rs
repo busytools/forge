@@ -341,16 +341,11 @@ mod tests {
         insta::assert_snapshot!(snapshot);
     }
 
-    /// `compact.jsonl` ends with a compaction Result - 44.4 s of wall
-    /// clock, no attributed API time, an all-zero usage block -
-    /// arriving with no assistant message of its own, so it reaches
-    /// the previous turn's already-settled message.
-    ///
-    /// Driven through the real reducer because a hand-built message
-    /// cannot reproduce it: its token fields start unset, so leaving
-    /// them alone and clearing them are indistinguishable. Every
-    /// assistant frame in every baseline carries usage, so the fields
-    /// are always populated by the time a Result lands.
+    /// `compact.jsonl` ends with a Result that has no assistant
+    /// message of its own, so it reaches the previous turn's settled
+    /// one. Driven through the real reducer because a hand-built
+    /// message starts with its token fields unset, which makes
+    /// leaving them alone and clearing them indistinguishable.
     #[test]
     fn replay_compact_leaves_a_settled_turn_alone() {
         use crate::app::MessageRole;
@@ -387,7 +382,7 @@ mod tests {
     /// `duration_ms` on the wire. The new stamp path in
     /// `handle_result` pulls it out of the destructure and writes
     /// it onto the latest Assistant ChatMessage so the
-    /// trailing duration row re-renders. This test
+    /// trailing turn-info row re-renders. This test
     /// drives a real captured baseline through the production reducer
     /// and asserts the stamp lands, comparing against the Result frame
     /// the same replay decoded so a recapture needs no edit here.

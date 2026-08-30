@@ -43,45 +43,27 @@ pub struct ChatMessage {
     /// Accounting for the turn this message closes, rendered as the
     /// message's trailing turn-info row.
     pub turn_info: TurnInfo,
-    /// Turn-info row hit-test: wrapped-row offset inside this message
-    /// of the clickable row. `0` when no row is rendered.
+    /// Turn-info row hit-test, all `0` when no row is rendered: the
+    /// wrapped-row offset and height of the clickable row (excluding
+    /// its expanded body), and the width they were measured at, since
+    /// a click against a stale width must be dropped.
     pub turn_info_y_in_msg: usize,
-    /// Turn-info row hit-test: wrapped-row height of the clickable
-    /// row, excluding the expanded body. `0` when no row is rendered.
     pub turn_info_height: usize,
-    /// Width the hit rect above was measured at. A click arriving
-    /// against a stale width is dropped rather than routed to the
-    /// wrong row.
     pub turn_info_width: u16,
 }
 
 /// Per-turn accounting behind the trailing turn-info row.
 ///
-/// Every accounting field is optional because the row starts
-/// rendering when the turn starts and fills in as data arrives:
-/// elapsed and the input side tick during the turn, output and cost
-/// only exist once `Message::Result` lands. An absent field is
+/// The counts and clocks are optional: the row renders from turn
+/// start and fills in as data arrives, and an absent value is
 /// rendered as absent or dropped, never as zero.
-///
-/// A turn appended to an already-settled message is the exception:
-/// both live writers skip it, so it shows nothing of its own until
-/// its Result arrives - and never, if that Result carries no usable
-/// counts, since the stamp refuses a settled row.
-///
-/// The wire mixes scopes, so two fields are NOT verbatim copies:
-/// `api_ms` is a delta (`Result.duration_api_ms` is
-/// session-cumulative) and `session_cost_usd` keeps its cumulative
-/// name so it cannot be misread as this turn's cost.
 #[derive(Debug, Clone, Default)]
 pub struct TurnInfo {
-    /// When the turn began, copied off the session's live accumulator:
-    /// stamped at prompt dispatch, or on the first assistant frame for
-    /// a turn forge did not dispatch. Drives the counting-up elapsed
-    /// until `duration_ms` supersedes it.
+    /// When the turn began: stamped at prompt dispatch, or on the
+    /// first assistant frame for a turn forge did not dispatch.
     pub started_at: Option<Instant>,
     /// Whole seconds since `started_at`, refreshed once per render so
-    /// the cache key and the layout it guards cannot disagree
-    /// mid-frame.
+    /// the cache key and the layout it guards agree.
     pub elapsed_secs: u64,
     /// Settled wall clock for the turn, from `Result.duration_ms`.
     pub duration_ms: Option<u64>,
@@ -89,11 +71,8 @@ pub struct TurnInfo {
     /// the whole session, so the per-turn figure is its delta against
     /// the previous Result.
     pub api_ms: Option<u64>,
-    /// Local wall-clock `HH:MM:SS` at which the Result arrived,
-    /// resolved on the event path because the wire carries no
-    /// wall-clock time and the renderer should not be reading the
-    /// system timezone. `None` on a replayed turn, whose real end time
-    /// was never captured.
+    /// Local wall-clock `HH:MM:SS` at which the Result arrived - the
+    /// wire carries none, so it is read from the clock on arrival.
     pub ended_at_local: Option<String>,
     pub model: Option<String>,
     pub input_tokens: Option<u64>,
@@ -110,13 +89,11 @@ pub struct TurnInfo {
     pub expanded: bool,
 }
 
-/// Accumulator for the turn currently in flight, feeding the live
-/// half of [`TurnInfo`].
+/// Accumulator for the turn currently in flight.
 ///
 /// The CLI splits one assistant message across a frame per content
 /// block and repeats the same usage on each, so totals are keyed by
-/// message id rather than summed frame by frame. Deduplicated that
-/// way, the input and cache sums match `Result.usage` exactly.
+/// message id rather than summed.
 #[derive(Debug, Clone, Default)]
 pub struct LiveTurn {
     pub started_at: Option<Instant>,
@@ -162,10 +139,10 @@ impl LiveTurn {
 }
 
 impl TurnInfo {
-    /// True when nothing is known yet, so the row is not rendered at
-    /// all. Both fields are checked because a resumed session settles
-    /// turns it never started: replay bails out of both live writers,
-    /// so history arrives with `duration_ms` and no `started_at`.
+    /// True when neither half of the row is known. Both are checked
+    /// because they come from different writers - `started_at` from
+    /// the live path, `duration_ms` from the Result - and a row
+    /// renders on either alone.
     pub fn is_empty(&self) -> bool {
         self.started_at.is_none() && self.duration_ms.is_none()
     }
@@ -182,20 +159,15 @@ impl TurnInfo {
         self.duration_ms.unwrap_or(self.elapsed_secs.saturating_mul(1_000))
     }
 
-    /// Time spent outside the API - tools and hooks.
-    ///
-    /// `None` when the split is not sound rather than clamped to zero:
-    /// concurrent subagent calls can sum past wall clock, and the
-    /// API counter resets after a compaction.
+    /// Time spent outside the API - tools and hooks. `None` rather
+    /// than clamped when the split is unsound: concurrent subagent
+    /// calls can sum past wall clock.
     pub fn local_ms(&self) -> Option<u64> {
         self.duration_ms?.checked_sub(self.api_ms?)
     }
 
-    /// Share of this turn's input tokens served from the cache.
-    ///
-    /// Denominator is every input-side counter -
-    /// `input + cache_written + cache_read` - so the figure answers
-    /// "how much of the input did we avoid paying full price for".
+    /// Share of this turn's input tokens served from the cache, over
+    /// every input-side counter.
     pub fn cache_hit_percent(&self) -> Option<u64> {
         let read = self.cache_read_tokens?;
         let total = read

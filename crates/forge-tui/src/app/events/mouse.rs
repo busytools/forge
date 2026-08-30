@@ -57,12 +57,14 @@ pub(super) fn pointer_shape_at(app: &App, mouse: MouseEvent) -> PointerShape {
     if app.projects_pane_overlay_open || app.inspector_pane_overlay_open {
         return PointerShape::Default;
     }
-    // 2. Clickable chat blocks: tool calls, peer blocks, stop-hook chips.
-    // A lifecycle block has no toggle, so it must not paint a Hand.
+    // 2. Clickable chat blocks: tool calls, peer blocks, stop-hook
+    // chips, turn-info rows. A lifecycle block has no toggle, so it
+    // must not paint a Hand.
     if locate_tool_call_block_at_click(app, mouse)
         .is_some_and(|(mi, bi)| !lifecycle_block_at(app, mi, bi))
         || locate_peer_user_block_at_click(app, mouse).is_some()
         || locate_stop_hook_summary_at_click(app, mouse).is_some()
+        || locate_turn_info_at_click(app, mouse).is_some()
     {
         return PointerShape::Hand;
     }

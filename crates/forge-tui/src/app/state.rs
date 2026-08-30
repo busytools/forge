@@ -577,15 +577,11 @@ pub struct App {
     /// dispatcher. Replay reuses the live walker so content blocks,
     /// tool_use, todos, and plans land in the bucket via the same code
     /// path - but the walker also has side effects that are wrong for
-    /// replay (most notably the lifecycle `Running` write in
-    /// `handle_assistant`, added so a mid-turn click flips the
-    /// Projects-pane spinner on). Replay messages are historical, not
-    /// live wire content, so those must be skipped while this flag is
-    /// true: the lifecycle write, the whole of `record_live_turn_usage`,
-    /// and the turn-info row's end time, which is read off the local
-    /// clock and would otherwise date every historical turn to the
-    /// resume. Cleared at end of replay so subsequent live messages on
-    /// the same session behave normally.
+    /// replay, most notably the lifecycle `Running` write in
+    /// `handle_assistant`. Replay messages are historical rather than
+    /// live wire content, so every such side effect checks this flag.
+    /// Cleared at end of replay so subsequent live messages on the
+    /// same session behave normally.
     pub replay_in_progress: bool,
 }
 
@@ -1885,13 +1881,9 @@ impl App {
         self.active_bucket_mut().latest_thinking_tokens = value;
     }
 
-    /// Start the active session's live turn accounting, so the
-    /// turn-info row appears with the turn and counts from the moment
-    /// forge dispatched the prompt rather than from the first
-    /// assistant frame.
-    ///
-    /// A settled message is left alone: it belongs to a turn that has
-    /// already ended.
+    /// Start the active session's live turn accounting, so the row
+    /// counts from prompt dispatch rather than from the first
+    /// assistant frame. A settled message is left alone.
     pub fn start_live_turn(&mut self, at: std::time::Instant) {
         self.active_bucket_mut().live_turn.start(at);
         let Some(idx) = self
@@ -1913,11 +1905,9 @@ impl App {
     }
 
     /// Fold one assistant frame's usage into the live turn, returning
-    /// the turn's start and its running totals for the row.
-    ///
-    /// Starts the turn if nothing did: forge dispatches most prompts
-    /// itself, but cron, auto-continue and peer traffic all arrive
-    /// with the turn already under way.
+    /// the turn's start and running totals. Starts the turn if nothing
+    /// did - cron, auto-continue and peer traffic arrive with it
+    /// already under way.
     pub fn record_live_turn_usage(
         &mut self,
         message_id: String,
@@ -1934,16 +1924,12 @@ impl App {
     /// Close the live turn and return the API time attributable to
     /// it, or `None` when the wire attributed none.
     ///
-    /// `Message::Result.duration_api_ms` counts up across the whole
-    /// session, so the turn's own figure is the delta. A value below
-    /// the previous one means the counter restarted (it does after a
-    /// compaction), in which case it is already per-turn.
-    ///
-    /// A resulting zero is "not attributed", not "took no time": the
-    /// counter is millisecond-granular, so a turn that reached the API
-    /// cannot register zero. Compaction and interrupt results both
-    /// arrive that way, and reporting the whole wall clock as local
-    /// time would be a claim rather than a measurement.
+    /// `Result.duration_api_ms` counts up across the session, so the
+    /// turn's figure is the delta; a value below the previous one
+    /// means the counter restarted and is already per-turn. A
+    /// resulting zero is "not attributed" rather than "took no time" -
+    /// the counter is millisecond-granular, so a turn that reached the
+    /// API cannot register zero.
     pub fn settle_live_turn(&mut self, duration_api_ms: u64) -> Option<u64> {
         let bucket = self.active_bucket_mut();
         let per_turn = match bucket.prev_duration_api_ms {
