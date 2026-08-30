@@ -91,10 +91,21 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     if should_jump_on_large_write(&tool_info) {
         app.active_viewport_mut().engage_auto_scroll();
     }
-    upsert_tool_call_into_assistant_message(app, tool_info);
+    // The root is the MAIN agent invoking Task, so it owns its turn like
+    // any other call; only a child is another agent's work.
+    let subagent_parent = match &scope {
+        ToolCallScope::SubagentChild { parent_tool_use_id } => Some(parent_tool_use_id.clone()),
+        ToolCallScope::SubagentRoot | ToolCallScope::MainAgent => None,
+    };
+    let subagent_scoped = subagent_parent.is_some();
+    upsert_tool_call_into_assistant_message(app, tool_info, subagent_parent.as_deref());
 
-    app.status = AppStatus::Running;
-    app.increment_files_accessed();
+    // A subagent's own call is not this session working, and
+    // files-accessed is this turn's footer figure.
+    if !subagent_scoped {
+        app.status = AppStatus::Running;
+        app.increment_files_accessed();
+    }
 }
 
 fn log_tool_call_received(
@@ -267,11 +278,62 @@ fn build_tool_info_from_tool_call(
     tool_info
 }
 
-pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: ToolCallInfo) {
+pub(super) fn upsert_tool_call_into_assistant_message(
+    app: &mut App,
+    tool_info: ToolCallInfo,
+    subagent_parent: Option<&str>,
+) {
     let existing_pos = app.lookup_tool_call(&tool_info.id);
 
     if let Some((mi, bi)) = existing_pos {
         update_existing_tool_call(app, mi, bi, &tool_info);
+        return;
+    }
+
+    // A subagent's card belongs with its root: that is where the
+    // Inspector's parent-id correlation looks for it, and it is the only
+    // placement independent of whatever sits at the tail.
+    if let Some(parent) = subagent_parent
+        && let Some((root_msg_idx, _)) = app.lookup_tool_call(parent)
+        && let Some(owner) = app.active_messages_mut().get_mut(root_msg_idx)
+    {
+        let block_idx = owner.blocks.len();
+        let tc_id = tool_info.id.clone();
+        let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
+        owner.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
+        app.sync_after_message_tail_changed(root_msg_idx);
+        app.index_tool_call(tc_id, root_msg_idx, block_idx);
+        sync_tool_call_terminal_tracking(app, root_msg_idx, block_idx, terminal_id);
+        return;
+    }
+
+    // Retention can evict the root: it drops from the front, and a
+    // backgrounded root's card goes terminal as soon as the CLI
+    // acknowledges the launch, so it is not retention-protected. Reuse
+    // the last assistant rather than the tail - after one push a last
+    // assistant always exists, so this stops pushing.
+    if subagent_parent.is_some() {
+        let target = app.messages().iter().rposition(|m| matches!(m.role, MessageRole::Assistant));
+        let tc_id = tool_info.id.clone();
+        let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
+        let (msg_idx, block_idx) = if let Some(msg_idx) = target {
+            let Some(owner) = app.active_messages_mut().get_mut(msg_idx) else {
+                return;
+            };
+            let block_idx = owner.blocks.len();
+            owner.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
+            app.sync_after_message_tail_changed(msg_idx);
+            (msg_idx, block_idx)
+        } else {
+            let new_idx = app.messages().len();
+            app.push_message_tracked(ChatMessage::new(
+                MessageRole::Assistant,
+                vec![MessageBlock::ToolCall(Box::new(tool_info))],
+            ));
+            (new_idx, 0)
+        };
+        app.index_tool_call(tc_id, msg_idx, block_idx);
+        sync_tool_call_terminal_tracking(app, msg_idx, block_idx, terminal_id);
         return;
     }
 
@@ -288,30 +350,39 @@ pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: 
         return;
     }
 
-    let msg_idx = app.messages().len().saturating_sub(1);
-    if app.messages().last().is_some_and(|m| matches!(m.role, MessageRole::Assistant)) {
-        if let Some(last) = app.active_messages_mut().last_mut() {
-            let block_idx = last.blocks.len();
-            let tc_id = tool_info.id.clone();
-            let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
-            last.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
-            app.bind_active_turn_assistant(msg_idx);
-            app.sync_after_message_tail_changed(msg_idx);
-            app.index_tool_call(tc_id, msg_idx, block_idx);
-            sync_tool_call_terminal_tracking(app, msg_idx, block_idx, terminal_id);
-        }
-    } else {
+    // A main-agent call here is opening a new turn, so it may not land
+    // on a message whose turn already ended.
+    let tail_is_assistant =
+        app.messages().last().is_some_and(|m| matches!(m.role, MessageRole::Assistant));
+    let tail_turn_ended = app.messages().last().is_some_and(|m| m.turn_duration_ms.is_some());
+    let append_to_tail = tail_is_assistant && !tail_turn_ended;
+
+    if append_to_tail {
+        let msg_idx = app.messages().len().saturating_sub(1);
+        let Some(last) = app.active_messages_mut().last_mut() else {
+            return;
+        };
+        let block_idx = last.blocks.len();
         let tc_id = tool_info.id.clone();
         let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
-        let new_idx = app.messages().len();
-        app.push_message_tracked(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(tool_info))],
-        ));
-        app.bind_active_turn_assistant(new_idx);
-        app.index_tool_call(tc_id, new_idx, 0);
-        sync_tool_call_terminal_tracking(app, new_idx, 0, terminal_id);
+        last.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
+        app.bind_active_turn_assistant(msg_idx);
+        app.sync_after_message_tail_changed(msg_idx);
+        app.index_tool_call(tc_id, msg_idx, block_idx);
+        sync_tool_call_terminal_tracking(app, msg_idx, block_idx, terminal_id);
+        return;
     }
+
+    let tc_id = tool_info.id.clone();
+    let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
+    let new_idx = app.messages().len();
+    app.push_message_tracked(ChatMessage::new(
+        MessageRole::Assistant,
+        vec![MessageBlock::ToolCall(Box::new(tool_info))],
+    ));
+    app.bind_active_turn_assistant(new_idx);
+    app.index_tool_call(tc_id, new_idx, 0);
+    sync_tool_call_terminal_tracking(app, new_idx, 0, terminal_id);
 }
 
 /// A tool's input is fixed at dispatch; a later update that carries no
@@ -680,6 +751,7 @@ mod tests {
         upsert_tool_call_into_assistant_message(
             &mut app,
             subagent_root(id, Some(descriptive.clone())),
+            None,
         );
         assert_eq!(
             app.subagents_view()[0].label,
@@ -688,7 +760,7 @@ mod tests {
         );
 
         // The CLI's follow-up update refines status only and carries no input.
-        upsert_tool_call_into_assistant_message(&mut app, subagent_root(id, None));
+        upsert_tool_call_into_assistant_message(&mut app, subagent_root(id, None), None);
 
         let (mi, bi) = app.lookup_tool_call(id).expect("root stays indexed");
         let MessageBlock::ToolCall(root) = &app.messages()[mi].blocks[bi] else {
@@ -721,11 +793,13 @@ mod tests {
         upsert_tool_call_into_assistant_message(
             &mut app,
             subagent_root(id, Some(descriptive.clone())),
+            None,
         );
 
         upsert_tool_call_into_assistant_message(
             &mut app,
             subagent_root(id, Some(serde_json::json!({}))),
+            None,
         );
 
         let (mi, bi) = app.lookup_tool_call(id).expect("root stays indexed");

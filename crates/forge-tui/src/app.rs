@@ -334,14 +334,14 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             break;
         }
 
-        // Render once, only when something changed. The extra
-        // is_animating clause keeps the per-row spinners on background
-        // sessions animating; the active session already drives ticks
-        // via `app.status` above.
+        // Render once, only when something changed - and keep
+        // rendering while anything is happening anywhere, so a
+        // background session's row spinner advances even when the
+        // active session is idle.
         let is_animating = is_animating(app);
         if is_animating {
             advance_spinner_frame(app, Instant::now());
-            tab_title::update_tab_title(&app.status, app.spinner_frame, app.cwd());
+            tab_title::update_tab_title(is_animating, app.spinner_frame, app.cwd());
             // The loop wakes more often than the frame interval, so
             // repainting per wake would redraw an unchanged frame
             // several times over.
@@ -353,9 +353,9 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         } else {
             app.spinner_last_advance_at = None;
         }
-        // Update tab title on non-animating state transitions (Ready, Error).
+        // Catch the transition into stillness, which the branch above cannot.
         if !is_animating && app.needs_redraw {
-            tab_title::update_tab_title(&app.status, app.spinner_frame, app.cwd());
+            tab_title::update_tab_title(is_animating, app.spinner_frame, app.cwd());
         }
         // Smooth scroll still settling - viewport row index (usize)
         // converts to f32 for sub-pixel scroll comparison; loss is bounded
@@ -466,28 +466,14 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 ///
 /// The preflight clause is not decoration. Account state and dictation
 /// progress are both POLLED by the renderer rather than pushed, so
-/// neither emits a `SessionUpdate` and neither marks `needs_redraw`; and
-/// `any_background_activity` reads `app.sessions`, which is empty at
-/// boot. Without this, preflight paints once with a spinner that never
-/// moves and a screen that never updates while 3.07 GB downloads.
+/// neither emits a `SessionUpdate` and neither marks `needs_redraw`.
+/// Without this, preflight paints once with a spinner that never moves
+/// and a screen that never updates while 3.07 GB downloads.
 pub(crate) fn is_animating(app: &App) -> bool {
     if app.active_view == crate::app::ActiveView::Launchpad && !app.preflight_done {
         return true;
     }
-    matches!(
-        app.status,
-        AppStatus::Connecting
-            | AppStatus::CommandPending
-            | AppStatus::Thinking
-            | AppStatus::Running
-    ) || app.is_compacting()
-        || any_background_activity(app)
-}
-
-fn any_background_activity(app: &App) -> bool {
-    app.sessions.values().any(|s| {
-        crate::app::session::session_shows_spinner(s.lifecycle_state, s.has_live_background_work())
-    })
+    app.shows_activity()
 }
 
 /// Which animation step the spinner epoch is on. Rendered glyphs divide
@@ -1340,7 +1326,7 @@ mod tests {
         app.sessions.insert(key.clone(), session);
 
         // Idle with no background work: nothing to animate.
-        assert!(!any_background_activity(&app), "idle with no background work must not animate");
+        assert!(!app.shows_activity(), "idle with no background work must not animate");
 
         // A live backgrounded task promotes the gate so the frame ticker
         // keeps advancing for a row that's active only because of it.
@@ -1351,7 +1337,7 @@ mod tests {
                 description: "cargo build".to_owned(),
             },
         );
-        assert!(any_background_activity(&app), "idle with live background work must animate");
+        assert!(app.shows_activity(), "idle with live background work must animate");
     }
 
     /// The gate must count exactly the rows that spin: an Attention session
@@ -1375,13 +1361,54 @@ mod tests {
         });
         app.sessions.insert(key.clone(), session);
         assert!(
-            !any_background_activity(&app),
+            !app.shows_activity(),
             "Attention + background work shows a triangle, not a spinner - gate must not tick",
         );
 
         app.sessions.get_mut(&key).expect("bucket").lifecycle_state =
             SessionLifecycleState::Running;
-        assert!(any_background_activity(&app), "a Running session spins, so the gate ticks");
+        assert!(app.shows_activity(), "a Running session spins, so the gate ticks");
+    }
+
+    /// Compaction is activity even though it is not a turn: the chat shows
+    /// a compacting line, so the title and the ticker must agree with it.
+    #[test]
+    fn animation_gate_counts_compaction() {
+        let mut app = App::test_default();
+        assert!(!app.shows_activity(), "idle to begin with");
+
+        app.set_is_compacting(true);
+        assert!(app.shows_activity(), "a compacting session is busy");
+
+        app.set_is_compacting(false);
+        assert!(!app.shows_activity(), "and stops being busy when it finishes");
+    }
+
+    /// Activity is process-wide, not active-session-wide: a background
+    /// session running while the focused one sits idle still animates its
+    /// Projects-pane row, so the gate and the tab title must both fire.
+    #[test]
+    fn animation_gate_counts_a_non_active_session() {
+        use crate::app::session::{SessionLifecycleState, UiSession};
+
+        let mut app = App::test_default();
+        assert!(!app.shows_activity(), "focused session idle, nothing else running");
+
+        let other = forge_workspace::SessionKey::from_session_id("other-project");
+        let mut session = UiSession::new(other.clone());
+        session.lifecycle_state = SessionLifecycleState::Running;
+        app.sessions.insert(other.clone(), session);
+
+        assert!(
+            app.shows_activity(),
+            "another session's turn is still something happening; got status {:?}",
+            app.status,
+        );
+        assert!(
+            matches!(app.status, AppStatus::Ready),
+            "and it holds without the focused session's status moving; got {:?}",
+            app.status,
+        );
     }
 
     /// The gate never lands above either pinned step, at every accepted

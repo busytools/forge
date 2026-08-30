@@ -151,7 +151,14 @@ fn handle_assistant(app: &mut App, msg: Message) {
     // Running with no balancing Result to flip it back, and the
     // Projects pane spinner sticks until the first real turn
     // completes.
+    // A subagent's envelope is not this bucket's turn. A backgrounded
+    // one keeps arriving after the main turn Resulted, and no Result
+    // follows it, so flipping the bucket to Running here left it
+    // Running for good - the row spinner and the tab title both pulsing
+    // with nothing in flight.
+    let is_subagent = parent_tool_use_id.as_deref().is_some_and(|p| !p.trim().is_empty());
     if !app.replay_in_progress
+        && !is_subagent
         && let Some(key) = app.active_session_key.clone()
     {
         super::set_bucket_lifecycle_state(
@@ -757,22 +764,28 @@ fn apply_tool_call_update(
 /// as done in both the chat-stream card and the Inspector PROCESSES
 /// section.
 ///
-/// Backgrounded tasks still in the session roster are skipped for the same
-/// reason: a `run_in_background` Bash or Task/Agent root outlives its
-/// spawning turn, so its card must not flip terminal until `task_updated`.
+/// A live backgrounded task is skipped for the same reason, root and
+/// children alike: a `run_in_background` Bash or Task/Agent root outlives
+/// its spawning turn, so its card must not flip terminal until
+/// `task_updated`.
 fn finalize_open_tool_calls(app: &mut App, status: forge_primitives::ToolCallStatus) {
     use crate::app::state::tool_call_info::is_monitor_tool_name;
     use forge_primitives::{ToolCallStatus, ToolCallUpdateFields};
 
-    // Backgrounded tasks the CLI still lists as running outlive the turn;
-    // their tool_use_ids resolve from the session roster so the sweep leaves
-    // them alone (their terminal status arrives later via `task_updated`).
+    // Their terminal status arrives later via `task_updated`.
     let backgrounded_alive: std::collections::HashSet<String> = app
         .active_session()
-        .map(|session| {
-            session.backgrounded_alive_tool_use_ids().into_iter().map(str::to_owned).collect()
-        })
+        .map(crate::app::session::UiSession::backgrounded_alive_with_children)
         .unwrap_or_default();
+    tracing::debug!(
+        target: crate::logging::targets::APP_TOOL,
+        event_name = "tool_call_sweep",
+        message = "swept open tool calls at a turn boundary",
+        outcome = "success",
+        sweep_site = "result_finalize",
+        new_status = ?status,
+        exempt_count = backgrounded_alive.len(),
+    );
     let pending: Vec<String> = app.with_turn_state(|ts| {
         ts.tool_calls
             .iter()

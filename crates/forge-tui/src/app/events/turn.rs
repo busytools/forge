@@ -247,14 +247,15 @@ fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionKey) {
 /// No layout invalidation, no terminal detach handling - the bucket
 /// will rebuild its layout state when it next becomes active.
 ///
-/// Mirrors the active sweep's exemption: a backgrounded task still in the
-/// bucket's session roster outlives the turn and settles via `task_updated`.
+/// Takes the same exemption as [`App::finalize_in_progress_tool_calls`]:
+/// a live backgrounded subagent, root and children alike, outlives the
+/// turn and settles via its own `task_updated`.
 pub(super) fn finalize_background_tool_calls(
     session: &mut crate::app::session::UiSession,
     new_status: model::ToolCallStatus,
 ) {
-    let exempt: std::collections::HashSet<String> =
-        session.backgrounded_alive_tool_use_ids().into_iter().map(str::to_owned).collect();
+    let exempt = session.backgrounded_alive_with_children();
+    let mut swept = 0usize;
     for msg in &mut session.messages {
         for block in &mut msg.blocks {
             if let MessageBlock::ToolCall(tc) = block {
@@ -266,10 +267,21 @@ pub(super) fn finalize_background_tool_calls(
                 {
                     tc.status = new_status;
                     let _ = tc.terminal_id.take();
+                    swept += 1;
                 }
             }
         }
     }
+    tracing::debug!(
+        target: crate::logging::targets::APP_TOOL,
+        event_name = "tool_call_sweep",
+        message = "swept open tool calls at a turn boundary",
+        outcome = "success",
+        sweep_site = "background_session",
+        new_status = ?new_status,
+        count = swept,
+        exempt_count = exempt.len(),
+    );
 }
 
 fn begin_turn_exit(app: &mut App, emit_manual_compaction_success: bool) -> TurnExitState {

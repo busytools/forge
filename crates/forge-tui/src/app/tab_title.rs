@@ -1,7 +1,9 @@
 //! Terminal tab/window title management.
 //!
 //! Uses OSC 2 escape sequences to update the terminal tab title with a simple
-//! busy toggle during active agent turns and a static idle icon otherwise.
+//! busy toggle while anything is happening - this session's turn, a
+//! compaction, or live background work in any session - and a static idle
+//! icon otherwise. The caller decides which; see `App::shows_activity`.
 //!
 //! Emits an OSC 2 only when the computed title actually changes - the render
 //! loop calls `update_tab_title` every frame (~120 Hz during animation), and
@@ -10,7 +12,6 @@
 //! visible title stuck on a stale value. Caching the last-emitted title and
 //! short-circuiting on equality keeps OSC 2 traffic to actual transitions.
 
-use super::state::AppStatus;
 use std::cell::RefCell;
 use std::io::Write;
 
@@ -40,22 +41,16 @@ fn write_osc2_title(title: &str) {
     let _ = std::io::stdout().flush();
 }
 
-/// Update the terminal tab title to reflect the current app status.
+/// Update the terminal tab title to reflect whether anything is happening.
 ///
-/// Called every frame tick during animating states, and on state transitions
-/// for static states (Ready, Error).
-pub fn update_tab_title(status: &AppStatus, spinner_frame: usize, cwd: &str) {
+/// Called every frame tick while active, and once on the transition into
+/// stillness.
+pub fn update_tab_title(shows_activity: bool, spinner_frame: usize, cwd: &str) {
     let name = folder_name(cwd);
-    let active = pulse_char(spinner_frame);
-
-    let title = match status {
-        AppStatus::Connecting
-        | AppStatus::CommandPending
-        | AppStatus::Thinking
-        | AppStatus::Running => {
-            format!("{active} {name}")
-        }
-        AppStatus::Ready | AppStatus::Error => format!("{IDLE_CHAR} {name}"),
+    let title = if shows_activity {
+        format!("{} {name}", pulse_char(spinner_frame))
+    } else {
+        format!("{IDLE_CHAR} {name}")
     };
 
     let changed = LAST_TITLE.with(|last| {

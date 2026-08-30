@@ -541,6 +541,52 @@ impl UiSession {
             .map(|(_, tool_use_id)| tool_use_id.as_str())
             .collect()
     }
+
+    /// [`Self::backgrounded_alive_tool_use_ids`] plus everything hanging
+    /// off those roots at any depth, which is what a turn-boundary sweep
+    /// must spare: only the root gets a `TaskStarted` and a roster row,
+    /// so anything under a live backgrounded subagent is invisible to the
+    /// roster and would be swept to a terminal status - `Completed` at a
+    /// turn's Result, `Failed` on a cancel - while it runs.
+    ///
+    /// Depth matters because a `Task` issued by a subagent registers as
+    /// that subagent's child rather than a root, so its own children
+    /// reach the roster only through the chain above them.
+    /// `clear_tool_scope_tracking` and the three sweeps all take this
+    /// set; `subagents_view` still resolves one hop.
+    pub fn backgrounded_alive_with_children(&self) -> HashSet<String> {
+        let roots = self.backgrounded_alive_tool_use_ids();
+        let mut alive: HashSet<String> = roots.iter().map(|id| (*id).to_owned()).collect();
+        alive.extend(
+            self.tool_call_scopes
+                .keys()
+                .filter(|id| self.resolves_to_live_root(id, &roots))
+                .cloned(),
+        );
+        alive
+    }
+
+    /// Whether a tool call hangs off one of `roots`, at any depth. A `Task`
+    /// issued by a subagent registers as that subagent's child rather than
+    /// a root, so its own children reach the roster only through the chain
+    /// above them; walking one hop leaves them looking unowned and they get
+    /// swept while they run.
+    fn resolves_to_live_root(&self, id: &str, roots: &HashSet<&str>) -> bool {
+        let mut cursor = id;
+        // The chain cannot exceed the map, and a cycle would otherwise spin.
+        for _ in 0..self.tool_call_scopes.len() {
+            match self.tool_call_scopes.get(cursor) {
+                Some(ToolCallScope::SubagentChild { parent_tool_use_id }) => {
+                    if roots.contains(parent_tool_use_id.as_str()) {
+                        return true;
+                    }
+                    cursor = parent_tool_use_id.as_str();
+                }
+                _ => return false,
+            }
+        }
+        false
+    }
 }
 
 /// Whether a session's Projects-pane row shows the activity spinner: an
@@ -548,7 +594,7 @@ impl UiSession {
 /// with a live backgrounded task. Attention / AuthRequired / Failed keep
 /// their own glyph, so the promotion is over the Idle bullet only. Shared
 /// by the row glyph (`glyph_for_lifecycle`) and the frame-tick gate
-/// (`any_background_activity`) so the two never disagree about what
+/// (`App::shows_activity`) so the two never disagree about what
 /// animates.
 pub fn session_shows_spinner(lifecycle: SessionLifecycleState, has_background_work: bool) -> bool {
     matches!(lifecycle, SessionLifecycleState::Running | SessionLifecycleState::Spawning)

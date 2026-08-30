@@ -795,7 +795,11 @@ impl App {
         // when fired close together, so calling here directly with
         // the incoming bucket's cwd guarantees one canonical update
         // per switch.
-        crate::app::tab_title::update_tab_title(&self.status, self.spinner_frame, self.cwd());
+        crate::app::tab_title::update_tab_title(
+            self.shows_activity(),
+            self.spinner_frame,
+            self.cwd(),
+        );
         // Ensure the file index for `@`-mention autocomplete is
         // started for the incoming bucket. Each bucket owns its own
         // `FileIndexState`; if this is the first time we've switched
@@ -1150,6 +1154,26 @@ impl App {
     /// Active session's `is_compacting` flag.
     pub fn is_compacting(&self) -> bool {
         self.active_session().is_some_and(|s| s.is_compacting)
+    }
+
+    /// Whether anything is happening the user should see moving: this
+    /// session's turn, a compaction, or live background work in any
+    /// session. Drives the spinner clock and the terminal tab title
+    /// together, so the two cannot disagree about whether forge is busy.
+    pub fn shows_activity(&self) -> bool {
+        matches!(
+            self.status,
+            AppStatus::Connecting
+                | AppStatus::CommandPending
+                | AppStatus::Thinking
+                | AppStatus::Running
+        ) || self.is_compacting()
+            || self.sessions.values().any(|s| {
+                crate::app::session::session_shows_spinner(
+                    s.lifecycle_state,
+                    s.has_live_background_work(),
+                )
+            })
     }
 
     /// Set the active session's `is_compacting` flag.
@@ -3154,17 +3178,54 @@ impl App {
         .flatten()
     }
 
+    /// Whether a tool call's card is still non-terminal. Independent
+    /// evidence that a backgrounded task is alive, for the window where
+    /// the roster has not caught up.
+    fn tool_call_is_open(&self, id: &str) -> bool {
+        self.lookup_tool_call(id)
+            .and_then(|(mi, bi)| self.messages().get(mi)?.blocks.get(bi))
+            .is_some_and(|block| match block {
+                MessageBlock::ToolCall(tc) => matches!(
+                    tc.status,
+                    model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending
+                ),
+                _ => false,
+            })
+    }
+
     pub fn clear_tool_scope_tracking(&mut self) {
         // Preserve scope tracking for still-running backgrounded roots and
         // their children so a backgrounded subagent stays identifiable in
         // SUBAGENTS across turn boundaries; a blanket clear made it vanish
         // until its next child re-registered the scope.
-        let alive: HashSet<String> = self
+        // `background_tasks_changed` can land a frame after the `Result`,
+        // so this read can see an empty roster for a subagent that is
+        // running, and nothing re-registers a dropped scope. Closing that
+        // needs a durable was-backgrounded signal (#790).
+        let alive = self
             .active_session()
-            .map(|session| {
-                session.backgrounded_alive_tool_use_ids().into_iter().map(str::to_owned).collect()
-            })
+            .map(super::session::UiSession::backgrounded_alive_with_children)
             .unwrap_or_default();
+        let open_roots: HashSet<String> = self
+            .tool_call_scopes()
+            .iter()
+            .filter(|(_, scope)| {
+                matches!(scope, crate::app::state::types::ToolCallScope::SubagentRoot)
+            })
+            .map(|(id, _)| id.clone())
+            .filter(|id| self.active_task_ids().contains(id) || self.tool_call_is_open(id))
+            .collect();
+        let dropped_while_open: Vec<String> =
+            open_roots.iter().filter(|id| !alive.contains(id.as_str())).map(Clone::clone).collect();
+        for id in &dropped_while_open {
+            tracing::warn!(
+                target: crate::logging::targets::APP_TOOL,
+                event_name = "subagent_root_dropped_while_open",
+                message = "dropping a subagent root's scope while its card is still open; it will not be re-registered and SUBAGENTS loses it",
+                outcome = "dropped",
+                tool_call_id = %id,
+            );
+        }
         self.tool_call_scopes_mut().retain(|id, scope| match scope {
             crate::app::state::types::ToolCallScope::SubagentRoot => alive.contains(id.as_str()),
             crate::app::state::types::ToolCallScope::SubagentChild { parent_tool_use_id } => {
@@ -3346,8 +3407,8 @@ impl App {
     /// Force-finish any lingering in-progress tool calls.
     /// Returns the number of tool calls that were transitioned.
     ///
-    /// Backgrounded tasks still in the session roster are exempt: they
-    /// outlive the turn and settle via their own `task_updated`.
+    /// A live backgrounded subagent is exempt, root and children alike:
+    /// it outlives the turn and settles via its own `task_updated`.
     pub fn finalize_in_progress_tool_calls(&mut self, new_status: model::ToolCallStatus) -> usize {
         let mut changed = 0usize;
         let mut changed_message_indices = Vec::new();
@@ -3355,9 +3416,7 @@ impl App {
         let mut detached_terminal = false;
         let exempt: std::collections::HashSet<String> = self
             .active_session()
-            .map(|session| {
-                session.backgrounded_alive_tool_use_ids().into_iter().map(str::to_owned).collect()
-            })
+            .map(super::session::UiSession::backgrounded_alive_with_children)
             .unwrap_or_default();
 
         for (msg_idx, msg) in self.active_messages_mut().iter_mut().enumerate() {
@@ -3400,6 +3459,16 @@ impl App {
             self.invalidate_message_set(changed_message_indices.iter().copied());
         }
 
+        tracing::debug!(
+            target: crate::logging::targets::APP_TOOL,
+            event_name = "tool_call_sweep",
+            message = "swept open tool calls at a turn boundary",
+            outcome = "success",
+            sweep_site = "submit_or_turn_exit",
+            new_status = ?new_status,
+            count = changed,
+            exempt_count = exempt.len(),
+        );
         changed
     }
 
