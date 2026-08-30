@@ -473,8 +473,10 @@ fn turn_info_token_field(info: &TurnInfo) -> Option<String> {
 
 /// The indented two-column body shown under an expanded row.
 ///
-/// A value forge does not have renders `-`; none of these fields is
-/// ever filled in with a zero.
+/// An unknown cell renders `-`, except where the whole row is
+/// conditional - `local`, the cache percentage and `session` drop out
+/// rather than showing one. A zero that the wire actually reported is
+/// a measurement and renders as `0`.
 fn turn_info_expanded_rows(info: &TurnInfo) -> Vec<Line<'static>> {
     let dim = Style::default().fg(theme::DIM);
     let mut rows: Vec<String> = Vec::new();

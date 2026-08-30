@@ -4302,6 +4302,81 @@ mod tests {
         assert!(app.scrollbar_drag.is_none());
     }
 
+    /// The row's expand toggle is mouse-only, so nothing else covers
+    /// it: refactoring the hit-test geometry would break click-to-
+    /// expand with the whole suite still green.
+    ///
+    /// Driven through `handle_terminal_event` rather than the locator,
+    /// so the dispatch order that decides which handler consumes the
+    /// click is exercised too.
+    #[test]
+    fn click_on_turn_info_row_flips_its_expanded_state() {
+        use crate::app::{ChatMessage, MessageRole, TurnInfo};
+
+        let mut app = make_test_app();
+        let chat_width: u16 = 60;
+        let row_y: usize = 2;
+        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new());
+        msg.turn_info = TurnInfo { duration_ms: Some(12_400), ..TurnInfo::default() };
+        msg.turn_info_y_in_msg = row_y;
+        msg.turn_info_height = 1;
+        msg.turn_info_width = chat_width;
+        app.push_message_tracked(msg);
+
+        app.active_viewport_mut().height_prefix_sums = vec![row_y + 1];
+        app.active_viewport_mut().scroll_offset = 0;
+        app.rendered_chat_area = Rect::new(0, 0, chat_width, 10);
+        assert!(
+            !app.messages()[0].turn_info.expanded,
+            "fixture guard: collapsed is the default, so a flip can only come from the click",
+        );
+
+        handle_terminal_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 10,
+                row: u16::try_from(row_y).expect("row fits"),
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+
+        assert!(
+            app.messages()[0].turn_info.expanded,
+            "a click inside the row's measured rect expands it",
+        );
+        assert!(app.selection().is_none(), "and the click is consumed, not left to start a drag");
+
+        handle_terminal_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 10,
+                row: u16::try_from(row_y).expect("row fits"),
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        assert!(!app.messages()[0].turn_info.expanded, "and clicking it again collapses it");
+
+        // A rect measured at another width belongs to a layout that is
+        // gone, so routing a click against it would toggle whatever now
+        // occupies that row.
+        app.rendered_chat_area = Rect::new(0, 0, chat_width + 1, 10);
+        handle_terminal_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 10,
+                row: u16::try_from(row_y).expect("row fits"),
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        assert!(
+            !app.messages()[0].turn_info.expanded,
+            "a click measured at a stale width is dropped rather than routed to the row",
+        );
+    }
+
     #[test]
     fn click_on_tool_call_row_flips_per_tool_collapse_override() {
         // Build a single tool-call message and pre-populate the
@@ -5002,7 +5077,7 @@ mod tests {
     }
 
     /// Round-2 regression: replay persists no Result records, so a
-    /// resumed-completed assistant has `turn_duration_ms` None. A running
+    /// resumed-completed assistant has no settled `turn_info`. A running
     /// frame with the pointer None must NOT reuse that content-bearing tail
     /// (the next token would glue onto the finished turn) - it opens a fresh
     /// placeholder, and the stream lands there, leaving the historical

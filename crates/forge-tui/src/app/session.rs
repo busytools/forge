@@ -283,7 +283,8 @@ pub struct UiSession {
     pub stop_hook_summary_expanded: std::collections::HashMap<usize, bool>,
 
     /// Live accounting for the turn in flight, feeding the turn-info
-    /// row while it counts up. Reset when a turn starts.
+    /// row while it counts up. Reset when a turn starts and again when
+    /// its Result settles.
     pub live_turn: LiveTurn,
 
     /// `Message::Result.duration_api_ms` from the previous Result in

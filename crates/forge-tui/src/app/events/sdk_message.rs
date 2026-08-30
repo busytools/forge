@@ -1757,10 +1757,14 @@ fn local_clock_now() -> String {
 /// re-stamp the running totals onto the turn's assistant message, so
 /// the row counts up rather than appearing finished.
 ///
-/// Skipped for subagent frames, whose usage is not part of the parent
-/// turn's `Result.usage`; during resume replay; and for a message that
-/// has already settled, which is why a turn appended to one shows
-/// nothing of its own until its Result lands.
+/// Returns early for a subagent frame, whose usage is not part of the
+/// parent turn's `Result.usage`; during resume replay; for a frame
+/// carrying no usage; and when no assistant message exists yet.
+///
+/// A settled message is the fifth, and it bails only after the fold -
+/// the frame still counts toward the session's totals, and it is just
+/// the re-stamp onto that message that is skipped, which is why a turn
+/// appended to one shows nothing of its own until its Result lands.
 fn record_live_turn_usage(
     app: &mut App,
     message: &forge_primitives::AssistantEnvelope,

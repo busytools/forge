@@ -568,9 +568,12 @@ pub struct App {
     /// replay (most notably the lifecycle `Running` write in
     /// `handle_assistant`, added so a mid-turn click flips the
     /// Projects-pane spinner on). Replay messages are historical, not
-    /// live wire content, so the lifecycle write must be skipped while
-    /// this flag is true. Cleared at end of replay so subsequent live
-    /// messages on the same session behave normally.
+    /// live wire content, so those must be skipped while this flag is
+    /// true: the lifecycle write, the whole of `record_live_turn_usage`,
+    /// and the turn-info row's end time, which is read off the local
+    /// clock and would otherwise date every historical turn to the
+    /// resume. Cleared at end of replay so subsequent live messages on
+    /// the same session behave normally.
     pub replay_in_progress: bool,
 }
 

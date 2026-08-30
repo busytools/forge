@@ -57,13 +57,16 @@ pub struct ChatMessage {
 
 /// Per-turn accounting behind the trailing turn-info row.
 ///
-/// Every field is optional because the row starts rendering when the
-/// turn starts and fills in as data arrives: elapsed and the input
-/// side tick during the turn, output and cost only exist once
-/// `Message::Result` lands. An absent field renders as absent, never
-/// as zero. A turn appended to an already-settled message is the
-/// exception: both live writers skip it, so it shows nothing of its
-/// own until its Result arrives.
+/// Every accounting field is optional because the row starts
+/// rendering when the turn starts and fills in as data arrives:
+/// elapsed and the input side tick during the turn, output and cost
+/// only exist once `Message::Result` lands. An absent field is
+/// rendered as absent or dropped, never as zero.
+///
+/// A turn appended to an already-settled message is the exception:
+/// both live writers skip it, so it shows nothing of its own until
+/// its Result arrives - and never, if that Result carries no usable
+/// counts, since the stamp refuses a settled row.
 ///
 /// The wire mixes scopes, so two fields are NOT verbatim copies:
 /// `api_ms` is a delta (`Result.duration_api_ms` is
@@ -71,9 +74,10 @@ pub struct ChatMessage {
 /// name so it cannot be misread as this turn's cost.
 #[derive(Debug, Clone, Default)]
 pub struct TurnInfo {
-    /// When forge dispatched the prompt, copied off the session's live
-    /// accumulator. Drives the counting-up elapsed until `duration_ms`
-    /// supersedes it.
+    /// When the turn began, copied off the session's live accumulator
+    /// - stamped at prompt dispatch, or on the first assistant frame
+    /// for a turn forge did not dispatch. Drives the counting-up
+    /// elapsed until `duration_ms` supersedes it.
     pub started_at: Option<Instant>,
     /// Whole seconds since `started_at`, refreshed once per render so
     /// the cache key and the layout it guards cannot disagree
@@ -159,8 +163,9 @@ impl LiveTurn {
 
 impl TurnInfo {
     /// True when nothing is known yet, so the row is not rendered at
-    /// all. Both fields are checked because a turn appended to a
-    /// settled message has no `started_at` of its own.
+    /// all. Both fields are checked because a resumed session settles
+    /// turns it never started: replay bails out of both live writers,
+    /// so history arrives with `duration_ms` and no `started_at`.
     pub fn is_empty(&self) -> bool {
         self.started_at.is_none() && self.duration_ms.is_none()
     }
