@@ -171,9 +171,21 @@ fn a_bailed_account_names_both_exits() {
     // the 30 s recovery poll, a base-url account on the 60 s usage poll
     // which that poll skips - so any single number is false for one
     // class, and this row cannot tell which it is rendering.
+    //
+    // Asserted as "this line carries no digit", scoped to the line
+    // itself. Enumerating spellings is always one variant short - the
+    // first version of this guard checked `30s`, `30 s` and `60s`, and
+    // let `60 s` straight through. Scoping to the line is what makes the
+    // blunt property safe: account names and paths carry digits, the
+    // retry line has no business carrying one.
+    let retry_line = text
+        .lines()
+        .find(|line| line.contains("forge retries on its own"))
+        .expect("the retry line is asserted present above");
     assert!(
-        !text.contains("30s") && !text.contains("30 s") && !text.contains("60s"),
-        "no interval belongs here: the two account classes do not share one; got:\n{text}",
+        !retry_line.chars().any(|c| c.is_ascii_digit()),
+        "no interval belongs on the retry line: the two account classes do not share one; \
+         got {retry_line:?}",
     );
 }
 

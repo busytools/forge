@@ -1011,7 +1011,7 @@ chat continues here...
 <div class="surface">
   <div class="surface-head">
     <h4>Preflight fails: a bailed account</h4>
-    <div class="when">gates forge entirely - clears in place on a `/login`, or on a config edit plus a restart</div>
+    <div class="when">gates forge entirely - clears in place when the account is repaired, or on a config edit plus a restart</div>
   </div>
   <div class="surface-body">
     <p>The <code>/login</code> exit says the retry is automatic, because otherwise a reader who fixes their auth has no way of knowing whether to restart - and the answer is no. It states no interval: a keychain account recovers on the 30 s recovery poll and a base-url account on the 60 s usage poll, which is subject to probe backoff, so any single number would be false for one class. <strong>The block itself is keychain-shaped</strong> - <code>claude /login</code> does not repair a base-url account, whose credentials live in its <code>[accounts.env]</code> - and that predates this screen. Both exits are named because neither is optional: a reader who cannot re-authenticate needs the second one. The footer drops <code>esc</code> - there is nothing left to cancel - and the paths are printed in full, since the reader is about to leave forge to edit them. A command too long for the panel wraps after a <code>/</code> onto a deeper-indented continuation line; it is never elided, because half a path is worse than none.</p>
