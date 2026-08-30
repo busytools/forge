@@ -93,8 +93,12 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     }
     // The root is the MAIN agent invoking Task, so it owns its turn like
     // any other call; only a child is another agent's work.
-    let subagent_scoped = matches!(scope, ToolCallScope::SubagentChild { .. });
-    upsert_tool_call_into_assistant_message(app, tool_info, subagent_scoped);
+    let subagent_parent = match &scope {
+        ToolCallScope::SubagentChild { parent_tool_use_id } => Some(parent_tool_use_id.clone()),
+        ToolCallScope::SubagentRoot | ToolCallScope::MainAgent => None,
+    };
+    let subagent_scoped = subagent_parent.is_some();
+    upsert_tool_call_into_assistant_message(app, tool_info, subagent_parent.as_deref());
 
     // A subagent's own call is not this session working.
     if !subagent_scoped {
@@ -276,12 +280,34 @@ fn build_tool_info_from_tool_call(
 pub(super) fn upsert_tool_call_into_assistant_message(
     app: &mut App,
     tool_info: ToolCallInfo,
-    subagent_scoped: bool,
+    subagent_parent: Option<&str>,
 ) {
+    // Only reached below when the root is not in the index at all - an
+    // orphaned child still must not claim a turn container.
+    let subagent_scoped = subagent_parent.is_some();
     let existing_pos = app.lookup_tool_call(&tool_info.id);
 
     if let Some((mi, bi)) = existing_pos {
         update_existing_tool_call(app, mi, bi, &tool_info);
+        return;
+    }
+
+    // A subagent's card belongs with its root, which is where the
+    // Inspector's parent-id correlation expects it and the only
+    // placement that does not depend on what happens to be at the tail.
+    // Anchoring it to the tail spawned a fresh message per arrival once
+    // no turn owned the chat, one for every child, without bound.
+    if let Some(parent) = subagent_parent
+        && let Some((root_msg_idx, _)) = app.lookup_tool_call(parent)
+        && let Some(owner) = app.active_messages_mut().get_mut(root_msg_idx)
+    {
+        let block_idx = owner.blocks.len();
+        let tc_id = tool_info.id.clone();
+        let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
+        owner.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
+        app.sync_after_message_tail_changed(root_msg_idx);
+        app.index_tool_call(tc_id, root_msg_idx, block_idx);
+        sync_tool_call_terminal_tracking(app, root_msg_idx, block_idx, terminal_id);
         return;
     }
 
@@ -705,7 +731,7 @@ mod tests {
         upsert_tool_call_into_assistant_message(
             &mut app,
             subagent_root(id, Some(descriptive.clone())),
-            false,
+            None,
         );
         assert_eq!(
             app.subagents_view()[0].label,
@@ -714,7 +740,7 @@ mod tests {
         );
 
         // The CLI's follow-up update refines status only and carries no input.
-        upsert_tool_call_into_assistant_message(&mut app, subagent_root(id, None), false);
+        upsert_tool_call_into_assistant_message(&mut app, subagent_root(id, None), None);
 
         let (mi, bi) = app.lookup_tool_call(id).expect("root stays indexed");
         let MessageBlock::ToolCall(root) = &app.messages()[mi].blocks[bi] else {
@@ -747,13 +773,13 @@ mod tests {
         upsert_tool_call_into_assistant_message(
             &mut app,
             subagent_root(id, Some(descriptive.clone())),
-            false,
+            None,
         );
 
         upsert_tool_call_into_assistant_message(
             &mut app,
             subagent_root(id, Some(serde_json::json!({}))),
-            false,
+            None,
         );
 
         let (mi, bi) = app.lookup_tool_call(id).expect("root stays indexed");

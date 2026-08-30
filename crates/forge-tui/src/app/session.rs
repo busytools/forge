@@ -532,12 +532,21 @@ impl UiSession {
             .collect()
     }
 
-    /// [`Self::backgrounded_alive_tool_use_ids`] plus the children of
-    /// those roots, which is what a turn-boundary sweep must spare: only
-    /// the root gets a `TaskStarted` and a roster row, so a child of a
-    /// live backgrounded subagent is invisible to the roster and would be
-    /// marked failed while it runs. `App::clear_tool_scope_tracking`
-    /// spares the same set one layer up.
+    /// [`Self::backgrounded_alive_tool_use_ids`] plus the direct children
+    /// of those roots, which is what a turn-boundary sweep must spare:
+    /// only the root gets a `TaskStarted` and a roster row, so a child of
+    /// a live backgrounded subagent is invisible to the roster and would
+    /// be swept to a terminal status - `Completed` at a turn's Result,
+    /// `Failed` on a cancel - while it runs.
+    ///
+    /// One level only. A `Task` issued by a subagent registers as that
+    /// subagent's child rather than a root, so its own children hang off
+    /// an id no roster lists and are not spared. That matches the
+    /// one-level assumption in `subagents_view` and
+    /// `clear_tool_scope_tracking`.
+    ///
+    /// `clear_tool_scope_tracking` spares the same membership one layer
+    /// up, but derives it independently rather than calling this.
     pub fn backgrounded_alive_with_children(&self) -> HashSet<String> {
         let roots = self.backgrounded_alive_tool_use_ids();
         let mut alive: HashSet<String> = roots.iter().map(|id| (*id).to_owned()).collect();

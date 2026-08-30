@@ -1,5 +1,5 @@
 // =====
-// TESTS: 26
+// TESTS: 28
 // =====
 //
 // Tool call lifecycle integration tests.
@@ -1612,4 +1612,145 @@ async fn the_result_sweep_spares_a_live_backgrounded_subagents_children() {
         tool_call_block(&app, "toolu_child").status,
     );
     assert_eq!(app.subagents_view().len(), 1, "and the subagent stays live in the Inspector");
+}
+
+/// The background-session sweep takes the same exemption as the two
+/// active-path ones, so a live backgrounded subagent's children survive a
+/// turn ending in a bucket the user is not looking at. Catches that sweep
+/// narrowing back to the roster while the other two keep the wider set -
+/// which is the drift a single shared helper exists to prevent.
+#[tokio::test]
+async fn the_background_sweep_spares_a_live_backgrounded_subagents_children() {
+    let mut app = test_app();
+    // Somebody else is active, so the target bucket is genuinely background.
+    send_msg(&mut app, assistant_message(vec![text_block("active")]));
+
+    let bg_key = SessionKey::from_str_for_test("bg-subagent");
+    let mut bg = UiSession::new(bg_key.clone());
+    let mut root = backgrounded_bash_card("toolu_root");
+    root.sdk_tool_name = "Agent".to_owned();
+    let child = backgrounded_bash_card("toolu_child");
+    bg.messages.push(ChatMessage::new(
+        MessageRole::Assistant,
+        vec![MessageBlock::ToolCall(Box::new(root)), MessageBlock::ToolCall(Box::new(child))],
+    ));
+    bg.tool_call_scopes.insert("toolu_root".to_owned(), ToolCallScope::SubagentRoot);
+    bg.tool_call_scopes.insert(
+        "toolu_child".to_owned(),
+        ToolCallScope::SubagentChild { parent_tool_use_id: "toolu_root".to_owned() },
+    );
+    bg.session_task_tool_use_ids.insert("task-root".to_owned(), "toolu_root".to_owned());
+    bg.background_tasks.push(BackgroundTask {
+        task_id: "task-root".to_owned(),
+        task_type: "local_agent".to_owned(),
+        description: "bg scan".to_owned(),
+    });
+    app.sessions.insert(bg_key.clone(), bg);
+
+    send_client_event(
+        &mut app,
+        SessionUpdate::TurnComplete { key: bg_key.clone(), terminal_reason: None },
+    );
+
+    let bg = app.sessions.get(&bg_key).expect("bg bucket");
+    assert_eq!(
+        bucket_card_status(bg, "toolu_root"),
+        Some(model::ToolCallStatus::InProgress),
+        "the live root is exempt, as it already was",
+    );
+    assert_eq!(
+        bucket_card_status(bg, "toolu_child"),
+        Some(model::ToolCallStatus::InProgress),
+        "and so is its still-running child",
+    );
+}
+
+/// A subagent's children land in their root's message however many
+/// arrive and whatever is at the tail when they do. Drives repeated
+/// episodes deliberately: a single child places correctly under any
+/// placement rule, so a one-episode test cannot see a rule that spawns a
+/// fresh message per arrival - repetition is the variable that catches
+/// it.
+#[tokio::test]
+async fn repeated_subagent_children_do_not_accumulate_assistant_messages() {
+    let assistants = |app: &App| {
+        app.messages().iter().filter(|m| matches!(m.role, MessageRole::Assistant)).count()
+    };
+
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_root",
+            "Agent",
+            serde_json::json!({"subagent_type": "Explore", "description": "d", "prompt": "d"}),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-root".to_owned(),
+            description: "d".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_root".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+        },
+    );
+    send_msg(
+        &mut app,
+        user_message(vec![tool_result_block(
+            "toolu_root",
+            serde_json::json!("Agent launched in background. Task ID: task-root"),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![serde_json::json!({
+                "task_id": "task-root",
+                "task_type": "local_agent",
+                "description": "d",
+            })],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+    send_msg(&mut app, result_success_message());
+
+    let root_msg = app.lookup_tool_call("toolu_root").expect("root indexed").0;
+    let baseline = assistants(&app);
+
+    // Each episode leaves a non-assistant tail, then delivers a child.
+    for i in 0..10 {
+        app.active_messages_mut().push(ChatMessage::new(
+            MessageRole::System(None),
+            vec![MessageBlock::Text(forge_tui::app::TextBlock::from_complete("notice"))],
+        ));
+        send_msg(
+            &mut app,
+            assistant_message_with_parent(
+                vec![tool_use_block(
+                    &format!("toolu_child_{i}"),
+                    "Bash",
+                    serde_json::json!({"command": "x"}),
+                )],
+                "toolu_root",
+            ),
+        );
+        assert_eq!(
+            assistants(&app),
+            baseline,
+            "episode {i} added an assistant message; children must land in their root's",
+        );
+        assert_eq!(
+            app.lookup_tool_call(&format!("toolu_child_{i}")).map(|(m, _)| m),
+            Some(root_msg),
+            "episode {i}'s child landed outside its root's message",
+        );
+    }
+
+    assert_eq!(app.active_turn_assistant_idx(), None, "and no child ever claimed the turn");
+    assert_eq!(app.subagents_view().first().map(|e| e.total_count), Some(10), "all ten grouped");
 }
