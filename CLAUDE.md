@@ -440,10 +440,10 @@ inspected.
 
     #778 is the worked example, and it is a good one because forge
     already had the right path and skipped it. `notification_plan`
-    (`crates/forge-tui/src/app/notify.rs`) set `send_desktop:
-    osc9_text.is_none()`, so believing the terminal spoke OSC 9
-    suppressed the `notify-rust` desktop notification, which reaches
-    the OS without crossing the terminal at all. That belief came
+    (`crates/forge-tui/src/app/notify.rs`) sets `send_desktop:
+    osc9_text.is_none()`, so believing the terminal speaks OSC 9
+    suppresses the `notify-rust` desktop notification, which reaches
+    the OS without crossing the terminal at all. That belief comes
     from `terminal_capabilities_from_env` reading `TERM_PROGRAM` and
     `ITERM_SESSION_ID`. Measured: both reach a pane under zellij
     0.44.3 and under GNU screen 4.00.03 unchanged, while an OSC 9
