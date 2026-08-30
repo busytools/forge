@@ -108,14 +108,17 @@ fn msg_spinner(
     // indicator belongs here.
     let turn_ended = msg.turn_duration_ms.is_some();
     let live = is_active_turn_assistant && !turn_ended;
-    SpinnerState {
+    let mut spinner = SpinnerState {
         is_active_turn_assistant,
         show_empty_thinking: live && base.show_empty_thinking,
         show_thinking: live && base.show_thinking && has_blocks,
         show_compacting: is_active_turn_assistant && base.show_compacting,
-        running_subagents: if turn_ended { None } else { base.running_subagents.clone() },
         ..base.clone()
+    };
+    if turn_ended {
+        spinner.running_subagents = None;
     }
+    spinner
 }
 
 /// Ensure every message has an up-to-date height in the viewport at the given width.
