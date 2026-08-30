@@ -172,12 +172,10 @@ fn a_bailed_account_names_both_exits() {
     // which that poll skips - so any single number is false for one
     // class, and this row cannot tell which it is rendering.
     //
-    // Asserted as "this line carries no digit", scoped to the line
-    // itself. Enumerating spellings is always one variant short - the
-    // first version of this guard checked `30s`, `30 s` and `60s`, and
-    // let `60 s` straight through. Scoping to the line is what makes the
-    // blunt property safe: account names and paths carry digits, the
-    // retry line has no business carrying one.
+    // Asserted as "this line carries no digit", because enumerating
+    // spellings is always one variant short. Scoping to the line is what
+    // makes so blunt a property safe: account names and paths carry
+    // digits, the retry line has no business carrying one.
     let retry_line = text
         .lines()
         .find(|line| line.contains("forge retries on its own"))
@@ -196,8 +194,7 @@ fn a_bailed_account_names_both_exits() {
 ///
 /// **Asserted as a DIFFERENCE, not as two independent contents.** Two
 /// `contains` checks would both keep passing if the branch were
-/// collapsed and one arm's copy were shown to everyone - which is the
-/// state this screen was in before, and the one worth catching.
+/// collapsed and one arm's copy shown to everyone.
 #[test]
 fn the_repair_instruction_differs_by_account_class_and_the_retry_line_does_not() {
     let render = |auth| {
