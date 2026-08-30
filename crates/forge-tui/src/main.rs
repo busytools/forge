@@ -92,6 +92,11 @@ fn run() -> anyhow::Result<()> {
         // forge-tui's connect path.
         workspace.start_account_loading_tasks();
 
+        // Fetch, verify and load the dictation models, on the same
+        // preflight screen as the accounts. No-op unless `[dictate]
+        // enabled` is set: a 3 GB download is opt-in.
+        workspace.start_dictate_preflight();
+
         // Spawn the worker-kick drainer task (#259). Routes every
         // `maybe_kick_worker_on_connected` enqueue through a single
         // `KICK_DISPATCH_INTERVAL`-spaced dispatcher so multi-worker

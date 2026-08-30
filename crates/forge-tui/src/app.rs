@@ -21,6 +21,7 @@ pub(crate) mod monitor_output;
 mod notify;
 pub(crate) mod paste_burst;
 pub(crate) mod plugins;
+pub mod preflight;
 pub(crate) mod process_scanner;
 pub(crate) mod processes;
 pub(crate) mod prompt;
@@ -289,6 +290,12 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // arrives on the wire to tell us the delay is up.
         events::auto_continue::maybe_fire(app);
 
+        // Preflight hands over to wherever the user was headed, and a
+        // cancelled model fetch quits once its screen has been painted.
+        // Driven from here rather than from the renderer, since handing
+        // over is a view transition.
+        crate::app::preflight::tick(app);
+
         // The Projects pane's account/status panel renders 5h + 7d
         // usage bars on every frame. Keep the snapshot live by
         // calling `request_refresh_if_needed` each tick - it's
@@ -331,7 +338,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // rendering while anything is happening anywhere, so a
         // background session's row spinner advances even when the
         // active session is idle.
-        let is_animating = app.shows_activity();
+        let is_animating = is_animating(app);
         if is_animating {
             advance_spinner_frame(app, Instant::now());
             tab_title::update_tab_title(is_animating, app.spinner_frame, app.cwd());
@@ -452,6 +459,22 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     ratatui::restore();
 
     Ok(())
+}
+
+/// Whether anything on screen is mid-animation, which is what earns a
+/// repaint on a tick nothing else changed.
+///
+/// The preflight clause is not decoration. Account state and dictation
+/// progress are both POLLED by the renderer rather than pushed, so
+/// neither emits a `SessionUpdate` and neither marks `needs_redraw`; and
+/// [`App::shows_activity`] reads `app.sessions`, which is empty at boot.
+/// Without this, preflight paints once with a spinner that never moves
+/// and a screen that never updates while 3.07 GB downloads.
+pub(crate) fn is_animating(app: &App) -> bool {
+    if app.active_view == crate::app::ActiveView::Launchpad && !app.preflight_done {
+        return true;
+    }
+    app.shows_activity()
 }
 
 /// Which animation step the spinner epoch is on. Rendered glyphs divide

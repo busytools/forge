@@ -176,12 +176,14 @@ fn create_app_impl(
     let panes_visible_by_default = initial_term_width >= crate::ui::layout::WIDE_TIER_MIN_WIDTH;
     let projects_pane_visible = panes_visible_by_default;
     let inspector_pane_visible = panes_visible_by_default;
-    // Boot view: `forge` (no argv) → launchpad picker; `forge <project>`
-    // → chat directly. Argv selection is final - no remembered-last-
-    // pick. Snapshot launchpad state from `[ui]` settings up-front so
-    // the picker doesn't shift if the user edits forge.toml mid-
-    // session.
-    let active_view = if cli.project.is_none() { ActiveView::Launchpad } else { ActiveView::Chat };
+    // Boot view: preflight, on every route. It hands over to the
+    // launchpad picker for `forge` and straight into chat for
+    // `forge <project>`; `startup_project` is what decides which, and
+    // it is the only thing that decides it - argv selection is final,
+    // with no remembered-last-pick. Snapshot launchpad state from
+    // `[ui]` settings up-front so the picker doesn't shift if the user
+    // edits forge.toml mid-session.
+    let active_view = ActiveView::Launchpad;
     let ui_settings = workspace.ui_settings();
     let spinner_style = ui_settings.spinner;
     let initial_launchpad_state = crate::app::LaunchpadState {
@@ -196,6 +198,9 @@ fn create_app_impl(
         settings_home_override: None,
         status: AppStatus::Connecting,
         should_quit: false,
+        preflight_done: false,
+        preflight_cancel_drawn: false,
+        spawn_deferred_logged: false,
         exit_error: None,
         start_new_run: cli.new,
         workspace: Some(workspace),
@@ -318,6 +323,43 @@ pub fn start_connection(app: &mut App) {
         return;
     };
 
+    // Two halves, each doing distinct work.
+    //
+    // The plan has to exist, or the spawn falls back to round-robin and
+    // can land a session on an account the project's org does not
+    // allow. Read off the plan rather than the account map: the map is
+    // published on one lock acquisition and the plan written on a
+    // second, so an observer can see every account settled while the
+    // plan is still absent.
+    //
+    // And every account has to be `Ready`, because that is the
+    // guarantee preflight's screen is making. A subprocess starting
+    // behind a screen whose only exit is quitting is work done for a
+    // forge that cannot be reached.
+    //
+    // Neither half waits on the dictation weights, so the models load
+    // alongside the session rather than delaying it.
+    let workspace_ready = workspace.assignment_plan_ready();
+    if !workspace_ready || !crate::ui::preflight::accounts_ready(app) {
+        if !app.spawn_deferred_logged {
+            app.spawn_deferred_logged = true;
+            tracing::info!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                event_name = "startup_spawn_deferred",
+                message = "holding the boot spawn until the account plan is ready",
+                plan_ready = workspace_ready,
+            );
+        }
+        return;
+    }
+    if app.spawn_deferred_logged {
+        tracing::info!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            event_name = "startup_spawn_released",
+            message = "account plan ready; starting the boot spawn",
+        );
+    }
+
     app.connection_started = true;
     let mut launch_settings = session_start::session_launch_settings_for_reason(
         app,
@@ -339,7 +381,7 @@ pub fn start_connection(app: &mut App) {
     // the cache is empty (cold install) the picker falls through to
     // forge.toml definition order; once data lands, subsequent spawns
     // see the right tier.
-    if app.active_view == crate::app::ActiveView::Launchpad {
+    if app.startup_project.is_none() {
         let auto_start = workspace.auto_start_project_names();
         for project_name in auto_start {
             let cmd = forge_workspace::Command::SpawnProject {
@@ -359,10 +401,9 @@ pub fn start_connection(app: &mut App) {
         return;
     }
 
-    // Chat branch. Only reachable with a project argv: `active_view`
-    // is Chat exactly when `cli.project.is_some()`, and
-    // `startup_project` IS `cli.project`, so the first arm always wins
-    // here and that project is the focused spawn. The `None` arms are
+    // Chat branch. Only reachable with a project argv - the arm above
+    // takes every other case - so the first match arm always wins here
+    // and that project is the focused spawn. The `None` arms are
     // exhaustiveness over `Option<String>`, not a reachable path.
     let auto_start = workspace.auto_start_project_names();
     let dispatch_targets: Vec<Option<String>> = match (&app.startup_project, auto_start.as_slice())
@@ -525,8 +566,133 @@ mod tests {
         assert_eq!(app.active_view, crate::app::ActiveView::Launchpad);
     }
 
+    /// Boot the app the way `create_app` does, intercept dispatches
+    /// rather than spawning, and run `start_connection` once.
+    async fn boot_and_dispatch(
+        project: Option<&str>,
+        accounts_ready: bool,
+    ) -> (App, Vec<forge_workspace::Command>, tempfile::TempDir, tempfile::TempDir) {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("project tempdir");
+        write_default_forge_toml(config_dir.path(), project_dir.path());
+        let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
+            .await
+            .expect("workspace");
+        workspace.enable_test_dispatch_intercept();
+        if accounts_ready {
+            // Also computes the assignment plan, which is the other half
+            // of what the gate waits on.
+            workspace.seed_test_ready_account("Stargate");
+        }
+        let cli = cli_with(project);
+        let local = tokio::task::LocalSet::new();
+        let workspace = Arc::new(workspace);
+        let mut app = local
+            .run_until(async {
+                create_app_for_test(&cli, Arc::clone(&workspace), config_dir.path())
+            })
+            .await;
+        super::start_connection(&mut app);
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        (app, dispatched, config_dir, project_dir)
+    }
+
+    /// `forge <project>` has to spawn the project it was given.
+    ///
+    /// Picking the arm off `active_view` instead reads `Launchpad` on
+    /// both routes, so it takes the no-project arm, spawns only
+    /// `auto_start`, and the user lands in a chat with no session and no
+    /// error.
     #[tokio::test(flavor = "current_thread")]
-    async fn create_app_boots_into_non_launchpad_view_when_argv_supplied() {
+    async fn the_named_project_is_what_boot_spawns_on_the_argv_route() {
+        let (_app, dispatched, _c, _p) = boot_and_dispatch(Some("forge-test"), true).await;
+        let started: Vec<&str> = dispatched
+            .iter()
+            .filter_map(|cmd| match cmd {
+                forge_workspace::Command::StartDefault { project_name, .. } => {
+                    project_name.as_deref()
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            started,
+            ["forge-test"],
+            "the argv project is the focused spawn; got {dispatched:?}",
+        );
+    }
+
+    /// Nothing spawns before the account plan exists. Without it the
+    /// spawn falls back to round-robin and can land a session on an
+    /// account the project's org does not allow.
+    #[tokio::test(flavor = "current_thread")]
+    async fn nothing_spawns_before_the_account_plan_is_ready() {
+        let (app, dispatched, _c, _p) = boot_and_dispatch(Some("forge-test"), false).await;
+        assert!(
+            dispatched.is_empty(),
+            "a fresh account map has no plan yet, so boot must dispatch nothing; got {dispatched:?}",
+        );
+        assert!(!app.connection_started, "and it must stay armed rather than marking itself done");
+        assert!(app.spawn_deferred_logged, "the deferral is recorded once, so it is diagnosable");
+    }
+
+    /// The two halves of the gate do distinct work: the plan closes the
+    /// window where the account map reads settled before the plan is
+    /// written, and all-`Ready` stops a subprocess starting behind a
+    /// screen the user can only quit.
+    ///
+    /// **The all-`Ready` half is pinned here; the plan half is
+    /// UNKILLABLE from a test, and that is a property of the code rather
+    /// than a gap.** Every route to a `Ready` account runs
+    /// `recompute_plan_if_ready`, so no test can construct
+    /// plan-absent-with-accounts-`Ready` - the state exists only inside
+    /// the real two-lock window between the map being published and the
+    /// plan being written. Dropping `!workspace_ready` therefore passes,
+    /// and no test would change that. Do not add one to chase it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_plan_and_all_ready_are_both_required() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("project tempdir");
+        write_default_forge_toml(config_dir.path(), project_dir.path());
+        let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
+            .await
+            .expect("workspace");
+        workspace.enable_test_dispatch_intercept();
+
+        // Plan present, one account not Ready: the second half holds.
+        workspace.seed_test_ready_account("Stargate");
+        assert!(workspace.assignment_plan_ready(), "seeding Ready computes the plan");
+        workspace.seed_test_account_state("Stargate", forge_workspace::LoadingState::Bailed);
+        assert!(
+            workspace.assignment_plan_ready(),
+            "and the plan is monotonic, so it survives the account bailing - which is exactly \
+             why the all-Ready half has to be there too",
+        );
+
+        let cli = cli_with(Some("forge-test"));
+        let local = tokio::task::LocalSet::new();
+        let workspace = Arc::new(workspace);
+        let mut app = local
+            .run_until(async {
+                create_app_for_test(&cli, Arc::clone(&workspace), config_dir.path())
+            })
+            .await;
+        super::start_connection(&mut app);
+        assert!(
+            workspace.drain_test_dispatch_buffer().is_empty(),
+            "a bailed account holds the spawn even with a plan in hand",
+        );
+    }
+
+    /// Preflight runs on every route, so `forge <project>` boots into
+    /// it too rather than straight into chat - and `startup_project`,
+    /// not the view, is what says where it hands over afterwards.
+    ///
+    /// `start_connection` branches on the same field, so the two agree
+    /// about where a boot is headed without the view standing in for
+    /// it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn create_app_boots_into_preflight_with_argv_and_remembers_the_project() {
         let config_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("project tempdir");
         write_default_forge_toml(config_dir.path(), project_dir.path());
@@ -538,10 +704,18 @@ mod tests {
         let app = local
             .run_until(async { create_app_for_test(&cli, Arc::new(workspace), config_dir.path()) })
             .await;
-        // With argv supplied the boot view is NOT Launchpad. The
-        // invariant the launchpad change cares about is just
-        // "argv supplied ⇒ never the launchpad."
-        assert_ne!(app.active_view, crate::app::ActiveView::Launchpad);
+
+        assert_eq!(
+            app.active_view,
+            crate::app::ActiveView::Launchpad,
+            "every route boots into preflight, argv or not",
+        );
+        assert!(!app.preflight_done, "and nothing seeds the latch; it is earned by completing");
+        assert_eq!(
+            app.startup_project.as_deref(),
+            Some("forge-test"),
+            "the named project is what the handover reads to land in chat rather than the picker",
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

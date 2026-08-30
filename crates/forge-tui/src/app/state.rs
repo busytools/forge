@@ -266,6 +266,17 @@ pub struct App {
     pub settings_home_override: Option<PathBuf>,
     pub status: AppStatus,
     pub should_quit: bool,
+    /// `true` once preflight has handed over to wherever the invocation
+    /// was headed. Latches for the run: see
+    /// [`crate::app::preflight::advance`].
+    pub preflight_done: bool,
+    /// `true` once preflight has painted a cancelled model fetch, which
+    /// is what lets forge quit having said what it kept and where.
+    pub preflight_cancel_drawn: bool,
+    /// `true` once the boot spawn has logged that it is waiting on the
+    /// account plan. Keeps that line to one, rather than one per frame
+    /// of a 120fps loop.
+    pub spawn_deferred_logged: bool,
     /// Optional fatal app error that should be surfaced at CLI boundary.
     pub exit_error: Option<crate::error::AppError>,
     /// Boot-wave fresh-start flag from the `--new` launch flag. When
@@ -471,8 +482,9 @@ pub struct App {
     // list is per-project - switching active session via the
     // Projects pane naturally swaps the list along with the bucket.
     // See `App::recent_sessions` / `App::recent_sessions_mut`.
-    /// State for the launchpad view (project picker shown when forge
-    /// is invoked without a project argv, or after `/launchpad`).
+    /// State for the launchpad's project picker, which preflight hands
+    /// over to when forge was given no project, and which `/launchpad`
+    /// returns to.
     /// Always present - reset whenever the active view transitions
     /// to [`ActiveView::Launchpad`] via the launchpad open helper.
     /// When the active view is anything else this is unused but
@@ -3412,6 +3424,9 @@ impl App {
             settings_home_override: None,
             status: AppStatus::Ready,
             should_quit: false,
+            preflight_done: false,
+            preflight_cancel_drawn: false,
+            spawn_deferred_logged: false,
             exit_error: None,
             start_new_run: false,
             workspace: Some(workspace),

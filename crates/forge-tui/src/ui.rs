@@ -19,6 +19,7 @@ pub(crate) mod markdown;
 pub(crate) mod message;
 pub(crate) mod page;
 pub(crate) mod peer_block;
+pub mod preflight;
 pub mod projects_pane;
 pub(crate) mod prompt;
 pub(crate) mod schedule_format;
@@ -46,7 +47,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         ActiveView::Chat => chat_view::render(frame, app),
         ActiveView::Plugins => config::render_plugins(frame, app),
         ActiveView::Mcp => config::render_mcp(frame, app),
-        ActiveView::Launchpad => launchpad::render(frame, app),
+        ActiveView::Launchpad => {
+            if app.preflight_done {
+                launchpad::render(frame, app);
+            } else {
+                preflight::render(frame, app);
+            }
+        }
         ActiveView::Diff => diff_overlay::render(frame, app),
         ActiveView::Usage => usage_overlay::render(frame, app),
     }

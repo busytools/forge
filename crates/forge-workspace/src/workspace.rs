@@ -25,7 +25,7 @@ use crate::protocol::{Command, DispatchError, SessionUpdate};
 use crate::session_task::SessionTask;
 use crate::spawn;
 use crate::target::{ProjectKey, SessionKey, SessionTarget};
-use crate::views::{ProjectView, SessionView};
+use crate::views::{AccountLoadingRow, ProjectView, SessionView};
 
 /// How often the background poller refreshes account usage. The
 /// TUI's bottom panel + the spawn-path account picker both read
@@ -192,6 +192,11 @@ pub struct Workspace {
     /// project rows on it being `Some` AND the project having a
     /// non-empty pool. See `crate::assignment_plan`.
     assignment_plan: Mutex<Option<crate::assignment_plan::AssignmentPlan>>,
+    /// Dictation preflight: the per-model progress the launchpad
+    /// renders, the flag Escape sets, and the loaded engine held for
+    /// the run. Populated by `start_dictate_preflight`; inert when
+    /// `[dictate] enabled` is false.
+    dictate: Arc<crate::dictate::DictateState>,
     /// Fan-in [`SessionUpdate`] sender. Cloned and handed to TUI-side
     /// modules (slash executors, plugin install, service-status check)
     /// via [`Self::update_sender`] so they can emit presentation
@@ -721,6 +726,7 @@ impl Workspace {
 
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
+        let config_dictate = config.dictate.clone();
         let workspace = Self {
             config_dir,
             config,
@@ -728,6 +734,7 @@ impl Workspace {
             pool: Mutex::new(HashMap::new()),
             accounts: Mutex::new(accounts),
             assignment_plan: Mutex::new(None),
+            dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
             update_tx,
             update_rx_slot: Mutex::new(Some(update_rx)),
             command_senders: Mutex::new(HashMap::new()),
@@ -1341,14 +1348,90 @@ impl Workspace {
         plan.as_ref().is_some_and(|p| !p.project_has_no_assignments(project_key))
     }
 
+    /// `true` once the deterministic per-session account assignment has
+    /// been computed. Monotonic: `recompute_plan_if_ready` stores on the
+    /// first pass and merges a frozen overlay on every later one, so a
+    /// populated plan never goes back to unpopulated.
+    ///
+    /// The boot spawn gates on this rather than on
+    /// [`Self::all_accounts_loaded`]. The map is published on one lock
+    /// acquisition and the plan is written on a second, so an observer
+    /// can see every account settled while the plan is still absent -
+    /// which is the round-robin fallback the gate exists to prevent.
+    pub fn assignment_plan_ready(&self) -> bool {
+        self.assignment_plan.lock().is_some()
+    }
+
     /// Snapshot of `(AccountKey display name, LoadingState)` pairs in
     /// declaration order. Forge-tui's launchpad renders the per-
     /// account loading glyph row from this; the order matches
     /// `forge.toml`'s `[[accounts]]` declarations so the glyphs sit
     /// next to the user's mental model of which-account-is-which.
-    pub fn account_loading_snapshot(&self) -> Vec<(String, crate::account::LoadingState)> {
+    pub fn account_loading_snapshot(&self) -> Vec<AccountLoadingRow> {
         let accounts = self.accounts.lock();
-        accounts.ordered_keys.iter().map(|k| (k.0.clone(), accounts.loading_state(k))).collect()
+        accounts
+            .ordered_keys
+            .iter()
+            .map(|k| AccountLoadingRow {
+                display_name: k.0.clone(),
+                state: accounts.loading_state(k),
+                config_dir: accounts.config_dir(k).cloned().unwrap_or_default(),
+                auth: match accounts.env(k).map(forge_agent::cloud::oauth_usage::probe_plan) {
+                    Some(forge_agent::cloud::oauth_usage::ProbePlan::BaseUrl { .. }) => {
+                        crate::views::AccountAuth::BaseUrl
+                    }
+                    _ => crate::views::AccountAuth::Keychain,
+                },
+            })
+            .collect()
+    }
+
+    /// The `forge.toml` this workspace loaded. Preflight names it as
+    /// one of the two ways past an account that will not authenticate -
+    /// the one that needs a restart, since config is read at boot. The
+    /// other is repairing the account's own credentials, which a poller
+    /// picks up in place without one.
+    pub fn config_path(&self) -> PathBuf {
+        crate::config::forge_data_dir(&self.config_dir).join("forge.toml")
+    }
+
+    /// Per-model dictation progress for the preflight screen. Empty
+    /// `models` means `[dictate] enabled` is false and preflight has no
+    /// Dictation section to draw.
+    pub fn dictate_snapshot(&self) -> crate::dictate::DictateSnapshot {
+        self.dictate.snapshot.lock().clone()
+    }
+
+    /// Where the dictation models land. `None` when the platform has no
+    /// usable cache directory and none was configured.
+    pub fn dictate_models_dir(&self) -> Option<PathBuf> {
+        self.config.dictate.models_dir()
+    }
+
+    /// Stop the in-flight model fetch. Whatever reached the disk stays
+    /// there as a `.part`, so the next run resumes; the snapshot then
+    /// carries [`crate::DictateFailure::Cancelled`] and forge quits,
+    /// because there is no dictation-less runtime to fall back to.
+    pub fn cancel_dictate_preflight(&self) {
+        self.dictate.cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Fetch, verify and load the dictation models. One task per forge
+    /// run, started beside the account loaders; a no-op when dictation
+    /// is switched off.
+    pub fn start_dictate_preflight(self: &Arc<Self>) {
+        let settings = self.config.dictate.clone();
+        if !settings.enabled {
+            return;
+        }
+        let state = Arc::clone(&self.dictate);
+        let span = tracing::info_span!("dictate_preflight");
+        tokio::spawn(
+            async move {
+                crate::dictate::run_dictate_preflight(settings, state).await;
+            }
+            .instrument(span),
+        );
     }
 
     /// Resolve `(project, session_label)` to the per-session chip
@@ -5905,6 +5988,7 @@ impl Workspace {
         let _ = crate::config::ensure_forge_data_dir(&config_dir);
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
+        let config_dictate = config.dictate.clone();
         let workspace = Self {
             config_dir,
             config,
@@ -5912,6 +5996,7 @@ impl Workspace {
             pool: Mutex::new(HashMap::new()),
             accounts: Mutex::new(AccountStateMap::empty_for_test()),
             assignment_plan: Mutex::new(None),
+            dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
             update_tx,
             update_rx_slot: Mutex::new(None),
             command_senders: Mutex::new(HashMap::new()),
@@ -5941,11 +6026,10 @@ impl Workspace {
     }
 }
 
-/// Kept apart from the `testing`-feature block below: these two are
-/// consumed only by this crate's own test mods, so they need neither
-/// `pub` nor the feature arm. The seeds in that block do - forge-tui's
-/// tests call them.
-#[cfg(test)]
+/// Test-mode command interception. Feature-gated and `pub` for the same
+/// reason the seeds below are: forge-tui's tests reach for these to
+/// assert what boot WOULD have spawned, without starting a subprocess.
+#[cfg(any(test, feature = "testing"))]
 impl Workspace {
     /// Enable test-mode app-level command interception. After this
     /// call, every `Command` routed through the app-level branch of
@@ -5953,7 +6037,7 @@ impl Workspace {
     /// drain via `drain_test_dispatch_buffer`. No-op if already
     /// enabled. Test-only - tests use this to assert what would
     /// have been dispatched without spinning up real subprocesses.
-    pub(crate) fn enable_test_dispatch_intercept(&self) {
+    pub fn enable_test_dispatch_intercept(&self) {
         let mut intercept = self.command_intercept.lock();
         if intercept.is_none() {
             *intercept = Some(Vec::new());
@@ -5963,7 +6047,7 @@ impl Workspace {
     /// Drain every app-level `Command` captured since the last call.
     /// Returns empty when no intercept was enabled or no commands
     /// were dispatched. Test-only.
-    pub(crate) fn drain_test_dispatch_buffer(&self) -> Vec<crate::protocol::Command> {
+    pub fn drain_test_dispatch_buffer(&self) -> Vec<crate::protocol::Command> {
         let mut intercept = self.command_intercept.lock();
         match intercept.as_mut() {
             Some(buffer) => std::mem::take(buffer),
@@ -5999,6 +6083,21 @@ impl Workspace {
             .lock()
             .set_loading(&AccountKey(account.to_owned()), crate::account::LoadingState::Ready);
         self.recompute_plan_if_ready();
+    }
+
+    /// Drive `account` to `state` directly, so a cross-crate test can
+    /// render a mid-flight or bailed preflight screen without the real
+    /// loader. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_account_state(&self, account: &str, state: crate::account::LoadingState) {
+        self.accounts.lock().set_loading(&AccountKey(account.to_owned()), state);
+    }
+
+    /// Replace the dictation preflight snapshot, so a cross-crate test
+    /// can render any of its states without fetching 3 GB. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_dictate_snapshot(&self, snapshot: crate::dictate::DictateSnapshot) {
+        *self.dictate.snapshot.lock() = snapshot;
     }
 
     /// Give `label` an assignment-plan entry the way a spawn does, so a

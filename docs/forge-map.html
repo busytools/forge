@@ -292,6 +292,7 @@
 <nav class="toc">
   <a href="#workspace">Workspace</a>
   <a href="#layout">Layout</a>
+  <a href="#preflight">Preflight</a>
   <a href="#launchpad">Launchpad</a>
   <a href="#chat">Chat</a>
   <a href="#tools">Tool calls</a>
@@ -919,21 +920,253 @@ chat continues here...
 </div>
 
 <!-- ============================================================== -->
-<h2 class="section-title" id="launchpad">Launchpad - project picker</h2>
+<h2 class="section-title" id="preflight">Preflight - the launchpad's first view</h2>
 
 <p class="intro">
-  Floor of the UI. Renders as the entire frame when forge is invoked
-  without a project argv (<code>forge</code> by itself) OR when the
-  user runs <code>/launchpad</code> mid-session. Both side panes hide
-  while launchpad is up; the ANSI Shadow wordmark + version metadata
-  + org-grouped project picker + footer hint own the full window
-  width. <code>Esc</code> is a no-op - the launchpad has nothing to
-  dismiss to. <code>Ctrl+Q</code> still quits.
+  The launchpad is two views, and <strong>preflight</strong> is the first
+  thing forge renders <strong>on every route</strong>. It resolves the
+  accounts and, when dictation is switched on, fetches, verifies and
+  loads its models, then hands over to wherever the invocation was
+  headed: the projects view for <code>forge</code>, straight into chat
+  for <code>forge &lt;project&gt;</code>. Shown once per run; every later
+  <code>/launchpad</code> goes straight to the projects view.
 </p>
 
 <p class="intro">
-  Boot rule is argv-only: <code>forge</code> ⇒ launchpad, <code>forge
-  &lt;project-name&gt;</code> ⇒ that project's chat. No
+  <strong>Nothing spawns until every account has authenticated.</strong>
+  The assignment plan is only computed once they have, so a session
+  started before that falls back to round-robin and can land on an
+  account the project's org does not allow. The launchpad has gated
+  clicks on this since #246; the startup spawn was never gated at all,
+  on either route, and now is. Accounts rather than the whole of
+  preflight, because the plan needs them and does not need the
+  dictation weights - so the models keep loading alongside the session
+  rather than delaying it.
+</p>
+
+<p class="intro">
+  <strong>Preflight completes only on <code>Ready</code>, never on
+  <code>Bailed</code>.</strong> forge will not start while an account in
+  <code>forge.toml</code> cannot, so every failure state names its exits
+  rather than leaving the reader on a screen with nothing to press.
+  <strong>Fixing the auth needs no restart; dropping the account does.</strong>
+  Both pollers run throughout preflight and re-probe a bailed account, so
+  repairing it out of band clears the screen in place - the 30 s recovery
+  poll for a keychain account, the 60 s usage poll for a base-url one,
+  which that poll deliberately skips because it gates on
+  <code>claude auth status</code>. Dropping the account edits
+  <code>forge.toml</code>, which is read at boot, so that one does need a
+  restart. The screen states the no-restart half without a number,
+  because the two classes do not share one.
+</p>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Preflight, resolving</h4>
+    <div class="when">visible: <code>ActiveView::Launchpad</code> before the hand-over</div>
+  </div>
+  <div class="surface-body">
+    <p>Two sibling sections at the same indent, sharing one row shape: two-cell indent, state glyph, name, right-aligned twelve-cell state column. The panel is <code>PICKER_WIDTH</code> - the same width the projects view uses - so the hand-over is a content swap rather than a resize. Model rows read by <strong>role</strong> with the file on a dim continuation line beneath: <code>transcribing model (cohere-transcribe-03-2026-Q4_K_M)</code> is 53 cells against a 38-cell name column, so the inline form does not fit and no shortening gets it there. There is no summary line; every row already carries its own state.</p>
+    <div class="term">
+      <pre class="indent">
+            <span class="rust-orange bold">███████╗ ██████╗ ██████╗  ██████╗ ███████╗</span>
+            <span class="rust-orange bold">██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝</span>
+            <span class="rust-orange bold">█████╗  ██║   ██║██████╔╝██║  ███╗█████╗  </span>
+            <span class="rust-orange bold">██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝  </span>
+            <span class="rust-orange bold">██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗</span>
+            <span class="rust-orange bold">╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝</span>
+                          <span class="dim">v1.0.21+2fa7c87</span>
+                          <span class="dim">claude 2.1.201</span>
+
+      <span class="dim">────────────────────────────────────────────────────────</span>
+        <span class="dim bold">Accounts</span>
+        <span style="color:#7eb87a">●</span> Subspace                              <span class="dim">       ready</span>
+        <span style="color:#7eb87a">●</span> Granite                               <span class="dim">       ready</span>
+        <span style="color:#cfc26b">○</span> Granite1                              <span class="dim">   resolving</span>
+        <span style="color:#cfc26b">○</span> Personal                              <span class="dim">   resolving</span>
+        <span style="color:#cfc26b">○</span> Codex                                 <span class="dim">   resolving</span>
+
+        <span class="dim bold">Dictation</span>
+        <span class="rust-orange">⠹</span> transcribing model                    <span class="dim">   verifying</span>
+          <span class="dim">(cohere-transcribe-03-2026-Q4_K_M)</span>
+        <span style="color:#cfc26b">○</span> normalization model                   <span class="dim">      queued</span>
+          <span class="dim">(s1-mini-f16)</span>
+      <span class="dim">────────────────────────────────────────────────────────</span>
+
+ <span class="dim">ctrl+q  quit</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/preflight.rs</code> (renderer) + <code>crates/forge-tui/src/app/preflight.rs</code> (hand-over latch + keyboard handler) · progress state from <code>crates/forge-workspace/src/dictate.rs</code></dd>
+      <dt>spinner</dt><dd>The configured <code>SpinnerStyle</code> at its own cadence, through the same <code>App::active_spinner_glyph</code> every other animated surface reads. Preflight is one more of those, not a new vocabulary - change <code>[ui] spinner</code> and this moves with the rest.</dd>
+      <dt>account states</dt><dd><code style="color:#cfc26b">○</code> yellow <code>resolving</code> = Loading or Refreshing · <code style="color:#7eb87a">●</code> green <code>ready</code> = probe returned · <code style="color:#cf6171">⚠</code> red <code>auth failed</code> = Bailed. Bailed renders in <code>STATUS_ERROR</code> rather than the warning yellow the launchpad chip row used: on the one screen that can stop forge starting, mid-flight and failed must not differ only by glyph. It also settles a disagreement with the project row's own account chip, which was already red.</dd>
+      <dt>model states</dt><dd><code>queued</code> · <code>downloading</code> · <code>resuming</code> (a transfer that picked up a <code>.part</code>) · <code>verifying</code> · <code>ready</code> · <code>loading</code> · then <code>ready</code> again once the weights are in memory. A failure reads <code>bad hash</code> or <code>cancelled</code>, and a row nothing will now start reads <code>not started</code> rather than <code>queued</code>.</dd>
+      <dt>keys</dt><dd><kbd>Esc</kbd> cancels an in-flight model download, which quits forge · <kbd>Ctrl+Q</kbd> quit. Every other key is consumed silently - there is nothing to navigate and the projects view underneath is not reachable yet.</dd>
+      <dt>hand-over</dt><dd>Latched, not re-evaluated. A token expiring mid-session takes an account <code>Ready → Bailed → Loading</code>, so the readiness condition genuinely goes false again while the user is working; without the latch that would throw them back onto a boot screen. The launchpad's own gate covers that window instead.</dd>
+      <dt>short terminals</dt><dd>The wordmark is dropped before any panel content when the block does not fit, because the failure screens' exits are the one thing this screen cannot clip. Past that the panel drops rows from the TOP rather than the bottom - the failure detail and the exits it names are appended last - and replaces them with a dim <code>… N more above</code>, so nothing vanishes unmarked. At 100x24 the bailed screen already overflows.</dd>
+      <dt>no verify bar</dt><dd>Verifying draws a spinner and no byte counter. <code>forge_dictate::Progress::Verifying</code> carries only a file name - hashing reports as one event rather than as progress - so a bar there would be invented rather than measured.</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Preflight fails: a bailed account</h4>
+    <div class="when">gates forge entirely - clears in place when the account is repaired, or on a config edit plus a restart</div>
+  </div>
+  <div class="surface-body">
+    <p>The <code>/login</code> exit says the retry is automatic, because otherwise a reader who fixes their auth has no way of knowing whether to restart - and the answer is no. It states no interval: a keychain account recovers on the 30 s recovery poll and a base-url account on the 60 s usage poll, which is subject to probe backoff, so any single number would be false for one class. <strong>The block itself is keychain-shaped</strong> - <code>claude /login</code> does not repair a base-url account, whose credentials live in its <code>[accounts.env]</code> - and that predates this screen. Both exits are named because neither is optional: a reader who cannot re-authenticate needs the second one. The footer drops <code>esc</code> - there is nothing left to cancel - and the paths are printed in full, since the reader is about to leave forge to edit them. A command too long for the panel wraps after a <code>/</code> onto a deeper-indented continuation line; it is never elided, because half a path is worse than none.</p>
+    <div class="term">
+      <pre class="indent">
+      <span class="dim">────────────────────────────────────────────────────────</span>
+        <span class="dim bold">Accounts</span>
+        <span style="color:#7eb87a">●</span> Subspace                              <span class="dim">       ready</span>
+        <span style="color:#7eb87a">●</span> Granite                               <span class="dim">       ready</span>
+        <span style="color:#cf6171">⚠</span> <span class="bold">Granite1</span>                              <span style="color:#cf6171"> auth failed</span>
+        <span style="color:#7eb87a">●</span> Personal                              <span class="dim">       ready</span>
+        <span style="color:#7eb87a">●</span> Codex                                 <span class="dim">       ready</span>
+
+        <span class="dim bold">Dictation</span>
+        <span style="color:#7eb87a">●</span> transcribing model                    <span class="dim">       ready</span>
+          <span class="dim">(cohere-transcribe-03-2026-Q4_K_M)</span>
+        <span style="color:#7eb87a">●</span> normalization model                   <span class="dim">       ready</span>
+          <span class="dim">(s1-mini-f16)</span>
+
+        <span class="#cf6171">Granite1 will not start a session, and forge will</span>
+        <span class="#cf6171">not start while an account in forge.toml cannot.</span>
+
+        <span class="bold">Fix the auth</span>
+          CLAUDE_CONFIG_DIR=~/.claude-granite1 claude
+          /login
+          <span class="dim">forge retries on its own - no restart needed</span>
+
+        <span class="bold">Or drop the account</span>
+          delete its [[accounts]] block from
+          ~/.claude/forge/forge.toml
+      <span class="dim">────────────────────────────────────────────────────────</span>
+
+ <span class="dim">ctrl+q  quit</span></pre>
+    </div>
+    <p>The repair instruction is the only thing that branches, because it is the only thing that differs. An account carrying <code>ANTHROPIC_BASE_URL</code> in its <code>[accounts.env]</code> has no keychain entry at all, so <code>claude /login</code> cannot repair it - its credential is the <code>ANTHROPIC_AUTH_TOKEN</code> beside it:</p>
+    <div class="term">
+      <pre class="indent">
+        <span class="bold">Fix the auth</span>
+          ANTHROPIC_AUTH_TOKEN in [accounts.env]
+          <span class="dim">forge retries on its own - no restart needed</span>
+
+        <span class="bold">Or drop the account</span>
+          delete its [[accounts]] block from
+          ~/.claude/forge/forge.toml</pre>
+    </div>
+    <p>The retry line is identical in both, and deliberately so: both classes recover without a restart, and neither shares the other's interval - a keychain account on the 30 s recovery poll, a base-url account on the 60 s usage poll under probe backoff - so it names none.</p>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Preflight fails: a model will not verify</h4>
+    <div class="when">the crate reports a mismatched file rather than repairing it</div>
+  </div>
+  <div class="surface-body">
+    <p>Discarding a multi-gigabyte file somebody put there is not forge's call, so the screen hands the decision back with the command that clears it. Both digests are cut to twelve hex characters a side - 64 do not fit, and nobody compares more than the ends. A size mismatch is a different error and gets the crate's own wording, which reads as a truncated download rather than as corruption.</p>
+    <div class="term">
+      <pre class="indent">
+      <span class="dim">────────────────────────────────────────────────────────</span>
+        <span class="dim bold">Dictation</span>
+        <span style="color:#7eb87a">●</span> transcribing model                    <span class="dim">       ready</span>
+          <span class="dim">(cohere-transcribe-03-2026-Q4_K_M)</span>
+        <span style="color:#cf6171">⚠</span> <span class="bold">normalization model</span>                   <span style="color:#cf6171">    bad hash</span>
+          <span class="dim">(s1-mini-f16)</span>
+
+        <span class="#cf6171">s1-mini-f16.gguf hashes to</span>
+          <span class="bold">4f2b9c1a77e0</span>
+        <span class="#cf6171">expected</span>
+          <span class="bold">0370da4f1bae</span>
+
+        It is the right length, so this is corruption and
+        not a half-finished download. forge reports it
+        rather than deleting it: throwing away a 1.51 GB file you
+        put there is not forge's call.
+
+        <span class="bold">Delete it and forge fetches it again</span>
+          rm ~/Library/Caches/forge-dictate/
+             s1-mini-f16.gguf
+      <span class="dim">────────────────────────────────────────────────────────</span>
+
+ <span class="dim">ctrl+q  quit</span></pre>
+    </div>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>First run, resume, and cancel</h4>
+    <div class="when">3.07 GB once, resumable, cancellable throughout</div>
+  </div>
+  <div class="surface-body">
+    <p>A fresh fetch carries the note saying what it is about to move and where it keeps what lands; a resume does not, because it is finishing a download that already started. The resume line names the byte count it found, since a bar opening at 38% with nothing said about it reads as a bug. <strong>Cancelling quits forge</strong> - there is no dictation-less runtime to fall back to - so the screen says what it kept and where before it goes, and only quits once that frame has been painted.</p>
+    <div class="term">
+      <pre class="indent">
+        <span class="dim bold">Dictation</span>                              <span class="dim"># a first run</span>
+        <span class="rust-orange">⠹</span> transcribing model                    <span class="dim"> downloading</span>
+          <span class="dim">(cohere-transcribe-03-2026-Q4_K_M)</span>
+          <span class="rust-orange">████</span><span class="dim">░░░░░░░░░░░░░░░░░░░░░░</span><span class="dim">   14%  218 MB / 1.56 GB</span>
+        <span style="color:#cfc26b">○</span> normalization model                   <span class="dim">      queued</span>
+          <span class="dim">(s1-mini-f16)</span>
+
+        First run fetches 3.07 GB once. Quitting keeps
+        what has landed, in ~/Library/Caches/forge-dictate.
+
+ <span class="dim">esc  cancel and quit     ctrl+q  quit</span>
+
+        <span class="dim bold">Dictation</span>                              <span class="dim"># resumed across a restart</span>
+        <span class="rust-orange">⠹</span> transcribing model                    <span class="dim">    resuming</span>
+          <span class="dim">(cohere-transcribe-03-2026-Q4_K_M)</span>
+          <span class="rust-orange">██████████</span><span class="dim">░░░░░░░░░░░░░░░░</span><span class="dim">   38%  592 MB / 1.56 GB</span>
+          <span class="dim">resumed from 592 MB found in .part</span>
+
+ <span class="dim">esc  cancel     ctrl+q  quit</span>
+
+        <span class="dim bold">Dictation</span>                              <span class="dim"># esc pressed</span>
+        <span style="color:#cf6171">⚠</span> <span class="bold">transcribing model</span>                    <span style="color:#cf6171">   cancelled</span>
+          <span class="dim">(cohere-transcribe-03-2026-Q4_K_M)</span>
+          <span class="rust-orange">██████████████████████████</span><span class="dim"></span><span class="dim">  612 MB</span>
+        <span style="color:#cfc26b">○</span> normalization model                   <span class="dim"> not started</span>
+          <span class="dim">(s1-mini-f16)</span>
+
+        Nothing was thrown away. 612 MB is on disk as a
+        .part file and the next run resumes from there.
+
+        <span class="bold">forge is quitting.</span></pre>
+    </div>
+    <dl>
+      <dt>config</dt><dd><code>[dictate]</code> in <code>forge.toml</code>, off unless asked for: <code>enabled</code>, <code>models_dir</code>, <code>device</code>, <code>language</code>, <code>normalizer</code> (a bool - off halves the download and skips a pass per utterance), <code>max_capture_minutes</code>. An unknown key fails the load rather than being ignored, because a mistyped <code>models_dir</code> would silently fetch three gigabytes to the wrong volume. The model specs and the normalizer's three prompt axes stay internal - see <a href="#preflight">the section intro</a> and the crate docs.</dd>
+      <dt>costs</dt><dd>3.07 GB on a first run, resumable via <code>.part</code> and SHA-256 verified. Every later run re-hashes both files end to end, about 5 s for the pair, then loads the weights: 1.0 s warm, 7 s on a cold page cache. About 1.8 GB of physical footprint is then held for the run, which is what Activity Monitor reports against forge.</dd>
+      <dt>cancel</dt><dd><code>ControlFlow::Break</code> out of the progress callback, surfacing as <code>Error::Cancelled</code>. Whatever reached <code>ready</code> stays installed and the in-flight <code>.part</code> is left where it is, so the next run resumes.</dd>
+    </dl>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<h2 class="section-title" id="launchpad">Launchpad - project picker</h2>
+
+<p class="intro">
+  Floor of the UI, and the second of the launchpad's two views -
+  <a href="#preflight">preflight</a> comes first and hands over once
+  everything has resolved. Renders as the entire frame when forge is
+  invoked without a project argv (<code>forge</code> by itself) OR when
+  the user runs <code>/launchpad</code> mid-session; every
+  <code>/launchpad</code> after the first in a run lands straight here.
+  Both side panes hide while launchpad is up; the ANSI Shadow wordmark +
+  version metadata + org-grouped project picker + footer hint own the
+  full window width. <code>Esc</code> is a no-op - the launchpad has
+  nothing to dismiss to. <code>Ctrl+Q</code> still quits.
+</p>
+
+<p class="intro">
+  Boot rule is argv-only, and now runs behind
+  <a href="#preflight">preflight</a> on both branches:
+  <code>forge</code> ⇒ preflight ⇒ this picker, <code>forge
+  &lt;project-name&gt;</code> ⇒ preflight ⇒ that project's chat. No
   "remember last picked" persistence, no <code>focus = true</code>
   override (the field is still parsed for back-compat but no longer
   affects routing).
@@ -942,10 +1175,10 @@ chat continues here...
 <div class="surface">
   <div class="surface-head">
     <h4>Launchpad full-screen layout</h4>
-    <div class="when">visible: <code>ActiveView::Launchpad</code> only</div>
+    <div class="when">visible: <code>ActiveView::Launchpad</code> after the hand-over</div>
   </div>
   <div class="surface-body">
-    <p>The identity block (wordmark + version + optional update line + account chips) and the picker box ride together as one <strong>vertically-centered unit</strong>; the single-row footer hint stays anchored to the terminal's bottom edge. The leftover height above the footer splits roughly symmetrically above the wordmark and below the box, so there's no dead gap between the wordmark and the list. The box grows to use most of the height left once the identity block is accounted for (capped so the block keeps breathing) and windows its rows by a scroll offset that follows the selection, so a project past the fold scrolls into view instead of being clipped; a scrollbar appears on the box's right edge only when the list overflows. On a long list or short screen the block top-aligns and the box scrolls; short lists render short and centered.</p>
+    <p>The identity block (wordmark + version + optional update line + the account chip row when one is showing) and the picker box ride together as one <strong>vertically-centered unit</strong>; the single-row footer hint stays anchored to the terminal's bottom edge. The leftover height above the footer splits roughly symmetrically above the wordmark and below the box, so there's no dead gap between the wordmark and the list. The box grows to use most of the height left once the identity block is accounted for (capped so the block keeps breathing) and windows its rows by a scroll offset that follows the selection, so a project past the fold scrolls into view instead of being clipped; a scrollbar appears on the box's right edge only when the list overflows. On a long list or short screen the block top-aligns and the box scrolls; short lists render short and centered.</p>
     <div class="term">
       <pre class="indent">
 
@@ -1024,7 +1257,9 @@ chat continues here...
     <div class="when">launchpad blocks project-row clicks until every account resolves</div>
   </div>
   <div class="surface-body">
-    <p>Forge boots into a per-account loading state machine, one tokio task per <code>[[accounts]]</code> entry in <code>forge.toml</code>. Each task drives its account through <code>Loading</code> -&gt; <code>Refreshing</code> -&gt; <code>Ready</code> or <code>Bailed</code> via probe (<code>/api/oauth/usage</code>) + auth-recovery refresh (<code>claude -p hi</code>). The launchpad's identity block carries a centred chip row showing each account's current state; project rows stay dimmed + unclickable until <em>every</em> account has reached a terminal state.</p>
+    <p>Forge boots into a per-account loading state machine, one tokio task per <code>[[accounts]]</code> entry in <code>forge.toml</code>. Each task drives its account through <code>Loading</code> -&gt; <code>Refreshing</code> -&gt; <code>Ready</code> or <code>Bailed</code> via probe (<code>/api/oauth/usage</code>) + auth-recovery refresh (<code>claude -p hi</code>). Project rows stay dimmed + unclickable until <em>every</em> account has reached a terminal state.</p>
+    <p><strong>The boot-time instance of this now happens on <a href="#preflight">preflight</a>, not here</strong> - the launchpad can no longer be reached while accounts are still resolving. What remains is the mid-session case, which is live for the whole run: the 60 s usage poll takes an account <code>Ready → Bailed</code> on a 401, and the 30 s recovery poll then takes it <code>Bailed → Loading</code>. <code>all_accounts_loaded()</code> is false for that window, so the gate fires exactly as it did at boot.</p>
+    <p>The identity block's chip row <strong>appears only while some account is non-<code>Ready</code></strong>, and hides rather than showing a permanently green line. That is deliberately <em>wider</em> than the click gate rather than the same condition: <code>all_accounts_loaded()</code> counts <code>Bailed</code> as terminal, so a bailed account lifts the gate and leaves the rows clickable while still being worth surfacing. The row covers that as well as the mid-flight window, where the rows really are blocked and this is what says why. The gate is global, so an account no project uses can block the whole picker; without the row that window would be unclickable rows with no explanation and no affected chip.</p>
     <div class="term">
       <pre class="indent">
                                   <span class="dim">v0.15.1+7d88141</span>
@@ -1052,7 +1287,7 @@ chat continues here...
         <code style="color:#7eb87a">●</code> green = Ready (fresh probe; account available for assignment) ·
         <code style="color:#cf6171">⚠</code> red = Bailed (auth_status says logged-out, or refresh failed terminally; needs <code>/login</code>)
       </dd>
-      <dt>click gate</dt><dd>Every project row downgrades to <code>Block</code> click intent while any account is non-terminal. Footer hint reads <code>⏳ loading accounts...</code> instead of the per-row spawn label. Once every account reaches Ready or Bailed, the gate lifts; rows un-dim and Enter resumes normal behavior.</dd>
+      <dt>click gate</dt><dd>Every project row downgrades to <code>Block</code> click intent while any account is non-terminal. Footer hint reads <code>⏳ loading accounts...</code> instead of the per-row spawn label. Once every account reaches Ready or Bailed, the gate lifts; rows un-dim and Enter resumes normal behavior. Reachable only mid-session now, via the recovery path above - at boot preflight holds the screen instead.</dd>
       <dt>per-project pool</dt><dd>A project's pool intersects its <code>[[orgs]].accounts</code> allow-list with the set of <code>Ready</code> accounts, then prefers the accounts not at the usage cap - a session lands on a saturated (100%) account only when every candidate is capped, so an all-exhausted org still spawns rather than going dark. Projects whose pool resolves to empty (every allowed account ended in <code>Bailed</code>) render a DIM <code>no usable accounts</code> sub-row and stay unclickable even after the gate lifts.</dd>
       <dt>per-row account chip</dt><dd>Each project row carries a trailing <code>(&lt;account&gt;)</code> chip showing the lead session's assigned account from the AssignmentPlan; one worker row nests under the project per persisted dynamic worker, each carrying the same four elements the project row does - lifecycle glyph, name, its own chip, and the right-aligned activity column. A worker row's chip and its glyph are independent. The chip is the label's AssignmentPlan entry, which a worker gets when it spawns, so a label that has not spawned this boot renders no chip at all. The glyph is the row's lifecycle, so a persisted row with no live worker shows <code>○</code> whether or not it carries a chip. The activity column reads <code>&mdash;</code> for any worker that is neither spawning nor failed, because no per-worker activity timestamp exists. Chip color tracks the assigned account's runtime state: DIM = Normal, STATUS_WARNING = at the usage cap (any window - 5h or weekly; the session still spawns but will throttle, and when every account is capped it was assigned only because nothing else was free), STATUS_ERROR + <code>⚠</code> = account flipped to Bailed mid-session. Worker rows are info-only on the launchpad (selection stays on the project row).</dd>
       <dt>code</dt><dd><code>crates/forge-workspace/src/account.rs</code> (LoadingState enum + AccountStateMap.all_loaded) · <code>crates/forge-workspace/src/account_loader.rs</code> (per-account state machine) · <code>crates/forge-workspace/src/assignment_plan.rs</code> (deterministic <code>(project, label) -&gt; account</code> mapping) · <code>crates/forge-tui/src/ui/launchpad.rs</code> (chip row + effective_click_intent gate)</dd>
@@ -2679,7 +2914,7 @@ chat continues here...
     <tr><td class="glyph">⏲</td><td class="codepoint">U+23F2</td><td>ScheduleWakeup</td><td>timer-clock - schedule a one-shot wake-up at a future timestamp</td></tr>
     <tr><td class="glyph">*</td><td class="codepoint">U+002A</td><td>CronCreate · CronDelete · CronList</td><td>asterisk - Cron-family scheduled-recurring (cron-syntax mapping <code>* * * * *</code>; ASCII width-1 keeps the kind-icon column deterministic across terminals)</td></tr>
     <tr><td class="glyph">◈</td><td class="codepoint">U+25C8</td><td>Gotify glyph (Inspector status + <a href="#gotify-block">chat notification block</a>)</td><td>white diamond containing black diamond - the shared Gotify icon: the Inspector GOTIFY header status while the stream is connected (<span class="accent">RUST_ORANGE</span>; a dropped stream swaps in <code>⚠</code>) and the inbound notification chat-block kind-icon (<span class="gotify">GOTIFY</span> cyan); distinct from the ◇ Task / ◆ Workflow diamonds</td></tr>
-    <tr><td class="glyph">⚠</td><td class="codepoint">U+26A0</td><td>degraded-but-not-broken state · Projects-pane <code>AuthRequired</code> · Inspector GOTIFY header when the stream is down</td><td>warning sign - always <span class="warning">STATUS_WARNING</span>, marking a state the user should notice but that is not a failure; the red <code>✗</code> / <code>✕</code> stay reserved for something actually broken. The GOTIFY header borrows the pairing from <code>glyph_for_lifecycle</code>'s <code>AuthRequired</code> rather than minting a new glyph, since the diamond family (<code>◇</code> Task, <code>◆</code> Workflow, <code>◉</code> TaskOutput, <code>◍</code> TaskStop) is fully claimed</td></tr>
+    <tr><td class="glyph">⚠</td><td class="codepoint">U+26A0</td><td>degraded-but-not-broken state · Projects-pane <code>AuthRequired</code> · Inspector GOTIFY header when the stream is down</td><td>warning sign - <span class="warning">STATUS_WARNING</span> on the surfaces above, marking a state the user should notice but that is not a failure; the red <code>✗</code> / <code>✕</code> stay reserved for something actually broken. <strong>One exception, and it is deliberate:</strong> a <code>Bailed</code> account renders this glyph in <span style="color:#cf6171">STATUS_ERROR</span> on <a href="#preflight">preflight</a> and on the launchpad's account row alike (<code>preflight::account_glyph</code>, which both call). On the one screen that can stop forge starting, mid-flight and failed must not differ only by glyph - and the project row's own account chip was already red for the same state. The GOTIFY header borrows the pairing from <code>glyph_for_lifecycle</code>'s <code>AuthRequired</code> rather than minting a new glyph, since the diamond family (<code>◇</code> Task, <code>◆</code> Workflow, <code>◉</code> TaskOutput, <code>◍</code> TaskStop) is fully claimed</td></tr>
     <tr><td class="glyph">✦</td><td class="codepoint">U+2726</td><td>Skill · Advisor</td><td>four-pointed star - meta capability (skill invocation); also the server-tool wire name <code>advisor</code>, which surfaces model-side counsel without a local handler</td></tr>
     <tr><td class="glyph">⌖</td><td class="codepoint">U+2316</td><td>ToolSearch (in-process and server-tool variants)</td><td>position-indicator - sibling of magnifier ⌕ for searching among available tools; same glyph used for the server-tool wire names <code>tool_search_tool_regex</code> and <code>tool_search_tool_bm25</code></td></tr>
     <tr><td class="glyph">▲</td><td class="codepoint">U+25B2</td><td>PushNotification</td><td>up-pointing triangle - outbound signal (push to user)</td></tr>

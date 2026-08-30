@@ -1,5 +1,6 @@
-//! Launchpad view - project picker shown as the floor of the UI when
-//! forge is invoked without a project argv.
+//! Launchpad view - the project picker, and the floor of the UI. Shown
+//! once [`super::preflight`] has handed over, which it does on every
+//! route.
 //!
 //! Three vertical zones: identity block (wordmark + version lines +
 //! optional update indicator), picker frame (org-grouped project
@@ -40,7 +41,7 @@ const FORGE_WORDMARK: [&str; 6] = [
 /// project row we expect (`├─ ⠋  service-api    (work-acct)     spawning`)
 /// with a generous margin. Constant so the layout is stable across
 /// terminal widths.
-const PICKER_WIDTH: u16 = 56;
+pub(super) const PICKER_WIDTH: u16 = 56;
 
 /// Width (in cells) of the left-edge selection indicator column.
 /// Reserved on every row so unselected rows align with the selected
@@ -330,61 +331,89 @@ fn block_top_offset(
     available.saturating_sub(total_block) / 2
 }
 
-/// Line count for the identity block: 6 wordmark rows, the version
-/// line, the claude line, an optional update indicator, and the
-/// per-account status row (blank separator + chips) shown when any
-/// account is loading.
-fn identity_block_height(app: &App) -> u16 {
-    let mut h: u16 = 6 + 1 + 1;
-    if app
-        .cli_version_info
-        .as_ref()
-        .is_some_and(forge_workspace::env::cli_version::CliVersionInfo::has_update)
-    {
-        h += 1;
-    }
-    if app.workspace.as_ref().is_some_and(|ws| !ws.account_loading_snapshot().is_empty()) {
-        h += 2;
-    }
-    h
+/// `true` when `needle` appears in a wordmark row. Exists so a test
+/// asserting the wordmark is absent can first prove its needle would
+/// have matched a present one.
+#[cfg(test)]
+pub(super) fn wordmark_contains(needle: &str) -> bool {
+    FORGE_WORDMARK.iter().any(|row| row.contains(needle))
 }
 
-fn render_identity_block(frame: &mut Frame, area: Rect, app: &App, y: u16) {
+/// `true` when the per-account glyph row has something to say: some
+/// account is not `Ready`. All-`Ready` hides it rather than showing a
+/// permanently green line.
+///
+/// **Deliberately wider than the click gate, not the same condition.**
+/// `all_accounts_loaded()` counts `Bailed` as terminal, so a bailed
+/// account lifts the gate and leaves the rows clickable - and is still
+/// worth surfacing. The row covers that as well as the mid-flight
+/// window, where the rows really are blocked and this is what says why.
+///
+/// Not a boot-time condition either. A token expiring mid-session takes
+/// an account `Ready -> Bailed` on the usage poll, and the recovery poll
+/// then takes it to `Loading`, so the row reappears whenever that
+/// happens.
+pub(super) fn account_row_visible(app: &App) -> bool {
+    app.workspace.as_ref().is_some_and(|ws| {
+        ws.account_loading_snapshot()
+            .iter()
+            .any(|row| row.state != forge_workspace::LoadingState::Ready)
+    })
+}
+
+/// Line count for the identity block: 6 wordmark rows, the version
+/// line, the claude line, an optional update indicator, and the
+/// per-account status row (blank separator + chips) when
+/// [`account_row_visible`] says so.
+pub(super) fn identity_block_height(app: &App) -> u16 {
+    // Counted off the lines themselves rather than restated, so the
+    // layout and the paint cannot disagree about the update indicator.
+    let mut h = identity_lines(app, 0).len();
+    if account_row_visible(app) {
+        h += 2;
+    }
+    u16::try_from(h).unwrap_or(u16::MAX)
+}
+
+/// Wordmark, version, claude version, and the update indicator when one
+/// is available, centred in `width`. Shared with the preflight screen,
+/// which draws the same header over a different body.
+pub(super) fn identity_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let wordmark_style = Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD);
     for row in FORGE_WORDMARK {
-        lines.push(centered_text_line(row, area.width, wordmark_style));
+        lines.push(centered_text_line(row, width, wordmark_style));
     }
     let dim = Style::default().fg(theme::DIM);
     let forge_line = format!("v{}", crate::FORGE_VERSION_SHORT);
-    lines.push(centered_text_line(&forge_line, area.width, dim));
+    lines.push(centered_text_line(&forge_line, width, dim));
     let claude_label = match app.cli_version_info.as_ref().and_then(|c| c.installed.as_deref()) {
         Some(installed) => format!("claude {installed}"),
         None => "claude (unknown)".to_owned(),
     };
-    lines.push(centered_text_line(&claude_label, area.width, dim));
+    lines.push(centered_text_line(&claude_label, width, dim));
     if let Some(cli) = app.cli_version_info.as_ref()
         && cli.has_update()
         && let Some(latest) = cli.latest.as_deref()
     {
         let update = format!("↑ v{latest} available");
-        lines.push(centered_text_line(
-            &update,
-            area.width,
-            Style::default().fg(theme::RUST_ORANGE),
-        ));
+        lines.push(centered_text_line(&update, width, Style::default().fg(theme::RUST_ORANGE)));
     }
-    // Per-account loading glyph row: one centred line with each
-    // account's name + state glyph. Yellow `○` for Loading or
-    // Refreshing (mid-flight), green `●` for Ready, red `⚠` for
-    // Bailed. Order matches forge.toml's `[[accounts]]` so the user
-    // can scan left-to-right against their mental layout.
-    if let Some(workspace) = app.workspace.as_ref() {
-        let snapshot = workspace.account_loading_snapshot();
-        if !snapshot.is_empty() {
-            lines.push(Line::default());
-            lines.push(centered_account_status_line(&snapshot, area.width));
-        }
+    lines
+}
+
+fn render_identity_block(frame: &mut Frame, area: Rect, app: &App, y: u16) {
+    let mut lines = identity_lines(app, area.width);
+    // Per-account glyph row, present only while some account is
+    // mid-flight - which is exactly when every project row is blocked,
+    // so this is what says why. Order matches forge.toml's
+    // `[[accounts]]` so the user can scan it left-to-right against
+    // their own mental layout.
+    if let Some(workspace) = app.workspace.as_ref()
+        && account_row_visible(app)
+    {
+        lines.push(Line::default());
+        lines.push(centered_account_status_line(&workspace.account_loading_snapshot(), area.width));
     }
     let block_area =
         Rect { x: area.x, y, width: area.width, height: u16::try_from(lines.len()).unwrap_or(0) };
@@ -395,26 +424,21 @@ fn render_identity_block(frame: &mut Frame, area: Rect, app: &App, y: u16) {
 /// `<glyph> <name>` separated by `  ` (two spaces) so the user can
 /// distinguish chips at a glance without staring at the row.
 fn centered_account_status_line(
-    snapshot: &[(String, forge_workspace::LoadingState)],
+    snapshot: &[forge_workspace::AccountLoadingRow],
     area_width: u16,
 ) -> Line<'static> {
-    use forge_workspace::LoadingState;
     let dim = Style::default().fg(theme::DIM);
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut text_width: usize = 0;
-    for (idx, (name, state)) in snapshot.iter().enumerate() {
+    for (idx, row) in snapshot.iter().enumerate() {
         if idx > 0 {
             spans.push(Span::styled("  ".to_owned(), dim));
             text_width += 2;
         }
-        let (glyph, color) = match state {
-            LoadingState::Loading | LoadingState::Refreshing => ("○", Color::Yellow),
-            LoadingState::Ready => ("●", Color::Green),
-            LoadingState::Bailed => ("⚠", theme::STATUS_WARNING),
-        };
+        let (glyph, color) = super::preflight::account_glyph(row.state);
         spans.push(Span::styled(glyph.to_owned(), Style::default().fg(color)));
-        spans.push(Span::styled(format!(" {name}"), dim));
-        text_width += 1 + 1 + name.chars().count();
+        spans.push(Span::styled(format!(" {}", row.display_name), dim));
+        text_width += 1 + 1 + row.display_name.chars().count();
     }
     let pad = usize::from(area_width).saturating_sub(text_width) / 2;
     let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len() + 1);
@@ -423,7 +447,7 @@ fn centered_account_status_line(
     Line::from(out)
 }
 
-fn centered_text_line(text: &str, area_width: u16, style: Style) -> Line<'static> {
+pub(super) fn centered_text_line(text: &str, area_width: u16, style: Style) -> Line<'static> {
     let text_width = text.chars().count();
     let pad = usize::from(area_width).saturating_sub(text_width) / 2;
     Line::from(vec![Span::raw(" ".repeat(pad)), Span::styled(text.to_owned(), style)])
@@ -903,7 +927,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, rows: &[PickerRow]) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
-fn truncate_to(text: &str, width: usize) -> String {
+pub(super) fn truncate_to(text: &str, width: usize) -> String {
     if text.chars().count() <= width {
         return text.to_owned();
     }
@@ -1239,6 +1263,49 @@ mod tests {
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
             .collect();
         (rendered, config_dir, project_dir)
+    }
+
+    /// The per-account glyph row appears only when it has something to
+    /// say. All-Ready is the steady state, and a row that renders then
+    /// is five permanent green dots; a row that does NOT render while an
+    /// account is mid-flight leaves every project blocked with nothing
+    /// on screen explaining why - and `all_accounts_loaded()` is global,
+    /// so that happens even for an account no project uses.
+    #[tokio::test]
+    async fn the_account_row_appears_only_while_an_account_is_mid_flight() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("project tempdir");
+        let forge = config_dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/ dir");
+        let project_path = project_dir.path().to_string_lossy().replace('\\', "/");
+        std::fs::write(
+            forge.join("forge.toml"),
+            format!(
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n\
+                 [[orgs.projects]]\nname = \"picker\"\npath = \"{project_path}\"\n\
+                 [[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"~/.claude-stargate\"\n"
+            ),
+        )
+        .expect("write forge.toml");
+
+        let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
+            .await
+            .expect("workspace");
+        let mut app = App::test_default();
+        app.workspace = Some(std::sync::Arc::new(workspace));
+
+        // A fresh account map starts every account Loading.
+        assert!(
+            account_row_visible(&app),
+            "an account still resolving must be visible, or the blocked project rows have no \
+             explanation on screen",
+        );
+
+        app.workspace.as_ref().expect("workspace").seed_test_ready_account("Stargate");
+        assert!(
+            !account_row_visible(&app),
+            "with every account Ready the row has nothing to say and must not render",
+        );
     }
 
     fn row_containing<'a>(rendered: &'a [String], needle: &str) -> &'a str {
