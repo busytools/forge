@@ -1687,17 +1687,13 @@ fn stamp_turn_info_on_latest_assistant(
         return;
     };
     let model = app.observed_assistant_model().map(ToOwned::to_owned);
+    let usage = usage.filter(|u| !is_unattributed_usage(*u));
     if let Some(msg) = app.active_messages_mut().get_mut(idx) {
         let info = &mut msg.turn_info;
-        // A settled row belongs to a turn that has already ended, so
-        // this Result reached a message that is not its own - a
-        // compaction emits one with no assistant message in between.
-        // Writing any field would merge two turns' accounting into a
-        // row that reads as one measurement.
-        //
-        // `record_live_turn_usage` guards the same way; this is the
-        // other writer.
-        if info.is_settled() {
+        // A Result with no usable token counts cannot replace the ones
+        // already on a settled row, so writing its clock there would
+        // leave another turn's figures sitting underneath it.
+        if usage.is_none() && info.is_settled() {
             return;
         }
         info.duration_ms = Some(duration_ms);
@@ -1707,7 +1703,7 @@ fn stamp_turn_info_on_latest_assistant(
         if model.is_some() {
             info.model = model;
         }
-        if let Some(usage) = usage.filter(|u| !is_unattributed_usage(*u)) {
+        if let Some(usage) = usage {
             info.input_tokens = Some(usage.input_tokens);
             info.output_tokens = Some(usage.output_tokens);
             info.cache_read_tokens = Some(usage.cache_read_input_tokens);
@@ -2131,16 +2127,11 @@ mod stamp_turn_info_tests {
         );
     }
 
-    /// The guard fails safe in one direction and dangerously in the
-    /// other: were `is_settled()` true more often than intended, every
-    /// row would quietly stop appearing, and an absent row looks like
-    /// a turn that had nothing to report. So pin both directions.
-    #[test]
-    fn a_live_turn_still_stamps_but_a_settled_one_is_left_alone() {
-        let mut app = App::test_default();
+    /// Seed a settled row, so the refusal can be tested against one.
+    fn settle_a_first_turn(app: &mut App) {
         app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new()));
         stamp_turn_info_on_latest_assistant(
-            &mut app,
+            app,
             4_675,
             Some(3_807),
             Some(forge_primitives::Usage {
@@ -2151,25 +2142,74 @@ mod stamp_turn_info_tests {
             }),
             Some(0.634_826),
         );
+    }
 
-        let settled = latest_turn_info(&app);
-        assert_eq!(settled.duration_ms, Some(4_675), "a live turn's Result still stamps its row");
-        assert_eq!(settled.api_ms, Some(3_807), "including its API time");
-        assert_eq!(settled.output_tokens, Some(5), "and its token counts");
+    /// The guard fails safe in one direction and dangerously in the
+    /// other: were it to refuse more often than intended, every row
+    /// would quietly stop appearing, and an absent row looks like a
+    /// turn that had nothing to report.
+    #[test]
+    fn a_live_turns_result_still_stamps_its_row() {
+        let mut app = App::test_default();
+        settle_a_first_turn(&mut app);
+
+        let info = latest_turn_info(&app);
+        assert_eq!(info.duration_ms, Some(4_675), "a live turn's Result still stamps its row");
+        assert_eq!(info.api_ms, Some(3_807), "including its API time");
+        assert_eq!(info.output_tokens, Some(5), "and its token counts");
+    }
+
+    /// The refusal is narrow on purpose. It exists because an
+    /// unattributed Result supplies no token counts, so its clock
+    /// would land over whatever counts the row already had - the
+    /// compaction shape. A Result that carries usage replaces every
+    /// field together and stays coherent, so it is allowed through
+    /// even onto a settled row: `monitor_persistent_stream`'s last
+    /// turn opens with a tool_use and is appended to the previous
+    /// turn's message, and refusing it renders its text with another
+    /// turn's figures and its own nowhere.
+    #[test]
+    fn only_a_result_with_no_token_counts_is_refused_by_a_settled_row() {
+        let mut app = App::test_default();
+        settle_a_first_turn(&mut app);
 
         stamp_turn_info_on_latest_assistant(&mut app, 44_410, None, None, None);
-
-        let after = latest_turn_info(&app);
+        let after_unattributed = latest_turn_info(&app);
         assert_eq!(
-            after.duration_ms,
+            after_unattributed.duration_ms,
             Some(4_675),
-            "a second Result reaching an already-settled row belongs to a different turn, so \
-             it must not overwrite the clock",
+            "an unattributed Result cannot supply tokens, so its clock must not land over the \
+             counts already on the row",
         );
         assert_eq!(
-            after.output_tokens,
+            after_unattributed.output_tokens,
             Some(5),
-            "nor leave that turn's tokens under the other turn's clock",
+            "and the row keeps the counts that belong to it",
+        );
+
+        stamp_turn_info_on_latest_assistant(
+            &mut app,
+            9_717,
+            Some(9_668),
+            Some(forge_primitives::Usage {
+                input_tokens: 4,
+                output_tokens: 186,
+                cache_read_input_tokens: 167_802,
+                cache_creation_input_tokens: 825,
+            }),
+            Some(0.961_126),
+        );
+        let after_complete = latest_turn_info(&app);
+        assert_eq!(
+            after_complete.duration_ms,
+            Some(9_717),
+            "a Result carrying usage overwrites every field together, so it stays coherent and \
+             is not refused",
+        );
+        assert_eq!(
+            (after_complete.output_tokens, after_complete.cache_written_tokens),
+            (Some(186), Some(825)),
+            "clock and counts come from the same Result, which is the property that matters",
         );
     }
 
