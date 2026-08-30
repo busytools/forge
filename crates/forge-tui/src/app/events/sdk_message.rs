@@ -1660,7 +1660,8 @@ fn handle_result(app: &mut App, msg: Message) {
 }
 
 /// Settle the turn-info row on the latest Assistant ChatMessage in
-/// the active session.
+/// the active session, or decline if the Result would leave that row
+/// describing two different turns.
 ///
 /// Invalidates the layout, not just the render cache: the row's
 /// height changes when it settles, and turn exit only invalidates
@@ -1668,9 +1669,10 @@ fn handle_result(app: &mut App, msg: Message) {
 /// background session's turn ending while the visible one sits idle
 /// takes neither path.
 ///
-/// `usage` and `total_cost_usd` stay `Option` all the way to the
-/// renderer: the CLI omits them on some error paths, and a missing
-/// count must read as missing rather than as zero.
+/// `total_cost_usd` stays `Option` all the way to the renderer, and
+/// `usage` arrives as `None` both when the CLI omitted it and when it
+/// carried only zeros: a missing count must read as missing, never as
+/// zero.
 ///
 /// No-op when no Assistant message is present (rare: Result fires
 /// before any assistant content has been pushed).
@@ -1755,8 +1757,10 @@ fn local_clock_now() -> String {
 /// re-stamp the running totals onto the turn's assistant message, so
 /// the row counts up rather than appearing finished.
 ///
-/// Subagent frames are skipped: their usage is not part of the parent
-/// turn's `Result.usage`.
+/// Skipped for subagent frames, whose usage is not part of the parent
+/// turn's `Result.usage`; during resume replay; and for a message that
+/// has already settled, which is why a turn appended to one shows
+/// nothing of its own until its Result lands.
 fn record_live_turn_usage(
     app: &mut App,
     message: &forge_primitives::AssistantEnvelope,

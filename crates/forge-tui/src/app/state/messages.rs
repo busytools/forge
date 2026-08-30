@@ -61,7 +61,9 @@ pub struct ChatMessage {
 /// turn starts and fills in as data arrives: elapsed and the input
 /// side tick during the turn, output and cost only exist once
 /// `Message::Result` lands. An absent field renders as absent, never
-/// as zero.
+/// as zero. A turn appended to an already-settled message is the
+/// exception: both live writers skip it, so it shows nothing of its
+/// own until its Result arrives.
 ///
 /// The wire mixes scopes, so two fields are NOT verbatim copies:
 /// `api_ms` is a delta (`Result.duration_api_ms` is
@@ -86,7 +88,8 @@ pub struct TurnInfo {
     /// Local wall-clock `HH:MM:SS` at which the Result arrived,
     /// resolved on the event path because the wire carries no
     /// wall-clock time and the renderer should not be reading the
-    /// system timezone.
+    /// system timezone. `None` on a replayed turn, whose real end time
+    /// was never captured.
     pub ended_at_local: Option<String>,
     pub model: Option<String>,
     pub input_tokens: Option<u64>,
@@ -156,7 +159,8 @@ impl LiveTurn {
 
 impl TurnInfo {
     /// True when nothing is known yet, so the row is not rendered at
-    /// all. A turn that has started always has `started_at`.
+    /// all. Both fields are checked because a turn appended to a
+    /// settled message has no `started_at` of its own.
     pub fn is_empty(&self) -> bool {
         self.started_at.is_none() && self.duration_ms.is_none()
     }
