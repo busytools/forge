@@ -96,10 +96,7 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     let subagent_scoped = matches!(scope, ToolCallScope::SubagentChild { .. });
     upsert_tool_call_into_assistant_message(app, tool_info, subagent_scoped);
 
-    // A subagent's own call is not the main agent working, and a
-    // backgrounded one keeps arriving long after the dispatching turn
-    // ended - reporting it as this session's status left the turn
-    // reading busy for the subagent's whole life.
+    // A subagent's own call is not this session working.
     if !subagent_scoped {
         app.status = AppStatus::Running;
     }
@@ -301,16 +298,11 @@ pub(super) fn upsert_tool_call_into_assistant_message(
         return;
     }
 
-    // No turn owns the chat right now. A subagent-scoped call must not
-    // make one: the turn container is the MAIN agent's, and binding it
-    // here attributes one agent's work to another's turn. Its card is
-    // hidden and the Inspector reads it out of whatever message holds
-    // it, so storage next to the turn that dispatched it is enough.
-    //
-    // A main-agent call in this position is opening a new turn, so it
-    // may not land on a message whose turn already ended - that is what
-    // glued two turns into one and left the second one's duration and
-    // token counts rendering nowhere.
+    // No turn owns the chat right now. The turn container is the MAIN
+    // agent's, so a subagent-scoped call must neither bind nor create
+    // one; the Inspector correlates its card by parent id, not by which
+    // message holds it. A main-agent call here is opening a new turn,
+    // so it may not land on a message whose turn already ended.
     let tail_is_assistant =
         app.messages().last().is_some_and(|m| matches!(m.role, MessageRole::Assistant));
     let tail_turn_ended = app.messages().last().is_some_and(|m| m.turn_duration_ms.is_some());

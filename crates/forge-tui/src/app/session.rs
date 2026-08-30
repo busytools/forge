@@ -532,11 +532,11 @@ impl UiSession {
             .collect()
     }
 
-    /// The above plus the children of those roots, which is what a
-    /// turn-boundary sweep must spare: only the root gets a `TaskStarted`
-    /// and a roster row, so a child of a live backgrounded subagent is
-    /// invisible to the roster and would be marked failed while it runs.
-    /// Mirrors the retention in `App::clear_tool_scope_tracking`, which
+    /// [`Self::backgrounded_alive_tool_use_ids`] plus the children of
+    /// those roots, which is what a turn-boundary sweep must spare: only
+    /// the root gets a `TaskStarted` and a roster row, so a child of a
+    /// live backgrounded subagent is invisible to the roster and would be
+    /// marked failed while it runs. `App::clear_tool_scope_tracking`
     /// spares the same set one layer up.
     pub fn backgrounded_alive_with_children(&self) -> HashSet<String> {
         let roots = self.backgrounded_alive_tool_use_ids();
@@ -558,7 +558,7 @@ impl UiSession {
 /// with a live backgrounded task. Attention / AuthRequired / Failed keep
 /// their own glyph, so the promotion is over the Idle bullet only. Shared
 /// by the row glyph (`glyph_for_lifecycle`) and the frame-tick gate
-/// (`any_background_activity`) so the two never disagree about what
+/// (`App::shows_activity`) so the two never disagree about what
 /// animates.
 pub fn session_shows_spinner(lifecycle: SessionLifecycleState, has_background_work: bool) -> bool {
     matches!(lifecycle, SessionLifecycleState::Running | SessionLifecycleState::Spawning)

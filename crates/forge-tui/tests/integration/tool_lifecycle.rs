@@ -1407,10 +1407,10 @@ async fn a_turn_opening_with_a_tool_use_does_not_land_on_the_previous_turn() {
 
 /// Ved's call: the chat goes quiet at turn end but the tab title keeps
 /// showing activity while a backgrounded subagent runs - the chat is
-/// where you are looking, the title is how you know to look. That must
-/// hold on real background activity, not on a stale `app.status`, which
-/// is how it used to hold. The wiring itself is compiler-enforced:
-/// `update_tab_title` no longer accepts an `AppStatus`.
+/// where you are looking, the title is how you know to look. It must
+/// hold on real background activity rather than on `app.status`, which
+/// reads Ready here. The wiring is compiler-enforced: `update_tab_title`
+/// takes a bool, so it cannot be keyed on a status.
 #[tokio::test]
 async fn tab_title_shows_activity_after_turn_end_while_background_work_runs() {
     let mut app = test_app();

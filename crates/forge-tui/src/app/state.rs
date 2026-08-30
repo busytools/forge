@@ -3299,8 +3299,8 @@ impl App {
     /// Force-finish any lingering in-progress tool calls.
     /// Returns the number of tool calls that were transitioned.
     ///
-    /// Backgrounded tasks still in the session roster are exempt: they
-    /// outlive the turn and settle via their own `task_updated`.
+    /// A live backgrounded subagent is exempt, root and children alike:
+    /// it outlives the turn and settles via its own `task_updated`.
     pub fn finalize_in_progress_tool_calls(&mut self, new_status: model::ToolCallStatus) -> usize {
         let mut changed = 0usize;
         let mut changed_message_indices = Vec::new();

@@ -1,7 +1,9 @@
 //! Terminal tab/window title management.
 //!
 //! Uses OSC 2 escape sequences to update the terminal tab title with a simple
-//! busy toggle during active agent turns and a static idle icon otherwise.
+//! busy toggle while anything is happening - this session's turn, a
+//! compaction, or live background work in any session - and a static idle
+//! icon otherwise. The caller decides which; see `App::shows_activity`.
 //!
 //! Emits an OSC 2 only when the computed title actually changes - the render
 //! loop calls `update_tab_title` every frame (~120 Hz during animation), and
@@ -39,10 +41,10 @@ fn write_osc2_title(title: &str) {
     let _ = std::io::stdout().flush();
 }
 
-/// Update the terminal tab title to reflect the current app status.
+/// Update the terminal tab title to reflect whether anything is happening.
 ///
-/// Called every frame tick during animating states, and on state transitions
-/// for static states (Ready, Error).
+/// Called every frame tick while active, and once on the transition into
+/// stillness.
 pub fn update_tab_title(shows_activity: bool, spinner_frame: usize, cwd: &str) {
     let name = folder_name(cwd);
     let title = if shows_activity {

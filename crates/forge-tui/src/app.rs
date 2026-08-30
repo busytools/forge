@@ -327,10 +327,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             break;
         }
 
-        // Render once, only when something changed. The extra
-        // is_animating clause keeps the per-row spinners on background
-        // sessions animating; the active session already drives ticks
-        // via `app.status` above.
+        // Render once, only when something changed - and keep
+        // rendering while anything is happening anywhere, so a
+        // background session's row spinner advances even when the
+        // active session is idle.
         let is_animating = app.shows_activity();
         if is_animating {
             advance_spinner_frame(app, Instant::now());
@@ -346,7 +346,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         } else {
             app.spinner_last_advance_at = None;
         }
-        // Update tab title on non-animating state transitions (Ready, Error).
+        // Catch the transition into stillness, which the branch above cannot.
         if !is_animating && app.needs_redraw {
             tab_title::update_tab_title(is_animating, app.spinner_frame, app.cwd());
         }
@@ -454,12 +454,6 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// True while any session should keep its Projects-pane row spinner
-/// advancing off the active-status path. Counts exactly the rows that
-/// spin (via the shared `session_shows_spinner`), so a background-only
-/// -active row keeps ticking while an Attention/triangle row with a live
-/// task does not - no wasted redraws, and no drift from the glyph. The
-/// active session already drives ticks via `app.status`.
 /// Which animation step the spinner epoch is on. Rendered glyphs divide
 /// that same epoch by their style cadence, so gating repaints on this
 /// cannot drift against them the way a separately-accumulated counter
@@ -1352,6 +1346,47 @@ mod tests {
         app.sessions.get_mut(&key).expect("bucket").lifecycle_state =
             SessionLifecycleState::Running;
         assert!(app.shows_activity(), "a Running session spins, so the gate ticks");
+    }
+
+    /// Compaction is activity even though it is not a turn: the chat shows
+    /// a compacting line, so the title and the ticker must agree with it.
+    #[test]
+    fn animation_gate_counts_compaction() {
+        let mut app = App::test_default();
+        assert!(!app.shows_activity(), "idle to begin with");
+
+        app.set_is_compacting(true);
+        assert!(app.shows_activity(), "a compacting session is busy");
+
+        app.set_is_compacting(false);
+        assert!(!app.shows_activity(), "and stops being busy when it finishes");
+    }
+
+    /// Activity is process-wide, not active-session-wide: a background
+    /// session running while the focused one sits idle still animates its
+    /// Projects-pane row, so the gate and the tab title must both fire.
+    #[test]
+    fn animation_gate_counts_a_non_active_session() {
+        use crate::app::session::{SessionLifecycleState, UiSession};
+
+        let mut app = App::test_default();
+        assert!(!app.shows_activity(), "focused session idle, nothing else running");
+
+        let other = forge_workspace::SessionKey::from_session_id("other-project");
+        let mut session = UiSession::new(other.clone());
+        session.lifecycle_state = SessionLifecycleState::Running;
+        app.sessions.insert(other.clone(), session);
+
+        assert!(
+            app.shows_activity(),
+            "another session's turn is still something happening; got status {:?}",
+            app.status,
+        );
+        assert!(
+            matches!(app.status, AppStatus::Ready),
+            "and it holds without the focused session's status moving; got {:?}",
+            app.status,
+        );
     }
 
     /// The gate never lands above either pinned step, at every accepted

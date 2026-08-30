@@ -247,8 +247,9 @@ fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionKey) {
 /// No layout invalidation, no terminal detach handling - the bucket
 /// will rebuild its layout state when it next becomes active.
 ///
-/// Mirrors the active sweep's exemption: a backgrounded task still in the
-/// bucket's session roster outlives the turn and settles via `task_updated`.
+/// Takes the same exemption as [`App::finalize_in_progress_tool_calls`]:
+/// a live backgrounded subagent, root and children alike, outlives the
+/// turn and settles via its own `task_updated`.
 pub(super) fn finalize_background_tool_calls(
     session: &mut crate::app::session::UiSession,
     new_status: model::ToolCallStatus,
