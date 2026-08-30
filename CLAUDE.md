@@ -454,7 +454,7 @@ inspected.
     So the check answers whether the terminal supports OSC 9 when
     the question is whether an OSC 9 survives to it. The outcome is
     silence rather than a degraded notification: `Iterm2` and
-    `Ghostty`, two of the five channels and including the default,
+    `Ghostty`, two of the five channels and the default among them,
     set `ring_bell` and `send_desktop` both false once OSC 9 is
     believed available, so an eaten escape leaves nothing at all.
 
