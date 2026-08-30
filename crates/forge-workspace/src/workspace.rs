@@ -1383,8 +1383,8 @@ impl Workspace {
     /// The `forge.toml` this workspace loaded. Preflight names it as
     /// one of the two ways past an account that will not authenticate -
     /// the one that needs a restart, since config is read at boot. The
-    /// other is an out-of-band `/login`, which the recovery poll picks
-    /// up in place.
+    /// other is repairing the account's own credentials, which a poller
+    /// picks up in place without one.
     pub fn config_path(&self) -> PathBuf {
         crate::config::forge_data_dir(&self.config_dir).join("forge.toml")
     }

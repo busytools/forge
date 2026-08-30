@@ -949,11 +949,15 @@ chat continues here...
   <code>Bailed</code>.</strong> forge will not start while an account in
   <code>forge.toml</code> cannot, so every failure state names its exits
   rather than leaving the reader on a screen with nothing to press.
-  <strong>Neither exit needs a restart to be tried.</strong> The recovery
-  poll runs throughout preflight and re-probes a bailed account every
-  30 s, so an out-of-band <code>/login</code> clears the screen in place;
-  dropping the account edits <code>forge.toml</code>, which is read at
-  boot, so that one does need a restart.
+  <strong>Fixing the auth needs no restart; dropping the account does.</strong>
+  Both pollers run throughout preflight and re-probe a bailed account, so
+  repairing it out of band clears the screen in place - the 30 s recovery
+  poll for a keychain account, the 60 s usage poll for a base-url one,
+  which that poll deliberately skips because it gates on
+  <code>claude auth status</code>. Dropping the account edits
+  <code>forge.toml</code>, which is read at boot, so that one does need a
+  restart. The screen states the no-restart half without a number,
+  because the two classes do not share one.
 </p>
 
 <div class="surface">
@@ -1010,7 +1014,7 @@ chat continues here...
     <div class="when">gates forge entirely - clears in place on a `/login`, or on a config edit plus a restart</div>
   </div>
   <div class="surface-body">
-    <p>The <code>/login</code> exit says the retry is automatic, because otherwise a reader who fixes their auth has no way of knowing whether to restart - and the answer is no. The interval is read from <code>RECOVERY_POLL_INTERVAL</code> rather than written into the copy, so the screen cannot go false if the poll changes. Both exits are named because neither is optional: a reader who cannot re-authenticate needs the second one. The footer drops <code>esc</code> - there is nothing left to cancel - and the paths are printed in full, since the reader is about to leave forge to edit them. A command too long for the panel wraps after a <code>/</code> onto a deeper-indented continuation line; it is never elided, because half a path is worse than none.</p>
+    <p>The <code>/login</code> exit says the retry is automatic, because otherwise a reader who fixes their auth has no way of knowing whether to restart - and the answer is no. It states no interval: a keychain account recovers on the 30 s recovery poll and a base-url account on the 60 s usage poll, which is subject to probe backoff, so any single number would be false for one class. <strong>The block itself is keychain-shaped</strong> - <code>claude /login</code> does not repair a base-url account, whose credentials live in its <code>[accounts.env]</code> - and that predates this screen. Both exits are named because neither is optional: a reader who cannot re-authenticate needs the second one. The footer drops <code>esc</code> - there is nothing left to cancel - and the paths are printed in full, since the reader is about to leave forge to edit them. A command too long for the panel wraps after a <code>/</code> onto a deeper-indented continuation line; it is never elided, because half a path is worse than none.</p>
     <div class="term">
       <pre class="indent">
       <span class="dim">────────────────────────────────────────────────────────</span>
@@ -1033,7 +1037,7 @@ chat continues here...
         <span class="bold">Fix the auth</span>
           CLAUDE_CONFIG_DIR=~/.claude-granite1 claude
           /login
-          <span class="dim">forge picks this up within 30s</span>
+          <span class="dim">forge retries on its own - no restart needed</span>
 
         <span class="bold">Or drop the account</span>
           delete its [[accounts]] block from

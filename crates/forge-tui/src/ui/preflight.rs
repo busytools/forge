@@ -11,11 +11,13 @@
 //! failure states name both ways out rather than leaving the reader on
 //! a screen with nothing to press.
 //!
-//! Neither exit needs a restart. The recovery poll runs throughout
-//! preflight and re-probes a bailed account every 30 s, so an
-//! out-of-band `/login` clears this screen in place; dropping the
-//! account from `forge.toml` does need one, since config is read at
-//! boot. The screen offers them in that order for that reason.
+//! Repairing the auth needs no restart; dropping the account does. Both
+//! pollers re-probe a bailed account throughout preflight, so a repair
+//! made out of band clears this screen in place - on the 30 s recovery
+//! poll for a keychain account, on the 60 s usage poll for a base-url
+//! one, which the recovery poll skips because it gates on `claude auth
+//! status`. Dropping the account edits config, which is read at boot.
+//! The screen offers them in that order for that reason.
 //!
 //! Geometry matches [`super::launchpad`]: same wordmark, same
 //! `PICKER_WIDTH` panel, so handing over to the project picker is a
@@ -337,11 +339,16 @@ fn failure_label(failure: Option<&DictateFailure>) -> &'static str {
 
 /// The account that will not authenticate, and both ways past it.
 ///
-/// Both, in that order, because they are not equivalent: an
-/// out-of-band `/login` is picked up in place by the recovery poll
-/// within 30 s, while dropping the account edits config, which is read
-/// at boot and so needs a restart. Naming only one would leave a reader
-/// who cannot take that route with nowhere to go.
+/// Both, in that order, because they are not equivalent: a repair made
+/// out of band is picked up in place, while dropping the account edits
+/// config, which is read at boot and so needs a restart. Naming only one
+/// would leave a reader who cannot take that route with nowhere to go.
+///
+/// The retry line states no interval on purpose. A keychain account
+/// recovers on the 30 s recovery poll; a base-url account is skipped by
+/// that poll and recovers on the 60 s usage poll, subject to probe
+/// backoff. No single number is true of both, and this row cannot tell
+/// them apart - `AccountLoadingRow` carries no probe plan.
 fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'static>> {
     let error = Style::default().fg(theme::STATUS_ERROR);
     let head = Style::default().add_modifier(Modifier::BOLD);
@@ -369,17 +376,8 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
     ));
     lines.push(text_row(4, "/login", Style::default(), width));
     // Without this a reader who fixes their auth has no way of knowing
-    // whether to restart, and the answer is no. The interval is read
-    // rather than written, so the screen cannot outlive the poll.
-    lines.push(text_row(
-        4,
-        &format!(
-            "forge picks this up within {}s",
-            forge_workspace::RECOVERY_POLL_INTERVAL.as_secs()
-        ),
-        dim(),
-        width,
-    ));
+    // whether to restart, and the answer is no.
+    lines.push(text_row(4, "forge retries on its own - no restart needed", dim(), width));
     lines.push(Line::default());
     lines.push(text_row(2, "Or drop the account", head, width));
     lines.push(text_row(4, "delete its [[accounts]] block from", Style::default(), width));

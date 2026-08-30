@@ -124,7 +124,7 @@ fn a_model_reads_by_role_with_its_file_beneath() {
 /// A bailed account stops forge starting, so the screen has to name
 /// BOTH exits: either one alone strands a reader who cannot take that
 /// route. They are not equivalent, and the screen says which is which -
-/// a `/login` is picked up in place, dropping the account is not.
+/// repairing the account is picked up in place, dropping it is not.
 #[test]
 fn a_bailed_account_names_both_exits() {
     let text = flatten(&bail_detail(
@@ -153,16 +153,17 @@ fn a_bailed_account_names_both_exits() {
     // The two exits are not equivalent and the screen has to say so:
     // this one lands without a restart, the other does not.
     assert!(
-        text.contains(&format!(
-            "forge picks this up within {}s",
-            forge_workspace::RECOVERY_POLL_INTERVAL.as_secs()
-        )),
-        "the /login exit says the retry is automatic, at the interval the poll actually uses - \
-         a reader who fixes their auth otherwise cannot tell whether to restart; got:\n{text}",
+        text.contains("forge retries on its own - no restart needed"),
+        "the /login exit says the retry is automatic - a reader who fixes their auth otherwise \
+         cannot tell whether to restart; got:\n{text}",
     );
+    // And it must not name an interval. A keychain account recovers on
+    // the 30 s recovery poll, a base-url account on the 60 s usage poll
+    // which that poll skips - so any single number is false for one
+    // class, and this row cannot tell which it is rendering.
     assert!(
-        forge_workspace::RECOVERY_POLL_INTERVAL.as_secs() > 0,
-        "a zero interval would make the assertion above match any digit-free copy",
+        !text.contains("30s") && !text.contains("30 s") && !text.contains("60s"),
+        "no interval belongs here: the two account classes do not share one; got:\n{text}",
     );
 }
 
