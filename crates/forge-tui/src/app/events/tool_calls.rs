@@ -366,14 +366,9 @@ pub(super) fn upsert_tool_call_into_assistant_message(
 
     if append_to_tail {
         let msg_idx = app.messages().len().saturating_sub(1);
+        // `tail_is_assistant` already resolved the same bucket's tail, so
+        // this cannot miss.
         let Some(last) = app.active_messages_mut().last_mut() else {
-            tracing::warn!(
-                target: crate::logging::targets::APP_TOOL,
-                event_name = "tool_call_tail_vanished",
-                message = "tail assistant message disappeared between check and insert; tool call dropped",
-                outcome = "dropped",
-                tool_call_id = %tool_info.id,
-            );
             return;
         };
         let block_idx = last.blocks.len();

@@ -1,5 +1,5 @@
 // =====
-// TESTS: 32
+// TESTS: 33
 // =====
 //
 // Tool call lifecycle integration tests.
@@ -1965,4 +1965,78 @@ async fn orphaned_subagent_children_do_not_accumulate_assistant_messages() {
     // orphan still lands in some turn's message, which is the attribution
     // error #790 has to close.
     assert_eq!(assistants(&app), settled.expect("ten episodes ran"), "flat throughout");
+}
+
+/// The placement rule is "the root's message", not "the last assistant".
+/// Every other test has those be the same message, so they cannot tell
+/// the rule from the fallback. This drives a later main-agent turn to
+/// move the last assistant away from the root, then delivers a child.
+#[tokio::test]
+async fn a_subagent_child_follows_its_root_not_the_last_assistant() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_root",
+            "Agent",
+            serde_json::json!({"subagent_type": "Explore", "description": "d", "prompt": "d"}),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-root".to_owned(),
+            description: "d".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_root".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+        },
+    );
+    send_msg(
+        &mut app,
+        user_message(vec![tool_result_block(
+            "toolu_root",
+            serde_json::json!("Agent launched in background. Task ID: task-root"),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![serde_json::json!({
+                "task_id": "task-root",
+                "task_type": "local_agent",
+                "description": "d",
+            })],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+    send_msg(&mut app, result_success_message());
+    let root_msg = app.lookup_tool_call("toolu_root").expect("root indexed").0;
+
+    // A later main-agent turn: the last assistant is now somewhere else.
+    send_msg(&mut app, assistant_message(vec![text_block("a later turn")]));
+    send_msg(&mut app, result_success_message());
+    let last_assistant = app
+        .messages()
+        .iter()
+        .rposition(|m| matches!(m.role, MessageRole::Assistant))
+        .expect("an assistant exists");
+    assert_ne!(last_assistant, root_msg, "the fixture must separate them or it proves nothing");
+
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block("toolu_child", "Bash", serde_json::json!({"command": "x"}))],
+            "toolu_root",
+        ),
+    );
+
+    assert_eq!(
+        app.lookup_tool_call("toolu_child").map(|(m, _)| m),
+        Some(root_msg),
+        "the child follows its root, not whichever assistant happens to be last",
+    );
 }

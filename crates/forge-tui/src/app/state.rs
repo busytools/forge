@@ -3157,21 +3157,21 @@ impl App {
             .map(|(id, _)| id.clone())
             .filter(|id| self.active_task_ids().contains(id) || self.tool_call_is_open(id))
             .collect();
-        let retained_by_card: Vec<String> =
+        let dropped_while_open: Vec<String> =
             open_roots.iter().filter(|id| !alive.contains(id.as_str())).map(Clone::clone).collect();
-        for id in &retained_by_card {
+        for id in &dropped_while_open {
             tracing::warn!(
                 target: crate::logging::targets::APP_TOOL,
-                event_name = "subagent_root_absent_from_roster",
-                message = "backgrounded subagent root is not in the session roster while its card is still open",
-                outcome = "retained",
+                event_name = "subagent_root_dropped_while_open",
+                message = "dropping a subagent root's scope while its card is still open; it will not be re-registered and SUBAGENTS loses it",
+                outcome = "dropped",
                 tool_call_id = %id,
             );
         }
         self.tool_call_scopes_mut().retain(|id, scope| match scope {
             crate::app::state::types::ToolCallScope::SubagentRoot => alive.contains(id.as_str()),
             crate::app::state::types::ToolCallScope::SubagentChild { parent_tool_use_id } => {
-                alive.contains(id.as_str()) || alive.contains(parent_tool_use_id.as_str())
+                alive.contains(parent_tool_use_id.as_str())
             }
             crate::app::state::types::ToolCallScope::MainAgent => false,
         });
