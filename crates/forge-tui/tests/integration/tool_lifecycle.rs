@@ -1,5 +1,5 @@
 // =====
-// TESTS: 25
+// TESTS: 26
 // =====
 //
 // Tool call lifecycle integration tests.
@@ -1539,6 +1539,76 @@ async fn a_turn_boundary_sweep_spares_a_live_backgrounded_subagents_children() {
     assert!(
         matches!(tool_call_block(&app, "toolu_child").status, model::ToolCallStatus::InProgress),
         "a live backgrounded subagent's child must survive the sweep; got {:?}",
+        tool_call_block(&app, "toolu_child").status,
+    );
+    assert_eq!(app.subagents_view().len(), 1, "and the subagent stays live in the Inspector");
+}
+
+/// The Result-path sweep is the most reachable of the three - it runs at
+/// every turn end, not only on the next submit - so a live backgrounded
+/// subagent's children must survive it too. Catches that sweep drifting
+/// back to the roster-only set the other two no longer use.
+#[tokio::test]
+async fn the_result_sweep_spares_a_live_backgrounded_subagents_children() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_root",
+            "Agent",
+            serde_json::json!({"subagent_type": "Explore", "description": "d", "prompt": "d"}),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-root".to_owned(),
+            description: "d".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_root".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+        },
+    );
+    // The child is dispatched during the turn and is still running when it ends.
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block("toolu_child", "Bash", serde_json::json!({"command": "sleep 60"}))],
+            "toolu_root",
+        ),
+    );
+    send_msg(
+        &mut app,
+        user_message(vec![tool_result_block(
+            "toolu_root",
+            serde_json::json!("Agent launched in background. Task ID: task-root"),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![serde_json::json!({
+                "task_id": "task-root",
+                "task_type": "local_agent",
+                "description": "d",
+            })],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+    assert!(
+        matches!(tool_call_block(&app, "toolu_child").status, model::ToolCallStatus::InProgress),
+        "the child is running before the turn ends",
+    );
+
+    send_msg(&mut app, result_success_message());
+
+    assert!(
+        matches!(tool_call_block(&app, "toolu_child").status, model::ToolCallStatus::InProgress),
+        "a live subagent's child must not get an unearned terminal status; got {:?}",
         tool_call_block(&app, "toolu_child").status,
     );
     assert_eq!(app.subagents_view().len(), 1, "and the subagent stays live in the Inspector");

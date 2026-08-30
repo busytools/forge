@@ -756,21 +756,18 @@ fn apply_tool_call_update(
 /// as done in both the chat-stream card and the Inspector PROCESSES
 /// section.
 ///
-/// Backgrounded tasks still in the session roster are skipped for the same
-/// reason: a `run_in_background` Bash or Task/Agent root outlives its
-/// spawning turn, so its card must not flip terminal until `task_updated`.
+/// A live backgrounded task is skipped for the same reason, root and
+/// children alike: a `run_in_background` Bash or Task/Agent root outlives
+/// its spawning turn, so its card must not flip terminal until
+/// `task_updated`.
 fn finalize_open_tool_calls(app: &mut App, status: forge_primitives::ToolCallStatus) {
     use crate::app::state::tool_call_info::is_monitor_tool_name;
     use forge_primitives::{ToolCallStatus, ToolCallUpdateFields};
 
-    // Backgrounded tasks the CLI still lists as running outlive the turn;
-    // their tool_use_ids resolve from the session roster so the sweep leaves
-    // them alone (their terminal status arrives later via `task_updated`).
+    // Their terminal status arrives later via `task_updated`.
     let backgrounded_alive: std::collections::HashSet<String> = app
         .active_session()
-        .map(|session| {
-            session.backgrounded_alive_tool_use_ids().into_iter().map(str::to_owned).collect()
-        })
+        .map(crate::app::session::UiSession::backgrounded_alive_with_children)
         .unwrap_or_default();
     let pending: Vec<String> = app.with_turn_state(|ts| {
         ts.tool_calls
