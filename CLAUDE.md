@@ -430,9 +430,13 @@ inspected.
     **Build the multiplexer-independent path first.** Where one
     exists it is the primary and an escape sequence is the fallback,
     never the preference. An escape sequence is a request to whatever
-    sits between forge and the terminal. The middle does announce
-    itself - `ZELLIJ`, `STY`, `TMUX`, `SHPOOL_SESSION_NAME` - so the
-    undetectable part is never its presence, it is what it forwards.
+    sits between forge and the terminal. Some of that middle
+    announces itself and some of it does not: zellij sets `ZELLIJ`,
+    screen sets `STY` and shpool sets `SHPOOL_SESSION_NAME`, while
+    dtach's whole source contains no `setenv` at all, which is why
+    #767 names it beside shpool. forge reads none of them today, and
+    reading one would not settle the question anyway - identifying
+    the manager does not say what it forwards.
 
     #778 is the worked example, and it is a good one because forge
     already had the right path and skipped it. `notification_plan`
