@@ -482,8 +482,9 @@ pub struct App {
     // list is per-project - switching active session via the
     // Projects pane naturally swaps the list along with the bucket.
     // See `App::recent_sessions` / `App::recent_sessions_mut`.
-    /// State for the launchpad view (project picker shown when forge
-    /// is invoked without a project argv, or after `/launchpad`).
+    /// State for the launchpad's project picker, which preflight hands
+    /// over to when forge was given no project, and which `/launchpad`
+    /// returns to.
     /// Always present - reset whenever the active view transitions
     /// to [`ActiveView::Launchpad`] via the launchpad open helper.
     /// When the active view is anything else this is unused but

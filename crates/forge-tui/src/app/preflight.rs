@@ -14,11 +14,9 @@ use super::view::{ActiveView, set_active_view};
 
 /// Everything preflight does per tick of the run loop.
 ///
-/// One entry point rather than two calls, so a test can exercise what
-/// the loop exercises. Both of these used to run from the renderer,
-/// where every `paint()` in the preflight tests reached them for free;
-/// moving them here was right - handing over is a view transition - and
-/// it silently took that coverage with it.
+/// One entry point rather than two calls, so a test can drive what the
+/// loop drives. Nothing else covers the loop body, so a call reachable
+/// only from there is a call nothing exercises.
 pub fn tick(app: &mut App) {
     advance(app);
     quit_after_cancel(app);
@@ -121,8 +119,7 @@ mod tests {
     /// painted once and stops, and the screen never updates while
     /// accounts resolve or three gigabytes download.
     ///
-    /// The change this catches is someone tightening the animation gate
-    /// for a repaint-cost reason, which is exactly how it got here.
+    /// Catches a repaint-cost tightening of the animation gate.
     #[test]
     fn preflight_animates_until_it_hands_over() {
         let mut app = App::test_default();

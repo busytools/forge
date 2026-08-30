@@ -7,10 +7,15 @@
 //! reached mid-load.
 //!
 //! **Preflight completes only on `Ready`, never on `Bailed`.** forge
-//! will not start while an account in `forge.toml` cannot, which makes
-//! a config edit the only way past this screen - so the failure states
-//! name both exits rather than leaving the reader stuck on a screen
-//! with nothing to press.
+//! will not start while an account in `forge.toml` cannot, so the
+//! failure states name both ways out rather than leaving the reader on
+//! a screen with nothing to press.
+//!
+//! Neither exit needs a restart. The recovery poll runs throughout
+//! preflight and re-probes a bailed account every 30 s, so an
+//! out-of-band `/login` clears this screen in place; dropping the
+//! account from `forge.toml` does need one, since config is read at
+//! boot. The screen offers them in that order for that reason.
 //!
 //! Geometry matches [`super::launchpad`]: same wordmark, same
 //! `PICKER_WIDTH` panel, so handing over to the project picker is a
@@ -52,8 +57,8 @@ const PANEL_BOTTOM_MARGIN: u16 = 1;
 ///
 /// `Bailed` is [`theme::STATUS_ERROR`] rather than the warning yellow:
 /// on the one screen that can stop forge starting, loading and failed
-/// must not differ only by glyph. It also settles a disagreement with
-/// the project row's own account chip, which was already red.
+/// must not differ only by glyph. The project row's own account chip
+/// uses the same red for the same state.
 pub(super) fn account_glyph(state: LoadingState) -> (&'static str, Color) {
     match state {
         LoadingState::Loading | LoadingState::Refreshing => ("\u{25cb}", Color::Yellow),
@@ -170,9 +175,8 @@ fn render_panel(frame: &mut Frame, area: Rect, body: Vec<Line<'static>>) -> bool
 ///
 /// Everything this screen cannot afford to lose - the failure detail and
 /// the exits it names - is appended last, so a paragraph that simply
-/// clips takes exactly the wrong end. Measured before this existed: at
-/// 100x24 the bailed screen lost the second exit, and at 100x20 both
-/// commands, on the one screen whose whole job is to state a way out.
+/// clips takes exactly the wrong end. At 100x24 the bailed screen is
+/// already taller than the terminal.
 fn keep_the_tail(mut body: Vec<Line<'static>>, height: u16) -> Vec<Line<'static>> {
     let height = usize::from(height);
     if height == 0 || body.len() <= height {
@@ -333,9 +337,11 @@ fn failure_label(failure: Option<&DictateFailure>) -> &'static str {
 
 /// The account that will not authenticate, and both ways past it.
 ///
-/// A config edit is the only escape from this screen, so naming just
-/// one exit would leave a reader who cannot fix the auth with nowhere
-/// to go.
+/// Both, in that order, because they are not equivalent: an
+/// out-of-band `/login` is picked up in place by the recovery poll
+/// within 30 s, while dropping the account edits config, which is read
+/// at boot and so needs a restart. Naming only one would leave a reader
+/// who cannot take that route with nowhere to go.
 fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'static>> {
     let error = Style::default().fg(theme::STATUS_ERROR);
     let head = Style::default().add_modifier(Modifier::BOLD);

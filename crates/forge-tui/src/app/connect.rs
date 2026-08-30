@@ -599,12 +599,10 @@ mod tests {
 
     /// `forge <project>` has to spawn the project it was given.
     ///
-    /// `start_connection` used to pick its arm off `active_view`, which
-    /// preflight made read `Launchpad` on both routes - so reverting it
-    /// takes the no-project arm, spawns only `auto_start`, and the user
-    /// lands in a chat with no session and no error. That is a silent
-    /// total failure on a daily path, and it survived the whole suite
-    /// because nothing called this function at all.
+    /// Picking the arm off `active_view` instead reads `Launchpad` on
+    /// both routes, so it takes the no-project arm, spawns only
+    /// `auto_start`, and the user lands in a chat with no session and no
+    /// error.
     #[tokio::test(flavor = "current_thread")]
     async fn the_named_project_is_what_boot_spawns_on_the_argv_route() {
         let (_app, dispatched, _c, _p) = boot_and_dispatch(Some("forge-test"), true).await;
@@ -624,11 +622,9 @@ mod tests {
         );
     }
 
-    /// Nothing spawns before the account plan exists. Without this the
+    /// Nothing spawns before the account plan exists. Without it the
     /// spawn falls back to round-robin and can land a session on an
-    /// account the project's org does not allow - which is what the
-    /// launchpad has gated clicks on since #246, with nothing equivalent
-    /// on this path until now.
+    /// account the project's org does not allow.
     #[tokio::test(flavor = "current_thread")]
     async fn nothing_spawns_before_the_account_plan_is_ready() {
         let (app, dispatched, _c, _p) = boot_and_dispatch(Some("forge-test"), false).await;
@@ -640,10 +636,19 @@ mod tests {
         assert!(app.spawn_deferred_logged, "the deferral is recorded once, so it is diagnosable");
     }
 
-    /// The two halves of the gate do distinct work, so each is pinned on
-    /// its own: the plan closes the window where the account map reads
-    /// settled before the plan is written, and all-`Ready` stops a
-    /// subprocess starting behind a screen whose only exit is quitting.
+    /// The two halves of the gate do distinct work: the plan closes the
+    /// window where the account map reads settled before the plan is
+    /// written, and all-`Ready` stops a subprocess starting behind a
+    /// screen the user can only quit.
+    ///
+    /// **The all-`Ready` half is pinned here; the plan half is
+    /// UNKILLABLE from a test, and that is a property of the code rather
+    /// than a gap.** Every route to a `Ready` account runs
+    /// `recompute_plan_if_ready`, so no test can construct
+    /// plan-absent-with-accounts-`Ready` - the state exists only inside
+    /// the real two-lock window between the map being published and the
+    /// plan being written. Dropping `!workspace_ready` therefore passes,
+    /// and no test would change that. Do not add one to chase it.
     #[tokio::test(flavor = "current_thread")]
     async fn the_plan_and_all_ready_are_both_required() {
         let config_dir = tempfile::tempdir().expect("tempdir");

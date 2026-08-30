@@ -947,9 +947,13 @@ chat continues here...
 <p class="intro">
   <strong>Preflight completes only on <code>Ready</code>, never on
   <code>Bailed</code>.</strong> forge will not start while an account in
-  <code>forge.toml</code> cannot, which makes a config edit the only way
-  past this screen - so every failure state names its exits rather than
-  leaving the reader on a screen with nothing to press.
+  <code>forge.toml</code> cannot, so every failure state names its exits
+  rather than leaving the reader on a screen with nothing to press.
+  <strong>Neither exit needs a restart to be tried.</strong> The recovery
+  poll runs throughout preflight and re-probes a bailed account every
+  30 s, so an out-of-band <code>/login</code> clears the screen in place;
+  dropping the account edits <code>forge.toml</code>, which is read at
+  boot, so that one does need a restart.
 </p>
 
 <div class="surface">
@@ -994,7 +998,7 @@ chat continues here...
       <dt>model states</dt><dd><code>queued</code> · <code>downloading</code> · <code>resuming</code> (a transfer that picked up a <code>.part</code>) · <code>verifying</code> · <code>ready</code> · <code>loading</code> · then <code>ready</code> again once the weights are in memory. A failure reads <code>bad hash</code> or <code>cancelled</code>, and a row nothing will now start reads <code>not started</code> rather than <code>queued</code>.</dd>
       <dt>keys</dt><dd><kbd>Esc</kbd> cancels an in-flight model download, which quits forge · <kbd>Ctrl+Q</kbd> quit. Every other key is consumed silently - there is nothing to navigate and the projects view underneath is not reachable yet.</dd>
       <dt>hand-over</dt><dd>Latched, not re-evaluated. A token expiring mid-session takes an account <code>Ready → Bailed → Loading</code>, so the readiness condition genuinely goes false again while the user is working; without the latch that would throw them back onto a boot screen. The launchpad's own gate covers that window instead.</dd>
-      <dt>short terminals</dt><dd>The wordmark is dropped before any panel content when the block does not fit, because the failure screens' exits are the one thing this screen cannot clip.</dd>
+      <dt>short terminals</dt><dd>The wordmark is dropped before any panel content when the block does not fit, because the failure screens' exits are the one thing this screen cannot clip. Past that the panel drops rows from the TOP rather than the bottom - the failure detail and the exits it names are appended last - and replaces them with a dim <code>… N more above</code>, so nothing vanishes unmarked. At 100x24 the bailed screen already overflows.</dd>
       <dt>no verify bar</dt><dd>Verifying draws a spinner and no byte counter. <code>forge_dictate::Progress::Verifying</code> carries only a file name - hashing reports as one event rather than as progress - so a bar there would be invented rather than measured.</dd>
     </dl>
   </div>
@@ -1003,7 +1007,7 @@ chat continues here...
 <div class="surface">
   <div class="surface-head">
     <h4>Preflight fails: a bailed account</h4>
-    <div class="when">gates forge entirely - a config edit is the only way past</div>
+    <div class="when">gates forge entirely - clears in place on a `/login`, or on a config edit plus a restart</div>
   </div>
   <div class="surface-body">
     <p>Both exits are named because neither is optional: a reader who cannot re-authenticate needs the second one. The footer drops <code>esc</code> - there is nothing left to cancel - and the paths are printed in full, since the reader is about to leave forge to edit them. A command too long for the panel wraps after a <code>/</code> onto a deeper-indented continuation line; it is never elided, because half a path is worse than none.</p>
@@ -1063,7 +1067,7 @@ chat continues here...
 
         It is the right length, so this is corruption and
         not a half-finished download. forge reports it
-        rather than deleting it: throwing away a file you
+        rather than deleting it: throwing away a 1.51 GB file you
         put there is not forge's call.
 
         <span class="bold">Delete it and forge fetches it again</span>
@@ -1154,7 +1158,7 @@ chat continues here...
 <div class="surface">
   <div class="surface-head">
     <h4>Launchpad full-screen layout</h4>
-    <div class="when">visible: <code>ActiveView::Launchpad</code> only</div>
+    <div class="when">visible: <code>ActiveView::Launchpad</code> after the hand-over</div>
   </div>
   <div class="surface-body">
     <p>The identity block (wordmark + version + optional update line + the account chip row when one is showing) and the picker box ride together as one <strong>vertically-centered unit</strong>; the single-row footer hint stays anchored to the terminal's bottom edge. The leftover height above the footer splits roughly symmetrically above the wordmark and below the box, so there's no dead gap between the wordmark and the list. The box grows to use most of the height left once the identity block is accounted for (capped so the block keeps breathing) and windows its rows by a scroll offset that follows the selection, so a project past the fold scrolls into view instead of being clipped; a scrollbar appears on the box's right edge only when the list overflows. On a long list or short screen the block top-aligns and the box scrolls; short lists render short and centered.</p>

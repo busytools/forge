@@ -461,12 +461,6 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// True while any session should keep its Projects-pane row spinner
-/// advancing off the active-status path. Counts exactly the rows that
-/// spin (via the shared `session_shows_spinner`), so a background-only
-/// -active row keeps ticking while an Attention/triangle row with a live
-/// task does not - no wasted redraws, and no drift from the glyph. The
-/// active session already drives ticks via `app.status`.
 /// Whether anything on screen is mid-animation, which is what earns a
 /// repaint on a tick nothing else changed.
 ///
