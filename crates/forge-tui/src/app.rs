@@ -466,8 +466,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 ///
 /// The preflight clause is not decoration. Account state and dictation
 /// progress are both POLLED by the renderer rather than pushed, so
-/// neither emits a `SessionUpdate` and neither marks `needs_redraw`; and
-/// [`App::shows_activity`] reads `app.sessions`, which is empty at boot.
+/// neither emits a `SessionUpdate` and neither marks `needs_redraw`.
 /// Without this, preflight paints once with a spinner that never moves
 /// and a screen that never updates while 3.07 GB downloads.
 pub(crate) fn is_animating(app: &App) -> bool {

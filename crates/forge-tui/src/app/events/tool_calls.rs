@@ -283,9 +283,6 @@ pub(super) fn upsert_tool_call_into_assistant_message(
     tool_info: ToolCallInfo,
     subagent_parent: Option<&str>,
 ) {
-    // Only reached below when the root is not in the index at all - an
-    // orphaned child still must not claim a turn container.
-    let subagent_scoped = subagent_parent.is_some();
     let existing_pos = app.lookup_tool_call(&tool_info.id);
 
     if let Some((mi, bi)) = existing_pos {
@@ -312,6 +309,38 @@ pub(super) fn upsert_tool_call_into_assistant_message(
         return;
     }
 
+    // The root can be gone: retention drops from the front, where a root
+    // sits by construction, and a backgrounded root's card goes terminal
+    // as soon as the CLI acknowledges the launch, so it is not
+    // retention-protected. Reuse the last assistant message rather than
+    // the tail - a notice makes the tail non-assistant, so a tail rule
+    // pushes again on every arrival - and never bind. After one push a
+    // last assistant always exists, so this stops pushing entirely.
+    if subagent_parent.is_some() {
+        let target = app.messages().iter().rposition(|m| matches!(m.role, MessageRole::Assistant));
+        let tc_id = tool_info.id.clone();
+        let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
+        let (msg_idx, block_idx) = if let Some(msg_idx) = target {
+            let Some(owner) = app.active_messages_mut().get_mut(msg_idx) else {
+                return;
+            };
+            let block_idx = owner.blocks.len();
+            owner.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
+            app.sync_after_message_tail_changed(msg_idx);
+            (msg_idx, block_idx)
+        } else {
+            let new_idx = app.messages().len();
+            app.push_message_tracked(ChatMessage::new(
+                MessageRole::Assistant,
+                vec![MessageBlock::ToolCall(Box::new(tool_info))],
+            ));
+            (new_idx, 0)
+        };
+        app.index_tool_call(tc_id, msg_idx, block_idx);
+        sync_tool_call_terminal_tracking(app, msg_idx, block_idx, terminal_id);
+        return;
+    }
+
     if let Some(msg_idx) = app.active_turn_assistant_idx()
         && let Some(owner) = app.active_messages_mut().get_mut(msg_idx)
     {
@@ -333,7 +362,7 @@ pub(super) fn upsert_tool_call_into_assistant_message(
     let tail_is_assistant =
         app.messages().last().is_some_and(|m| matches!(m.role, MessageRole::Assistant));
     let tail_turn_ended = app.messages().last().is_some_and(|m| m.turn_duration_ms.is_some());
-    let append_to_tail = tail_is_assistant && (subagent_scoped || !tail_turn_ended);
+    let append_to_tail = tail_is_assistant && !tail_turn_ended;
 
     if append_to_tail {
         let msg_idx = app.messages().len().saturating_sub(1);
@@ -351,9 +380,7 @@ pub(super) fn upsert_tool_call_into_assistant_message(
         let tc_id = tool_info.id.clone();
         let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
         last.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
-        if !subagent_scoped {
-            app.bind_active_turn_assistant(msg_idx);
-        }
+        app.bind_active_turn_assistant(msg_idx);
         app.sync_after_message_tail_changed(msg_idx);
         app.index_tool_call(tc_id, msg_idx, block_idx);
         sync_tool_call_terminal_tracking(app, msg_idx, block_idx, terminal_id);
@@ -367,9 +394,7 @@ pub(super) fn upsert_tool_call_into_assistant_message(
         MessageRole::Assistant,
         vec![MessageBlock::ToolCall(Box::new(tool_info))],
     ));
-    if !subagent_scoped {
-        app.bind_active_turn_assistant(new_idx);
-    }
+    app.bind_active_turn_assistant(new_idx);
     app.index_tool_call(tc_id, new_idx, 0);
     sync_tool_call_terminal_tracking(app, new_idx, 0, terminal_id);
 }

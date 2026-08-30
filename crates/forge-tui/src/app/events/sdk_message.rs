@@ -151,7 +151,14 @@ fn handle_assistant(app: &mut App, msg: Message) {
     // Running with no balancing Result to flip it back, and the
     // Projects pane spinner sticks until the first real turn
     // completes.
+    // A subagent's envelope is not this bucket's turn. A backgrounded
+    // one keeps arriving after the main turn Resulted, and no Result
+    // follows it, so flipping the bucket to Running here left it
+    // Running for good - the row spinner and the tab title both pulsing
+    // with nothing in flight.
+    let is_subagent = parent_tool_use_id.as_deref().is_some_and(|p| !p.trim().is_empty());
     if !app.replay_in_progress
+        && !is_subagent
         && let Some(key) = app.active_session_key.clone()
     {
         super::set_bucket_lifecycle_state(

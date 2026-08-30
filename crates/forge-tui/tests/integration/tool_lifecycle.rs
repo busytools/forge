@@ -1,5 +1,5 @@
 // =====
-// TESTS: 29
+// TESTS: 32
 // =====
 //
 // Tool call lifecycle integration tests.
@@ -1279,8 +1279,10 @@ async fn subagent_assistant_narration_does_not_leak_into_main_chat() {
 /// A backgrounded subagent's children keep arriving after the turn that
 /// dispatched it Resulted. They must not claim the finished turn: no
 /// indicator on it, and the session must not read busy for the
-/// subagent's whole life. Catches re-widening `subagent_scoped` to
-/// include the root, or dropping either `!subagent_scoped` guard.
+/// subagent's whole life. Two reviewers measured the coverage this
+/// comment used to claim and both found it absent: widening
+/// `subagent_scoped` to include the root survives here, and so does
+/// dropping either bind guard. What it does catch is the status write.
 #[tokio::test]
 async fn backgrounded_subagent_traffic_does_not_reopen_the_finished_turn() {
     let mut app = test_app();
@@ -1448,6 +1450,17 @@ async fn tab_title_shows_activity_after_turn_end_while_background_work_runs() {
         },
     );
     send_msg(&mut app, result_success_message());
+
+    // The subagent keeps emitting its own envelopes after the turn ends.
+    // These must not put the bucket back in flight - no Result follows
+    // them, so a bucket flipped to Running here never comes back.
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block("toolu_child", "Bash", serde_json::json!({"command": "x"}))],
+            "toolu_root",
+        ),
+    );
 
     assert!(
         matches!(app.status, AppStatus::Ready),
@@ -1823,4 +1836,133 @@ async fn a_grandchild_of_a_live_backgrounded_subagent_is_spared() {
         "nor Failed by the submit-path sweep; got {:?}",
         tool_call_block(&app, "toolu_gchild").status,
     );
+}
+
+/// A `Task`/`Agent` dispatch is the MAIN agent's own call, so a turn that
+/// opens with one owns its turn like any other. Classifying the root as
+/// subagent-scoped bars it from binding and reproduces the finished-turn
+/// symptom one level up, on the dispatching turn itself.
+#[tokio::test]
+async fn a_turn_opening_with_a_subagent_dispatch_still_owns_its_turn() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+    send_msg(&mut app, assistant_message(vec![text_block("first turn")]));
+    let mut first = result_success_message();
+    if let forge_primitives::Message::Result { ref mut duration_ms, .. } = first {
+        *duration_ms = 1_000;
+    }
+    send_msg(&mut app, first);
+    assert_eq!(app.active_turn_assistant_idx(), None, "the first turn released the anchor");
+
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_dispatch",
+            "Agent",
+            serde_json::json!({"subagent_type": "Explore", "description": "d", "prompt": "d"}),
+        )]),
+    );
+
+    let dispatch_msg = app.lookup_tool_call("toolu_dispatch").expect("indexed").0;
+    assert_eq!(
+        app.active_turn_assistant_idx(),
+        Some(dispatch_msg),
+        "the dispatching turn owns the message it opened",
+    );
+    assert!(
+        matches!(app.status, AppStatus::Running),
+        "and the dispatch is this session working; got {:?}",
+        app.status,
+    );
+}
+
+/// The bind guard on the other placement branch: with no assistant at the
+/// tail, a main-agent call opens a message and must own it. Only the
+/// tail-append branch was covered, so dropping this one went unnoticed.
+#[tokio::test]
+async fn a_main_agent_call_owns_a_message_it_opens_from_a_non_assistant_tail() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+    send_msg(&mut app, assistant_message(vec![text_block("turn")]));
+    send_msg(&mut app, result_success_message());
+    app.active_messages_mut().push(ChatMessage::new(
+        MessageRole::System(None),
+        vec![MessageBlock::Text(forge_tui::app::TextBlock::from_complete("notice"))],
+    ));
+    assert_eq!(app.active_turn_assistant_idx(), None, "nothing owns the chat");
+
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_main",
+            "Bash",
+            serde_json::json!({"command": "ls"}),
+        )]),
+    );
+
+    let opened = app.lookup_tool_call("toolu_main").expect("indexed").0;
+    assert_eq!(
+        app.active_turn_assistant_idx(),
+        Some(opened),
+        "a main-agent call opening a fresh message owns it",
+    );
+}
+
+/// The orphan path: a child whose root is no longer in the index, which
+/// retention produces routinely - it drops from the front where a root
+/// sits, and a backgrounded root's card goes terminal as soon as the CLI
+/// acknowledges the launch, so it is not retention-protected.
+///
+/// Reusing the last assistant message rather than the tail is what bounds
+/// this: a notice makes the tail non-assistant every episode, so a tail
+/// rule pushes again each time. The count must be flat after the first
+/// arrival, and this is the case the root-present loop cannot reach.
+#[tokio::test]
+async fn orphaned_subagent_children_do_not_accumulate_assistant_messages() {
+    let assistants = |app: &App| {
+        app.messages().iter().filter(|m| matches!(m.role, MessageRole::Assistant)).count()
+    };
+
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+    send_msg(&mut app, assistant_message(vec![text_block("a turn")]));
+    send_msg(&mut app, result_success_message());
+
+    let mut settled: Option<usize> = None;
+    for i in 0..10 {
+        app.active_messages_mut().push(ChatMessage::new(
+            MessageRole::System(None),
+            vec![MessageBlock::Text(forge_tui::app::TextBlock::from_complete("notice"))],
+        ));
+        // The parent id names a tool call that is not in the index.
+        send_msg(
+            &mut app,
+            assistant_message_with_parent(
+                vec![tool_use_block(
+                    &format!("toolu_orphan_{i}"),
+                    "Bash",
+                    serde_json::json!({"command": "x"}),
+                )],
+                "toolu_evicted_root",
+            ),
+        );
+        let now = assistants(&app);
+        match settled {
+            None => settled = Some(now),
+            Some(expected) => assert_eq!(
+                now, expected,
+                "episode {i} added an assistant message; orphans must reuse the last one",
+            ),
+        }
+        assert_eq!(
+            app.active_turn_assistant_idx(),
+            None,
+            "episode {i}: an orphan must not claim a turn container",
+        );
+    }
+
+    // Placement is deliberately unconstrained beyond boundedness: an
+    // orphan still lands in some turn's message, which is the attribution
+    // error #790 has to close.
+    assert_eq!(assistants(&app), settled.expect("ten episodes ran"), "flat throughout");
 }
