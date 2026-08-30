@@ -1380,9 +1380,11 @@ impl Workspace {
             .collect()
     }
 
-    /// The `forge.toml` this workspace loaded. Preflight names it: an
-    /// account that will not authenticate stops forge starting, and a
-    /// config edit is the only way past that.
+    /// The `forge.toml` this workspace loaded. Preflight names it as
+    /// one of the two ways past an account that will not authenticate -
+    /// the one that needs a restart, since config is read at boot. The
+    /// other is an out-of-band `/login`, which the recovery poll picks
+    /// up in place.
     pub fn config_path(&self) -> PathBuf {
         crate::config::forge_data_dir(&self.config_dir).join("forge.toml")
     }

@@ -207,8 +207,9 @@ pub struct DictateModel {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DictateSnapshot {
     pub models: Vec<DictateModel>,
-    /// Set once, and never cleared: the only way past a failed preflight
-    /// is a config edit or a fresh run.
+    /// Set once, and never cleared for the run: nothing re-probes a
+    /// failed model the way the account loader re-probes a bailed
+    /// account, so clearing this one takes a config edit or a fresh run.
     pub failure: Option<DictateFailure>,
 }
 

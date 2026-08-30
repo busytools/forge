@@ -121,9 +121,10 @@ fn a_model_reads_by_role_with_its_file_beneath() {
     );
 }
 
-/// A bailed account stops forge starting and a config edit is the only
-/// way past, so the screen has to name BOTH exits. Either one alone
-/// strands a reader who cannot take that route.
+/// A bailed account stops forge starting, so the screen has to name
+/// BOTH exits: either one alone strands a reader who cannot take that
+/// route. They are not equivalent, and the screen says which is which -
+/// a `/login` is picked up in place, dropping the account is not.
 #[test]
 fn a_bailed_account_names_both_exits() {
     let text = flatten(&bail_detail(
