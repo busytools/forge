@@ -487,10 +487,11 @@ inspected.
     appears nowhere in `crates/`. #767 is open on exactly that: under
     a byte-transparent session manager the flags live on the terminal
     rather than the session, so a reattach silently stops delivering
-    what the protocol provides. The nearby `CMD_MOD` fallback to
-    `CONTROL` is worth reading but is the clause above this one - a
-    fallback is not a detection, and treating one as the other is how
-    this rule gets satisfied on paper.
+    what the protocol provides. The nearby `is_cmd_shortcut`, which
+    accepts `CONTROL` where `SUPER` cannot arrive, is worth reading
+    but is the clause above this one - a fallback is not a detection,
+    and treating one as the other is how this rule gets satisfied on
+    paper.
 
     **Where the implementation must be multiplexer-specific, it owes
     three things**: why the generic path was not possible, which
