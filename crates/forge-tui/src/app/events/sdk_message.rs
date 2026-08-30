@@ -1688,6 +1688,11 @@ fn stamp_turn_info_on_latest_assistant(
     };
     let model = app.observed_assistant_model().map(ToOwned::to_owned);
     let usage = usage.filter(|u| !is_unattributed_usage(*u));
+    // Resume walks history through this same handler, and the end time
+    // is read off the local clock rather than the wire, so stamping it
+    // there would date every historical turn to the moment of the
+    // resume. Everything else in the frame is real and is kept.
+    let ended_at_local = (!app.replay_in_progress).then(local_clock_now);
     if let Some(msg) = app.active_messages_mut().get_mut(idx) {
         let info = &mut msg.turn_info;
         // A Result with no usable token counts cannot replace the ones
@@ -1698,7 +1703,7 @@ fn stamp_turn_info_on_latest_assistant(
         }
         info.duration_ms = Some(duration_ms);
         info.api_ms = api_ms;
-        info.ended_at_local = Some(local_clock_now());
+        info.ended_at_local = ended_at_local;
         info.session_cost_usd = total_cost_usd;
         if model.is_some() {
             info.model = model;
@@ -2159,6 +2164,47 @@ mod stamp_turn_info_tests {
         assert_eq!(info.output_tokens, Some(5), "and its token counts");
     }
 
+    /// The end time is read off the local clock, not the wire, and
+    /// resume replays history through this same handler - so without a
+    /// gate every historical turn on a resumed session claims to have
+    /// ended at the moment of the resume. `record_live_turn_usage`
+    /// gates on the same flag.
+    #[test]
+    fn replayed_history_is_not_dated_to_the_moment_of_the_resume() {
+        let usage = forge_primitives::Usage {
+            input_tokens: 2,
+            output_tokens: 5,
+            cache_read_input_tokens: 15_262,
+            cache_creation_input_tokens: 62_706,
+        };
+
+        let mut app = App::test_default();
+        app.replay_in_progress = true;
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new()));
+        stamp_turn_info_on_latest_assistant(&mut app, 4_675, Some(3_807), Some(usage), None);
+
+        let replayed = latest_turn_info(&app);
+        assert_eq!(
+            replayed.ended_at_local, None,
+            "a replayed turn ended at a time the wire never carried, so the row says nothing \
+             rather than naming the resume",
+        );
+        assert_eq!(
+            (replayed.duration_ms, replayed.output_tokens),
+            (Some(4_675), Some(5)),
+            "the rest of a replayed frame is real history and is still stamped",
+        );
+
+        let mut live = App::test_default();
+        live.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new()));
+        stamp_turn_info_on_latest_assistant(&mut live, 4_675, Some(3_807), Some(usage), None);
+        assert!(
+            latest_turn_info(&live).ended_at_local.is_some(),
+            "control: a live turn still gets an end time, so the gate cannot be suppressing \
+             every stamp",
+        );
+    }
+
     /// The refusal is narrow on purpose. It exists because an
     /// unattributed Result supplies no token counts, so its clock
     /// would land over whatever counts the row already had - the
@@ -2333,7 +2379,11 @@ mod stamp_turn_info_tests {
             .filter(|m| matches!(m.role, MessageRole::Assistant))
             .map(|m| m.turn_info.duration_ms)
             .collect();
-        assert_eq!(assistants, vec![None, Some(5_000)]);
+        assert_eq!(
+            assistants,
+            vec![None, Some(5_000)],
+            "the stamp targets the LATEST assistant, so an earlier one keeps its own row",
+        );
     }
 
     /// The row's height changes when it settles, so the stamp has to
