@@ -439,7 +439,7 @@ inspected.
     the manager does not say what it forwards.
 
     #778 is the worked example, and it is a good one because forge
-    already had the right path and skipped it. `notification_plan`
+    already has the right path and skips it. `notification_plan`
     (`crates/forge-tui/src/app/notify.rs`) sets `send_desktop:
     osc9_text.is_none()`, so believing the terminal speaks OSC 9
     suppresses the `notify-rust` desktop notification, which reaches
