@@ -1,9 +1,11 @@
 //! Preflight view state + keyboard handling.
 //!
-//! Preflight is the launchpad's first view (the renderer lives in
-//! [`crate::ui::preflight`]). It runs once per forge run and hands over
-//! to the projects view the moment every account has authenticated and
-//! every configured dictation model is loaded.
+//! Preflight is the first thing forge renders on every route (the
+//! renderer lives in [`crate::ui::preflight`]). It runs once per forge
+//! run and, once every account has authenticated and every configured
+//! dictation model is loaded, hands over to wherever the invocation was
+//! headed: chat when forge was given a project, the project picker when
+//! it was not.
 
 use crossterm::event::{KeyCode, KeyEvent};
 

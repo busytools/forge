@@ -1,9 +1,10 @@
 //! Preflight - the first of the launchpad's two views.
 //!
 //! Two sibling sections, `Accounts` and `Dictation`, each row carrying
-//! its own state. Shown once per forge run; nothing proceeds until
-//! every account is `Ready` and every configured model is loaded, so
-//! the projects pane can no longer be reached mid-load.
+//! its own state. Shown once per forge run, on every route; nothing
+//! proceeds until every account is `Ready` and every configured model
+//! is loaded, so neither the project picker nor a chat session can be
+//! reached mid-load.
 //!
 //! **Preflight completes only on `Ready`, never on `Bailed`.** forge
 //! will not start while an account in `forge.toml` cannot, which makes
@@ -12,8 +13,9 @@
 //! with nothing to press.
 //!
 //! Geometry matches [`super::launchpad`]: same wordmark, same
-//! `PICKER_WIDTH` panel, so handing over to the projects view is a
-//! content swap rather than a resize.
+//! `PICKER_WIDTH` panel, so handing over to the project picker is a
+//! content swap rather than a resize. The chat route redraws anyway, so
+//! only the picker handover is a geometry claim.
 
 use forge_workspace::{
     AccountLoadingRow, DictateFailure, DictateModel, DictateModelState, DictateSnapshot,
