@@ -422,6 +422,93 @@ inspected.
     of the harness, so both are true and neither is stale. Naming
     these documents as a set is what invites someone to make them
     agree, which would quietly change what two of them mean.
+19. **A terminal multiplexer is the common case, not the edge case.**
+    forge is expected to run behind one, so a capability forge detects
+    is not a capability forge has. Recommending a particular
+    multiplexer is not the same as depending on one.
+
+    **Build the multiplexer-independent path first.** Where one
+    exists it is the primary and an escape sequence is the fallback,
+    never the preference. An escape sequence is a request to whatever
+    sits between forge and the terminal. Some of that middle
+    announces itself and some of it does not: zellij sets `ZELLIJ`,
+    screen sets `STY` and shpool sets `SHPOOL_SESSION_NAME`, while
+    dtach's whole source contains no `setenv` at all, which is why
+    #767 names it beside shpool. forge reads none of them today, and
+    reading one would not settle the question anyway - identifying
+    the manager does not say what it forwards.
+
+    #778 is the worked example, and it is a good one because forge
+    already has the right path and skips it. `notification_plan`
+    (`crates/forge-tui/src/app/notify.rs`) sets `send_desktop:
+    osc9_text.is_none()`, so believing the terminal speaks OSC 9
+    suppresses the `notify-rust` desktop notification, which reaches
+    the OS without crossing the terminal at all. That belief comes
+    from `terminal_capabilities_from_env` reading `TERM_PROGRAM` and
+    `ITERM_SESSION_ID`. Measured: both reach a pane under zellij
+    0.44.3 and under GNU screen 4.00.03 unchanged, while an OSC 9
+    emitted inside either does not reach the outer pty, with plain
+    text written on both sides of it arriving normally. shpool 0.9.8
+    drops it deliberately; its vendored vterm carries the literals
+    `ignoring OSC 9 (desktop notification)` and `ignoring OSC 777`.
+    So the check answers whether the terminal supports OSC 9 when
+    the question is whether an OSC 9 survives to it. The outcome is
+    silence rather than a degraded notification: `Iterm2` and
+    `Ghostty`, two of the five channels and the default among them,
+    leave `ring_bell` and `send_desktop` both false when OSC 9 is
+    believed available - `Iterm2` keys both on it, `Ghostty`'s bell
+    is off regardless - so an eaten escape leaves nothing at all.
+
+    What crosses is decided per sequence by the thing in the middle,
+    and no one capability answers it for every sequence. tmux
+    re-emits some pane-originated OSC from its own terminfo: OSC 8
+    when the outer terminal carries `Hls`, and since 3.7 the OSC 9;4
+    progress bar via `Spb`. The OSC 9 NOTIFICATION form is not among
+    them - `input_osc_9` returns on any payload not starting `4` -
+    and that is the form forge emits. Carrying an arbitrary sequence
+    out takes a DCS envelope, and the price differs per multiplexer:
+    tmux wants a `tmux;` prefix, `allow-passthrough` at `on` for a
+    visible pane or `all` for any (tri-state since 3.4, default
+    `off`), and every ESC in the payload doubled, the doubling being
+    the one requirement `tmux.1` never states. screen forwards a bare
+    DCS-wrapped OSC 9 with no opt-in and no doubling. The screen half
+    is measured; the tmux half is read from source, at 3.7c except
+    where an earlier tag is named.
+
+    **Where no multiplexer-independent path exists, state the
+    requirement and detect its absence.** Depending on a sequence is
+    allowed. Depending on it silently is not, because a feature that
+    quietly does nothing reads as forge being broken rather than as
+    the multiplexer eating it.
+
+    **forge has no example of that clause to copy, and #767 is the
+    gap.** `resume_terminal` (`crates/forge-tui/src/app.rs`) pushes
+    the kitty enhancement flags because `SUPER` arrives no other way,
+    discards the result, and never asks whether they took;
+    `supports_keyboard_enhancement` is crossterm public API and
+    appears nowhere in `crates/`. #767 is open on exactly that: under
+    a byte-transparent session manager the flags live on the terminal
+    rather than the session, so a reattach silently stops delivering
+    what the protocol provides. `is_cmd_shortcut` in `app/keys.rs`,
+    which accepts `CONTROL` where `SUPER` cannot arrive, is worth
+    reading, but accepting a substitute is a fallback and not a
+    detection, and treating one as the other is how this rule gets
+    satisfied on paper.
+
+    **Where the implementation must be multiplexer-specific, it owes
+    three things**: why the generic path was not possible, which
+    multiplexers it works under and which it does not, and a seam - a
+    `forge.toml` key plus enough structure that a second multiplexer
+    is a config entry and an implementation rather than a rewrite.
+    Hardcoding one multiplexer's behaviour with no way to add another
+    is the thing this forbids. The first two belong in the pull
+    request and beside the `forge.toml` key, never as a support
+    matrix in a comment, which rots exactly as hard rule 13
+    describes.
+
+    The binary test: when a terminal multiplexer intercepts it, does
+    the user get a degraded experience or an explained one? Silence
+    is the failure.
 
 ## Claude Code worktree interop
 
