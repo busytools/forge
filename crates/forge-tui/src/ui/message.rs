@@ -2123,8 +2123,10 @@ pub fn format_token_count_short(n: u64) -> String {
 }
 
 /// One-line chat indicator for a session waiting on >=1 non-terminal
-/// `SubagentRoot`. Subagents are Inspector-only, so without this line
-/// the chat goes silent while a subagent runs. Sibling of
+/// `SubagentRoot`, rendered only on the in-flight turn's assistant
+/// message. Subagents are Inspector-only, so without this line the chat
+/// goes silent while a subagent runs mid-turn; once the turn ends the
+/// Inspector is the only surface, which is deliberate. Sibling of
 /// [`thinking_line`] / [`compacting_line`]; additive to `thinking_line`
 /// (both render together when the assistant is mid-stream AND a
 /// subagent is still going). Single shape:
