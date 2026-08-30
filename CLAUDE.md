@@ -451,12 +451,12 @@ inspected.
     text written on both sides of it arriving normally. shpool 0.9.8
     drops it deliberately; its vendored vterm carries the literals
     `ignoring OSC 9 (desktop notification)` and `ignoring OSC 777`.
-    So the check answered whether the terminal supports OSC 9 when
-    the question was whether an OSC 9 survives to it. Under the
-    default channel that is silence rather than a degraded
-    notification: `Iterm2` with OSC 9 believed available sets
-    `ring_bell` and `send_desktop` both false, so an eaten escape
-    leaves nothing at all.
+    So the check answers whether the terminal supports OSC 9 when
+    the question is whether an OSC 9 survives to it. The outcome is
+    silence rather than a degraded notification: `Iterm2` and
+    `Ghostty`, two of the five channels and including the default,
+    set `ring_bell` and `send_desktop` both false once OSC 9 is
+    believed available, so an eaten escape leaves nothing at all.
 
     What crosses is decided per sequence by the thing in the middle,
     and no one capability answers it for every sequence. tmux
