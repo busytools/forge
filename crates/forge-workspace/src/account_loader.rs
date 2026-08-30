@@ -55,7 +55,7 @@ const PROBE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_LOADING_ITERATIONS: u32 = 12;
 
 /// 30 s polling interval for the recovery loop.
-const RECOVERY_POLL_INTERVAL: Duration = Duration::from_secs(30);
+pub const RECOVERY_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Per-call timeout for `claude auth status` invocations from the
 /// recovery poll. The shellout is normally ~50 ms (see auth_status.rs);

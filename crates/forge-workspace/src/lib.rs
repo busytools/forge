@@ -77,6 +77,10 @@ mod views;
 mod workspace;
 
 pub use account::{LoadingState, UsageFetchStatus};
+/// How often a bailed account is re-probed. Exported because preflight
+/// tells the reader how long an out-of-band `/login` takes to land, and
+/// a number written into that copy would go false if this moved.
+pub use account_loader::RECOVERY_POLL_INTERVAL;
 pub use dictate::{
     DictateFailure, DictateModel, DictateModelState, DictateRole, DictateSettings, DictateSnapshot,
 };

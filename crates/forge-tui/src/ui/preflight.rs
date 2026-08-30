@@ -368,6 +368,18 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
         width,
     ));
     lines.push(text_row(4, "/login", Style::default(), width));
+    // Without this a reader who fixes their auth has no way of knowing
+    // whether to restart, and the answer is no. The interval is read
+    // rather than written, so the screen cannot outlive the poll.
+    lines.push(text_row(
+        4,
+        &format!(
+            "forge picks this up within {}s",
+            forge_workspace::RECOVERY_POLL_INTERVAL.as_secs()
+        ),
+        dim(),
+        width,
+    ));
     lines.push(Line::default());
     lines.push(text_row(2, "Or drop the account", head, width));
     lines.push(text_row(4, "delete its [[accounts]] block from", Style::default(), width));

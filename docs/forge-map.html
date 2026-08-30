@@ -1010,7 +1010,7 @@ chat continues here...
     <div class="when">gates forge entirely - clears in place on a `/login`, or on a config edit plus a restart</div>
   </div>
   <div class="surface-body">
-    <p>Both exits are named because neither is optional: a reader who cannot re-authenticate needs the second one. The footer drops <code>esc</code> - there is nothing left to cancel - and the paths are printed in full, since the reader is about to leave forge to edit them. A command too long for the panel wraps after a <code>/</code> onto a deeper-indented continuation line; it is never elided, because half a path is worse than none.</p>
+    <p>The <code>/login</code> exit says the retry is automatic, because otherwise a reader who fixes their auth has no way of knowing whether to restart - and the answer is no. The interval is read from <code>RECOVERY_POLL_INTERVAL</code> rather than written into the copy, so the screen cannot go false if the poll changes. Both exits are named because neither is optional: a reader who cannot re-authenticate needs the second one. The footer drops <code>esc</code> - there is nothing left to cancel - and the paths are printed in full, since the reader is about to leave forge to edit them. A command too long for the panel wraps after a <code>/</code> onto a deeper-indented continuation line; it is never elided, because half a path is worse than none.</p>
     <div class="term">
       <pre class="indent">
       <span class="dim">────────────────────────────────────────────────────────</span>
@@ -1033,6 +1033,7 @@ chat continues here...
         <span class="bold">Fix the auth</span>
           CLAUDE_CONFIG_DIR=~/.claude-granite1 claude
           /login
+          <span class="dim">forge picks this up within 30s</span>
 
         <span class="bold">Or drop the account</span>
           delete its [[accounts]] block from

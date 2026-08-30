@@ -149,6 +149,20 @@ fn a_bailed_account_names_both_exits() {
         text.contains("Or drop the account") && text.contains("[[accounts]]"),
         "exit two is removing the account from forge.toml; got:\n{text}",
     );
+    // The two exits are not equivalent and the screen has to say so:
+    // this one lands without a restart, the other does not.
+    assert!(
+        text.contains(&format!(
+            "forge picks this up within {}s",
+            forge_workspace::RECOVERY_POLL_INTERVAL.as_secs()
+        )),
+        "the /login exit says the retry is automatic, at the interval the poll actually uses - \
+         a reader who fixes their auth otherwise cannot tell whether to restart; got:\n{text}",
+    );
+    assert!(
+        forge_workspace::RECOVERY_POLL_INTERVAL.as_secs() > 0,
+        "a zero interval would make the assertion above match any digit-free copy",
+    );
 }
 
 /// `Bailed` is red rather than the shipped warning yellow. On the one
