@@ -459,17 +459,19 @@ inspected.
     leaves nothing at all.
 
     What crosses is decided per sequence by the thing in the middle,
-    not by the terminal, so no single capability answers it. tmux
-    re-emits some pane-originated OSC from its own terminfo - OSC 8
-    leaves via the `Hls` capability whenever the outer terminal
-    advertises `hyperlinks` (`tty_hyperlink`) - while dropping
-    others, OSC 9 among them. Carrying an arbitrary sequence out
-    verbatim takes a DCS envelope, and the price differs per
-    multiplexer: tmux wants a `tmux;` prefix, `allow-passthrough` set
-    (off by default since 3.3) and every ESC in the payload doubled,
-    a rule that lives in `input.c`'s state tables and not in
-    `tmux.1`, while screen forwards a bare DCS-wrapped OSC 9 with no
-    opt-in and no doubling. Both measured.
+    and no one capability answers it for every sequence. tmux
+    re-emits some pane-originated OSC from its own terminfo: OSC 8
+    when the outer terminal carries `Hls`, and since 3.7 the OSC 9;4
+    progress bar via `Spb`. The OSC 9 NOTIFICATION form is not among
+    them - `input_osc_9` returns on any payload not starting `4` -
+    and that is the form forge emits. Carrying an arbitrary sequence
+    out takes a DCS envelope, and the price differs per multiplexer:
+    tmux wants a `tmux;` prefix, `allow-passthrough` at `on` for a
+    visible pane or `all` for any (default `off` since 3.3), and
+    every ESC in the payload doubled, the doubling being the one
+    requirement `tmux.1` never states. screen forwards a bare
+    DCS-wrapped OSC 9 with no opt-in and no doubling. The screen half
+    is measured; the tmux half is read from 3.7c source.
 
     **Where no multiplexer-independent path exists, state the
     requirement and detect its absence.** Depending on a sequence is
