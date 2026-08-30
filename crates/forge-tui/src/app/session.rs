@@ -531,6 +531,26 @@ impl UiSession {
             .map(|(_, tool_use_id)| tool_use_id.as_str())
             .collect()
     }
+
+    /// The above plus the children of those roots, which is what a
+    /// turn-boundary sweep must spare: only the root gets a `TaskStarted`
+    /// and a roster row, so a child of a live backgrounded subagent is
+    /// invisible to the roster and would be marked failed while it runs.
+    /// Mirrors the retention in `App::clear_tool_scope_tracking`, which
+    /// spares the same set one layer up.
+    pub fn backgrounded_alive_with_children(&self) -> HashSet<String> {
+        let roots = self.backgrounded_alive_tool_use_ids();
+        let mut alive: HashSet<String> = roots.iter().map(|id| (*id).to_owned()).collect();
+        alive.extend(self.tool_call_scopes.iter().filter_map(|(id, scope)| match scope {
+            ToolCallScope::SubagentChild { parent_tool_use_id }
+                if roots.contains(parent_tool_use_id.as_str()) =>
+            {
+                Some(id.clone())
+            }
+            _ => None,
+        }));
+        alive
+    }
 }
 
 /// Whether a session's Projects-pane row shows the activity spinner: an

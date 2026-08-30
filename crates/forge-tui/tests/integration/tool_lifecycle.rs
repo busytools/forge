@@ -1,5 +1,5 @@
 // =====
-// TESTS: 21
+// TESTS: 25
 // =====
 //
 // Tool call lifecycle integration tests.
@@ -1274,4 +1274,272 @@ async fn subagent_assistant_narration_does_not_leak_into_main_chat() {
         !chat_text.contains("subagent narration leaking"),
         "subagent narration must not leak into the main chat; got {chat_text:?}",
     );
+}
+
+/// A backgrounded subagent's children keep arriving after the turn that
+/// dispatched it Resulted. They must not claim the finished turn: no
+/// indicator on it, and the session must not read busy for the
+/// subagent's whole life. Catches re-widening `subagent_scoped` to
+/// include the root, or dropping either `!subagent_scoped` guard.
+#[tokio::test]
+async fn backgrounded_subagent_traffic_does_not_reopen_the_finished_turn() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_root",
+            "Agent",
+            serde_json::json!({
+                "subagent_type": "general-purpose",
+                "description": "bg scan",
+                "prompt": "bg scan",
+            }),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-root".to_owned(),
+            description: "bg scan".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_root".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+        },
+    );
+    send_msg(
+        &mut app,
+        user_message(vec![tool_result_block(
+            "toolu_root",
+            serde_json::json!("Agent launched in background. Task ID: task-root"),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![serde_json::json!({
+                "task_id": "task-root",
+                "task_type": "local_agent",
+                "description": "bg scan",
+            })],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+    send_msg(&mut app, result_success_message());
+
+    let ended_turn = app.messages().len() - 1;
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block("toolu_child", "Bash", serde_json::json!({"command": "rg x"}))],
+            "toolu_root",
+        ),
+    );
+
+    assert_eq!(
+        app.active_turn_assistant_idx(),
+        None,
+        "a subagent child must not bind the main agent's turn container",
+    );
+    assert!(
+        matches!(app.status, AppStatus::Ready),
+        "a subagent's own call is not this session working; got {:?}",
+        app.status,
+    );
+    assert_eq!(
+        app.messages().len() - 1,
+        ended_turn,
+        "the child belongs beside the turn that dispatched it, not in a new one",
+    );
+    assert_eq!(app.subagents_view().len(), 1, "the Inspector still owns the running subagent");
+
+    // Something new after the turn is its own turn, and says so.
+    send_msg(&mut app, assistant_message(vec![text_block("fresh")]));
+    assert_eq!(
+        app.active_turn_assistant_idx(),
+        Some(ended_turn + 1),
+        "new streaming text opens its own turn rather than joining the dead one",
+    );
+}
+
+/// A turn that opens with a tool_use, while the previous turn's message
+/// is still the tail, must not land on it - that glued two turns into
+/// one message and left the second turn's duration rendering nowhere.
+/// Catches dropping the `tail_turn_ended` conjunct.
+#[tokio::test]
+async fn a_turn_opening_with_a_tool_use_does_not_land_on_the_previous_turn() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+
+    send_msg(&mut app, assistant_message(vec![text_block("first turn")]));
+    let mut first = result_success_message();
+    if let forge_primitives::Message::Result { ref mut duration_ms, .. } = first {
+        *duration_ms = 3_174;
+    }
+    send_msg(&mut app, first);
+    assert_eq!(app.messages().len(), 1, "one turn so far");
+
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "tc_second",
+            "Bash",
+            serde_json::json!({"command": "ls"}),
+        )]),
+    );
+    send_msg(&mut app, assistant_message(vec![text_block("second turn")]));
+
+    assert_eq!(app.messages().len(), 2, "the second turn owns its own message");
+    assert_eq!(
+        app.messages()[1].turn_duration_ms,
+        None,
+        "the new turn must not inherit the finished turn's duration",
+    );
+    assert_eq!(
+        app.messages()[0].turn_duration_ms,
+        Some(3_174),
+        "and the finished turn keeps its own",
+    );
+}
+
+/// Ved's call: the chat goes quiet at turn end but the tab title keeps
+/// showing activity while a backgrounded subagent runs - the chat is
+/// where you are looking, the title is how you know to look. That must
+/// hold on real background activity, not on a stale `app.status`, which
+/// is how it used to hold. The wiring itself is compiler-enforced:
+/// `update_tab_title` no longer accepts an `AppStatus`.
+#[tokio::test]
+async fn tab_title_shows_activity_after_turn_end_while_background_work_runs() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_root",
+            "Agent",
+            serde_json::json!({"subagent_type": "Explore", "description": "d", "prompt": "d"}),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-root".to_owned(),
+            description: "d".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_root".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+        },
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![serde_json::json!({
+                "task_id": "task-root",
+                "task_type": "local_agent",
+                "description": "d",
+            })],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+    send_msg(&mut app, result_success_message());
+
+    assert!(
+        matches!(app.status, AppStatus::Ready),
+        "the turn ended, so the session is not busy; got {:?}",
+        app.status,
+    );
+    assert!(
+        app.shows_activity(),
+        "the title must still show activity, on the live background work rather than a stale status",
+    );
+
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: Vec::new(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+    assert!(
+        !app.shows_activity(),
+        "with the background work drained and the turn over, the title goes idle",
+    );
+}
+
+/// Only the root of a backgrounded subagent gets a `TaskStarted` and a
+/// roster row, so a roster-only exemption spares the root and fails its
+/// children while they are still running. That stayed hidden while a
+/// stale `Running` status made the submit path skip the sweep entirely.
+/// Catches narrowing the exemption back to the roster.
+#[tokio::test]
+async fn a_turn_boundary_sweep_spares_a_live_backgrounded_subagents_children() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_root",
+            "Agent",
+            serde_json::json!({"subagent_type": "Explore", "description": "d", "prompt": "d"}),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-root".to_owned(),
+            description: "d".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_root".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+        },
+    );
+    send_msg(
+        &mut app,
+        user_message(vec![tool_result_block(
+            "toolu_root",
+            serde_json::json!("Agent launched in background. Task ID: task-root"),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![serde_json::json!({
+                "task_id": "task-root",
+                "task_type": "local_agent",
+                "description": "d",
+            })],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+    send_msg(&mut app, result_success_message());
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block("toolu_child", "Bash", serde_json::json!({"command": "sleep 60"}))],
+            "toolu_root",
+        ),
+    );
+    assert!(
+        matches!(tool_call_block(&app, "toolu_child").status, model::ToolCallStatus::InProgress),
+        "the child is running before the sweep",
+    );
+
+    app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
+
+    assert!(
+        matches!(tool_call_block(&app, "toolu_child").status, model::ToolCallStatus::InProgress),
+        "a live backgrounded subagent's child must survive the sweep; got {:?}",
+        tool_call_block(&app, "toolu_child").status,
+    );
+    assert_eq!(app.subagents_view().len(), 1, "and the subagent stays live in the Inspector");
 }

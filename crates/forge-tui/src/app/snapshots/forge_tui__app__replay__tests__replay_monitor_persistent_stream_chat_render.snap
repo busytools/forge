@@ -14,6 +14,8 @@ Event 1 received (monitor-line-1). Waiting for the remaining two.
 3.6s
 
 Event 2 received (monitor-line-2). One more to go.
+3.1s
+
 All three events arrived:
 
 ```

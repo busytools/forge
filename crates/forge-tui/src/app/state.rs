@@ -784,7 +784,11 @@ impl App {
         // when fired close together, so calling here directly with
         // the incoming bucket's cwd guarantees one canonical update
         // per switch.
-        crate::app::tab_title::update_tab_title(&self.status, self.spinner_frame, self.cwd());
+        crate::app::tab_title::update_tab_title(
+            self.shows_activity(),
+            self.spinner_frame,
+            self.cwd(),
+        );
         // Ensure the file index for `@`-mention autocomplete is
         // started for the incoming bucket. Each bucket owns its own
         // `FileIndexState`; if this is the first time we've switched
@@ -1139,6 +1143,26 @@ impl App {
     /// Active session's `is_compacting` flag.
     pub fn is_compacting(&self) -> bool {
         self.active_session().is_some_and(|s| s.is_compacting)
+    }
+
+    /// Whether anything is happening the user should see moving: this
+    /// session's turn, a compaction, or live background work in any
+    /// session. Drives the spinner clock and the terminal tab title
+    /// together, so the two cannot disagree about whether forge is busy.
+    pub fn shows_activity(&self) -> bool {
+        matches!(
+            self.status,
+            AppStatus::Connecting
+                | AppStatus::CommandPending
+                | AppStatus::Thinking
+                | AppStatus::Running
+        ) || self.is_compacting()
+            || self.sessions.values().any(|s| {
+                crate::app::session::session_shows_spinner(
+                    s.lifecycle_state,
+                    s.has_live_background_work(),
+                )
+            })
     }
 
     /// Set the active session's `is_compacting` flag.
@@ -3284,9 +3308,7 @@ impl App {
         let mut detached_terminal = false;
         let exempt: std::collections::HashSet<String> = self
             .active_session()
-            .map(|session| {
-                session.backgrounded_alive_tool_use_ids().into_iter().map(str::to_owned).collect()
-            })
+            .map(super::session::UiSession::backgrounded_alive_with_children)
             .unwrap_or_default();
 
         for (msg_idx, msg) in self.active_messages_mut().iter_mut().enumerate() {

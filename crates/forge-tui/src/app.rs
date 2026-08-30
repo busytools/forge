@@ -331,18 +331,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // is_animating clause keeps the per-row spinners on background
         // sessions animating; the active session already drives ticks
         // via `app.status` above.
-        let any_background_running = any_background_activity(app);
-        let is_animating = matches!(
-            app.status,
-            AppStatus::Connecting
-                | AppStatus::CommandPending
-                | AppStatus::Thinking
-                | AppStatus::Running
-        ) || app.is_compacting()
-            || any_background_running;
+        let is_animating = app.shows_activity();
         if is_animating {
             advance_spinner_frame(app, Instant::now());
-            tab_title::update_tab_title(&app.status, app.spinner_frame, app.cwd());
+            tab_title::update_tab_title(is_animating, app.spinner_frame, app.cwd());
             // The loop wakes more often than the frame interval, so
             // repainting per wake would redraw an unchanged frame
             // several times over.
@@ -356,7 +348,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         }
         // Update tab title on non-animating state transitions (Ready, Error).
         if !is_animating && app.needs_redraw {
-            tab_title::update_tab_title(&app.status, app.spinner_frame, app.cwd());
+            tab_title::update_tab_title(is_animating, app.spinner_frame, app.cwd());
         }
         // Smooth scroll still settling - viewport row index (usize)
         // converts to f32 for sub-pixel scroll comparison; loss is bounded
@@ -468,12 +460,6 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 /// -active row keeps ticking while an Attention/triangle row with a live
 /// task does not - no wasted redraws, and no drift from the glyph. The
 /// active session already drives ticks via `app.status`.
-fn any_background_activity(app: &App) -> bool {
-    app.sessions.values().any(|s| {
-        crate::app::session::session_shows_spinner(s.lifecycle_state, s.has_live_background_work())
-    })
-}
-
 /// Which animation step the spinner epoch is on. Rendered glyphs divide
 /// that same epoch by their style cadence, so gating repaints on this
 /// cannot drift against them the way a separately-accumulated counter
@@ -1324,7 +1310,7 @@ mod tests {
         app.sessions.insert(key.clone(), session);
 
         // Idle with no background work: nothing to animate.
-        assert!(!any_background_activity(&app), "idle with no background work must not animate");
+        assert!(!app.shows_activity(), "idle with no background work must not animate");
 
         // A live backgrounded task promotes the gate so the frame ticker
         // keeps advancing for a row that's active only because of it.
@@ -1335,7 +1321,7 @@ mod tests {
                 description: "cargo build".to_owned(),
             },
         );
-        assert!(any_background_activity(&app), "idle with live background work must animate");
+        assert!(app.shows_activity(), "idle with live background work must animate");
     }
 
     /// The gate must count exactly the rows that spin: an Attention session
@@ -1359,13 +1345,13 @@ mod tests {
         });
         app.sessions.insert(key.clone(), session);
         assert!(
-            !any_background_activity(&app),
+            !app.shows_activity(),
             "Attention + background work shows a triangle, not a spinner - gate must not tick",
         );
 
         app.sessions.get_mut(&key).expect("bucket").lifecycle_state =
             SessionLifecycleState::Running;
-        assert!(any_background_activity(&app), "a Running session spins, so the gate ticks");
+        assert!(app.shows_activity(), "a Running session spins, so the gate ticks");
     }
 
     /// The gate never lands above either pinned step, at every accepted

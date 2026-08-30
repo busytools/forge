@@ -67,7 +67,7 @@ fn apply_connected_presentation(
         crate::app::file_index::restart(app);
         app.rebuild_chat_focus_from_state();
         crate::app::config::refresh_runtime_tabs_for_session_change(app);
-        crate::app::tab_title::update_tab_title(&app.status, app.spinner_frame, app.cwd());
+        crate::app::tab_title::update_tab_title(app.shows_activity(), app.spinner_frame, app.cwd());
     } else {
         // Background path: temp-swap `active_session_key` so the
         // App-level message + viewport accessors land on the migrated

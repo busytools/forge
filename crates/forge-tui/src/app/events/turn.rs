@@ -253,8 +253,7 @@ pub(super) fn finalize_background_tool_calls(
     session: &mut crate::app::session::UiSession,
     new_status: model::ToolCallStatus,
 ) {
-    let exempt: std::collections::HashSet<String> =
-        session.backgrounded_alive_tool_use_ids().into_iter().map(str::to_owned).collect();
+    let exempt = session.backgrounded_alive_with_children();
     for msg in &mut session.messages {
         for block in &mut msg.blocks {
             if let MessageBlock::ToolCall(tc) = block {

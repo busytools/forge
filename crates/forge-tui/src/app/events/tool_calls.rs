@@ -91,9 +91,18 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     if should_jump_on_large_write(&tool_info) {
         app.active_viewport_mut().engage_auto_scroll();
     }
-    upsert_tool_call_into_assistant_message(app, tool_info);
+    // The root is the MAIN agent invoking Task, so it owns its turn like
+    // any other call; only a child is another agent's work.
+    let subagent_scoped = matches!(scope, ToolCallScope::SubagentChild { .. });
+    upsert_tool_call_into_assistant_message(app, tool_info, subagent_scoped);
 
-    app.status = AppStatus::Running;
+    // A subagent's own call is not the main agent working, and a
+    // backgrounded one keeps arriving long after the dispatching turn
+    // ended - reporting it as this session's status left the turn
+    // reading busy for the subagent's whole life.
+    if !subagent_scoped {
+        app.status = AppStatus::Running;
+    }
     app.increment_files_accessed();
 }
 
@@ -267,7 +276,11 @@ fn build_tool_info_from_tool_call(
     tool_info
 }
 
-pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: ToolCallInfo) {
+pub(super) fn upsert_tool_call_into_assistant_message(
+    app: &mut App,
+    tool_info: ToolCallInfo,
+    subagent_scoped: bool,
+) {
     let existing_pos = app.lookup_tool_call(&tool_info.id);
 
     if let Some((mi, bi)) = existing_pos {
@@ -288,30 +301,50 @@ pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: 
         return;
     }
 
-    let msg_idx = app.messages().len().saturating_sub(1);
-    if app.messages().last().is_some_and(|m| matches!(m.role, MessageRole::Assistant)) {
+    // No turn owns the chat right now. A subagent-scoped call must not
+    // make one: the turn container is the MAIN agent's, and binding it
+    // here attributes one agent's work to another's turn. Its card is
+    // hidden and the Inspector reads it out of whatever message holds
+    // it, so storage next to the turn that dispatched it is enough.
+    //
+    // A main-agent call in this position is opening a new turn, so it
+    // may not land on a message whose turn already ended - that is what
+    // glued two turns into one and left the second one's duration and
+    // token counts rendering nowhere.
+    let tail_is_assistant =
+        app.messages().last().is_some_and(|m| matches!(m.role, MessageRole::Assistant));
+    let tail_turn_ended = app.messages().last().is_some_and(|m| m.turn_duration_ms.is_some());
+    let append_to_tail = tail_is_assistant && (subagent_scoped || !tail_turn_ended);
+
+    if append_to_tail {
+        let msg_idx = app.messages().len().saturating_sub(1);
         if let Some(last) = app.active_messages_mut().last_mut() {
             let block_idx = last.blocks.len();
             let tc_id = tool_info.id.clone();
             let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
             last.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
-            app.bind_active_turn_assistant(msg_idx);
+            if !subagent_scoped {
+                app.bind_active_turn_assistant(msg_idx);
+            }
             app.sync_after_message_tail_changed(msg_idx);
             app.index_tool_call(tc_id, msg_idx, block_idx);
             sync_tool_call_terminal_tracking(app, msg_idx, block_idx, terminal_id);
         }
-    } else {
-        let tc_id = tool_info.id.clone();
-        let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
-        let new_idx = app.messages().len();
-        app.push_message_tracked(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(tool_info))],
-        ));
-        app.bind_active_turn_assistant(new_idx);
-        app.index_tool_call(tc_id, new_idx, 0);
-        sync_tool_call_terminal_tracking(app, new_idx, 0, terminal_id);
+        return;
     }
+
+    let tc_id = tool_info.id.clone();
+    let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
+    let new_idx = app.messages().len();
+    app.push_message_tracked(ChatMessage::new(
+        MessageRole::Assistant,
+        vec![MessageBlock::ToolCall(Box::new(tool_info))],
+    ));
+    if !subagent_scoped {
+        app.bind_active_turn_assistant(new_idx);
+    }
+    app.index_tool_call(tc_id, new_idx, 0);
+    sync_tool_call_terminal_tracking(app, new_idx, 0, terminal_id);
 }
 
 /// A tool's input is fixed at dispatch; a later update that carries no
@@ -680,6 +713,7 @@ mod tests {
         upsert_tool_call_into_assistant_message(
             &mut app,
             subagent_root(id, Some(descriptive.clone())),
+            false,
         );
         assert_eq!(
             app.subagents_view()[0].label,
@@ -688,7 +722,7 @@ mod tests {
         );
 
         // The CLI's follow-up update refines status only and carries no input.
-        upsert_tool_call_into_assistant_message(&mut app, subagent_root(id, None));
+        upsert_tool_call_into_assistant_message(&mut app, subagent_root(id, None), false);
 
         let (mi, bi) = app.lookup_tool_call(id).expect("root stays indexed");
         let MessageBlock::ToolCall(root) = &app.messages()[mi].blocks[bi] else {
@@ -721,11 +755,13 @@ mod tests {
         upsert_tool_call_into_assistant_message(
             &mut app,
             subagent_root(id, Some(descriptive.clone())),
+            false,
         );
 
         upsert_tool_call_into_assistant_message(
             &mut app,
             subagent_root(id, Some(serde_json::json!({}))),
+            false,
         );
 
         let (mi, bi) = app.lookup_tool_call(id).expect("root stays indexed");

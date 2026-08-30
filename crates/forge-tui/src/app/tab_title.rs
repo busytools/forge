@@ -10,7 +10,6 @@
 //! visible title stuck on a stale value. Caching the last-emitted title and
 //! short-circuiting on equality keeps OSC 2 traffic to actual transitions.
 
-use super::state::AppStatus;
 use std::cell::RefCell;
 use std::io::Write;
 
@@ -44,18 +43,12 @@ fn write_osc2_title(title: &str) {
 ///
 /// Called every frame tick during animating states, and on state transitions
 /// for static states (Ready, Error).
-pub fn update_tab_title(status: &AppStatus, spinner_frame: usize, cwd: &str) {
+pub fn update_tab_title(shows_activity: bool, spinner_frame: usize, cwd: &str) {
     let name = folder_name(cwd);
-    let active = pulse_char(spinner_frame);
-
-    let title = match status {
-        AppStatus::Connecting
-        | AppStatus::CommandPending
-        | AppStatus::Thinking
-        | AppStatus::Running => {
-            format!("{active} {name}")
-        }
-        AppStatus::Ready | AppStatus::Error => format!("{IDLE_CHAR} {name}"),
+    let title = if shows_activity {
+        format!("{} {name}", pulse_char(spinner_frame))
+    } else {
+        format!("{IDLE_CHAR} {name}")
     };
 
     let changed = LAST_TITLE.with(|last| {
