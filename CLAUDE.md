@@ -467,7 +467,8 @@ inspected.
     and that is the form forge emits. Carrying an arbitrary sequence
     out takes a DCS envelope, and the price differs per multiplexer:
     tmux wants a `tmux;` prefix, `allow-passthrough` at `on` for a
-    visible pane or `all` for any (default `off` since 3.3), and
+    visible pane or `all` for any (tri-state since 3.4, default
+    `off`), and
     every ESC in the payload doubled, the doubling being the one
     requirement `tmux.1` never states. screen forwards a bare
     DCS-wrapped OSC 9 with no opt-in and no doubling. The screen half
