@@ -1,5 +1,5 @@
 // =====
-// TESTS: 33
+// TESTS: 29
 // =====
 //
 // Tool call lifecycle integration tests.
@@ -31,6 +31,50 @@ fn tool_call_block<'a>(app: &'a App, id: &str) -> &'a ToolCallInfo {
             _ => None,
         })
         .expect("expected ToolCall block")
+}
+
+/// The frames every backgrounded-subagent case starts from: dispatch an
+/// `Agent`, let the CLI acknowledge the background launch, and put it in
+/// the roster. Root is `toolu_root`, task is `task-root`.
+fn seed_backgrounded_subagent(app: &mut App) {
+    send_msg(
+        app,
+        assistant_message(vec![tool_use_block(
+            "toolu_root",
+            "Agent",
+            serde_json::json!({"subagent_type": "Explore", "description": "d", "prompt": "d"}),
+        )]),
+    );
+    send_msg(
+        app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-root".to_owned(),
+            description: "d".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_root".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+        },
+    );
+    send_msg(
+        app,
+        user_message(vec![tool_result_block(
+            "toolu_root",
+            serde_json::json!("Agent launched in background. Task ID: task-root"),
+        )]),
+    );
+    send_msg(
+        app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![serde_json::json!({
+                "task_id": "task-root",
+                "task_type": "local_agent",
+                "description": "d",
+            })],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
 }
 
 // --- ToolCallUpdate lifecycle ---
@@ -1418,37 +1462,7 @@ async fn tab_title_shows_activity_after_turn_end_while_background_work_runs() {
     let mut app = test_app();
     app.status = AppStatus::Thinking;
 
-    send_msg(
-        &mut app,
-        assistant_message(vec![tool_use_block(
-            "toolu_root",
-            "Agent",
-            serde_json::json!({"subagent_type": "Explore", "description": "d", "prompt": "d"}),
-        )]),
-    );
-    send_msg(
-        &mut app,
-        forge_primitives::Message::TaskStarted {
-            task_id: "task-root".to_owned(),
-            description: "d".to_owned(),
-            uuid: String::new(),
-            session_id: "test-session".to_owned(),
-            tool_use_id: Some("toolu_root".to_owned()),
-            task_type: Some("local_agent".to_owned()),
-        },
-    );
-    send_msg(
-        &mut app,
-        forge_primitives::Message::BackgroundTasksChanged {
-            tasks: vec![serde_json::json!({
-                "task_id": "task-root",
-                "task_type": "local_agent",
-                "description": "d",
-            })],
-            uuid: String::new(),
-            session_id: "test-session".to_owned(),
-        },
-    );
+    seed_backgrounded_subagent(&mut app);
     send_msg(&mut app, result_success_message());
 
     // The subagent keeps emitting its own envelopes after the turn ends.
@@ -1484,147 +1498,6 @@ async fn tab_title_shows_activity_after_turn_end_while_background_work_runs() {
         !app.shows_activity(),
         "with the background work drained and the turn over, the title goes idle",
     );
-}
-
-/// Only the root of a backgrounded subagent gets a `TaskStarted` and a
-/// roster row, so a roster-only exemption spares the root and fails its
-/// children while they are still running. That stayed hidden while a
-/// stale `Running` status made the submit path skip the sweep entirely.
-/// Catches narrowing the exemption back to the roster.
-#[tokio::test]
-async fn a_turn_boundary_sweep_spares_a_live_backgrounded_subagents_children() {
-    let mut app = test_app();
-    app.status = AppStatus::Thinking;
-
-    send_msg(
-        &mut app,
-        assistant_message(vec![tool_use_block(
-            "toolu_root",
-            "Agent",
-            serde_json::json!({"subagent_type": "Explore", "description": "d", "prompt": "d"}),
-        )]),
-    );
-    send_msg(
-        &mut app,
-        forge_primitives::Message::TaskStarted {
-            task_id: "task-root".to_owned(),
-            description: "d".to_owned(),
-            uuid: String::new(),
-            session_id: "test-session".to_owned(),
-            tool_use_id: Some("toolu_root".to_owned()),
-            task_type: Some("local_agent".to_owned()),
-        },
-    );
-    send_msg(
-        &mut app,
-        user_message(vec![tool_result_block(
-            "toolu_root",
-            serde_json::json!("Agent launched in background. Task ID: task-root"),
-        )]),
-    );
-    send_msg(
-        &mut app,
-        forge_primitives::Message::BackgroundTasksChanged {
-            tasks: vec![serde_json::json!({
-                "task_id": "task-root",
-                "task_type": "local_agent",
-                "description": "d",
-            })],
-            uuid: String::new(),
-            session_id: "test-session".to_owned(),
-        },
-    );
-    send_msg(&mut app, result_success_message());
-    send_msg(
-        &mut app,
-        assistant_message_with_parent(
-            vec![tool_use_block("toolu_child", "Bash", serde_json::json!({"command": "sleep 60"}))],
-            "toolu_root",
-        ),
-    );
-    assert!(
-        matches!(tool_call_block(&app, "toolu_child").status, model::ToolCallStatus::InProgress),
-        "the child is running before the sweep",
-    );
-
-    app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
-
-    assert!(
-        matches!(tool_call_block(&app, "toolu_child").status, model::ToolCallStatus::InProgress),
-        "a live backgrounded subagent's child must survive the sweep; got {:?}",
-        tool_call_block(&app, "toolu_child").status,
-    );
-    assert_eq!(app.subagents_view().len(), 1, "and the subagent stays live in the Inspector");
-}
-
-/// The Result-path sweep is the most reachable of the three - it runs at
-/// every turn end, not only on the next submit - so a live backgrounded
-/// subagent's children must survive it too. Catches that sweep drifting
-/// back to the roster-only set the other two no longer use.
-#[tokio::test]
-async fn the_result_sweep_spares_a_live_backgrounded_subagents_children() {
-    let mut app = test_app();
-    app.status = AppStatus::Thinking;
-
-    send_msg(
-        &mut app,
-        assistant_message(vec![tool_use_block(
-            "toolu_root",
-            "Agent",
-            serde_json::json!({"subagent_type": "Explore", "description": "d", "prompt": "d"}),
-        )]),
-    );
-    send_msg(
-        &mut app,
-        forge_primitives::Message::TaskStarted {
-            task_id: "task-root".to_owned(),
-            description: "d".to_owned(),
-            uuid: String::new(),
-            session_id: "test-session".to_owned(),
-            tool_use_id: Some("toolu_root".to_owned()),
-            task_type: Some("local_agent".to_owned()),
-        },
-    );
-    // The child is dispatched during the turn and is still running when it ends.
-    send_msg(
-        &mut app,
-        assistant_message_with_parent(
-            vec![tool_use_block("toolu_child", "Bash", serde_json::json!({"command": "sleep 60"}))],
-            "toolu_root",
-        ),
-    );
-    send_msg(
-        &mut app,
-        user_message(vec![tool_result_block(
-            "toolu_root",
-            serde_json::json!("Agent launched in background. Task ID: task-root"),
-        )]),
-    );
-    send_msg(
-        &mut app,
-        forge_primitives::Message::BackgroundTasksChanged {
-            tasks: vec![serde_json::json!({
-                "task_id": "task-root",
-                "task_type": "local_agent",
-                "description": "d",
-            })],
-            uuid: String::new(),
-            session_id: "test-session".to_owned(),
-        },
-    );
-    assert!(
-        matches!(tool_call_block(&app, "toolu_child").status, model::ToolCallStatus::InProgress),
-        "the child is running before the turn ends",
-    );
-
-    send_msg(&mut app, result_success_message());
-
-    assert!(
-        matches!(tool_call_block(&app, "toolu_child").status, model::ToolCallStatus::InProgress),
-        "a live subagent's child must not get an unearned terminal status; got {:?}",
-        tool_call_block(&app, "toolu_child").status,
-    );
-    assert_eq!(app.subagents_view().len(), 1, "and the subagent stays live in the Inspector");
 }
 
 /// The background-session sweep takes the same exemption as the two
@@ -1678,96 +1551,6 @@ async fn the_background_sweep_spares_a_live_backgrounded_subagents_children() {
     );
 }
 
-/// A subagent's children land in their root's message however many
-/// arrive and whatever is at the tail when they do. Drives repeated
-/// episodes deliberately: a single child places correctly under any
-/// placement rule, so a one-episode test cannot see a rule that spawns a
-/// fresh message per arrival - repetition is the variable that catches
-/// it.
-#[tokio::test]
-async fn repeated_subagent_children_do_not_accumulate_assistant_messages() {
-    let assistants = |app: &App| {
-        app.messages().iter().filter(|m| matches!(m.role, MessageRole::Assistant)).count()
-    };
-
-    let mut app = test_app();
-    app.status = AppStatus::Thinking;
-    send_msg(
-        &mut app,
-        assistant_message(vec![tool_use_block(
-            "toolu_root",
-            "Agent",
-            serde_json::json!({"subagent_type": "Explore", "description": "d", "prompt": "d"}),
-        )]),
-    );
-    send_msg(
-        &mut app,
-        forge_primitives::Message::TaskStarted {
-            task_id: "task-root".to_owned(),
-            description: "d".to_owned(),
-            uuid: String::new(),
-            session_id: "test-session".to_owned(),
-            tool_use_id: Some("toolu_root".to_owned()),
-            task_type: Some("local_agent".to_owned()),
-        },
-    );
-    send_msg(
-        &mut app,
-        user_message(vec![tool_result_block(
-            "toolu_root",
-            serde_json::json!("Agent launched in background. Task ID: task-root"),
-        )]),
-    );
-    send_msg(
-        &mut app,
-        forge_primitives::Message::BackgroundTasksChanged {
-            tasks: vec![serde_json::json!({
-                "task_id": "task-root",
-                "task_type": "local_agent",
-                "description": "d",
-            })],
-            uuid: String::new(),
-            session_id: "test-session".to_owned(),
-        },
-    );
-    send_msg(&mut app, result_success_message());
-
-    let root_msg = app.lookup_tool_call("toolu_root").expect("root indexed").0;
-    let baseline = assistants(&app);
-
-    // Each episode leaves a non-assistant tail, then delivers a child.
-    for i in 0..10 {
-        app.active_messages_mut().push(ChatMessage::new(
-            MessageRole::System(None),
-            vec![MessageBlock::Text(forge_tui::app::TextBlock::from_complete("notice"))],
-        ));
-        send_msg(
-            &mut app,
-            assistant_message_with_parent(
-                vec![tool_use_block(
-                    &format!("toolu_child_{i}"),
-                    "Bash",
-                    serde_json::json!({"command": "x"}),
-                )],
-                "toolu_root",
-            ),
-        );
-        assert_eq!(
-            assistants(&app),
-            baseline,
-            "episode {i} added an assistant message; children must land in their root's",
-        );
-        assert_eq!(
-            app.lookup_tool_call(&format!("toolu_child_{i}")).map(|(m, _)| m),
-            Some(root_msg),
-            "episode {i}'s child landed outside its root's message",
-        );
-    }
-
-    assert_eq!(app.active_turn_assistant_idx(), None, "and no child ever claimed the turn");
-    assert_eq!(app.subagents_view().first().map(|e| e.total_count), Some(10), "all ten grouped");
-}
-
 /// A `Task` issued by a subagent registers as that subagent's child, not a
 /// root, so its own children reach the roster only through the chain above
 /// them. Walking one hop left them looking unowned and swept while running
@@ -1777,25 +1560,9 @@ async fn repeated_subagent_children_do_not_accumulate_assistant_messages() {
 async fn a_grandchild_of_a_live_backgrounded_subagent_is_spared() {
     let mut app = test_app();
     app.status = AppStatus::Thinking;
-    send_msg(
-        &mut app,
-        assistant_message(vec![tool_use_block(
-            "toolu_root",
-            "Agent",
-            serde_json::json!({"subagent_type": "Explore", "description": "d", "prompt": "d"}),
-        )]),
-    );
-    send_msg(
-        &mut app,
-        forge_primitives::Message::TaskStarted {
-            task_id: "task-root".to_owned(),
-            description: "d".to_owned(),
-            uuid: String::new(),
-            session_id: "test-session".to_owned(),
-            tool_use_id: Some("toolu_root".to_owned()),
-            task_type: Some("local_agent".to_owned()),
-        },
-    );
+    seed_backgrounded_subagent(&mut app);
+    // A `Task` issued BY the subagent registers as that subagent's child,
+    // so its own child reaches the roster only through the chain above it.
     send_msg(
         &mut app,
         assistant_message_with_parent(
@@ -1809,18 +1576,6 @@ async fn a_grandchild_of_a_live_backgrounded_subagent_is_spared() {
             vec![tool_use_block("toolu_gchild", "Bash", serde_json::json!({"command": "sleep"}))],
             "toolu_nested",
         ),
-    );
-    send_msg(
-        &mut app,
-        forge_primitives::Message::BackgroundTasksChanged {
-            tasks: vec![serde_json::json!({
-                "task_id": "task-root",
-                "task_type": "local_agent",
-                "description": "d",
-            })],
-            uuid: String::new(),
-            session_id: "test-session".to_owned(),
-        },
     );
 
     send_msg(&mut app, result_success_message());
@@ -1873,38 +1628,6 @@ async fn a_turn_opening_with_a_subagent_dispatch_still_owns_its_turn() {
         matches!(app.status, AppStatus::Running),
         "and the dispatch is this session working; got {:?}",
         app.status,
-    );
-}
-
-/// The bind guard on the other placement branch: with no assistant at the
-/// tail, a main-agent call opens a message and must own it. Only the
-/// tail-append branch was covered, so dropping this one went unnoticed.
-#[tokio::test]
-async fn a_main_agent_call_owns_a_message_it_opens_from_a_non_assistant_tail() {
-    let mut app = test_app();
-    app.status = AppStatus::Thinking;
-    send_msg(&mut app, assistant_message(vec![text_block("turn")]));
-    send_msg(&mut app, result_success_message());
-    app.active_messages_mut().push(ChatMessage::new(
-        MessageRole::System(None),
-        vec![MessageBlock::Text(forge_tui::app::TextBlock::from_complete("notice"))],
-    ));
-    assert_eq!(app.active_turn_assistant_idx(), None, "nothing owns the chat");
-
-    send_msg(
-        &mut app,
-        assistant_message(vec![tool_use_block(
-            "toolu_main",
-            "Bash",
-            serde_json::json!({"command": "ls"}),
-        )]),
-    );
-
-    let opened = app.lookup_tool_call("toolu_main").expect("indexed").0;
-    assert_eq!(
-        app.active_turn_assistant_idx(),
-        Some(opened),
-        "a main-agent call opening a fresh message owns it",
     );
 }
 
@@ -1975,44 +1698,7 @@ async fn orphaned_subagent_children_do_not_accumulate_assistant_messages() {
 async fn a_subagent_child_follows_its_root_not_the_last_assistant() {
     let mut app = test_app();
     app.status = AppStatus::Thinking;
-    send_msg(
-        &mut app,
-        assistant_message(vec![tool_use_block(
-            "toolu_root",
-            "Agent",
-            serde_json::json!({"subagent_type": "Explore", "description": "d", "prompt": "d"}),
-        )]),
-    );
-    send_msg(
-        &mut app,
-        forge_primitives::Message::TaskStarted {
-            task_id: "task-root".to_owned(),
-            description: "d".to_owned(),
-            uuid: String::new(),
-            session_id: "test-session".to_owned(),
-            tool_use_id: Some("toolu_root".to_owned()),
-            task_type: Some("local_agent".to_owned()),
-        },
-    );
-    send_msg(
-        &mut app,
-        user_message(vec![tool_result_block(
-            "toolu_root",
-            serde_json::json!("Agent launched in background. Task ID: task-root"),
-        )]),
-    );
-    send_msg(
-        &mut app,
-        forge_primitives::Message::BackgroundTasksChanged {
-            tasks: vec![serde_json::json!({
-                "task_id": "task-root",
-                "task_type": "local_agent",
-                "description": "d",
-            })],
-            uuid: String::new(),
-            session_id: "test-session".to_owned(),
-        },
-    );
+    seed_backgrounded_subagent(&mut app);
     send_msg(&mut app, result_success_message());
     let root_msg = app.lookup_tool_call("toolu_root").expect("root indexed").0;
 

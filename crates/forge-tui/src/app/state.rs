@@ -3141,9 +3141,8 @@ impl App {
         // until its next child re-registered the scope.
         // `background_tasks_changed` can land a frame after the `Result`,
         // so this read can see an empty roster for a subagent that is
-        // running, and nothing re-registers a scope once dropped. The warn
-        // below marks that moment; closing it needs a durable
-        // was-backgrounded signal rather than a snapshot (#790).
+        // running, and nothing re-registers a dropped scope. Closing that
+        // needs a durable was-backgrounded signal (#790).
         let alive = self
             .active_session()
             .map(super::session::UiSession::backgrounded_alive_with_children)

@@ -100,8 +100,8 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     let subagent_scoped = subagent_parent.is_some();
     upsert_tool_call_into_assistant_message(app, tool_info, subagent_parent.as_deref());
 
-    // A subagent's own call is not this session working, and the
-    // files-accessed count is this turn's footer figure.
+    // A subagent's own call is not this session working, and
+    // files-accessed is this turn's footer figure.
     if !subagent_scoped {
         app.status = AppStatus::Running;
         app.increment_files_accessed();
@@ -290,11 +290,9 @@ pub(super) fn upsert_tool_call_into_assistant_message(
         return;
     }
 
-    // A subagent's card belongs with its root, which is where the
-    // Inspector's parent-id correlation expects it and the only
-    // placement that does not depend on what happens to be at the tail.
-    // Anchoring it to the tail spawned a fresh message per arrival once
-    // no turn owned the chat, one for every child, without bound.
+    // A subagent's card belongs with its root: that is where the
+    // Inspector's parent-id correlation looks for it, and it is the only
+    // placement independent of whatever sits at the tail.
     if let Some(parent) = subagent_parent
         && let Some((root_msg_idx, _)) = app.lookup_tool_call(parent)
         && let Some(owner) = app.active_messages_mut().get_mut(root_msg_idx)
@@ -309,13 +307,11 @@ pub(super) fn upsert_tool_call_into_assistant_message(
         return;
     }
 
-    // The root can be gone: retention drops from the front, where a root
-    // sits by construction, and a backgrounded root's card goes terminal
-    // as soon as the CLI acknowledges the launch, so it is not
-    // retention-protected. Reuse the last assistant message rather than
-    // the tail - a notice makes the tail non-assistant, so a tail rule
-    // pushes again on every arrival - and never bind. After one push a
-    // last assistant always exists, so this stops pushing entirely.
+    // Retention can evict the root: it drops from the front, and a
+    // backgrounded root's card goes terminal as soon as the CLI
+    // acknowledges the launch, so it is not retention-protected. Reuse
+    // the last assistant rather than the tail - after one push a last
+    // assistant always exists, so this stops pushing.
     if subagent_parent.is_some() {
         let target = app.messages().iter().rposition(|m| matches!(m.role, MessageRole::Assistant));
         let tc_id = tool_info.id.clone();
@@ -354,11 +350,8 @@ pub(super) fn upsert_tool_call_into_assistant_message(
         return;
     }
 
-    // No turn owns the chat right now. The turn container is the MAIN
-    // agent's, so a subagent-scoped call must neither bind nor create
-    // one; the Inspector correlates its card by parent id, not by which
-    // message holds it. A main-agent call here is opening a new turn,
-    // so it may not land on a message whose turn already ended.
+    // A main-agent call here is opening a new turn, so it may not land
+    // on a message whose turn already ended.
     let tail_is_assistant =
         app.messages().last().is_some_and(|m| matches!(m.role, MessageRole::Assistant));
     let tail_turn_ended = app.messages().last().is_some_and(|m| m.turn_duration_ms.is_some());
@@ -366,8 +359,6 @@ pub(super) fn upsert_tool_call_into_assistant_message(
 
     if append_to_tail {
         let msg_idx = app.messages().len().saturating_sub(1);
-        // `tail_is_assistant` already resolved the same bucket's tail, so
-        // this cannot miss.
         let Some(last) = app.active_messages_mut().last_mut() else {
             return;
         };
