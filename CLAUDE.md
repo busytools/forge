@@ -488,9 +488,10 @@ inspected.
     appears nowhere in `crates/`. #767 is open on exactly that: under
     a byte-transparent session manager the flags live on the terminal
     rather than the session, so a reattach silently stops delivering
-    what the protocol provides. The nearby `is_cmd_shortcut`, which
-    accepts `CONTROL` where `SUPER` cannot arrive, is worth reading
-    but is the clause above this one - a fallback is not a detection,
+    what the protocol provides. `is_cmd_shortcut` in `app/keys.rs`,
+    which accepts `CONTROL` where `SUPER` cannot arrive, is worth
+    reading but is the clause above this one - a fallback is not a
+    detection,
     and treating one as the other is how this rule gets satisfied on
     paper.
 
