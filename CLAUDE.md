@@ -8,7 +8,7 @@ forge-primitives ───── leaf (pure data, no logic)
 forge-dictate    ───── leaf (dictation; depends on no forge-* crate)
 forge-sdk        ───→ primitives
 forge-agent      ───→ primitives + sdk
-forge-workspace  ───→ primitives + agent + sdk    (the MVVM orchestrator)
+forge-workspace  ───→ primitives + agent + sdk + dictate
 forge-tui        ───→ primitives + workspace      (no direct agent dep)
 forge-test-harness ─→ primitives + sdk + workspace
 ```

@@ -251,6 +251,11 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
     // picker is the active view. `Ctrl+Q` is handled by the
     // always-allowed shortcuts above so the user can still quit.
     if app.active_view == crate::app::ActiveView::Launchpad {
+        // Preflight has its own keymap: nothing to navigate, and Esc
+        // cancels a model download rather than doing nothing.
+        if !app.preflight_done {
+            return crate::app::preflight::handle_key(app, key);
+        }
         return crate::app::launchpad::handle_key(app, key);
     }
 

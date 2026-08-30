@@ -93,6 +93,7 @@ cpal = "0.18"
 forge-primitives = { path = "crates/forge-primitives", version = "=1.0.21" }
 forge-sdk = { path = "crates/forge-sdk", version = "=1.0.21" }
 forge-agent = { path = "crates/forge-agent", version = "=1.0.21" }
+forge-dictate = { path = "crates/forge-dictate", version = "=1.0.21" }
 forge-workspace = { path = "crates/forge-workspace", version = "=1.0.21" }
 
 # Dev-only

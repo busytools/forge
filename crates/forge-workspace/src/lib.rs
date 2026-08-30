@@ -62,6 +62,7 @@ mod account_cache;
 mod account_loader;
 mod assignment_plan;
 mod config;
+mod dictate;
 mod domain_session;
 mod error;
 pub(crate) mod mcp;
@@ -76,12 +77,15 @@ mod views;
 mod workspace;
 
 pub use account::{LoadingState, UsageFetchStatus};
+pub use dictate::{
+    DictateFailure, DictateModel, DictateModelState, DictateRole, DictateSettings, DictateSnapshot,
+};
 pub use domain_session::DomainSession;
 pub use error::WorkspaceError;
 pub use protocol::{Command, DispatchError, SessionUpdate, TurnErrorClass};
 pub use target::{ProjectKey, SessionKey, SessionTarget};
 pub use ui::{RepaintCadence, SpinnerStyle};
-pub use views::{AccountRow, ProjectView, SessionView};
+pub use views::{AccountAuth, AccountLoadingRow, AccountRow, ProjectView, SessionView};
 pub use workspace::{SessionChipInfo, SessionChipState, Workspace};
 
 // MCP (peers / workers) public surface. The `mcp` module itself is

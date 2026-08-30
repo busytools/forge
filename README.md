@@ -27,7 +27,7 @@ forge-primitives      leaf: pure data, no logic, no I/O, no async
 forge-dictate         leaf: dictation, depends on no forge-* crate
 forge-sdk         ->  primitives
 forge-agent       ->  primitives + sdk
-forge-workspace   ->  primitives + agent + sdk
+forge-workspace   ->  primitives + agent + sdk + dictate
 forge-tui         ->  primitives + workspace
 forge-test-harness->  primitives + sdk
 ```
@@ -48,8 +48,10 @@ surface the TUI can currently render. Open it in a browser.
 ## Getting started
 
 Requires nightly Rust at the date pinned in `rust-toolchain.toml`
-(rustup applies it automatically), the `claude` CLI, and
-`cargo-nextest`.
+(rustup applies it automatically), the `claude` CLI, `cargo-nextest`,
+and a native toolchain for the dictation model runtimes - a C and C++
+compiler, `cmake`, `libclang`, and ALSA headers on Linux. The
+[install page](docs/book/src/install.md) has the per-platform packages.
 
 ```bash
 just check      # fmt + unicode gate + clippy + nextest + docs

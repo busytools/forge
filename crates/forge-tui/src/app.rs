@@ -21,6 +21,7 @@ pub(crate) mod monitor_output;
 mod notify;
 pub(crate) mod paste_burst;
 pub(crate) mod plugins;
+pub mod preflight;
 pub(crate) mod process_scanner;
 pub(crate) mod processes;
 pub(crate) mod prompt;
@@ -289,6 +290,12 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // arrives on the wire to tell us the delay is up.
         events::auto_continue::maybe_fire(app);
 
+        // Preflight hands over to wherever the user was headed, and a
+        // cancelled model fetch quits once its screen has been painted.
+        // Driven from here rather than from the renderer, since handing
+        // over is a view transition.
+        crate::app::preflight::tick(app);
+
         // The Projects pane's account/status panel renders 5h + 7d
         // usage bars on every frame. Keep the snapshot live by
         // calling `request_refresh_if_needed` each tick - it's
@@ -331,15 +338,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // is_animating clause keeps the per-row spinners on background
         // sessions animating; the active session already drives ticks
         // via `app.status` above.
-        let any_background_running = any_background_activity(app);
-        let is_animating = matches!(
-            app.status,
-            AppStatus::Connecting
-                | AppStatus::CommandPending
-                | AppStatus::Thinking
-                | AppStatus::Running
-        ) || app.is_compacting()
-            || any_background_running;
+        let is_animating = is_animating(app);
         if is_animating {
             advance_spinner_frame(app, Instant::now());
             tab_title::update_tab_title(&app.status, app.spinner_frame, app.cwd());
@@ -462,12 +461,29 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// True while any session should keep its Projects-pane row spinner
-/// advancing off the active-status path. Counts exactly the rows that
-/// spin (via the shared `session_shows_spinner`), so a background-only
-/// -active row keeps ticking while an Attention/triangle row with a live
-/// task does not - no wasted redraws, and no drift from the glyph. The
-/// active session already drives ticks via `app.status`.
+/// Whether anything on screen is mid-animation, which is what earns a
+/// repaint on a tick nothing else changed.
+///
+/// The preflight clause is not decoration. Account state and dictation
+/// progress are both POLLED by the renderer rather than pushed, so
+/// neither emits a `SessionUpdate` and neither marks `needs_redraw`; and
+/// `any_background_activity` reads `app.sessions`, which is empty at
+/// boot. Without this, preflight paints once with a spinner that never
+/// moves and a screen that never updates while 3.07 GB downloads.
+pub(crate) fn is_animating(app: &App) -> bool {
+    if app.active_view == crate::app::ActiveView::Launchpad && !app.preflight_done {
+        return true;
+    }
+    matches!(
+        app.status,
+        AppStatus::Connecting
+            | AppStatus::CommandPending
+            | AppStatus::Thinking
+            | AppStatus::Running
+    ) || app.is_compacting()
+        || any_background_activity(app)
+}
+
 fn any_background_activity(app: &App) -> bool {
     app.sessions.values().any(|s| {
         crate::app::session::session_shows_spinner(s.lifecycle_state, s.has_live_background_work())

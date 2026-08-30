@@ -4,11 +4,12 @@ use std::time::Instant;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveView {
     Chat,
-    /// Project picker shown when forge is invoked without an argv
-    /// project, or when the user runs `/launchpad` mid-session. The
-    /// launchpad is the floor of the UI - `Esc` is a no-op while
-    /// it's up; the user picks a project (transitioning to `Chat`)
-    /// or quits with `Ctrl+Q`.
+    /// Preflight while `App::preflight_done` is false, and the project
+    /// picker after. Both routes boot here; preflight hands over to
+    /// `Chat` when forge was given a project and stays for the picker
+    /// when it was not. `/launchpad` mid-session returns to the picker.
+    /// The floor of the UI - `Esc` is a no-op while it's up; the user
+    /// picks a project or quits with `Ctrl+Q`.
     Launchpad,
     /// Full-screen diff overlay for reviewing changes with inline
     /// comments. Opened by `/diff [target]` or the Inspector GIT
