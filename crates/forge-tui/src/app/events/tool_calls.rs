@@ -100,11 +100,12 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     let subagent_scoped = subagent_parent.is_some();
     upsert_tool_call_into_assistant_message(app, tool_info, subagent_parent.as_deref());
 
-    // A subagent's own call is not this session working.
+    // A subagent's own call is not this session working, and the
+    // files-accessed count is this turn's footer figure.
     if !subagent_scoped {
         app.status = AppStatus::Running;
+        app.increment_files_accessed();
     }
-    app.increment_files_accessed();
 }
 
 fn log_tool_call_received(
@@ -336,18 +337,26 @@ pub(super) fn upsert_tool_call_into_assistant_message(
 
     if append_to_tail {
         let msg_idx = app.messages().len().saturating_sub(1);
-        if let Some(last) = app.active_messages_mut().last_mut() {
-            let block_idx = last.blocks.len();
-            let tc_id = tool_info.id.clone();
-            let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
-            last.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
-            if !subagent_scoped {
-                app.bind_active_turn_assistant(msg_idx);
-            }
-            app.sync_after_message_tail_changed(msg_idx);
-            app.index_tool_call(tc_id, msg_idx, block_idx);
-            sync_tool_call_terminal_tracking(app, msg_idx, block_idx, terminal_id);
+        let Some(last) = app.active_messages_mut().last_mut() else {
+            tracing::warn!(
+                target: crate::logging::targets::APP_TOOL,
+                event_name = "tool_call_tail_vanished",
+                message = "tail assistant message disappeared between check and insert; tool call dropped",
+                outcome = "dropped",
+                tool_call_id = %tool_info.id,
+            );
+            return;
+        };
+        let block_idx = last.blocks.len();
+        let tc_id = tool_info.id.clone();
+        let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
+        last.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
+        if !subagent_scoped {
+            app.bind_active_turn_assistant(msg_idx);
         }
+        app.sync_after_message_tail_changed(msg_idx);
+        app.index_tool_call(tc_id, msg_idx, block_idx);
+        sync_tool_call_terminal_tracking(app, msg_idx, block_idx, terminal_id);
         return;
     }
 

@@ -255,6 +255,7 @@ pub(super) fn finalize_background_tool_calls(
     new_status: model::ToolCallStatus,
 ) {
     let exempt = session.backgrounded_alive_with_children();
+    let mut swept = 0usize;
     for msg in &mut session.messages {
         for block in &mut msg.blocks {
             if let MessageBlock::ToolCall(tc) = block {
@@ -266,10 +267,21 @@ pub(super) fn finalize_background_tool_calls(
                 {
                     tc.status = new_status;
                     let _ = tc.terminal_id.take();
+                    swept += 1;
                 }
             }
         }
     }
+    tracing::debug!(
+        target: crate::logging::targets::APP_TOOL,
+        event_name = "tool_call_sweep",
+        message = "swept open tool calls at a turn boundary",
+        outcome = "success",
+        sweep_site = "background_session",
+        new_status = ?new_status,
+        count = swept,
+        exempt_count = exempt.len(),
+    );
 }
 
 fn begin_turn_exit(app: &mut App, emit_manual_compaction_success: bool) -> TurnExitState {

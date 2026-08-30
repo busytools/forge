@@ -769,6 +769,15 @@ fn finalize_open_tool_calls(app: &mut App, status: forge_primitives::ToolCallSta
         .active_session()
         .map(crate::app::session::UiSession::backgrounded_alive_with_children)
         .unwrap_or_default();
+    tracing::debug!(
+        target: crate::logging::targets::APP_TOOL,
+        event_name = "tool_call_sweep",
+        message = "swept open tool calls at a turn boundary",
+        outcome = "success",
+        sweep_site = "result_finalize",
+        new_status = ?status,
+        exempt_count = backgrounded_alive.len(),
+    );
     let pending: Vec<String> = app.with_turn_state(|ts| {
         ts.tool_calls
             .iter()

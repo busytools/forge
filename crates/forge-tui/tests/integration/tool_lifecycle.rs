@@ -1,5 +1,5 @@
 // =====
-// TESTS: 28
+// TESTS: 29
 // =====
 //
 // Tool call lifecycle integration tests.
@@ -1753,4 +1753,74 @@ async fn repeated_subagent_children_do_not_accumulate_assistant_messages() {
 
     assert_eq!(app.active_turn_assistant_idx(), None, "and no child ever claimed the turn");
     assert_eq!(app.subagents_view().first().map(|e| e.total_count), Some(10), "all ten grouped");
+}
+
+/// A `Task` issued by a subagent registers as that subagent's child, not a
+/// root, so its own children reach the roster only through the chain above
+/// them. Walking one hop left them looking unowned and swept while running
+/// - `Completed` at a Result, which asserts success for work still going.
+/// Catches the exemption going back to a single hop.
+#[tokio::test]
+async fn a_grandchild_of_a_live_backgrounded_subagent_is_spared() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_root",
+            "Agent",
+            serde_json::json!({"subagent_type": "Explore", "description": "d", "prompt": "d"}),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-root".to_owned(),
+            description: "d".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_root".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+        },
+    );
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block("toolu_nested", "Task", serde_json::json!({"description": "n"}))],
+            "toolu_root",
+        ),
+    );
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block("toolu_gchild", "Bash", serde_json::json!({"command": "sleep"}))],
+            "toolu_nested",
+        ),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![serde_json::json!({
+                "task_id": "task-root",
+                "task_type": "local_agent",
+                "description": "d",
+            })],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+
+    send_msg(&mut app, result_success_message());
+    assert!(
+        matches!(tool_call_block(&app, "toolu_gchild").status, model::ToolCallStatus::InProgress),
+        "a grandchild must not be reported Completed while it runs; got {:?}",
+        tool_call_block(&app, "toolu_gchild").status,
+    );
+
+    app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
+    assert!(
+        matches!(tool_call_block(&app, "toolu_gchild").status, model::ToolCallStatus::InProgress),
+        "nor Failed by the submit-path sweep; got {:?}",
+        tool_call_block(&app, "toolu_gchild").status,
+    );
 }

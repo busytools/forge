@@ -3119,21 +3119,59 @@ impl App {
         .flatten()
     }
 
+    /// Whether a tool call's card is still non-terminal. Independent
+    /// evidence that a backgrounded task is alive, for the window where
+    /// the roster has not caught up.
+    fn tool_call_is_open(&self, id: &str) -> bool {
+        self.lookup_tool_call(id)
+            .and_then(|(mi, bi)| self.messages().get(mi)?.blocks.get(bi))
+            .is_some_and(|block| match block {
+                MessageBlock::ToolCall(tc) => matches!(
+                    tc.status,
+                    model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending
+                ),
+                _ => false,
+            })
+    }
+
     pub fn clear_tool_scope_tracking(&mut self) {
         // Preserve scope tracking for still-running backgrounded roots and
         // their children so a backgrounded subagent stays identifiable in
         // SUBAGENTS across turn boundaries; a blanket clear made it vanish
         // until its next child re-registered the scope.
-        let alive: HashSet<String> = self
+        // `background_tasks_changed` can land a frame after the `Result`,
+        // so this read can see an empty roster for a subagent that is
+        // running, and nothing re-registers a scope once dropped. The warn
+        // below marks that moment; closing it needs a durable
+        // was-backgrounded signal rather than a snapshot (#790).
+        let alive = self
             .active_session()
-            .map(|session| {
-                session.backgrounded_alive_tool_use_ids().into_iter().map(str::to_owned).collect()
-            })
+            .map(super::session::UiSession::backgrounded_alive_with_children)
             .unwrap_or_default();
+        let open_roots: HashSet<String> = self
+            .tool_call_scopes()
+            .iter()
+            .filter(|(_, scope)| {
+                matches!(scope, crate::app::state::types::ToolCallScope::SubagentRoot)
+            })
+            .map(|(id, _)| id.clone())
+            .filter(|id| self.active_task_ids().contains(id) || self.tool_call_is_open(id))
+            .collect();
+        let retained_by_card: Vec<String> =
+            open_roots.iter().filter(|id| !alive.contains(id.as_str())).map(Clone::clone).collect();
+        for id in &retained_by_card {
+            tracing::warn!(
+                target: crate::logging::targets::APP_TOOL,
+                event_name = "subagent_root_absent_from_roster",
+                message = "backgrounded subagent root is not in the session roster while its card is still open",
+                outcome = "retained",
+                tool_call_id = %id,
+            );
+        }
         self.tool_call_scopes_mut().retain(|id, scope| match scope {
             crate::app::state::types::ToolCallScope::SubagentRoot => alive.contains(id.as_str()),
             crate::app::state::types::ToolCallScope::SubagentChild { parent_tool_use_id } => {
-                alive.contains(parent_tool_use_id.as_str())
+                alive.contains(id.as_str()) || alive.contains(parent_tool_use_id.as_str())
             }
             crate::app::state::types::ToolCallScope::MainAgent => false,
         });
@@ -3363,6 +3401,16 @@ impl App {
             self.invalidate_message_set(changed_message_indices.iter().copied());
         }
 
+        tracing::debug!(
+            target: crate::logging::targets::APP_TOOL,
+            event_name = "tool_call_sweep",
+            message = "swept open tool calls at a turn boundary",
+            outcome = "success",
+            sweep_site = "submit_or_turn_exit",
+            new_status = ?new_status,
+            count = changed,
+            exempt_count = exempt.len(),
+        );
         changed
     }
 

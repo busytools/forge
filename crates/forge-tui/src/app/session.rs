@@ -550,15 +550,35 @@ impl UiSession {
     pub fn backgrounded_alive_with_children(&self) -> HashSet<String> {
         let roots = self.backgrounded_alive_tool_use_ids();
         let mut alive: HashSet<String> = roots.iter().map(|id| (*id).to_owned()).collect();
-        alive.extend(self.tool_call_scopes.iter().filter_map(|(id, scope)| match scope {
-            ToolCallScope::SubagentChild { parent_tool_use_id }
-                if roots.contains(parent_tool_use_id.as_str()) =>
-            {
-                Some(id.clone())
-            }
-            _ => None,
-        }));
+        alive.extend(
+            self.tool_call_scopes
+                .keys()
+                .filter(|id| self.resolves_to_live_root(id, &roots))
+                .cloned(),
+        );
         alive
+    }
+
+    /// Whether a tool call hangs off one of `roots`, at any depth. A `Task`
+    /// issued by a subagent registers as that subagent's child rather than
+    /// a root, so its own children reach the roster only through the chain
+    /// above them; walking one hop leaves them looking unowned and they get
+    /// swept while they run.
+    fn resolves_to_live_root(&self, id: &str, roots: &HashSet<&str>) -> bool {
+        let mut cursor = id;
+        // The chain cannot exceed the map, and a cycle would otherwise spin.
+        for _ in 0..self.tool_call_scopes.len() {
+            match self.tool_call_scopes.get(cursor) {
+                Some(ToolCallScope::SubagentChild { parent_tool_use_id }) => {
+                    if roots.contains(parent_tool_use_id.as_str()) {
+                        return true;
+                    }
+                    cursor = parent_tool_use_id.as_str();
+                }
+                _ => return false,
+            }
+        }
+        false
     }
 }
 
