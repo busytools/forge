@@ -2088,7 +2088,8 @@ mod tests {
     fn spawning_follows_the_focus_a_user_click_asked_for() {
         let mut app = App::test_default();
         let elsewhere = SessionKey::from_session_id("some-other-session");
-        app.sessions.insert(elsewhere.clone(), crate::app::session::UiSession::new(elsewhere.clone()));
+        app.sessions
+            .insert(elsewhere.clone(), crate::app::session::UiSession::new(elsewhere.clone()));
         app.active_session_key = Some(elsewhere);
 
         let key = SessionKey::from_session_id("__spawn_cold__".to_owned());
@@ -2122,7 +2123,8 @@ mod tests {
     fn spawning_leaves_focus_alone_when_no_click_asked_for_it() {
         let mut app = App::test_default();
         let watching = SessionKey::from_session_id("session-the-user-is-reading");
-        app.sessions.insert(watching.clone(), crate::app::session::UiSession::new(watching.clone()));
+        app.sessions
+            .insert(watching.clone(), crate::app::session::UiSession::new(watching.clone()));
         app.active_session_key = Some(watching.clone());
         assert!(app.pending_spawn_focus.is_none(), "no click preceded this spawn");
 

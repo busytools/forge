@@ -1050,8 +1050,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
     if !rect_contains(pane, mouse.column, mouse.row) {
         return false;
     }
-    let target =
-        app.pane_hit_targets.iter().find(|t| t.contains(mouse.column, mouse.row)).cloned();
+    let target = app.pane_hit_targets.iter().find(|t| t.contains(mouse.column, mouse.row)).cloned();
     let Some(target) = target else {
         // Click landed in the pane area but outside any stamped row
         // (banner rule, blank line, padding). Consume so the chat

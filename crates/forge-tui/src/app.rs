@@ -67,7 +67,6 @@ pub use state::{
     AnsweredQuestion, App, AppStatus, AttentionEntry, AttentionKind, BackgroundTask, BlockCache,
     CacheMetrics, CachedMessageSegment, ChatMessage, ChatRenderTraceState, ChatViewport,
     ExtraUsage, FailedTurn, HelpView, IncrementalMarkdown, InputFocus, InvalidationLevel,
-    control_gutter_start,
     LayoutInvalidation, LoginHint, McpState, MessageBlock, MessageRenderCache,
     MessageRenderCacheKey, MessageRenderSignature, MessageRole, ModeInfo, ModeState, MonitorEntry,
     MonitorStatus, NoticeBlock, NoticeDedupKey, NoticeStage, PaneHitTarget, PasteSessionState,
@@ -78,8 +77,8 @@ pub use state::{
     TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo,
     ToolCallScope, TurnInfo, TurnNoticeLocation, TurnNoticeRef, UsageSnapshot, UsageSourceKind,
     UsageState, UsageWindow, WelcomeBlock, WorkflowEntry, WorkflowStatus,
-    compute_scrollbar_geometry, hash_text_block_content, hash_welcome_block_content,
-    is_execute_tool_name, is_monitor_tool_name,
+    compute_scrollbar_geometry, control_gutter_start, hash_text_block_content,
+    hash_welcome_block_content, is_execute_tool_name, is_monitor_tool_name,
 };
 pub use usage_overlay::UsageOverlayState;
 pub use view::ActiveView;
