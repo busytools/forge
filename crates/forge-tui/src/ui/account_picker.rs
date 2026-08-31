@@ -1,13 +1,12 @@
 //! `/account` picker overlay render.
 //!
 //! A centered modal listing the active session's project accounts,
-//! one row each: a current marker `●`, the account name, the 5h + 7d
-//! window utilization (coloured by proximity to the cap), a reset ETA
-//! shown only while the account is at its cap, and a trailing
-//! `usable` / `rate limited` tag. State + key handling live in
+//! one row each: a current marker `●`, the account name, a budget
+//! block whose shape follows the account's `AccountBudget`, and a
+//! trailing `usable` / `rate limited` tag. State + key handling live in
 //! [`crate::app::account_picker`].
 
-use forge_workspace::AccountRow;
+use forge_workspace::{AccountBudget, AccountRow};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -89,8 +88,10 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Build one account row: marker + name + 5h/7d windows + reset ETA
-/// (capped rows only) + a right-aligned status tag.
+/// Build one account row: marker + name + budget block + a
+/// right-aligned status tag. The budget block is 5h/7d percentages plus
+/// a reset ETA on capped rows, three spend figures, or a dash per
+/// column when no usable snapshot has landed.
 fn account_row_line(row: &AccountRow, selected: bool, inner_w: usize) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut used = 0usize;
@@ -109,40 +110,77 @@ fn account_row_line(row: &AccountRow, selected: bool, inner_w: usize) -> Line<'s
     } else {
         Style::default().add_modifier(Modifier::BOLD)
     };
-    let name = truncate_pad(&row.display_name, NAME_W);
+    // `truncate_pad` pads TO the column, so a name that already fills
+    // it needs the separator adding or the budget runs straight on.
+    let name = format!("{} ", truncate_pad(&row.display_name, NAME_W));
     used += display_len(&name);
     spans.push(Span::styled(name, name_style));
 
-    // 5h window.
-    spans.push(Span::styled("5h ".to_owned(), Style::default().fg(theme::DIM)));
-    used += 3;
-    let five = format!("{:.0}%", row.five_hour_util);
-    used += display_len(&five);
-    spans.push(Span::styled(
-        five,
-        Style::default().fg(pct_color(row.five_hour_util)).add_modifier(Modifier::BOLD),
-    ));
-    spans.push(Span::raw("  "));
-    used += 2;
+    match &row.budget {
+        AccountBudget::Unknown => {
+            for (idx, label) in ["5h ", "7d "].into_iter().enumerate() {
+                if idx > 0 {
+                    spans.push(Span::raw("  "));
+                    used += 2;
+                }
+                spans.push(Span::styled(label.to_owned(), Style::default().fg(theme::DIM)));
+                used += 3;
+                spans.push(Span::styled("-".to_owned(), Style::default().fg(theme::DIM)));
+                used += 1;
+            }
+        }
+        AccountBudget::Subscription { five_hour_util, seven_day_util, resets_at } => {
+            for (idx, (label, util)) in
+                [("5h ", *five_hour_util), ("7d ", *seven_day_util)].into_iter().enumerate()
+            {
+                if idx > 0 {
+                    spans.push(Span::raw("  "));
+                    used += 2;
+                }
+                spans.push(Span::styled(label.to_owned(), Style::default().fg(theme::DIM)));
+                used += 3;
+                let pct = format!("{util:.0}%");
+                used += display_len(&pct);
+                spans.push(Span::styled(
+                    pct,
+                    Style::default().fg(pct_color(util)).add_modifier(Modifier::BOLD),
+                ));
+            }
 
-    // 7d window.
-    spans.push(Span::styled("7d ".to_owned(), Style::default().fg(theme::DIM)));
-    used += 3;
-    let seven = format!("{:.0}%", row.seven_day_util);
-    used += display_len(&seven);
-    spans.push(Span::styled(
-        seven,
-        Style::default().fg(pct_color(row.seven_day_util)).add_modifier(Modifier::BOLD),
-    ));
-
-    // Reset ETA - only while the account is at its cap (resets_at is
-    // populated only then), so the picker shows it on limited rows.
-    if let Some(resets_at) = row.resets_at {
-        spans.push(Span::raw("  "));
-        used += 2;
-        let eta = format!("\u{27F3} {}", format_reset_in(resets_at));
-        used += display_len(&eta);
-        spans.push(Span::styled(eta, Style::default().fg(theme::STATUS_WARNING)));
+            // Reset ETA - only while the account is at its cap
+            // (`resets_at` is populated only then), so the picker shows
+            // it on limited rows.
+            if let Some(resets_at) = resets_at {
+                spans.push(Span::raw("  "));
+                used += 2;
+                let eta = format!("\u{27F3} {}", format_reset_in(*resets_at));
+                used += display_len(&eta);
+                spans.push(Span::styled(eta, Style::default().fg(theme::STATUS_WARNING)));
+            }
+        }
+        AccountBudget::Api { daily, weekly, monthly } => {
+            // Single-letter periods because the row has 27 columns left
+            // once the name and an `experimental · usable` tag are
+            // placed, and the words do not fit. `$` asserts USD: the
+            // endpoint reports no currency, and OpenRouter credits are
+            // dollar-denominated.
+            for (idx, (amount, period)) in
+                [(*daily, "d"), (*weekly, "w"), (*monthly, "m")].into_iter().enumerate()
+            {
+                if idx > 0 {
+                    spans.push(Span::raw(" "));
+                    used += 1;
+                }
+                let money = format!("${amount:.2}");
+                used += display_len(&money);
+                spans.push(Span::styled(
+                    money,
+                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::styled(format!(" {period}"), Style::default().fg(theme::DIM)));
+                used += 2;
+            }
+        }
     }
 
     // Status tag, right-aligned. Experimental rows prefix an amber
@@ -268,6 +306,103 @@ mod tests {
             .collect()
     }
 
+    /// An API-billed account has no window and, uncapped, no
+    /// denominator. A percentage or a reset ETA on this row would be a
+    /// number forge invented.
+    #[test]
+    fn an_api_row_renders_spend_and_never_a_percentage() {
+        let mut app = App::test_default();
+        let rows = vec![AccountRow {
+            display_name: "Router".to_owned(),
+            config_dir: PathBuf::from("/c/router"),
+            is_current: false,
+            usable: true,
+            budget: AccountBudget::Api { daily: 0.56, weekly: 1.25, monthly: 20.30 },
+            experimental: true,
+        }];
+        crate::app::account_picker::open(&mut app, rows);
+
+        let lines = render_picker(&app, 80, 16);
+        let row = lines.iter().find(|l| l.contains("Router")).expect("api row present");
+
+        assert!(row.contains("$0.56"), "today's spend on the row: {row}");
+        assert!(row.contains("$1.25"), "this week's spend on the row: {row}");
+        assert!(row.contains("$20.30"), "this month's spend on the row: {row}");
+        assert!(!row.contains('%'), "an API account has no percentage to show: {row}");
+        assert!(!row.contains("resets"), "an API account has no window to reset: {row}");
+    }
+
+    /// "Never probed" and "probed, nothing used" are different answers.
+    /// Collapsing them to a green 0% reads as plenty of budget for an
+    /// account forge knows nothing about.
+    #[test]
+    fn an_unprobed_row_is_distinguishable_from_a_probed_zero() {
+        let mut app = App::test_default();
+        let rows = vec![
+            AccountRow {
+                display_name: "Unprobed".to_owned(),
+                config_dir: PathBuf::from("/c/unprobed"),
+                is_current: false,
+                usable: true,
+                budget: AccountBudget::Unknown,
+                experimental: false,
+            },
+            AccountRow {
+                display_name: "Fresh".to_owned(),
+                config_dir: PathBuf::from("/c/fresh"),
+                is_current: false,
+                usable: true,
+                budget: AccountBudget::Subscription {
+                    five_hour_util: 0.0,
+                    seven_day_util: 0.0,
+                    resets_at: None,
+                },
+                experimental: false,
+            },
+        ];
+        crate::app::account_picker::open(&mut app, rows);
+
+        let lines = render_picker(&app, 80, 16);
+        let unprobed = lines.iter().find(|l| l.contains("Unprobed")).expect("unprobed row");
+        let fresh = lines.iter().find(|l| l.contains("Fresh")).expect("probed-zero row");
+
+        assert!(!unprobed.contains("0%"), "an unprobed account must not claim 0%: {unprobed}");
+        assert!(fresh.contains("0%"), "a probed account genuinely at zero says so: {fresh}");
+    }
+
+    /// `truncate_pad` pads TO the name column, so a name that already
+    /// fills it left no separator and the value ran straight on:
+    /// `OpenRouter5h 20%`.
+    #[test]
+    fn a_full_width_name_keeps_a_separator_before_its_budget() {
+        let mut app = App::test_default();
+        let rows = vec![AccountRow {
+            display_name: "OpenRouter".to_owned(),
+            config_dir: PathBuf::from("/c/openrouter"),
+            is_current: false,
+            usable: true,
+            budget: AccountBudget::Subscription {
+                five_hour_util: 20.0,
+                seven_day_util: 8.0,
+                resets_at: None,
+            },
+            experimental: false,
+        }];
+        assert_eq!(
+            "OpenRouter".chars().count(),
+            NAME_W,
+            "the fixture has to fill the name column exactly, or it proves nothing",
+        );
+        crate::app::account_picker::open(&mut app, rows);
+
+        let lines = render_picker(&app, 80, 16);
+        let row = lines.iter().find(|l| l.contains("OpenRouter")).expect("row present");
+        assert!(
+            row.contains("OpenRouter 5h"),
+            "a full-width name keeps one space before its budget: {row}",
+        );
+    }
+
     #[test]
     fn renders_windows_reset_only_on_capped_and_status_tags() {
         let mut app = App::test_default();
@@ -278,9 +413,11 @@ mod tests {
                 config_dir: PathBuf::from("/c/gateway"),
                 is_current: true,
                 usable: false,
-                five_hour_util: 100.0,
-                seven_day_util: 63.0,
-                resets_at: Some(future),
+                budget: AccountBudget::Subscription {
+                    five_hour_util: 100.0,
+                    seven_day_util: 63.0,
+                    resets_at: Some(future),
+                },
                 experimental: false,
             },
             AccountRow {
@@ -288,9 +425,11 @@ mod tests {
                 config_dir: PathBuf::from("/c/gateway1"),
                 is_current: false,
                 usable: true,
-                five_hour_util: 34.0,
-                seven_day_util: 22.0,
-                resets_at: None,
+                budget: AccountBudget::Subscription {
+                    five_hour_util: 34.0,
+                    seven_day_util: 22.0,
+                    resets_at: None,
+                },
                 experimental: false,
             },
         ];
@@ -327,9 +466,11 @@ mod tests {
                 config_dir: PathBuf::from("/c/gateway"),
                 is_current: true,
                 usable: true,
-                five_hour_util: 10.0,
-                seven_day_util: 5.0,
-                resets_at: None,
+                budget: AccountBudget::Subscription {
+                    five_hour_util: 10.0,
+                    seven_day_util: 5.0,
+                    resets_at: None,
+                },
                 experimental: false,
             },
             AccountRow {
@@ -337,9 +478,11 @@ mod tests {
                 config_dir: PathBuf::from("/c/codex"),
                 is_current: false,
                 usable: true,
-                five_hour_util: 20.0,
-                seven_day_util: 8.0,
-                resets_at: None,
+                budget: AccountBudget::Subscription {
+                    five_hour_util: 20.0,
+                    seven_day_util: 8.0,
+                    resets_at: None,
+                },
                 experimental: true,
             },
         ];
