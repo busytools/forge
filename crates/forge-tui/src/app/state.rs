@@ -6351,7 +6351,6 @@ mod tests {
             show_empty_thinking: false,
             show_thinking: false,
             show_compacting: false,
-            thinking_tokens: None,
             running_subagents: None,
         };
 
