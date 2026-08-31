@@ -374,6 +374,42 @@ pub fn resolve_lead_session(sessions: &[SDKSessionInfo]) -> Option<&SDKSessionIn
 /// the dir can't be created or the DB can't open - forge then runs
 /// without durable Gotify subscriptions or dynamic workers this session
 /// (hard rule #14: no cwd fallback).
+/// The previous run's tag scans, or an empty cache when there is no
+/// store: a missing cache costs a full re-scan, never a wrong answer.
+fn load_session_tag_cache(
+    db: Option<&crate::store::Db>,
+) -> forge_agent::userdata::catalog::scan::SessionTagCache {
+    let prior = db
+        .map(|db| {
+            crate::store::session_tags::load_all(db).unwrap_or_else(|error| {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    "loading the session tag cache failed; every transcript will be re-scanned",
+                );
+                std::collections::HashMap::new()
+            })
+        })
+        .unwrap_or_default();
+    forge_agent::userdata::catalog::scan::SessionTagCache::new(prior)
+}
+
+fn persist_session_tag_cache(
+    db: Option<&crate::store::Db>,
+    cache: &forge_agent::userdata::catalog::scan::SessionTagCache,
+) {
+    let updates = cache.updates();
+    if let Some(db) = db
+        && let Err(error) = crate::store::session_tags::store_all(db, &updates)
+    {
+        tracing::warn!(
+            target: "forge_workspace::workspace",
+            %error,
+            "storing the session tag cache failed; the next boot re-scans what it covered",
+        );
+    }
+}
+
 fn open_db(app_support: &Path) -> Option<crate::store::Db> {
     if let Err(error) = std::fs::create_dir_all(app_support) {
         tracing::warn!(
@@ -504,8 +540,13 @@ async fn scan_worker_resume_map(
     let mut sessions: Vec<SDKSessionInfo> = Vec::new();
     for config_dir in config_dirs {
         sessions.extend(
-            forge_agent::userdata::catalog::scan::list_sessions(config_dir, None, None, 0, true)
-                .await,
+            // Uncached: this runs on worker respawn rather than at boot,
+            // and reaching the store from here means threading a handle
+            // through for a scan nobody is waiting on a frame for.
+            forge_agent::userdata::catalog::scan::list_sessions(
+                config_dir, None, None, 0, true, None,
+            )
+            .await,
         );
     }
     let is_git_repo = forge_agent::env::worktree::is_git_repo(project_dir);
@@ -678,14 +719,21 @@ impl Workspace {
         // `config_dir` (where forge.toml lives). Each spawn binds to
         // its own account `config_dir` separately; multi-account
         // catalog merge is a separate concern.
+        // This scan is the bulk of boot before the first frame, and
+        // almost all of it is reading transcripts end to end for their
+        // worker tag. The cache carries the last run's answers in so
+        // only bytes appended since are read.
+        let tag_cache = std::sync::Arc::new(load_session_tag_cache(db.as_ref()));
         let catalog_entries = forge_agent::userdata::catalog::scan::list_sessions(
             &config_dir,
             None, // every project in the catalog
             None, // no limit
             0,
             false, // hide worker-tagged sessions from default catalog
+            Some(&tag_cache),
         )
         .await;
+        persist_session_tag_cache(db.as_ref(), &tag_cache);
 
         // Group sessions by project key derived from each session's cwd.
         // Sessions without a cwd are skipped - they can't be associated
