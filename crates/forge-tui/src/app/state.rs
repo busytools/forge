@@ -1891,16 +1891,17 @@ impl App {
 
     // ---- Render cache + history retention accessors ----
 
-    /// Active session's latest thinking-token count for the
+    /// Active session's running thinking-token estimate for the
     /// in-flight turn (#273). `None` when no `ThinkingTokens` event
     /// has fired yet or the turn just ended.
     pub fn latest_thinking_tokens(&self) -> Option<u64> {
         self.active_session().and_then(|s| s.latest_thinking_tokens)
     }
 
-    /// Set the active session's latest thinking-token count.
+    /// Set the active session's running thinking-token estimate.
     /// Called by the `Message::ThinkingTokens` reducer; passed
-    /// `None` on turn end to clear the chip.
+    /// `None` at each turn boundary, which is what keeps one turn's
+    /// estimate off the next turn's row.
     pub fn set_latest_thinking_tokens(&mut self, value: Option<u64>) {
         self.active_bucket_mut().latest_thinking_tokens = value;
     }

@@ -266,10 +266,10 @@ pub struct UiSession {
     /// right side of the chat view.
     pub todos: Vec<TodoItem>,
 
-    /// Cumulative thinking-token count for the current in-flight
-    /// turn (#273). Set by the `Message::ThinkingTokens` reducer;
-    /// cleared on `Message::Result` (turn end). When `Some`, the
-    /// spinner-chip renders as `⠋ thinking · 1.2k tok`.
+    /// Estimated thinking tokens accumulated so far in the current
+    /// in-flight turn (#273), summed from the `ThinkingTokens` deltas.
+    /// Cleared at each turn boundary, which is why the turn info row
+    /// mirrors it onto the message rather than reading it at render.
     pub latest_thinking_tokens: Option<u64>,
 
     /// Latest `Message::StopHookSummary` for the current turn

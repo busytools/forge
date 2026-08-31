@@ -382,6 +382,7 @@ fn hash_turn_info(info: &TurnInfo, hasher: &mut impl std::hash::Hasher) {
     info.api_ms.hash(hasher);
     info.ended_at_local.hash(hasher);
     info.model.hash(hasher);
+    info.thinking_tokens.hash(hasher);
     info.input_tokens.hash(hasher);
     info.output_tokens.hash(hasher);
     info.cache_read_tokens.hash(hasher);
