@@ -135,6 +135,10 @@ fn should_dispatch_key_event(key: crossterm::event::KeyEvent) -> bool {
 }
 
 fn handle_resize(app: &mut App, width: u16, height: u16) {
+    // A reattach under a byte-transparent session manager arrives as a
+    // resize, and the flags it needs live on the terminal it left.
+    app.needs_keyboard_flags_restore = true;
+
     // Force a full terminal clear on resize. Without this, terminal
     // emulators (especially on Windows) corrupt their scrollback buffer
     // when the alternate screen is resized, causing the visible area to
@@ -592,6 +596,37 @@ mod tests {
             }
             None => panic!("expected message block"),
         }
+    }
+
+    #[test]
+    fn a_resize_event_asks_for_the_keyboard_flags_to_be_restored() {
+        let mut app = App::test_default();
+
+        handle_terminal_event(&mut app, Event::Resize(120, 40));
+
+        assert!(
+            app.needs_keyboard_flags_restore,
+            "a resize must ask for the keyboard flags to be rewritten"
+        );
+    }
+
+    /// The set form replaces the active flags. A push would grow the
+    /// terminal's stack once per resize, past the single pop at teardown.
+    #[test]
+    fn the_restore_sequence_sets_rather_than_pushes_the_negotiated_flags() {
+        let expected = format!(
+            "\x1b[={};1u",
+            (crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | crossterm::event::KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS)
+                .bits()
+        );
+
+        assert_eq!(
+            crate::app::keyboard_enhancement_set_sequence(),
+            expected,
+            "the restore must set the negotiated flags rather than push them"
+        );
     }
 
     // shorten_tool_title

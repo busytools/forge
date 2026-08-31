@@ -267,6 +267,7 @@ fn create_app_impl(
         rendered_input_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         pointer_shape: crate::app::events::mouse::PointerShape::Default,
         emitted_pointer_shape: None,
+        needs_keyboard_flags_restore: false,
         rendered_inspector_body_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         rendered_projects_pane_body_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         paste_burst: super::paste_burst::PasteBurstDetector::new(),
