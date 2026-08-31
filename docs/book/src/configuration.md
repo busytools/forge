@@ -84,17 +84,30 @@ An array of tables. At least one is required, or the load fails with
 spawned `claude` subprocess, so each account reads and writes its own
 credentials, session history and settings tree.
 
-`provider` has no default. An account that omits it fails the load with
-`account '<name>' in forge.toml at <path> is missing provider; expected
-one of "anthropic", "codex", "openrouter"`. Silence is the dangerous
-answer here: a mislabelled account probes the wrong endpoint and then
-cannot reach a usable state, which stops forge starting.
+`provider` has no default. Accounts that omit it are named together in
+one load error listing the accepted values, so a first run does not
+surface them one restart at a time. Silence is the dangerous answer
+here: a mislabelled account probes the wrong endpoint and then cannot
+reach a usable state, which stops forge starting.
+
+The line has to sit above the account's `[accounts.env]` table. TOML
+scopes every key after a table header into that table, so a `provider`
+written below one is read as an environment variable and the account
+still counts as missing it.
 
 `"anthropic"` reads credentials from the macOS keychain and probes the
 default host. `"codex"` and `"openrouter"` authenticate with the
-`ANTHROPIC_AUTH_TOKEN` beside their `ANTHROPIC_BASE_URL` in
-`[accounts.env]`, and an account declaring either without that base url
-fails the load naming the account and the missing key.
+`ANTHROPIC_AUTH_TOKEN` beside their `ANTHROPIC_BASE_URL`, and an account
+declaring either without that base url fails the load naming the
+account and the missing key. Either key may come from the account's own
+`[accounts.env]` or from the global `[env]`, since the two are merged
+before the check runs.
+
+For `"openrouter"` the base url must be the API root, `https://openrouter.ai/api`,
+and an account whose base does not end in `/api` fails the load. The
+bare host is the trap worth naming: forge probes `{base}/v1/key`, and
+`https://openrouter.ai/v1/key` answers `200` with a web page rather than
+a `404`, so nothing downstream could tell it apart from a real reply.
 
 The split is billing, not auth. `"codex"` is a base-url account whose
 proxy serves the same windowed body Anthropic does, so it reads as a

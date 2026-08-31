@@ -1047,7 +1047,7 @@ chat continues here...
 
  <span class="dim">ctrl+q  quit</span></pre>
     </div>
-    <p>The repair instruction is the only thing that branches, because it is the only thing that differs. An account carrying <code>ANTHROPIC_BASE_URL</code> in its <code>[accounts.env]</code> has no keychain entry at all, so <code>claude /login</code> cannot repair it - its credential is the <code>ANTHROPIC_AUTH_TOKEN</code> beside it:</p>
+    <p>The repair instruction is the only thing that branches, because it is the only thing that differs. An account whose <code>provider</code> is a base-url one (<code>codex</code> or <code>openrouter</code>) has no keychain entry at all, so <code>claude /login</code> cannot repair it - its credential is the <code>ANTHROPIC_AUTH_TOKEN</code> beside its base url. The branch is on <code>provider</code>, not on the presence of <code>ANTHROPIC_BASE_URL</code>, so an <code>anthropic</code> account that happens to set one still gets keychain copy:</p>
     <div class="term">
       <pre class="indent">
         <span class="bold">Fix the auth</span>
