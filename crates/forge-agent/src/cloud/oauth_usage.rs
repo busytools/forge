@@ -194,6 +194,10 @@ pub fn probe_plan<S: std::hash::BuildHasher>(
     let Some(base_url) =
         env.get("ANTHROPIC_BASE_URL").map(|value| value.trim()).filter(|value| !value.is_empty())
     else {
+        // Falling back to Keychain here would send a base-url account
+        // down the keychain path, where a 401 fires billed `claude -p hi`
+        // refreshes against a token its probe never reads.
+        debug_assert!(false, "config load rejects a base-url provider with no ANTHROPIC_BASE_URL");
         return ProbePlan::Keychain;
     };
     let bearer = env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str).unwrap_or_default();
@@ -276,8 +280,21 @@ pub async fn probe_openrouter_key(
     }
 
     match status {
-        200 => serde_json::from_slice(&body)
-            .map_err(|error| OauthUsageError::Decode(error.to_string())),
+        200 => serde_json::from_slice(&body).map_err(|error| {
+            // A 200 that will not parse is the shape a wrong base url
+            // takes: the bare host answers 200 with an HTML page. Name
+            // the URL and show the body, or the only evidence is a byte
+            // count on a trace line nobody has enabled.
+            tracing::warn!(
+                target: "forge_agent::cloud::oauth_usage",
+                event_name = "openrouter_key_decode_failed",
+                url = %key_url(base_url),
+                error = %error,
+                body_suffix = %truncated_body_suffix(&body),
+                "200 from the key endpoint did not decode; check the base url is the API root",
+            );
+            OauthUsageError::Decode(error.to_string())
+        }),
         401 | 403 => Err(OauthUsageError::Unauthorized(status)),
         429 => Err(OauthUsageError::RateLimited { retry_after }),
         _ => Err(OauthUsageError::HttpStatus(status, truncated_body_suffix(&body))),
@@ -485,10 +502,9 @@ mod tests {
         );
     }
 
-    /// The defect the `provider` key exists to remove: the plan used to
-    /// key on `ANTHROPIC_BASE_URL`, which answers where the credential
-    /// lives rather than what the backend bills for. Same env, two
-    /// providers, two plans - so a base url can never again decide it.
+    /// Same env, two providers, two plans: a base url cannot decide the
+    /// probe, because it answers where the credential lives rather than
+    /// what the backend bills for.
     #[test]
     fn probe_plan_keys_on_provider_not_on_base_url() {
         let mut env = HashMap::new();
