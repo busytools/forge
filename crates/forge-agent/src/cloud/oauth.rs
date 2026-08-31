@@ -82,15 +82,30 @@ pub fn map_probe_snapshot(
 
 /// Map an OpenRouter `/api/v1/key` payload into a [`UsageSnapshot`].
 ///
-/// Infallible and window-free: a pay-per-token key has no plan window
-/// and, when uncapped, no denominator, so nothing here synthesises a
-/// utilization. An absent figure reads as 0.0 spent, which is what the
-/// endpoint means by omitting it.
+/// Window-free: a pay-per-token key has no plan window and, when
+/// uncapped, no denominator, so nothing here synthesises a utilization.
+///
+/// Fallible on purpose. A 200 whose body carries no `data` envelope, or
+/// an envelope with none of the three usage figures, is a response
+/// forge cannot read rather than a bill of zero - and since `set_usage`
+/// takes any snapshot to `Ready` without inspecting it, mapping those
+/// to zeroes would report a confident number nothing prompts anyone to
+/// doubt. An absent figure alongside a present sibling is a real zero
+/// and maps as one.
 pub fn snapshot_from_openrouter_key(
     payload: forge_primitives::usage::openrouter::KeyResponse,
-) -> UsageSnapshot {
-    let data = payload.data.unwrap_or_default();
-    UsageSnapshot {
+) -> Result<UsageSnapshot, OauthFetchError> {
+    let Some(data) = payload.data else {
+        return Err(OauthFetchError::Failed(
+            "OpenRouter key response carried no data envelope.".to_owned(),
+        ));
+    };
+    if data.usage_daily.is_none() && data.usage_weekly.is_none() && data.usage_monthly.is_none() {
+        return Err(OauthFetchError::Failed(
+            "OpenRouter key response carried no usage figures.".to_owned(),
+        ));
+    }
+    Ok(UsageSnapshot {
         source: UsageSourceKind::OpenRouterKey,
         fetched_at: SystemTime::now(),
         five_hour: None,
@@ -103,7 +118,7 @@ pub fn snapshot_from_openrouter_key(
             weekly: data.usage_weekly.unwrap_or(0.0),
             monthly: data.usage_monthly.unwrap_or(0.0),
         }),
-    }
+    })
 }
 
 fn map_window(payload: Option<super::oauth_usage::OauthUsageWindow>) -> Option<UsageWindow> {
@@ -246,7 +261,7 @@ mod tests {
             }}"#,
         )
         .expect("decode");
-        let snapshot = snapshot_from_openrouter_key(payload);
+        let snapshot = snapshot_from_openrouter_key(payload).expect("a real payload maps");
 
         assert_eq!(snapshot.source, UsageSourceKind::OpenRouterKey);
         let spend = snapshot.spend.expect("spend is populated");
@@ -266,6 +281,46 @@ mod tests {
         assert!(
             snapshot.extra_usage.is_none(),
             "extra_usage is Anthropic overage in minor units, not this",
+        );
+    }
+
+    /// A 200 whose body forge cannot read is not a zero bill. Both
+    /// shapes below used to decode to a confident (0.0, 0.0, 0.0) and
+    /// take the account Ready, with the only log line saying success.
+    #[test]
+    fn an_unreadable_openrouter_body_is_an_error_not_zero_spend() {
+        let no_envelope: forge_primitives::usage::openrouter::KeyResponse =
+            serde_json::from_str(r#"{"error":{"message":"User not found.","code":401}}"#)
+                .expect("decodes structurally");
+        assert!(
+            snapshot_from_openrouter_key(no_envelope).is_err(),
+            "a body with no data envelope carries no spend and must not read as zero",
+        );
+
+        let no_figures: forge_primitives::usage::openrouter::KeyResponse =
+            serde_json::from_str(r#"{"data":{"label":"sk-or-v1-TEST","is_free_tier":false}}"#)
+                .expect("decodes structurally");
+        assert!(
+            snapshot_from_openrouter_key(no_figures).is_err(),
+            "an envelope with none of the three usage figures must not read as zero",
+        );
+    }
+
+    /// One figure present is a real report; its absent siblings are
+    /// genuinely zero, which is what the endpoint means by omitting a
+    /// figure that has a sibling.
+    #[test]
+    fn a_partial_openrouter_body_maps_its_present_figure() {
+        let partial: forge_primitives::usage::openrouter::KeyResponse =
+            serde_json::from_str(r#"{"data":{"usage_daily":0.25}}"#).expect("decode");
+        let spend = snapshot_from_openrouter_key(partial)
+            .expect("one present figure is a readable report")
+            .spend
+            .expect("spend");
+        assert!((spend.daily - 0.25).abs() < f64::EPSILON, "the present figure maps");
+        assert!(
+            spend.weekly.abs() < f64::EPSILON && spend.monthly.abs() < f64::EPSILON,
+            "absent siblings of a present figure are zero",
         );
     }
 

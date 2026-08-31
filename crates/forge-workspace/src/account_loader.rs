@@ -32,7 +32,6 @@ use std::time::Duration;
 use tracing::Instrument;
 
 use forge_agent::cloud::{auth_status, oauth, oauth_credentials, oauth_usage};
-use forge_primitives::account::Provider;
 use forge_primitives::usage::oauth::OauthUsageError;
 
 use crate::account::{AccountKey, LoadingState, UsageFetchStatus};
@@ -87,19 +86,22 @@ enum BootProbeAction {
     RetryLoop(UsageFetchStatus, Option<Duration>),
 }
 
-/// Decide the [`BootProbeAction`] for a boot-probe error. Auth failures
-/// refresh on the keychain path but are terminal on the base-url path;
+/// Decide the [`BootProbeAction`] for a boot-probe error. `env_bearer`
+/// is true when the probe authenticated with the account's
+/// `[accounts.env]` token rather than the keychain, which is what makes
+/// a refresh pointless. Auth failures refresh on the keychain path but
+/// are terminal on an env-bearer one;
 /// a 429 or any network / HTTP / decode failure is a retry-loop. The
 /// status is the shared [`crate::workspace::classify_oauth_usage_error`]
 /// verdict so the loader and poller never label the same error
 /// differently.
-fn boot_probe_action(is_base_url: bool, err: &OauthUsageError) -> BootProbeAction {
+fn boot_probe_action(env_bearer: bool, err: &OauthUsageError) -> BootProbeAction {
     let status = crate::workspace::classify_oauth_usage_error(err);
     match err {
         OauthUsageError::NoCredentials
         | OauthUsageError::Expired
         | OauthUsageError::Unauthorized(_) => {
-            if is_base_url {
+            if env_bearer {
                 BootProbeAction::Terminal(status)
             } else {
                 BootProbeAction::Refresh
@@ -155,24 +157,17 @@ pub async fn run_account_loading(
         };
         // One decision (probe_plan) drives the probe source, the
         // response-mapping strictness, and whether a 401 is eligible for
-        // the keychain refresh. The account's declared provider picks
-        // it: a base-url provider probes its own endpoint with the env
-        // bearer and skips the keychain, an Anthropic account uses the
-        // keychain + default host.
+        // the keychain refresh.
         let (provider, account_env) = {
             let accounts = workspace.account_states().lock();
             (
-                accounts.provider(&account_key).unwrap_or(Provider::Anthropic),
+                accounts.provider_or_anthropic(&account_key),
                 accounts.env(&account_key).cloned().unwrap_or_default(),
             )
         };
         let plan = oauth_usage::probe_plan(provider, &account_env);
-        let is_base_url = !matches!(plan, oauth_usage::ProbePlan::Keychain);
-        // Probe and map in one step because the two billing kinds return
-        // different bodies: the window kinds map per strictness (base-url
-        // leniently, each window independent and a cold `{}` -> n/a;
-        // keychain strictly, a 200 must carry five_hour), while the
-        // per-key spend body maps infallibly and has no window at all.
+        let env_bearer = !matches!(plan, oauth_usage::ProbePlan::Keychain);
+        // Probe and map together: each plan returns a different body.
         let probe_result = match &plan {
             oauth_usage::ProbePlan::BaseUrl { base_url, bearer } => {
                 let creds = oauth_credentials::OauthCredentials {
@@ -194,7 +189,7 @@ pub async fn run_account_loading(
             oauth_usage::ProbePlan::OpenRouterKey { base_url, bearer } => {
                 oauth_usage::probe_openrouter_key(base_url, bearer)
                     .await
-                    .map(|payload| Ok(oauth::snapshot_from_openrouter_key(payload)))
+                    .map(oauth::snapshot_from_openrouter_key)
             }
         };
 
@@ -224,7 +219,7 @@ pub async fn run_account_loading(
                 );
                 return;
             }
-            Err(err) => match boot_probe_action(is_base_url, &err) {
+            Err(err) => match boot_probe_action(env_bearer, &err) {
                 BootProbeAction::Refresh => {
                     // Keychain auth-recovery (never base-url). Transition to
                     // Refreshing so the launchpad shows in-flight; fire the
@@ -488,9 +483,9 @@ mod tests {
 
     #[test]
     fn boot_probe_action_network_is_retry_loop_on_either_plan() {
-        for is_base_url in [true, false] {
+        for env_bearer in [true, false] {
             assert_eq!(
-                boot_probe_action(is_base_url, &OauthUsageError::Network("dns".to_owned())),
+                boot_probe_action(env_bearer, &OauthUsageError::Network("dns".to_owned())),
                 BootProbeAction::RetryLoop(UsageFetchStatus::NetworkFailed, None),
             );
         }

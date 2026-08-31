@@ -1445,15 +1445,7 @@ impl Workspace {
                 display_name: k.0.clone(),
                 state: accounts.loading_state(k),
                 config_dir: accounts.config_dir(k).cloned().unwrap_or_default(),
-                // Repair copy is the only thing this decides, and every
-                // base-url provider repairs the same way (the token
-                // beside its base url in `[accounts.env]`), so this
-                // stays a two-way split rather than one arm per
-                // provider.
-                auth: if accounts
-                    .provider(k)
-                    .is_some_and(forge_primitives::account::Provider::uses_base_url)
-                {
+                auth: if accounts.provider_or_anthropic(k).uses_base_url() {
                     crate::views::AccountAuth::BaseUrl
                 } else {
                     crate::views::AccountAuth::Keychain
@@ -2007,9 +1999,7 @@ impl Workspace {
                         (
                             key.clone(),
                             dir.clone(),
-                            accounts
-                                .provider(key)
-                                .unwrap_or(forge_primitives::account::Provider::Anthropic),
+                            accounts.provider_or_anthropic(key),
                             accounts.env(key).cloned().unwrap_or_default(),
                         )
                     })
@@ -2067,9 +2057,7 @@ impl Workspace {
                 forge_agent::cloud::oauth_usage::ProbePlan::OpenRouterKey { base_url, bearer } => {
                     forge_agent::cloud::oauth_usage::probe_openrouter_key(base_url, bearer)
                         .await
-                        .map(|payload| {
-                            Ok(forge_agent::cloud::oauth::snapshot_from_openrouter_key(payload))
-                        })
+                        .map(forge_agent::cloud::oauth::snapshot_from_openrouter_key)
                 }
             };
             match fetch_result {
