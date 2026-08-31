@@ -468,7 +468,9 @@ async fn list_recent_sessions(
     use forge_primitives::SessionListEntry;
     const MAX_RECENT: usize = 50;
     let dir = if cwd.is_empty() { None } else { Some(cwd) };
-    crate::userdata::catalog::scan::list_sessions(config_dir, dir, Some(MAX_RECENT), 0, false)
+    // One project's recent sessions, off the boot path, and this crate
+    // holds no store to cache into.
+    crate::userdata::catalog::scan::list_sessions(config_dir, dir, Some(MAX_RECENT), 0, false, None)
         .await
         .into_iter()
         .map(|info| SessionListEntry {
