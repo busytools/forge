@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
 
+pub use forge_primitives::account::Provider;
 pub use forge_primitives::usage::oauth::{
     OauthExtraUsage, OauthUsage, OauthUsageError, OauthUsageWindow,
 };
@@ -143,12 +144,16 @@ fn usage_url(base_url: Option<&str>) -> String {
 }
 
 /// How an account's usage should be probed, derived once from its
-/// `[accounts.env]`. The loader and poller both read this single
+/// declared [`Provider`]. The loader and poller both read this single
 /// decision so the probe source AND the response-mapping strictness
 /// stay in lockstep.
+///
+/// Deliberately not [`Provider`] itself: the `BaseUrl` variant carries
+/// a bearer, so this type must not cross into a view the TUI renders.
+/// `forge_workspace::AccountAuth` is the secret-free counterpart.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ProbePlan {
-    /// Account sets `ANTHROPIC_BASE_URL`: probe `{base_url}/api/oauth/usage`
+    /// Base-url provider: probe `{base_url}/api/oauth/usage`
     /// with the env `ANTHROPIC_AUTH_TOKEN` bearer (the macOS keychain is
     /// skipped - a base-url account has no keychain entry), and map the
     /// response leniently via [`super::oauth::snapshot_from_payload_lenient`]
@@ -163,11 +168,24 @@ pub enum ProbePlan {
     Keychain,
 }
 
-/// Derive the [`ProbePlan`] for an account from its `[accounts.env]`.
-/// Keyed purely on an `ANTHROPIC_BASE_URL` override, so any account
-/// that sets one probes via its own endpoint; every other account uses
-/// the keychain path.
-pub fn probe_plan<S: std::hash::BuildHasher>(env: &HashMap<String, String, S>) -> ProbePlan {
+/// Derive the [`ProbePlan`] for an account from its declared
+/// [`Provider`]. The provider alone decides the shape; `env` is read
+/// only to fill in the base url and bearer a base-url provider
+/// authenticates with. `ANTHROPIC_BASE_URL` decides nothing, because it
+/// answers where the credential lives rather than what the backend
+/// bills for - Codex sets one and is still a windowed subscription.
+///
+/// Config load rejects a base-url provider with no `ANTHROPIC_BASE_URL`
+/// (`WorkspaceError::AccountProviderNeedsBaseUrl`), so the empty-base
+/// case here is unreachable in production and falls back to the
+/// keychain rather than probing a malformed url.
+pub fn probe_plan<S: std::hash::BuildHasher>(
+    provider: Provider,
+    env: &HashMap<String, String, S>,
+) -> ProbePlan {
+    if !provider.uses_base_url() {
+        return ProbePlan::Keychain;
+    }
     let Some(base_url) =
         env.get("ANTHROPIC_BASE_URL").map(|value| value.trim()).filter(|value| !value.is_empty())
     else {
@@ -330,12 +348,12 @@ mod tests {
     }
 
     #[test]
-    fn probe_plan_base_url_reads_base_and_token_from_env() {
+    fn probe_plan_codex_reads_base_and_token_from_env() {
         let mut env = HashMap::new();
         env.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
         env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-codex".to_owned());
         assert_eq!(
-            probe_plan(&env),
+            probe_plan(Provider::Codex, &env),
             ProbePlan::BaseUrl {
                 base_url: "http://localhost:18765".to_owned(),
                 bearer: "sk-codex".to_owned(),
@@ -343,35 +361,42 @@ mod tests {
         );
     }
 
+    /// The defect the `provider` key exists to remove: the plan used to
+    /// key on `ANTHROPIC_BASE_URL`, which answers where the credential
+    /// lives rather than what the backend bills for. Same env, two
+    /// providers, two plans - so a base url can never again decide it.
     #[test]
-    fn probe_plan_keychain_without_base_url() {
-        // A normal Anthropic account (no ANTHROPIC_BASE_URL) -> Keychain
-        // so the caller keeps the default host + keychain bearer.
+    fn probe_plan_keys_on_provider_not_on_base_url() {
         let mut env = HashMap::new();
+        env.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
         env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-codex".to_owned());
-        assert_eq!(probe_plan(&env), ProbePlan::Keychain);
-        assert_eq!(probe_plan(&HashMap::new()), ProbePlan::Keychain);
-    }
-
-    #[test]
-    fn probe_plan_keychain_for_empty_base_url() {
-        let mut env = HashMap::new();
-        env.insert("ANTHROPIC_BASE_URL".to_owned(), "   ".to_owned());
         assert_eq!(
-            probe_plan(&env),
+            probe_plan(Provider::Anthropic, &env),
             ProbePlan::Keychain,
-            "whitespace-only base url is not an override",
+            "an Anthropic account keeps the keychain even with a base url set",
+        );
+        assert!(
+            matches!(probe_plan(Provider::Codex, &env), ProbePlan::BaseUrl { .. }),
+            "the same env under Codex probes the base url",
         );
     }
 
     #[test]
-    fn probe_plan_base_url_missing_token_defaults_to_empty_bearer() {
+    fn probe_plan_anthropic_is_keychain() {
+        let mut env = HashMap::new();
+        env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-anything".to_owned());
+        assert_eq!(probe_plan(Provider::Anthropic, &env), ProbePlan::Keychain);
+        assert_eq!(probe_plan(Provider::Anthropic, &HashMap::new()), ProbePlan::Keychain);
+    }
+
+    #[test]
+    fn probe_plan_codex_missing_token_defaults_to_empty_bearer() {
         // A proxy on localhost ignores the bearer; an absent
-        // ANTHROPIC_AUTH_TOKEN must not suppress the override.
+        // ANTHROPIC_AUTH_TOKEN must not suppress the base-url probe.
         let mut env = HashMap::new();
         env.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
         assert_eq!(
-            probe_plan(&env),
+            probe_plan(Provider::Codex, &env),
             ProbePlan::BaseUrl {
                 base_url: "http://localhost:18765".to_owned(),
                 bearer: String::new(),

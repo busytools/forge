@@ -35,6 +35,19 @@ pub enum WorkspaceError {
     #[error("duplicate account display_name '{name}' in forge.toml at {}", path.display())]
     DuplicateAccount { path: PathBuf, name: String },
 
+    #[error(
+        "account '{name}' in forge.toml at {} is missing provider; expected one of {}",
+        path.display(),
+        forge_primitives::account::Provider::ACCEPTED,
+    )]
+    AccountMissingProvider { path: PathBuf, name: String },
+
+    #[error(
+        "account '{name}' in forge.toml at {} declares a base-url provider but has no ANTHROPIC_BASE_URL in [accounts.env]",
+        path.display()
+    )]
+    AccountProviderNeedsBaseUrl { path: PathBuf, name: String },
+
     #[error("duplicate org name '{name}' in forge.toml at {}", path.display())]
     DuplicateOrg { path: PathBuf, name: String },
 

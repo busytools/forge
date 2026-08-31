@@ -39,14 +39,17 @@ auto_start = true
 [[accounts]]
 display_name = "Aacct"
 config_dir = "/tmp/forge-switch-a"
+provider = "anthropic"
 
 [[accounts]]
 display_name = "Bacct"
 config_dir = "/tmp/forge-switch-b"
+provider = "anthropic"
 
 [[accounts]]
 display_name = "Cacct"
 config_dir = "/tmp/forge-switch-c"
+provider = "anthropic"
 "#,
     )
     .expect("write forge.toml");

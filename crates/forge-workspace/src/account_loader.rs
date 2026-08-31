@@ -32,6 +32,7 @@ use std::time::Duration;
 use tracing::Instrument;
 
 use forge_agent::cloud::{auth_status, oauth, oauth_credentials, oauth_usage};
+use forge_primitives::account::Provider;
 use forge_primitives::usage::oauth::OauthUsageError;
 
 use crate::account::{AccountKey, LoadingState, UsageFetchStatus};
@@ -154,13 +155,18 @@ pub async fn run_account_loading(
         };
         // One decision (probe_plan) drives the probe source, the
         // response-mapping strictness, and whether a 401 is eligible for
-        // the keychain refresh. A base-url-override account
-        // (`ANTHROPIC_BASE_URL` in `[accounts.env]`) probes its own
-        // endpoint with the env bearer and skips the keychain; a normal
-        // account uses the keychain + default host.
-        let account_env =
-            workspace.account_states().lock().env(&account_key).cloned().unwrap_or_default();
-        let plan = oauth_usage::probe_plan(&account_env);
+        // the keychain refresh. The account's declared provider picks
+        // it: a base-url provider probes its own endpoint with the env
+        // bearer and skips the keychain, an Anthropic account uses the
+        // keychain + default host.
+        let (provider, account_env) = {
+            let accounts = workspace.account_states().lock();
+            (
+                accounts.provider(&account_key).unwrap_or(Provider::Anthropic),
+                accounts.env(&account_key).cloned().unwrap_or_default(),
+            )
+        };
+        let plan = oauth_usage::probe_plan(provider, &account_env);
         let is_base_url = matches!(plan, oauth_usage::ProbePlan::BaseUrl { .. });
         let probe_result = match &plan {
             oauth_usage::ProbePlan::BaseUrl { base_url, bearer } => {
@@ -322,13 +328,7 @@ pub async fn run_recovery_poll(workspace_weak: Weak<Workspace>) {
             accounts
                 .by_key
                 .iter()
-                .filter(|(_, s)| {
-                    s.loading == LoadingState::Bailed
-                        && !matches!(
-                            oauth_usage::probe_plan(&s.env),
-                            oauth_usage::ProbePlan::BaseUrl { .. }
-                        )
-                })
+                .filter(|(_, s)| s.loading == LoadingState::Bailed && !s.provider.uses_base_url())
                 .map(|(k, s)| (k.clone(), s.config_dir.clone()))
                 .collect()
         };

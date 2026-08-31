@@ -47,10 +47,12 @@ auto_start = true
 [[accounts]]
 display_name = "Stargate"
 config_dir = "/tmp/forge-test-stargate"
+provider = "anthropic"
 
 [[accounts]]
 display_name = "Gateway"
 config_dir = "/tmp/forge-test-gateway"
+provider = "anthropic"
 "#,
     )
     .expect("write forge.toml");
@@ -97,10 +99,12 @@ auto_start = true
 [[accounts]]
 display_name = "Stargate"
 config_dir = "/tmp/forge-test-display-stargate"
+provider = "anthropic"
 
 [[accounts]]
 display_name = "Gateway"
 config_dir = "/tmp/forge-test-display-gateway"
+provider = "anthropic"
 "#,
     )
     .expect("write forge.toml");
@@ -163,6 +167,7 @@ path = "~/Projects/airmail"
 [[accounts]]
 display_name = "Stargate"
 config_dir = "/tmp/forge-test-env-stargate"
+provider = "anthropic"
 [accounts.env]
 ACCOUNT_KEY = "account-value"
 

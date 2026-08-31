@@ -43,6 +43,7 @@
 //! Add a type here when 2+ forge crates need it. Never reach for
 //! cross-crate `pub use` chains as a substitute.
 
+pub mod account;
 pub mod cloud;
 pub mod command;
 pub mod content;
