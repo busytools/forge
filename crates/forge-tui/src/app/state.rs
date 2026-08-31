@@ -117,15 +117,27 @@ pub struct TurnNoticeRef {
 /// mouse handler on click. Same render-time-stamp pattern as the
 /// per-tool-call expand/collapse.
 ///
-/// `ProjectHeader` and `WorkerRow` are y-only - they span the full
-/// pane width, so an x-coord doesn't add information. `TopBarIcon`
-/// and `OverlayClose` are x+y bounded - they target a specific glyph
-/// position on a one-row band shared with other content.
+/// Every variant is x+y bounded. In the projects pane's row grid a
+/// body target stops short of the right-edge control gutter (see
+/// [`control_gutter_start`]) rather than spanning the pane width, so a
+/// control that only exists while the row is live can never occupy a
+/// column the same row treated as body one frame earlier.
+///
+/// Only `ProjectHeader`, `WorkerRow` and their two close controls are
+/// in that grid. The other six variants are stamped by the top bar,
+/// the Inspector or the account panel and keep their own geometry, so
+/// the gutter says nothing about them - and `CopySessionId` in
+/// particular starts one column left of `control_gutter_start`, so it
+/// genuinely overlaps the body target of whatever row the account
+/// panel is painted over. Clicks resolve that by checking control
+/// targets before row bodies, not by geometry. A per-row control added
+/// to the Inspector's attention band, which is full width today, would
+/// want the gutter treatment before it could rely on geometry either.
 #[derive(Debug, Clone)]
 pub enum PaneHitTarget {
     /// Click on a project name row → switch active session to its
     /// lead.
-    ProjectHeader { project_name: String, y: u16, height: u16 },
+    ProjectHeader { project_name: String, y: u16, height: u16, x_start: u16, x_end: u16 },
     /// Click on the `▤` icon in the Narrow-tier top bar → toggle
     /// the Projects overlay.
     TopBarIcon { y: u16, height: u16, x_start: u16, x_end: u16 },
@@ -136,10 +148,10 @@ pub enum PaneHitTarget {
     /// Click on the `✕` glyph in the overlay banner → close the
     /// overlay without switching sessions.
     OverlayClose { y: u16, height: u16, x_start: u16, x_end: u16 },
-    /// Click on the `×` glyph at the right edge of an active project
-    /// row → close that project's session (drop the bucket + tell
-    /// the workspace to release its pool entry so the underlying
-    /// `claude` subprocess can exit).
+    /// Click on the [`ROW_CLOSE_BUTTON`] at the right edge of an
+    /// active project row → close that project's session (drop the
+    /// bucket + tell the workspace to release its pool entry so the
+    /// underlying `claude` subprocess can exit).
     CloseSession {
         session_key: forge_workspace::SessionKey,
         y: u16,
@@ -172,8 +184,8 @@ pub enum PaneHitTarget {
     /// handler doesn't have to look it up again (and so a session
     /// switch between render and click can't write the wrong id).
     CopySessionId { session_id: String, y: u16, height: u16, x_start: u16, x_end: u16 },
-    /// `×` close button on a worker tree-child row. Click dispatches
-    /// `Command::CloseWorker { project_key, label }`.
+    /// [`ROW_CLOSE_BUTTON`] on a worker tree-child row. Click
+    /// dispatches `Command::CloseWorker { project_key, label }`.
     CloseWorker {
         project_key: forge_workspace::ProjectKey,
         label: String,
@@ -191,17 +203,18 @@ pub enum PaneHitTarget {
         session_key: forge_workspace::SessionKey,
         y: u16,
         height: u16,
+        x_start: u16,
+        x_end: u16,
     },
 }
 
 impl PaneHitTarget {
     /// Whether the target's row range covers `y` (inclusive of `y`,
-    /// exclusive of `y + height`). For full-width row targets
-    /// (`ProjectHeader`, `WorkerRow`) this is the only check the
-    /// hit-tester needs; for x+y-bounded targets (`TopBarIcon`,
-    /// `OverlayClose`) call [`Self::contains`] instead so the column
-    /// constraint also applies.
-    pub fn contains_y(&self, y: u16) -> bool {
+    /// exclusive of `y + height`). Private on purpose: a y-only
+    /// hit-test is what let a close button claim columns the cold row
+    /// routed to its body, so [`Self::contains`] is the only way to
+    /// resolve a click.
+    fn contains_y(&self, y: u16) -> bool {
         let (start, height) = match self {
             Self::ProjectHeader { y, height, .. }
             | Self::TopBarIcon { y, height, .. }
@@ -217,17 +230,18 @@ impl PaneHitTarget {
         (start..start.saturating_add(height)).contains(&y)
     }
 
-    /// Full hit-test (x + y). For full-width row targets the x
-    /// component is unconstrained; for x+y-bounded targets (top-bar
-    /// icon, overlay close, per-row close) the click must fall within
-    /// the recorded `[x_start, x_end)` range.
+    /// Full hit-test: the click must fall inside the recorded row
+    /// range and the recorded `[x_start, x_end)` column range. The
+    /// match is exhaustive with no unconstrained arm, so a new variant
+    /// cannot be added without deciding its columns.
     pub fn contains(&self, x: u16, y: u16) -> bool {
         if !self.contains_y(y) {
             return false;
         }
         match self {
-            Self::ProjectHeader { .. } | Self::WorkerRow { .. } => true,
-            Self::TopBarIcon { x_start, x_end, .. }
+            Self::ProjectHeader { x_start, x_end, .. }
+            | Self::WorkerRow { x_start, x_end, .. }
+            | Self::TopBarIcon { x_start, x_end, .. }
             | Self::InspectorTopBarIcon { x_start, x_end, .. }
             | Self::OverlayClose { x_start, x_end, .. }
             | Self::CloseSession { x_start, x_end, .. }
@@ -238,6 +252,29 @@ impl PaneHitTarget {
         }
     }
 }
+
+/// First column of the right-edge control gutter, for a projects-pane
+/// project or worker row spanning `area`. Those rows' body targets end
+/// here and their close controls start here, so the two ranges are
+/// adjacent by construction. Targets stamped by other surfaces keep
+/// their own geometry and are not bound by this.
+pub fn control_gutter_start(area: ratatui::layout::Rect) -> u16 {
+    area.x.saturating_add(area.width).saturating_sub(CONTROL_GUTTER_WIDTH)
+}
+
+/// The close button painted at the right edge of a live project or
+/// worker row. Exported so the paint and the hit band are measured
+/// from one glyph rather than from two literals that agree today.
+pub const ROW_CLOSE_BUTTON: &str = " x ";
+
+/// Columns a row reserves at its right edge: one separator, the
+/// [`ROW_CLOSE_BUTTON`], one right pad. Both the row's name budget and
+/// its close band are derived from this, so widening the button cannot
+/// move the drawn glyph out from under the clickable band.
+///
+/// The band itself runs `[gutter_start, row_right - 1)`: the separator
+/// column is tolerance, and the right pad column stays inert.
+const CONTROL_GUTTER_WIDTH: u16 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChatRenderTraceState {
@@ -314,6 +351,13 @@ pub struct App {
     /// `None` only in the brief pre-Connect window where no session
     /// has landed in the map yet.
     pub active_session_key: Option<forge_workspace::SessionKey>,
+    /// Synthetic spawn key the user asked to be taken to, set when a
+    /// click wakes a cold project and consumed by the `Spawning`
+    /// reducer once that bucket exists. The reducer cannot focus
+    /// unconditionally - every `auto_start` project emits `Spawning`
+    /// at boot and the first to arrive would steal the tab - so a
+    /// user-driven wake records its intent here instead.
+    pub pending_spawn_focus: Option<forge_workspace::SessionKey>,
     /// Snapshot of the durable forge crons (`mcp__forge__cron`) the
     /// active session itself created, refreshed on the ~1s ticker
     /// (`git_diff::apply_timer_tick`) from
@@ -735,6 +779,10 @@ impl App {
     /// sides is preserved (in-memory buckets in `sessions`); the
     /// next paint reflects the new active session. No-op if `key`
     /// is already active or unknown.
+    ///
+    /// Drops any [`Self::pending_spawn_focus`]: landing somewhere by
+    /// any route settles where the user wants to be, so a spawn they
+    /// asked for earlier must not pull them back when it arrives.
     pub fn switch_active_session(&mut self, key: forge_workspace::SessionKey) {
         // Local helper: map a session's lifecycle state to the
         // App-level status enum so a background turn that completed
@@ -755,6 +803,10 @@ impl App {
                 | L::LoggedOut => AppStatus::Ready,
             }
         }
+        // Cleared before the early returns: a click that lands on the
+        // session already focused is still the user settling where
+        // they want to be.
+        self.pending_spawn_focus = None;
         if self.active_session_key.as_ref() == Some(&key) {
             return;
         }
@@ -3548,6 +3600,7 @@ impl App {
             #[rustfmt::skip] #[cfg(feature = "testing")] test_notifications: std::cell::RefCell::new(Vec::new()),
             sessions,
             active_session_key: Some(pending_key),
+            pending_spawn_focus: None,
             forge_crons: Vec::new(),
             forge_schedule_rows: Vec::new(),
             gotify_subs: Vec::new(),

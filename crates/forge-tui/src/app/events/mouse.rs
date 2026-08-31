@@ -923,10 +923,18 @@ fn locate_peer_user_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usiz
 /// Returns `true` when the click was consumed so the chat hit-test
 /// path is skipped.
 fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
-    // X+Y-bounded targets (top-bar icon, overlay ✕). These overlap
-    // the chat body or share a one-row band with non-interactive
-    // text, so we must constrain on column too - `contains_y`
-    // alone would catch unrelated clicks on the same row.
+    // Control targets first, and this pass is the only one that
+    // performs a close - both fallthroughs below match the control
+    // variants to a bare `true`. So it is never redundant, whatever
+    // the geometry says.
+    //
+    // Geometry and ordering divide the work rather than duplicating
+    // it. For the projects pane's rows the gutter makes the body and
+    // control bands disjoint, so ordering is not what picks between
+    // them. For the account panel's copy-id affordance the bands do
+    // overlap - it starts one column left of the gutter - and there
+    // ordering is what decides. The Inspector's targets are outside
+    // `app.layout.pane` and never reach the fallthrough at all.
     let xy_target = app
         .pane_hit_targets
         .iter()
@@ -1007,7 +1015,8 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
     // in one action. The overlay covers the whole body rect so we
     // skip the inline-pane gate.
     if app.projects_pane_overlay_open {
-        let target = app.pane_hit_targets.iter().find(|t| t.contains_y(mouse.row)).cloned();
+        let target =
+            app.pane_hit_targets.iter().find(|t| t.contains(mouse.column, mouse.row)).cloned();
         let Some(target) = target else {
             // Click landed on overlay chrome (banner rule, blank
             // padding). Consume so chat hit-tests don't fire
@@ -1027,11 +1036,10 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
                 app.needs_redraw = true;
                 true
             }
-            // x+y-bounded glyphs handled above; reaching them here
-            // means the y-only fallback matched a row stamped on
-            // the same band as the glyph but the click missed the
-            // glyph's x range - treat as "in-overlay no-op" so we
-            // still consume.
+            // Control glyphs are resolved by the pass above, which
+            // returns rather than falling through. Consume anyway so
+            // a future stamp ordering cannot leak a click into the
+            // chat behind the overlay.
             PaneHitTarget::TopBarIcon { .. }
             | PaneHitTarget::InspectorTopBarIcon { .. }
             | PaneHitTarget::OverlayClose { .. }
@@ -1043,15 +1051,16 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
         };
     }
 
-    // Inline pane (Wide / Medium): existing y-only routing gated by
-    // the inline pane rect.
+    // Inline pane (Wide / Medium): row routing gated by the inline
+    // pane rect, which is also what keeps the Inspector's targets out
+    // of this fallthrough.
     let Some(pane) = app.layout.pane else {
         return false;
     };
     if !rect_contains(pane, mouse.column, mouse.row) {
         return false;
     }
-    let target = app.pane_hit_targets.iter().find(|t| t.contains_y(mouse.row)).cloned();
+    let target = app.pane_hit_targets.iter().find(|t| t.contains(mouse.column, mouse.row)).cloned();
     let Some(target) = target else {
         // Click landed in the pane area but outside any stamped row
         // (banner rule, blank line, padding). Consume so the chat
@@ -1184,10 +1193,9 @@ fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
 
 /// Switch to the lead session of `project_name`. If the project's
 /// lead is already an in-process session in `app.sessions`, swap to
-/// it; otherwise hand off to
-/// [`crate::app::connect::spawn_for_sleeping_project`] which
-/// synthesizes a spawning bucket and kicks off the async lookup of
-/// the project's lead AgentHandle.
+/// it; otherwise dispatch `Command::SpawnProject` and record the
+/// synthetic spawn key in [`App::pending_spawn_focus`], so the
+/// `Spawning` reducer lands the user in the session this click woke.
 fn switch_to_project_lead(app: &mut App, project_name: &str) {
     // Resolve display name + project path up-front; both are used
     // in multiple branches below.
@@ -1288,7 +1296,14 @@ fn switch_to_project_lead(app: &mut App, project_name: &str) {
                         error = %err,
                         "switch_to_project_lead: dispatch failed",
                     );
+                    return;
                 }
+                // The bucket does not exist yet, so there is nothing
+                // to switch to until `Spawning` lands. Record where
+                // the click was headed; the reducer takes it from
+                // here. Without this the click has no visible effect
+                // at all and reads as a dead row.
+                app.pending_spawn_focus = Some(spawn_synthetic);
             }
         }
     }
@@ -1650,6 +1665,292 @@ mod tests {
             app.active_session_key.as_ref(),
             Some(&spawn_synth),
             "non-spawning synthetic bucket should still be switchable",
+        );
+    }
+
+    /// Paint the Projects pane for `projects` into `app` at the inline
+    /// pane rect, and return the screen row the project's name landed
+    /// on. Painted rather than reasoned about: the hit targets are
+    /// stamped during render, so only a real frame produces them.
+    fn paint_pane(app: &mut App, projects: &[forge_workspace::ProjectView], name: &str) -> u16 {
+        paint_pane_row(app, projects, name).0
+    }
+
+    /// Paint at `width` and return the row's screen y plus the cells
+    /// actually painted on it, so a test can compare where a glyph
+    /// landed against where the hit band was stamped.
+    fn paint_pane_row_at(
+        app: &mut App,
+        projects: &[forge_workspace::ProjectView],
+        name: &str,
+        width: u16,
+    ) -> (u16, Vec<String>) {
+        let area = Rect { x: 0, y: 0, width, height: 30 };
+        app.layout.pane = Some(area);
+        let backend = ratatui::backend::TestBackend::new(width, 30);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| crate::ui::projects_pane::render(frame, area, app, projects))
+            .expect("the pane paints");
+        let buffer = terminal.backend().buffer().clone();
+        let row_of = |y: u16| -> Vec<String> {
+            (0..width)
+                .map(|x| buffer.cell((x, y)).map_or_else(String::new, |c| c.symbol().to_owned()))
+                .collect()
+        };
+        let y =
+            (0..30).find(|y| row_of(*y).concat().contains(name)).expect("the project row paints");
+        (y, row_of(y))
+    }
+
+    fn paint_pane_row(
+        app: &mut App,
+        projects: &[forge_workspace::ProjectView],
+        name: &str,
+    ) -> (u16, Vec<String>) {
+        paint_pane_row_at(app, projects, name, crate::ui::layout::PANE_WIDTH_WIDE)
+    }
+
+    fn left_click(app: &mut App, column: u16, row: u16) {
+        handle_pane_click(
+            app,
+            MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column,
+                row,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+        );
+    }
+
+    /// A project row grows a close button the moment its session
+    /// lands. The pointer does not move between those two frames, so
+    /// the second click of a double-click arrives at a column that
+    /// meant "wake this project" when the user aimed at it and means
+    /// "close it" by the time it lands - spawn, close, spawn, close,
+    /// which is what made three projects read as unclickable.
+    ///
+    /// Driven through `handle_pane_click` rather than asserted against
+    /// the stamped targets, because the router is half the defect: a
+    /// y-only lookup reintroduces it with the geometry left correct.
+    #[test]
+    fn waking_a_project_does_not_turn_row_body_columns_into_a_close_button() {
+        use forge_workspace::{ProjectKey, ProjectView, SessionKey, SessionView};
+
+        const PROJECT_PATH: &str = "/Users/v/Projects/hub-modules";
+        let width = crate::ui::layout::PANE_WIDTH_WIDE;
+
+        let mut app = App::test_default();
+        let lead = SessionKey::from_session_id("hub-modules-lead");
+        let projects = vec![ProjectView::new_for_test(
+            ProjectKey::new_for_test("hub-modules"),
+            "hub-modules",
+            PROJECT_PATH,
+            // A real sleeping row paints a relative-time label in the
+            // gutter, which is the thing a user aims at.
+            vec![SessionView::new_for_test(
+                lead.clone(),
+                "lead",
+                true,
+                Some(std::time::SystemTime::now() - std::time::Duration::from_secs(7200)),
+            )],
+        )];
+
+        // Frame 1, cold: record every column that routes to the row
+        // body, i.e. every column a user could aim a "wake it" click at.
+        let row_y = paint_pane(&mut app, &projects, "hub-modules");
+        let body_columns: Vec<u16> = (0..width)
+            .filter(|x| {
+                app.pane_hit_targets
+                    .iter()
+                    .find(|t| t.contains(*x, row_y))
+                    .is_some_and(|t| matches!(t, PaneHitTarget::ProjectHeader { .. }))
+            })
+            .collect();
+        assert!(!body_columns.is_empty(), "the cold row must be clickable somewhere");
+
+        // Frame 2: the spawn landed. Same App, same pane, same pointer.
+        let mut bucket = UiSession::new(lead.clone());
+        bucket.lifecycle_state = SessionLifecycleState::Idle;
+        bucket.cwd_raw = PROJECT_PATH.to_owned();
+        app.sessions.insert(lead.clone(), bucket);
+        let live_y = paint_pane(&mut app, &projects, "hub-modules");
+        assert_eq!(live_y, row_y, "fixture only bites while the row stays put across the wake");
+
+        // Control: the close button really is on this row, so the
+        // sweep below is not passing because nothing can close.
+        left_click(&mut app, width - 3, row_y);
+        assert!(
+            !app.sessions.contains_key(&lead),
+            "the gutter must close the session, or this test proves nothing",
+        );
+
+        // Every column that meant "wake it" one frame ago must still
+        // not close the session it just woke.
+        for column in body_columns {
+            let mut bucket = UiSession::new(lead.clone());
+            bucket.lifecycle_state = SessionLifecycleState::Idle;
+            bucket.cwd_raw = PROJECT_PATH.to_owned();
+            app.sessions.insert(lead.clone(), bucket);
+            paint_pane(&mut app, &projects, "hub-modules");
+
+            left_click(&mut app, column, row_y);
+            assert!(
+                app.sessions.contains_key(&lead),
+                "column {column} routed to the row body while the project was cold and closed \
+                 its session once it went live, so a second click at a pointer that never \
+                 moved undoes the first",
+            );
+        }
+    }
+
+    /// The gutter reservation and the row's name budget are derived
+    /// from one constant, but the button's painted cells and the close
+    /// band's columns are still produced by two different pieces of
+    /// arithmetic. This pins them to each other: the band must be
+    /// exactly the painted button plus the one separator column of
+    /// tolerance to its left.
+    ///
+    /// Without it, changing the gutter width alone leaves the drawn
+    /// glyph and the clickable band pointing at different cells, which
+    /// is the same class of defect as the original bug - the cell under
+    /// the pointer meaning something other than what is drawn there.
+    ///
+    /// It also catches a left-chrome change pushing name glyphs into
+    /// the band, but only via the button's displacement - so asserting
+    /// on the button alone is load-bearing for more than the button,
+    /// and narrowing this to "the band is 4 wide" would lose it.
+    ///
+    /// Both row kinds, because the worker row runs its own copy of the
+    /// same two-piece arithmetic and would otherwise be unpinned.
+    #[test]
+    fn the_close_band_covers_exactly_the_painted_button_and_its_separator() {
+        for width in [crate::ui::layout::PANE_WIDTH_WIDE, crate::ui::layout::PANE_WIDTH_MEDIUM] {
+            for row in [CloseRow::Project, CloseRow::Worker] {
+                let (mut app, projects) = pane_with_project_and_worker();
+                let (row_y, cells) = paint_pane_row_at(&mut app, &projects, row.name(), width);
+                let painted: Vec<u16> = (0..width)
+                    .filter(|x| cells.get(usize::from(*x)).is_some_and(|c| c == "x"))
+                    .collect();
+                assert_eq!(
+                    painted.len(),
+                    1,
+                    "{row:?} at width {width}: expected one painted close glyph, row was {}",
+                    cells.concat(),
+                );
+                let glyph = painted[0];
+
+                let banded: Vec<u16> = (0..width)
+                    .filter(|x| {
+                        app.pane_hit_targets
+                            .iter()
+                            .find(|t| t.contains(*x, row_y))
+                            .is_some_and(|t| row.is_close_target(t))
+                    })
+                    .collect();
+
+                // ` x ` is painted at glyph-1..=glyph+1, and the band
+                // adds the separator column to its left.
+                let expected: Vec<u16> = (glyph - 2..=glyph + 1).collect();
+                assert_eq!(
+                    banded,
+                    expected,
+                    "{row:?} at width {width}: the close band and the painted button disagree \
+                     about which cells close it - row was {}",
+                    cells.concat(),
+                );
+            }
+        }
+    }
+
+    /// The two row kinds that carry a close button, so the band test
+    /// can run the same assertions against both.
+    #[derive(Debug, Clone, Copy)]
+    enum CloseRow {
+        Project,
+        Worker,
+    }
+
+    impl CloseRow {
+        fn name(self) -> &'static str {
+            match self {
+                Self::Project => CLOSE_ROW_PROJECT,
+                Self::Worker => CLOSE_ROW_WORKER,
+            }
+        }
+
+        fn is_close_target(self, target: &PaneHitTarget) -> bool {
+            match self {
+                Self::Project => matches!(target, PaneHitTarget::CloseSession { .. }),
+                Self::Worker => matches!(target, PaneHitTarget::CloseWorker { .. }),
+            }
+        }
+    }
+
+    const CLOSE_ROW_PROJECT: &str = "hub-modules";
+    const CLOSE_ROW_WORKER: &str = "steward";
+
+    /// One live project with one live worker, so both close-carrying
+    /// row kinds paint in the same frame.
+    fn pane_with_project_and_worker() -> (App, Vec<forge_workspace::ProjectView>) {
+        use forge_workspace::{ProjectKey, ProjectView, SessionKey, SessionView, WorkerEntry};
+
+        const PROJECT_PATH: &str = "/Users/v/Projects/hub-modules";
+
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("test_default seeds a workspace stub");
+        let project_key = ProjectKey::new_for_test(CLOSE_ROW_PROJECT);
+
+        let lead = SessionKey::from_session_id("hub-modules-lead");
+        let mut bucket = UiSession::new(lead.clone());
+        bucket.lifecycle_state = SessionLifecycleState::Idle;
+        bucket.cwd_raw = PROJECT_PATH.to_owned();
+        app.sessions.insert(lead.clone(), bucket);
+
+        let worker = SessionKey::from_session_id("hub-modules-steward");
+        app.sessions.insert(worker.clone(), UiSession::new(worker.clone()));
+        workspace.insert_live_worker(
+            &project_key,
+            WorkerEntry {
+                label: CLOSE_ROW_WORKER.into(),
+                charter: "band-test".into(),
+                session_key: worker,
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".into(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+
+        let projects = vec![ProjectView::new_for_test(
+            project_key,
+            CLOSE_ROW_PROJECT,
+            PROJECT_PATH,
+            vec![SessionView::new_for_test(lead, "lead", true, None)],
+        )];
+        (app, projects)
+    }
+
+    /// Clicking a cold project row has nothing to switch to yet, so it
+    /// records where the click was headed and lets the `Spawning`
+    /// reducer finish the move. Dropping that record leaves the click
+    /// dispatching a spawn with no visible effect, which is what made
+    /// a cold row read as unclickable.
+    #[test]
+    fn cold_project_click_records_where_it_was_headed() {
+        let mut app = App::test_default();
+        let _outbox = app.install_testing_stub();
+        assert!(app.sessions.keys().all(|k| k.as_str() != "__spawn_forge__"));
+
+        switch_to_project_lead(&mut app, "forge");
+
+        assert_eq!(
+            app.pending_spawn_focus.as_ref().map(forge_workspace::SessionKey::as_str),
+            Some("__spawn_forge__"),
+            "a cold-row click must record the spawn key it is waiting for",
         );
     }
 

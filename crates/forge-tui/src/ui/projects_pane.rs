@@ -591,27 +591,27 @@ fn append_org_project_row(
         // exactly where the idle row's last time char ends, so
         // active + idle row right edges stay flush.
         spans.push(Span::styled(
-            " x ".to_owned(),
+            crate::app::ROW_CLOSE_BUTTON.to_owned(),
             Style::default().fg(Color::Gray).bg(theme::USER_MSG_BG).add_modifier(Modifier::BOLD),
         ));
         // 1-col right gutter - matches the inspector pane's GIT
         // section right edge AND the idle row's 1-col gutter.
         spans.push(Span::raw(" "));
         lines.push(Line::from(spans));
-        // Hit targets: whole row → focus/switch; button + 1-col
-        // tolerance each side → close session.
+        // Hit targets: row body up to the control gutter →
+        // focus/switch; the gutter itself → close session.
+        let close_x_start = crate::app::control_gutter_start(area);
         app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
             project_name: project.key.as_str().to_owned(),
             y: row_y,
             height: 1,
+            x_start: area.x,
+            x_end: close_x_start,
         });
-        let row_right = area.x.saturating_add(area.width);
-        // Close button: the ` x ` 3-cell span occupies
-        // (row_right - 4) to (row_right - 2). 5-col hit band runs
-        // (row_right - 5) to (row_right - 1) for 1-col tolerance
-        // each side; the rightmost gutter col stays inert.
-        let close_x_start = row_right.saturating_sub(5);
-        let close_x_end = row_right.saturating_sub(1);
+        // The ` x ` 3-cell span occupies (row_right - 4) to
+        // (row_right - 2); the band adds 1-col tolerance on the left
+        // and the rightmost gutter col stays inert.
+        let close_x_end = area.x.saturating_add(area.width).saturating_sub(1);
         app.pane_hit_targets.push(PaneHitTarget::CloseSession {
             session_key: session_key.clone(),
             y: row_y,
@@ -643,10 +643,17 @@ fn append_org_project_row(
         spans.push(Span::styled(time, Style::default().fg(theme::DIM)));
         spans.push(Span::raw(" "));
         lines.push(Line::from(spans));
+        // Same body range as the live row above. The gutter carries
+        // the relative-time label here and no control, but it stays
+        // reserved: this row grows a close button the moment its
+        // session lands, and a click aimed at the timestamp must not
+        // mean "wake" one frame and "close" the next.
         app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
             project_name: project.key.as_str().to_owned(),
             y: row_y,
             height: 1,
+            x_start: area.x,
+            x_end: crate::app::control_gutter_start(area),
         });
     }
 }
@@ -723,7 +730,10 @@ fn append_worker_tree_children(
             .unwrap_or_default();
         let (badge_spans, badge_width) =
             peer_badge_spans(&badge_stats, badge_last_failure_at, Instant::now());
-        let label_budget = total_width.saturating_sub(1 + 3 + 3 + 1 + 1 + 1 + 3 + 1 + badge_width);
+        let label_budget = total_width
+            .saturating_sub(usize::from(WORKER_ROW_LEFT_CHROME))
+            .saturating_sub(control_gutter_width())
+            .saturating_sub(badge_width);
         let label = truncate_with_ellipsis(worker.label.as_str(), label_budget);
         let label_pad = label_budget.saturating_sub(label.chars().count());
         let is_focused = active_session_key.as_ref() == Some(&worker.session_key);
@@ -809,7 +819,7 @@ fn append_worker_tree_children(
         spans.extend(badge_spans);
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
-            " x ".to_owned(),
+            crate::app::ROW_CLOSE_BUTTON.to_owned(),
             Style::default().fg(Color::Gray).bg(theme::USER_MSG_BG).add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::raw(" "));
@@ -824,12 +834,13 @@ fn append_worker_tree_children(
         // recovery path cleared the diagnostic).
         if matches!(worker.status, forge_primitives::WorkerLiveness::Failed) {
             let diagnostic = worker.diagnostic.as_deref().unwrap_or("spawn failed");
-            // Indent = 1 left pad + 3 `│  ` + 3 tree connector + 1
-            // glyph + 1 sep = 9. Leave the close button column free.
-            let indent: usize = 9;
-            let right_chrome: usize = 1 + 3 + 1; // sep + ` x ` + gutter
+            // Aligned to the worker's label column and stopping at the
+            // gutter, from the same two values the label itself uses -
+            // this row carries no hit target, so a drift here would be
+            // silent text running under the close button.
+            let indent = usize::from(WORKER_ROW_LEFT_CHROME);
             let total_width = usize::from(area.width);
-            let budget = total_width.saturating_sub(indent).saturating_sub(right_chrome);
+            let budget = total_width.saturating_sub(indent).saturating_sub(control_gutter_width());
             let truncated = truncate_with_ellipsis(diagnostic, budget);
             lines.push(Line::from(vec![
                 Span::raw(" ".repeat(indent)),
@@ -837,21 +848,21 @@ fn append_worker_tree_children(
             ]));
         }
 
-        // Hit targets. The label area covers the row from x_start at
-        // the indent + connector through to before the close button.
-        // Click on it switches focus to the worker's chat session.
-        // The trailing 3-cell ` x ` button + 1-cell tolerance each
-        // side dispatches the close command (mirrors `CloseSession`).
+        // Hit targets. The label area covers the row up to the
+        // control gutter; click on it switches focus to the worker's
+        // chat session. The gutter dispatches the close command
+        // (mirrors `CloseSession`).
+        let close_x_start = crate::app::control_gutter_start(area);
         app.pane_hit_targets.push(PaneHitTarget::WorkerRow {
             project_key: project.key.clone(),
             label: worker.label.clone(),
             session_key: worker.session_key.clone(),
             y: row_y,
             height: 1,
+            x_start: area.x,
+            x_end: close_x_start,
         });
-        let row_right = area.x.saturating_add(area.width);
-        let close_x_start = row_right.saturating_sub(5);
-        let close_x_end = row_right.saturating_sub(1);
+        let close_x_end = area.x.saturating_add(area.width).saturating_sub(1);
         app.pane_hit_targets.push(PaneHitTarget::CloseWorker {
             project_key: project.key.clone(),
             label: worker.label.clone(),
@@ -888,13 +899,29 @@ fn org_trunk_span(parent_is_last: bool) -> Span<'static> {
     }
 }
 
-/// Chrome budget for an org-grouped row:
-/// `<1 PANE_PAD><3 connector><1 glyph><1 sp><name><1 sp><RIGHT col><1 right pad>`
-/// where RIGHT col = 3 cells (` x ` button for active rows / 3-char
-/// `Xm`/`Xh`/`Xd` time for idle rows). Total = 6 left chrome + 1 sep
-/// + 3 right col + 1 right pad = 11 chars per row.
+/// Left chrome on an org-grouped project row:
+/// `<1 PANE_PAD><3 connector><1 glyph><1 sp>`.
+const ORG_ROW_LEFT_CHROME: u16 = 6;
+
+/// Left chrome on a worker tree-child row: the project row's, plus the
+/// 3-cell org trunk the subtree is indented behind.
+const WORKER_ROW_LEFT_CHROME: u16 = ORG_ROW_LEFT_CHROME + 3;
+
+/// Name budget for an org-grouped row: the width less its left chrome
+/// and the right-edge control gutter. Derived from
+/// [`crate::app::control_gutter_start`]'s own reservation rather than
+/// from a matching literal, so the name can never grow into the
+/// columns the close band claims.
 fn name_budget_org_row(area_width: u16) -> usize {
-    usize::from(area_width.saturating_sub(11))
+    usize::from(area_width.saturating_sub(ORG_ROW_LEFT_CHROME))
+        .saturating_sub(control_gutter_width())
+}
+
+/// Cells the control gutter reserves, read back from the geometry the
+/// hit band uses so the two cannot be changed apart.
+fn control_gutter_width() -> usize {
+    let probe = Rect { x: 0, y: 0, width: u16::MAX, height: 1 };
+    usize::from(u16::MAX - crate::app::control_gutter_start(probe))
 }
 
 /// Format `activity` as a short relative-time string anchored at
