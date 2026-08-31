@@ -923,12 +923,18 @@ fn locate_peer_user_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usiz
 /// Returns `true` when the click was consumed so the chat hit-test
 /// path is skipped.
 fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
-    // Control targets first. For the projects pane's project and
-    // worker rows this pass is redundant - their body target now stops
-    // at the gutter, so at most one of the two can match a column. It
-    // stays load-bearing for the surfaces outside that grid, where a
-    // full-width row target shares a band with a glyph: the Inspector's
-    // attention rows, and the account panel's copy-id affordance.
+    // Control targets first, and this pass is the only one that
+    // performs a close - both fallthroughs below match the control
+    // variants to a bare `true`. So it is never redundant, whatever
+    // the geometry says.
+    //
+    // Geometry and ordering divide the work rather than duplicating
+    // it. For the projects pane's rows the gutter makes the body and
+    // control bands disjoint, so ordering is not what picks between
+    // them. For the account panel's copy-id affordance the bands do
+    // overlap - it starts one column left of the gutter - and there
+    // ordering is what decides. The Inspector's targets are outside
+    // `app.layout.pane` and never reach the fallthrough at all.
     let xy_target = app
         .pane_hit_targets
         .iter()
@@ -1045,8 +1051,9 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
         };
     }
 
-    // Inline pane (Wide / Medium): existing y-only routing gated by
-    // the inline pane rect.
+    // Inline pane (Wide / Medium): row routing gated by the inline
+    // pane rect, which is also what keeps the Inspector's targets out
+    // of this fallthrough.
     let Some(pane) = app.layout.pane else {
         return false;
     };
@@ -1808,58 +1815,123 @@ mod tests {
     /// glyph and the clickable band pointing at different cells, which
     /// is the same class of defect as the original bug - the cell under
     /// the pointer meaning something other than what is drawn there.
+    ///
+    /// It also catches a left-chrome change pushing name glyphs into
+    /// the band, but only via the button's displacement - so asserting
+    /// on the button alone is load-bearing for more than the button,
+    /// and narrowing this to "the band is 4 wide" would lose it.
+    ///
+    /// Both row kinds, because the worker row runs its own copy of the
+    /// same two-piece arithmetic and would otherwise be unpinned.
     #[test]
     fn the_close_band_covers_exactly_the_painted_button_and_its_separator() {
-        use forge_workspace::{ProjectKey, ProjectView, SessionKey, SessionView};
+        for width in [crate::ui::layout::PANE_WIDTH_WIDE, crate::ui::layout::PANE_WIDTH_MEDIUM] {
+            for row in [CloseRow::Project, CloseRow::Worker] {
+                let (mut app, projects) = pane_with_project_and_worker();
+                let (row_y, cells) = paint_pane_row_at(&mut app, &projects, row.name(), width);
+                let painted: Vec<u16> = (0..width)
+                    .filter(|x| cells.get(usize::from(*x)).is_some_and(|c| c == "x"))
+                    .collect();
+                assert_eq!(
+                    painted.len(),
+                    1,
+                    "{row:?} at width {width}: expected one painted close glyph, row was {}",
+                    cells.concat(),
+                );
+                let glyph = painted[0];
+
+                let banded: Vec<u16> = (0..width)
+                    .filter(|x| {
+                        app.pane_hit_targets
+                            .iter()
+                            .find(|t| t.contains(*x, row_y))
+                            .is_some_and(|t| row.is_close_target(t))
+                    })
+                    .collect();
+
+                // ` x ` is painted at glyph-1..=glyph+1, and the band
+                // adds the separator column to its left.
+                let expected: Vec<u16> = (glyph - 2..=glyph + 1).collect();
+                assert_eq!(
+                    banded,
+                    expected,
+                    "{row:?} at width {width}: the close band and the painted button disagree \
+                     about which cells close it - row was {}",
+                    cells.concat(),
+                );
+            }
+        }
+    }
+
+    /// The two row kinds that carry a close button, so the band test
+    /// can run the same assertions against both.
+    #[derive(Debug, Clone, Copy)]
+    enum CloseRow {
+        Project,
+        Worker,
+    }
+
+    impl CloseRow {
+        fn name(self) -> &'static str {
+            match self {
+                Self::Project => CLOSE_ROW_PROJECT,
+                Self::Worker => CLOSE_ROW_WORKER,
+            }
+        }
+
+        fn is_close_target(self, target: &PaneHitTarget) -> bool {
+            match self {
+                Self::Project => matches!(target, PaneHitTarget::CloseSession { .. }),
+                Self::Worker => matches!(target, PaneHitTarget::CloseWorker { .. }),
+            }
+        }
+    }
+
+    const CLOSE_ROW_PROJECT: &str = "hub-modules";
+    const CLOSE_ROW_WORKER: &str = "steward";
+
+    /// One live project with one live worker, so both close-carrying
+    /// row kinds paint in the same frame.
+    fn pane_with_project_and_worker() -> (App, Vec<forge_workspace::ProjectView>) {
+        use forge_workspace::{ProjectKey, ProjectView, SessionKey, SessionView, WorkerEntry};
 
         const PROJECT_PATH: &str = "/Users/v/Projects/hub-modules";
 
-        for width in [crate::ui::layout::PANE_WIDTH_WIDE, crate::ui::layout::PANE_WIDTH_MEDIUM] {
-            let mut app = App::test_default();
-            let lead = SessionKey::from_session_id("hub-modules-lead");
-            let projects = vec![ProjectView::new_for_test(
-                ProjectKey::new_for_test("hub-modules"),
-                "hub-modules",
-                PROJECT_PATH,
-                vec![SessionView::new_for_test(lead.clone(), "lead", true, None)],
-            )];
-            let mut bucket = UiSession::new(lead.clone());
-            bucket.lifecycle_state = SessionLifecycleState::Idle;
-            bucket.cwd_raw = PROJECT_PATH.to_owned();
-            app.sessions.insert(lead, bucket);
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("test_default seeds a workspace stub");
+        let project_key = ProjectKey::new_for_test(CLOSE_ROW_PROJECT);
 
-            let (row_y, cells) = paint_pane_row_at(&mut app, &projects, "hub-modules", width);
-            let painted: Vec<u16> = (0..width)
-                .filter(|x| cells.get(usize::from(*x)).is_some_and(|c| c == "x"))
-                .collect();
-            assert_eq!(
-                painted.len(),
-                1,
-                "width {width}: expected one painted close glyph, row was {}",
-                cells.concat(),
-            );
-            let glyph = painted[0];
+        let lead = SessionKey::from_session_id("hub-modules-lead");
+        let mut bucket = UiSession::new(lead.clone());
+        bucket.lifecycle_state = SessionLifecycleState::Idle;
+        bucket.cwd_raw = PROJECT_PATH.to_owned();
+        app.sessions.insert(lead.clone(), bucket);
 
-            let banded: Vec<u16> = (0..width)
-                .filter(|x| {
-                    app.pane_hit_targets
-                        .iter()
-                        .find(|t| t.contains(*x, row_y))
-                        .is_some_and(|t| matches!(t, PaneHitTarget::CloseSession { .. }))
-                })
-                .collect();
+        let worker = SessionKey::from_session_id("hub-modules-steward");
+        app.sessions.insert(worker.clone(), UiSession::new(worker.clone()));
+        workspace.insert_live_worker(
+            &project_key,
+            WorkerEntry {
+                label: CLOSE_ROW_WORKER.into(),
+                charter: "band-test".into(),
+                session_key: worker,
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".into(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                diagnostic: None,
+                kick: None,
+            },
+        );
 
-            // ` x ` is painted at glyph-1..=glyph+1, and the band adds
-            // the separator column to its left.
-            let expected: Vec<u16> = (glyph - 2..=glyph + 1).collect();
-            assert_eq!(
-                banded,
-                expected,
-                "width {width}: the close band and the painted button disagree about which \
-                 cells close the session - row was {}",
-                cells.concat(),
-            );
-        }
+        let projects = vec![ProjectView::new_for_test(
+            project_key,
+            CLOSE_ROW_PROJECT,
+            PROJECT_PATH,
+            vec![SessionView::new_for_test(lead, "lead", true, None)],
+        )];
+        (app, projects)
     }
 
     /// Clicking a cold project row has nothing to switch to yet, so it

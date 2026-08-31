@@ -123,11 +123,16 @@ pub struct TurnNoticeRef {
 /// control that only exists while the row is live can never occupy a
 /// column the same row treated as body one frame earlier.
 ///
-/// Two targets sit outside that grid: `InspectorAttentionRow` spans
-/// its pane's full width, and `CopySessionId` is stamped against the
-/// account panel rather than a row. Neither shares a band with
-/// anything today; a per-row control added to the attention band would
-/// need the same gutter treatment first.
+/// Only `ProjectHeader`, `WorkerRow` and their two close controls are
+/// in that grid. The other six variants are stamped by the top bar,
+/// the Inspector or the account panel and keep their own geometry, so
+/// the gutter says nothing about them - and `CopySessionId` in
+/// particular starts one column left of `control_gutter_start`, so it
+/// genuinely overlaps the body target of whatever row the account
+/// panel is painted over. Clicks resolve that by checking control
+/// targets before row bodies, not by geometry. A per-row control added
+/// to the Inspector's attention band, which is full width today, would
+/// want the gutter treatment before it could rely on geometry either.
 #[derive(Debug, Clone)]
 pub enum PaneHitTarget {
     /// Click on a project name row → switch active session to its
@@ -143,10 +148,10 @@ pub enum PaneHitTarget {
     /// Click on the `✕` glyph in the overlay banner → close the
     /// overlay without switching sessions.
     OverlayClose { y: u16, height: u16, x_start: u16, x_end: u16 },
-    /// Click on the `×` glyph at the right edge of an active project
-    /// row → close that project's session (drop the bucket + tell
-    /// the workspace to release its pool entry so the underlying
-    /// `claude` subprocess can exit).
+    /// Click on the [`ROW_CLOSE_BUTTON`] at the right edge of an
+    /// active project row → close that project's session (drop the
+    /// bucket + tell the workspace to release its pool entry so the
+    /// underlying `claude` subprocess can exit).
     CloseSession {
         session_key: forge_workspace::SessionKey,
         y: u16,
@@ -179,8 +184,8 @@ pub enum PaneHitTarget {
     /// handler doesn't have to look it up again (and so a session
     /// switch between render and click can't write the wrong id).
     CopySessionId { session_id: String, y: u16, height: u16, x_start: u16, x_end: u16 },
-    /// `×` close button on a worker tree-child row. Click dispatches
-    /// `Command::CloseWorker { project_key, label }`.
+    /// [`ROW_CLOSE_BUTTON`] on a worker tree-child row. Click
+    /// dispatches `Command::CloseWorker { project_key, label }`.
     CloseWorker {
         project_key: forge_workspace::ProjectKey,
         label: String,
@@ -251,10 +256,8 @@ impl PaneHitTarget {
 /// First column of the right-edge control gutter, for a projects-pane
 /// project or worker row spanning `area`. Those rows' body targets end
 /// here and their close controls start here, so the two ranges are
-/// adjacent by construction. Other pane targets are stamped by their
-/// own surfaces and are not part of this grid - see
-/// [`PaneHitTarget::InspectorAttentionRow`], which is deliberately full
-/// width because it carries no per-row control.
+/// adjacent by construction. Targets stamped by other surfaces keep
+/// their own geometry and are not bound by this.
 pub fn control_gutter_start(area: ratatui::layout::Rect) -> u16 {
     area.x.saturating_add(area.width).saturating_sub(CONTROL_GUTTER_WIDTH)
 }

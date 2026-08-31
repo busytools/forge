@@ -431,12 +431,11 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
 /// `cwd_raw`/`cwd` from the project's path, and (conditionally)
 /// switch active focus.
 ///
-/// **Focus rule:** auto-focus the new spawn ONLY when there's no
-/// real focused session yet - i.e. `active_session_key` is `None`
-/// or still pointing at the pre-Connect placeholder. Once a real
-/// session is focused (the StartDefault target, i.e. the project named
-/// on the command line, once its Connected fires), subsequent
-/// auto_start projects' `Spawning` events must NOT steal focus.
+/// **Focus rule:** auto-focus the new spawn ONLY when
+/// `active_session_key` is `None`, which in practice means never -
+/// the App seeds a pre-Connect bucket at startup and something is
+/// always focused. auto_start projects all emit `Spawning` during
+/// boot, and whichever arrived first would otherwise take the tab.
 ///
 /// Two user actions are exempt, both because a person asked for this
 /// specific session rather than a background spawn arriving on its

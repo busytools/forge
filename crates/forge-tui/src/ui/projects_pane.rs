@@ -834,12 +834,13 @@ fn append_worker_tree_children(
         // recovery path cleared the diagnostic).
         if matches!(worker.status, forge_primitives::WorkerLiveness::Failed) {
             let diagnostic = worker.diagnostic.as_deref().unwrap_or("spawn failed");
-            // Indent = 1 left pad + 3 `│  ` + 3 tree connector + 1
-            // glyph + 1 sep = 9. Leave the close button column free.
-            let indent: usize = 9;
-            let right_chrome: usize = 1 + 3 + 1; // sep + ` x ` + gutter
+            // Aligned to the worker's label column and stopping at the
+            // gutter, from the same two values the label itself uses -
+            // this row carries no hit target, so a drift here would be
+            // silent text running under the close button.
+            let indent = usize::from(WORKER_ROW_LEFT_CHROME);
             let total_width = usize::from(area.width);
-            let budget = total_width.saturating_sub(indent).saturating_sub(right_chrome);
+            let budget = total_width.saturating_sub(indent).saturating_sub(control_gutter_width());
             let truncated = truncate_with_ellipsis(diagnostic, budget);
             lines.push(Line::from(vec![
                 Span::raw(" ".repeat(indent)),
