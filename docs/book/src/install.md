@@ -53,9 +53,10 @@ builds and tests on Linux, but two things behave differently:
   returns nothing, unconditionally. It feeds the boot-time account
   loader and the usage probe, so on other platforms the surfaces built
   on those (account usage, plan tier) have no token to authenticate
-  with. An account that sets `ANTHROPIC_BASE_URL` in its
-  `[accounts.env]` is unaffected, because that path carries its own
-  bearer token and never consults the keychain.
+  with. An account whose `provider` is `codex` or `openrouter` is
+  unaffected, because those paths carry their own bearer token and
+  never consult the keychain. `provider` is what decides that, not the
+  presence of `ANTHROPIC_BASE_URL`.
 
 ## Build and check
 

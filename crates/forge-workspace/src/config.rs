@@ -8,17 +8,25 @@
 //! `auto_start = true`; all auto-start projects spawn at launch and
 //! the first one (alphabetical) becomes the focused tab.
 //!
-//! **Selection policy.** Exactly one: every account spawn picks the
-//! account in the org's `accounts` subset with the most remaining
-//! usage budget. Cold cache → first-in-subset by definition order.
-//! No LRU, no round-robin, no fallback to accounts outside the org's
-//! subset.
+//! **Selection policy.** A deterministic `AssignmentPlan`, computed
+//! once every account reaches a terminal loading state. Its pool is the
+//! org's `accounts` list in the order written there, narrowed to the
+//! accounts that came up `Ready` and then to those not at their cap,
+//! falling back to the capped ones only when every candidate is capped
+//! so a project never goes dark. Each project takes an offset from its
+//! position in the project list and a session lands on
+//! `pool[(offset + session_n) % pool.len()]`. `experimental` accounts
+//! are excluded from the pool entirely. Utilization is never compared
+//! between accounts; it collapses to one boolean per account. A
+//! round-robin cursor over the same pool is the fallback for spawns
+//! that happen before the plan exists.
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use forge_primitives::GotifyConfig;
+use forge_primitives::account::Provider;
 use serde::Deserialize;
 
 use crate::error::WorkspaceError;
@@ -95,15 +103,23 @@ struct ProjectEntry {
     auto_start: bool,
 }
 
+/// Unknown fields are rejected so a near-miss key (`providers`) fails
+/// loudly instead of loading and leaving the account probing the wrong
+/// endpoint until preflight hangs on it.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AccountEntry {
     display_name: String,
     config_dir: String,
+    /// Which backend this account talks to. Required: an account that
+    /// does not say probes the wrong endpoint and bails at preflight,
+    /// so silence is the dangerous answer. Held as `Option` only so the
+    /// absent case can name the account; `None` is a load error.
+    provider: Option<forge_primitives::account::Provider>,
     /// Free-form environment stamped onto the account's `claude`
     /// subprocess at spawn. Absent `[accounts.env]` table -> empty.
-    /// An `ANTHROPIC_BASE_URL` key here is the implicit signal that
-    /// the account talks to an alternate endpoint (usage probe hits
-    /// `{base_url}/api/oauth/usage`); no dedicated backend field.
+    /// A base-url provider reads its `ANTHROPIC_BASE_URL` and
+    /// `ANTHROPIC_AUTH_TOKEN` from here.
     #[serde(default)]
     env: HashMap<String, String>,
     /// When true, the account is excluded from every auto-assignment
@@ -118,6 +134,9 @@ struct AccountEntry {
 pub(crate) struct LoadedAccount {
     pub display_name: String,
     pub config_dir: PathBuf,
+    /// Declared backend. Drives the usage probe and the billing shape.
+    /// See [`AccountEntry::provider`].
+    pub provider: forge_primitives::account::Provider,
     /// Per-account environment from `[accounts.env]`, stamped onto the
     /// spawned `claude` subprocess. See [`AccountEntry::env`].
     pub env: HashMap<String, String>,
@@ -280,16 +299,72 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     // Validate accounts first - orgs cross-reference them.
     let mut seen_account_names: std::collections::HashSet<String> =
         std::collections::HashSet::new();
+    // Collected rather than reported one at a time: a first run after
+    // the key became required trips every account at once, and naming
+    // one per boot is that many edit-and-restart cycles.
+    let missing_provider: Vec<String> = parsed
+        .accounts
+        .iter()
+        .filter(|entry| entry.provider.is_none())
+        .map(|entry| entry.display_name.clone())
+        .collect();
+    if !missing_provider.is_empty() {
+        return Err(WorkspaceError::AccountsMissingProvider { path, names: missing_provider });
+    }
+
     let mut accounts: Vec<LoadedAccount> = Vec::with_capacity(parsed.accounts.len());
     for entry in parsed.accounts {
         if !seen_account_names.insert(entry.display_name.clone()) {
             return Err(WorkspaceError::DuplicateAccount { path, name: entry.display_name });
         }
+        let Some(provider) = entry.provider else {
+            return Err(WorkspaceError::AccountsMissingProvider {
+                path,
+                names: vec![entry.display_name],
+            });
+        };
         let mut env = global_env.clone();
         env.extend(entry.env);
+        // A base-url provider probes `{ANTHROPIC_BASE_URL}/...`, so an
+        // absent key would leave the probe pointed at Anthropic's host
+        // with the wrong bearer. Refuse at load rather than at preflight.
+        let base_url = env.get("ANTHROPIC_BASE_URL").map(|v| v.trim()).filter(|v| !v.is_empty());
+        if provider.uses_base_url() && base_url.is_none() {
+            return Err(WorkspaceError::AccountProviderNeedsBaseUrl {
+                path,
+                name: entry.display_name,
+            });
+        }
+        // The key probe is `{base}/v1/key`, so a base that is the bare
+        // host resolves to `openrouter.ai/v1/key` - which answers 200
+        // with a marketing page. 200 is the one status the probe reads
+        // as success, so it would reach the decode arm, retry to the
+        // iteration cap and bail the account, stopping forge from
+        // starting. Refuse the base here, where the message can say so.
+        if provider == Provider::Openrouter
+            && !base_url.is_some_and(|v| v.trim_end_matches('/').ends_with("/api"))
+        {
+            return Err(WorkspaceError::OpenrouterBaseUrlNotApiRoot {
+                path,
+                name: entry.display_name,
+            });
+        }
+        // Legal but self-inconsistent: the env is still stamped on the
+        // spawned session, so chat goes to the proxy while usage probes
+        // the keychain. Before `provider` existed the combination could
+        // not be expressed, so warn rather than refuse.
+        if provider == Provider::Anthropic && base_url.is_some() {
+            tracing::warn!(
+                target: "forge_workspace::config",
+                account = %entry.display_name,
+                "account sets provider = \"anthropic\" beside an ANTHROPIC_BASE_URL; sessions \
+                 will use that endpoint while usage probes the keychain",
+            );
+        }
         accounts.push(LoadedAccount {
             display_name: entry.display_name,
             config_dir: expand_home(&entry.config_dir),
+            provider,
             env,
             experimental: entry.experimental,
         });
@@ -506,6 +581,7 @@ auto_start = true
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 "#
     }
 
@@ -524,6 +600,7 @@ path = "~/Projects/forge"
 [[accounts]]
 display_name = "Codex"
 config_dir = "~/.claude-codex"
+provider = "codex"
 [accounts.env]
 ANTHROPIC_BASE_URL = "http://localhost:18765"
 ANTHROPIC_AUTH_TOKEN = "unused"
@@ -537,6 +614,176 @@ ANTHROPIC_AUTH_TOKEN = "unused"
             Some("http://localhost:18765"),
         );
         assert_eq!(account.env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str), Some("unused"));
+    }
+
+    #[test]
+    fn account_without_provider_fails_the_load_naming_the_account() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Stargate"
+config_dir = "~/.claude-no-provider"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("absent provider must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("Stargate"),
+            "the error has to name the offending account, got: {message}",
+        );
+        assert!(
+            message.contains("anthropic") && message.contains("codex"),
+            "the error has to list the accepted providers, got: {message}",
+        );
+    }
+
+    #[test]
+    fn codex_provider_without_a_base_url_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+config_dir = "~/.claude-codex-no-base"
+provider = "codex"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("codex without a base url must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("Codex") && message.contains("ANTHROPIC_BASE_URL"),
+            "the error has to name the account and the missing key, got: {message}",
+        );
+    }
+
+    /// `https://openrouter.ai/v1/key` answers 200 with a marketing page,
+    /// and 200 is the one status the probe treats as success, so a bare
+    /// host reaches the decode arm, retries twelve times and bails the
+    /// account - which stops forge starting. Catch the base at load
+    /// instead, where the user can act on it.
+    #[test]
+    fn openrouter_base_url_without_the_api_suffix_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Router"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Router"
+config_dir = "~/.claude-router-bare-host"
+provider = "openrouter"
+[accounts.env]
+ANTHROPIC_BASE_URL = "https://openrouter.ai"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("a bare host must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("Router"),
+            "the error has to name the offending account, got: {message}",
+        );
+        assert!(
+            message.contains("/api"),
+            "the error has to say what the base url is expected to end in, got: {message}",
+        );
+    }
+
+    #[test]
+    fn openrouter_base_url_with_the_api_suffix_loads() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Router"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Router"
+config_dir = "~/.claude-router-ok"
+provider = "openrouter"
+[accounts.env]
+ANTHROPIC_BASE_URL = "https://openrouter.ai/api/"
+"#,
+        );
+        load_from_dir(dir.path()).expect("a trailing slash after /api is still the api base");
+    }
+
+    #[test]
+    fn account_rejects_an_unknown_key() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Stargate"
+config_dir = "~/.claude-unknown-key"
+provider = "anthropic"
+providers = "anthropic"
+"#,
+        );
+        // A near-miss key is the failure `provider` exists to prevent:
+        // without the reject it loads, probes the wrong endpoint and
+        // hangs preflight.
+        let err = load_from_dir(dir.path()).expect_err("a mistyped account key must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("providers"),
+            "the error has to name the offending key, got: {message}",
+        );
+    }
+
+    #[test]
+    fn a_whitespace_only_base_url_is_not_a_base_url() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+config_dir = "~/.claude-codex-blank-base"
+provider = "codex"
+[accounts.env]
+ANTHROPIC_BASE_URL = "   "
+"#,
+        );
+        let err =
+            load_from_dir(dir.path()).expect_err("a blank base url must not satisfy the check");
+        assert!(err.to_string().contains("ANTHROPIC_BASE_URL"), "got: {err}");
     }
 
     #[test]
@@ -583,6 +830,7 @@ path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
@@ -611,11 +859,13 @@ path = "~/Projects/forge"
 [[accounts]]
 display_name = "Codex"
 config_dir = "~/.claude-codex"
+provider = "anthropic"
 [accounts.env]
 CLAUDE_CODE_AUTO_COMPACT_WINDOW = "372000"
 [[accounts]]
 display_name = "Gateway"
 config_dir = "~/.claude"
+provider = "anthropic"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
@@ -649,6 +899,7 @@ path = "~/Projects/forge"
 [[accounts]]
 display_name = "Codex"
 config_dir = "~/.claude-codex"
+provider = "codex"
 [accounts.env]
 ANTHROPIC_BASE_URL = "http://localhost:18765"
 "#,
@@ -682,6 +933,7 @@ path = "~/Projects/forge"
 [[accounts]]
 display_name = "Codex"
 config_dir = "~/.claude-codex"
+provider = "anthropic"
 [accounts.env]
 ALL_THREE = "account"
 
@@ -736,6 +988,7 @@ path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 
 [projects.forge]
 env_file = "{file}"
@@ -799,6 +1052,7 @@ path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 
 [projects.forge]
 env_file = "{}/nope.env"
@@ -835,6 +1089,7 @@ path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 
 [projects.forge.env]
 AIRMAIL_MCP_URL = "https://mail.example/mcp"
@@ -888,6 +1143,7 @@ path = "~/Projects/theta"
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 
 [projects.gamma.env]
 AIRMAIL_TOKEN = "typo-in-the-project-name"
@@ -956,6 +1212,7 @@ path = "~/Projects/airmail"
 [[accounts]]
 display_name = "Codex"
 config_dir = "~/.claude-codex"
+provider = "codex"
 [accounts.env]
 ANTHROPIC_BASE_URL = "http://localhost:18765"
 
@@ -999,10 +1256,12 @@ path = "~/Projects/forge"
 [[accounts]]
 display_name = "Codex"
 config_dir = "~/.claude-codex"
+provider = "anthropic"
 experimental = true
 [[accounts]]
 display_name = "Gateway"
 config_dir = "~/.claude"
+provider = "anthropic"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
@@ -1118,6 +1377,7 @@ config_dir = "~/.claude"
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("missing orgs should error");
@@ -1137,6 +1397,7 @@ accounts = ["Stargate"]
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("org without projects should error");
@@ -1160,6 +1421,7 @@ path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("empty accounts should error");
@@ -1183,6 +1445,7 @@ path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("unknown account should error");
@@ -1216,6 +1479,7 @@ path = "~/Projects/forge"
 [[accounts]]
 display_name = "Codex"
 config_dir = "~/.claude-codex"
+provider = "anthropic"
 experimental = true
 "#,
         );
@@ -1243,11 +1507,13 @@ path = "~/Projects/forge"
 [[accounts]]
 display_name = "Codex"
 config_dir = "~/.claude-codex"
+provider = "anthropic"
 experimental = true
 
 [[accounts]]
 display_name = "Gateway"
 config_dir = "~/.claude"
+provider = "anthropic"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("org with a non-experimental account loads");
@@ -1280,6 +1546,7 @@ path = "~/Projects/aware"
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("duplicate org should error");
@@ -1309,6 +1576,7 @@ path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("duplicate project should error");
@@ -1338,6 +1606,7 @@ path = "~/Projects/middle"
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
@@ -1363,6 +1632,7 @@ path = "~/Projects/alpha"
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
@@ -1392,6 +1662,7 @@ auto_start = true
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
@@ -1433,9 +1704,11 @@ path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-other"
+provider = "anthropic"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("duplicate account should error");

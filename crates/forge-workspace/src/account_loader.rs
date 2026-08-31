@@ -86,19 +86,22 @@ enum BootProbeAction {
     RetryLoop(UsageFetchStatus, Option<Duration>),
 }
 
-/// Decide the [`BootProbeAction`] for a boot-probe error. Auth failures
-/// refresh on the keychain path but are terminal on the base-url path;
+/// Decide the [`BootProbeAction`] for a boot-probe error. `env_bearer`
+/// is true when the probe authenticated with the account's
+/// `[accounts.env]` token rather than the keychain, which is what makes
+/// a refresh pointless. Auth failures refresh on the keychain path but
+/// are terminal on an env-bearer one;
 /// a 429 or any network / HTTP / decode failure is a retry-loop. The
 /// status is the shared [`crate::workspace::classify_oauth_usage_error`]
 /// verdict so the loader and poller never label the same error
 /// differently.
-fn boot_probe_action(is_base_url: bool, err: &OauthUsageError) -> BootProbeAction {
+fn boot_probe_action(env_bearer: bool, err: &OauthUsageError) -> BootProbeAction {
     let status = crate::workspace::classify_oauth_usage_error(err);
     match err {
         OauthUsageError::NoCredentials
         | OauthUsageError::Expired
         | OauthUsageError::Unauthorized(_) => {
-            if is_base_url {
+            if env_bearer {
                 BootProbeAction::Terminal(status)
             } else {
                 BootProbeAction::Refresh
@@ -154,38 +157,47 @@ pub async fn run_account_loading(
         };
         // One decision (probe_plan) drives the probe source, the
         // response-mapping strictness, and whether a 401 is eligible for
-        // the keychain refresh. A base-url-override account
-        // (`ANTHROPIC_BASE_URL` in `[accounts.env]`) probes its own
-        // endpoint with the env bearer and skips the keychain; a normal
-        // account uses the keychain + default host.
-        let account_env =
-            workspace.account_states().lock().env(&account_key).cloned().unwrap_or_default();
-        let plan = oauth_usage::probe_plan(&account_env);
-        let is_base_url = matches!(plan, oauth_usage::ProbePlan::BaseUrl { .. });
+        // the keychain refresh.
+        let (provider, account_env) = {
+            let accounts = workspace.account_states().lock();
+            (
+                accounts.provider_or_anthropic(&account_key),
+                accounts.env(&account_key).cloned().unwrap_or_default(),
+            )
+        };
+        let plan = oauth_usage::probe_plan(provider, &account_env);
+        let env_bearer = !matches!(plan, oauth_usage::ProbePlan::Keychain);
+        // Probe and map together: each plan returns a different body.
         let probe_result = match &plan {
             oauth_usage::ProbePlan::BaseUrl { base_url, bearer } => {
                 let creds = oauth_credentials::OauthCredentials {
                     access_token: bearer.clone(),
                     expires_at: None,
                 };
-                oauth_usage::probe(&creds, Some(base_url)).await
+                oauth_usage::probe(&creds, Some(base_url))
+                    .await
+                    .map(|payload| oauth::map_probe_snapshot(true, payload))
             }
             oauth_usage::ProbePlan::Keychain => {
                 match oauth_credentials::load_oauth_credentials(&config_dir) {
-                    Some(creds) => oauth_usage::probe(&creds, None).await,
+                    Some(creds) => oauth_usage::probe(&creds, None)
+                        .await
+                        .map(|payload| oauth::map_probe_snapshot(false, payload)),
                     None => Err(OauthUsageError::NoCredentials),
                 }
+            }
+            oauth_usage::ProbePlan::OpenRouterKey { base_url, bearer } => {
+                oauth_usage::probe_openrouter_key(base_url, bearer)
+                    .await
+                    .map(oauth::snapshot_from_openrouter_key)
             }
         };
 
         match probe_result {
-            Ok(payload) => {
-                // Map per plan (shared with the poller): base-url leniently
-                // (each window independent, cold `{}` -> n/a), keychain
-                // strictly (a 200 must carry five_hour). A keychain mapping
-                // failure is a transient response-shape drift; back off +
-                // retry. Base-url never errors here.
-                let snapshot = match oauth::map_probe_snapshot(is_base_url, payload) {
+            Ok(mapped) => {
+                // A keychain mapping failure is a transient response-shape
+                // drift; back off + retry. The other two never error here.
+                let snapshot = match mapped {
                     Ok(s) => s,
                     Err(err) => {
                         tracing::warn!(
@@ -207,7 +219,7 @@ pub async fn run_account_loading(
                 );
                 return;
             }
-            Err(err) => match boot_probe_action(is_base_url, &err) {
+            Err(err) => match boot_probe_action(env_bearer, &err) {
                 BootProbeAction::Refresh => {
                     // Keychain auth-recovery (never base-url). Transition to
                     // Refreshing so the launchpad shows in-flight; fire the
@@ -322,13 +334,7 @@ pub async fn run_recovery_poll(workspace_weak: Weak<Workspace>) {
             accounts
                 .by_key
                 .iter()
-                .filter(|(_, s)| {
-                    s.loading == LoadingState::Bailed
-                        && !matches!(
-                            oauth_usage::probe_plan(&s.env),
-                            oauth_usage::ProbePlan::BaseUrl { .. }
-                        )
-                })
+                .filter(|(_, s)| s.loading == LoadingState::Bailed && !s.provider.uses_base_url())
                 .map(|(k, s)| (k.clone(), s.config_dir.clone()))
                 .collect()
         };
@@ -477,9 +483,9 @@ mod tests {
 
     #[test]
     fn boot_probe_action_network_is_retry_loop_on_either_plan() {
-        for is_base_url in [true, false] {
+        for env_bearer in [true, false] {
             assert_eq!(
-                boot_probe_action(is_base_url, &OauthUsageError::Network("dns".to_owned())),
+                boot_probe_action(env_bearer, &OauthUsageError::Network("dns".to_owned())),
                 BootProbeAction::RetryLoop(UsageFetchStatus::NetworkFailed, None),
             );
         }

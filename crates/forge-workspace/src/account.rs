@@ -95,11 +95,13 @@ pub enum LoadingState {
 #[derive(Debug, Clone)]
 pub(crate) struct AccountState {
     pub config_dir: PathBuf,
+    /// Declared backend from `[[accounts]] provider`. Decides which
+    /// endpoint the usage probe hits and which credential it carries.
+    pub provider: forge_primitives::account::Provider,
     /// Per-account environment from `[accounts.env]`. Stamped onto the
-    /// account's `claude` subprocess at spawn, and consulted by the
-    /// usage probe: an `ANTHROPIC_BASE_URL` key here redirects the
-    /// probe to `{base_url}/api/oauth/usage` with the account's
-    /// `ANTHROPIC_AUTH_TOKEN` bearer.
+    /// account's `claude` subprocess at spawn, and read by the usage
+    /// probe for the `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` a
+    /// base-url provider authenticates with.
     pub env: std::collections::HashMap<String, String>,
     /// When true, the account is excluded from every auto-assignment
     /// path (the assignment plan and the round-robin fallback) but
@@ -186,6 +188,7 @@ impl AccountStateMap {
                 key,
                 AccountState {
                     config_dir: account.config_dir.clone(),
+                    provider: account.provider,
                     env: account.env.clone(),
                     experimental: account.experimental,
                     usage: None,
@@ -244,9 +247,33 @@ impl AccountStateMap {
 
     /// Per-account `[accounts.env]` map for `key`. Consumed by the
     /// spawn path (stamped onto the child) and the usage poller /
-    /// loader (base-url override detection). `None` for unknown keys.
+    /// loader (base url + bearer for a base-url provider). `None` for
+    /// unknown keys.
     pub fn env(&self, key: &AccountKey) -> Option<&std::collections::HashMap<String, String>> {
         self.by_key.get(key).map(|s| &s.env)
+    }
+
+    /// Declared [`Provider`] for `key`, the input the probe plan and the
+    /// preflight repair copy both branch on. `None` for unknown keys.
+    pub fn provider(&self, key: &AccountKey) -> Option<forge_primitives::account::Provider> {
+        self.by_key.get(key).map(|s| s.provider)
+    }
+
+    /// [`Self::provider`] for a key that came out of this map, so a miss
+    /// means the map changed underneath the caller. Anthropic is the
+    /// safe default - it probes the keychain rather than an endpoint
+    /// derived from an env this account may not have - but it is the
+    /// wrong answer for a base-url account, whose repair copy would then
+    /// tell the user to run `/login`. Warn rather than pick silently.
+    pub fn provider_or_anthropic(&self, key: &AccountKey) -> forge_primitives::account::Provider {
+        self.provider(key).unwrap_or_else(|| {
+            tracing::warn!(
+                target: "forge_workspace::account",
+                account = %key.0,
+                "no provider for a key taken from the account map; assuming anthropic",
+            );
+            forge_primitives::account::Provider::Anthropic
+        })
     }
 
     /// Reverse of [`Self::config_dir`]: the account key bound to `dir`.
@@ -763,6 +790,7 @@ mod tests {
         LoadedAccount {
             display_name: name.to_owned(),
             config_dir: PathBuf::from(format!("/fake/{name}")),
+            provider: forge_primitives::account::Provider::Anthropic,
             env: std::collections::HashMap::new(),
             experimental: false,
         }
@@ -795,6 +823,7 @@ mod tests {
             seven_day_opus: None,
             seven_day_sonnet: None,
             extra_usage: None,
+            spend: None,
         }
     }
 
@@ -1276,6 +1305,7 @@ mod tests {
             seven_day_opus: None,
             seven_day_sonnet: None,
             extra_usage: None,
+            spend: None,
         }
     }
 
@@ -1326,6 +1356,7 @@ mod tests {
             }),
             seven_day_sonnet: None,
             extra_usage: None,
+            spend: None,
         }
     }
 
@@ -1353,6 +1384,7 @@ mod tests {
                 reset_description: None,
             }),
             extra_usage: None,
+            spend: None,
         }
     }
 

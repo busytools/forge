@@ -31,6 +31,7 @@ auto_start = true
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 "#,
     )
     .expect("write forge.toml");

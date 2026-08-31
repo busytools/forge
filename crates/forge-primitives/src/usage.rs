@@ -12,19 +12,48 @@
 use serde::{Deserialize, Serialize};
 
 pub mod oauth;
+pub mod openrouter;
 
-/// Origin of a [`UsageSnapshot`].
+/// Origin of a [`UsageSnapshot`], and with it which half of the
+/// snapshot carries data: `Oauth` fills the windows, `OpenRouterKey`
+/// fills [`UsageSnapshot::spend`].
+///
+/// Load-bearing across a config change: the snapshot is cached and
+/// rehydrated, so an account whose `provider` was edited still has a
+/// row in the old shape. A renderer that compares this against the
+/// account's declared provider can fall back to "no data" instead of
+/// reading windows as money.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UsageSourceKind {
     Oauth,
+    OpenRouterKey,
 }
 
 impl UsageSourceKind {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Oauth => "oauth",
+            Self::OpenRouterKey => "openrouter-key",
         }
     }
+}
+
+/// Per-key spend for a pay-per-token account, in USD.
+///
+/// Not [`ExtraUsage`], which is Anthropic overage: that type's money
+/// fields arrive in minor units and are divided by 100 on the way in,
+/// and it carries a `utilization` percentage. These are decimal USD
+/// straight off the wire, and an uncapped key has no denominator to be
+/// a percentage of.
+///
+/// Every figure is scoped to one key. Account-wide balance comes from a
+/// different endpoint with a different scope and is deliberately absent
+/// so a row cannot imply both are per-key.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ApiSpend {
+    pub daily: f64,
+    pub weekly: f64,
+    pub monthly: f64,
 }
 
 /// One named usage window inside a snapshot (5-hour, 7-day, etc.).
@@ -80,6 +109,11 @@ pub struct UsageSnapshot {
     pub seven_day_opus: Option<UsageWindow>,
     pub seven_day_sonnet: Option<UsageWindow>,
     pub extra_usage: Option<ExtraUsage>,
+    /// Per-key spend for an API-billed account. `None` for every
+    /// window-billed source, and for every row written before this
+    /// field existed - serde decodes a missing key on an `Option` to
+    /// `None`, which is what keeps the cached rows readable.
+    pub spend: Option<ApiSpend>,
 }
 
 #[cfg(test)]

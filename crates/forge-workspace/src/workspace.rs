@@ -1445,11 +1445,10 @@ impl Workspace {
                 display_name: k.0.clone(),
                 state: accounts.loading_state(k),
                 config_dir: accounts.config_dir(k).cloned().unwrap_or_default(),
-                auth: match accounts.env(k).map(forge_agent::cloud::oauth_usage::probe_plan) {
-                    Some(forge_agent::cloud::oauth_usage::ProbePlan::BaseUrl { .. }) => {
-                        crate::views::AccountAuth::BaseUrl
-                    }
-                    _ => crate::views::AccountAuth::Keychain,
+                auth: if accounts.provider_or_anthropic(k).uses_base_url() {
+                    crate::views::AccountAuth::BaseUrl
+                } else {
+                    crate::views::AccountAuth::Keychain
                 },
             })
             .collect()
@@ -1978,6 +1977,7 @@ impl Workspace {
         let entries: Vec<(
             AccountKey,
             std::path::PathBuf,
+            forge_primitives::account::Provider,
             std::collections::HashMap<String, String>,
         )> = {
             let accounts = self.accounts.lock();
@@ -1996,7 +1996,12 @@ impl Workspace {
                 .filter(|key| accounts.scheduler_should_probe(key))
                 .filter_map(|key| {
                     accounts.config_dir(key).map(|dir| {
-                        (key.clone(), dir.clone(), accounts.env(key).cloned().unwrap_or_default())
+                        (
+                            key.clone(),
+                            dir.clone(),
+                            accounts.provider_or_anthropic(key),
+                            accounts.env(key).cloned().unwrap_or_default(),
+                        )
                     })
                 })
                 .collect()
@@ -2014,7 +2019,7 @@ impl Workspace {
         // per-iteration set_usage / set_last_error locks below.
         {
             let mut accounts = self.accounts.lock();
-            for (key, _, _) in &entries {
+            for (key, _, _, _) in &entries {
                 if !accounts.should_probe_now(key) {
                     accounts.disarm_override(key);
                 }
@@ -2026,50 +2031,55 @@ impl Workspace {
         // Serial execution staggers requests by per-probe latency
         // (~hundreds of ms), within the 60 s poll interval.
         let mut any_success = false;
-        for (key, dir, env) in entries {
+        for (key, dir, provider, env) in entries {
             // One decision (probe_plan) drives both the probe source and
-            // the response-mapping strictness. A base-url-override account
+            // the response-mapping strictness. A base-url provider
             // probes its own endpoint with the env bearer (skipping the
             // keychain + the auth-refresh wrapper) and maps leniently
-            // (each window independent; cold `{}` -> n/a); a normal
+            // (each window independent; cold `{}` -> n/a); an Anthropic
             // account keeps the keychain + default host + strict mapping.
-            let plan = forge_agent::cloud::oauth_usage::probe_plan(&env);
-            let is_base_url =
-                matches!(plan, forge_agent::cloud::oauth_usage::ProbePlan::BaseUrl { .. });
+            let plan = forge_agent::cloud::oauth_usage::probe_plan(provider, &env);
             let fetch_result = match &plan {
                 forge_agent::cloud::oauth_usage::ProbePlan::BaseUrl { base_url, bearer } => {
                     let creds = forge_agent::cloud::oauth_credentials::OauthCredentials {
                         access_token: bearer.clone(),
                         expires_at: None,
                     };
-                    forge_agent::cloud::oauth_usage::probe(&creds, Some(base_url)).await
+                    forge_agent::cloud::oauth_usage::probe(&creds, Some(base_url))
+                        .await
+                        .map(|payload| forge_agent::cloud::oauth::map_probe_snapshot(true, payload))
                 }
                 forge_agent::cloud::oauth_usage::ProbePlan::Keychain => {
-                    forge_agent::cloud::oauth_usage::oauth_usage(&dir).await
+                    forge_agent::cloud::oauth_usage::oauth_usage(&dir).await.map(|payload| {
+                        forge_agent::cloud::oauth::map_probe_snapshot(false, payload)
+                    })
+                }
+                forge_agent::cloud::oauth_usage::ProbePlan::OpenRouterKey { base_url, bearer } => {
+                    forge_agent::cloud::oauth_usage::probe_openrouter_key(base_url, bearer)
+                        .await
+                        .map(forge_agent::cloud::oauth::snapshot_from_openrouter_key)
                 }
             };
             match fetch_result {
-                Ok(payload) => {
-                    match forge_agent::cloud::oauth::map_probe_snapshot(is_base_url, payload) {
-                        Ok(snapshot) => {
-                            self.accounts.lock().set_usage(&key, snapshot);
-                            any_success = true;
-                        }
-                        Err(err) => {
-                            self.accounts.lock().set_last_error(
-                                &key,
-                                crate::account::UsageFetchStatus::Other,
-                                None,
-                            );
-                            tracing::debug!(
-                                target: "forge_workspace::account",
-                                account = %key.0,
-                                error = ?err,
-                                "usage_poll snapshot mapping failed",
-                            );
-                        }
+                Ok(mapped) => match mapped {
+                    Ok(snapshot) => {
+                        self.accounts.lock().set_usage(&key, snapshot);
+                        any_success = true;
                     }
-                }
+                    Err(err) => {
+                        self.accounts.lock().set_last_error(
+                            &key,
+                            crate::account::UsageFetchStatus::Other,
+                            None,
+                        );
+                        tracing::debug!(
+                            target: "forge_workspace::account",
+                            account = %key.0,
+                            error = ?err,
+                            "usage_poll snapshot mapping failed",
+                        );
+                    }
+                },
                 Err(err) => {
                     let status = classify_oauth_usage_error(&err);
                     // Pull the server-provided Retry-After out of the
@@ -6490,6 +6500,7 @@ mod tests {
             seven_day_opus: None,
             seven_day_sonnet: None,
             extra_usage: None,
+            spend: None,
         }
     }
 
@@ -6506,12 +6517,14 @@ mod tests {
                 crate::config::LoadedAccount {
                     display_name: "A".to_owned(),
                     config_dir: PathBuf::from("/cfg/A"),
+                    provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: false,
                 },
                 crate::config::LoadedAccount {
                     display_name: "B".to_owned(),
                     config_dir: PathBuf::from("/cfg/B"),
+                    provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: false,
                 },
@@ -6561,12 +6574,14 @@ mod tests {
                 crate::config::LoadedAccount {
                     display_name: "A".to_owned(),
                     config_dir: PathBuf::from("/cfg/A"),
+                    provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: false,
                 },
                 crate::config::LoadedAccount {
                     display_name: "Exp".to_owned(),
                     config_dir: PathBuf::from("/cfg/Exp"),
+                    provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: true,
                 },
@@ -6596,12 +6611,14 @@ mod tests {
                 crate::config::LoadedAccount {
                     display_name: "A".to_owned(),
                     config_dir: PathBuf::from("/cfg/A"),
+                    provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: false,
                 },
                 crate::config::LoadedAccount {
                     display_name: "Exp".to_owned(),
                     config_dir: PathBuf::from("/cfg/Exp"),
+                    provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: true,
                 },
@@ -6632,12 +6649,14 @@ mod tests {
                 crate::config::LoadedAccount {
                     display_name: "One".to_owned(),
                     config_dir: PathBuf::from("/c/One"),
+                    provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: false,
                 },
                 crate::config::LoadedAccount {
                     display_name: "Two".to_owned(),
                     config_dir: PathBuf::from("/c/Two"),
+                    provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: false,
                 },
@@ -7857,15 +7876,19 @@ auto_start = true
 [[accounts]]
 display_name = "Gateway"
 config_dir = "/tmp/wt-acct-cfg/gateway"
+provider = "anthropic"
 [[accounts]]
 display_name = "Gateway1"
 config_dir = "/tmp/wt-acct-cfg/gateway1"
+provider = "anthropic"
 [[accounts]]
 display_name = "Personal"
 config_dir = "/tmp/wt-acct-cfg/personal"
+provider = "anthropic"
 [[accounts]]
 display_name = "Stargate"
 config_dir = "/tmp/wt-acct-cfg/stargate"
+provider = "anthropic"
 "#;
 
     // Stub whose config is `ACCOUNT_PIN_FIXTURE`. The returned `TempDir`
@@ -7926,6 +7949,7 @@ path = "{root}"
 [[accounts]]
 display_name = "Stargate"
 config_dir = "/tmp/applied-record-cfg"
+provider = "anthropic"
 
 [projects.solo.env]
 SOLO_TOKEN = "value-must-never-be-logged"
@@ -7984,6 +8008,7 @@ path = "{solo}"
 [[accounts]]
 display_name = "Stargate"
 config_dir = "/tmp/ambig-cfg"
+provider = "anthropic"
 
 [projects.twin-a.env]
 TWIN_TOKEN = "twin-a-secret"
@@ -9597,6 +9622,7 @@ auto_start = true
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 "#,
         )
         .expect("write forge.toml");
@@ -9715,6 +9741,7 @@ path = "~/Projects/dotfiles"
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 "#,
         )
         .expect("write forge.toml");
@@ -9751,6 +9778,7 @@ auto_start = true
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 "#,
         )
         .expect("write forge.toml");
@@ -9786,10 +9814,12 @@ auto_start = true
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 
 [[accounts]]
 display_name = "Gateway"
 config_dir = "~/.claude-gateway"
+provider = "anthropic"
 "#,
         )
         .expect("write forge.toml");
@@ -9867,14 +9897,17 @@ auto_start = true
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 
 [[accounts]]
 display_name = "Gateway"
 config_dir = "~/.claude-gateway"
+provider = "anthropic"
 
 [[accounts]]
 display_name = "Personal"
 config_dir = "~/.claude-second"
+provider = "anthropic"
 "#,
         )
         .expect("write forge.toml");
@@ -10163,6 +10196,7 @@ path = "{root}"
 [[accounts]]
 display_name = "Stargate"
 config_dir = "/tmp/respawn-retire-cfg"
+provider = "anthropic"
 "#,
                 root = root.display()
             ),
@@ -10417,6 +10451,7 @@ auto_start = false
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 "#,
         )
         .expect("write forge.toml");
@@ -11267,6 +11302,7 @@ auto_start = true
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 "#,
         )
         .expect("write forge.toml");
@@ -12416,6 +12452,7 @@ path = "{project_path}"
 [[accounts]]
 display_name = "acct-a"
 config_dir = "{}"
+provider = "anthropic"
 "#,
                 cfg.path().to_string_lossy().replace('\\', "/"),
             ),
@@ -13619,6 +13656,7 @@ auto_start = true
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 "#,
         )
         .expect("write forge.toml");
@@ -13643,6 +13681,7 @@ path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
+provider = "anthropic"
 "#,
         )
         .expect("write forge.toml");
@@ -13671,10 +13710,12 @@ auto_start = true
 [[accounts]]
 display_name = "Alpha"
 config_dir = "~/.claude-alpha"
+provider = "anthropic"
 
 [[accounts]]
 display_name = "Beta"
 config_dir = "~/.claude-beta"
+provider = "anthropic"
 "#,
         )
         .expect("write forge.toml");
@@ -13702,10 +13743,12 @@ auto_start = true
 [[accounts]]
 display_name = "Alpha"
 config_dir = "~/.claude-alpha"
+provider = "anthropic"
 
 [[accounts]]
 display_name = "Beta"
 config_dir = "~/.claude-beta"
+provider = "anthropic"
 "#,
         )
         .expect("write forge.toml");
@@ -13799,11 +13842,13 @@ auto_start = true
 [[accounts]]
 display_name = "Exp"
 config_dir = "~/.claude-exp"
+provider = "anthropic"
 experimental = true
 
 [[accounts]]
 display_name = "Alpha"
 config_dir = "~/.claude-alpha"
+provider = "anthropic"
 "#,
         )
         .expect("write forge.toml");
@@ -13831,6 +13876,7 @@ config_dir = "~/.claude-alpha"
                     seven_day_opus: None,
                     seven_day_sonnet: None,
                     extra_usage: None,
+                    spend: None,
                 };
                 accounts.set_usage(&AccountKey(name.to_owned()), snapshot);
             }
@@ -13870,6 +13916,7 @@ config_dir = "~/.claude-alpha"
                     seven_day_opus: None,
                     seven_day_sonnet: None,
                     extra_usage: None,
+                    spend: None,
                 };
                 accounts.set_usage(&AccountKey(name.to_owned()), snapshot);
             }
@@ -13934,6 +13981,7 @@ config_dir = "~/.claude-alpha"
                 seven_day_opus: None,
                 seven_day_sonnet: None,
                 extra_usage: None,
+                spend: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
@@ -13966,6 +14014,7 @@ config_dir = "~/.claude-alpha"
                 seven_day_opus: None,
                 seven_day_sonnet: None,
                 extra_usage: None,
+                spend: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
@@ -14029,6 +14078,7 @@ config_dir = "~/.claude-alpha"
                 seven_day_opus: None,
                 seven_day_sonnet: None,
                 extra_usage: None,
+                spend: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
@@ -14065,6 +14115,7 @@ config_dir = "~/.claude-alpha"
             seven_day_opus: None,
             seven_day_sonnet: None,
             extra_usage: None,
+            spend: None,
         }
     }
 
@@ -14259,6 +14310,7 @@ config_dir = "~/.claude-alpha"
                 seven_day_opus: None,
                 seven_day_sonnet: None,
                 extra_usage: None,
+                spend: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
@@ -14292,6 +14344,7 @@ config_dir = "~/.claude-alpha"
                 seven_day_opus: None,
                 seven_day_sonnet: None,
                 extra_usage: None,
+                spend: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
@@ -14335,6 +14388,7 @@ config_dir = "~/.claude-alpha"
                 seven_day_opus: None,
                 seven_day_sonnet: None,
                 extra_usage: None,
+                spend: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
@@ -14370,6 +14424,7 @@ config_dir = "~/.claude-alpha"
                 seven_day_opus: None,
                 seven_day_sonnet: None,
                 extra_usage: None,
+                spend: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
@@ -14400,6 +14455,7 @@ config_dir = "~/.claude-alpha"
                 seven_day_opus: None,
                 seven_day_sonnet: None,
                 extra_usage: None,
+                spend: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }

@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
 
+pub use forge_primitives::account::Provider;
 pub use forge_primitives::usage::oauth::{
     OauthExtraUsage, OauthUsage, OauthUsageError, OauthUsageWindow,
 };
@@ -143,12 +144,16 @@ fn usage_url(base_url: Option<&str>) -> String {
 }
 
 /// How an account's usage should be probed, derived once from its
-/// `[accounts.env]`. The loader and poller both read this single
+/// declared [`Provider`]. The loader and poller both read this single
 /// decision so the probe source AND the response-mapping strictness
 /// stay in lockstep.
+///
+/// Deliberately not [`Provider`] itself: the `BaseUrl` variant carries
+/// a bearer, so this type must not cross into a view the TUI renders.
+/// `forge_workspace::AccountAuth` is the secret-free counterpart.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ProbePlan {
-    /// Account sets `ANTHROPIC_BASE_URL`: probe `{base_url}/api/oauth/usage`
+    /// Base-url provider: probe `{base_url}/api/oauth/usage`
     /// with the env `ANTHROPIC_AUTH_TOKEN` bearer (the macOS keychain is
     /// skipped - a base-url account has no keychain entry), and map the
     /// response leniently via [`super::oauth::snapshot_from_payload_lenient`]
@@ -161,20 +166,139 @@ pub enum ProbePlan {
     /// strict mapping (a 200 must carry the five-hour window), and the
     /// CLI-spawn auth-recovery refresh on a 401.
     Keychain,
+    /// OpenRouter: probe `{base_url}/v1/key` with the env
+    /// `ANTHROPIC_AUTH_TOKEN` bearer and map the per-key spend. No
+    /// windows, so nothing about this plan can go through the
+    /// window-shaped mappers.
+    OpenRouterKey { base_url: String, bearer: String },
 }
 
-/// Derive the [`ProbePlan`] for an account from its `[accounts.env]`.
-/// Keyed purely on an `ANTHROPIC_BASE_URL` override, so any account
-/// that sets one probes via its own endpoint; every other account uses
-/// the keychain path.
-pub fn probe_plan<S: std::hash::BuildHasher>(env: &HashMap<String, String, S>) -> ProbePlan {
+/// Derive the [`ProbePlan`] for an account from its declared
+/// [`Provider`]. The provider alone decides the shape; `env` is read
+/// only to fill in the base url and bearer a base-url provider
+/// authenticates with. `ANTHROPIC_BASE_URL` decides nothing, because it
+/// answers where the credential lives rather than what the backend
+/// bills for - Codex sets one and is still a windowed subscription.
+///
+/// Config load rejects a base-url provider with no `ANTHROPIC_BASE_URL`
+/// (`WorkspaceError::AccountProviderNeedsBaseUrl`), so the empty-base
+/// case here is unreachable in production and falls back to the
+/// keychain rather than probing a malformed url.
+pub fn probe_plan<S: std::hash::BuildHasher>(
+    provider: Provider,
+    env: &HashMap<String, String, S>,
+) -> ProbePlan {
+    if !provider.uses_base_url() {
+        return ProbePlan::Keychain;
+    }
     let Some(base_url) =
         env.get("ANTHROPIC_BASE_URL").map(|value| value.trim()).filter(|value| !value.is_empty())
     else {
+        // Falling back to Keychain here would send a base-url account
+        // down the keychain path, where a 401 fires billed `claude -p hi`
+        // refreshes against a token its probe never reads.
+        debug_assert!(false, "config load rejects a base-url provider with no ANTHROPIC_BASE_URL");
         return ProbePlan::Keychain;
     };
     let bearer = env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str).unwrap_or_default();
-    ProbePlan::BaseUrl { base_url: base_url.to_owned(), bearer: bearer.to_owned() }
+    let (base_url, bearer) = (base_url.to_owned(), bearer.to_owned());
+    match provider {
+        Provider::Openrouter => ProbePlan::OpenRouterKey { base_url, bearer },
+        Provider::Anthropic | Provider::Codex => ProbePlan::BaseUrl { base_url, bearer },
+    }
+}
+
+/// OpenRouter's per-key endpoint. The documented path is `/api/v1/key`
+/// relative to the site root, but `ANTHROPIC_BASE_URL` already ends in
+/// `/api` because that is what the chat API wants, so only the `/v1/key`
+/// tail is appended. Measured: appending the documented path to that
+/// base yields `/api/api/v1/key`, which 404s.
+fn key_url(base_url: &str) -> String {
+    format!("{}/v1/key", base_url.trim_end_matches('/'))
+}
+
+/// One round-trip against `{base_url}/v1/key` for a pay-per-token
+/// account. Shares [`OauthUsageError`] with the window probe so the
+/// loader and poller classify a 401 / 429 / network failure the same
+/// way regardless of billing kind.
+pub async fn probe_openrouter_key(
+    base_url: &str,
+    bearer: &str,
+) -> Result<forge_primitives::usage::openrouter::KeyResponse, OauthUsageError> {
+    let mut headers = HeaderMap::new();
+    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+    let auth = HeaderValue::from_str(&format!("Bearer {bearer}"))
+        .map_err(|error| OauthUsageError::Network(format!("bad bearer header: {error}")))?;
+    headers.insert(AUTHORIZATION, auth);
+
+    let client = crate::http_trust::with_extra_roots(
+        reqwest::Client::builder().timeout(OAUTH_TIMEOUT).default_headers(headers),
+    )
+    .build()
+    .map_err(|error| OauthUsageError::Network(format!("client build: {error}")))?;
+
+    let response = client
+        .get(key_url(base_url))
+        .send()
+        .await
+        .map_err(|error| OauthUsageError::Network(error.to_string()))?;
+
+    let status = response.status().as_u16();
+    let retry_after = if status == 429 {
+        response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_retry_after)
+    } else {
+        None
+    };
+    let body = response
+        .bytes()
+        .await
+        .map_err(|error| OauthUsageError::Network(format!("body read: {error}")))?;
+
+    // Body is logged only on a non-200, and only as a truncated
+    // suffix. A 200 here carries a truncated copy of the key itself.
+    if status == 200 {
+        tracing::trace!(
+            target: "forge_agent::cloud::oauth_usage",
+            event_name = "openrouter_key_response",
+            status,
+            outcome = "ok",
+            body_bytes = body.len(),
+        );
+    } else {
+        tracing::warn!(
+            target: "forge_agent::cloud::oauth_usage",
+            event_name = "openrouter_key_response",
+            status,
+            outcome = "non_ok",
+            retry_after_secs = ?retry_after.map(|d| d.as_secs()),
+            body_suffix = %truncated_body_suffix(&body),
+        );
+    }
+
+    match status {
+        200 => serde_json::from_slice(&body).map_err(|error| {
+            // A 200 that will not parse is the shape a wrong base url
+            // takes: the bare host answers 200 with an HTML page. Name
+            // the URL and show the body, or the only evidence is a byte
+            // count on a trace line nobody has enabled.
+            tracing::warn!(
+                target: "forge_agent::cloud::oauth_usage",
+                event_name = "openrouter_key_decode_failed",
+                url = %key_url(base_url),
+                error = %error,
+                body_suffix = %truncated_body_suffix(&body),
+                "200 from the key endpoint did not decode; check the base url is the API root",
+            );
+            OauthUsageError::Decode(error.to_string())
+        }),
+        401 | 403 => Err(OauthUsageError::Unauthorized(status)),
+        429 => Err(OauthUsageError::RateLimited { retry_after }),
+        _ => Err(OauthUsageError::HttpStatus(status, truncated_body_suffix(&body))),
+    }
 }
 
 /// One round-trip against `/api/oauth/usage` using `credentials.access_token`.
@@ -329,13 +453,48 @@ mod tests {
         );
     }
 
+    /// OpenRouter documents the endpoint as `/api/v1/key` relative to
+    /// the site root, but the configured base url already ends in
+    /// `/api`, so the documented path appended to it 404s. Measured:
+    /// `https://openrouter.ai/api/api/v1/key` is 404 and
+    /// `https://openrouter.ai/api/v1/key` is 401, i.e. the endpoint
+    /// exists and only auth is missing.
     #[test]
-    fn probe_plan_base_url_reads_base_and_token_from_env() {
+    fn key_url_joins_one_v1_segment_onto_the_configured_base() {
+        assert_eq!(key_url("https://openrouter.ai/api"), "https://openrouter.ai/api/v1/key");
+        assert_eq!(
+            key_url("https://openrouter.ai/api/"),
+            "https://openrouter.ai/api/v1/key",
+            "trailing slash trimmed so base and base/ behave identically",
+        );
+        assert!(
+            !key_url("https://openrouter.ai/api").contains("/api/api/"),
+            "the documented /api/v1/key path must not be appended to a base that ends in /api",
+        );
+    }
+
+    #[test]
+    fn probe_plan_openrouter_probes_its_own_key_endpoint() {
+        let mut env = HashMap::new();
+        env.insert("ANTHROPIC_BASE_URL".to_owned(), "https://openrouter.ai/api".to_owned());
+        env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-or-test".to_owned());
+        assert_eq!(
+            probe_plan(Provider::Openrouter, &env),
+            ProbePlan::OpenRouterKey {
+                base_url: "https://openrouter.ai/api".to_owned(),
+                bearer: "sk-or-test".to_owned(),
+            },
+            "openrouter must not share Codex's windowed plan",
+        );
+    }
+
+    #[test]
+    fn probe_plan_codex_reads_base_and_token_from_env() {
         let mut env = HashMap::new();
         env.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
         env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-codex".to_owned());
         assert_eq!(
-            probe_plan(&env),
+            probe_plan(Provider::Codex, &env),
             ProbePlan::BaseUrl {
                 base_url: "http://localhost:18765".to_owned(),
                 bearer: "sk-codex".to_owned(),
@@ -343,35 +502,41 @@ mod tests {
         );
     }
 
+    /// Same env, two providers, two plans: a base url cannot decide the
+    /// probe, because it answers where the credential lives rather than
+    /// what the backend bills for.
     #[test]
-    fn probe_plan_keychain_without_base_url() {
-        // A normal Anthropic account (no ANTHROPIC_BASE_URL) -> Keychain
-        // so the caller keeps the default host + keychain bearer.
+    fn probe_plan_keys_on_provider_not_on_base_url() {
         let mut env = HashMap::new();
+        env.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
         env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-codex".to_owned());
-        assert_eq!(probe_plan(&env), ProbePlan::Keychain);
-        assert_eq!(probe_plan(&HashMap::new()), ProbePlan::Keychain);
-    }
-
-    #[test]
-    fn probe_plan_keychain_for_empty_base_url() {
-        let mut env = HashMap::new();
-        env.insert("ANTHROPIC_BASE_URL".to_owned(), "   ".to_owned());
         assert_eq!(
-            probe_plan(&env),
+            probe_plan(Provider::Anthropic, &env),
             ProbePlan::Keychain,
-            "whitespace-only base url is not an override",
+            "an Anthropic account keeps the keychain even with a base url set",
+        );
+        assert!(
+            matches!(probe_plan(Provider::Codex, &env), ProbePlan::BaseUrl { .. }),
+            "the same env under Codex probes the base url",
         );
     }
 
     #[test]
-    fn probe_plan_base_url_missing_token_defaults_to_empty_bearer() {
+    fn probe_plan_anthropic_is_keychain() {
+        let mut env = HashMap::new();
+        env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-anything".to_owned());
+        assert_eq!(probe_plan(Provider::Anthropic, &env), ProbePlan::Keychain);
+        assert_eq!(probe_plan(Provider::Anthropic, &HashMap::new()), ProbePlan::Keychain);
+    }
+
+    #[test]
+    fn probe_plan_codex_missing_token_defaults_to_empty_bearer() {
         // A proxy on localhost ignores the bearer; an absent
-        // ANTHROPIC_AUTH_TOKEN must not suppress the override.
+        // ANTHROPIC_AUTH_TOKEN must not suppress the base-url probe.
         let mut env = HashMap::new();
         env.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
         assert_eq!(
-            probe_plan(&env),
+            probe_plan(Provider::Codex, &env),
             ProbePlan::BaseUrl {
                 base_url: "http://localhost:18765".to_owned(),
                 bearer: String::new(),

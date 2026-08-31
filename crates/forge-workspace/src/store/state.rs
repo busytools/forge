@@ -139,6 +139,7 @@ mod tests {
                 seven_day_opus: None,
                 seven_day_sonnet: None,
                 extra_usage: None,
+                spend: None,
             },
         }
     }
@@ -195,6 +196,55 @@ mod tests {
             Some(99.0),
             "the surviving account's snapshot is the new value",
         );
+    }
+
+    /// A row written before `UsageSnapshot` grew `spend` must still
+    /// decode, because there is no migration step: the cache is read
+    /// straight back at boot. Written as raw JSON in the old shape
+    /// rather than by constructing today's type, so the assertion is
+    /// about what is actually on disk.
+    #[test]
+    fn an_old_shape_account_usage_row_still_decodes() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        let old_row = br#"{"snapshot":{
+            "source":"Oauth",
+            "fetched_at":{"secs_since_epoch":1735128000,"nanos_since_epoch":0},
+            "five_hour":{"utilization":42.0,"resets_at":null,"reset_description":null},
+            "seven_day":{"utilization":7.0,"resets_at":null,"reset_description":null},
+            "seven_day_opus":null,"seven_day_sonnet":null,
+            "extra_usage":{"monthly_limit":20.0,"used_credits":12.5,
+                           "utilization":62.5,"currency":"USD"}
+        }}"#;
+
+        let txn = db.database().begin_write().expect("begin");
+        {
+            let mut table = txn.open_table(ACCOUNT_USAGE).expect("open table");
+            table.insert("Gateway", old_row.as_slice()).expect("insert old-shape row");
+        }
+        txn.commit().expect("commit");
+
+        let loaded = account_usage(&db).expect("read");
+        let entry = loaded.get("Gateway").expect("the pre-spend row survives the new shape");
+        let snapshot = &entry.snapshot;
+        assert_eq!(snapshot.source, UsageSourceKind::Oauth, "the source it carried is preserved");
+        assert_eq!(
+            snapshot.five_hour.as_ref().map(|w| w.utilization),
+            Some(42.0),
+            "the five-hour window it carried is preserved",
+        );
+        assert_eq!(
+            snapshot.seven_day.as_ref().map(|w| w.utilization),
+            Some(7.0),
+            "the seven-day window it carried is preserved",
+        );
+        assert_eq!(
+            snapshot.extra_usage.as_ref().and_then(|e| e.used_credits),
+            Some(12.5),
+            "the extra-usage block it carried is preserved",
+        );
+        assert!(snapshot.spend.is_none(), "the absent new field decodes to None");
     }
 
     #[test]

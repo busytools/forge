@@ -76,12 +76,47 @@ An array of tables. At least one is required, or the load fails with
 |---|---|---|---|---|
 | `display_name` | string | yes | | Must be unique. This is the name orgs reference. |
 | `config_dir` | string | yes | | The `claude` config directory this account uses. `~/` is expanded. |
+| `provider` | string | yes | | One of `"anthropic"`, `"codex"`, `"openrouter"`. Decides how the account is probed and how its usage reads. |
 | `experimental` | bool | no | `false` | Excludes the account from automatic assignment while leaving it selectable by hand. |
 | `env` | table | no | `{}` | Written as `[accounts.env]`. See [Environment layering](#environment-layering). |
 
 `config_dir` is what forge exports as `CLAUDE_CONFIG_DIR` to the
 spawned `claude` subprocess, so each account reads and writes its own
 credentials, session history and settings tree.
+
+`provider` has no default. Accounts that omit it are named together in
+one load error listing the accepted values, so a first run does not
+surface them one restart at a time. Silence is the dangerous answer
+here: a mislabelled account probes the wrong endpoint and then cannot
+reach a usable state, which stops forge starting.
+
+The line has to sit above the account's `[accounts.env]` table. TOML
+scopes every key after a table header into that table, so a `provider`
+written below one is read as an environment variable and the account
+still counts as missing it.
+
+`"anthropic"` reads credentials from the macOS keychain and probes the
+default host. `"codex"` and `"openrouter"` authenticate with the
+`ANTHROPIC_AUTH_TOKEN` beside their `ANTHROPIC_BASE_URL`, and an account
+declaring either without that base url fails the load naming the
+account and the missing key. Either key may come from the account's own
+`[accounts.env]` or from the global `[env]`, since the two are merged
+before the check runs.
+
+For `"openrouter"` the base url must be the API root, `https://openrouter.ai/api`,
+and an account whose base does not end in `/api` fails the load. The
+bare host is the trap worth naming: forge probes `{base}/v1/key`, and
+`https://openrouter.ai/v1/key` answers `200` with a web page rather than
+a `404`, so nothing downstream could tell it apart from a real reply.
+
+The split is billing, not auth. `"codex"` is a base-url account whose
+proxy serves the same windowed body Anthropic does, so it reads as a
+subscription with rolling windows. `"openrouter"` is pay-per-token:
+there is no window and no allowance, so its usage is money spent over a
+period rather than a percentage.
+
+Unknown keys in an `[[accounts]]` block are rejected, so a near-miss
+like `providers` fails the load instead of loading and doing nothing.
 
 ## `[env]`
 
@@ -144,9 +179,11 @@ env layer overrides forge's own stamp. The value still applies, since
 `forge.toml` is treated as trusted, but forge logs a warning naming the
 key.
 
-An `ANTHROPIC_BASE_URL` under `[accounts.env]` is how an account points
-at an alternate endpoint; there is no dedicated field for it, and
-forge's usage probe reads it from there. Setting `ANTHROPIC_BASE_URL`
+An `ANTHROPIC_BASE_URL` under `[accounts.env]` is where a `"codex"` or
+`"openrouter"` account's endpoint lives, alongside the
+`ANTHROPIC_AUTH_TOKEN` it authenticates with. It does not decide how
+the account is probed - `provider` does, and this is only read once
+that has already chosen a base-url account. Setting `ANTHROPIC_BASE_URL`
 or `ANTHROPIC_AUTH_TOKEN` at the *project* layer instead desynchronises
 forge's own accounting, because the usage probe, plan detection and the
 account picker all read the account map.
@@ -252,15 +289,19 @@ accounts = ["Work"]
 [[accounts]]
 display_name = "Personal"
 config_dir = "~/.claude"
+provider = "anthropic"
 
 [[accounts]]
 display_name = "Work"
 config_dir = "~/.claude-work"
+provider = "anthropic"
 
-# Talks to a local endpoint.
+# Talks to a local endpoint. The provider line has to come before
+# [accounts.env], or TOML reads it as an env key.
 [[accounts]]
 display_name = "Scratch"
 config_dir = "~/.claude-scratch"
+provider = "codex"
 experimental = true
 
   [accounts.env]

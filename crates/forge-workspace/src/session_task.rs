@@ -1343,6 +1343,7 @@ mod tests {
         crate::config::LoadedAccount {
             display_name: name.to_owned(),
             config_dir: std::path::PathBuf::from(format!("/fake/{name}")),
+            provider: forge_primitives::account::Provider::Anthropic,
             env: std::collections::HashMap::new(),
             experimental: false,
         }
@@ -1425,7 +1426,7 @@ mod tests {
             format!(
                 "[[orgs]]\nname = \"Default\"\naccounts = [\"Acct\"]\n\n\
                  [[orgs.projects]]\nname = \"forge\"\npath = \"~/Projects/forge\"\n\n\
-                 [[accounts]]\ndisplay_name = \"Acct\"\nconfig_dir = \"{config_dir}\"\n"
+                 [[accounts]]\ndisplay_name = \"Acct\"\nconfig_dir = \"{config_dir}\"\nprovider = \"anthropic\"\n"
             ),
         )
         .expect("write forge.toml");
