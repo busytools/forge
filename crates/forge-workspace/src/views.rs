@@ -102,18 +102,47 @@ pub struct AccountRow {
     /// `true` when the account is pickable now (tier-0, not bailed).
     /// `false` renders the red `rate limited` tag.
     pub usable: bool,
-    /// 5-hour window utilization (0.0 when no probe has landed yet).
-    pub five_hour_util: f64,
-    /// Binding 7-day utilization: max across the three 7-day windows.
-    pub seven_day_util: f64,
-    /// When the account unlocks - `Some` only while it is at its cap,
-    /// so the picker shows a reset ETA on rate-limited rows only.
-    pub resets_at: Option<SystemTime>,
+    /// What this account has left, in whatever terms its backend bills.
+    pub budget: AccountBudget,
     /// `true` for an `experimental = true` account. The picker renders
     /// these in a separate `EXPERIMENTAL` group with an amber tag; they
     /// are offered globally (regardless of the project's org pin)
     /// because they are excluded from every auto-assignment path.
     pub experimental: bool,
+}
+
+/// What an account has left, in the terms its backend bills in.
+///
+/// Lives on the view rather than on `UsageSnapshot` because the
+/// snapshot is persisted and this is not: making the stored type an
+/// enum would break every cached row, while a view type can carry the
+/// discrimination for free.
+///
+/// `Unknown` is load-bearing, not a placeholder. Before it existed a
+/// missing snapshot collapsed to `(0.0, 0.0)`, so "never probed" and
+/// "probed, nothing used" rendered identically as a green 0% - the same
+/// class of invented number as a fabricated percentage on an account
+/// with no windows.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AccountBudget {
+    /// No usable snapshot: none has landed yet, or the cached one was
+    /// written under a different `provider` and no longer describes
+    /// this account.
+    Unknown,
+    /// Plan windows, as percentages of an allowance that resets.
+    Subscription {
+        five_hour_util: f64,
+        /// Binding 7-day utilization: max across the three 7-day windows.
+        seven_day_util: f64,
+        /// When the account unlocks - `Some` only while it is at its
+        /// cap, so the picker shows a reset ETA on limited rows only.
+        resets_at: Option<SystemTime>,
+    },
+    /// Per-key spend in USD over the three periods the backend
+    /// pre-computes. No allowance, so no percentage and no reset;
+    /// account-wide balance has a different scope and is not carried
+    /// here, so a row cannot imply both figures are per-key.
+    Api { daily: f64, weekly: f64, monthly: f64 },
 }
 
 /// How an account proves who it is, which is the only thing that

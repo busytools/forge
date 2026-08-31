@@ -2221,22 +2221,14 @@ impl Workspace {
                 let usable = accounts.is_account_usable(&key);
                 let is_current = current_account == Some(name.as_str());
                 let experimental = accounts.is_experimental(&key);
-                let (five_hour_util, seven_day_util, resets_at) =
-                    accounts.usage(&key).map_or((0.0, 0.0, None), |snapshot| {
-                        (
-                            account::five_hour_util(snapshot),
-                            account::seven_day_util(snapshot),
-                            account::binding_reset_at(snapshot),
-                        )
-                    });
+                let budget =
+                    account_budget(accounts.provider_or_anthropic(&key), accounts.usage(&key));
                 Some(crate::AccountRow {
                     display_name: name,
                     config_dir,
                     is_current,
                     usable,
-                    five_hour_util,
-                    seven_day_util,
-                    resets_at,
+                    budget,
                     experimental,
                 })
             })
@@ -5563,6 +5555,44 @@ impl Workspace {
     }
 }
 
+/// Pick the [`crate::views::AccountBudget`] shape for an account from
+/// its declared provider and whatever snapshot is cached.
+///
+/// A snapshot whose source disagrees with the provider is treated as
+/// absent: the cache survives a `forge.toml` edit, so an account whose
+/// `provider` changed still has a row in the old shape, and rendering
+/// windows as money (or the reverse) is worse than saying nothing.
+fn account_budget(
+    provider: forge_primitives::account::Provider,
+    snapshot: Option<&forge_primitives::usage::UsageSnapshot>,
+) -> crate::views::AccountBudget {
+    use forge_primitives::account::Provider;
+    use forge_primitives::usage::UsageSourceKind;
+
+    let Some(snapshot) = snapshot else {
+        return crate::views::AccountBudget::Unknown;
+    };
+    match (provider, snapshot.source) {
+        (Provider::Anthropic | Provider::Codex, UsageSourceKind::Oauth) => {
+            crate::views::AccountBudget::Subscription {
+                five_hour_util: account::five_hour_util(snapshot),
+                seven_day_util: account::seven_day_util(snapshot),
+                resets_at: account::binding_reset_at(snapshot),
+            }
+        }
+        (Provider::Openrouter, UsageSourceKind::OpenRouterKey) => {
+            snapshot.spend.as_ref().map_or(crate::views::AccountBudget::Unknown, |spend| {
+                crate::views::AccountBudget::Api {
+                    daily: spend.daily,
+                    weekly: spend.weekly,
+                    monthly: spend.monthly,
+                }
+            })
+        }
+        _ => crate::views::AccountBudget::Unknown,
+    }
+}
+
 /// Map an [`OauthUsageError`] to the renderer-facing
 /// [`account::UsageFetchStatus`] bucket. Separates HTTP 429 (the
 /// common multi-instance throttle case) from the auth-related
@@ -6551,16 +6581,30 @@ mod tests {
         // A: current + saturated -> not usable, carries a reset ETA.
         assert!(rows[0].is_current, "A is the session's active account");
         assert!(!rows[0].usable, "A saturated on 5h -> rate limited");
-        assert!((rows[0].five_hour_util - 100.0).abs() < f64::EPSILON);
-        assert!((rows[0].seven_day_util - 63.0).abs() < f64::EPSILON);
-        assert_eq!(rows[0].resets_at, Some(future), "capped account shows when it unlocks");
+        match rows[0].budget {
+            crate::views::AccountBudget::Subscription {
+                five_hour_util,
+                seven_day_util,
+                resets_at,
+            } => {
+                assert!((five_hour_util - 100.0).abs() < f64::EPSILON);
+                assert!((seven_day_util - 63.0).abs() < f64::EPSILON);
+                assert_eq!(resets_at, Some(future), "capped account shows when it unlocks");
+            }
+            ref other => panic!("a window-billed account renders as a subscription, got {other:?}"),
+        }
         assert_eq!(rows[0].config_dir, PathBuf::from("/cfg/A"));
 
         // B: not current + usable -> no reset ETA.
         assert!(!rows[1].is_current);
         assert!(rows[1].usable, "B under cap on both windows");
-        assert!((rows[1].five_hour_util - 34.0).abs() < f64::EPSILON);
-        assert!(rows[1].resets_at.is_none(), "usable account has no reset ETA");
+        match rows[1].budget {
+            crate::views::AccountBudget::Subscription { five_hour_util, resets_at, .. } => {
+                assert!((five_hour_util - 34.0).abs() < f64::EPSILON);
+                assert!(resets_at.is_none(), "usable account has no reset ETA");
+            }
+            ref other => panic!("a window-billed account renders as a subscription, got {other:?}"),
+        }
     }
 
     /// Experimental accounts are globally selectable: they appear in the

@@ -85,7 +85,9 @@ pub use error::WorkspaceError;
 pub use protocol::{Command, DispatchError, SessionUpdate, TurnErrorClass};
 pub use target::{ProjectKey, SessionKey, SessionTarget};
 pub use ui::{RepaintCadence, SpinnerStyle};
-pub use views::{AccountAuth, AccountLoadingRow, AccountRow, ProjectView, SessionView};
+pub use views::{
+    AccountAuth, AccountBudget, AccountLoadingRow, AccountRow, ProjectView, SessionView,
+};
 pub use workspace::{SessionChipInfo, SessionChipState, Workspace};
 
 // MCP (peers / workers) public surface. The `mcp` module itself is
