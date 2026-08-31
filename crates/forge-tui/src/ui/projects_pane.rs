@@ -591,7 +591,7 @@ fn append_org_project_row(
         // exactly where the idle row's last time char ends, so
         // active + idle row right edges stay flush.
         spans.push(Span::styled(
-            " x ".to_owned(),
+            crate::app::ROW_CLOSE_BUTTON.to_owned(),
             Style::default().fg(Color::Gray).bg(theme::USER_MSG_BG).add_modifier(Modifier::BOLD),
         ));
         // 1-col right gutter - matches the inspector pane's GIT
@@ -730,7 +730,10 @@ fn append_worker_tree_children(
             .unwrap_or_default();
         let (badge_spans, badge_width) =
             peer_badge_spans(&badge_stats, badge_last_failure_at, Instant::now());
-        let label_budget = total_width.saturating_sub(1 + 3 + 3 + 1 + 1 + 1 + 3 + 1 + badge_width);
+        let label_budget = total_width
+            .saturating_sub(usize::from(WORKER_ROW_LEFT_CHROME))
+            .saturating_sub(control_gutter_width())
+            .saturating_sub(badge_width);
         let label = truncate_with_ellipsis(worker.label.as_str(), label_budget);
         let label_pad = label_budget.saturating_sub(label.chars().count());
         let is_focused = active_session_key.as_ref() == Some(&worker.session_key);
@@ -816,7 +819,7 @@ fn append_worker_tree_children(
         spans.extend(badge_spans);
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
-            " x ".to_owned(),
+            crate::app::ROW_CLOSE_BUTTON.to_owned(),
             Style::default().fg(Color::Gray).bg(theme::USER_MSG_BG).add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::raw(" "));
@@ -895,13 +898,29 @@ fn org_trunk_span(parent_is_last: bool) -> Span<'static> {
     }
 }
 
-/// Chrome budget for an org-grouped row:
-/// `<1 PANE_PAD><3 connector><1 glyph><1 sp><name><1 sp><RIGHT col><1 right pad>`
-/// where RIGHT col = 3 cells (` x ` button for active rows / 3-char
-/// `Xm`/`Xh`/`Xd` time for idle rows). Total = 6 left chrome + 1 sep
-/// + 3 right col + 1 right pad = 11 chars per row.
+/// Left chrome on an org-grouped project row:
+/// `<1 PANE_PAD><3 connector><1 glyph><1 sp>`.
+const ORG_ROW_LEFT_CHROME: u16 = 6;
+
+/// Left chrome on a worker tree-child row: the project row's, plus the
+/// 3-cell org trunk the subtree is indented behind.
+const WORKER_ROW_LEFT_CHROME: u16 = ORG_ROW_LEFT_CHROME + 3;
+
+/// Name budget for an org-grouped row: the width less its left chrome
+/// and the right-edge control gutter. Derived from
+/// [`crate::app::control_gutter_start`]'s own reservation rather than
+/// from a matching literal, so the name can never grow into the
+/// columns the close band claims.
 fn name_budget_org_row(area_width: u16) -> usize {
-    usize::from(area_width.saturating_sub(11))
+    usize::from(area_width.saturating_sub(ORG_ROW_LEFT_CHROME))
+        .saturating_sub(control_gutter_width())
+}
+
+/// Cells the control gutter reserves, read back from the geometry the
+/// hit band uses so the two cannot be changed apart.
+fn control_gutter_width() -> usize {
+    let probe = Rect { x: 0, y: 0, width: u16::MAX, height: 1 };
+    usize::from(u16::MAX - crate::app::control_gutter_start(probe))
 }
 
 /// Format `activity` as a short relative-time string anchored at

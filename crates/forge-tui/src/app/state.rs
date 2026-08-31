@@ -117,11 +117,17 @@ pub struct TurnNoticeRef {
 /// mouse handler on click. Same render-time-stamp pattern as the
 /// per-tool-call expand/collapse.
 ///
-/// Every variant is x+y bounded. A row-body target stops short of the
-/// right-edge control gutter (see [`control_gutter_start`]) rather
-/// than spanning the full pane width, so a control that only exists
-/// while the row is live can never occupy a column the same row
-/// treated as body one frame earlier.
+/// Every variant is x+y bounded. In the projects pane's row grid a
+/// body target stops short of the right-edge control gutter (see
+/// [`control_gutter_start`]) rather than spanning the pane width, so a
+/// control that only exists while the row is live can never occupy a
+/// column the same row treated as body one frame earlier.
+///
+/// Two targets sit outside that grid: `InspectorAttentionRow` spans
+/// its pane's full width, and `CopySessionId` is stamped against the
+/// account panel rather than a row. Neither shares a band with
+/// anything today; a per-row control added to the attention band would
+/// need the same gutter treatment first.
 #[derive(Debug, Clone)]
 pub enum PaneHitTarget {
     /// Click on a project name row → switch active session to its
@@ -242,16 +248,29 @@ impl PaneHitTarget {
     }
 }
 
-/// First column of a pane row's right-edge control gutter, for a row
-/// spanning `area`. Every row-body target ends here and every per-row
-/// control starts here, so the two ranges are adjacent by construction
-/// and cannot drift into overlapping.
+/// First column of the right-edge control gutter, for a projects-pane
+/// project or worker row spanning `area`. Those rows' body targets end
+/// here and their close controls start here, so the two ranges are
+/// adjacent by construction. Other pane targets are stamped by their
+/// own surfaces and are not part of this grid - see
+/// [`PaneHitTarget::InspectorAttentionRow`], which is deliberately full
+/// width because it carries no per-row control.
 pub fn control_gutter_start(area: ratatui::layout::Rect) -> u16 {
     area.x.saturating_add(area.width).saturating_sub(CONTROL_GUTTER_WIDTH)
 }
 
-/// Width of the reserved control gutter: the 3-cell ` x ` button plus
-/// one column of tolerance each side.
+/// The close button painted at the right edge of a live project or
+/// worker row. Exported so the paint and the hit band are measured
+/// from one glyph rather than from two literals that agree today.
+pub const ROW_CLOSE_BUTTON: &str = " x ";
+
+/// Columns a row reserves at its right edge: one separator, the
+/// [`ROW_CLOSE_BUTTON`], one right pad. Both the row's name budget and
+/// its close band are derived from this, so widening the button cannot
+/// move the drawn glyph out from under the clickable band.
+///
+/// The band itself runs `[gutter_start, row_right - 1)`: the separator
+/// column is tolerance, and the right pad column stays inert.
 const CONTROL_GUTTER_WIDTH: u16 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -757,6 +776,10 @@ impl App {
     /// sides is preserved (in-memory buckets in `sessions`); the
     /// next paint reflects the new active session. No-op if `key`
     /// is already active or unknown.
+    ///
+    /// Drops any [`Self::pending_spawn_focus`]: landing somewhere by
+    /// any route settles where the user wants to be, so a spawn they
+    /// asked for earlier must not pull them back when it arrives.
     pub fn switch_active_session(&mut self, key: forge_workspace::SessionKey) {
         // Local helper: map a session's lifecycle state to the
         // App-level status enum so a background turn that completed
@@ -777,6 +800,10 @@ impl App {
                 | L::LoggedOut => AppStatus::Ready,
             }
         }
+        // Cleared before the early returns: a click that lands on the
+        // session already focused is still the user settling where
+        // they want to be.
+        self.pending_spawn_focus = None;
         if self.active_session_key.as_ref() == Some(&key) {
             return;
         }

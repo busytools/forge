@@ -438,9 +438,13 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
 /// on the command line, once its Connected fires), subsequent
 /// auto_start projects' `Spawning` events must NOT steal focus.
 ///
-/// Existing buckets (user clicked a stale row to re-wake) still
-/// switch focus - that's an explicit user action, not a passive
-/// background spawn.
+/// Two user actions are exempt, both because a person asked for this
+/// specific session rather than a background spawn arriving on its
+/// own. An existing bucket (a stale row clicked to re-wake) switches
+/// focus outright. And a click that woke a cold project has no bucket
+/// to switch to yet, so it leaves its key in
+/// [`App::pending_spawn_focus`] and this reducer completes the move
+/// when the bucket appears.
 fn apply_session_update_spawning(
     app: &mut App,
     key: SessionKey,
@@ -2112,6 +2116,39 @@ mod tests {
         assert!(
             app.pending_spawn_focus.is_none(),
             "the intent is one-shot; leaving it set would re-steal focus on a later spawn",
+        );
+    }
+
+    /// The recorded intent is a request, not a reservation: if the
+    /// user goes somewhere else before the spawn lands, the spawn must
+    /// not pull them back out of the session they chose second.
+    #[test]
+    fn switching_away_before_the_spawn_lands_abandons_the_pending_focus() {
+        let mut app = App::test_default();
+        let chosen = SessionKey::from_session_id("session-picked-instead");
+        app.sessions.insert(chosen.clone(), crate::app::session::UiSession::new(chosen.clone()));
+
+        let waking = SessionKey::from_session_id("__spawn_cold__".to_owned());
+        app.pending_spawn_focus = Some(waking.clone());
+        app.switch_active_session(chosen.clone());
+        assert!(
+            app.pending_spawn_focus.is_none(),
+            "landing somewhere else must abandon the earlier request",
+        );
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::Spawning {
+                key: waking,
+                project_name: "cold".to_owned(),
+                cwd: "/p/cold".to_owned(),
+                display_name: "cold".to_owned(),
+            },
+        );
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&chosen),
+            "the abandoned spawn must not yank focus back when it arrives",
         );
     }
 
