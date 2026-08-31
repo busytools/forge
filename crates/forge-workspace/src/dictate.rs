@@ -308,64 +308,91 @@ pub(crate) async fn run_dictate_preflight(settings: DictateSettings, state: Arc<
     }
 }
 
-/// The fetch-and-verify leg. `Err(())` means `state` already carries the
-/// reason.
-fn prepare(cfg: &forge_dictate::Config, state: &DictateState) -> Result<(), ()> {
-    use std::ops::ControlFlow;
+/// Per-file transfer bookkeeping, kept across the progress events of one
+/// `prepare` call.
+///
+/// Keyed by file throughout because the models are prepared concurrently
+/// and their events interleave: a single slot lets one model's
+/// `Verifying` clear the other's resume marker mid-transfer, and lets a
+/// model that already finished be named as the one a cancellation
+/// stopped.
+#[derive(Default)]
+struct TransferProgress {
+    /// What a `.part` held when its transfer opened. A bar that starts
+    /// at 38% with nothing said about it reads as a bug.
+    resumed_from: HashMap<String, u64>,
+    /// Bytes seen so far per file still transferring.
+    in_flight: HashMap<String, (u64, u64)>,
+    /// Which transfer a cancellation is reported against. With one model
+    /// in flight this names the same file the old single slot did.
+    cancelling: Option<String>,
+}
 
-    // Keyed by file because the models are prepared concurrently and
-    // their events interleave: a single slot would let one model's
-    // Verifying clear the other's resume marker mid-transfer.
-    //
-    // `resumed_from` is what a `.part` held when its transfer opened - a
-    // bar that starts at 38% with nothing said about it reads as a bug.
-    let mut resumed_from: HashMap<String, u64> = HashMap::new();
-    let mut in_flight: HashMap<String, (u64, u64)> = HashMap::new();
-    // Which transfer a cancellation is reported against. With one model
-    // in flight this names the same file the old single slot did.
-    let mut cancelling: Option<String> = None;
-
-    let outcome = forge_dictate::prepare(cfg, |progress| {
-        if state.cancelled.load(Ordering::Relaxed) {
-            return ControlFlow::Break(());
-        }
+impl TransferProgress {
+    /// Fold one event in and return the row state it implies.
+    fn apply(&mut self, progress: forge_dictate::Progress) -> (String, DictateModelState) {
         match progress {
             forge_dictate::Progress::Verifying { file } => {
-                resumed_from.remove(&file);
-                state.set_state(&file, DictateModelState::Verifying);
+                self.resumed_from.remove(&file);
+                (file, DictateModelState::Verifying)
             }
             forge_dictate::Progress::Downloading { file, downloaded, total } => {
                 // The first report of a transfer carries whatever was
                 // already on disk, so it is the only chance to learn
                 // that this is a resume rather than a fresh fetch.
-                if !in_flight.contains_key(&file) && downloaded > 0 {
-                    resumed_from.insert(file.clone(), downloaded);
+                if !self.in_flight.contains_key(&file) && downloaded > 0 {
+                    self.resumed_from.insert(file.clone(), downloaded);
                 }
-                in_flight.insert(file.clone(), (downloaded, total));
-                cancelling = Some(file.clone());
-                state.set_state(
-                    &file,
-                    DictateModelState::Downloading {
-                        downloaded,
-                        total,
-                        resumed_from: resumed_from.get(&file).copied(),
-                    },
-                );
+                self.in_flight.insert(file.clone(), (downloaded, total));
+                self.cancelling = Some(file.clone());
+                let resumed_from = self.resumed_from.get(&file).copied();
+                (file, DictateModelState::Downloading { downloaded, total, resumed_from })
             }
             forge_dictate::Progress::Ready { file } => {
-                resumed_from.remove(&file);
-                in_flight.remove(&file);
-                state.set_state(&file, DictateModelState::Fetched);
+                self.resumed_from.remove(&file);
+                self.in_flight.remove(&file);
+                // A finished model is not what a later cancellation is
+                // about. Leaving it named here reports a model that
+                // downloaded and verified as cancelled, with the empty
+                // byte counts of a transfer that is no longer running.
+                if self.cancelling.as_deref() == Some(file.as_str()) {
+                    self.cancelling = None;
+                }
+                (file, DictateModelState::Fetched)
             }
         }
+    }
+
+    /// The file a cancellation is about and how far it got. An empty name
+    /// when nothing was transferring, which names no row and shows no
+    /// bytes rather than blaming a model that finished.
+    fn cancellation(&self) -> (String, u64, u64) {
+        let file = self.cancelling.clone().unwrap_or_default();
+        let (kept, total) = self.in_flight.get(&file).copied().unwrap_or_default();
+        (file, kept, total)
+    }
+}
+
+/// The fetch-and-verify leg. `Err(())` means `state` already carries the
+/// reason.
+fn prepare(cfg: &forge_dictate::Config, state: &DictateState) -> Result<(), ()> {
+    use std::ops::ControlFlow;
+
+    let mut transfers = TransferProgress::default();
+
+    let outcome = forge_dictate::prepare(cfg, |progress| {
+        if state.cancelled.load(Ordering::Relaxed) {
+            return ControlFlow::Break(());
+        }
+        let (file, next) = transfers.apply(progress);
+        state.set_state(&file, next);
         ControlFlow::Continue(())
     });
 
     match outcome {
         Ok(()) => Ok(()),
         Err(forge_dictate::Error::Cancelled) => {
-            let file = cancelling.unwrap_or_default();
-            let (kept, total) = in_flight.get(&file).copied().unwrap_or_default();
+            let (file, kept, total) = transfers.cancellation();
             state.fail(DictateFailure::Cancelled { kept, total }, Some(&file));
             Err(())
         }
@@ -416,6 +443,72 @@ fn failure_for(cfg: &forge_dictate::Config, error: &forge_dictate::Error) -> Dic
             }
         }
         other => DictateFailure::Other { message: other.to_string() },
+    }
+}
+
+#[cfg(test)]
+mod transfer_progress_tests {
+    use super::*;
+    use forge_dictate::Progress;
+
+    /// The models are prepared concurrently, so a cancel can land while
+    /// one is still transferring and the other has already finished.
+    /// Naming the finished one puts `cancelled` in error red on a model
+    /// that downloaded and hash-verified, under prose about a `.part`
+    /// file it does not have.
+    #[test]
+    fn a_model_that_finished_is_not_named_by_a_later_cancellation() {
+        let mut t = TransferProgress::default();
+        t.apply(Progress::Downloading { file: "asr.gguf".into(), downloaded: 612, total: 1_560 });
+        t.apply(Progress::Verifying { file: "asr.gguf".into() });
+        t.apply(Progress::Ready { file: "asr.gguf".into() });
+        // The other model is cached, so it only ever verifies.
+        t.apply(Progress::Verifying { file: "norm.gguf".into() });
+
+        let (file, kept, total) = t.cancellation();
+        assert_eq!(file, "", "a model that reached ready must not be blamed for the cancel");
+        assert_eq!((kept, total), (0, 0), "and it must not lend its byte counts to one");
+    }
+
+    /// The transfer that IS still running is the one to report, with its
+    /// own numbers.
+    #[test]
+    fn the_transfer_still_running_is_the_one_reported() {
+        let mut t = TransferProgress::default();
+        t.apply(Progress::Downloading { file: "asr.gguf".into(), downloaded: 10, total: 100 });
+        t.apply(Progress::Ready { file: "asr.gguf".into() });
+        t.apply(Progress::Downloading { file: "norm.gguf".into(), downloaded: 40, total: 200 });
+
+        assert_eq!(
+            t.cancellation(),
+            ("norm.gguf".to_owned(), 40, 200),
+            "the live transfer and its own bytes, not the finished model's"
+        );
+    }
+
+    /// Interleaved events must not let one model's `Verifying` clear the
+    /// other's resume marker: the bar would silently drop the line
+    /// explaining why it opened at 38%.
+    #[test]
+    fn one_models_verifying_does_not_clear_the_others_resume_marker() {
+        let mut t = TransferProgress::default();
+        t.apply(Progress::Downloading { file: "asr.gguf".into(), downloaded: 592, total: 1_560 });
+        t.apply(Progress::Verifying { file: "norm.gguf".into() });
+        let (_, state) = t.apply(Progress::Downloading {
+            file: "asr.gguf".into(),
+            downloaded: 600,
+            total: 1_560,
+        });
+
+        assert_eq!(
+            state,
+            DictateModelState::Downloading {
+                downloaded: 600,
+                total: 1_560,
+                resumed_from: Some(592)
+            },
+            "the resume marker belongs to asr.gguf and nothing norm.gguf does may clear it"
+        );
     }
 }
 
