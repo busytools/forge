@@ -37,3 +37,32 @@ impl Provider {
         matches!(self, Self::Codex | Self::Openrouter)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `ACCEPTED` is the load error's list of what the user may write,
+    /// and it is hand-maintained, so a new variant can ship without
+    /// appearing in it and leave the error telling people the wrong set.
+    #[test]
+    fn accepted_lists_every_variant() {
+        for (variant, token) in [
+            (Provider::Anthropic, "anthropic"),
+            (Provider::Codex, "codex"),
+            (Provider::Openrouter, "openrouter"),
+        ] {
+            let serialized =
+                serde_json::to_string(&variant).expect("provider serializes to its toml token");
+            assert_eq!(
+                serialized,
+                format!("\"{token}\""),
+                "the toml spelling of {variant:?} is what a user writes",
+            );
+            assert!(
+                Provider::ACCEPTED.contains(token),
+                "ACCEPTED must name {token}, or the load error lists the wrong set",
+            );
+        }
+    }
+}

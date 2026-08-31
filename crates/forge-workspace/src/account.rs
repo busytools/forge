@@ -259,6 +259,23 @@ impl AccountStateMap {
         self.by_key.get(key).map(|s| s.provider)
     }
 
+    /// [`Self::provider`] for a key that came out of this map, so a miss
+    /// means the map changed underneath the caller. Anthropic is the
+    /// safe default - it probes the keychain rather than an endpoint
+    /// derived from an env this account may not have - but it is the
+    /// wrong answer for a base-url account, whose repair copy would then
+    /// tell the user to run `/login`. Warn rather than pick silently.
+    pub fn provider_or_anthropic(&self, key: &AccountKey) -> forge_primitives::account::Provider {
+        self.provider(key).unwrap_or_else(|| {
+            tracing::warn!(
+                target: "forge_workspace::account",
+                account = %key.0,
+                "no provider for a key taken from the account map; assuming anthropic",
+            );
+            forge_primitives::account::Provider::Anthropic
+        })
+    }
+
     /// Reverse of [`Self::config_dir`]: the account key bound to `dir`.
     /// A live session runs under its account's `config_dir`, so this
     /// maps that dir back to the key to rotate off on a 429.
