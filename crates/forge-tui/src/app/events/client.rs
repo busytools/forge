@@ -910,8 +910,8 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
                 // race (in-flight wire frame whose session_id was
                 // rekey'd / dropped between the SessionTask emit and
                 // this reducer). If the dropped msg is `Result`,
-                // TurnComplete never fires and the spinner stays on
-                // "Thinking..." forever.
+                // TurnComplete never fires and the turn info row spins
+                // and counts up forever.
                 let bucket_keys: Vec<String> =
                     app.sessions.keys().map(|k| k.as_str().to_owned()).collect();
                 tracing::error!(

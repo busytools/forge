@@ -163,18 +163,24 @@ pub enum Message {
         usage: Option<TaskUsage>,
     },
 
-    /// CLI-side per-turn estimated thinking-token count, fires
-    /// repeatedly during model thinking. Subtype `"thinking_tokens"`
-    /// (#273). The renderer consumes `estimated_tokens` for the
-    /// in-progress spinner chip `⠋ thinking · N tok`; the delta field
-    /// is captured for future per-tick rate analysis.
+    /// CLI-side estimated thinking-token count, fires repeatedly
+    /// during model thinking. Subtype `"thinking_tokens"` (#273).
+    ///
+    /// Both counters are scoped to one **thinking block**, not to the
+    /// turn: the CLI restarts them at each agentic iteration, so a
+    /// turn with two thinking blocks emits a second run beginning at
+    /// 50 again. A per-turn total is therefore the sum of the deltas,
+    /// which is what the turn info row renders.
     ThinkingTokens {
-        /// Cumulative estimated reasoning-token count for the current
-        /// in-flight assistant turn.
+        /// Estimated reasoning tokens so far in the current thinking
+        /// block. Restarts at each block within a turn, so this is not
+        /// a turn total and reading it as one understates a multi-block
+        /// turn.
         estimated_tokens: u64,
-        /// Delta since the previous `thinking_tokens` event in this
-        /// turn. Surfaces the per-tick growth rate; the CLI emits a
-        /// new event roughly every ~50 tokens.
+        /// Growth since the previous event in the same thinking block,
+        /// and equal to `estimated_tokens` on a block's first event
+        /// rather than stepping backwards. The CLI emits roughly every
+        /// 50 tokens.
         estimated_tokens_delta: i64,
         /// Unique identifier for this thinking-tokens event.
         uuid: String,

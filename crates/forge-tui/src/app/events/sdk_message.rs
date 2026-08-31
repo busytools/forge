@@ -76,8 +76,8 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         | Message::HookStarted { .. }
         | Message::HookResponse { .. } => {}
         // #273: typed wrappers around the CLI 2.1.156 system events.
-        Message::ThinkingTokens { estimated_tokens, .. } => {
-            handle_thinking_tokens(app, estimated_tokens);
+        Message::ThinkingTokens { estimated_tokens_delta, .. } => {
+            handle_thinking_tokens(app, estimated_tokens_delta);
         }
         Message::StopHookSummary { actions, hook_infos, .. } => {
             handle_stop_hook_summary(app, actions, hook_infos);
@@ -88,12 +88,49 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
     }
 }
 
-/// #273: Set the active session's latest thinking-token count.
-/// The renderer reads it via `App::latest_thinking_tokens` to format
-/// the spinner chip `⠋ thinking · N tok`. Repeated events overwrite;
-/// the field is cleared on turn end (in `handle_result`).
-fn handle_thinking_tokens(app: &mut App, estimated_tokens: u64) {
-    app.set_latest_thinking_tokens(Some(estimated_tokens));
+/// #273: Accumulate the turn's estimated thinking tokens and mirror
+/// the running total onto the turn's own message.
+///
+/// Summed from the deltas rather than read off `estimated_tokens`,
+/// which restarts at every thinking block and so understates any turn
+/// that thought more than once. The session field is cleared at turn
+/// end, which is why the row keeps its own copy.
+fn handle_thinking_tokens(app: &mut App, estimated_tokens_delta: i64) {
+    let delta = u64::try_from(estimated_tokens_delta).unwrap_or_else(|_| {
+        // Every delta across the 2.1.220 baselines is non-negative, and
+        // a block boundary restarts at the new block's first increment
+        // rather than stepping back. A negative one means the field
+        // changed meaning, so count nothing rather than guess.
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "thinking_tokens_negative_delta",
+            message = "thinking_tokens delta was negative; wire shape may have changed",
+            outcome = "ignored",
+            estimated_tokens_delta,
+        );
+        0
+    });
+    let total = app.latest_thinking_tokens().unwrap_or(0).saturating_add(delta);
+    app.set_latest_thinking_tokens(Some(total));
+    mirror_thinking_tokens_onto_turn(app, total);
+}
+
+/// Write the turn's running estimate onto the message the row renders
+/// from, skipping a settled one exactly as the live usage stamp does.
+fn mirror_thinking_tokens_onto_turn(app: &mut App, total: u64) {
+    let Some(idx) =
+        app.messages().iter().rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
+    else {
+        return;
+    };
+    if let Some(msg) = app.active_messages_mut().get_mut(idx) {
+        if msg.turn_info.is_settled() {
+            return;
+        }
+        msg.turn_info.thinking_tokens = Some(total);
+        msg.invalidate_render_cache();
+    }
+    app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(idx));
 }
 
 /// #273: Capture the stop-hook summary for the active assistant
@@ -317,18 +354,18 @@ fn handle_user(app: &mut App, msg: Message) {
     let Message::User { message, parent_tool_use_id, tool_use_result, .. } = msg else {
         return;
     };
-    // a genuine new user turn invalidates the previous
-    // turn's thinking-token tally. Without this clear, a multi-tool-call
-    // turn that ends without a `Result` (in-flight when the next user
-    // turn lands) leaves `latest_thinking_tokens` holding the prior
-    // cumulative value (e.g. 150); the first `thinking_tokens` event of
-    // the new turn arrives with a reset cumulative (50) and the chip
-    // drops 150 -> 50, which reads as the chip "going up and down".
-    // Tool-result echoes (`tool_use_result.is_some()`) are mid-turn
-    // continuations of the assistant's tool-call loop, not new user
-    // turns - leave the count alone there. The existing Result-side
-    // clear in `handle_result` covers the clean turn-end case; this
-    // user-side clear is additive for the in-flight case.
+    // A genuine new user turn invalidates the previous turn's
+    // thinking-token tally. Without this clear, a turn that ends
+    // without a `Result` - in flight when the next user turn lands -
+    // leaves the accumulator holding its total, and the new turn's
+    // deltas add on top of it, so the row bills one turn for two turns
+    // of reasoning with nothing on screen saying so. Tool-result echoes
+    // (`tool_use_result.is_some()`) are mid-turn continuations of the
+    // assistant's tool-call loop, not new user turns - the count must
+    // survive them, since a turn's later thinking blocks arrive after
+    // exactly these. The Result-side clear in `handle_result` covers
+    // the clean turn-end case; this one is additive for the in-flight
+    // case.
     if tool_use_result.is_none() {
         app.set_latest_thinking_tokens(None);
     }
@@ -1663,10 +1700,10 @@ fn handle_result(app: &mut App, msg: Message) {
     };
     let api_ms = app.settle_live_turn(duration_api_ms);
     stamp_turn_info_on_latest_assistant(app, duration_ms, api_ms, usage, total_cost_usd);
-    // #273: Turn ended - clear per-turn thinking-token chip so the
-    // next in-progress turn starts with a bare spinner (it'll
-    // re-populate once `Message::ThinkingTokens` fires for the new
-    // turn). `stop_hook_summary` is left intact: it belongs to the
+    // #273: Turn ended - reset the accumulator so the next turn counts
+    // its own reasoning from zero. The stamp above has already copied
+    // the total onto this turn's row, which is what goes on showing it.
+    // `stop_hook_summary` is left intact: it belongs to the
     // just-completed turn's end-of-turn surface.
     app.set_latest_thinking_tokens(None);
     apply_result_finalize(app, is_error, &subtype, errors.unwrap_or_default(), terminal_reason);
@@ -1693,6 +1730,10 @@ fn stamp_turn_info_on_latest_assistant(
     };
     let model = app.observed_assistant_model().map(ToOwned::to_owned);
     let usage = usage.filter(|u| !is_unattributed_usage(*u));
+    // Read before `handle_result` clears the session field, which it
+    // does immediately after this returns, since the settled row goes
+    // on showing the estimate.
+    let thinking_tokens = app.latest_thinking_tokens();
     if let Some(msg) = app.active_messages_mut().get_mut(idx) {
         let info = &mut msg.turn_info;
         // A Result with no usable token counts cannot replace the ones
@@ -1705,6 +1746,7 @@ fn stamp_turn_info_on_latest_assistant(
         info.api_ms = api_ms;
         info.ended_at_local = Some(local_clock_now());
         info.session_cost_usd = total_cost_usd;
+        info.thinking_tokens = thinking_tokens;
         if model.is_some() {
             info.model = model;
         }
@@ -1781,12 +1823,16 @@ fn record_live_turn_usage(
         return;
     };
     let model = (!message.model.is_empty()).then(|| message.model.clone());
+    // The turn's first thinking events land before it has a message to
+    // hold them, so the first frame that gives it one back-fills them.
+    let thinking_tokens = app.latest_thinking_tokens();
     if let Some(msg) = app.active_messages_mut().get_mut(idx) {
         let info = &mut msg.turn_info;
         if info.is_settled() {
             return;
         }
         info.started_at = started_at;
+        info.thinking_tokens = thinking_tokens;
         if model.is_some() {
             info.model = model;
         }
@@ -1994,6 +2040,7 @@ mod stamp_turn_info_tests {
     //! pinned in `replay.rs`.
     use super::stamp_turn_info_on_latest_assistant;
     use super::stamp_turn_info_on_latest_assistant as stamp;
+    use super::{handle_thinking_tokens, handle_user, record_live_turn_usage};
     use crate::app::{App, ChatMessage, MessageRole, TurnInfo};
 
     fn usage(input: u64, output: u64, read: u64, written: u64) -> forge_primitives::Usage {
@@ -2010,6 +2057,124 @@ mod stamp_turn_info_tests {
         let mut app = App::test_default();
         app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new()));
         app
+    }
+
+    /// One assistant frame carrying usage, the shape that stamps a
+    /// live row.
+    fn assistant_frame(id: &str) -> forge_primitives::AssistantEnvelope {
+        forge_primitives::AssistantEnvelope {
+            id: id.to_owned(),
+            role: "assistant".to_owned(),
+            model: "claude-opus-5".to_owned(),
+            content: Vec::new(),
+            stop_reason: None,
+            stop_sequence: None,
+            usage: Some(usage(4, 1, 93_262, 62_840)),
+        }
+    }
+
+    /// A genuine user prompt: no `tool_use_result`, so the reducer
+    /// treats it as a new turn rather than a mid-turn echo.
+    fn user_prompt() -> forge_primitives::Message {
+        forge_primitives::Message::User {
+            message: forge_primitives::UserEnvelope {
+                role: "user".to_owned(),
+                content: vec![forge_primitives::ContentBlock::Text {
+                    text: "next prompt".to_owned(),
+                }],
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            uuid: None,
+            tool_use_result: None,
+        }
+    }
+
+    /// A turn that never gets a `Result` leaves its estimate on a row
+    /// the next turn then reuses, because a plain user prompt opens no
+    /// placeholder of its own - the case `handle_user`'s clear exists
+    /// for. Both mirrors have to overwrite rather than skip, or turn
+    /// two wears turn one's reasoning.
+    ///
+    /// Driven through the reducer rather than by seeding a `TurnInfo`:
+    /// the point is that this sequence is reachable, which a fixture
+    /// cannot show. No baseline happens to contain it.
+    #[test]
+    fn a_turn_reusing_an_unsettled_row_does_not_inherit_its_estimate() {
+        let mut app = app_with_assistant();
+        handle_thinking_tokens(&mut app, 50);
+        handle_thinking_tokens(&mut app, 33);
+        record_live_turn_usage(&mut app, &assistant_frame("msg_turn_one"), None);
+        assert_eq!(
+            latest_turn_info(&app).thinking_tokens,
+            Some(83),
+            "fixture guard: turn one's estimate is on the row, or the assertions below pass \
+             for want of anything to inherit",
+        );
+
+        // Turn one never settles. The prompt resets the accumulator but
+        // leaves the row it was mirrored onto.
+        handle_user(&mut app, user_prompt());
+        record_live_turn_usage(&mut app, &assistant_frame("msg_turn_two"), None);
+        assert_eq!(
+            latest_turn_info(&app).thinking_tokens,
+            None,
+            "the live mirror must write the absence onto the reused row, not skip and leave \
+             turn one's 83 sitting under turn two's figures",
+        );
+
+        // And the settle: a Result reaching a still-live row, which is
+        // the compaction shape.
+        handle_thinking_tokens(&mut app, 40);
+        handle_user(&mut app, user_prompt());
+        stamp(&mut app, 9_717, Some(9_668), Some(usage(4, 186, 167_802, 825)), None);
+        assert_eq!(
+            latest_turn_info(&app).thinking_tokens,
+            None,
+            "and the settle overwrites too, or the row freezes an estimate belonging to a \
+             different turn",
+        );
+    }
+
+    /// The other half, and the commoner one: interrupt a turn and type
+    /// the next prompt. That goes through the submit path, where
+    /// `start_live_turn` replaces the row's whole `TurnInfo` - so the
+    /// accumulator it does not reach would be added to rather than
+    /// replaced, the deltas summing across the boundary.
+    #[test]
+    fn a_prompt_after_an_interrupted_turn_starts_the_estimate_over() {
+        let mut app = app_with_assistant();
+        handle_thinking_tokens(&mut app, 50);
+        handle_thinking_tokens(&mut app, 33);
+        record_live_turn_usage(&mut app, &assistant_frame("msg_turn_one"), None);
+        assert_eq!(
+            latest_turn_info(&app).thinking_tokens,
+            Some(83),
+            "fixture guard: turn one's estimate is on the row before it is interrupted",
+        );
+
+        // Interrupted: no Result. The user types, which is the submit
+        // path rather than a wire frame.
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new()));
+        app.start_live_turn(std::time::Instant::now());
+        assert_eq!(
+            latest_turn_info(&app).thinking_tokens,
+            None,
+            "the fresh turn's row carries no estimate yet",
+        );
+        assert_eq!(
+            app.latest_thinking_tokens(),
+            None,
+            "and the accumulator behind it is reset too - clearing only the row would leave \
+             the next delta adding to a number the user cannot see",
+        );
+
+        handle_thinking_tokens(&mut app, 50);
+        assert_eq!(
+            latest_turn_info(&app).thinking_tokens,
+            Some(50),
+            "turn two has thought 50, so that is what it reports - not 133",
+        );
     }
 
     fn latest_turn_info(app: &App) -> TurnInfo {
@@ -2785,10 +2950,11 @@ mod monitor_output_file_wiring_tests {
 
 #[cfg(test)]
 mod thinking_tokens_clear_on_user_tests {
-    //! A new genuine user turn must clear the
-    //! `latest_thinking_tokens` carry-over from the prior turn so the
-    //! chip never reads stale 150 when the new turn opens with its
-    //! reset cumulative 50.
+    //! A new genuine user turn must reset the thinking accumulator, so
+    //! the next turn's deltas never land on top of the previous turn's
+    //! total. The turn info row copies this field, so a leak here is a
+    //! wrong number frozen onto a settled row rather than a transient
+    //! one.
     use super::handle_user;
     use crate::app::App;
     use forge_primitives::{ContentBlock, Message, UserEnvelope};
@@ -2833,9 +2999,9 @@ mod thinking_tokens_clear_on_user_tests {
     #[test]
     fn tool_result_echo_preserves_thinking_tokens() {
         // Tool-result echoes are intra-turn continuations of the
-        // assistant's tool-call loop. They share the same
-        // accumulating thinking_tokens budget; clearing on them
-        // would drop the chip in the middle of an active turn.
+        // assistant's tool-call loop, and a turn's second and later
+        // thinking blocks arrive after exactly these. Clearing on one
+        // would restart the count mid-turn and undercount the total.
         let mut app = App::test_default();
         app.set_latest_thinking_tokens(Some(150));
         handle_user(&mut app, tool_result_echo());
@@ -3998,7 +4164,6 @@ mod monitor_chat_block_tests {
             show_empty_thinking: false,
             show_thinking: false,
             show_compacting: false,
-            thinking_tokens: None,
             running_subagents: None,
         };
         let mut out = String::new();

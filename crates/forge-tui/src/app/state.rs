@@ -1943,16 +1943,17 @@ impl App {
 
     // ---- Render cache + history retention accessors ----
 
-    /// Active session's latest thinking-token count for the
+    /// Active session's running thinking-token estimate for the
     /// in-flight turn (#273). `None` when no `ThinkingTokens` event
     /// has fired yet or the turn just ended.
     pub fn latest_thinking_tokens(&self) -> Option<u64> {
         self.active_session().and_then(|s| s.latest_thinking_tokens)
     }
 
-    /// Set the active session's latest thinking-token count.
+    /// Set the active session's running thinking-token estimate.
     /// Called by the `Message::ThinkingTokens` reducer; passed
-    /// `None` on turn end to clear the chip.
+    /// `None` at each turn boundary, which is what keeps one turn's
+    /// estimate off the next turn's row.
     pub fn set_latest_thinking_tokens(&mut self, value: Option<u64>) {
         self.active_bucket_mut().latest_thinking_tokens = value;
     }
@@ -1960,7 +1961,13 @@ impl App {
     /// Start the active session's live turn accounting, so the row
     /// counts from prompt dispatch rather than from the first
     /// assistant frame. A settled message is left alone.
+    ///
+    /// Resets the thinking accumulator with it. The row's own copy is
+    /// wiped by the struct replacement below, and leaving the session
+    /// field behind would add an interrupted turn's estimate to the
+    /// next one's, since the deltas accumulate rather than overwrite.
     pub fn start_live_turn(&mut self, at: std::time::Instant) {
+        self.set_latest_thinking_tokens(None);
         self.active_bucket_mut().live_turn.start(at);
         let Some(idx) = self
             .messages()
@@ -6403,7 +6410,6 @@ mod tests {
             show_empty_thinking: false,
             show_thinking: false,
             show_compacting: false,
-            thinking_tokens: None,
             running_subagents: None,
         };
 
