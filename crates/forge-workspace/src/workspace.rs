@@ -2049,42 +2049,49 @@ impl Workspace {
             // (each window independent; cold `{}` -> n/a); an Anthropic
             // account keeps the keychain + default host + strict mapping.
             let plan = forge_agent::cloud::oauth_usage::probe_plan(provider, &env);
-            let is_base_url =
-                matches!(plan, forge_agent::cloud::oauth_usage::ProbePlan::BaseUrl { .. });
             let fetch_result = match &plan {
                 forge_agent::cloud::oauth_usage::ProbePlan::BaseUrl { base_url, bearer } => {
                     let creds = forge_agent::cloud::oauth_credentials::OauthCredentials {
                         access_token: bearer.clone(),
                         expires_at: None,
                     };
-                    forge_agent::cloud::oauth_usage::probe(&creds, Some(base_url)).await
+                    forge_agent::cloud::oauth_usage::probe(&creds, Some(base_url))
+                        .await
+                        .map(|payload| forge_agent::cloud::oauth::map_probe_snapshot(true, payload))
                 }
                 forge_agent::cloud::oauth_usage::ProbePlan::Keychain => {
-                    forge_agent::cloud::oauth_usage::oauth_usage(&dir).await
+                    forge_agent::cloud::oauth_usage::oauth_usage(&dir).await.map(|payload| {
+                        forge_agent::cloud::oauth::map_probe_snapshot(false, payload)
+                    })
+                }
+                forge_agent::cloud::oauth_usage::ProbePlan::OpenRouterKey { base_url, bearer } => {
+                    forge_agent::cloud::oauth_usage::probe_openrouter_key(base_url, bearer)
+                        .await
+                        .map(|payload| {
+                            Ok(forge_agent::cloud::oauth::snapshot_from_openrouter_key(payload))
+                        })
                 }
             };
             match fetch_result {
-                Ok(payload) => {
-                    match forge_agent::cloud::oauth::map_probe_snapshot(is_base_url, payload) {
-                        Ok(snapshot) => {
-                            self.accounts.lock().set_usage(&key, snapshot);
-                            any_success = true;
-                        }
-                        Err(err) => {
-                            self.accounts.lock().set_last_error(
-                                &key,
-                                crate::account::UsageFetchStatus::Other,
-                                None,
-                            );
-                            tracing::debug!(
-                                target: "forge_workspace::account",
-                                account = %key.0,
-                                error = ?err,
-                                "usage_poll snapshot mapping failed",
-                            );
-                        }
+                Ok(mapped) => match mapped {
+                    Ok(snapshot) => {
+                        self.accounts.lock().set_usage(&key, snapshot);
+                        any_success = true;
                     }
-                }
+                    Err(err) => {
+                        self.accounts.lock().set_last_error(
+                            &key,
+                            crate::account::UsageFetchStatus::Other,
+                            None,
+                        );
+                        tracing::debug!(
+                            target: "forge_workspace::account",
+                            account = %key.0,
+                            error = ?err,
+                            "usage_poll snapshot mapping failed",
+                        );
+                    }
+                },
                 Err(err) => {
                     let status = classify_oauth_usage_error(&err);
                     // Pull the server-provided Retry-After out of the
@@ -6505,6 +6512,7 @@ mod tests {
             seven_day_opus: None,
             seven_day_sonnet: None,
             extra_usage: None,
+            spend: None,
         }
     }
 
@@ -13880,6 +13888,7 @@ provider = "anthropic"
                     seven_day_opus: None,
                     seven_day_sonnet: None,
                     extra_usage: None,
+                    spend: None,
                 };
                 accounts.set_usage(&AccountKey(name.to_owned()), snapshot);
             }
@@ -13919,6 +13928,7 @@ provider = "anthropic"
                     seven_day_opus: None,
                     seven_day_sonnet: None,
                     extra_usage: None,
+                    spend: None,
                 };
                 accounts.set_usage(&AccountKey(name.to_owned()), snapshot);
             }
@@ -13983,6 +13993,7 @@ provider = "anthropic"
                 seven_day_opus: None,
                 seven_day_sonnet: None,
                 extra_usage: None,
+                spend: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
@@ -14015,6 +14026,7 @@ provider = "anthropic"
                 seven_day_opus: None,
                 seven_day_sonnet: None,
                 extra_usage: None,
+                spend: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
@@ -14078,6 +14090,7 @@ provider = "anthropic"
                 seven_day_opus: None,
                 seven_day_sonnet: None,
                 extra_usage: None,
+                spend: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
@@ -14114,6 +14127,7 @@ provider = "anthropic"
             seven_day_opus: None,
             seven_day_sonnet: None,
             extra_usage: None,
+            spend: None,
         }
     }
 
@@ -14308,6 +14322,7 @@ provider = "anthropic"
                 seven_day_opus: None,
                 seven_day_sonnet: None,
                 extra_usage: None,
+                spend: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
@@ -14341,6 +14356,7 @@ provider = "anthropic"
                 seven_day_opus: None,
                 seven_day_sonnet: None,
                 extra_usage: None,
+                spend: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
@@ -14384,6 +14400,7 @@ provider = "anthropic"
                 seven_day_opus: None,
                 seven_day_sonnet: None,
                 extra_usage: None,
+                spend: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
@@ -14419,6 +14436,7 @@ provider = "anthropic"
                 seven_day_opus: None,
                 seven_day_sonnet: None,
                 extra_usage: None,
+                spend: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
@@ -14449,6 +14467,7 @@ provider = "anthropic"
                 seven_day_opus: None,
                 seven_day_sonnet: None,
                 extra_usage: None,
+                spend: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }

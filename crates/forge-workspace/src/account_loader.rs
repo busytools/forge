@@ -167,31 +167,42 @@ pub async fn run_account_loading(
             )
         };
         let plan = oauth_usage::probe_plan(provider, &account_env);
-        let is_base_url = matches!(plan, oauth_usage::ProbePlan::BaseUrl { .. });
+        let is_base_url = !matches!(plan, oauth_usage::ProbePlan::Keychain);
+        // Probe and map in one step because the two billing kinds return
+        // different bodies: the window kinds map per strictness (base-url
+        // leniently, each window independent and a cold `{}` -> n/a;
+        // keychain strictly, a 200 must carry five_hour), while the
+        // per-key spend body maps infallibly and has no window at all.
         let probe_result = match &plan {
             oauth_usage::ProbePlan::BaseUrl { base_url, bearer } => {
                 let creds = oauth_credentials::OauthCredentials {
                     access_token: bearer.clone(),
                     expires_at: None,
                 };
-                oauth_usage::probe(&creds, Some(base_url)).await
+                oauth_usage::probe(&creds, Some(base_url))
+                    .await
+                    .map(|payload| oauth::map_probe_snapshot(true, payload))
             }
             oauth_usage::ProbePlan::Keychain => {
                 match oauth_credentials::load_oauth_credentials(&config_dir) {
-                    Some(creds) => oauth_usage::probe(&creds, None).await,
+                    Some(creds) => oauth_usage::probe(&creds, None)
+                        .await
+                        .map(|payload| oauth::map_probe_snapshot(false, payload)),
                     None => Err(OauthUsageError::NoCredentials),
                 }
+            }
+            oauth_usage::ProbePlan::OpenRouterKey { base_url, bearer } => {
+                oauth_usage::probe_openrouter_key(base_url, bearer)
+                    .await
+                    .map(|payload| Ok(oauth::snapshot_from_openrouter_key(payload)))
             }
         };
 
         match probe_result {
-            Ok(payload) => {
-                // Map per plan (shared with the poller): base-url leniently
-                // (each window independent, cold `{}` -> n/a), keychain
-                // strictly (a 200 must carry five_hour). A keychain mapping
-                // failure is a transient response-shape drift; back off +
-                // retry. Base-url never errors here.
-                let snapshot = match oauth::map_probe_snapshot(is_base_url, payload) {
+            Ok(mapped) => {
+                // A keychain mapping failure is a transient response-shape
+                // drift; back off + retry. The other two never error here.
+                let snapshot = match mapped {
                     Ok(s) => s,
                     Err(err) => {
                         tracing::warn!(

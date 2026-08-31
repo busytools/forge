@@ -166,6 +166,11 @@ pub enum ProbePlan {
     /// strict mapping (a 200 must carry the five-hour window), and the
     /// CLI-spawn auth-recovery refresh on a 401.
     Keychain,
+    /// OpenRouter: probe `{base_url}/v1/key` with the env
+    /// `ANTHROPIC_AUTH_TOKEN` bearer and map the per-key spend. No
+    /// windows, so nothing about this plan can go through the
+    /// window-shaped mappers.
+    OpenRouterKey { base_url: String, bearer: String },
 }
 
 /// Derive the [`ProbePlan`] for an account from its declared
@@ -192,7 +197,91 @@ pub fn probe_plan<S: std::hash::BuildHasher>(
         return ProbePlan::Keychain;
     };
     let bearer = env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str).unwrap_or_default();
-    ProbePlan::BaseUrl { base_url: base_url.to_owned(), bearer: bearer.to_owned() }
+    let (base_url, bearer) = (base_url.to_owned(), bearer.to_owned());
+    match provider {
+        Provider::Openrouter => ProbePlan::OpenRouterKey { base_url, bearer },
+        Provider::Anthropic | Provider::Codex => ProbePlan::BaseUrl { base_url, bearer },
+    }
+}
+
+/// OpenRouter's per-key endpoint. The documented path is `/api/v1/key`
+/// relative to the site root, but `ANTHROPIC_BASE_URL` already ends in
+/// `/api` because that is what the chat API wants, so only the `/v1/key`
+/// tail is appended. Measured: appending the documented path to that
+/// base yields `/api/api/v1/key`, which 404s.
+fn key_url(base_url: &str) -> String {
+    format!("{}/v1/key", base_url.trim_end_matches('/'))
+}
+
+/// One round-trip against `{base_url}/v1/key` for a pay-per-token
+/// account. Shares [`OauthUsageError`] with the window probe so the
+/// loader and poller classify a 401 / 429 / network failure the same
+/// way regardless of billing kind.
+pub async fn probe_openrouter_key(
+    base_url: &str,
+    bearer: &str,
+) -> Result<forge_primitives::usage::openrouter::KeyResponse, OauthUsageError> {
+    let mut headers = HeaderMap::new();
+    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+    let auth = HeaderValue::from_str(&format!("Bearer {bearer}"))
+        .map_err(|error| OauthUsageError::Network(format!("bad bearer header: {error}")))?;
+    headers.insert(AUTHORIZATION, auth);
+
+    let client = crate::http_trust::with_extra_roots(
+        reqwest::Client::builder().timeout(OAUTH_TIMEOUT).default_headers(headers),
+    )
+    .build()
+    .map_err(|error| OauthUsageError::Network(format!("client build: {error}")))?;
+
+    let response = client
+        .get(key_url(base_url))
+        .send()
+        .await
+        .map_err(|error| OauthUsageError::Network(error.to_string()))?;
+
+    let status = response.status().as_u16();
+    let retry_after = if status == 429 {
+        response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_retry_after)
+    } else {
+        None
+    };
+    let body = response
+        .bytes()
+        .await
+        .map_err(|error| OauthUsageError::Network(format!("body read: {error}")))?;
+
+    // Body is logged only on a non-200, and only as a truncated
+    // suffix. A 200 here carries a truncated copy of the key itself.
+    if status == 200 {
+        tracing::trace!(
+            target: "forge_agent::cloud::oauth_usage",
+            event_name = "openrouter_key_response",
+            status,
+            outcome = "ok",
+            body_bytes = body.len(),
+        );
+    } else {
+        tracing::warn!(
+            target: "forge_agent::cloud::oauth_usage",
+            event_name = "openrouter_key_response",
+            status,
+            outcome = "non_ok",
+            retry_after_secs = ?retry_after.map(|d| d.as_secs()),
+            body_suffix = %truncated_body_suffix(&body),
+        );
+    }
+
+    match status {
+        200 => serde_json::from_slice(&body)
+            .map_err(|error| OauthUsageError::Decode(error.to_string())),
+        401 | 403 => Err(OauthUsageError::Unauthorized(status)),
+        429 => Err(OauthUsageError::RateLimited { retry_after }),
+        _ => Err(OauthUsageError::HttpStatus(status, truncated_body_suffix(&body))),
+    }
 }
 
 /// One round-trip against `/api/oauth/usage` using `credentials.access_token`.
@@ -344,6 +433,41 @@ mod tests {
             usage_url(Some("http://localhost:18765/")),
             "http://localhost:18765/api/oauth/usage",
             "trailing slash trimmed so host and host/ behave identically",
+        );
+    }
+
+    /// OpenRouter documents the endpoint as `/api/v1/key` relative to
+    /// the site root, but the configured base url already ends in
+    /// `/api`, so the documented path appended to it 404s. Measured:
+    /// `https://openrouter.ai/api/api/v1/key` is 404 and
+    /// `https://openrouter.ai/api/v1/key` is 401, i.e. the endpoint
+    /// exists and only auth is missing.
+    #[test]
+    fn key_url_joins_one_v1_segment_onto_the_configured_base() {
+        assert_eq!(key_url("https://openrouter.ai/api"), "https://openrouter.ai/api/v1/key");
+        assert_eq!(
+            key_url("https://openrouter.ai/api/"),
+            "https://openrouter.ai/api/v1/key",
+            "trailing slash trimmed so base and base/ behave identically",
+        );
+        assert!(
+            !key_url("https://openrouter.ai/api").contains("/api/api/"),
+            "the documented /api/v1/key path must not be appended to a base that ends in /api",
+        );
+    }
+
+    #[test]
+    fn probe_plan_openrouter_probes_its_own_key_endpoint() {
+        let mut env = HashMap::new();
+        env.insert("ANTHROPIC_BASE_URL".to_owned(), "https://openrouter.ai/api".to_owned());
+        env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-or-test".to_owned());
+        assert_eq!(
+            probe_plan(Provider::Openrouter, &env),
+            ProbePlan::OpenRouterKey {
+                base_url: "https://openrouter.ai/api".to_owned(),
+                bearer: "sk-or-test".to_owned(),
+            },
+            "openrouter must not share Codex's windowed plan",
         );
     }
 

@@ -1932,6 +1932,7 @@ mod tests {
             seven_day_opus: None,
             seven_day_sonnet: None,
             extra_usage: None,
+            spend: None,
         });
         app.set_account_info(Some(forge_primitives::AccountInfo {
             email: Some("old@example.com".into()),

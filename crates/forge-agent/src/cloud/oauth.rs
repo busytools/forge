@@ -34,6 +34,7 @@ pub fn snapshot_from_payload(
         seven_day_opus: map_window(payload.seven_day_opus),
         seven_day_sonnet: map_window(payload.seven_day_sonnet),
         extra_usage: map_extra_usage(payload.extra_usage),
+        spend: None,
     })
 }
 
@@ -59,6 +60,7 @@ pub fn snapshot_from_payload_lenient(payload: super::oauth_usage::OauthUsage) ->
         seven_day_opus: map_window(payload.seven_day_opus),
         seven_day_sonnet: map_window(payload.seven_day_sonnet),
         extra_usage: map_extra_usage(payload.extra_usage),
+        spend: None,
     }
 }
 
@@ -75,6 +77,32 @@ pub fn map_probe_snapshot(
         Ok(snapshot_from_payload_lenient(payload))
     } else {
         snapshot_from_payload(payload)
+    }
+}
+
+/// Map an OpenRouter `/api/v1/key` payload into a [`UsageSnapshot`].
+///
+/// Infallible and window-free: a pay-per-token key has no plan window
+/// and, when uncapped, no denominator, so nothing here synthesises a
+/// utilization. An absent figure reads as 0.0 spent, which is what the
+/// endpoint means by omitting it.
+pub fn snapshot_from_openrouter_key(
+    payload: forge_primitives::usage::openrouter::KeyResponse,
+) -> UsageSnapshot {
+    let data = payload.data.unwrap_or_default();
+    UsageSnapshot {
+        source: UsageSourceKind::OpenRouterKey,
+        fetched_at: SystemTime::now(),
+        five_hour: None,
+        seven_day: None,
+        seven_day_opus: None,
+        seven_day_sonnet: None,
+        extra_usage: None,
+        spend: Some(forge_primitives::usage::ApiSpend {
+            daily: data.usage_daily.unwrap_or(0.0),
+            weekly: data.usage_weekly.unwrap_or(0.0),
+            monthly: data.usage_monthly.unwrap_or(0.0),
+        }),
     }
 }
 
@@ -197,6 +225,48 @@ mod tests {
         assert_eq!(extra.used_credits, Some(12.4));
         assert_eq!(extra.utilization, Some(62.0));
         assert_eq!(extra.currency.as_deref(), Some("USD"));
+    }
+
+    /// An uncapped key reports `limit: null`, so there is no
+    /// denominator and no honest percentage. The mapper must carry
+    /// spend and leave every window empty rather than inventing a 0%
+    /// that forge's own saturation predicate would then read.
+    #[test]
+    fn openrouter_key_maps_to_spend_with_no_windows() {
+        let payload: forge_primitives::usage::openrouter::KeyResponse = serde_json::from_str(
+            r#"{"data":{
+                "label":"sk-or-v1-TEST...TEST",
+                "limit":null,"limit_reset":null,"limit_remaining":null,
+                "usage":198.552152461,
+                "usage_daily":0.5632267,
+                "usage_weekly":1.25,
+                "usage_monthly":20.296155711,
+                "byok_usage":0.000365,
+                "is_free_tier":false
+            }}"#,
+        )
+        .expect("decode");
+        let snapshot = snapshot_from_openrouter_key(payload);
+
+        assert_eq!(snapshot.source, UsageSourceKind::OpenRouterKey);
+        let spend = snapshot.spend.expect("spend is populated");
+        assert!(
+            (spend.daily - 0.563_226_7).abs() < f64::EPSILON,
+            "daily spend comes straight off usage_daily",
+        );
+        assert!((spend.weekly - 1.25).abs() < f64::EPSILON, "weekly spend maps");
+        assert!((spend.monthly - 20.296_155_711).abs() < f64::EPSILON, "monthly spend maps");
+        assert!(
+            snapshot.five_hour.is_none()
+                && snapshot.seven_day.is_none()
+                && snapshot.seven_day_opus.is_none()
+                && snapshot.seven_day_sonnet.is_none(),
+            "an API-billed account has no plan window to fabricate",
+        );
+        assert!(
+            snapshot.extra_usage.is_none(),
+            "extra_usage is Anthropic overage in minor units, not this",
+        );
     }
 
     #[test]

@@ -806,6 +806,7 @@ mod tests {
             seven_day_opus: None,
             seven_day_sonnet: None,
             extra_usage: None,
+            spend: None,
         }
     }
 
@@ -1287,6 +1288,7 @@ mod tests {
             seven_day_opus: None,
             seven_day_sonnet: None,
             extra_usage: None,
+            spend: None,
         }
     }
 
@@ -1337,6 +1339,7 @@ mod tests {
             }),
             seven_day_sonnet: None,
             extra_usage: None,
+            spend: None,
         }
     }
 
@@ -1364,6 +1367,7 @@ mod tests {
                 reset_description: None,
             }),
             extra_usage: None,
+            spend: None,
         }
     }
 
