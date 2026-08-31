@@ -36,11 +36,22 @@ pub enum WorkspaceError {
     DuplicateAccount { path: PathBuf, name: String },
 
     #[error(
-        "account '{name}' in forge.toml at {} is missing provider; expected one of {}",
+        "accounts missing provider in forge.toml at {}: {}. Each needs one of {}. If a line is \
+         present, check it sits above that account's [accounts.env] table - below it TOML reads \
+         it as an env key",
         path.display(),
+        names.join(", "),
         forge_primitives::account::Provider::ACCEPTED,
     )]
-    AccountMissingProvider { path: PathBuf, name: String },
+    AccountsMissingProvider { path: PathBuf, names: Vec<String> },
+
+    #[error(
+        "account '{name}' in forge.toml at {} sets provider = \"openrouter\" with an \
+         ANTHROPIC_BASE_URL that is not the API root; it must end in /api, as in \
+         https://openrouter.ai/api",
+        path.display()
+    )]
+    OpenrouterBaseUrlNotApiRoot { path: PathBuf, name: String },
 
     #[error(
         "account '{name}' in forge.toml at {} declares a base-url provider but has no ANTHROPIC_BASE_URL in [accounts.env]",
