@@ -58,22 +58,33 @@ pub struct SpinnerState {
     pub glyph: char,
     /// True when this message owns the currently active assistant turn.
     pub is_active_turn_assistant: bool,
-    /// True when this message should show the initial empty-turn thinking indicator.
+    /// True when this message owns a turn still in flight and has no
+    /// body yet. Nothing renders from it directly - the turn info row
+    /// is the indicator - but it decides whether that row may stand
+    /// alone, and it keeps the message off the idle-suppression path.
     pub show_empty_thinking: bool,
-    /// True when this message should show the thinking indicator.
+    /// As [`Self::show_empty_thinking`], for a turn that has begun
+    /// streaming a body. The two are exclusive, so their union is
+    /// "this message owns a running turn", which is what decides
+    /// whether the row wears the spinner.
     pub show_thinking: bool,
     /// True when this message should show the compaction indicator.
     pub show_compacting: bool,
-    /// #273: Latest cumulative thinking-token count for the current
-    /// turn. `None` when no `Message::ThinkingTokens` event has fired
-    /// yet; the spinner falls back to bare `Thinking...`.
-    pub thinking_tokens: Option<u64>,
     /// One-line chat indicator for the session waiting on >=1
     /// non-terminal `SubagentRoot`. `Some` whenever
     /// `App::subagents_view` is non-empty for the active session;
-    /// `None` when no subagent is active. ADDITIVE to
-    /// `show_thinking` (both lines render together when both apply).
+    /// `None` when no subagent is active. ADDITIVE to the turn info
+    /// row, which renders beneath it while the turn runs.
     pub running_subagents: Option<RunningSubagentsLine>,
+}
+
+impl SpinnerState {
+    /// True when this message owns a turn that is still in flight, in
+    /// either the pre-body or the mid-stream window. The turn info row
+    /// wears the spinner and is allowed to stand alone exactly here.
+    fn owns_running_turn(&self) -> bool {
+        self.show_empty_thinking || self.show_thinking
+    }
 }
 
 /// Snapshot of the active-subagent set surfaced by the chat
@@ -344,7 +355,7 @@ fn build_message_layout(
                 msg.stop_hook_summary_y_in_msg = 0;
                 msg.stop_hook_summary_height = 0;
             }
-            let (row_y, row_h) = append_turn_info(msg, render_context.width, &mut layout);
+            let (row_y, row_h) = append_turn_info(msg, spinner, render_context.width, &mut layout);
             msg.turn_info_y_in_msg = row_y;
             msg.turn_info_height = row_h;
             msg.turn_info_width = render_context.width;
@@ -360,9 +371,14 @@ fn build_message_layout(
 }
 
 /// Re-read the running turn's elapsed into whole seconds before the
-/// cache key is built, so the key and the layout it guards agree and
-/// the row re-lays out at most once a second. No new clock: a running
-/// turn already forces a repaint on the existing cadence.
+/// cache key is built, so the key and the layout it guards agree. No
+/// new clock: a running turn already forces a repaint on the existing
+/// cadence.
+///
+/// This bounds how often the elapsed *changes* the key, not how often
+/// the message rebuilds: the signature also folds the spinner glyph on
+/// a running assistant message, and that turns over every 32ms on the
+/// default style.
 fn refresh_live_turn_elapsed(msg: &mut ChatMessage) {
     if msg.turn_info.is_settled() {
         return;
@@ -373,8 +389,10 @@ fn refresh_live_turn_elapsed(msg: &mut ChatMessage) {
 }
 
 /// Fold the turn-info row's inputs into the message render signature.
-/// `elapsed_secs` rather than the start instant, so a rebuild happens
-/// on a second boundary instead of every frame.
+/// `elapsed_secs` rather than the start instant, so the elapsed moves
+/// the key on a second boundary rather than every frame - which is not
+/// the same as the message rebuilding once a second, since the glyph
+/// folded alongside it turns over far quicker.
 fn hash_turn_info(info: &TurnInfo, hasher: &mut impl std::hash::Hasher) {
     use std::hash::Hash;
     info.elapsed_secs.hash(hasher);
@@ -382,6 +400,7 @@ fn hash_turn_info(info: &TurnInfo, hasher: &mut impl std::hash::Hasher) {
     info.api_ms.hash(hasher);
     info.ended_at_local.hash(hasher);
     info.model.hash(hasher);
+    info.thinking_tokens.hash(hasher);
     info.input_tokens.hash(hasher);
     info.output_tokens.hash(hasher);
     info.cache_read_tokens.hash(hasher);
@@ -394,15 +413,35 @@ fn hash_turn_info(info: &TurnInfo, hasher: &mut impl std::hash::Hasher) {
 /// expanded body when open. Returns the clickable row's offset and
 /// height, excluding that body, for the caller's hit rect.
 ///
-/// Skipped when the message rendered nothing - a hidden tool call
-/// leaves blocks but paints no rows, and the row would sit alone.
-fn append_turn_info(msg: &ChatMessage, width: u16, layout: &mut MessageLayout) -> (usize, usize) {
+/// A running row is allowed to sit alone, because before any body
+/// content exists it is the only sign the turn is alive. A row on a
+/// message that is not running is not: a hidden tool call leaves
+/// blocks but paints no rows, and a lone footer under an empty message
+/// reads as a bug. That is the spinner's view of the turn rather than
+/// `TurnInfo::is_settled`, which the guard never consults - an
+/// abandoned row on a turn that never settled is equally not running.
+///
+/// A row with nothing stamped on it yet says only that the turn is
+/// alive, so it earns a line only when nothing else on the message
+/// already says so - otherwise it doubles the compacting line's
+/// spinner with a row carrying no figures.
+fn append_turn_info(
+    msg: &ChatMessage,
+    spinner: &SpinnerState,
+    width: u16,
+    layout: &mut MessageLayout,
+) -> (usize, usize) {
     let info = &msg.turn_info;
-    if info.is_empty() || layout.height == 0 {
+    let running = spinner.owns_running_turn();
+    if info.is_empty() {
+        if !running || layout.height > 0 {
+            return (0, 0);
+        }
+    } else if !running && layout.height == 0 {
         return (0, 0);
     }
     let row_y = layout.height;
-    layout.push_wrapped_line(turn_info_row(info, width), width);
+    layout.push_wrapped_line(turn_info_row(info, running.then_some(spinner.glyph), width), width);
     let row_height = layout.height.saturating_sub(row_y);
     if info.expanded {
         for line in turn_info_expanded_rows(info) {
@@ -412,42 +451,67 @@ fn append_turn_info(msg: &ChatMessage, width: u16, layout: &mut MessageLayout) -
     (row_y, row_height)
 }
 
-/// Build the collapsed row, dropping fields right to left until it
-/// fits `width`. The label, elapsed and toggle are never dropped;
-/// below that width the row wraps like any other line.
-fn turn_info_row(info: &TurnInfo, width: u16) -> Line<'static> {
+/// Build the collapsed row, shedding fields until it fits `width`.
+///
+/// `glyph` is the spinner frame while the turn runs and `None` once it
+/// has settled, which is the whole difference between the row as a live
+/// indicator and the row as the turn's footer. The elapsed time and the
+/// toggle never shed; below that width the row wraps like any other
+/// line.
+fn turn_info_row(info: &TurnInfo, glyph: Option<char>, width: u16) -> Line<'static> {
     let toggle = if info.expanded { "[▼ collapse]" } else { "[▶ expand]" };
-    let mut fields: Vec<String> = Vec::new();
-    fields.push(format_turn_duration(info.elapsed_ms()));
-    if let Some(tokens) = turn_info_token_field(info) {
-        fields.push(tokens);
+    // (shed rank, text) in display order. Rank 0 never sheds and the
+    // rest go in ascending order, stated rather than positional
+    // because `thinking` renders ahead of the token pair but has to
+    // shed before it - giving up real billed usage to keep an estimate
+    // is backwards.
+    let mut fields: Vec<(u8, String)> = Vec::new();
+    // With no clock there is no anchor for the rest to sit beside, so
+    // the row is a bare spinner rather than a field list missing its
+    // first entry. That window is real: `start_live_turn` runs on the
+    // submit path only, so a delivered prompt has no start until its
+    // first frame, while `thinking` can arrive before it (#805).
+    if !info.is_empty() {
+        fields.push((0, format_turn_duration(info.elapsed_ms())));
+        // Running-only: once billed counts exist they are the better
+        // use of the width, and the estimate stays in the expanded body.
+        if let Some(thinking) = info.thinking_tokens.filter(|_| glyph.is_some()) {
+            fields.push((3, format!("thinking {}", format_token_count_short(thinking))));
+        }
+        if let Some(tokens) = turn_info_token_field(info) {
+            fields.push((4, tokens));
+        }
+        if let Some(pct) = info.cache_hit_percent() {
+            fields.push((2, format!("{pct}% cached")));
+        }
+        if let Some(written) = info.cache_written_tokens {
+            fields.push((1, format!("{} written", format_token_count_short(written))));
+        }
     }
-    if let Some(pct) = info.cache_hit_percent() {
-        fields.push(format!("{pct}% cached"));
-    }
-    if let Some(written) = info.cache_written_tokens {
-        fields.push(format!("{} written", format_token_count_short(written)));
-    }
-    // Elapsed is index 0 and stays; everything after it is optional.
-    while fields.len() > 1 && turn_info_row_width(&fields, toggle) > usize::from(width) {
-        fields.pop();
+    let lead = glyph.unwrap_or('↳');
+    for rank in 1..=4 {
+        if turn_info_row_width(lead, &fields, toggle) <= usize::from(width) {
+            break;
+        }
+        fields.retain(|(field_rank, _)| *field_rank != rank);
     }
     Line::from(vec![
-        Span::styled(
-            format!("↳ turn info · {} ", fields.join(" · ")),
-            Style::default().fg(theme::DIM),
-        ),
+        Span::styled(turn_info_row_prefix(lead, &fields), Style::default().fg(theme::DIM)),
         Span::styled(toggle.to_owned(), Style::default().fg(theme::DIM)),
     ])
 }
 
+/// Everything left of the toggle, trailing space included.
+fn turn_info_row_prefix(lead: char, fields: &[(u8, String)]) -> String {
+    let body: Vec<&str> = fields.iter().map(|(_, text)| text.as_str()).collect();
+    if body.is_empty() { format!("{lead} ") } else { format!("{lead} {} ", body.join(" · ")) }
+}
+
 /// Rendered column count of the collapsed row for a given field set.
-fn turn_info_row_width(fields: &[String], toggle: &str) -> usize {
-    let prefix = "↳ turn info · ".chars().count();
-    let separators = fields.len().saturating_sub(1) * " · ".chars().count();
-    let body: usize = fields.iter().map(|f| f.chars().count()).sum();
-    // One space sits between the last field and the toggle.
-    prefix + body + separators + 1 + toggle.chars().count()
+/// Measures the string the row actually builds, so the shed loop cannot
+/// disagree with what gets painted.
+fn turn_info_row_width(lead: char, fields: &[(u8, String)], toggle: &str) -> usize {
+    turn_info_row_prefix(lead, fields).chars().count() + toggle.chars().count()
 }
 
 /// The `4.2k↑ 1.1k↓` pair, or just the input side while the turn is
@@ -464,9 +528,17 @@ fn turn_info_token_field(info: &TurnInfo) -> Option<String> {
 
 /// The indented two-column body shown under an expanded row.
 ///
-/// An unknown cell renders `-`, except for `local`, the cache
-/// percentage and `session`, which own their row and drop it instead.
-/// A zero the wire reported is a measurement and renders as `0`.
+/// An unknown cell renders `-`, and the three rows that can be absent
+/// while the rest are present - `local`, `thinking` and `session` -
+/// hold their place with one rather than dropping out, so a body open
+/// across the settle does not grow under the cursor. `local` and
+/// `session` fill only when the Result lands; `thinking` fills during
+/// the turn if it fires at all, and stays a dash for a turn that never
+/// thought. The cache
+/// percentage is the exception and stays conditional: it is a sentence
+/// rather than a labelled cell, and `- % of input served from cache`
+/// reads as broken rather than pending. A zero the wire reported is a
+/// measurement and renders as `0`.
 fn turn_info_expanded_rows(info: &TurnInfo) -> Vec<Line<'static>> {
     let dim = Style::default().fg(theme::DIM);
     let mut rows: Vec<String> = Vec::new();
@@ -482,9 +554,20 @@ fn turn_info_expanded_rows(info: &TurnInfo) -> Vec<Line<'static>> {
         "api",
         &info.api_ms.map_or_else(|| "-".to_owned(), format_turn_duration),
     ));
-    if let Some(local) = info.local_ms() {
-        rows.push(format!("    {:<10}{} tools + hooks", "local", format_turn_duration(local)));
-    }
+    // Held as a bare dash rather than `- tools + hooks`, which names a
+    // split of nothing.
+    rows.push(match info.local_ms() {
+        Some(local) => {
+            format!("    {:<10}{} tools + hooks", "local", format_turn_duration(local))
+        }
+        None => format!("    {:<10}-", "local"),
+    });
+    rows.push(format!(
+        "    {:<10}{}",
+        "thinking",
+        info.thinking_tokens
+            .map_or_else(|| "-".to_owned(), |n| format!("{} est", format_token_count_grouped(n)))
+    ));
     rows.push(String::new());
     rows.push(turn_info_pair(
         "in",
@@ -503,10 +586,12 @@ fn turn_info_expanded_rows(info: &TurnInfo) -> Vec<Line<'static>> {
     if let Some(pct) = info.cache_hit_percent() {
         rows.push(format!("    {:<10}{pct}% of input served from cache", ""));
     }
-    if let Some(cost) = info.session_cost_usd {
-        rows.push(String::new());
-        rows.push(format!("    {:<10}${cost:.2} cumulative", "session"));
-    }
+    rows.push(String::new());
+    // Held as a bare dash: the `$` and `cumulative` attach to nothing.
+    rows.push(match info.session_cost_usd {
+        Some(cost) => format!("    {:<10}${cost:.2} cumulative", "session"),
+        None => format!("    {:<10}-", "session"),
+    });
     rows.into_iter().map(|row| Line::from(Span::styled(row, dim))).collect()
 }
 
@@ -740,10 +825,6 @@ fn append_assistant_blocks(
         return;
     }
     if msg.blocks.is_empty() && spinner.show_empty_thinking {
-        layout.push_wrapped_line(
-            thinking_line(spinner.glyph, spinner.thinking_tokens),
-            render_context.width,
-        );
         return;
     }
 
@@ -859,22 +940,13 @@ fn append_assistant_blocks(
         }
         layout.push_wrapped_line(compacting_line(spinner.glyph), render_context.width);
     }
-    if spinner.show_thinking && !show_compacting {
-        if state.has_body_content {
-            layout.push_blank();
-        }
-        layout.push_wrapped_line(
-            thinking_line(spinner.glyph, spinner.thinking_tokens),
-            render_context.width,
-        );
-    }
-    // Additive to the thinking line: both can render simultaneously
-    // when the assistant is mid-stream AND a subagent is non-terminal.
+    // Additive to the turn info row, which renders beneath this line
+    // and carries the main agent's own progress.
     if let Some(running) = spinner.running_subagents.as_ref()
         && !show_compacting
         && spinner.is_active_turn_assistant
     {
-        if state.has_body_content || spinner.show_thinking {
+        if state.has_body_content {
             layout.push_blank();
         }
         layout.push_wrapped_line(
@@ -2231,18 +2303,6 @@ fn system_role_label_line(severity: SystemSeverity) -> Line<'static> {
     Line::from(Span::styled(label, Style::default().fg(color).add_modifier(Modifier::BOLD)))
 }
 
-fn thinking_line(ch: char, thinking_tokens: Option<u64>) -> Line<'static> {
-    // #273: when ThinkingTokens has fired for the current turn the
-    // chip swaps from `Thinking...` to `thinking · N tok` (with k/M
-    // abbreviation). Falls back to the bare `Thinking...` shape when
-    // no count is available yet (Turn just started, mid-bootstrap).
-    let body = match thinking_tokens {
-        Some(n) => format!("{ch} thinking · {} tok", format_token_count_short(n)),
-        None => format!("{ch} Thinking..."),
-    };
-    Line::from(Span::styled(body, Style::default().fg(theme::DIM)))
-}
-
 /// #273: Format a token count with k / M abbreviation. Threshold
 /// rules:
 ///   - < 1_000 -> bare integer (`0`, `42`, `999`).
@@ -2250,9 +2310,11 @@ fn thinking_line(ch: char, thinking_tokens: Option<u64>) -> Line<'static> {
 ///     `1199 -> 1.1k`, `15_000 -> 15k`, `999_999 -> 999k`.
 ///   - >= 1_000_000 -> `NM` or `N.NM`, e.g. `1_500_000 -> 1.5M`.
 ///
-/// The integer / one-decimal split matches the rendered chip width
-/// (max 4 visible chars: `1.4M`, `999k`, `999`) so the spinner row
-/// stays a stable size regardless of the turn's token volume.
+/// The integer / one-decimal split caps a count at 4 visible chars
+/// (`1.4M`, `999k`, `999`), so a field on the collapsed turn info row
+/// does not widen with the turn's token volume. The row's own width
+/// still changes as it sheds fields; what this stops is a field
+/// growing under one.
 pub fn format_token_count_short(n: u64) -> String {
     const K: u64 = 1_000;
     const M: u64 = 1_000_000;
@@ -2281,11 +2343,10 @@ pub fn format_token_count_short(n: u64) -> String {
 /// One-line chat indicator for a session waiting on >=1 non-terminal
 /// `SubagentRoot`, rendered only on the in-flight turn's assistant
 /// message. Subagents are Inspector-only, so without this line the chat
-/// goes silent while a subagent runs mid-turn; once the turn ends the
-/// Inspector is the only surface, which is deliberate. Sibling of
-/// [`thinking_line`] / [`compacting_line`]; additive to `thinking_line`
-/// (both render together when the assistant is mid-stream AND a
-/// subagent is still going). Single shape:
+/// says nothing about what a subagent is doing mid-turn; once the turn
+/// ends the Inspector is the only surface, which is deliberate. Sibling
+/// of [`compacting_line`]; additive to the turn info row, which renders
+/// beneath it and carries the main agent's own progress. Single shape:
 /// `⠋ ◇ running subagent: <label>… (see Inspector)`; multi:
 /// `⠋ ◇ running N subagents… (see Inspector)`. The label arg falls
 /// back to the count form when absent.
@@ -3514,7 +3575,6 @@ mod tests {
             show_empty_thinking: false,
             show_thinking: false,
             show_compacting: false,
-            thinking_tokens: None,
             running_subagents: None,
         }
     }
@@ -3750,7 +3810,11 @@ mod tests {
 
         let rendered = render_lines_to_strings(&lines);
         assert_eq!(rendered.len(), 1, "a live turn has no duration, so no header row precedes it");
-        assert!(rendered[0].contains("Thinking..."));
+        assert_eq!(
+            rendered[0], "\u{280b} [\u{25b6} expand]",
+            "nothing has been stamped on the turn yet, so the row degrades to the bare spinner \
+             the standalone thinking line used to be",
+        );
 
         let (h, _) = measure_message_height_cached_with_tools_collapsed_and_separator(
             &mut msg, &spinner, 80, 1, false, false,
@@ -3846,8 +3910,9 @@ mod tests {
         assert_eq!(remaining, 0);
         let rendered = render_lines_to_strings(&out);
         assert!(
-            rendered[0].contains("Thinking..."),
-            "a live turn has no duration, so the offset render opens on the spinner row",
+            is_turn_info_row(&rendered[0]),
+            "a live turn has no body yet, so the offset render opens on the turn row: \
+             {rendered:?}",
         );
         assert!(!rendered.last().is_some_and(String::is_empty));
     }
@@ -4152,11 +4217,15 @@ mod tests {
         );
         let rendered = render_lines_to_strings(&lines);
 
-        assert!(!rendered.iter().any(|line| line.contains("Thinking...")));
+        assert!(
+            rendered.iter().any(|line| line.contains("done")),
+            "the empty-placeholder branch must not fire once content exists, or every \
+             streaming turn renders a blank body: {rendered:?}",
+        );
     }
 
     #[test]
-    fn assistant_message_suppresses_thinking_line_while_compacting() {
+    fn assistant_message_suppresses_the_bare_turn_row_while_compacting() {
         let spinner = SpinnerState {
             is_active_turn_assistant: true,
             show_thinking: true,
@@ -4175,11 +4244,15 @@ mod tests {
         let rendered = render_lines_to_strings(&lines);
 
         assert!(rendered.iter().any(|line| line.contains("Compacting context...")));
-        assert!(!rendered.iter().any(|line| line.contains("Thinking...")));
+        assert!(
+            !rendered.iter().any(|line| is_turn_info_row(line)),
+            "nothing is stamped on this turn, so a row would add a second spinner saying \
+             only what the compacting line already says: {rendered:?}",
+        );
     }
 
     #[test]
-    fn assistant_offset_render_suppresses_thinking_line_while_compacting() {
+    fn assistant_offset_render_suppresses_the_bare_turn_row_while_compacting() {
         let spinner = SpinnerState {
             is_active_turn_assistant: true,
             show_thinking: true,
@@ -4194,7 +4267,10 @@ mod tests {
 
         assert_eq!(remaining, 0);
         assert!(rendered.iter().any(|line| line.contains("Compacting context...")));
-        assert!(!rendered.iter().any(|line| line.contains("Thinking...")));
+        assert!(
+            !rendered.iter().any(|line| is_turn_info_row(line)),
+            "same on the offset path: {rendered:?}",
+        );
     }
 
     #[test]
@@ -4224,6 +4300,7 @@ mod tests {
     #[test]
     fn message_render_cache_rebuilds_when_indicator_visibility_changes() {
         let mut msg = make_text_message(MessageRole::Assistant, "cached");
+        msg.turn_info = running_turn_info();
         let base_spinner = idle_spinner();
         let thinking_spinner =
             SpinnerState { show_thinking: true, glyph: '\u{2819}', ..idle_spinner() };
@@ -4234,18 +4311,28 @@ mod tests {
             &base_spinner,
             MessageRenderContext::new(None, 80, 1, options),
         );
-        let base_height = base_cache.height();
-        let base_segments = base_cache.segments().to_vec();
+        let mut idle_out = Vec::new();
+        render_cached_message(base_cache.segments(), &mut idle_out);
+        let idle_rows = render_lines_to_strings(&idle_out);
 
         let thinking_cache = get_or_build_message_render_cache(
             &mut msg,
             &thinking_spinner,
             MessageRenderContext::new(None, 80, 1, options),
         );
-        assert!(thinking_cache.height() >= base_height);
+        let mut running_out = Vec::new();
+        render_cached_message(thinking_cache.segments(), &mut running_out);
+        let running_rows = render_lines_to_strings(&running_out);
+
+        // The row is the same height either way now, so a stale cache
+        // shows up as the wrong leading glyph rather than a wrong line
+        // count, and asserting on the count would pass either way.
+        let idle_row = idle_rows.iter().find(|r| is_turn_info_row(r)).expect("idle row");
+        let running_row = running_rows.iter().find(|r| is_turn_info_row(r)).expect("running row");
         assert!(
-            thinking_cache.height() != base_height
-                || thinking_cache.segments().len() != base_segments.len()
+            idle_row.starts_with('\u{21b3}') && running_row.starts_with('\u{2819}'),
+            "flipping the turn in flight must re-render the row's glyph rather than serve the \
+             settled one back: idle {idle_row:?}, running {running_row:?}",
         );
     }
 
@@ -4609,7 +4696,7 @@ mod tests {
     }
 
     // ----------------------------------------------------------------
-    // #273: thinking_tokens spinner chip + format helper.
+    // #273: the collapsed row's token abbreviation.
     // ----------------------------------------------------------------
 
     #[test]
@@ -4632,31 +4719,10 @@ mod tests {
         assert_eq!(format_token_count_short(15_000_000), "15M");
     }
 
-    #[test]
-    fn thinking_line_renders_chip_when_token_count_provided() {
-        let line = thinking_line('\u{280B}', Some(1_234));
-        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(
-            rendered.contains("thinking · 1.2k tok"),
-            "expected chip with k abbreviation; got {rendered:?}",
-        );
-    }
-
-    #[test]
-    fn thinking_line_falls_back_to_bare_thinking_when_no_tokens_yet() {
-        let line = thinking_line('\u{280B}', None);
-        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(
-            rendered.contains("Thinking..."),
-            "expected fallback shape when no count; got {rendered:?}",
-        );
-        assert!(!rendered.contains("tok"));
-    }
-
     // ----------------------------------------------------------------
     // subagent_running_line: the chat-side "running subagent..." line
     // that surfaces while `App::subagents_view` is non-empty. Additive
-    // to `thinking_line` - both render together when both apply.
+    // to the turn info row, which renders beneath it.
     // ----------------------------------------------------------------
 
     #[test]
@@ -4726,13 +4792,14 @@ mod tests {
             "expected the running-subagent line; got {rendered:?}",
         );
         assert!(
-            !rendered.iter().any(|line| line.contains("Thinking...")),
-            "thinking_line absent when show_thinking is false; got {rendered:?}",
+            !rendered.iter().any(|line| is_turn_info_row(line)),
+            "the turn is not in flight, so the row stays away - being the bound assistant is \
+             not the same as running: {rendered:?}",
         );
     }
 
     #[test]
-    fn assistant_render_stacks_subagent_line_with_thinking_when_both_active() {
+    fn assistant_render_stacks_the_subagent_line_above_the_turn_row() {
         let spinner = SpinnerState {
             is_active_turn_assistant: true,
             show_thinking: true,
@@ -4740,6 +4807,7 @@ mod tests {
             ..idle_spinner()
         };
         let mut msg = make_text_message(MessageRole::Assistant, "streaming");
+        msg.turn_info = running_turn_info();
         let mut lines = Vec::new();
 
         render_message(
@@ -4750,24 +4818,25 @@ mod tests {
         );
 
         let rendered = render_lines_to_strings(&lines);
-        let thinking_idx = rendered.iter().position(|line| line.contains("Thinking..."));
         let subagent_idx = rendered.iter().position(|line| line.contains("running 2 subagents"));
-        assert!(
-            thinking_idx.is_some(),
-            "expected the thinking line alongside the subagent line; got {rendered:?}",
-        );
+        let row_idx = rendered.iter().position(|line| is_turn_info_row(line));
         assert!(
             subagent_idx.is_some(),
-            "expected the running-subagents line alongside the thinking line; got {rendered:?}",
+            "expected the running-subagents line alongside the turn row; got {rendered:?}",
         );
         assert!(
-            thinking_idx < subagent_idx,
-            "thinking line should appear above the subagent line; got {rendered:?}",
+            row_idx.is_some(),
+            "expected the turn info row alongside the subagent line; got {rendered:?}",
+        );
+        assert!(
+            subagent_idx < row_idx,
+            "the subagent line sits in the body's status slot and the row is the message's \
+             footer, so the row is last; got {rendered:?}",
         );
     }
 
     #[test]
-    fn assistant_render_keeps_thinking_when_no_subagent_active() {
+    fn assistant_render_keeps_the_turn_row_when_no_subagent_active() {
         let spinner = SpinnerState {
             is_active_turn_assistant: true,
             show_thinking: true,
@@ -4775,6 +4844,7 @@ mod tests {
             ..idle_spinner()
         };
         let mut msg = make_text_message(MessageRole::Assistant, "streaming");
+        msg.turn_info = running_turn_info();
         let mut lines = Vec::new();
 
         render_message(
@@ -4786,8 +4856,9 @@ mod tests {
 
         let rendered = render_lines_to_strings(&lines);
         assert!(
-            rendered.iter().any(|line| line.contains("Thinking...")),
-            "expected the thinking line in the no-subagent baseline; got {rendered:?}",
+            rendered.iter().any(|line| is_turn_info_row(line)),
+            "expected the turn info row carrying the turn in the no-subagent baseline; \
+             got {rendered:?}",
         );
         assert!(
             !rendered.iter().any(|line| line.contains("running subagent")),
@@ -4894,11 +4965,7 @@ mod tests {
         let rendered = render_assistant_turn("hello", Some(12_400));
         assert_eq!(
             rendered,
-            vec![
-                "hello".to_owned(),
-                "\u{21b3} turn info \u{b7} 12.4s [\u{25b6} expand]".to_owned(),
-                String::new(),
-            ],
+            vec!["hello".to_owned(), "\u{21b3} 12.4s [\u{25b6} expand]".to_owned(), String::new(),],
             "the row trails the body, and the separator still follows it",
         );
     }
@@ -4932,7 +4999,9 @@ mod tests {
         );
         let row = lines
             .iter()
-            .find(|line| line.spans.iter().any(|s| s.content.contains("turn info")))
+            .find(|line| {
+                is_turn_info_row(&line.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            })
             .expect("turn-info row");
         assert!(
             row.spans.iter().all(|s| s.style.fg == Some(theme::DIM)),
@@ -4965,23 +5034,41 @@ mod tests {
             &mut lines,
         );
         assert!(
-            !render_lines_to_strings(&lines).iter().any(|row| row.contains("turn info")),
-            "a turn whose body rendered nothing has nothing to hang the row under",
+            !render_lines_to_strings(&lines).iter().any(|row| is_turn_info_row(row)),
+            "a settled turn whose body rendered nothing has nothing to hang the row under",
         );
+    }
+
+    /// True for the turn-info row and nothing else. The row carries no
+    /// constant label of its own, so it is identified by its toggle -
+    /// which the stop-hook chip also wears, hence the second clause.
+    fn is_turn_info_row(row: &str) -> bool {
+        (row.contains("[\u{25b6} expand]") || row.contains("[\u{25bc} collapse]"))
+            && !row.contains("hook summary")
     }
 
     /// The collapsed row's text, at `width` columns.
     fn turn_info_row_text(msg: &mut ChatMessage, width: u16) -> String {
+        turn_info_row_text_with(msg, &idle_spinner(), width)
+    }
+
+    /// As [`turn_info_row_text`], with the spinner the caller wants -
+    /// a running one puts the row in its live shape.
+    fn turn_info_row_text_with(
+        msg: &mut ChatMessage,
+        spinner: &SpinnerState,
+        width: u16,
+    ) -> String {
         let mut lines = Vec::new();
         render_message(
             msg,
-            &idle_spinner(),
+            spinner,
             MessageRenderContext::new(None, width, 0, options_without_separator()),
             &mut lines,
         );
         render_lines_to_strings(&lines)
             .into_iter()
-            .find(|row| row.contains("turn info"))
+            .find(|row| is_turn_info_row(row))
             .unwrap_or_default()
     }
 
@@ -5045,8 +5132,11 @@ mod tests {
         for expected in [
             "    ended     -               model   -",
             "    elapsed   12.4s           api     -",
+            "    local     -",
+            "    thinking  -",
             "    in        -               out     -",
             "    cache     -               wrote   -",
+            "    session   -",
         ] {
             assert!(
                 rows.iter().any(|row| row.trim_end() == expected),
@@ -5054,8 +5144,13 @@ mod tests {
             );
         }
         assert!(
-            !rows.iter().any(|r| r.contains("local")),
-            "and a row whose value is unknown drops out rather than showing one: {rows:?}",
+            !rows.iter().any(|r| r.contains("tools + hooks") || r.contains("cumulative")),
+            "a held row is a bare dash - the words describe a value that is not there: {rows:?}",
+        );
+        assert!(
+            !rows.iter().any(|r| r.contains("served from cache")),
+            "the cache percentage is the one row that still drops, because a dashed sentence \
+             reads as broken rather than pending: {rows:?}",
         );
 
         // A populated fixture: the percentage is the one figure derived
@@ -5077,7 +5172,7 @@ mod tests {
     }
 
     #[test]
-    fn the_collapsed_row_sheds_fields_right_to_left_to_fit() {
+    fn the_collapsed_row_sheds_fields_to_fit() {
         let mut msg = make_text_message(MessageRole::Assistant, "hello");
         msg.turn_info = TurnInfo {
             output_tokens: Some(1_102),
@@ -5092,7 +5187,7 @@ mod tests {
              lose them to the ladder: {wide}",
         );
 
-        let narrow = turn_info_row_text(&mut msg, 58);
+        let narrow = turn_info_row_text(&mut msg, 46);
         assert!(
             !narrow.contains("written") && narrow.contains("cached"),
             "`written` is the first field shed, being the least likely to change what the \
@@ -5101,26 +5196,80 @@ mod tests {
 
         let narrower = turn_info_row_text(&mut msg, 30);
         assert!(
-            narrower.starts_with("\u{21b3} turn info \u{b7} 1m 19s")
-                && narrower.ends_with("[\u{25b6} expand]"),
-            "the label, the elapsed and the toggle are never shed: {narrower}",
+            narrower.starts_with("\u{21b3} 1m 19s") && narrower.ends_with("[\u{25b6} expand]"),
+            "the glyph, the elapsed and the toggle are never shed: {narrower}",
         );
 
-        // Counted independently of the code: 14 for the prefix, 39 of
-        // field text, 9 of separators, 1 space before the toggle and
-        // 10 for the toggle. An off-by-one in that space is invisible
-        // at any width except this one.
-        let exact = turn_info_row_text(&mut msg, 73);
+        // Counted independently of the code: 2 for the glyph and its
+        // space, 39 of field text, 9 of separators, 1 space before the
+        // toggle and 10 for the toggle. An off-by-one in that space is
+        // invisible at any width except this one, and the drop from the
+        // 73 this needed before the label went is the twelve columns it
+        // was costing.
+        let exact = turn_info_row_text(&mut msg, 61);
         assert_eq!(
             exact.chars().count(),
-            73,
+            61,
             "at its exact width the full row is kept and fills the line: {exact}",
         );
-        let one_short = turn_info_row_text(&mut msg, 72);
+        let one_short = turn_info_row_text(&mut msg, 60);
         assert!(
             !one_short.contains("written"),
             "one column narrower than an exact fit must shed a field, not overflow: \
              {one_short}",
+        );
+    }
+
+    #[test]
+    fn a_row_with_no_clock_is_a_bare_spinner_not_a_headless_field_list() {
+        let running = SpinnerState {
+            is_active_turn_assistant: true,
+            show_empty_thinking: true,
+            glyph: '\u{280b}',
+            ..idle_spinner()
+        };
+        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new());
+        // The estimate reaches the row before the turn's start does on
+        // any delivered prompt, since the thinking frames precede the
+        // first assistant frame in every baseline that fires them.
+        msg.turn_info = TurnInfo { thinking_tokens: Some(83), ..TurnInfo::default() };
+
+        assert_eq!(
+            turn_info_row_text_with(&mut msg, &running, 80),
+            "\u{280b} [\u{25b6} expand]",
+            "elapsed anchors the row, so a field that arrives before it waits rather than \
+             rendering as the row's first and only figure",
+        );
+    }
+
+    #[test]
+    fn the_running_row_sheds_its_estimate_before_billed_tokens() {
+        let running = SpinnerState {
+            is_active_turn_assistant: true,
+            show_thinking: true,
+            glyph: '\u{280b}',
+            ..idle_spinner()
+        };
+        let mut msg = make_text_message(MessageRole::Assistant, "hello");
+        msg.turn_info = TurnInfo { thinking_tokens: Some(434), ..running_turn_info() };
+
+        // Narrow one column at a time and record the order the fields
+        // leave in, so the property is the order itself rather than the
+        // width any one of them happens to go at.
+        let mut shed: Vec<&str> = Vec::new();
+        for width in (12..=90).rev() {
+            let row = turn_info_row_text_with(&mut msg, &running, width);
+            for field in ["written", "cached", "thinking", "\u{2191}"] {
+                if !row.contains(field) && !shed.contains(&field) {
+                    shed.push(field);
+                }
+            }
+        }
+        assert_eq!(
+            shed,
+            vec!["written", "cached", "thinking", "\u{2191}"],
+            "the estimate sheds before the billed token pair it renders ahead of - a \
+             right-to-left walk would give up real usage to keep it",
         );
     }
 

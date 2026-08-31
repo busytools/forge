@@ -466,11 +466,6 @@ fn build_base_spinner(app: &App, subagents: &[crate::app::SubagentEntry]) -> Spi
         show_empty_thinking: turn_in_flight,
         show_thinking: turn_in_flight,
         show_compacting: app.is_compacting(),
-        // #273: only carry the chip during an in-flight turn - once
-        // the turn ends the field will have been cleared by
-        // `handle_result`, but gating here keeps the chip from
-        // briefly flashing across the final layout pass.
-        thinking_tokens: if turn_in_flight { app.latest_thinking_tokens() } else { None },
         running_subagents: derive_running_subagents(subagents),
     }
 }
@@ -1303,7 +1298,6 @@ mod tests {
             show_empty_thinking: false,
             show_thinking: false,
             show_compacting: false,
-            thinking_tokens: None,
             running_subagents: None,
         }
     }

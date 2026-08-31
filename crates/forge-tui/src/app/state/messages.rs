@@ -75,6 +75,12 @@ pub struct TurnInfo {
     /// wire carries none, so it is read from the clock on arrival.
     pub ended_at_local: Option<String>,
     pub model: Option<String>,
+    /// Estimated reasoning tokens for this turn, summed from the
+    /// `ThinkingTokens` deltas because the wire's running counter
+    /// restarts at every thinking block. Mirrored from the session
+    /// field while the turn runs, since that field is cleared at turn
+    /// end and the settled row still shows it.
+    pub thinking_tokens: Option<u64>,
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     /// Input tokens read back from the prompt cache. There is no

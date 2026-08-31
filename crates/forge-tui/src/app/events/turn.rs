@@ -354,8 +354,8 @@ fn apply_turn_complete_presentation(
             // fires the bucket's `lifecycle_state` never returns to
             // `Idle`, the Projects pane glyph stays as the spinner,
             // and (if the active bucket is the one whose TurnComplete
-            // dropped) the chat spinner sits on "Thinking..." until
-            // forge restarts.
+            // dropped) the turn info row keeps spinning and counting up
+            // until forge restarts.
             let bucket_keys: Vec<String> =
                 app.sessions.keys().map(|k| k.as_str().to_owned()).collect();
             tracing::error!(

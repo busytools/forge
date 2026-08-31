@@ -1153,7 +1153,7 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> bool {
 /// Toggle the session-wide `tools_collapsed` preference and clear the
 /// active session's per-item collapse overrides (per-tool
 /// `collapsed_override`, per-peer-text-block `peer_collapsed_override`,
-/// per-group `group_collapse_levels` and
+/// per-turn-info `expanded`, per-group `group_collapse_levels` and
 /// `messaging_group_collapse_levels`) so any row the user had clicked
 /// open or closed there resets to its default-render state on the
 /// flip. The flag is App-global; the clear is not, so a background
@@ -1165,6 +1165,7 @@ pub(super) fn toggle_all_tool_calls(app: &mut App) {
     use crate::app::MessageBlock;
     if let Some(bucket) = app.try_active_bucket_mut() {
         for msg in &mut bucket.messages {
+            msg.turn_info.expanded = false;
             for block in &mut msg.blocks {
                 match block {
                     MessageBlock::ToolCall(tc) => tc.collapsed_override = None,
@@ -1241,6 +1242,22 @@ mod tests {
     use crossterm::event::{KeyCode, KeyModifiers};
     use ratatui::layout::Rect;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn toggle_all_resets_a_turn_info_row_clicked_open() {
+        let mut app = App::test_default();
+        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new());
+        msg.turn_info.expanded = true;
+        *app.active_messages_mut() = vec![msg];
+
+        toggle_all_tool_calls(&mut app);
+
+        assert!(
+            !app.messages()[0].turn_info.expanded,
+            "the expanded flag is per-row state like a tool call's own, so collapse-all takes \
+             it with the rest rather than leaving one row open",
+        );
+    }
 
     #[test]
     fn ctrl_shortcut_accepts_standard_ctrl_v_encoding() {
