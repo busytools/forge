@@ -4,9 +4,11 @@
 //! - [`list_sessions`] - lists sessions, either for one project or all.
 //! - [`get_session_messages`] - reads the full transcript for one session.
 //!
-//! Session metadata ([`list_sessions`]) is extracted via an internal
-//! head + tail lite read so a 100 MiB transcript costs two 64 KiB
-//! reads rather than a full scan.
+//! Session metadata ([`list_sessions`]) comes from an internal head +
+//! tail lite read, so the fields it parses cost two 64 KiB reads
+//! whatever the transcript's size. The worker tag is the exception and
+//! is read in full: it can sit anywhere in the file and the last one
+//! wins, so there is no window that settles it.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
@@ -259,12 +261,16 @@ pub fn should_exclude_worker_tag(info: &SDKSessionInfo) -> bool {
     info.tag.as_deref().is_some_and(|t| t.starts_with(FORGE_WORKER_TAG_PREFIX))
 }
 
+/// `tag_cache` carries the previous run's tag scans so an unchanged
+/// transcript is not re-read end to end. `None` reads every byte of
+/// every file, which is what a caller with no store must do.
 pub async fn list_sessions(
     config_dir: &Path,
     directory: Option<&str>,
     limit: Option<usize>,
     offset: usize,
     include_workers: bool,
+    tag_cache: Option<&std::sync::Arc<SessionTagCache>>,
 ) -> Vec<SDKSessionInfo> {
     let search_dirs: Vec<PathBuf> = if let Some(dir) = directory {
         vec![project_dir_for(config_dir, dir)]
@@ -298,8 +304,12 @@ pub async fn list_sessions(
     let mut entries: Vec<SDKSessionInfo> = Vec::with_capacity(candidates.len());
     let mut paths = candidates.into_iter();
     let mut set: tokio::task::JoinSet<Option<SDKSessionInfo>> = tokio::task::JoinSet::new();
+    let spawn_read = |set: &mut tokio::task::JoinSet<Option<SDKSessionInfo>>, path: PathBuf| {
+        let cache = tag_cache.cloned();
+        set.spawn_blocking(move || read_session_info(&path, cache.as_deref()));
+    };
     for path in paths.by_ref().take(LIST_SESSIONS_MAX_CONCURRENT) {
-        set.spawn_blocking(move || read_session_info(&path));
+        spawn_read(&mut set, path);
     }
     while let Some(res) = set.join_next().await {
         match res {
@@ -314,7 +324,7 @@ pub async fn list_sessions(
             }
         }
         if let Some(path) = paths.next() {
-            set.spawn_blocking(move || read_session_info(&path));
+            spawn_read(&mut set, path);
         }
     }
 
@@ -407,12 +417,16 @@ struct LiteSessionFile {
 /// than the buffer, `tail == head` (single read). Returns `None` on
 /// any I/O error or for empty files.
 ///
+/// The tag scan that follows is NOT bounded by that buffer - it reads
+/// the file end to end, so this is a lite read of the metadata and a
+/// full read of the bytes. See [`scan_tag_from`].
+///
 /// Each `.ok()?` early return logs at debug level naming the step
 /// that failed - without these, the session picker silently drops
 /// sessions whose files have permission errors / are mid-truncation
 /// / have a bad fd, which presents to the user as missing sessions
 /// with no triage signal.
-fn read_session_lite(path: &Path) -> Option<LiteSessionFile> {
+fn read_session_lite(path: &Path, cache: Option<&SessionTagCache>) -> Option<LiteSessionFile> {
     let mut file = match fs::File::open(path) {
         Ok(f) => f,
         Err(e) => {
@@ -472,8 +486,22 @@ fn read_session_lite(path: &Path) -> Option<LiteSessionFile> {
         String::from_utf8_lossy(&tail_bytes).into_owned()
     };
 
-    let tag = match file.seek(SeekFrom::Start(0)) {
-        Ok(_) => find_session_tag(BufReader::new(&mut file)),
+    // Resume the tag scan from where the last one stopped. A shrunk file
+    // was truncated or replaced, so what was scanned no longer describes
+    // these bytes and the whole thing is read again.
+    let carried = cache
+        .and_then(|c| c.get(path))
+        .filter(|prior| prior.scanned_len <= size)
+        .unwrap_or_default();
+    let resume_at = carried.scanned_len;
+    let tag = match file.seek(SeekFrom::Start(resume_at)) {
+        Ok(_) => {
+            let (tag, state) = scan_tag_from(BufReader::new(&mut file), Some(carried));
+            if let Some(cache) = cache {
+                cache.put(path, state);
+            }
+            tag
+        }
         Err(e) => {
             tracing::debug!(target: crate::logging::targets::CATALOG_SCAN, path = %path.display(), error = %e, step = "seek_tag_scan", "lite-read tag-scan failed; resume will treat as untagged");
             None
@@ -483,32 +511,137 @@ fn read_session_lite(path: &Path) -> Option<LiteSessionFile> {
     Some(LiteSessionFile { mtime, size, head, tail, tag })
 }
 
-/// Line-iterate a JSONL stream and return the value of the LAST
-/// `{"type":"tag"}` row's `"tag"` field. Empty strings are filtered.
-/// Returns `None` when no tag row is present or any read errors out.
+/// What a tag scan learned about one transcript, and how far into it the
+/// answer is known to hold.
+///
+/// `scanned_len` is the offset just past the last newline the scan
+/// consumed, NOT the file's length. Any trailing bytes with no newline
+/// are a line the writer had not finished, so they are deliberately not
+/// credited: the next scan re-reads that line from its true start. That
+/// is what makes `scanned_len` a line boundary by construction, and a
+/// line therefore cannot straddle it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SessionTagScan {
+    /// The last tag among the complete lines below `scanned_len`.
+    pub tag: Option<String>,
+    pub scanned_len: u64,
+}
+
+/// Carries the previous run's tag scans into this one and collects what
+/// changed, so the whole catalog costs one store read up front and one
+/// store write at the end rather than a transaction per transcript.
+///
+/// Owned by the caller because this crate has no store of its own: whoever
+/// has the database fills it, passes it to [`list_sessions`], and persists
+/// [`SessionTagCache::updates`] afterwards.
+#[derive(Debug, Default)]
+pub struct SessionTagCache {
+    prior: std::collections::HashMap<String, SessionTagScan>,
+    updated: std::sync::Mutex<Vec<(String, SessionTagScan)>>,
+}
+
+impl SessionTagCache {
+    pub fn new(prior: std::collections::HashMap<String, SessionTagScan>) -> Self {
+        Self { prior, updated: std::sync::Mutex::new(Vec::new()) }
+    }
+
+    fn get(&self, path: &Path) -> Option<SessionTagScan> {
+        self.prior.get(path.to_str()?).cloned()
+    }
+
+    fn put(&self, path: &Path, scan: SessionTagScan) {
+        let Some(key) = path.to_str() else { return };
+        // Unchanged files re-derive the entry they already had; writing it
+        // back would rewrite the whole table on every boot.
+        if self.prior.get(key) == Some(&scan) {
+            return;
+        }
+        if let Ok(mut updated) = self.updated.lock() {
+            updated.push((key.to_owned(), scan));
+        }
+    }
+
+    /// Entries whose scan moved this run, for the caller to persist.
+    pub fn updates(&self) -> Vec<(String, SessionTagScan)> {
+        self.updated.lock().map(|u| u.clone()).unwrap_or_default()
+    }
+}
+
+/// Return the value of the LAST `{"type":"tag"}` row's `"tag"` field.
+/// Empty strings are filtered. `None` when no tag row is present or any
+/// read errors out.
 ///
 /// Last-wins semantics: a `/new` re-tag appended later in the
 /// transcript supersedes the original spawn tag.
-fn find_session_tag<R: BufRead>(reader: R) -> Option<String> {
-    let mut last_tag: Option<String> = None;
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
+///
+/// Reads into one reused buffer rather than over `BufRead::lines`,
+/// whose per-line `String` is pure overhead here: this runs over every
+/// byte of every transcript in the catalog on the boot path, and the
+/// tag rows it is looking for are a handful of lines in gigabytes.
+///
+/// `carried` is the answer a previous scan reached
+/// at its own `scanned_len`, which stands unless these bytes hold a
+/// later tag - last-wins makes that sound, since every line here follows
+/// every line the carried answer was computed over.
+///
+/// Returns the tag INCLUDING any trailing unterminated line, which is
+/// what a whole-file scan has always reported, alongside the state to
+/// cache, which excludes it.
+fn scan_tag_from<R: BufRead>(
+    mut reader: R,
+    carried: Option<SessionTagScan>,
+) -> (Option<String>, SessionTagScan) {
+    let mut state = carried.unwrap_or_default();
+    // Tracked apart from `state.tag` so a tag on a half-written line is
+    // reported now but not cached: the line is re-read next time.
+    let mut last_tag = state.tag.clone();
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e) => {
+                tracing::debug!(target: crate::logging::targets::CATALOG_SCAN, error = %e, step = "tag_scan_line", "lite-read tag-scan line read failed; ending scan with last seen tag");
+                break;
+            }
+        }
+        let complete = line.last() == Some(&b'\n');
+        let raw_len = line.len() as u64;
+        // `lines()` yields neither terminator, and both are stripped
+        // before the prefix test so a CRLF transcript compares the same
+        // bytes it always did.
+        if complete {
+            line.pop();
+        }
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+        // Every line is still validated, not only the candidates: a
+        // transcript that is not UTF-8 ended the scan before, and where
+        // it ends decides which tag wins. Breaking before the line is
+        // credited leaves it to be retried rather than skipped for good.
+        let text = match std::str::from_utf8(&line) {
+            Ok(text) => text,
             Err(e) => {
                 tracing::debug!(target: crate::logging::targets::CATALOG_SCAN, error = %e, step = "tag_scan_line", "lite-read tag-scan line read failed; ending scan with last seen tag");
                 break;
             }
         };
-        if !line.starts_with("{\"type\":\"tag\"") {
-            continue;
-        }
-        if let Some(tag) = extract_last_json_string_field(&line, "tag")
+        if text.starts_with("{\"type\":\"tag\"")
+            && let Some(tag) = extract_last_json_string_field(text, "tag")
             && !tag.is_empty()
         {
             last_tag = Some(tag);
+            if complete {
+                state.tag.clone_from(&last_tag);
+            }
+        }
+        if complete {
+            state.scanned_len += raw_len;
         }
     }
-    last_tag
+    (last_tag, state)
 }
 
 /// Find the first byte offset where `needle` begins in `haystack`.
@@ -706,9 +839,9 @@ pub(crate) fn should_skip_first_prompt(s: &str) -> bool {
     false
 }
 
-fn read_session_info(path: &Path) -> Option<SDKSessionInfo> {
+fn read_session_info(path: &Path, cache: Option<&SessionTagCache>) -> Option<SDKSessionInfo> {
     let session_id = path.file_stem().and_then(|s| s.to_str())?.to_string();
-    let lite = read_session_lite(path)?;
+    let lite = read_session_lite(path, cache)?;
     let storage_key = path
         .parent()
         .and_then(Path::file_name)
@@ -947,7 +1080,7 @@ mod tests {
         let content = r#"{"type":"user","message":{"content":"hi"}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","input":{"command":"git tag","tag":"v1.0"}}]}}
 "#;
-        assert_eq!(find_session_tag(std::io::Cursor::new(content)), None);
+        assert_eq!(scan_tag_from(std::io::Cursor::new(content), None).0, None);
     }
 
     #[test]
@@ -1121,7 +1254,7 @@ mod tests {
         }
         let path = write_session_jsonl(tmp.path(), "abc", &body);
 
-        let info = read_session_info(&path).expect("session info parsed");
+        let info = read_session_info(&path, None).expect("session info parsed");
         assert_eq!(info.tag.as_deref(), Some("forge:worker:reviewer"));
     }
 
@@ -1150,8 +1283,75 @@ mod tests {
         }
         let path = write_session_jsonl(tmp.path(), "abc", &body);
 
-        let info = read_session_info(&path).expect("session info parsed");
+        let info = read_session_info(&path, None).expect("session info parsed");
         assert_eq!(info.tag.as_deref(), Some("forge:worker:tester"));
+    }
+
+    /// A transcript that shrank was truncated or replaced, so an offset
+    /// recorded against the old bytes describes nothing in the new ones.
+    /// Resuming past the end of the replacement would read no bytes at
+    /// all and keep answering with a tag the file no longer contains.
+    #[test]
+    fn a_shrunk_transcript_is_scanned_again_rather_than_resumed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tagged = "{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}\n\
+                      {\"type\":\"tag\",\"tag\":\"forge:worker:gone\"}\n";
+        let path = write_session_jsonl(tmp.path(), "abc", tagged);
+
+        let cache = SessionTagCache::default();
+        assert_eq!(
+            read_session_lite(&path, Some(&cache)).unwrap().tag.as_deref(),
+            Some("forge:worker:gone"),
+            "the first scan must find the tag it will later be asked to forget"
+        );
+
+        // Replay the cache the store would have handed back, then replace
+        // the file with shorter, untagged content.
+        let primed = SessionTagCache::new(cache.updates().into_iter().collect());
+        std::fs::write(&path, "{\"type\":\"user\",\"message\":{\"content\":\"x\"}}\n").unwrap();
+
+        assert_eq!(
+            read_session_lite(&path, Some(&primed)).unwrap().tag,
+            None,
+            "a replaced transcript must be re-scanned, not answered from the old offset"
+        );
+    }
+
+    /// A resumed scan must agree with a whole-file one for every split
+    /// point, and the hard case is a split inside a line: the writer had
+    /// only flushed half a tag row when the previous scan ran. Crediting
+    /// the file's length rather than the last newline would restart in
+    /// the middle of that row, fail the prefix test, and lose the tag
+    /// for good - it is never re-read.
+    #[test]
+    fn a_resumed_scan_sees_a_tag_that_was_half_written_when_it_stopped() {
+        let settled = "{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}\n";
+        let tag_row = "{\"type\":\"tag\",\"tag\":\"forge-worker-x\"}\n";
+        // The first scan sees a whole line plus the front of the tag row.
+        let torn = &tag_row[..20];
+        let (found, state) = scan_tag_from(std::io::Cursor::new(format!("{settled}{torn}")), None);
+        assert_eq!(found, None, "half a tag row carries no closing quote to parse");
+        assert_eq!(
+            state.scanned_len,
+            settled.len() as u64,
+            "an unterminated line must not be credited, or it is skipped on resume"
+        );
+
+        // The writer finishes the row; the next scan resumes from the
+        // recorded offset, exactly as the production path seeks.
+        let whole = format!("{settled}{tag_row}");
+        let resume_at = usize::try_from(state.scanned_len).unwrap();
+        let (resumed, _) = scan_tag_from(std::io::Cursor::new(&whole[resume_at..]), Some(state));
+        assert_eq!(
+            resumed.as_deref(),
+            Some("forge-worker-x"),
+            "a resumed scan must find the completed row a whole-file scan would"
+        );
+        assert_eq!(
+            resumed,
+            scan_tag_from(std::io::Cursor::new(whole.as_str()), None).0,
+            "resuming must agree with scanning the whole file"
+        );
     }
 
     #[test]
@@ -1179,7 +1379,7 @@ mod tests {
         }
         let path = write_session_jsonl(tmp.path(), "abc", &body);
 
-        let info = read_session_info(&path).expect("session info parsed");
+        let info = read_session_info(&path, None).expect("session info parsed");
         assert_eq!(info.tag.as_deref(), Some("second"));
     }
 
@@ -1197,7 +1397,7 @@ mod tests {
             "{\"type\":\"user\",\"timestamp\":\"2026-04-22T00:00:00.000Z\",\"message\":{\"content\":\"hi\"}}\n",
         );
 
-        let info = read_session_info(&path).expect("session info parsed");
+        let info = read_session_info(&path, None).expect("session info parsed");
         assert_eq!(
             info.storage_key, storage_key,
             "the scanned session reports the projects/<KEY>/ dir it lives in",
