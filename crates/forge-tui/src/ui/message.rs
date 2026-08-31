@@ -404,6 +404,11 @@ fn hash_turn_info(info: &TurnInfo, hasher: &mut impl std::hash::Hasher) {
 /// content exists it is the only sign the turn is alive. A settled one
 /// is not: a hidden tool call leaves blocks but paints no rows, and a
 /// lone footer under an empty message reads as a bug.
+///
+/// A row with nothing stamped on it yet says only that the turn is
+/// alive, so it earns a line only when nothing else on the message
+/// already says so - otherwise it doubles the compacting line's
+/// spinner with a row carrying no figures.
 fn append_turn_info(
     msg: &ChatMessage,
     spinner: &SpinnerState,
@@ -412,7 +417,11 @@ fn append_turn_info(
 ) -> (usize, usize) {
     let info = &msg.turn_info;
     let running = spinner.owns_running_turn();
-    if !running && (info.is_empty() || layout.height == 0) {
+    if info.is_empty() {
+        if !running || layout.height > 0 {
+            return (0, 0);
+        }
+    } else if !running && layout.height == 0 {
         return (0, 0);
     }
     let row_y = layout.height;
@@ -2311,11 +2320,10 @@ pub fn format_token_count_short(n: u64) -> String {
 /// One-line chat indicator for a session waiting on >=1 non-terminal
 /// `SubagentRoot`, rendered only on the in-flight turn's assistant
 /// message. Subagents are Inspector-only, so without this line the chat
-/// goes silent while a subagent runs mid-turn; once the turn ends the
-/// Inspector is the only surface, which is deliberate. Sibling of
-/// [`thinking_line`] / [`compacting_line`]; additive to `thinking_line`
-/// (both render together when the assistant is mid-stream AND a
-/// subagent is still going). Single shape:
+/// says nothing about what a subagent is doing mid-turn; once the turn
+/// ends the Inspector is the only surface, which is deliberate. Sibling
+/// of [`compacting_line`]; additive to the turn info row, which renders
+/// beneath it and carries the main agent's own progress. Single shape:
 /// `⠋ ◇ running subagent: <label>… (see Inspector)`; multi:
 /// `⠋ ◇ running N subagents… (see Inspector)`. The label arg falls
 /// back to the count form when absent.
@@ -4186,11 +4194,15 @@ mod tests {
         );
         let rendered = render_lines_to_strings(&lines);
 
-        assert!(!rendered.iter().any(|line| line.contains("Thinking...")));
+        assert!(
+            rendered.iter().any(|line| line.contains("done")),
+            "the empty-placeholder branch must not fire once content exists, or every \
+             streaming turn renders a blank body: {rendered:?}",
+        );
     }
 
     #[test]
-    fn assistant_message_suppresses_thinking_line_while_compacting() {
+    fn assistant_message_suppresses_the_bare_turn_row_while_compacting() {
         let spinner = SpinnerState {
             is_active_turn_assistant: true,
             show_thinking: true,
@@ -4209,11 +4221,15 @@ mod tests {
         let rendered = render_lines_to_strings(&lines);
 
         assert!(rendered.iter().any(|line| line.contains("Compacting context...")));
-        assert!(!rendered.iter().any(|line| line.contains("Thinking...")));
+        assert!(
+            !rendered.iter().any(|line| is_turn_info_row(line)),
+            "nothing is stamped on this turn, so a row would add a second spinner saying \
+             only what the compacting line already says: {rendered:?}",
+        );
     }
 
     #[test]
-    fn assistant_offset_render_suppresses_thinking_line_while_compacting() {
+    fn assistant_offset_render_suppresses_the_bare_turn_row_while_compacting() {
         let spinner = SpinnerState {
             is_active_turn_assistant: true,
             show_thinking: true,
@@ -4228,7 +4244,10 @@ mod tests {
 
         assert_eq!(remaining, 0);
         assert!(rendered.iter().any(|line| line.contains("Compacting context...")));
-        assert!(!rendered.iter().any(|line| line.contains("Thinking...")));
+        assert!(
+            !rendered.iter().any(|line| is_turn_info_row(line)),
+            "same on the offset path: {rendered:?}",
+        );
     }
 
     #[test]
@@ -4258,6 +4277,7 @@ mod tests {
     #[test]
     fn message_render_cache_rebuilds_when_indicator_visibility_changes() {
         let mut msg = make_text_message(MessageRole::Assistant, "cached");
+        msg.turn_info = running_turn_info();
         let base_spinner = idle_spinner();
         let thinking_spinner =
             SpinnerState { show_thinking: true, glyph: '\u{2819}', ..idle_spinner() };
@@ -4268,18 +4288,28 @@ mod tests {
             &base_spinner,
             MessageRenderContext::new(None, 80, 1, options),
         );
-        let base_height = base_cache.height();
-        let base_segments = base_cache.segments().to_vec();
+        let mut idle_out = Vec::new();
+        render_cached_message(base_cache.segments(), &mut idle_out);
+        let idle_rows = render_lines_to_strings(&idle_out);
 
         let thinking_cache = get_or_build_message_render_cache(
             &mut msg,
             &thinking_spinner,
             MessageRenderContext::new(None, 80, 1, options),
         );
-        assert!(thinking_cache.height() >= base_height);
+        let mut running_out = Vec::new();
+        render_cached_message(thinking_cache.segments(), &mut running_out);
+        let running_rows = render_lines_to_strings(&running_out);
+
+        // The row is the same height either way now, so a stale cache
+        // shows up as the wrong leading glyph rather than a wrong line
+        // count, and asserting on the count would pass either way.
+        let idle_row = idle_rows.iter().find(|r| is_turn_info_row(r)).expect("idle row");
+        let running_row = running_rows.iter().find(|r| is_turn_info_row(r)).expect("running row");
         assert!(
-            thinking_cache.height() != base_height
-                || thinking_cache.segments().len() != base_segments.len()
+            idle_row.starts_with('\u{21b3}') && running_row.starts_with('\u{2819}'),
+            "flipping the turn in flight must re-render the row's glyph rather than serve the \
+             settled one back: idle {idle_row:?}, running {running_row:?}",
         );
     }
 
@@ -4643,7 +4673,7 @@ mod tests {
     }
 
     // ----------------------------------------------------------------
-    // #273: thinking_tokens spinner chip + format helper.
+    // #273: the collapsed row's token abbreviation.
     // ----------------------------------------------------------------
 
     #[test]
@@ -4669,7 +4699,7 @@ mod tests {
     // ----------------------------------------------------------------
     // subagent_running_line: the chat-side "running subagent..." line
     // that surfaces while `App::subagents_view` is non-empty. Additive
-    // to `thinking_line` - both render together when both apply.
+    // to the turn info row, which renders beneath it.
     // ----------------------------------------------------------------
 
     #[test]
@@ -4739,8 +4769,9 @@ mod tests {
             "expected the running-subagent line; got {rendered:?}",
         );
         assert!(
-            !rendered.iter().any(|line| line.contains("Thinking...")),
-            "thinking_line absent when show_thinking is false; got {rendered:?}",
+            !rendered.iter().any(|line| is_turn_info_row(line)),
+            "the turn is not in flight, so the row stays away - being the bound assistant is \
+             not the same as running: {rendered:?}",
         );
     }
 
@@ -4753,6 +4784,7 @@ mod tests {
             ..idle_spinner()
         };
         let mut msg = make_text_message(MessageRole::Assistant, "streaming");
+        msg.turn_info = running_turn_info();
         let mut lines = Vec::new();
 
         render_message(
@@ -4781,7 +4813,7 @@ mod tests {
     }
 
     #[test]
-    fn assistant_render_keeps_thinking_when_no_subagent_active() {
+    fn assistant_render_keeps_the_turn_row_when_no_subagent_active() {
         let spinner = SpinnerState {
             is_active_turn_assistant: true,
             show_thinking: true,
@@ -4789,6 +4821,7 @@ mod tests {
             ..idle_spinner()
         };
         let mut msg = make_text_message(MessageRole::Assistant, "streaming");
+        msg.turn_info = running_turn_info();
         let mut lines = Vec::new();
 
         render_message(
