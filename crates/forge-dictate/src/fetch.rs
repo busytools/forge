@@ -754,7 +754,7 @@ mod tests_download {
             .expect_err("the missing asr model must still be reported");
         assert!(
             matches!(err, Error::HttpStatus { status: 404, .. }),
-            "the failure reported must be the first spec's, not whichever thread lost the race, got: {err:?}"
+            "the asr model's 404 must survive the other model succeeding, got: {err:?}"
         );
         let landed = fs::read(dir.path().join("norm.gguf")).expect(
             "the models run concurrently, so one failing must not leave the other unattempted",
