@@ -58,9 +58,15 @@ pub struct SpinnerState {
     pub glyph: char,
     /// True when this message owns the currently active assistant turn.
     pub is_active_turn_assistant: bool,
-    /// True when this message should show the initial empty-turn thinking indicator.
+    /// True when this message owns a turn still in flight and has no
+    /// body yet. Nothing renders from it directly - the turn info row
+    /// is the indicator - but it decides whether that row may stand
+    /// alone, and it keeps the message off the idle-suppression path.
     pub show_empty_thinking: bool,
-    /// True when this message should show the thinking indicator.
+    /// As [`Self::show_empty_thinking`], for a turn that has begun
+    /// streaming a body. The two are exclusive, so their union is
+    /// "this message owns a running turn", which is what decides
+    /// whether the row wears the spinner.
     pub show_thinking: bool,
     /// True when this message should show the compaction indicator.
     pub show_compacting: bool,
@@ -408,9 +414,12 @@ fn hash_turn_info(info: &TurnInfo, hasher: &mut impl std::hash::Hasher) {
 /// height, excluding that body, for the caller's hit rect.
 ///
 /// A running row is allowed to sit alone, because before any body
-/// content exists it is the only sign the turn is alive. A settled one
-/// is not: a hidden tool call leaves blocks but paints no rows, and a
-/// lone footer under an empty message reads as a bug.
+/// content exists it is the only sign the turn is alive. A row on a
+/// message that is not running is not: a hidden tool call leaves
+/// blocks but paints no rows, and a lone footer under an empty message
+/// reads as a bug. That is the spinner's view of the turn rather than
+/// `TurnInfo::is_settled`, which the guard never consults - an
+/// abandoned row on a turn that never settled is equally not running.
 ///
 /// A row with nothing stamped on it yet says only that the turn is
 /// alive, so it earns a line only when nothing else on the message
@@ -519,9 +528,13 @@ fn turn_info_token_field(info: &TurnInfo) -> Option<String> {
 
 /// The indented two-column body shown under an expanded row.
 ///
-/// An unknown cell renders `-`, and the rows that only settling can
-/// fill hold their place with one rather than dropping out, so a body
-/// open across the settle does not grow under the cursor. The cache
+/// An unknown cell renders `-`, and the three rows that can be absent
+/// while the rest are present - `local`, `thinking` and `session` -
+/// hold their place with one rather than dropping out, so a body open
+/// across the settle does not grow under the cursor. `local` and
+/// `session` fill only when the Result lands; `thinking` fills during
+/// the turn if it fires at all, and stays a dash for a turn that never
+/// thought. The cache
 /// percentage is the exception and stays conditional: it is a sentence
 /// rather than a labelled cell, and `- % of input served from cache`
 /// reads as broken rather than pending. A zero the wire reported is a
@@ -2297,9 +2310,11 @@ fn system_role_label_line(severity: SystemSeverity) -> Line<'static> {
 ///     `1199 -> 1.1k`, `15_000 -> 15k`, `999_999 -> 999k`.
 ///   - >= 1_000_000 -> `NM` or `N.NM`, e.g. `1_500_000 -> 1.5M`.
 ///
-/// The integer / one-decimal split matches the rendered chip width
-/// (max 4 visible chars: `1.4M`, `999k`, `999`) so the spinner row
-/// stays a stable size regardless of the turn's token volume.
+/// The integer / one-decimal split caps a count at 4 visible chars
+/// (`1.4M`, `999k`, `999`), so a field on the collapsed turn info row
+/// does not widen with the turn's token volume. The row's own width
+/// still changes as it sheds fields; what this stops is a field
+/// growing under one.
 pub fn format_token_count_short(n: u64) -> String {
     const K: u64 = 1_000;
     const M: u64 = 1_000_000;
