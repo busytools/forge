@@ -117,15 +117,16 @@ pub struct TurnNoticeRef {
 /// mouse handler on click. Same render-time-stamp pattern as the
 /// per-tool-call expand/collapse.
 ///
-/// `ProjectHeader` and `WorkerRow` are y-only - they span the full
-/// pane width, so an x-coord doesn't add information. `TopBarIcon`
-/// and `OverlayClose` are x+y bounded - they target a specific glyph
-/// position on a one-row band shared with other content.
+/// Every variant is x+y bounded. A row-body target stops short of the
+/// right-edge control gutter (see [`control_gutter_start`]) rather
+/// than spanning the full pane width, so a control that only exists
+/// while the row is live can never occupy a column the same row
+/// treated as body one frame earlier.
 #[derive(Debug, Clone)]
 pub enum PaneHitTarget {
     /// Click on a project name row → switch active session to its
     /// lead.
-    ProjectHeader { project_name: String, y: u16, height: u16 },
+    ProjectHeader { project_name: String, y: u16, height: u16, x_start: u16, x_end: u16 },
     /// Click on the `▤` icon in the Narrow-tier top bar → toggle
     /// the Projects overlay.
     TopBarIcon { y: u16, height: u16, x_start: u16, x_end: u16 },
@@ -191,17 +192,18 @@ pub enum PaneHitTarget {
         session_key: forge_workspace::SessionKey,
         y: u16,
         height: u16,
+        x_start: u16,
+        x_end: u16,
     },
 }
 
 impl PaneHitTarget {
     /// Whether the target's row range covers `y` (inclusive of `y`,
-    /// exclusive of `y + height`). For full-width row targets
-    /// (`ProjectHeader`, `WorkerRow`) this is the only check the
-    /// hit-tester needs; for x+y-bounded targets (`TopBarIcon`,
-    /// `OverlayClose`) call [`Self::contains`] instead so the column
-    /// constraint also applies.
-    pub fn contains_y(&self, y: u16) -> bool {
+    /// exclusive of `y + height`). Private on purpose: a y-only
+    /// hit-test is what let a close button claim columns the cold row
+    /// routed to its body, so [`Self::contains`] is the only way to
+    /// resolve a click.
+    fn contains_y(&self, y: u16) -> bool {
         let (start, height) = match self {
             Self::ProjectHeader { y, height, .. }
             | Self::TopBarIcon { y, height, .. }
@@ -217,17 +219,18 @@ impl PaneHitTarget {
         (start..start.saturating_add(height)).contains(&y)
     }
 
-    /// Full hit-test (x + y). For full-width row targets the x
-    /// component is unconstrained; for x+y-bounded targets (top-bar
-    /// icon, overlay close, per-row close) the click must fall within
-    /// the recorded `[x_start, x_end)` range.
+    /// Full hit-test: the click must fall inside the recorded row
+    /// range and the recorded `[x_start, x_end)` column range. The
+    /// match is exhaustive with no unconstrained arm, so a new variant
+    /// cannot be added without deciding its columns.
     pub fn contains(&self, x: u16, y: u16) -> bool {
         if !self.contains_y(y) {
             return false;
         }
         match self {
-            Self::ProjectHeader { .. } | Self::WorkerRow { .. } => true,
-            Self::TopBarIcon { x_start, x_end, .. }
+            Self::ProjectHeader { x_start, x_end, .. }
+            | Self::WorkerRow { x_start, x_end, .. }
+            | Self::TopBarIcon { x_start, x_end, .. }
             | Self::InspectorTopBarIcon { x_start, x_end, .. }
             | Self::OverlayClose { x_start, x_end, .. }
             | Self::CloseSession { x_start, x_end, .. }
@@ -238,6 +241,18 @@ impl PaneHitTarget {
         }
     }
 }
+
+/// First column of a pane row's right-edge control gutter, for a row
+/// spanning `area`. Every row-body target ends here and every per-row
+/// control starts here, so the two ranges are adjacent by construction
+/// and cannot drift into overlapping.
+pub fn control_gutter_start(area: ratatui::layout::Rect) -> u16 {
+    area.x.saturating_add(area.width).saturating_sub(CONTROL_GUTTER_WIDTH)
+}
+
+/// Width of the reserved control gutter: the 3-cell ` x ` button plus
+/// one column of tolerance each side.
+const CONTROL_GUTTER_WIDTH: u16 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChatRenderTraceState {
@@ -314,6 +329,13 @@ pub struct App {
     /// `None` only in the brief pre-Connect window where no session
     /// has landed in the map yet.
     pub active_session_key: Option<forge_workspace::SessionKey>,
+    /// Synthetic spawn key the user asked to be taken to, set when a
+    /// click wakes a cold project and consumed by the `Spawning`
+    /// reducer once that bucket exists. The reducer cannot focus
+    /// unconditionally - every `auto_start` project emits `Spawning`
+    /// at boot and the first to arrive would steal the tab - so a
+    /// user-driven wake records its intent here instead.
+    pub pending_spawn_focus: Option<forge_workspace::SessionKey>,
     /// Snapshot of the durable forge crons (`mcp__forge__cron`) the
     /// active session itself created, refreshed on the ~1s ticker
     /// (`git_diff::apply_timer_tick`) from
@@ -3541,6 +3563,7 @@ impl App {
             #[rustfmt::skip] #[cfg(feature = "testing")] test_notifications: std::cell::RefCell::new(Vec::new()),
             sessions,
             active_session_key: Some(pending_key),
+            pending_spawn_focus: None,
             forge_crons: Vec::new(),
             forge_schedule_rows: Vec::new(),
             gotify_subs: Vec::new(),

@@ -209,6 +209,7 @@ fn create_app_impl(
         #[rustfmt::skip] #[cfg(feature = "testing")] test_notifications: std::cell::RefCell::new(Vec::new()),
         sessions,
         active_session_key: Some(pre_connect_key),
+        pending_spawn_focus: None,
         forge_crons: Vec::new(),
         forge_schedule_rows: Vec::new(),
         gotify_subs: Vec::new(),

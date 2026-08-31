@@ -598,20 +598,20 @@ fn append_org_project_row(
         // section right edge AND the idle row's 1-col gutter.
         spans.push(Span::raw(" "));
         lines.push(Line::from(spans));
-        // Hit targets: whole row → focus/switch; button + 1-col
-        // tolerance each side → close session.
+        // Hit targets: row body up to the control gutter →
+        // focus/switch; the gutter itself → close session.
+        let close_x_start = crate::app::control_gutter_start(area);
         app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
             project_name: project.key.as_str().to_owned(),
             y: row_y,
             height: 1,
+            x_start: area.x,
+            x_end: close_x_start,
         });
-        let row_right = area.x.saturating_add(area.width);
-        // Close button: the ` x ` 3-cell span occupies
-        // (row_right - 4) to (row_right - 2). 5-col hit band runs
-        // (row_right - 5) to (row_right - 1) for 1-col tolerance
-        // each side; the rightmost gutter col stays inert.
-        let close_x_start = row_right.saturating_sub(5);
-        let close_x_end = row_right.saturating_sub(1);
+        // The ` x ` 3-cell span occupies (row_right - 4) to
+        // (row_right - 2); the band adds 1-col tolerance on the left
+        // and the rightmost gutter col stays inert.
+        let close_x_end = area.x.saturating_add(area.width).saturating_sub(1);
         app.pane_hit_targets.push(PaneHitTarget::CloseSession {
             session_key: session_key.clone(),
             y: row_y,
@@ -643,10 +643,17 @@ fn append_org_project_row(
         spans.push(Span::styled(time, Style::default().fg(theme::DIM)));
         spans.push(Span::raw(" "));
         lines.push(Line::from(spans));
+        // Same body range as the live row above. The gutter carries
+        // the relative-time label here and no control, but it stays
+        // reserved: this row grows a close button the moment its
+        // session lands, and a click aimed at the timestamp must not
+        // mean "wake" one frame and "close" the next.
         app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
             project_name: project.key.as_str().to_owned(),
             y: row_y,
             height: 1,
+            x_start: area.x,
+            x_end: crate::app::control_gutter_start(area),
         });
     }
 }
@@ -837,21 +844,21 @@ fn append_worker_tree_children(
             ]));
         }
 
-        // Hit targets. The label area covers the row from x_start at
-        // the indent + connector through to before the close button.
-        // Click on it switches focus to the worker's chat session.
-        // The trailing 3-cell ` x ` button + 1-cell tolerance each
-        // side dispatches the close command (mirrors `CloseSession`).
+        // Hit targets. The label area covers the row up to the
+        // control gutter; click on it switches focus to the worker's
+        // chat session. The gutter dispatches the close command
+        // (mirrors `CloseSession`).
+        let close_x_start = crate::app::control_gutter_start(area);
         app.pane_hit_targets.push(PaneHitTarget::WorkerRow {
             project_key: project.key.clone(),
             label: worker.label.clone(),
             session_key: worker.session_key.clone(),
             y: row_y,
             height: 1,
+            x_start: area.x,
+            x_end: close_x_start,
         });
-        let row_right = area.x.saturating_add(area.width);
-        let close_x_start = row_right.saturating_sub(5);
-        let close_x_end = row_right.saturating_sub(1);
+        let close_x_end = area.x.saturating_add(area.width).saturating_sub(1);
         app.pane_hit_targets.push(PaneHitTarget::CloseWorker {
             project_key: project.key.clone(),
             label: worker.label.clone(),
@@ -3153,4 +3160,5 @@ mod tests {
             subtree[3]
         );
     }
+
 }

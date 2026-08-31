@@ -923,10 +923,9 @@ fn locate_peer_user_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usiz
 /// Returns `true` when the click was consumed so the chat hit-test
 /// path is skipped.
 fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
-    // X+Y-bounded targets (top-bar icon, overlay ✕). These overlap
-    // the chat body or share a one-row band with non-interactive
-    // text, so we must constrain on column too - `contains_y`
-    // alone would catch unrelated clicks on the same row.
+    // Control targets first. They share a row band with the body
+    // target they sit beside, so stamp order rather than geometry
+    // would otherwise decide which one a click on the control wins.
     let xy_target = app
         .pane_hit_targets
         .iter()
@@ -1007,7 +1006,8 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
     // in one action. The overlay covers the whole body rect so we
     // skip the inline-pane gate.
     if app.projects_pane_overlay_open {
-        let target = app.pane_hit_targets.iter().find(|t| t.contains_y(mouse.row)).cloned();
+        let target =
+            app.pane_hit_targets.iter().find(|t| t.contains(mouse.column, mouse.row)).cloned();
         let Some(target) = target else {
             // Click landed on overlay chrome (banner rule, blank
             // padding). Consume so chat hit-tests don't fire
@@ -1027,11 +1027,10 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
                 app.needs_redraw = true;
                 true
             }
-            // x+y-bounded glyphs handled above; reaching them here
-            // means the y-only fallback matched a row stamped on
-            // the same band as the glyph but the click missed the
-            // glyph's x range - treat as "in-overlay no-op" so we
-            // still consume.
+            // Control glyphs are resolved by the pass above, which
+            // returns rather than falling through. Consume anyway so
+            // a future stamp ordering cannot leak a click into the
+            // chat behind the overlay.
             PaneHitTarget::TopBarIcon { .. }
             | PaneHitTarget::InspectorTopBarIcon { .. }
             | PaneHitTarget::OverlayClose { .. }
@@ -1051,7 +1050,8 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
     if !rect_contains(pane, mouse.column, mouse.row) {
         return false;
     }
-    let target = app.pane_hit_targets.iter().find(|t| t.contains_y(mouse.row)).cloned();
+    let target =
+        app.pane_hit_targets.iter().find(|t| t.contains(mouse.column, mouse.row)).cloned();
     let Some(target) = target else {
         // Click landed in the pane area but outside any stamped row
         // (banner rule, blank line, padding). Consume so the chat
@@ -1288,7 +1288,14 @@ fn switch_to_project_lead(app: &mut App, project_name: &str) {
                         error = %err,
                         "switch_to_project_lead: dispatch failed",
                     );
+                    return;
                 }
+                // The bucket does not exist yet, so there is nothing
+                // to switch to until `Spawning` lands. Record where
+                // the click was headed; the reducer takes it from
+                // here. Without this the click has no visible effect
+                // at all and reads as a dead row.
+                app.pending_spawn_focus = Some(spawn_synthetic);
             }
         }
     }
@@ -1650,6 +1657,140 @@ mod tests {
             app.active_session_key.as_ref(),
             Some(&spawn_synth),
             "non-spawning synthetic bucket should still be switchable",
+        );
+    }
+
+    /// Paint the Projects pane for `projects` into `app` at the inline
+    /// pane rect, and return the screen row the project's name landed
+    /// on. Painted rather than reasoned about: the hit targets are
+    /// stamped during render, so only a real frame produces them.
+    fn paint_pane(app: &mut App, projects: &[forge_workspace::ProjectView], name: &str) -> u16 {
+        let width = crate::ui::layout::PANE_WIDTH_WIDE;
+        let area = Rect { x: 0, y: 0, width, height: 30 };
+        app.layout.pane = Some(area);
+        let backend = ratatui::backend::TestBackend::new(width, 30);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| crate::ui::projects_pane::render(frame, area, app, projects))
+            .expect("the pane paints");
+        let buffer = terminal.backend().buffer().clone();
+        (0..30)
+            .find(|y| {
+                (0..width)
+                    .filter_map(|x| buffer.cell((x, *y)).map(|c| c.symbol().to_owned()))
+                    .collect::<String>()
+                    .contains(name)
+            })
+            .expect("the project row paints")
+    }
+
+    fn left_click(app: &mut App, column: u16, row: u16) {
+        handle_pane_click(
+            app,
+            MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column,
+                row,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+        );
+    }
+
+    /// A project row grows a close button the moment its session
+    /// lands. The pointer does not move between those two frames, so
+    /// the second click of a double-click arrives at a column that
+    /// meant "wake this project" when the user aimed at it and means
+    /// "close it" by the time it lands - spawn, close, spawn, close,
+    /// which is what made three projects read as unclickable.
+    ///
+    /// Driven through `handle_pane_click` rather than asserted against
+    /// the stamped targets, because the router is half the defect: a
+    /// y-only lookup reintroduces it with the geometry left correct.
+    ///
+    /// Written as a transition because neither frame is wrong alone -
+    /// the cold frame and the live frame are each individually right,
+    /// and the defect lives only in the relationship between them.
+    #[test]
+    fn waking_a_project_does_not_turn_row_body_columns_into_a_close_button() {
+        use forge_workspace::{ProjectKey, ProjectView, SessionKey, SessionView};
+
+        const PROJECT_PATH: &str = "/Users/v/Projects/hub-modules";
+        let width = crate::ui::layout::PANE_WIDTH_WIDE;
+
+        let mut app = App::test_default();
+        let lead = SessionKey::from_session_id("hub-modules-lead");
+        let projects = vec![ProjectView::new_for_test(
+            ProjectKey::new_for_test("hub-modules"),
+            "hub-modules",
+            PROJECT_PATH,
+            vec![SessionView::new_for_test(lead.clone(), "lead", true, None)],
+        )];
+
+        // Frame 1, cold: record every column that routes to the row
+        // body, i.e. every column a user could aim a "wake it" click at.
+        let row_y = paint_pane(&mut app, &projects, "hub-modules");
+        let body_columns: Vec<u16> = (0..width)
+            .filter(|x| {
+                app.pane_hit_targets
+                    .iter()
+                    .find(|t| t.contains(*x, row_y))
+                    .is_some_and(|t| matches!(t, PaneHitTarget::ProjectHeader { .. }))
+            })
+            .collect();
+        assert!(!body_columns.is_empty(), "the cold row must be clickable somewhere");
+
+        // Frame 2: the spawn landed. Same App, same pane, same pointer.
+        let mut bucket = UiSession::new(lead.clone());
+        bucket.lifecycle_state = SessionLifecycleState::Idle;
+        bucket.cwd_raw = PROJECT_PATH.to_owned();
+        app.sessions.insert(lead.clone(), bucket);
+        let live_y = paint_pane(&mut app, &projects, "hub-modules");
+        assert_eq!(live_y, row_y, "fixture only bites while the row stays put across the wake");
+
+        // Control: the close button really is on this row, so the
+        // sweep below is not passing because nothing can close.
+        left_click(&mut app, width - 3, row_y);
+        assert!(
+            !app.sessions.contains_key(&lead),
+            "the gutter must close the session, or this test proves nothing",
+        );
+
+        // Every column that meant "wake it" one frame ago must still
+        // not close the session it just woke.
+        for column in body_columns {
+            let mut bucket = UiSession::new(lead.clone());
+            bucket.lifecycle_state = SessionLifecycleState::Idle;
+            bucket.cwd_raw = PROJECT_PATH.to_owned();
+            app.sessions.insert(lead.clone(), bucket);
+            paint_pane(&mut app, &projects, "hub-modules");
+
+            left_click(&mut app, column, row_y);
+            assert!(
+                app.sessions.contains_key(&lead),
+                "column {column} routed to the row body while the project was cold and closed \
+                 its session once it went live, so a second click at a pointer that never \
+                 moved undoes the first",
+            );
+        }
+    }
+
+    /// Clicking a cold project row has nothing to switch to yet, so it
+    /// records where the click was headed and lets the `Spawning`
+    /// reducer finish the move. Dropping that record leaves the click
+    /// dispatching a spawn with no visible effect, which is what made
+    /// a cold row read as unclickable.
+    #[test]
+    fn cold_project_click_records_where_it_was_headed() {
+        let mut app = App::test_default();
+        let _outbox = app.install_testing_stub();
+        assert!(app.sessions.keys().all(|k| k.as_str() != "__spawn_forge__"));
+
+        switch_to_project_lead(&mut app, "forge");
+
+        assert_eq!(
+            app.pending_spawn_focus.as_ref().map(forge_workspace::SessionKey::as_str),
+            Some("__spawn_forge__"),
+            "a cold-row click must record the spawn key it is waiting for",
         );
     }
 

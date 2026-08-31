@@ -494,11 +494,20 @@ fn apply_session_update_spawning(
     // auto_start project must just register the bucket and trigger
     // a redraw - never move focus.
     //
-    // The only case we'd switch focus from here is `active_session_key
-    // == None`, which doesn't happen in practice (the App constructs
-    // pre-Connect at startup). Kept defensively so a future flow that
-    // skips the pre-Connect bucket still focuses its first spawn.
-    if app.active_session_key.is_none() {
+    // A user-driven wake is the exception: it recorded this exact key
+    // in `pending_spawn_focus` when the click dispatched, so honouring
+    // it moves focus for that one spawn and no other.
+    //
+    // The only other case we'd switch focus from here is
+    // `active_session_key == None`, which doesn't happen in practice
+    // (the App constructs pre-Connect at startup). Kept defensively so
+    // a future flow that skips the pre-Connect bucket still focuses
+    // its first spawn.
+    let user_asked_for_this = app.pending_spawn_focus.as_ref() == Some(&key);
+    if user_asked_for_this {
+        app.pending_spawn_focus = None;
+    }
+    if user_asked_for_this || app.active_session_key.is_none() {
         app.switch_active_session(key);
     } else {
         app.needs_redraw = true;
@@ -2068,6 +2077,70 @@ mod tests {
         );
         // Still switched to active.
         assert_eq!(app.active_session_key.as_ref(), Some(&key));
+    }
+
+    /// Waking a cold project from the Projects pane records the key it
+    /// was headed for, and the reducer honours it when the bucket
+    /// appears. Without the hand-off the click dispatches a spawn and
+    /// leaves the user exactly where they were, which is
+    /// indistinguishable from a dead row.
+    #[test]
+    fn spawning_follows_the_focus_a_user_click_asked_for() {
+        let mut app = App::test_default();
+        let elsewhere = SessionKey::from_session_id("some-other-session");
+        app.sessions.insert(elsewhere.clone(), crate::app::session::UiSession::new(elsewhere.clone()));
+        app.active_session_key = Some(elsewhere);
+
+        let key = SessionKey::from_session_id("__spawn_cold__".to_owned());
+        app.pending_spawn_focus = Some(key.clone());
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::Spawning {
+                key: key.clone(),
+                project_name: "cold".to_owned(),
+                cwd: "/p/cold".to_owned(),
+                display_name: "cold".to_owned(),
+            },
+        );
+
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&key),
+            "a click-driven wake must land the user in the session it woke",
+        );
+        assert!(
+            app.pending_spawn_focus.is_none(),
+            "the intent is one-shot; leaving it set would re-steal focus on a later spawn",
+        );
+    }
+
+    /// The negative control for the test above, and the reason the
+    /// reducer cannot simply always focus: every `auto_start` project
+    /// emits `Spawning` at boot, so an unconditional switch hands the
+    /// tab to whichever one the scheduler happens to run first.
+    #[test]
+    fn spawning_leaves_focus_alone_when_no_click_asked_for_it() {
+        let mut app = App::test_default();
+        let watching = SessionKey::from_session_id("session-the-user-is-reading");
+        app.sessions.insert(watching.clone(), crate::app::session::UiSession::new(watching.clone()));
+        app.active_session_key = Some(watching.clone());
+        assert!(app.pending_spawn_focus.is_none(), "no click preceded this spawn");
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::Spawning {
+                key: SessionKey::from_session_id("__spawn_autostart__".to_owned()),
+                project_name: "autostart".to_owned(),
+                cwd: "/p/autostart".to_owned(),
+                display_name: "autostart".to_owned(),
+            },
+        );
+
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&watching),
+            "an unasked-for spawn must not take the tab the user is reading",
+        );
     }
 
     /// `SessionUpdate::KeyRenamed { from, to }` should migrate a
