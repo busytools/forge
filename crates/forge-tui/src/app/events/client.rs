@@ -101,6 +101,9 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::KeyRenamed { from, to } => {
             apply_session_update_key_renamed(app, &from, to);
         }
+        SessionUpdate::SpawnBucketRetired { key, superseded_by } => {
+            apply_session_update_spawn_bucket_retired(app, &key, &superseded_by);
+        }
         SessionUpdate::Connected {
             key,
             session_id,
@@ -1179,10 +1182,9 @@ pub(super) fn apply_session_update_key_renamed(app: &mut App, from: &SessionKey,
     let already_under_to = app.sessions.contains_key(&to);
     if let Some(mut bucket) = app.sessions.remove(from) {
         if already_under_to {
-            // `to` already exists (e.g. a Connected for the same
-            // session UUID raced ahead and seeded the bucket); the
-            // synthetic at `from` is now redundant, so drop it.
-            tracing::warn!(
+            // A Connected for the same session UUID raced ahead and
+            // seeded the bucket.
+            tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "key_renamed_synthetic_dropped",
                 message = "synthetic bucket dropped because real-key bucket already existed",
@@ -1217,12 +1219,44 @@ pub(super) fn apply_session_update_key_renamed(app: &mut App, from: &SessionKey,
     app.needs_redraw = true;
 }
 
+/// Drop the redundant `Spawning` bucket a wake left behind when it
+/// resolved to an already-pooled session.
+///
+/// Retires nothing until a bucket stands at `superseded_by`: before the
+/// live session's first `Connected` the synthetic is the only bucket it
+/// has, and that session's own `KeyRenamed` still names the same
+/// synthetic key, so leaving it alone is what lets that case heal
+/// itself.
+pub(super) fn apply_session_update_spawn_bucket_retired(
+    app: &mut App,
+    key: &SessionKey,
+    superseded_by: &SessionKey,
+) {
+    if !app.sessions.contains_key(superseded_by) || app.sessions.remove(key).is_none() {
+        return;
+    }
+    tracing::debug!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "spawn_bucket_retired",
+        message = "synthetic spawn bucket dropped against an already-pooled session",
+        outcome = "dropped",
+        key = %key.as_str(),
+        superseded_by = %superseded_by.as_str(),
+    );
+    // `switch_active_session` rather than writing the key directly, so
+    // `App.status` is re-derived from the destination's lifecycle.
+    if app.active_session_key.as_ref() == Some(key) {
+        app.switch_active_session(superseded_by.clone());
+    }
+    app.needs_redraw = true;
+}
+
 #[cfg(test)]
 mod tests {
     use forge_workspace::protocol::WorktreeDisposition;
 
     use super::*;
-    use crate::app::session::UiSession;
+    use crate::app::session::{SessionLifecycleState, UiSession};
 
     fn seed_two_sessions(app: &mut App) -> (SessionKey, SessionKey) {
         let key_a = SessionKey::from_str_for_test("session-a");
@@ -2179,6 +2213,87 @@ mod tests {
             Some(&watching),
             "an unasked-for spawn must not take the tab the user is reading",
         );
+    }
+
+    /// Retiring a synthetic must drop it and leave the live session's
+    /// bucket alone - the whole reason this is not a `KeyRenamed`,
+    /// which would overwrite `superseded_by` with the synthetic and
+    /// stamp it `Idle`. Focus follows only when it sat on the
+    /// synthetic, and through `switch_active_session`, so `App.status`
+    /// is re-derived rather than left on `Connecting`.
+    #[test]
+    fn spawn_bucket_retired_drops_the_synthetic_and_leaves_the_live_bucket() {
+        let mut app = App::test_default();
+        app.sessions.clear();
+
+        let synthetic = SessionKey::from_session_id("__spawn_proj__".to_owned());
+        let live = SessionKey::from_session_id("real-uuid-9000".to_owned());
+        app.sessions.insert(synthetic.clone(), UiSession::new(synthetic.clone()));
+        let mut live_bucket = UiSession::new(live.clone());
+        live_bucket.cwd_raw = "/proj".to_owned();
+        live_bucket.lifecycle_state = SessionLifecycleState::Idle;
+        live_bucket.messages.push(crate::app::ChatMessage::new(
+            crate::app::MessageRole::System(Some(crate::app::SystemSeverity::Info)),
+            vec![crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete("live"))],
+        ));
+        app.sessions.insert(live.clone(), live_bucket);
+        app.active_session_key = Some(synthetic.clone());
+        app.status = crate::app::state::AppStatus::Connecting;
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::SpawnBucketRetired {
+                key: synthetic.clone(),
+                superseded_by: live.clone(),
+            },
+        );
+
+        assert!(!app.sessions.contains_key(&synthetic), "the synthetic bucket is dropped");
+        let survivor = app.sessions.get(&live).expect("the live bucket survives");
+        assert_eq!(survivor.messages.len(), 1, "the live bucket's content is untouched");
+        assert_eq!(
+            survivor.lifecycle_state,
+            SessionLifecycleState::Idle,
+            "and its lifecycle is not restamped",
+        );
+        assert_eq!(app.active_session_key.as_ref(), Some(&live), "focus follows off the synthetic");
+        assert_eq!(
+            app.status,
+            crate::app::state::AppStatus::Ready,
+            "and App.status is re-derived from the destination rather than left Connecting",
+        );
+    }
+
+    /// Before the live session's first `Connected` there is no bucket
+    /// at `superseded_by`, and the synthetic is the only bucket that
+    /// session has - so retiring it would strand the wake. That case
+    /// heals itself: the pending `SessionTask` still emits `KeyRenamed`
+    /// naming the same synthetic key.
+    #[test]
+    fn spawn_bucket_retired_keeps_the_synthetic_when_nothing_stands_at_the_live_key() {
+        let mut app = App::test_default();
+        app.sessions.clear();
+
+        let synthetic = SessionKey::from_session_id("__spawn_proj__".to_owned());
+        let live = SessionKey::from_session_id("real-uuid-9000".to_owned());
+        let mut bucket = UiSession::new(synthetic.clone());
+        bucket.lifecycle_state = SessionLifecycleState::Spawning;
+        app.sessions.insert(synthetic.clone(), bucket);
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::SpawnBucketRetired {
+                key: synthetic.clone(),
+                superseded_by: live.clone(),
+            },
+        );
+
+        assert_eq!(
+            app.sessions.get(&synthetic).map(|s| s.lifecycle_state),
+            Some(SessionLifecycleState::Spawning),
+            "the still-connecting session keeps its only bucket, untouched",
+        );
+        assert!(!app.sessions.contains_key(&live), "and nothing is seeded at the live key");
     }
 
     /// `SessionUpdate::KeyRenamed { from, to }` should migrate a

@@ -1023,15 +1023,13 @@ impl Workspace {
         // `__spawn_<name>__` and dispatches SpawnProject), we MUST
         // drain that buffer into the live session before returning
         // the pooled handle - otherwise the pending peer prompt
-        // strands at the synth key forever. The drain happens in
-        // the same critical section as the pool lookup so a
-        // concurrent caller can't race us into orphaning the
-        // buffer.
+        // strands at the synth key forever.
         {
             let pool = self.pool.lock();
             if let Some(existing) = pool.get(&session_key) {
                 let handle = Arc::clone(&existing.handle);
                 drop(pool);
+                self.retire_spawn_key_bucket(&session_key, spawn_key.as_ref());
                 self.drain_spawn_key_buffer_into(&session_key, spawn_key.as_ref());
                 return Ok(handle);
             }
@@ -1288,6 +1286,29 @@ impl Workspace {
         }
 
         Ok(arc)
+    }
+
+    /// Retire the caller's synthetic `spawn_key` bucket: the pool fast
+    /// path builds no `SessionTask`, so nothing else emits the
+    /// `KeyRenamed` that would migrate it, and the task that did
+    /// connect consumed its own `spawn_key`.
+    ///
+    /// Unconditional because the reducer, not this, decides whether the
+    /// bucket is redundant yet - it is the only side that can see
+    /// whether one already stands at `session_key`.
+    ///
+    /// A self-rename would reach the reducer with the live bucket as
+    /// both ends, so the equal-keys guard is load-bearing: the worker
+    /// fresh-spawn path resolves `FreshInProject` to its own synth key.
+    fn retire_spawn_key_bucket(&self, session_key: &SessionKey, spawn_key: Option<&SessionKey>) {
+        let Some(spawn_key) = spawn_key else { return };
+        if spawn_key == session_key {
+            return;
+        }
+        let _ = self.update_tx.send(SessionUpdate::SpawnBucketRetired {
+            key: spawn_key.clone(),
+            superseded_by: session_key.clone(),
+        });
     }
 
     /// When `get_agent_handle_with_spawn_key` hits the pool fast-path
@@ -10116,6 +10137,104 @@ config_dir = "~/.claude-second"
         assert!(workspace.command_senders.lock().contains_key(&key));
         assert!(workspace.pool.lock().contains_key(&key));
         assert!(workspace.domain_handles.lock().contains_key(&key));
+    }
+
+    /// Stub carrying one project, `companies`, whose lead session is
+    /// already up: catalogued, pooled, and - because
+    /// `install_fake_session_task` stamps it - carrying the
+    /// `session_id` the retire gate reads. The returned `TempDir`
+    /// guards the config dir for the caller's lifetime.
+    fn stub_with_connected_lead()
+    -> (Arc<Workspace>, mpsc::UnboundedReceiver<SessionUpdate>, SessionKey, tempfile::TempDir) {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("companies");
+        fs::create_dir_all(&root).expect("project root");
+        let forge_dir = crate::config::ensure_forge_data_dir(dir.path()).expect("forge dir");
+        fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "companies"
+path = "{root}"
+[[accounts]]
+display_name = "Stargate"
+config_dir = "/tmp/respawn-retire-cfg"
+"#,
+                root = root.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let config = crate::config::load_from_dir(dir.path()).expect("load config");
+        let (ws, update_rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config);
+
+        let lead = SessionKey::from_session_id("lead-uuid".to_owned());
+        ws.record_connected_session(&root.to_string_lossy(), lead.as_str(), None);
+        let _cmd_rx = install_fake_session_task(&ws, &lead);
+        assert_eq!(
+            ws.resolve_target(&SessionTarget::Named("companies".to_owned())).expect("resolves"),
+            lead,
+            "precondition: the project resolves to the lead this fixture pooled",
+        );
+        (ws, update_rx, lead, dir)
+    }
+
+    /// Fold an emitted update stream down to the buckets still standing
+    /// at a synthetic spawn key: `Spawning` opens one,
+    /// `SpawnBucketRetired` closes it.
+    fn standing_spawn_buckets(
+        update_rx: &mut mpsc::UnboundedReceiver<SessionUpdate>,
+    ) -> Vec<SessionKey> {
+        let mut standing: Vec<SessionKey> = Vec::new();
+        while let Ok(update) = update_rx.try_recv() {
+            match update {
+                SessionUpdate::Spawning { key, .. } => standing.push(key),
+                SessionUpdate::SpawnBucketRetired { key, .. } => standing.retain(|k| k != &key),
+                _ => {}
+            }
+        }
+        standing
+    }
+
+    /// Any second wake of a live project reaches the fast path: a cron,
+    /// a peer prompt, a gotify message or the boot auto-start wave
+    /// landing after one of them.
+    #[test]
+    fn respawn_of_connected_project_retires_its_spawn_bucket() {
+        let (ws, mut update_rx, _lead, _dir) = stub_with_connected_lead();
+
+        crate::spawn::handle_spawn_project(&ws, "companies", SessionLaunchSettings::default());
+
+        let standing = standing_spawn_buckets(&mut update_rx);
+        assert!(
+            standing.is_empty(),
+            "re-spawning an already-connected project must leave no bucket at its \
+             __spawn_<name>__ key; stranded: {standing:?}",
+        );
+    }
+
+    /// A background rate-limit clears `DomainSession.session_id` while
+    /// the pool entry lives, and the connected task already consumed
+    /// its `spawn_key`, so nothing else can retire the bucket. The emit
+    /// must not read that mirror.
+    #[test]
+    fn a_rate_limited_session_still_gets_its_spawn_bucket_retired() {
+        let (ws, mut update_rx, lead, _dir) = stub_with_connected_lead();
+        // What `apply_session_update_connection_failed` does to a
+        // rate-limited background session: clear the mirror, leave the
+        // pool entry alone.
+        ws.set_session_id_in_domain(&lead, None);
+
+        crate::spawn::handle_spawn_project(&ws, "companies", SessionLaunchSettings::default());
+
+        let standing = standing_spawn_buckets(&mut update_rx);
+        assert!(
+            standing.is_empty(),
+            "a cleared session_id must not suppress the retire; stranded: {standing:?}",
+        );
     }
 
     /// `migrate_session_task` on an unregistered source is a no-op.

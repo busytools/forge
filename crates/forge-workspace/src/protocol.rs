@@ -549,6 +549,22 @@ pub enum SessionUpdate {
         from: SessionKey,
         to: SessionKey,
     },
+    /// A wake resolved to a session already in the pool, so the
+    /// `Spawning` bucket at `key` is redundant and no `SessionTask`
+    /// exists to migrate it - the one that connected consumed its own
+    /// `spawn_key`. TUI drops the bucket, moving focus to
+    /// `superseded_by` if it was there, and leaves `superseded_by`
+    /// otherwise untouched.
+    ///
+    /// Distinct from `KeyRenamed`, which migrates the bucket onto `to`
+    /// and marks it `Idle`. That is wrong here: before the live
+    /// session's first `Connected` the synthetic is still the only
+    /// bucket it has, so this retires nothing until one stands at
+    /// `superseded_by`.
+    SpawnBucketRetired {
+        key: SessionKey,
+        superseded_by: SessionKey,
+    },
     Connected {
         key: SessionKey,
         session_id: SessionId,
@@ -802,6 +818,7 @@ impl SessionUpdate {
                 Some(SessionKey::from_session_id(session_id.clone()))
             }
             Self::KeyRenamed { .. }
+            | Self::SpawnBucketRetired { .. }
             | Self::ServiceStatus { .. }
             | Self::PluginsInventoryUpdated { .. }
             | Self::PluginsInventoryRefreshFailed { .. }
@@ -824,6 +841,11 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("key", key)
                 .field("project_name", project_name)
                 .finish_non_exhaustive(),
+            Self::SpawnBucketRetired { key, superseded_by } => f
+                .debug_struct("SpawnBucketRetired")
+                .field("key", key)
+                .field("superseded_by", superseded_by)
+                .finish(),
             Self::KeyRenamed { from, to } => {
                 f.debug_struct("KeyRenamed").field("from", from).field("to", to).finish()
             }
