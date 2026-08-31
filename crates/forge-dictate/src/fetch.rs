@@ -81,13 +81,20 @@ pub fn prepare(
                     // Each announcement blocks on the driver's verdict, so
                     // a `Break` still stops this transfer at the same point
                     // it would have when the callback was called directly.
-                    let (verdict_tx, verdicts) = mpsc::channel();
                     let mut announce_to_driver = |progress| {
-                        let report = Report { progress, verdict: verdict_tx.clone() };
+                        // A fresh channel per announcement, so the only
+                        // sender travels WITH the report. Holding one for
+                        // the worker's lifetime would keep this `recv`
+                        // connected to itself, and a panicking callback
+                        // would park every worker on a wait that can never
+                        // end - `thread::scope` then never returns and the
+                        // panic never propagates.
+                        let (verdict_tx, verdict) = mpsc::channel();
+                        let report = Report { progress, verdict: verdict_tx };
                         if report_tx.send(report).is_err() {
                             return ControlFlow::Break(());
                         }
-                        verdicts.recv().unwrap_or(ControlFlow::Break(()))
+                        verdict.recv().unwrap_or(ControlFlow::Break(()))
                     };
                     ensure(dir, spec, &mut announce_to_driver)
                 })
@@ -692,6 +699,43 @@ mod tests_download {
             .collect();
         ready.sort_unstable();
         assert_eq!(ready, ["asr.gguf", "norm.gguf"], "each model must be reported ready");
+    }
+
+    /// A panicking callback must unwind out of `prepare` rather than
+    /// hang. The workers block waiting for a verdict, so if the channel
+    /// they wait on can outlive the driver they park forever and
+    /// `thread::scope` never joins - a hang with no message, inside a
+    /// `spawn_blocking` that esc cannot reach.
+    ///
+    /// Watchdog rather than a bare call: the failure being guarded
+    /// against is an infinite wait, and a test that reproduces it by
+    /// hanging is worse than no test.
+    #[test]
+    fn a_panicking_callback_unwinds_rather_than_parking_the_workers() {
+        let asr = b"pretend these are recognition weights".to_vec();
+        let norm = b"and these rewrite the words".to_vec();
+        let server = serve(vec![("/asr.gguf", asr.clone()), ("/norm.gguf", norm.clone())]);
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .asr_model(spec_for(&server, "/asr.gguf", &asr))
+            .normalizer(spec_for(&server, "/norm.gguf", &norm))
+            .build();
+
+        let running = std::thread::spawn(move || prepare(&cfg, |_| panic!("callback blew up")));
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !running.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(
+            running.is_finished(),
+            "prepare never returned: the workers are parked on a verdict that cannot arrive"
+        );
+        assert!(
+            running.join().is_err(),
+            "the callback's panic must surface to the caller, not be swallowed"
+        );
     }
 
     #[test]
