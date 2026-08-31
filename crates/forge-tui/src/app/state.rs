@@ -568,6 +568,12 @@ pub struct App {
     /// the arrow at startup instead of inheriting the terminal's own
     /// text-surface I-beam default.
     pub(crate) emitted_pointer_shape: Option<crate::app::events::mouse::PointerShape>,
+    /// Set when a resize arrived, cleared once the loop has rewritten the
+    /// keyboard enhancement flags. A byte-transparent session manager
+    /// leaves the flags on the terminal rather than the session, so a
+    /// reattach needs them set again; SIGWINCH is the signal that one
+    /// may have happened.
+    pub(crate) needs_keyboard_flags_restore: bool,
     /// Area where the Inspector pane's **scrollable body** was last
     /// rendered (excluding the pinned banner + rule above it). Used
     /// by the mouse-wheel handler to detect "wheel scrolled while
@@ -3659,6 +3665,7 @@ impl App {
             rendered_input_area: ratatui::layout::Rect::default(),
             pointer_shape: crate::app::events::mouse::PointerShape::Default,
             emitted_pointer_shape: None,
+            needs_keyboard_flags_restore: false,
             rendered_inspector_body_area: ratatui::layout::Rect::default(),
             rendered_projects_pane_body_area: ratatui::layout::Rect::default(),
             paste_burst: super::paste_burst::PasteBurstDetector::new(),

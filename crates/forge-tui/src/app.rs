@@ -116,7 +116,7 @@ const LOOP_TICK: Duration = Duration::from_millis(4);
 pub(crate) const MAX_CANDIDATES: usize = 200;
 
 // ---------------------------------------------------------------------------
-// Terminal suspend / resume helpers (reused by /login, /logout)
+// Terminal suspend / resume helpers
 // ---------------------------------------------------------------------------
 
 /// Disable raw mode and crossterm features so a child process can own the
@@ -169,12 +169,32 @@ fn keyboard_enhancement_flags() -> KeyboardEnhancementFlags {
         | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
 }
 
-pub(crate) fn replace_keyboard_enhancement_flags(
-    terminal: &mut impl std::io::Write,
-) -> std::io::Result<()> {
-    // Crossterm exposes only push/pop; kitty set mode 1 replaces the current entry.
-    let flags = keyboard_enhancement_flags().bits();
-    crossterm::execute!(terminal, crossterm::style::Print(format_args!("\x1b[={flags};1u")))
+/// The kitty set form, which replaces the active flags: crossterm
+/// exposes only push and pop, and a push per resize would grow the
+/// terminal's stack past the single pop in [`suspend_terminal`].
+pub(crate) fn keyboard_enhancement_set_sequence() -> String {
+    format!("\x1b[={};1u", keyboard_enhancement_flags().bits())
+}
+
+/// Rewrite the enhancement flags iff a resize asked for it. Called once
+/// per loop pass, so a drag's SIGWINCH burst costs one escape rather
+/// than one per event.
+fn flush_keyboard_flags_restore(app: &mut App) {
+    if !std::mem::take(&mut app.needs_keyboard_flags_restore) {
+        return;
+    }
+    if let Err(error) = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::style::Print(keyboard_enhancement_set_sequence())
+    ) {
+        tracing::warn!(
+            target: crate::logging::targets::APP_LIFECYCLE,
+            event_name = "keyboard_enhancement_restore_failed",
+            message = "could not rewrite keyboard enhancement flags after a resize",
+            outcome = "failure",
+            error_message = %error,
+        );
+    }
 }
 
 /// Re-enable raw mode and crossterm features after a child process finishes.
@@ -191,6 +211,37 @@ pub(crate) fn resume_terminal() {
     // events, not just drags - needed for the pointer-shape affordance.
     // crossterm's EnableMouseCapture only sets 1000/1002/1006.
     let _ = crossterm::execute!(std::io::stdout(), crossterm::style::Print("\x1b[?1003h"));
+    report_keyboard_enhancement_support();
+}
+
+/// Ask whether the flags just pushed actually took, so a terminal or
+/// multiplexer that discards them leaves a record rather than silence.
+/// Cmd bindings and key-release events both need the enhanced protocol,
+/// and a session manager that eats the escape breaks them with no other
+/// symptom.
+///
+/// Only safe to call from [`resume_terminal`]: the query blocks on a
+/// terminal reply, and the caller runs before the event loop owns the
+/// reader. GNU screen answers the device-attributes half and not the
+/// flags half, which is a prompt `Ok(false)`; a terminal that answers
+/// neither costs crossterm's 2s timeout once at startup.
+fn report_keyboard_enhancement_support() {
+    match crossterm::terminal::supports_keyboard_enhancement() {
+        Ok(true) => {}
+        Ok(false) => tracing::warn!(
+            target: crate::logging::targets::APP_LIFECYCLE,
+            event_name = "keyboard_enhancement_unsupported",
+            message = "terminal discarded the keyboard enhancement flags; Cmd bindings and key-release events will not arrive",
+            outcome = "failure",
+        ),
+        Err(error) => tracing::warn!(
+            target: crate::logging::targets::APP_LIFECYCLE,
+            event_name = "keyboard_enhancement_query_failed",
+            message = "could not read keyboard enhancement support from the terminal",
+            outcome = "failure",
+            error_message = %error,
+        ),
+    }
 }
 
 /// Emit the OSC 22 pointer-shape sequence iff the desired shape changed
@@ -339,6 +390,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // Flush the desired OS pointer shape (off the render path, every
         // pass, de-duped) so hover updates the cursor without a redraw.
         flush_pointer_shape(app);
+        flush_keyboard_flags_restore(app);
 
         if app.should_quit {
             break;

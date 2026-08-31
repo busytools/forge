@@ -120,8 +120,7 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
             true
         }
         Event::Resize(width, height) => {
-            let mut terminal = std::io::stdout();
-            handle_resize(app, width, height, &mut terminal);
+            handle_resize(app, width, height);
             true
         }
         // Non-press key events (Release, Repeat) -- ignored.
@@ -135,8 +134,11 @@ fn should_dispatch_key_event(key: crossterm::event::KeyEvent) -> bool {
         || (key.kind == KeyEventKind::Release && super::keys::is_clipboard_paste_shortcut(key))
 }
 
-fn handle_resize(app: &mut App, width: u16, height: u16, terminal: &mut impl std::io::Write) {
-    let _ = super::replace_keyboard_enhancement_flags(terminal);
+fn handle_resize(app: &mut App, width: u16, height: u16) {
+    // A reattach under a byte-transparent session manager arrives as a
+    // resize, and the flags it needs live on the terminal it left.
+    app.needs_keyboard_flags_restore = true;
+
     // Force a full terminal clear on resize. Without this, terminal
     // emulators (especially on Windows) corrupt their scrollback buffer
     // when the alternate screen is resized, causing the visible area to
@@ -493,6 +495,9 @@ fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
 
 #[cfg(test)]
 mod tests {
+    // =====
+    // TESTS: 40
+    // =====
 
     use super::*;
     use crate::app::{
@@ -594,16 +599,33 @@ mod tests {
     }
 
     #[test]
-    fn each_resize_restores_keyboard_enhancement_flags_without_pushing_the_stack() {
+    fn a_resize_event_asks_for_the_keyboard_flags_to_be_restored() {
         let mut app = App::test_default();
-        let mut terminal = Vec::new();
 
-        handle_resize(&mut app, 120, 40, &mut terminal);
-        handle_resize(&mut app, 121, 40, &mut terminal);
+        handle_terminal_event(&mut app, Event::Resize(120, 40));
+
+        assert!(
+            app.needs_keyboard_flags_restore,
+            "a resize must ask for the keyboard flags to be rewritten"
+        );
+    }
+
+    /// The set form replaces the active flags. A push would grow the
+    /// terminal's stack once per resize, past the single pop at teardown.
+    #[test]
+    fn the_restore_sequence_sets_rather_than_pushes_the_negotiated_flags() {
+        let expected = format!(
+            "\x1b[={};1u",
+            (crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | crossterm::event::KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS)
+                .bits()
+        );
 
         assert_eq!(
-            terminal, b"\x1b[=7;1u\x1b[=7;1u",
-            "every resize must replace the active flags without growing the terminal stack"
+            crate::app::keyboard_enhancement_set_sequence(),
+            expected,
+            "the restore must set the negotiated flags rather than push them"
         );
     }
 
