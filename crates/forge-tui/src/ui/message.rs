@@ -365,9 +365,14 @@ fn build_message_layout(
 }
 
 /// Re-read the running turn's elapsed into whole seconds before the
-/// cache key is built, so the key and the layout it guards agree and
-/// the row re-lays out at most once a second. No new clock: a running
-/// turn already forces a repaint on the existing cadence.
+/// cache key is built, so the key and the layout it guards agree. No
+/// new clock: a running turn already forces a repaint on the existing
+/// cadence.
+///
+/// This bounds how often the elapsed *changes* the key, not how often
+/// the message rebuilds: the signature also folds the spinner glyph on
+/// a running assistant message, and that turns over every 32ms on the
+/// default style.
 fn refresh_live_turn_elapsed(msg: &mut ChatMessage) {
     if msg.turn_info.is_settled() {
         return;
@@ -378,8 +383,10 @@ fn refresh_live_turn_elapsed(msg: &mut ChatMessage) {
 }
 
 /// Fold the turn-info row's inputs into the message render signature.
-/// `elapsed_secs` rather than the start instant, so a rebuild happens
-/// on a second boundary instead of every frame.
+/// `elapsed_secs` rather than the start instant, so the elapsed moves
+/// the key on a second boundary rather than every frame - which is not
+/// the same as the message rebuilding once a second, since the glyph
+/// folded alongside it turns over far quicker.
 fn hash_turn_info(info: &TurnInfo, hasher: &mut impl std::hash::Hasher) {
     use std::hash::Hash;
     info.elapsed_secs.hash(hasher);
@@ -450,26 +457,27 @@ fn turn_info_row(info: &TurnInfo, glyph: Option<char>, width: u16) -> Line<'stat
     // shed before it - giving up real billed usage to keep an estimate
     // is backwards.
     let mut fields: Vec<(u8, String)> = Vec::new();
-    // Absent only before anything has been stamped, which is the window
-    // between forge opening a turn it did not dispatch and that turn's
-    // first frame. A bare spinner is all there is to say there, and it
-    // is what the standalone thinking line used to say.
+    // With no clock there is no anchor for the rest to sit beside, so
+    // the row is a bare spinner rather than a field list missing its
+    // first entry. That window is real: `start_live_turn` runs on the
+    // submit path only, so a delivered prompt has no start until its
+    // first frame, while `thinking` can arrive before it (#805).
     if !info.is_empty() {
         fields.push((0, format_turn_duration(info.elapsed_ms())));
-    }
-    // Running-only: once billed counts exist they are the better use of
-    // the width, and the estimate stays in the expanded body.
-    if let Some(thinking) = info.thinking_tokens.filter(|_| glyph.is_some()) {
-        fields.push((3, format!("thinking {}", format_token_count_short(thinking))));
-    }
-    if let Some(tokens) = turn_info_token_field(info) {
-        fields.push((4, tokens));
-    }
-    if let Some(pct) = info.cache_hit_percent() {
-        fields.push((2, format!("{pct}% cached")));
-    }
-    if let Some(written) = info.cache_written_tokens {
-        fields.push((1, format!("{} written", format_token_count_short(written))));
+        // Running-only: once billed counts exist they are the better
+        // use of the width, and the estimate stays in the expanded body.
+        if let Some(thinking) = info.thinking_tokens.filter(|_| glyph.is_some()) {
+            fields.push((3, format!("thinking {}", format_token_count_short(thinking))));
+        }
+        if let Some(tokens) = turn_info_token_field(info) {
+            fields.push((4, tokens));
+        }
+        if let Some(pct) = info.cache_hit_percent() {
+            fields.push((2, format!("{pct}% cached")));
+        }
+        if let Some(written) = info.cache_written_tokens {
+            fields.push((1, format!("{} written", format_token_count_short(written))));
+        }
     }
     let lead = glyph.unwrap_or('↳');
     for rank in 1..=4 {
@@ -5194,6 +5202,28 @@ mod tests {
             !one_short.contains("written"),
             "one column narrower than an exact fit must shed a field, not overflow: \
              {one_short}",
+        );
+    }
+
+    #[test]
+    fn a_row_with_no_clock_is_a_bare_spinner_not_a_headless_field_list() {
+        let running = SpinnerState {
+            is_active_turn_assistant: true,
+            show_empty_thinking: true,
+            glyph: '\u{280b}',
+            ..idle_spinner()
+        };
+        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new());
+        // The estimate reaches the row before the turn's start does on
+        // any delivered prompt, since the thinking frames precede the
+        // first assistant frame in every baseline that fires them.
+        msg.turn_info = TurnInfo { thinking_tokens: Some(83), ..TurnInfo::default() };
+
+        assert_eq!(
+            turn_info_row_text_with(&mut msg, &running, 80),
+            "\u{280b} [\u{25b6} expand]",
+            "elapsed anchors the row, so a field that arrives before it waits rather than \
+             rendering as the row's first and only figure",
         );
     }
 

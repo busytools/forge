@@ -349,8 +349,10 @@ mod tests {
     ///
     /// It does not prove the mirrors overwrite rather than skip: every
     /// turn here opens its own message, so a fresh `None` and a written
-    /// `None` are the same thing. That distinction only bites on a
-    /// message a second turn reuses, which no baseline produces.
+    /// `None` are the same thing. That distinction bites on a message a
+    /// second turn reuses, which no baseline happens to contain but the
+    /// reducer reaches readily - see
+    /// `a_turn_reusing_an_unsettled_row_does_not_inherit_its_estimate`.
     #[test]
     fn replay_the_turn_end_reset_keeps_an_estimate_off_later_turns() {
         use crate::app::MessageRole;
