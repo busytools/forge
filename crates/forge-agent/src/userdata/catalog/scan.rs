@@ -4,9 +4,11 @@
 //! - [`list_sessions`] - lists sessions, either for one project or all.
 //! - [`get_session_messages`] - reads the full transcript for one session.
 //!
-//! Session metadata ([`list_sessions`]) is extracted via an internal
-//! head + tail lite read so a 100 MiB transcript costs two 64 KiB
-//! reads rather than a full scan.
+//! Session metadata ([`list_sessions`]) comes from an internal head +
+//! tail lite read, so the fields it parses cost two 64 KiB reads
+//! whatever the transcript's size. The worker tag is the exception and
+//! is read in full: it can sit anywhere in the file and the last one
+//! wins, so there is no window that settles it.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
@@ -407,6 +409,10 @@ struct LiteSessionFile {
 /// than the buffer, `tail == head` (single read). Returns `None` on
 /// any I/O error or for empty files.
 ///
+/// The tag scan that follows is NOT bounded by that buffer - it reads
+/// the file end to end, so this is a lite read of the metadata and a
+/// full read of the bytes. See [`find_session_tag`].
+///
 /// Each `.ok()?` early return logs at debug level naming the step
 /// that failed - without these, the session picker silently drops
 /// sessions whose files have permission errors / are mid-truncation
@@ -489,11 +495,38 @@ fn read_session_lite(path: &Path) -> Option<LiteSessionFile> {
 ///
 /// Last-wins semantics: a `/new` re-tag appended later in the
 /// transcript supersedes the original spawn tag.
-fn find_session_tag<R: BufRead>(reader: R) -> Option<String> {
+///
+/// Reads into one reused buffer rather than over `BufRead::lines`,
+/// whose per-line `String` is the whole cost here: this runs over every
+/// byte of every transcript in the catalog on the boot path, and the
+/// tag rows it is looking for are a handful of lines in gigabytes.
+fn find_session_tag<R: BufRead>(mut reader: R) -> Option<String> {
     let mut last_tag: Option<String> = None;
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e) => {
+                tracing::debug!(target: crate::logging::targets::CATALOG_SCAN, error = %e, step = "tag_scan_line", "lite-read tag-scan line read failed; ending scan with last seen tag");
+                break;
+            }
+        }
+        // `lines()` yields neither terminator, and both are stripped
+        // before the prefix test so a CRLF transcript compares the same
+        // bytes it always did.
+        if line.last() == Some(&b'\n') {
+            line.pop();
+        }
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+        // Every line is still validated, not only the candidates: a
+        // transcript that is not UTF-8 ended the scan before, and where
+        // it ends decides which tag wins.
+        let line = match std::str::from_utf8(&line) {
+            Ok(text) => text,
             Err(e) => {
                 tracing::debug!(target: crate::logging::targets::CATALOG_SCAN, error = %e, step = "tag_scan_line", "lite-read tag-scan line read failed; ending scan with last seen tag");
                 break;
@@ -502,7 +535,7 @@ fn find_session_tag<R: BufRead>(reader: R) -> Option<String> {
         if !line.starts_with("{\"type\":\"tag\"") {
             continue;
         }
-        if let Some(tag) = extract_last_json_string_field(&line, "tag")
+        if let Some(tag) = extract_last_json_string_field(line, "tag")
             && !tag.is_empty()
         {
             last_tag = Some(tag);
