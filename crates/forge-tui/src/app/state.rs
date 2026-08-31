@@ -1909,7 +1909,13 @@ impl App {
     /// Start the active session's live turn accounting, so the row
     /// counts from prompt dispatch rather than from the first
     /// assistant frame. A settled message is left alone.
+    ///
+    /// Resets the thinking accumulator with it. The row's own copy is
+    /// wiped by the struct replacement below, and leaving the session
+    /// field behind would add an interrupted turn's estimate to the
+    /// next one's, since the deltas accumulate rather than overwrite.
     pub fn start_live_turn(&mut self, at: std::time::Instant) {
+        self.set_latest_thinking_tokens(None);
         self.active_bucket_mut().live_turn.start(at);
         let Some(idx) = self
             .messages()

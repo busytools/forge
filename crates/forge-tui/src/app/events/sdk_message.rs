@@ -2136,6 +2136,47 @@ mod stamp_turn_info_tests {
         );
     }
 
+    /// The other half, and the commoner one: interrupt a turn and type
+    /// the next prompt. That goes through the submit path, where
+    /// `start_live_turn` replaces the row's whole `TurnInfo` - so the
+    /// accumulator it does not reach would be added to rather than
+    /// replaced, the deltas summing across the boundary.
+    #[test]
+    fn a_prompt_after_an_interrupted_turn_starts_the_estimate_over() {
+        let mut app = app_with_assistant();
+        handle_thinking_tokens(&mut app, 50);
+        handle_thinking_tokens(&mut app, 33);
+        record_live_turn_usage(&mut app, &assistant_frame("msg_turn_one"), None);
+        assert_eq!(
+            latest_turn_info(&app).thinking_tokens,
+            Some(83),
+            "fixture guard: turn one's estimate is on the row before it is interrupted",
+        );
+
+        // Interrupted: no Result. The user types, which is the submit
+        // path rather than a wire frame.
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new()));
+        app.start_live_turn(std::time::Instant::now());
+        assert_eq!(
+            latest_turn_info(&app).thinking_tokens,
+            None,
+            "the fresh turn's row carries no estimate yet",
+        );
+        assert_eq!(
+            app.latest_thinking_tokens(),
+            None,
+            "and the accumulator behind it is reset too - clearing only the row would leave \
+             the next delta adding to a number the user cannot see",
+        );
+
+        handle_thinking_tokens(&mut app, 50);
+        assert_eq!(
+            latest_turn_info(&app).thinking_tokens,
+            Some(50),
+            "turn two has thought 50, so that is what it reports - not 133",
+        );
+    }
+
     fn latest_turn_info(app: &App) -> TurnInfo {
         app.messages()
             .iter()
