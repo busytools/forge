@@ -989,7 +989,7 @@ chat continues here...
         <span class="dim bold">Dictation</span>
         <span class="rust-orange">⠹</span> transcribing model                    <span class="dim">   verifying</span>
           <span class="dim">(cohere-transcribe-03-2026-Q4_K_M)</span>
-        <span style="color:#cfc26b">○</span> normalization model                   <span class="dim">      queued</span>
+        <span class="rust-orange">⠹</span> normalization model                   <span class="dim">   verifying</span>
           <span class="dim">(s1-mini-f16)</span>
       <span class="dim">────────────────────────────────────────────────────────</span>
 
@@ -1000,6 +1000,7 @@ chat continues here...
       <dt>spinner</dt><dd>The configured <code>SpinnerStyle</code> at its own cadence, through the same <code>App::active_spinner_glyph</code> every other animated surface reads. Preflight is one more of those, not a new vocabulary - change <code>[ui] spinner</code> and this moves with the rest.</dd>
       <dt>account states</dt><dd><code style="color:#cfc26b">○</code> yellow <code>resolving</code> = Loading or Refreshing · <code style="color:#7eb87a">●</code> green <code>ready</code> = probe returned · <code style="color:#cf6171">⚠</code> red <code>auth failed</code> = Bailed. Bailed renders in <code>STATUS_ERROR</code> rather than the warning yellow the launchpad chip row used: on the one screen that can stop forge starting, mid-flight and failed must not differ only by glyph. It also settles a disagreement with the project row's own account chip, which was already red.</dd>
       <dt>model states</dt><dd><code>queued</code> · <code>downloading</code> · <code>resuming</code> (a transfer that picked up a <code>.part</code>) · <code>verifying</code> · <code>ready</code> · <code>loading</code> · then <code>ready</code> again once the weights are in memory. A failure reads <code>bad hash</code> or <code>cancelled</code>, and a row nothing will now start reads <code>not started</code> rather than <code>queued</code>.</dd>
+      <dt>both rows advance together</dt><dd><code>forge_dictate::prepare</code> gives each model a thread, so the pair costs the slower of the two rather than their sum - 5.3 s to 2.7 s verifying the shipped 3.07 GB warm. <code>queued</code> is therefore the moment before both start, not one model waiting on the other.</dd>
       <dt>keys</dt><dd><kbd>Esc</kbd> cancels an in-flight model download, which quits forge · <kbd>Ctrl+Q</kbd> quit. Every other key is consumed silently - there is nothing to navigate and the projects view underneath is not reachable yet.</dd>
       <dt>hand-over</dt><dd>Latched, not re-evaluated. A token expiring mid-session takes an account <code>Ready → Bailed → Loading</code>, so the readiness condition genuinely goes false again while the user is working; without the latch that would throw them back onto a boot screen. The launchpad's own gate covers that window instead.</dd>
       <dt>short terminals</dt><dd>The wordmark is dropped before any panel content when the block does not fit, because the failure screens' exits are the one thing this screen cannot clip. Past that the panel drops rows from the TOP rather than the bottom - the failure detail and the exits it names are appended last - and replaces them with a dim <code>… N more above</code>, so nothing vanishes unmarked. At 100x24 the bailed screen already overflows.</dd>
@@ -1110,8 +1111,9 @@ chat continues here...
         <span class="rust-orange">⠹</span> transcribing model                    <span class="dim"> downloading</span>
           <span class="dim">(cohere-transcribe-03-2026-Q4_K_M)</span>
           <span class="rust-orange">████</span><span class="dim">░░░░░░░░░░░░░░░░░░░░░░</span><span class="dim">   14%  218 MB / 1.56 GB</span>
-        <span style="color:#cfc26b">○</span> normalization model                   <span class="dim">      queued</span>
+        <span class="rust-orange">⠹</span> normalization model                   <span class="dim"> downloading</span>
           <span class="dim">(s1-mini-f16)</span>
+          <span class="rust-orange">███</span><span class="dim">░░░░░░░░░░░░░░░░░░░░░░░</span><span class="dim">   11%  166 MB / 1.51 GB</span>
 
         First run fetches 3.07 GB once. Quitting keeps
         what has landed, in ~/Library/Caches/forge-dictate.

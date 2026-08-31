@@ -2,11 +2,12 @@
 //! preflight pass that makes the models usable before forge starts.
 //!
 //! The costs are what shape this. A first run fetches 3.07 GB; every
-//! later one re-hashes it, which is about 5 s for the pair; loading the
-//! weights is another second warm. None of that can happen while
-//! somebody is dictating, so all of it happens once, at boot, on the
-//! preflight screen.
+//! later one re-hashes it, which is about 2.7 s for the pair now the
+//! two models are prepared concurrently; loading the weights is another
+//! second warm. None of that can happen while somebody is dictating, so
+//! all of it happens once, at boot, on the preflight screen.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -312,10 +313,17 @@ pub(crate) async fn run_dictate_preflight(settings: DictateSettings, state: Arc<
 fn prepare(cfg: &forge_dictate::Config, state: &DictateState) -> Result<(), ()> {
     use std::ops::ControlFlow;
 
-    // What a `.part` held when the transfer opened, per file. A bar that
-    // starts at 38% with nothing said about it reads as a bug.
-    let mut resumed_from: Option<u64> = None;
-    let mut in_flight: Option<(String, u64, u64)> = None;
+    // Keyed by file because the models are prepared concurrently and
+    // their events interleave: a single slot would let one model's
+    // Verifying clear the other's resume marker mid-transfer.
+    //
+    // `resumed_from` is what a `.part` held when its transfer opened - a
+    // bar that starts at 38% with nothing said about it reads as a bug.
+    let mut resumed_from: HashMap<String, u64> = HashMap::new();
+    let mut in_flight: HashMap<String, (u64, u64)> = HashMap::new();
+    // Which transfer a cancellation is reported against. With one model
+    // in flight this names the same file the old single slot did.
+    let mut cancelling: Option<String> = None;
 
     let outcome = forge_dictate::prepare(cfg, |progress| {
         if state.cancelled.load(Ordering::Relaxed) {
@@ -323,25 +331,30 @@ fn prepare(cfg: &forge_dictate::Config, state: &DictateState) -> Result<(), ()> 
         }
         match progress {
             forge_dictate::Progress::Verifying { file } => {
-                resumed_from = None;
+                resumed_from.remove(&file);
                 state.set_state(&file, DictateModelState::Verifying);
             }
             forge_dictate::Progress::Downloading { file, downloaded, total } => {
                 // The first report of a transfer carries whatever was
                 // already on disk, so it is the only chance to learn
                 // that this is a resume rather than a fresh fetch.
-                if in_flight.as_ref().is_none_or(|(name, ..)| name != &file) {
-                    resumed_from = (downloaded > 0).then_some(downloaded);
+                if !in_flight.contains_key(&file) && downloaded > 0 {
+                    resumed_from.insert(file.clone(), downloaded);
                 }
-                in_flight = Some((file.clone(), downloaded, total));
+                in_flight.insert(file.clone(), (downloaded, total));
+                cancelling = Some(file.clone());
                 state.set_state(
                     &file,
-                    DictateModelState::Downloading { downloaded, total, resumed_from },
+                    DictateModelState::Downloading {
+                        downloaded,
+                        total,
+                        resumed_from: resumed_from.get(&file).copied(),
+                    },
                 );
             }
             forge_dictate::Progress::Ready { file } => {
-                resumed_from = None;
-                in_flight = None;
+                resumed_from.remove(&file);
+                in_flight.remove(&file);
                 state.set_state(&file, DictateModelState::Fetched);
             }
         }
@@ -351,7 +364,8 @@ fn prepare(cfg: &forge_dictate::Config, state: &DictateState) -> Result<(), ()> 
     match outcome {
         Ok(()) => Ok(()),
         Err(forge_dictate::Error::Cancelled) => {
-            let (file, kept, total) = in_flight.unwrap_or_default();
+            let file = cancelling.unwrap_or_default();
+            let (kept, total) = in_flight.get(&file).copied().unwrap_or_default();
             state.fail(DictateFailure::Cancelled { kept, total }, Some(&file));
             Err(())
         }
