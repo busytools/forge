@@ -3,6 +3,7 @@
 use std::fs::{self, File};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 
 use sha2::{Digest, Sha256};
 
@@ -50,11 +51,15 @@ pub enum Progress {
 /// repaired. Deciding to discard someone's model file belongs to
 /// whoever put it there.
 ///
+/// Models are prepared concurrently, one thread each, so the pair costs
+/// the slower of the two rather than their sum. `on_progress` is still
+/// called from a single thread and one event at a time, but events from
+/// the two now interleave: a caller keeping per-transfer state must key
+/// it on [`Progress`]'s `file`.
+///
 /// Known cost: every call re-hashes each file end to end, measured at
-/// 1.8 s/GiB in release, so the default pair costs about five seconds
-/// even when there is nothing to download. An unoptimised build measures
-/// 34 s/GiB, near enough two minutes for the pair, which reads as a hang
-/// rather than as the profile.
+/// 1.8 s/GiB in release. An unoptimised build measures 34 s/GiB, which
+/// reads as a hang rather than as the profile.
 pub fn prepare(
     cfg: &Config,
     mut on_progress: impl FnMut(Progress) -> ControlFlow<()>,
@@ -62,10 +67,63 @@ pub fn prepare(
     let dir = models_dir(cfg)?;
     fs::create_dir_all(&dir).map_err(|source| Error::Io { path: dir.clone(), source })?;
 
-    for spec in std::iter::once(&cfg.asr_model).chain(cfg.normalizer.as_ref()) {
-        ensure(&dir, spec, &mut on_progress)?;
-    }
-    Ok(())
+    let specs: Vec<&ModelSpec> =
+        std::iter::once(&cfg.asr_model).chain(cfg.normalizer.as_ref()).collect();
+    let (report_tx, reports) = mpsc::channel::<Report>();
+
+    let outcomes: Vec<Result<(), Error>> = std::thread::scope(|scope| {
+        let workers: Vec<_> = specs
+            .iter()
+            .map(|spec| {
+                let report_tx = report_tx.clone();
+                let dir = dir.as_path();
+                scope.spawn(move || {
+                    // Each announcement blocks on the driver's verdict, so
+                    // a `Break` still stops this transfer at the same point
+                    // it would have when the callback was called directly.
+                    let mut announce_to_driver = |progress| {
+                        // A fresh channel per announcement, so the only
+                        // sender travels WITH the report. Holding one for
+                        // the worker's lifetime would keep this `recv`
+                        // connected to itself, and a panicking callback
+                        // would park every worker on a wait that can never
+                        // end - `thread::scope` then never returns and the
+                        // panic never propagates.
+                        let (verdict_tx, verdict) = mpsc::channel();
+                        let report = Report { progress, verdict: verdict_tx };
+                        if report_tx.send(report).is_err() {
+                            return ControlFlow::Break(());
+                        }
+                        verdict.recv().unwrap_or(ControlFlow::Break(()))
+                    };
+                    ensure(dir, spec, &mut announce_to_driver)
+                })
+            })
+            .collect();
+        // The driver's own sender would keep `reports` open past the last
+        // worker and hang the loop below.
+        drop(report_tx);
+
+        for report in reports {
+            let _ = report.verdict.send(on_progress(report.progress));
+        }
+
+        workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
+            .collect()
+    });
+
+    // In spec order, so which failure a caller sees does not depend on
+    // which thread lost the race.
+    outcomes.into_iter().find(Result::is_err).unwrap_or(Ok(()))
+}
+
+/// One model thread's progress event and the channel its verdict comes
+/// back on.
+struct Report {
+    progress: Progress,
+    verdict: mpsc::Sender<ControlFlow<()>>,
 }
 
 /// The configured directory, else a subdirectory of the platform cache
@@ -630,14 +688,78 @@ mod tests_download {
         assert_eq!(landed_asr, asr, "the asr model must be the bytes the server served");
         assert_eq!(landed_norm, norm, "the normalizer must be the bytes the server served");
 
-        let ready: Vec<_> = reported
+        // Sorted, not in spec order: the models are prepared concurrently,
+        // so which finishes first is not a property worth pinning.
+        let mut ready: Vec<_> = reported
             .iter()
             .filter_map(|p| match p {
                 Progress::Ready { file } => Some(file.as_str()),
                 _ => None,
             })
             .collect();
+        ready.sort_unstable();
         assert_eq!(ready, ["asr.gguf", "norm.gguf"], "each model must be reported ready");
+    }
+
+    /// A panicking callback must unwind out of `prepare` rather than
+    /// hang. The workers block waiting for a verdict, so if the channel
+    /// they wait on can outlive the driver they park forever and
+    /// `thread::scope` never joins - a hang with no message, inside a
+    /// `spawn_blocking` that esc cannot reach.
+    ///
+    /// Watchdog rather than a bare call: the failure being guarded
+    /// against is an infinite wait, and a test that reproduces it by
+    /// hanging is worse than no test.
+    #[test]
+    fn a_panicking_callback_unwinds_rather_than_parking_the_workers() {
+        let asr = b"pretend these are recognition weights".to_vec();
+        let norm = b"and these rewrite the words".to_vec();
+        let server = serve(vec![("/asr.gguf", asr.clone()), ("/norm.gguf", norm.clone())]);
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .asr_model(spec_for(&server, "/asr.gguf", &asr))
+            .normalizer(spec_for(&server, "/norm.gguf", &norm))
+            .build();
+
+        let running = std::thread::spawn(move || prepare(&cfg, |_| panic!("callback blew up")));
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !running.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(
+            running.is_finished(),
+            "prepare never returned: the workers are parked on a verdict that cannot arrive"
+        );
+        assert!(
+            running.join().is_err(),
+            "the callback's panic must surface to the caller, not be swallowed"
+        );
+    }
+
+    #[test]
+    fn a_failing_model_does_not_stop_the_other_from_being_fetched() {
+        let norm = b"and these rewrite the words".to_vec();
+        let server = serve(vec![("/norm.gguf", norm.clone())]);
+        let dir = tempfile::tempdir().unwrap();
+
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .asr_model(spec_for(&server, "/absent.gguf", b"never served"))
+            .normalizer(spec_for(&server, "/norm.gguf", &norm))
+            .build();
+
+        let err = prepare(&cfg, |_| ControlFlow::Continue(()))
+            .expect_err("the missing asr model must still be reported");
+        assert!(
+            matches!(err, Error::HttpStatus { status: 404, .. }),
+            "the asr model's 404 must survive the other model succeeding, got: {err:?}"
+        );
+        let landed = fs::read(dir.path().join("norm.gguf")).expect(
+            "the models run concurrently, so one failing must not leave the other unattempted",
+        );
+        assert_eq!(landed, norm, "the normalizer must be the bytes the server served");
     }
 
     #[test]
