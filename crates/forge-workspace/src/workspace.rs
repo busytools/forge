@@ -1023,10 +1023,7 @@ impl Workspace {
         // `__spawn_<name>__` and dispatches SpawnProject), we MUST
         // drain that buffer into the live session before returning
         // the pooled handle - otherwise the pending peer prompt
-        // strands at the synth key forever. The drain happens in
-        // the same critical section as the pool lookup so a
-        // concurrent caller can't race us into orphaning the
-        // buffer.
+        // strands at the synth key forever.
         {
             let pool = self.pool.lock();
             if let Some(existing) = pool.get(&session_key) {

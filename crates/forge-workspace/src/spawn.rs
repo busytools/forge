@@ -139,7 +139,10 @@ pub(crate) fn handle_spawn_project(
                 target: "forge_workspace::spawn",
                 project = project_name,
                 spawn_key = %synth_key.as_str(),
-                "spawn task started for project"
+                // The pool fast path returns a live handle without
+                // building a task, so `forge_sdk_options_built` is the
+                // per-subprocess signal.
+                "spawn dispatched for project"
             );
         }
         Err(err) => {
@@ -680,7 +683,7 @@ pub(crate) fn handle_spawn_session(
                 target: "forge_workspace::spawn",
                 session_id,
                 spawn_key = %synth_key.as_str(),
-                "spawn task started for session resume"
+                "spawn dispatched for session resume"
             );
         }
         Err(err) => {
@@ -818,7 +821,7 @@ pub(crate) fn handle_start_default(
             tracing::info!(
                 target: "forge_workspace::spawn",
                 spawn_key = %synth_key.as_str(),
-                "startup spawn task started"
+                "startup spawn dispatched"
             );
         }
         Err(err) => {
@@ -1015,7 +1018,7 @@ pub(crate) fn handle_spawn_worker(
                 project = %project_key.as_str(),
                 label = %label,
                 spawn_key = %synth_key.as_str(),
-                "spawn task started for worker"
+                "spawn dispatched for worker"
             );
             // Reply to the LLM optimistically with the synth key.
             // The LLM addresses subsequent calls by label; the

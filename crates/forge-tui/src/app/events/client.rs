@@ -1182,10 +1182,9 @@ pub(super) fn apply_session_update_key_renamed(app: &mut App, from: &SessionKey,
     let already_under_to = app.sessions.contains_key(&to);
     if let Some(mut bucket) = app.sessions.remove(from) {
         if already_under_to {
-            // `to` already exists (e.g. a Connected for the same
-            // session UUID raced ahead and seeded the bucket); the
-            // synthetic at `from` is now redundant, so drop it.
-            tracing::warn!(
+            // A Connected for the same session UUID raced ahead and
+            // seeded the bucket.
+            tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "key_renamed_synthetic_dropped",
                 message = "synthetic bucket dropped because real-key bucket already existed",
