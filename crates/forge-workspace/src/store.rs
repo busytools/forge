@@ -9,9 +9,10 @@
 //! Table logic lives per-tenant in the submodules: Gotify subscriptions
 //! ([`gotify`]), durable crons ([`cron`]), dynamic workers
 //! ([`dynamic_workers`]), review threads ([`review`]), forge state
-//! ([`state`], the spinner override + account-usage cache), and the
-//! `/usage` view's per-file token summaries ([`token_usage`]) and
-//! cached model pricing ([`pricing`]).
+//! ([`state`], the spinner override + account-usage cache), the
+//! `/usage` view's per-file token summaries ([`token_usage`]), cached
+//! model pricing ([`pricing`]), and the catalog's per-file worker-tag
+//! scans ([`session_tags`]).
 
 use std::path::Path;
 
@@ -22,6 +23,7 @@ pub mod dynamic_workers;
 pub mod gotify;
 pub mod pricing;
 pub mod review;
+pub mod session_tags;
 pub mod state;
 pub mod token_usage;
 

@@ -267,7 +267,18 @@ fn model_rows(
     snapshot: &DictateSnapshot,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let spinner = app.active_spinner_glyph().to_string();
+    // A stopped preflight has nothing still turning, and both models run
+    // at once now, so the one the failure is not about can be left
+    // mid-transfer with a spinner going under a screen that says forge
+    // is quitting. The state and its bar stay as they were, because they
+    // are true and say how much of that model landed; only the animation
+    // stops. `Pending` already reads differently under a failure for the
+    // same reason.
+    let spinner = if snapshot.failure.is_some() {
+        "\u{25cb}".to_owned()
+    } else {
+        app.active_spinner_glyph().to_string()
+    };
     let (glyph, color, state, state_style) = match &model.state {
         DictateModelState::Pending => {
             // Nothing else is going to start, so `queued` would be a
