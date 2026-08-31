@@ -120,7 +120,8 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
             true
         }
         Event::Resize(width, height) => {
-            handle_resize(app, width, height);
+            let mut terminal = std::io::stdout();
+            handle_resize(app, width, height, &mut terminal);
             true
         }
         // Non-press key events (Release, Repeat) -- ignored.
@@ -134,7 +135,8 @@ fn should_dispatch_key_event(key: crossterm::event::KeyEvent) -> bool {
         || (key.kind == KeyEventKind::Release && super::keys::is_clipboard_paste_shortcut(key))
 }
 
-fn handle_resize(app: &mut App, width: u16, height: u16) {
+fn handle_resize(app: &mut App, width: u16, height: u16, terminal: &mut impl std::io::Write) {
+    let _ = super::replace_keyboard_enhancement_flags(terminal);
     // Force a full terminal clear on resize. Without this, terminal
     // emulators (especially on Windows) corrupt their scrollback buffer
     // when the alternate screen is resized, causing the visible area to
@@ -491,9 +493,6 @@ fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
 
 #[cfg(test)]
 mod tests {
-    // =====
-    // TESTS: 40
-    // =====
 
     use super::*;
     use crate::app::{
@@ -592,6 +591,20 @@ mod tests {
             }
             None => panic!("expected message block"),
         }
+    }
+
+    #[test]
+    fn each_resize_restores_keyboard_enhancement_flags_without_pushing_the_stack() {
+        let mut app = App::test_default();
+        let mut terminal = Vec::new();
+
+        handle_resize(&mut app, 120, 40, &mut terminal);
+        handle_resize(&mut app, 121, 40, &mut terminal);
+
+        assert_eq!(
+            terminal, b"\x1b[=7;1u\x1b[=7;1u",
+            "every resize must replace the active flags without growing the terminal stack"
+        );
     }
 
     // shorten_tool_title

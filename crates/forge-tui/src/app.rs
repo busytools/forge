@@ -163,6 +163,20 @@ fn install_panic_hook() {
     }));
 }
 
+fn keyboard_enhancement_flags() -> KeyboardEnhancementFlags {
+    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+        | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+}
+
+pub(crate) fn replace_keyboard_enhancement_flags(
+    terminal: &mut impl std::io::Write,
+) -> std::io::Result<()> {
+    // Crossterm exposes only push/pop; kitty set mode 1 replaces the current entry.
+    let flags = keyboard_enhancement_flags().bits();
+    crossterm::execute!(terminal, crossterm::style::Print(format_args!("\x1b[={flags};1u")))
+}
+
 /// Re-enable raw mode and crossterm features after a child process finishes.
 pub(crate) fn resume_terminal() {
     let _ = crossterm::terminal::enable_raw_mode();
@@ -171,11 +185,7 @@ pub(crate) fn resume_terminal() {
         crossterm::event::EnableBracketedPaste,
         crossterm::event::EnableMouseCapture,
         crossterm::event::EnableFocusChange,
-        PushKeyboardEnhancementFlags(
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-        )
+        PushKeyboardEnhancementFlags(keyboard_enhancement_flags())
     );
     // Any-motion mouse tracking (1003) so forge receives hover-move
     // events, not just drags - needed for the pointer-shape affordance.
