@@ -499,9 +499,9 @@ pub(crate) async fn handle_dictate_start(ws: &Arc<crate::Workspace>, key: Sessio
     let opened =
         tokio::task::spawn_blocking(move || begin_capture(&ws_for_capture, &key_for_capture)).await;
     match opened {
-        Ok(Ok((capture, engine, floor_db, stop_rx))) => {
+        Ok(Ok((capture, floor_db, stop_rx))) => {
             let _ = updates.send(SessionUpdate::DictateStarted { key: key.clone(), floor_db });
-            tokio::spawn(run_recording(Arc::clone(ws), key, engine, capture, stop_rx, updates));
+            tokio::spawn(run_recording(Arc::clone(ws), key, capture, stop_rx, updates));
         }
         Ok(Err(message)) => {
             let _ = updates.send(SessionUpdate::DictateEnded {
@@ -536,10 +536,7 @@ pub(crate) async fn handle_dictate_stop(
 fn begin_capture(
     ws: &Arc<crate::Workspace>,
     key: &SessionKey,
-) -> Result<
-    (forge_dictate::Capture, Arc<forge_dictate::Engine>, f32, tokio::sync::mpsc::Receiver<bool>),
-    String,
-> {
+) -> Result<(forge_dictate::Capture, f32, tokio::sync::mpsc::Receiver<bool>), String> {
     let (stop_tx, stop_rx) = tokio::sync::mpsc::channel(1);
     let mut runtime = ws.dictate_runtime.lock();
     if let Some(live) = runtime.recording.as_ref() {
@@ -561,7 +558,7 @@ fn begin_capture(
     }
     runtime.recording = Some(LiveRecording { key: key.clone(), stop: stop_tx });
     let floor_db = engine.silence_floor();
-    Ok((capture, engine, floor_db, stop_rx))
+    Ok((capture, floor_db, stop_rx))
 }
 
 /// Own one take from first sample to delivered transcript: stream
@@ -570,7 +567,6 @@ fn begin_capture(
 async fn run_recording(
     ws: Arc<crate::Workspace>,
     key: SessionKey,
-    engine: Arc<forge_dictate::Engine>,
     capture: forge_dictate::Capture,
     mut stop: tokio::sync::mpsc::Receiver<bool>,
     updates: tokio::sync::mpsc::UnboundedSender<SessionUpdate>,
@@ -596,6 +592,10 @@ async fn run_recording(
     move_to_finishing(&ws, &key);
 
     let mut cancelled = false;
+    // The token is cloned out before the ticket moves into the blocking
+    // read, so abandoning this take touches only its own job - a queued
+    // take behind it keeps its own token and aborts on its own turn.
+    let cancel = ticket.cancel_token();
     let mut answer = tokio::task::spawn_blocking(move || ticket.recv());
     let outcome = loop {
         tokio::select! {
@@ -615,7 +615,7 @@ async fn run_recording(
             decide = stop.recv() => {
                 if decide == Some(false) && !cancelled {
                     cancelled = true;
-                    engine.cancel_in_flight();
+                    cancel.cancel();
                 }
             }
         }

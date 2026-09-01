@@ -50,6 +50,7 @@ pub use engine::{Busy, Capture, Engine, Outcome, Stages, Ticket, Transcript};
 pub use error::Error;
 pub use fetch::{Progress, prepare};
 pub use normalize::{NormalizeError, NormalizeOptions, Normalizer};
+pub use transcribe_cpp::CancelToken;
 
 #[cfg(test)]
 mod tests_leaf_invariant {

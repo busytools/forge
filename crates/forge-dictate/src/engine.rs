@@ -316,19 +316,6 @@ impl Engine {
         self.silence_floor
     }
 
-    /// Cancel the transcription currently running, if any. The ticket
-    /// waiting on it resolves cancelled; when the model does not honour
-    /// cancellation the work runs out and the ticket's answer is
-    /// whatever it produced. A job still queued behind another is not
-    /// touched - the token is installed when its turn comes.
-    pub fn cancel_in_flight(&self) {
-        if let Some(token) =
-            self.in_flight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref()
-        {
-            token.cancel();
-        }
-    }
-
     /// Queue `source` for transcription.
     ///
     /// Rejects a source the models cannot read before queueing anything.
@@ -593,6 +580,15 @@ impl Ticket {
     /// put a runtime in every consumer to serve one.
     pub fn recv(self) -> Result<Outcome, Error> {
         self.answer.recv().map_err(|_| Error::EngineStopped)?
+    }
+
+    /// A clone of this ticket's cancel token. Cancelling it aborts THIS
+    /// transcription - a job still queued behind another takes the
+    /// token with it and is aborted when its turn comes - which is why
+    /// a host abandoning one take among several goes through here
+    /// rather than through anything engine-wide.
+    pub fn cancel_token(&self) -> CancelToken {
+        self.cancel.clone()
     }
 }
 
@@ -870,22 +866,24 @@ mod tests_engine {
         );
     }
 
-    /// Cancelling before anything is in flight must be a no-op that
-    /// leaves the engine answering, not a wedge. With no weights every
-    /// job resolves as a load failure, which is exactly the drain a
-    /// caller abandoned mid-queue would have raced into.
+    /// Cancelling a ticket must never wedge its own answer. With no
+    /// weights every job resolves as a load failure, which is exactly
+    /// the drain a caller abandoned mid-queue would have raced into.
+    /// A no-op cancel would survive this pin in CI - the real-weights
+    /// test below is what kills that mutation, where a cancelled job
+    /// comes back cancelled instead of with words.
     #[test]
-    fn cancelling_an_idle_engine_leaves_it_answering() {
+    fn cancelling_a_ticket_still_resolves_its_answer() {
         let (_dir, engine) = engine_without_weights();
-        engine.cancel_in_flight();
-        let answer = engine
-            .transcribe(Samples::mono(vec![0.6; 512]))
-            .expect("queued")
+        let ticket = engine.transcribe(Samples::mono(vec![0.6; 512])).expect("queued");
+        let token = ticket.cancel_token();
+        token.cancel();
+        let answer = ticket
             .recv()
             .expect_err("no weights means the job answers with the load failure");
         assert!(
             matches!(answer, Error::ModelLoad { .. }),
-            "the queued job must still resolve, got: {answer:?}"
+            "the cancelled job must still resolve, got: {answer:?}"
         );
     }
 
@@ -1131,6 +1129,32 @@ mod tests_real_recognition {
         assert!(
             matches!(after, Outcome::Transcript(_)),
             "an abandoned ticket must free the worker for the next caller, got: {after:?}"
+        );
+    }
+
+    /// A cancelled ticket comes back cancelled, not with words.
+    ///
+    /// Cancelled before the worker's turn (the first job's model load
+    /// gives the cancel a wide window), so this pins the whole path:
+    /// token clone, install, and the abort mapping. Assumes the model
+    /// honours cancellation - the engine logs a notice when it does
+    /// not, and there this assert would misfire.
+    #[test]
+    #[ignore = "needs the ASR weights; run with --run-ignored all after `--example fetch`"]
+    fn cancelling_a_ticket_returns_cancelled_rather_than_the_words() {
+        let clip = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/08_009s.wav");
+        let (pcm, rate) = read_wav(&clip);
+
+        let engine =
+            Engine::new(ConfigBuilder::new().normalizer(None).build()).expect("engine must start");
+        let ticket = engine.transcribe(Samples::new(pcm, rate, 1)).expect("queued");
+        ticket.cancel_token().cancel();
+        let answer = ticket
+            .recv()
+            .expect_err("a cancelled ticket is an error, never the transcript it aborted");
+        assert!(
+            matches!(answer, Error::Cancelled),
+            "cancelling before the turn must abort the job, got: {answer:?}"
         );
     }
 
