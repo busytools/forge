@@ -1608,15 +1608,11 @@ mod tests {
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
         {
             let bucket = app.session_mut(&key).expect("bucket");
-            let mut indicator =
-                crate::app::dictate::DictateIndicator::recording(-50.0, 1);
+            let mut indicator = crate::app::dictate::DictateIndicator::recording(-50.0, 1);
             indicator.begin_transcribing();
             bucket.dictate = Some(indicator);
         }
-        assert!(
-            !app.shows_activity(),
-            "inside the 3 s silence the composer draws nothing at all"
-        );
+        assert!(!app.shows_activity(), "inside the 3 s silence the composer draws nothing at all");
 
         {
             let bucket = app.session_mut(&key).expect("bucket");

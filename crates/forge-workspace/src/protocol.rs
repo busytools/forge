@@ -1077,9 +1077,11 @@ impl std::fmt::Debug for SessionUpdate {
             Self::DictateTranscribing { key } => {
                 f.debug_struct("DictateTranscribing").field("key", key).finish()
             }
-            Self::DictateEnded { key, outcome, .. } => {
-                f.debug_struct("DictateEnded").field("key", key).field("outcome", outcome).finish_non_exhaustive()
-            }
+            Self::DictateEnded { key, outcome, .. } => f
+                .debug_struct("DictateEnded")
+                .field("key", key)
+                .field("outcome", outcome)
+                .finish_non_exhaustive(),
             Self::FatalError(err) => f.debug_struct("FatalError").field("error", err).finish(),
         }
     }

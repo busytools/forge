@@ -810,16 +810,15 @@ mod tests {
                 SessionUpdate::DictateEnded {
                     key: key.clone(),
                     generation: 1,
-                    outcome: DictateOutcome::Landed { text: "stale words".to_owned(), truncated: false },
+                    outcome: DictateOutcome::Landed {
+                        text: "stale words".to_owned(),
+                        truncated: false,
+                    },
                 },
             );
             {
                 let bucket = app.session_mut(&key).expect("bucket");
-                assert_eq!(
-                    bucket.input.text(),
-                    "stale words",
-                    "the older take's words still land"
-                );
+                assert_eq!(bucket.input.text(), "stale words", "the older take's words still land");
                 assert!(
                     bucket.dictate.is_some(),
                     "the live recording must survive a stale outcome on the same key"

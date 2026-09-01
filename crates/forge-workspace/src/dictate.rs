@@ -1073,10 +1073,7 @@ mod dictate_lifecycle_tests {
             );
         }
         assert!(
-            matches!(
-                stop_rx.try_recv(),
-                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
-            ),
+            matches!(stop_rx.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)),
             "dropping the entry must close the channel, which is what makes the recording task abandon the take"
         );
 

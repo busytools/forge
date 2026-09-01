@@ -419,10 +419,7 @@ mod tests_recording {
         // the message would report the empty window instead of what
         // failed.
         let peak = recording.peak_dbfs();
-        assert!(
-            peak.abs() < 0.01,
-            "the meter must read the raw peak (0 dBFS), got {peak}"
-        );
+        assert!(peak.abs() < 0.01, "the meter must read the raw peak (0 dBFS), got {peak}");
     }
 
     /// The read is take-and-reset: each read answers "loudest since the

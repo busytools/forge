@@ -878,9 +878,8 @@ mod tests_engine {
         let ticket = engine.transcribe(Samples::mono(vec![0.6; 512])).expect("queued");
         let token = ticket.cancel_token();
         token.cancel();
-        let answer = ticket
-            .recv()
-            .expect_err("no weights means the job answers with the load failure");
+        let answer =
+            ticket.recv().expect_err("no weights means the job answers with the load failure");
         assert!(
             matches!(answer, Error::ModelLoad { .. }),
             "the cancelled job must still resolve, got: {answer:?}"
