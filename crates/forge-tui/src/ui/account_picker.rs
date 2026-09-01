@@ -339,7 +339,6 @@ fn display_len(s: &str) -> usize {
     Span::raw(s).width()
 }
 
-/// Pad or hard-truncate `s` to exactly `width` columns.
 /// Pad or truncate `s` to exactly `width` terminal columns. Truncation
 /// walks columns rather than chars, and stops short by one when the
 /// next glyph is double-width, so the result never overshoots.
