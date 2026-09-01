@@ -618,38 +618,65 @@ async fn run_recording(
     // the mic to awaiting the transcript so Esc still routes here.
     move_to_finishing(&ws, &key);
 
-    let mut cancelled = false;
     // The token is cloned out before the ticket moves into the blocking
     // read, so abandoning this take touches only its own job - a queued
     // take behind it keeps its own token and aborts on its own turn.
     let cancel = ticket.cancel_token();
     let mut answer = tokio::task::spawn_blocking(move || ticket.recv());
-    let outcome = loop {
-        tokio::select! {
-            resolved = &mut answer => {
-                break match resolved {
-                    Ok(Ok(outcome)) => map_outcome(outcome),
-                    Ok(Err(error)) => {
-                        tracing::warn!(%error, "dictation failed");
-                        DictateOutcome::Failed
-                    }
-                    Err(source) => {
-                        tracing::warn!(%source, "dictation answer task failed to join");
-                        DictateOutcome::Failed
-                    }
-                };
+    let outcome = match wait_for_take(&mut answer, &mut stop, &cancel).await {
+        TakeResolution::Abandoned => DictateOutcome::Cancelled,
+        TakeResolution::Answered(resolved) => match resolved {
+            Ok(Ok(outcome)) => map_outcome(outcome),
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "dictation failed");
+                DictateOutcome::Failed
             }
+            Err(source) => {
+                tracing::warn!(%source, "dictation answer task failed to join");
+                DictateOutcome::Failed
+            }
+        },
+    };
+    remove_finishing(&ws, &key);
+    let _ = updates.send(SessionUpdate::DictateEnded { key, outcome, generation });
+}
+
+/// How waiting on a submitted take ended.
+enum TakeResolution<T> {
+    /// The transcript arrived, or the job failed - either way the take
+    /// has an answer to report. `Err` is the blocking task's join
+    /// failing, which reports as any other failure.
+    Answered(Result<T, tokio::task::JoinError>),
+    /// Esc or the owner going away abandoned the take. The caller
+    /// reports [`DictateOutcome::Cancelled`] and the blocking answer,
+    /// when it eventually lands, is dropped unread.
+    Abandoned,
+}
+
+/// Wait for a submitted take's answer or a stop decision, whichever
+/// comes first. A submit decision is a no-op (the take is already in),
+/// and ANY other stop - `Some(false)` from Esc, or the channel closing
+/// at teardown - fires this take's own cancel token and abandons the
+/// wait. The abandon must end the wait rather than re-select: a closed
+/// channel answers immediately and forever, and a loop that keeps
+/// polling it busy-spins a core until the inference runs out on its
+/// own.
+async fn wait_for_take<T>(
+    mut answer: &mut tokio::task::JoinHandle<T>,
+    stop: &mut tokio::sync::mpsc::Receiver<bool>,
+    cancel: &forge_dictate::CancelToken,
+) -> TakeResolution<T> {
+    loop {
+        tokio::select! {
+            resolved = &mut answer => break TakeResolution::Answered(resolved),
             decide = stop.recv() => {
-                if decide == Some(false) && !cancelled {
-                    cancelled = true;
+                if decide != Some(true) {
                     cancel.cancel();
+                    break TakeResolution::Abandoned;
                 }
             }
         }
-    };
-    remove_finishing(&ws, &key);
-    let outcome = if cancelled { DictateOutcome::Cancelled } else { outcome };
-    let _ = updates.send(SessionUpdate::DictateEnded { key, outcome, generation });
+    }
 }
 
 /// Stream level events until a stop decision or the capture cap stops
@@ -1043,6 +1070,89 @@ mod dictate_lifecycle_tests {
             matches!(stop_rx.try_recv(), Ok(false)),
             "abandon must still reach the take after it finished recording"
         );
+    }
+
+    /// A stop channel closed by teardown ends the wait and fires the
+    /// take's own token. Before this was handled, the closed channel
+    /// answered `None` immediately on every select iteration and the
+    /// wait spun on one core until the inference ran out on its own.
+    #[tokio::test]
+    async fn a_closed_stop_channel_abandons_the_wait_instead_of_spinning() {
+        // An answer that never lands: the worst case, the model does not
+        // honour cancellation and the inference runs long. The sender is
+        // released before the test ends, or the runtime drop would wait
+        // out the blocking read.
+        let (answer_tx, answer_rx) =
+            std::sync::mpsc::channel::<Result<forge_dictate::Outcome, forge_dictate::Error>>();
+        let mut answer = tokio::task::spawn_blocking(move || {
+            answer_rx.recv().map_err(|_| forge_dictate::Error::EngineStopped)
+        });
+        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(1);
+        drop(stop_tx);
+        let cancel = forge_dictate::CancelToken::new();
+
+        let started = std::time::Instant::now();
+        let resolution = wait_for_take(&mut answer, &mut stop_rx, &cancel).await;
+        drop(answer_tx);
+
+        assert!(
+            matches!(resolution, TakeResolution::Abandoned),
+            "a closed channel means the owner is gone, not that the take resolved"
+        );
+        assert!(cancel.is_cancelled(), "the abandon fires this take's token");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the wait must end when the channel closes, not spin until the answer resolves"
+        );
+    }
+
+    /// Esc during a transcription abandons the take and fires its
+    /// token, whatever the answer is doing.
+    #[tokio::test]
+    async fn an_abandon_decision_fires_the_token_and_ends_the_wait() {
+        let (answer_tx, answer_rx) =
+            std::sync::mpsc::channel::<Result<forge_dictate::Outcome, forge_dictate::Error>>();
+        let mut answer = tokio::task::spawn_blocking(move || {
+            answer_rx.recv().map_err(|_| forge_dictate::Error::EngineStopped)
+        });
+        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(1);
+        stop_tx.send(false).await.expect("the channel is open");
+        let cancel = forge_dictate::CancelToken::new();
+
+        let resolution = wait_for_take(&mut answer, &mut stop_rx, &cancel).await;
+        drop(answer_tx);
+
+        assert!(matches!(resolution, TakeResolution::Abandoned));
+        assert!(cancel.is_cancelled(), "abandoning the take cancels its job");
+    }
+
+    /// A submit decision during a transcription is a no-op: the take is
+    /// already submitted, so the wait continues to the answer.
+    #[tokio::test]
+    async fn a_submit_decision_during_transcription_keeps_waiting() {
+        let (answer_tx, answer_rx) =
+            std::sync::mpsc::channel::<Result<forge_dictate::Outcome, forge_dictate::Error>>();
+        let mut answer = tokio::task::spawn_blocking(move || {
+            answer_rx.recv().map_err(|_| forge_dictate::Error::EngineStopped)
+        });
+        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(1);
+        stop_tx.send(true).await.expect("the channel is open");
+        answer_tx
+            .send(Err(forge_dictate::Error::EngineStopped))
+            .expect("an unbounded channel accepts the answer");
+        let cancel = forge_dictate::CancelToken::new();
+
+        let resolution = wait_for_take(&mut answer, &mut stop_rx, &cancel).await;
+        drop(answer_tx);
+
+        match resolution {
+            TakeResolution::Answered(_) => {
+                assert!(!cancel.is_cancelled(), "a submit decision never cancels");
+            }
+            TakeResolution::Abandoned => {
+                panic!("a submit decision during a transcription must keep waiting")
+            }
+        }
     }
 
     /// Closing the session that owns a live take must release the
