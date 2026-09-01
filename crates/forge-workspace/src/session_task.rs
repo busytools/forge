@@ -110,6 +110,7 @@ impl SessionTask {
             tokio::select! {
                 maybe_event = event_rx.recv() => {
                     let Some(event) = maybe_event else { break; };
+                    let event = self.merge_catalog_models(event).await;
                     self.translate_event(event);
                 }
                 maybe_cmd = self.command_rx.recv() => {
@@ -134,6 +135,45 @@ impl SessionTask {
         // an `/account` switch) doesn't wipe its successor's live entries.
         if let Some(workspace) = self.workspace.upgrade() {
             workspace.release_session_if_current(&self.key, &self.handle);
+        }
+    }
+
+    /// Swap an OpenRouter session's discovered `available_models` for
+    /// the curated catalog list before `translate_event` sees the
+    /// `Connected` event (covering both the `Connected` and
+    /// `SessionReplaced` emits). Awaited in the async run loop so
+    /// `translate_event` itself stays synchronous; on a cache miss the
+    /// inline fetch delays this session's events once per TTL window.
+    async fn merge_catalog_models(&self, event: AgentEvent) -> AgentEvent {
+        let AgentEvent::Connected {
+            session_id,
+            cwd,
+            current_model,
+            available_models,
+            mode,
+            history_updates,
+            compaction_count,
+        } = event
+        else {
+            return event;
+        };
+        let available_models = match self.workspace.upgrade() {
+            Some(workspace) => match self.handle.display_name() {
+                Some(display_name) => {
+                    workspace.catalog_available_models(&display_name, available_models).await
+                }
+                None => available_models,
+            },
+            None => available_models,
+        };
+        AgentEvent::Connected {
+            session_id,
+            cwd,
+            current_model,
+            available_models,
+            mode,
+            history_updates,
+            compaction_count,
         }
     }
 

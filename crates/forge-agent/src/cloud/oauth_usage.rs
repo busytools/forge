@@ -415,7 +415,7 @@ fn parse_retry_after(raw: &str) -> Option<Duration> {
     when.duration_since(std::time::SystemTime::now()).ok()
 }
 
-fn truncated_body_suffix(body: &[u8]) -> String {
+pub(super) fn truncated_body_suffix(body: &[u8]) -> String {
     let text = String::from_utf8_lossy(body).trim().replace('\n', " ");
     if text.is_empty() {
         return String::new();
