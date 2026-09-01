@@ -6,6 +6,8 @@ pub(crate) mod clipboard_image;
 pub(crate) mod config;
 pub(crate) mod connect;
 mod dialog;
+pub(crate) mod dictate;
+pub(crate) mod dictate_picker;
 pub(crate) mod diff_overlay;
 pub(crate) mod emoji;
 pub(crate) mod events;
@@ -167,6 +169,9 @@ fn keyboard_enhancement_flags() -> KeyboardEnhancementFlags {
     KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
         | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
         | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+        // Standalone modifier presses and releases, which push-to-talk
+        // dictation needs, are only reported under this flag.
+        | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
 }
 
 /// The kitty set form, which replaces the active flags: crossterm
@@ -231,7 +236,7 @@ fn report_keyboard_enhancement_support() {
         Ok(false) => tracing::warn!(
             target: crate::logging::targets::APP_LIFECYCLE,
             event_name = "keyboard_enhancement_unsupported",
-            message = "terminal discarded the keyboard enhancement flags; Cmd bindings and key-release events will not arrive",
+            message = "terminal discarded the keyboard enhancement flags; Cmd bindings, key-release events and push-to-talk dictation will not arrive",
             outcome = "failure",
         ),
         Err(error) => tracing::warn!(

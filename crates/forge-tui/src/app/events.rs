@@ -105,7 +105,15 @@ pub(crate) fn set_bucket_lifecycle_state(
 }
 pub fn handle_terminal_event(app: &mut App, event: Event) {
     let changed = match event {
-        Event::Key(key) if should_dispatch_key_event(key) => dispatch_key_by_view(app, key),
+        Event::Key(key) => {
+            if crate::app::dictate::handle_key(app, key, std::time::Instant::now()) {
+                true
+            } else if should_dispatch_key_event(key) {
+                dispatch_key_by_view(app, key)
+            } else {
+                false
+            }
+        }
         Event::Mouse(mouse) => {
             dispatch_mouse_by_view(app, mouse);
             true
@@ -123,15 +131,18 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
             handle_resize(app, width, height);
             true
         }
-        // Non-press key events (Release, Repeat) -- ignored.
-        Event::Key(_) => false,
     };
     app.needs_redraw |= changed;
 }
 
 fn should_dispatch_key_event(key: crossterm::event::KeyEvent) -> bool {
-    key.kind == KeyEventKind::Press
-        || (key.kind == KeyEventKind::Release && super::keys::is_clipboard_paste_shortcut(key))
+    match key.kind {
+        // Repeat arrives for every held key once
+        // REPORT_ALL_KEYS_AS_ESCAPE_CODES is negotiated; dropping it
+        // would break held-key typing.
+        KeyEventKind::Press | KeyEventKind::Repeat => true,
+        KeyEventKind::Release => super::keys::is_clipboard_paste_shortcut(key),
+    }
 }
 
 fn handle_resize(app: &mut App, width: u16, height: u16) {
@@ -618,7 +629,8 @@ mod tests {
             "\x1b[={};1u",
             (crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
                 | crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                | crossterm::event::KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS)
+                | crossterm::event::KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+                | crossterm::event::KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES)
                 .bits()
         );
 
@@ -4651,6 +4663,36 @@ mod tests {
             state: crossterm::event::KeyEventState::NONE,
         };
         assert!(!should_dispatch_key_event(key));
+    }
+
+    #[test]
+    fn repeat_key_events_are_dispatched() {
+        // Under REPORT_ALL_KEYS_AS_ESCAPE_CODES every held key arrives
+        // with kind Repeat; dropping them would break held-key typing.
+        let key =
+            KeyEvent::new_with_kind(KeyCode::Char('a'), KeyModifiers::NONE, KeyEventKind::Repeat);
+        assert!(should_dispatch_key_event(key));
+    }
+
+    #[test]
+    fn bare_modifier_press_leaves_autocomplete_open() {
+        let mut app = make_test_app();
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE)),
+        );
+        assert!(app.slash().is_some(), "precondition: slash autocomplete open");
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(
+                KeyCode::Modifier(crossterm::event::ModifierKeyCode::RightSuper),
+                KeyModifiers::NONE,
+            )),
+        );
+
+        assert!(app.slash().is_some(), "a bare modifier must not tear down autocomplete");
+        assert_eq!(app.input().text(), "/");
     }
 
     #[test]

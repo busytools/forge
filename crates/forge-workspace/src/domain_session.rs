@@ -69,6 +69,12 @@ pub struct DomainSession {
     /// Turn committed at `Command::Prompt` routing, ahead of the
     /// wire-lagged `runtime_state`; the `/account` backstop ORs it in.
     pub turn_pending: bool,
+    /// The `/dictate` overlay's per-session normalizer-axis overrides.
+    /// Set by `Command::SetDictateOverride` / `::ResetDictateOverrides`
+    /// and consumed when a capture finishes into
+    /// `NormalizeOptions`. Session-scoped and volatile: dies with the
+    /// session, never persisted.
+    pub dictate_overrides: crate::dictate::DictateOverrides,
 }
 
 impl DomainSession {
@@ -87,6 +93,7 @@ impl DomainSession {
             spawned_force_new: false,
             runtime_state: None,
             turn_pending: false,
+            dictate_overrides: crate::dictate::DictateOverrides::default(),
         }
     }
 

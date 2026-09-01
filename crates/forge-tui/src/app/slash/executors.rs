@@ -33,6 +33,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
     }
     match parsed.name {
         "/account" => handle_account_submit(app, &parsed.args),
+        "/dictate" => handle_dictate_submit(app, &parsed.args),
         "/compact" => handle_compact_submit(app, &parsed.args),
         "/diff" => handle_diff_submit(app, &parsed.args),
         "/effort" => handle_effort_submit(app, &parsed.args),
@@ -93,6 +94,18 @@ fn handle_account_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
     crate::app::account_picker::open(app, rows);
+    true
+}
+
+/// `/dictate` - open the dictation cleanup overlay. No args: the
+/// dialog deliberately reads no state back, so there is nothing to
+/// show as one.
+fn handle_dictate_submit(app: &mut App, args: &[&str]) -> bool {
+    if !args.is_empty() {
+        push_system_message(app, "Usage: /dictate");
+        return true;
+    }
+    crate::app::dictate_picker::open(app);
     true
 }
 

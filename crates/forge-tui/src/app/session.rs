@@ -43,6 +43,11 @@ pub struct UiSession {
     /// The claude-issued session UUID, also used as the map key.
     /// Stored here for symmetry; the map lookup uses the same value.
     pub key: Option<SessionKey>,
+    /// This session's `/dictate` normalizer-axis overrides, mirrored
+    /// from the workspace's `DomainSession` via
+    /// `SessionUpdate::DictateOverrides` echoes. The `/dictate`
+    /// dialog's markers and reset row read from here.
+    pub dictate_overrides: forge_workspace::DictateOverrides,
     /// TUI-side mirror of the workspace's authoritative `session_id`.
     /// Workspace stamps the real id onto `DomainSession.session_id`
     /// (for `AgentHandle` dispatch); TUI mirrors it here for render
@@ -608,6 +613,7 @@ impl Default for UiSession {
         // lands here without further thought.
         Self {
             key: Option::default(),
+            dictate_overrides: forge_workspace::DictateOverrides::default(),
             session_id: Option::default(),
             lifecycle_state: SessionLifecycleState::default(),
             cwd_raw: String::default(),

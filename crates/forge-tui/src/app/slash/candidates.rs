@@ -206,6 +206,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     let mut forge: BTreeMap<String, String> = BTreeMap::new();
     forge.insert("/account".into(), "Switch the active account".into());
     forge.insert("/compact".into(), "Compact session context".into());
+    forge.insert("/dictate".into(), "Set how dictation is cleaned up, for this session".into());
     forge.insert("/diff".into(), "Review changes in a full-screen diff overlay".into());
     forge.insert("/effort".into(), "Show / set thinking effort".into());
     forge.insert("/launchpad".into(), "Return to project picker".into());
@@ -468,6 +469,7 @@ pub fn is_supported_command(app: &App, command_name: &str) -> bool {
     matches!(
         command_name,
         "/compact"
+            | "/dictate"
             | "/diff"
             | "/effort"
             | "/help"
@@ -513,5 +515,22 @@ mod launchpad_filter_tests {
         assert!(names.contains(&"/launchpad"), "chat surfaces /launchpad: {names:?}");
         assert!(names.contains(&"/mode"), "chat surfaces /mode: {names:?}");
         assert!(names.contains(&"/mcp"), "chat surfaces /mcp: {names:?}");
+    }
+
+    /// Not a show-and-set: the dialog never reads state back, so the
+    /// description says what it does instead of "Show / set ...".
+    #[test]
+    fn dictate_is_advertised_as_a_set_not_a_show_and_set() {
+        let mut app = App::test_default();
+        app.active_view = ActiveView::Chat;
+        let candidates = supported_command_candidates(&app);
+        let dictate = candidates
+            .iter()
+            .find(|c| c.primary == "/dictate")
+            .expect("/dictate sits in the forge group");
+        assert_eq!(
+            dictate.secondary.as_deref(),
+            Some("Set how dictation is cleaned up, for this session"),
+        );
     }
 }

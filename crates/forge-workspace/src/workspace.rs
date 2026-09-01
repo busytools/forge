@@ -196,7 +196,7 @@ pub struct Workspace {
     /// renders, the flag Escape sets, and the loaded engine held for
     /// the run. Populated by `start_dictate_preflight`; inert when
     /// `[dictate] enabled` is false.
-    dictate: Arc<crate::dictate::DictateState>,
+    pub(crate) dictate: Arc<crate::dictate::DictateState>,
     /// Fan-in [`SessionUpdate`] sender. Cloned and handed to TUI-side
     /// modules (slash executors, plugin install, service-status check)
     /// via [`Self::update_sender`] so they can emit presentation
@@ -821,6 +821,13 @@ impl Workspace {
     /// clone - the struct is shallow.
     pub fn ui_settings(&self) -> crate::ui::UiSettings {
         self.config.ui.clone()
+    }
+
+    /// The push-to-talk key from forge.toml `[dictate] bind`. Read by
+    /// the TUI's key handler per event; config is boot-frozen so the
+    /// value never changes mid-run.
+    pub fn dictate_bind(&self) -> crate::dictate::DictateBind {
+        self.config.dictate.bind
     }
 
     /// The `[gotify]` server connection from forge.toml, or `None`
@@ -2597,6 +2604,38 @@ impl Workspace {
     /// is registered for the requested key (e.g., the session was
     /// just closed), or [`DispatchError::SessionClosed`] when the
     /// task's command receiver has been dropped.
+    /// Apply a `/dictate` override edit to the session's `DomainSession`
+    /// and echo the full set back. An unknown session is refused the same
+    /// way the per-session commands are: there is nothing to edit.
+    fn apply_dictate_override(
+        self: &Arc<Self>,
+        key: &SessionKey,
+        update: crate::dictate::DictateOverrideUpdate,
+    ) -> Result<(), DispatchError> {
+        let Some(domain) = self.domain_session_for(key) else {
+            return Err(DispatchError::UnknownSession(key.clone()));
+        };
+        match update {
+            crate::dictate::DictateOverrideUpdate::Styling(v) => {
+                domain.lock().dictate_overrides.styling = Some(v);
+            }
+            crate::dictate::DictateOverrideUpdate::Structure(v) => {
+                domain.lock().dictate_overrides.structure = Some(v);
+            }
+            crate::dictate::DictateOverrideUpdate::Context(v) => {
+                domain.lock().dictate_overrides.context = Some(v);
+            }
+            crate::dictate::DictateOverrideUpdate::Reset => {
+                domain.lock().dictate_overrides = crate::dictate::DictateOverrides::default();
+            }
+        }
+        let overrides = domain.lock().dictate_overrides;
+        let _ = self
+            .update_sender()
+            .send(SessionUpdate::DictateOverrides { key: key.clone(), overrides });
+        Ok(())
+    }
+
     pub fn dispatch(self: &Arc<Self>, cmd: Command) -> Result<(), DispatchError> {
         // Test intercept (when armed): capture EVERY Command - both
         // app-level and per-session - before any routing. Tests use
@@ -2612,6 +2651,21 @@ impl Workspace {
             }
         }
         if let Some(key) = cmd.key() {
+            // The /dictate override edits are workspace state on the
+            // DomainSession, never agent traffic: apply inline and
+            // echo, ahead of the SessionTask routing below.
+            match cmd {
+                Command::SetDictateOverride { key, update } => {
+                    return self.apply_dictate_override(&key, update);
+                }
+                Command::ResetDictateOverrides { key } => {
+                    return self.apply_dictate_override(
+                        &key,
+                        crate::dictate::DictateOverrideUpdate::Reset,
+                    );
+                }
+                _ => {}
+            }
             let key = key.clone();
             let senders = self.command_senders.lock();
             if let Some(sender) = senders.get(&key) {
@@ -2658,6 +2712,12 @@ impl Workspace {
             // (which internally tokio::spawns the agent), and return.
             // Run them inline under the span; no detach needed.
             match cmd {
+                Command::DictateStart { key } => {
+                    crate::dictate::handle_dictate_start(self, &key);
+                }
+                Command::DictateStop { key, cancelled } => {
+                    crate::dictate::handle_dictate_stop(self, &key, cancelled);
+                }
                 Command::SpawnProject { project_name, launch_settings } => {
                     let span = tracing::info_span!(
                         "spawn_project",

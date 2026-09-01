@@ -5,6 +5,7 @@ pub(crate) mod chat_tree;
 mod chat_view;
 pub(crate) mod collapse;
 mod config;
+pub(crate) mod dictate_picker;
 mod diff;
 mod diff_overlay;
 mod document_table;
@@ -65,6 +66,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if app.account_picker.is_some() {
         let area = frame.area();
         account_picker::render(frame, area, app);
+    }
+    if app.dictate_picker.is_some() {
+        let area = frame.area();
+        dictate_picker::render(frame, area, app);
     }
 }
 

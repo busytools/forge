@@ -1147,7 +1147,12 @@ pub(crate) fn execute_command_via_handle(
         }
         // App-level commands are caught in Workspace::dispatch's
         // app-level branch; they never reach this helper.
-        misrouted @ (Command::SpawnProject { .. }
+        // Handled inline in `Workspace::dispatch`; never agent traffic.
+        misrouted @ (Command::SetDictateOverride { .. }
+        | Command::ResetDictateOverrides { .. }
+        | Command::DictateStart { .. }
+        | Command::DictateStop { .. }
+        | Command::SpawnProject { .. }
         | Command::SpawnSession { .. }
         | Command::StartDefault { .. }
         | Command::DeliverPeerPrompt { .. }

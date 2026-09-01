@@ -929,6 +929,43 @@ pub(super) fn apply_session_update_slash_command_error(
     handle_slash_command_error_event(app, key, message);
 }
 
+/// `SessionUpdate::DictateFinished` reducer: words insert at the
+/// caret of the session that dictated them, a notice becomes an
+/// info-level system message on that session, and the recording
+/// shadow re-syncs either way.
+pub(super) fn apply_session_update_dictate_finished(
+    app: &mut App,
+    key: &SessionKey,
+    text: Option<&str>,
+    notice: Option<&str>,
+    truncated: bool,
+) {
+    let _ = truncated;
+    app.dictate_recording = false;
+    if let Some(text) = text
+        && let Some(bucket) = app.sessions.get_mut(key)
+    {
+        bucket.input.insert_str(text);
+    }
+    if let Some(notice) = notice {
+        if app.active_session_key.as_ref() == Some(key) {
+            app.push_message_tracked(ChatMessage::new(
+                MessageRole::System(Some(crate::app::SystemSeverity::Info)),
+                vec![MessageBlock::Text(TextBlock::from_complete(notice))],
+            ));
+            app.enforce_history_retention_tracked();
+            app.active_viewport_mut().engage_auto_scroll();
+        } else if let Some(session) = app.session_mut(key) {
+            session.messages.push(ChatMessage::new(
+                MessageRole::System(Some(crate::app::SystemSeverity::Info)),
+                vec![MessageBlock::Text(TextBlock::from_complete(notice))],
+            ));
+            session.message_retained_bytes.push(0);
+        }
+    }
+    app.needs_redraw = true;
+}
+
 pub(super) fn apply_session_update_service_status(
     app: &mut App,
     severity: forge_primitives::cloud::service_status::ServiceSeverity,

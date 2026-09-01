@@ -16,10 +16,97 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use serde::Deserialize;
 
+use crate::{SessionKey, SessionUpdate};
+
 /// Cap on one recording when `[dictate] max_capture_minutes` is absent.
 /// Matches the crate's own default; a capture reserves 4 bytes a sample
 /// eagerly, so this is about 110 MiB held for the run.
 const DEFAULT_MAX_CAPTURE_MINUTES: u64 = 30;
+
+/// The push-to-talk key. Right Cmd is the default; on Linux and
+/// Windows there is no Cmd key, so the cmd equivalent is the right
+/// Control key, mirroring how the Cmd shortcuts accept Ctrl off macOS
+/// (`is_cmd_shortcut`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DictateBind {
+    #[default]
+    RightCmd,
+    LeftCmd,
+    Off,
+}
+
+/// What a session has overridden on the normalizer's prompt axes.
+/// `None` on an axis means "the crate default"; the `●` the `/dictate`
+/// dialog draws marks exactly this, not the value in force.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DictateOverrides {
+    pub styling: Option<forge_dictate::normalize::Styling>,
+    pub structure: Option<forge_dictate::normalize::Structure>,
+    pub context: Option<forge_dictate::normalize::Context>,
+}
+
+impl DictateOverrides {
+    /// The per-recording options this session dictates with: crate
+    /// defaults with each overridden axis replaced.
+    pub fn normalize_options(self) -> forge_dictate::NormalizeOptions {
+        let mut options = forge_dictate::NormalizeOptions::default();
+        if let Some(v) = self.styling {
+            options.styling = v;
+        }
+        if let Some(v) = self.structure {
+            options.structure = v;
+        }
+        if let Some(v) = self.context {
+            options.context = v;
+        }
+        options
+    }
+
+    /// `true` when nothing is overridden: the reset row is inert and
+    /// the dialog draws no markers.
+    pub fn is_empty(self) -> bool {
+        self.styling.is_none() && self.structure.is_none() && self.context.is_none()
+    }
+}
+
+/// One edit the `/dictate` dialog asks for: set a single axis, or
+/// clear them all. Enter on an already-set row re-sets the same value;
+/// there is no per-axis clear, so the reset row is the only way back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DictateOverrideUpdate {
+    Styling(forge_dictate::normalize::Styling),
+    Structure(forge_dictate::normalize::Structure),
+    Context(forge_dictate::normalize::Context),
+    Reset,
+}
+
+impl DictateBind {
+    /// What the forge.toml key accepts.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::RightCmd => "right_cmd",
+            Self::LeftCmd => "left_cmd",
+            Self::Off => "off",
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for DictateBind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "right_cmd" => Ok(Self::RightCmd),
+            "left_cmd" => Ok(Self::LeftCmd),
+            "off" => Ok(Self::Off),
+            other => {
+                Err(serde::de::Error::unknown_variant(other, &["right_cmd", "left_cmd", "off"]))
+            }
+        }
+    }
+}
 
 /// The `[dictate]` section. Every field has a default, so an absent
 /// section is exactly `enabled = false`.
@@ -58,6 +145,9 @@ pub struct DictateSettings {
     /// itself here rather than holding the microphone indefinitely.
     #[serde(default = "default_max_capture_minutes")]
     pub max_capture_minutes: u64,
+    /// The push-to-talk key.
+    #[serde(default)]
+    pub bind: DictateBind,
 }
 
 fn enabled_by_default() -> bool {
@@ -77,6 +167,7 @@ impl Default for DictateSettings {
             language: None,
             normalizer: true,
             max_capture_minutes: DEFAULT_MAX_CAPTURE_MINUTES,
+            bind: DictateBind::default(),
         }
     }
 }
@@ -231,6 +322,17 @@ pub(crate) struct DictateState {
     /// The live engine, held for the whole run. Dropping it unloads the
     /// weights, which is the one thing preflight exists to avoid.
     pub(crate) engine: Mutex<Option<Arc<forge_dictate::Engine>>>,
+    /// The process's one push-to-talk capture, held from the key press
+    /// that started it to the release that ends it. The microphone is
+    /// exclusive process-wide, so a single slot is the whole state.
+    pub(crate) capture: Mutex<Option<ActiveCapture>>,
+}
+
+/// A running capture and the session it belongs to. The transcript
+/// lands on this session however focus has moved by the time it does.
+pub(crate) struct ActiveCapture {
+    pub(crate) capture: forge_dictate::Capture,
+    pub(crate) session: SessionKey,
 }
 
 impl DictateState {
@@ -240,6 +342,7 @@ impl DictateState {
             snapshot: Mutex::new(DictateSnapshot { models, failure: None }),
             cancelled: AtomicBool::new(false),
             engine: Mutex::new(None),
+            capture: Mutex::new(None),
         }
     }
 
@@ -306,6 +409,134 @@ pub(crate) async fn run_dictate_preflight(settings: DictateSettings, state: Arc<
         Ok(Err(error)) => state.fail(failure_for(&load_cfg, &error), failing_file(&error)),
         Err(source) => state.fail(DictateFailure::Other { message: source.to_string() }, None),
     }
+}
+
+/// Begin a push-to-talk capture on behalf of `key`. Silently refused
+/// when the engine is absent: `[dictate]` off is the state the box doc
+/// calls S0, where the key does nothing at all. The blocking
+/// `try_capture` (it waits on the device opening) runs on the blocking
+/// pool.
+pub(crate) fn handle_dictate_start(workspace: &Arc<crate::Workspace>, key: &SessionKey) {
+    let state = &workspace.dictate;
+    let Some(engine) = state.engine.lock().clone() else {
+        return;
+    };
+    let ws = Arc::clone(workspace);
+    let start_key = key.clone();
+    tokio::spawn(async move {
+        let holder = format!("session {}", start_key.as_str());
+        let attempt = tokio::task::spawn_blocking(move || engine.try_capture(holder)).await;
+        match attempt {
+            Ok(Ok(capture)) => {
+                *ws.dictate.capture.lock() =
+                    Some(ActiveCapture { capture, session: start_key.clone() });
+            }
+            Ok(Err(busy)) => {
+                tracing::warn!(
+                    target: "forge_workspace::dictate",
+                    event_name = "dictate_start_busy",
+                    holder = %busy.holder,
+                    "push-to-talk start refused: the microphone is claimed",
+                );
+                let _ = ws.update_sender().send(SessionUpdate::DictateFinished {
+                    key: start_key,
+                    text: None,
+                    notice: Some(format!("the microphone is claimed by {}", busy.holder)),
+                    truncated: false,
+                });
+            }
+            Err(source) => {
+                tracing::warn!(
+                    target: "forge_workspace::dictate",
+                    event_name = "dictate_start_task_failed",
+                    error_message = %source,
+                    "the capture task did not run to its attempt",
+                );
+            }
+        }
+    });
+}
+
+/// End the session's push-to-talk capture. A chorded release discards
+/// the audio without touching the weights; otherwise the recording
+/// transcribes with the starting session's `/dictate` overrides and
+/// the outcome lands as one `SessionUpdate::DictateFinished`.
+pub(crate) fn handle_dictate_stop(
+    workspace: &Arc<crate::Workspace>,
+    _key: &SessionKey,
+    cancelled: bool,
+) {
+    let state = &workspace.dictate;
+    let Some(active) = state.capture.lock().take() else {
+        return;
+    };
+    if cancelled {
+        // Dropping releases the device and the claim; nothing lands.
+        drop(active.capture);
+        return;
+    }
+    let overrides = workspace
+        .domain_session_for(&active.session)
+        .map(|domain| domain.lock().dictate_overrides)
+        .unwrap_or_default();
+    let ws = Arc::clone(workspace);
+    let landing_key = active.session.clone();
+    tokio::spawn(async move {
+        let ActiveCapture { capture, .. } = active;
+        let finish = move || capture.finish_with(overrides.normalize_options());
+        let ticket = tokio::task::spawn_blocking(finish).await;
+        let outcome = match ticket {
+            Ok(Ok(ticket)) => tokio::task::spawn_blocking(move || ticket.recv()).await,
+            Ok(Err(error)) => Ok(Err(error)),
+            Err(source) => {
+                tracing::warn!(
+                    target: "forge_workspace::dictate",
+                    event_name = "dictate_finish_task_failed",
+                    error_message = %source,
+                    "the finish task did not run to its attempt",
+                );
+                return;
+            }
+        };
+        let (text, notice, truncated) = match outcome {
+            Ok(Ok(forge_dictate::Outcome::Transcript(transcript))) => {
+                (Some(transcript.text), None, transcript.truncated)
+            }
+            // A finite peak below the floor is a quiet room: retrying
+            // may work. -inf is structural (every sample was zero), so
+            // no retry is offered.
+            Ok(Ok(forge_dictate::Outcome::NoAudio { peak, .. })) => {
+                let notice = if peak.is_finite() {
+                    "no audio picked up; speak up and press the key again".to_owned()
+                } else {
+                    "the microphone delivered silence; check the input device".to_owned()
+                };
+                (None, Some(notice), false)
+            }
+            Ok(Err(error)) => (None, Some(format!("dictation failed: {error}")), false),
+            Err(source) => {
+                tracing::warn!(
+                    target: "forge_workspace::dictate",
+                    event_name = "dictate_recv_task_failed",
+                    error_message = %source,
+                    "the transcribe task did not run to its attempt",
+                );
+                return;
+            }
+        };
+        // Filler-only input normalizes to an empty string, which is a
+        // legitimate answer; without a notice it reads as broken.
+        let (text, notice) = match text {
+            Some(t) if t.is_empty() => (None, Some("dictation produced no text".to_owned())),
+            other => (other, notice),
+        };
+        let _ = ws.update_sender().send(SessionUpdate::DictateFinished {
+            key: landing_key,
+            text,
+            notice,
+            truncated,
+        });
+    });
 }
 
 /// Per-file transfer bookkeeping, kept across the progress events of one
@@ -516,6 +747,8 @@ mod transfer_progress_tests {
 mod tests {
     use super::*;
 
+    use crate::{Command, SessionUpdate};
+
     /// An absent `[dictate]` section must not download three gigabytes
     /// because forge started, so the whole section defaults off.
     #[test]
@@ -555,6 +788,149 @@ mod tests {
             1,
             "with no normalizer configured preflight has one model to fetch, not two"
         );
+    }
+
+    /// The push-to-talk keybinding is a config knob, not a constant.
+    /// Right Cmd is the default; `left_cmd` and `off` exist so the key
+    /// can be moved or switched off, and a typo must fail the load the
+    /// way every other `[dictate]` key does.
+    #[test]
+    fn bind_defaults_to_right_cmd_and_parses_the_three_values() {
+        let settings: DictateSettings = toml::from_str("").expect("an empty section parses");
+        assert_eq!(settings.bind, DictateBind::RightCmd);
+
+        let left: DictateSettings = toml::from_str("bind = \"left_cmd\"\n").expect("parse");
+        assert_eq!(left.bind, DictateBind::LeftCmd);
+
+        let off: DictateSettings = toml::from_str("bind = \"off\"\n").expect("parse");
+        assert_eq!(off.bind, DictateBind::Off);
+
+        let err = toml::from_str::<DictateSettings>("bind = \"right_command\"\n")
+            .expect_err("an unknown value must be refused");
+        assert!(
+            err.to_string().contains("right_command"),
+            "the error must name the value that was not understood, got: {err}"
+        );
+    }
+
+    /// The overlay's one reset control clears every axis, and the merged
+    /// options must equal the crate defaults when nothing is set.
+    #[test]
+    fn normalize_options_merge_overridden_axes_over_the_crate_defaults() {
+        let empty = DictateOverrides::default();
+        let merged = empty.normalize_options();
+        assert_eq!(merged, forge_dictate::NormalizeOptions::default());
+        assert!(empty.is_empty(), "a fresh session has nothing to reset");
+
+        let overridden = DictateOverrides {
+            styling: Some(forge_dictate::normalize::Styling::Formal),
+            ..DictateOverrides::default()
+        };
+        let merged = overridden.normalize_options();
+        assert_eq!(merged.styling, forge_dictate::normalize::Styling::Formal);
+        assert_eq!(
+            merged.structure,
+            forge_dictate::NormalizeOptions::default().structure,
+            "an unset axis keeps the crate default"
+        );
+        assert!(!overridden.is_empty());
+    }
+
+    #[test]
+    fn a_set_override_lands_on_its_own_session_and_echoes_back() {
+        let (workspace, mut updates) = crate::Workspace::testing_stub();
+        let a = crate::SessionKey::from_session_id("dictate-a");
+        let b = crate::SessionKey::from_session_id("dictate-b");
+        workspace.register_domain_session(a.clone(), None);
+        workspace.register_domain_session(b.clone(), None);
+
+        workspace
+            .dispatch(Command::SetDictateOverride {
+                key: a.clone(),
+                update: DictateOverrideUpdate::Styling(forge_dictate::normalize::Styling::Formal),
+            })
+            .expect("dispatch");
+
+        let a_binding = workspace.domain_session_for(&a).expect("session a");
+        assert_eq!(
+            a_binding.lock().dictate_overrides.styling,
+            Some(forge_dictate::normalize::Styling::Formal),
+        );
+        let b_binding = workspace.domain_session_for(&b).expect("session b");
+        assert_eq!(b_binding.lock().dictate_overrides, DictateOverrides::default());
+
+        let echo = updates.try_recv().expect("an echo for the session that set it");
+        match echo {
+            SessionUpdate::DictateOverrides { key, overrides } => {
+                assert_eq!(key, a);
+                assert_eq!(overrides.styling, Some(forge_dictate::normalize::Styling::Formal));
+            }
+            other => panic!("unexpected update: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reset_clears_every_axis_at_once() {
+        let (workspace, mut updates) = crate::Workspace::testing_stub();
+        let key = crate::SessionKey::from_session_id("dictate-reset");
+        workspace.register_domain_session(key.clone(), None);
+
+        for update in [
+            DictateOverrideUpdate::Styling(forge_dictate::normalize::Styling::Casual),
+            DictateOverrideUpdate::Context(forge_dictate::normalize::Context::Email),
+        ] {
+            workspace
+                .dispatch(Command::SetDictateOverride { key: key.clone(), update })
+                .expect("dispatch");
+        }
+        workspace.dispatch(Command::ResetDictateOverrides { key: key.clone() }).expect("dispatch");
+
+        let binding = workspace.domain_session_for(&key).expect("session");
+        assert_eq!(binding.lock().dictate_overrides, DictateOverrides::default());
+
+        let mut echoes = 0;
+        while let Ok(update) = updates.try_recv() {
+            if matches!(update, SessionUpdate::DictateOverrides { .. }) {
+                echoes += 1;
+            }
+        }
+        assert_eq!(echoes, 3, "each set echoes, and the reset does too");
+    }
+
+    #[test]
+    fn an_override_for_an_unknown_session_is_refused() {
+        let (workspace, _updates) = crate::Workspace::testing_stub();
+        let key = crate::SessionKey::from_session_id("never-registered");
+        let err = workspace
+            .dispatch(Command::ResetDictateOverrides { key })
+            .expect_err("an unknown session must be refused");
+        assert!(matches!(err, crate::DispatchError::UnknownSession(_)));
+    }
+
+    /// `[dictate]` off (or the engine otherwise absent) is the state the
+    /// box doc calls S0: the key does nothing at all, and nothing says
+    /// otherwise.
+    #[test]
+    fn a_start_with_no_engine_is_silent() {
+        let (workspace, mut updates) = crate::Workspace::testing_stub();
+        let key = crate::SessionKey::from_session_id("dictate-s0");
+        workspace.register_domain_session(key.clone(), None);
+
+        workspace.dispatch(Command::DictateStart { key }).expect("dispatch");
+
+        assert!(workspace.dictate.capture.lock().is_none(), "no engine: nothing to capture");
+        assert!(updates.try_recv().is_err(), "S0 means nothing at all");
+    }
+
+    #[test]
+    fn a_stop_with_no_capture_is_silent() {
+        let (workspace, mut updates) = crate::Workspace::testing_stub();
+        let key = crate::SessionKey::from_session_id("dictate-no-capture");
+        workspace.register_domain_session(key.clone(), None);
+
+        workspace.dispatch(Command::DictateStop { key, cancelled: false }).expect("dispatch");
+
+        assert!(updates.try_recv().is_err(), "a release with nothing recording does nothing");
     }
 
     /// Minutes, because the value is a duration and TOML has no unit.

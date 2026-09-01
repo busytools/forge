@@ -243,6 +243,9 @@ fn create_app_impl(
         repaint_cadence: ui_settings.fps,
         spinner_picker: None,
         account_picker: None,
+        dictate_picker: None,
+        dictate_key: crate::app::dictate::DictateKeyState::default(),
+        dictate_recording: false,
         tools_collapsed: true,
         #[cfg(any(test, feature = "testing"))]
         last_invalidation_level: std::cell::Cell::new(None),

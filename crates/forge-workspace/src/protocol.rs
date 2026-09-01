@@ -198,6 +198,34 @@ pub enum Command {
         tool_id: String,
         outcome: QuestionOutcome,
     },
+    /// Begin a push-to-talk capture on behalf of this session. App-level
+    /// (the microphone is process-wide), but the transcript lands on
+    /// the session named here. Silently refused when `[dictate]` is
+    /// disabled or the engine is absent: the key does nothing, which is
+    /// the state the box doc calls S0.
+    DictateStart {
+        key: SessionKey,
+    },
+    /// End the session's push-to-talk capture. `cancelled` discards the
+    /// audio (a chorded release); otherwise it transcribes with the
+    /// starting session's `/dictate` overrides and lands as
+    /// `SessionUpdate::DictateFinished`.
+    DictateStop {
+        key: SessionKey,
+        cancelled: bool,
+    },
+    /// Set one `/dictate` overlay axis for this session, or clear
+    /// every axis at once. Workspace state on the `DomainSession`,
+    /// never routed to the agent; the echo lands as
+    /// `SessionUpdate::DictateOverrides`.
+    SetDictateOverride {
+        key: SessionKey,
+        update: crate::dictate::DictateOverrideUpdate,
+    },
+    /// Clear every `/dictate` override this session holds.
+    ResetDictateOverrides {
+        key: SessionKey,
+    },
     /// Reconnect a configured MCP server.
     ReconnectMcpServer {
         key: SessionKey,
@@ -388,10 +416,14 @@ impl Command {
             | Self::RespondPermission { key, .. }
             | Self::RespondQuestion { key, .. }
             | Self::ReconnectMcpServer { key, .. }
-            | Self::ToggleMcpServer { key, .. } => Some(key),
+            | Self::ToggleMcpServer { key, .. }
+            | Self::SetDictateOverride { key, .. }
+            | Self::ResetDictateOverrides { key } => Some(key),
             Self::SpawnProject { .. }
             | Self::SpawnSession { .. }
             | Self::StartDefault { .. }
+            | Self::DictateStart { .. }
+            | Self::DictateStop { .. }
             | Self::DeliverPeerPrompt { .. }
             | Self::SpawnWorker { .. }
             | Self::CloseWorker { .. }
@@ -442,6 +474,18 @@ impl std::fmt::Debug for Command {
                 .field("key", key)
                 .field("tool_id", tool_id)
                 .finish_non_exhaustive(),
+            Self::DictateStart { key } => f.debug_struct("DictateStart").field("key", key).finish(),
+            Self::DictateStop { key, cancelled } => f
+                .debug_struct("DictateStop")
+                .field("key", key)
+                .field("cancelled", cancelled)
+                .finish(),
+            Self::SetDictateOverride { key, .. } => {
+                f.debug_struct("SetDictateOverride").field("key", key).finish_non_exhaustive()
+            }
+            Self::ResetDictateOverrides { key } => {
+                f.debug_struct("ResetDictateOverrides").field("key", key).finish()
+            }
             Self::ReconnectMcpServer { key, server_name } => f
                 .debug_struct("ReconnectMcpServer")
                 .field("key", key)
@@ -668,6 +712,25 @@ pub enum SessionUpdate {
         key: SessionKey,
         display_name: String,
     },
+    /// The full override set a session holds after a `/dictate` edit
+    /// landed. Sent after every `SetDictateOverride` and
+    /// `ResetDictateOverrides` so the dialog's markers and its reset
+    /// row read from this, not from a TUI-side copy.
+    DictateOverrides {
+        key: SessionKey,
+        overrides: crate::dictate::DictateOverrides,
+    },
+    /// A push-to-talk capture resolved. `text` is the transcript;
+    /// `None` with a `notice` covers the outcomes where no words land
+    /// (no audio, an empty transcript, a failure). `truncated` rides
+    /// alongside text that still landed: the capture cap or the decode
+    /// budget cut the tail.
+    DictateFinished {
+        key: SessionKey,
+        text: Option<String>,
+        notice: Option<String>,
+        truncated: bool,
+    },
     OauthCredentialsSnapshot {
         session_id: String,
         credentials: Option<OauthCredentials>,
@@ -801,6 +864,8 @@ impl SessionUpdate {
             | Self::TurnCancelled { key }
             | Self::TurnError { key, .. }
             | Self::ForgeAccountIdentity { key, .. }
+            | Self::DictateOverrides { key, .. }
+            | Self::DictateFinished { key, .. }
             | Self::SessionsListed { key, .. }
             | Self::ReviewActivityNotice { key, .. }
             | Self::PeerInflightStatsChanged { key, .. } => Some(key.clone()),
@@ -909,6 +974,12 @@ impl std::fmt::Debug for SessionUpdate {
                 .finish_non_exhaustive(),
             Self::ForgeAccountIdentity { key, .. } => {
                 f.debug_struct("ForgeAccountIdentity").field("key", key).finish_non_exhaustive()
+            }
+            Self::DictateFinished { key, .. } => {
+                f.debug_struct("DictateFinished").field("key", key).finish_non_exhaustive()
+            }
+            Self::DictateOverrides { key, .. } => {
+                f.debug_struct("DictateOverrides").field("key", key).finish_non_exhaustive()
             }
             Self::OauthCredentialsSnapshot { session_id, .. } => f
                 .debug_struct("OauthCredentialsSnapshot")
