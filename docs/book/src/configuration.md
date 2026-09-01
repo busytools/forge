@@ -227,6 +227,7 @@ Optional. Absent means dictation is off, which is also what an explicit
 | `language` | string | autodetect | Spoken language hint. |
 | `normalizer` | boolean | `true` | Rewrite recognition output into clean text. Off halves the download and skips a pass per utterance. |
 | `max_capture_minutes` | integer | `30` | Upper bound on one recording. A capture reserves memory eagerly, about 110 MiB at the default. |
+| `bind` | string | `right_cmd` | The push-to-talk key: `right_cmd`, `left_cmd` or `off`. On Linux and Windows the cmd equivalent is the right/left Control key. |
 
 Unlike `[ui]`, an unrecognised key here fails the load rather than being
 ignored: a mistyped `models_dir` would otherwise fetch three gigabytes
