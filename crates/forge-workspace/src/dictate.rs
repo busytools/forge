@@ -919,8 +919,7 @@ mod dictate_lifecycle_tests {
         assert_eq!(
             METER_INTERVAL,
             Duration::from_millis(50),
-            "the level meter runs at 20 Hz by decision, got {:?}",
-            METER_INTERVAL
+            "the level meter runs at 20 Hz by decision, got {METER_INTERVAL:?}"
         );
     }
 
