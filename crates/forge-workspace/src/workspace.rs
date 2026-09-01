@@ -196,7 +196,11 @@ pub struct Workspace {
     /// renders, the flag Escape sets, and the loaded engine held for
     /// the run. Populated by `start_dictate_preflight`; inert when
     /// `[dictate] enabled` is false.
-    dictate: Arc<crate::dictate::DictateState>,
+    pub(crate) dictate: Arc<crate::dictate::DictateState>,
+    /// Live dictation: the recording holding the microphone and the
+    /// submitted takes still awaiting a transcript. Driven by
+    /// `Command::DictateStart` / `Command::DictateStop`.
+    pub(crate) dictate_runtime: Mutex<crate::dictate::DictateRuntime>,
     /// Fan-in [`SessionUpdate`] sender. Cloned and handed to TUI-side
     /// modules (slash executors, plugin install, service-status check)
     /// via [`Self::update_sender`] so they can emit presentation
@@ -783,6 +787,7 @@ impl Workspace {
             accounts: Mutex::new(accounts),
             assignment_plan: Mutex::new(None),
             dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
+            dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
             update_tx,
             update_rx_slot: Mutex::new(Some(update_rx)),
             command_senders: Mutex::new(HashMap::new()),
@@ -1493,10 +1498,17 @@ impl Workspace {
             return;
         }
         let state = Arc::clone(&self.dictate);
+        let updates = self.update_sender();
         let span = tracing::info_span!("dictate_preflight");
         tokio::spawn(
             async move {
-                crate::dictate::run_dictate_preflight(settings, state).await;
+                crate::dictate::run_dictate_preflight(settings, state.clone()).await;
+                // `run_dictate_preflight` parks the engine in the state
+                // only on success, and every failure path ends the run,
+                // so a held engine is the whole availability signal.
+                if state.engine.lock().is_some() {
+                    let _ = updates.send(SessionUpdate::DictateAvailability { available: true });
+                }
             }
             .instrument(span),
         );
@@ -2793,6 +2805,18 @@ impl Workspace {
                     );
                     let _enter = span.enter();
                     spawn::handle_switch_account(self, key, &account_display_name, launch_settings);
+                }
+                Command::DictateStart { key } => {
+                    let ws = Arc::clone(self);
+                    tokio::spawn(async move {
+                        crate::dictate::handle_dictate_start(&ws, key).await;
+                    });
+                }
+                Command::DictateStop { key, submit } => {
+                    let ws = Arc::clone(self);
+                    tokio::spawn(async move {
+                        crate::dictate::handle_dictate_stop(&ws, &key, submit).await;
+                    });
                 }
                 other => {
                     tracing::warn!(
@@ -6148,6 +6172,7 @@ impl Workspace {
             accounts: Mutex::new(AccountStateMap::empty_for_test()),
             assignment_plan: Mutex::new(None),
             dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
+            dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
             update_tx,
             update_rx_slot: Mutex::new(None),
             command_senders: Mutex::new(HashMap::new()),

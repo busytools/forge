@@ -316,6 +316,19 @@ impl Engine {
         self.silence_floor
     }
 
+    /// Cancel the transcription currently running, if any. The ticket
+    /// waiting on it resolves cancelled; when the model does not honour
+    /// cancellation the work runs out and the ticket's answer is
+    /// whatever it produced. A job still queued behind another is not
+    /// touched - the token is installed when its turn comes.
+    pub fn cancel_in_flight(&self) {
+        if let Some(token) =
+            self.in_flight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref()
+        {
+            token.cancel();
+        }
+    }
+
     /// Queue `source` for transcription.
     ///
     /// Rejects a source the models cannot read before queueing anything.
@@ -520,6 +533,13 @@ impl Capture {
     /// reporting the failure only when the caller lets go.
     pub fn open_error(&self) -> Option<&Error> {
         self.failed_to_open.as_ref()
+    }
+
+    /// Whether the capture reached [`Config::max_capture`] and stopped
+    /// itself. A host polling the level reads this so it can submit the
+    /// take instead of holding a microphone that is no longer running.
+    pub fn was_truncated(&self) -> bool {
+        self.recording.was_truncated()
     }
 
     /// Stop the recorder and join it, so the device is released before
@@ -847,6 +867,25 @@ mod tests_engine {
         assert!(
             again.is_ok(),
             "release must ride on Drop, or a panicking caller wedges the microphone for everyone"
+        );
+    }
+
+    /// Cancelling before anything is in flight must be a no-op that
+    /// leaves the engine answering, not a wedge. With no weights every
+    /// job resolves as a load failure, which is exactly the drain a
+    /// caller abandoned mid-queue would have raced into.
+    #[test]
+    fn cancelling_an_idle_engine_leaves_it_answering() {
+        let (_dir, engine) = engine_without_weights();
+        engine.cancel_in_flight();
+        let answer = engine
+            .transcribe(Samples::mono(vec![0.6; 512]))
+            .expect("queued")
+            .recv()
+            .expect_err("no weights means the job answers with the load failure");
+        assert!(
+            matches!(answer, Error::ModelLoad { .. }),
+            "the queued job must still resolve, got: {answer:?}"
         );
     }
 

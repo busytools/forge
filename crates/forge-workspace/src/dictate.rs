@@ -15,6 +15,10 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use serde::Deserialize;
+use tokio::time::MissedTickBehavior;
+
+use crate::SessionKey;
+use crate::protocol::{DictateOutcome, SessionUpdate};
 
 /// Cap on one recording when `[dictate] max_capture_minutes` is absent.
 /// Matches the crate's own default; a capture reserves 4 bytes a sample
@@ -446,6 +450,241 @@ fn failure_for(cfg: &forge_dictate::Config, error: &forge_dictate::Error) -> Dic
     }
 }
 
+/// How often the live recording is polled for its level. A deliberate
+/// fourth clock: coarser than the repaint gate, so every level event
+/// lands on a repaint without driving it.
+const METER_INTERVAL: Duration = Duration::from_millis(50);
+
+/// The microphone side of one dictation: the session that started it
+/// and the channel its recording task polls for the stop decision.
+/// `true` on the channel means submit, `false` means abandon.
+pub(crate) struct LiveRecording {
+    pub(crate) key: SessionKey,
+    pub(crate) stop: tokio::sync::mpsc::Sender<bool>,
+}
+
+/// A submitted take still awaiting its transcript. The microphone is
+/// already released; the entry stays only so Esc can still abandon it.
+pub(crate) struct FinishingTake {
+    pub(crate) key: SessionKey,
+    pub(crate) stop: tokio::sync::mpsc::Sender<bool>,
+}
+
+/// Process-wide dictation state. One microphone, so at most one
+/// [`LiveRecording`]; several takes can be finishing at once, because a
+/// new recording never waits for the previous transcript.
+#[derive(Default)]
+pub(crate) struct DictateRuntime {
+    pub(crate) recording: Option<LiveRecording>,
+    pub(crate) finishing: Vec<FinishingTake>,
+}
+
+impl DictateRuntime {
+    /// The stop channel to route a `DictateStop` for `key` to, if a
+    /// recording or a submitted take belongs to it.
+    fn stop_channel_for(&self, key: &SessionKey) -> Option<tokio::sync::mpsc::Sender<bool>> {
+        if let Some(recording) = self.recording.as_ref().filter(|r| &r.key == key) {
+            return Some(recording.stop.clone());
+        }
+        self.finishing.iter().find(|take| &take.key == key).map(|take| take.stop.clone())
+    }
+}
+
+/// `Command::DictateStart`: take the microphone for the composer at
+/// `key` and start streaming level events.
+pub(crate) async fn handle_dictate_start(ws: &Arc<crate::Workspace>, key: SessionKey) {
+    let updates = ws.update_sender();
+    let ws_for_capture = Arc::clone(ws);
+    let key_for_capture = key.clone();
+    let opened =
+        tokio::task::spawn_blocking(move || begin_capture(&ws_for_capture, &key_for_capture)).await;
+    match opened {
+        Ok(Ok((capture, engine, floor_db, stop_rx))) => {
+            let _ = updates.send(SessionUpdate::DictateStarted { key: key.clone(), floor_db });
+            tokio::spawn(run_recording(Arc::clone(ws), key, engine, capture, stop_rx, updates));
+        }
+        Ok(Err(message)) => {
+            let _ = updates.send(SessionUpdate::DictateEnded {
+                key,
+                outcome: DictateOutcome::Refused { message },
+            });
+        }
+        Err(source) => {
+            tracing::warn!(%source, "dictate start task failed to join");
+        }
+    }
+}
+
+/// `Command::DictateStop`: submit (`true`) or abandon the take that
+/// `key` started. A take that already resolved has nothing to route
+/// to, and that is fine.
+pub(crate) async fn handle_dictate_stop(
+    ws: &Arc<crate::Workspace>,
+    key: &SessionKey,
+    submit: bool,
+) {
+    let stop = ws.dictate_runtime.lock().stop_channel_for(key);
+    if let Some(stop) = stop {
+        let _ = stop.send(submit).await;
+    }
+}
+
+/// Take the microphone, refusing everything a host should say no to
+/// before the first sample. Blocking (the device open waits on the
+/// recorder thread), so it runs under `spawn_blocking`.
+#[allow(clippy::type_complexity)]
+fn begin_capture(
+    ws: &Arc<crate::Workspace>,
+    key: &SessionKey,
+) -> Result<
+    (forge_dictate::Capture, Arc<forge_dictate::Engine>, f32, tokio::sync::mpsc::Receiver<bool>),
+    String,
+> {
+    let (stop_tx, stop_rx) = tokio::sync::mpsc::channel(1);
+    let mut runtime = ws.dictate_runtime.lock();
+    if let Some(live) = runtime.recording.as_ref() {
+        return Err(format!("the microphone is in use by session {}", live.key.as_str()));
+    }
+    let engine = ws
+        .dictate
+        .engine
+        .lock()
+        .clone()
+        .ok_or("dictation is not ready · enable [dictate] in forge.toml and restart")?;
+    let capture = engine
+        .try_capture(key.as_str())
+        .map_err(|busy| format!("the microphone is in use by session {}", busy.holder))?;
+    if let Some(error) = capture.open_error() {
+        tracing::warn!(?error, "dictation refused: the input device did not open");
+        drop(capture);
+        return Err("no input device is available · dictation did not start".to_owned());
+    }
+    runtime.recording = Some(LiveRecording { key: key.clone(), stop: stop_tx });
+    let floor_db = engine.silence_floor();
+    Ok((capture, engine, floor_db, stop_rx))
+}
+
+/// Own one take from first sample to delivered transcript: stream
+/// level events while recording, then submit and wait, honouring the
+/// stop channel at every phase.
+async fn run_recording(
+    ws: Arc<crate::Workspace>,
+    key: SessionKey,
+    engine: Arc<forge_dictate::Engine>,
+    capture: forge_dictate::Capture,
+    mut stop: tokio::sync::mpsc::Receiver<bool>,
+    updates: tokio::sync::mpsc::UnboundedSender<SessionUpdate>,
+) {
+    let submit = record_until_stopped(&key, &capture, &mut stop, &updates).await;
+    if !submit {
+        drop(capture);
+        ws.dictate_runtime.lock().recording = None;
+        let _ =
+            updates.send(SessionUpdate::DictateEnded { key, outcome: DictateOutcome::Cancelled });
+        return;
+    }
+
+    let _ = updates.send(SessionUpdate::DictateTranscribing { key: key.clone() });
+    let Ok(ticket) = capture.finish() else {
+        tracing::warn!("dictation could not submit its take");
+        ws.dictate_runtime.lock().recording = None;
+        let _ = updates.send(SessionUpdate::DictateEnded { key, outcome: DictateOutcome::Failed });
+        return;
+    };
+    // The microphone is released; the runtime entry moves from holding
+    // the mic to awaiting the transcript so Esc still routes here.
+    move_to_finishing(&ws, &key);
+
+    let mut cancelled = false;
+    let mut answer = tokio::task::spawn_blocking(move || ticket.recv());
+    let outcome = loop {
+        tokio::select! {
+            resolved = &mut answer => {
+                break match resolved {
+                    Ok(Ok(outcome)) => map_outcome(outcome),
+                    Ok(Err(error)) => {
+                        tracing::warn!(%error, "dictation failed");
+                        DictateOutcome::Failed
+                    }
+                    Err(source) => {
+                        tracing::warn!(%source, "dictation answer task failed to join");
+                        DictateOutcome::Failed
+                    }
+                };
+            }
+            decide = stop.recv() => {
+                if decide == Some(false) && !cancelled {
+                    cancelled = true;
+                    engine.cancel_in_flight();
+                }
+            }
+        }
+    };
+    remove_finishing(&ws, &key);
+    let outcome = if cancelled { DictateOutcome::Cancelled } else { outcome };
+    let _ = updates.send(SessionUpdate::DictateEnded { key, outcome });
+}
+
+/// Stream level events until a stop decision or the capture cap stops
+/// itself. Returns whether the take should be submitted.
+async fn record_until_stopped(
+    key: &SessionKey,
+    capture: &forge_dictate::Capture,
+    stop: &mut tokio::sync::mpsc::Receiver<bool>,
+    updates: &tokio::sync::mpsc::UnboundedSender<SessionUpdate>,
+) -> bool {
+    let mut meter = tokio::time::interval(METER_INTERVAL);
+    meter.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = meter.tick() => {
+                // The cap stopped the capture on its own; submitting is
+                // what a release would have done.
+                if capture.was_truncated() {
+                    return true;
+                }
+                let peak_db = capture.level();
+                let _ = updates.send(SessionUpdate::DictateLevel { key: key.clone(), peak_db });
+            }
+            decide = stop.recv() => {
+                return decide.unwrap_or(false);
+            }
+        }
+    }
+}
+
+/// Move this take's stop channel from the recording slot to the
+/// finishing list, so a stop during transcription still routes to it.
+fn move_to_finishing(ws: &crate::Workspace, key: &SessionKey) {
+    let mut runtime = ws.dictate_runtime.lock();
+    if runtime.recording.as_ref().is_some_and(|live| &live.key == key)
+        && let Some(live) = runtime.recording.take()
+    {
+        runtime.finishing.push(FinishingTake { key: key.clone(), stop: live.stop });
+    }
+}
+
+/// Drop this take's finishing entry, whatever took it out of routing.
+fn remove_finishing(ws: &crate::Workspace, key: &SessionKey) {
+    ws.dictate_runtime.lock().finishing.retain(|take| &take.key != key);
+}
+
+/// Map the crate's answer onto the wire outcome. A normalisation that
+/// produced nothing is a valid answer, not a failure.
+fn map_outcome(outcome: forge_dictate::Outcome) -> DictateOutcome {
+    match outcome {
+        forge_dictate::Outcome::Transcript(transcript) if transcript.text.is_empty() => {
+            DictateOutcome::Empty
+        }
+        forge_dictate::Outcome::Transcript(transcript) => {
+            DictateOutcome::Landed { text: transcript.text, truncated: transcript.truncated }
+        }
+        forge_dictate::Outcome::NoAudio { peak, audio } => {
+            DictateOutcome::NoAudio { peak_db: peak, seconds: audio.as_secs() }
+        }
+    }
+}
+
 #[cfg(test)]
 mod transfer_progress_tests {
     use super::*;
@@ -613,6 +852,137 @@ mod tests {
             failing_file(&error),
             Some("s1-mini-f16.gguf"),
             "a `.part` rejection must land on the row for the file it would have become",
+        );
+    }
+}
+
+#[cfg(test)]
+mod dictate_lifecycle_tests {
+    use super::*;
+
+    fn key(name: &str) -> SessionKey {
+        SessionKey::from_session_id(name.to_owned())
+    }
+
+    /// The words a host inserts come from the transcript text; a
+    /// normalisation that produced nothing is its own outcome, and the
+    /// silence answer keeps its peak so a host can split a quiet room
+    /// from no signal at all.
+    #[test]
+    fn crate_outcomes_map_onto_the_wire_outcomes() {
+        use forge_dictate::Outcome;
+
+        let landed = map_outcome(Outcome::Transcript(forge_dictate::Transcript {
+            text: "hello there".to_owned(),
+            asr: "hello there".to_owned(),
+            stages: forge_dictate::Stages::default(),
+            truncated: false,
+        }));
+        assert_eq!(
+            landed,
+            DictateOutcome::Landed { text: "hello there".to_owned(), truncated: false },
+            "a transcript with words lands as words"
+        );
+
+        let empty = map_outcome(Outcome::Transcript(forge_dictate::Transcript {
+            text: String::new(),
+            asr: "um".to_owned(),
+            stages: forge_dictate::Stages::default(),
+            truncated: false,
+        }));
+        assert_eq!(empty, DictateOutcome::Empty, "filler-only input normalises to nothing");
+
+        let silent = map_outcome(Outcome::NoAudio {
+            peak: f32::NEG_INFINITY,
+            audio: Duration::from_secs(4),
+        });
+        assert_eq!(
+            silent,
+            DictateOutcome::NoAudio { peak_db: f32::NEG_INFINITY, seconds: 4 },
+            "the peak must survive so the host can tell quiet from structural silence"
+        );
+    }
+
+    /// A start while another recording holds the microphone is refused
+    /// before anything is opened, naming the holder.
+    #[tokio::test]
+    async fn a_start_while_the_microphone_is_held_names_the_holder() {
+        let (ws, _updates) = crate::Workspace::testing_stub();
+        let holder = key("holder-session");
+        let (stop_tx, _stop_rx) = tokio::sync::mpsc::channel(1);
+        ws.dictate_runtime.lock().recording =
+            Some(LiveRecording { key: holder.clone(), stop: stop_tx });
+
+        let Err(error) = begin_capture(&ws, &key("second-session")) else {
+            panic!("the microphone is held, so a start must be refused");
+        };
+        assert!(
+            error.contains("holder-session"),
+            "the refusal must name the holding session, got: {error}"
+        );
+    }
+
+    /// A start with no loaded engine is refused with the way out, not
+    /// by touching the microphone.
+    #[tokio::test]
+    async fn a_start_without_an_engine_refuses_with_the_way_out() {
+        let (ws, _updates) = crate::Workspace::testing_stub();
+        assert!(
+            ws.dictate.engine.lock().is_none(),
+            "the stub preflight never ran, so no engine is loaded"
+        );
+        let Err(error) = begin_capture(&ws, &key("any")) else {
+            panic!("no engine is loaded, so a start must be refused");
+        };
+        assert!(
+            error.contains("not ready"),
+            "the refusal must say dictation is not ready, got: {error}"
+        );
+    }
+
+    /// Stop routing reaches the recording that owns the key, and an
+    /// unknown key routes nowhere rather than to some other take.
+    #[tokio::test]
+    async fn a_stop_routes_to_the_take_that_started_on_the_key() {
+        let (ws, _updates) = crate::Workspace::testing_stub();
+        let owner = key("owner");
+        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(1);
+        ws.dictate_runtime.lock().recording = Some(LiveRecording { key: owner, stop: stop_tx });
+
+        handle_dictate_stop(&ws, &key("owner"), true).await;
+        assert!(
+            matches!(stop_rx.try_recv(), Ok(true)),
+            "submit must reach the owning take's channel"
+        );
+
+        handle_dictate_stop(&ws, &key("stranger"), false).await;
+        assert!(
+            matches!(stop_rx.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)),
+            "a stop from a session with no take must not reach someone else's"
+        );
+    }
+
+    /// The stop channel follows the take from recording into finishing,
+    /// so Esc can still abandon a submitted take whose transcript is in
+    /// flight.
+    #[tokio::test]
+    async fn a_submitted_take_keeps_its_stop_channel_reachable() {
+        let (ws, _updates) = crate::Workspace::testing_stub();
+        let take = key("take");
+        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(1);
+        ws.dictate_runtime.lock().recording =
+            Some(LiveRecording { key: take.clone(), stop: stop_tx });
+
+        move_to_finishing(&ws, &take);
+        {
+            let runtime = ws.dictate_runtime.lock();
+            assert!(runtime.recording.is_none(), "a submitted take no longer holds the microphone");
+            assert_eq!(runtime.finishing.len(), 1, "the take is awaiting its transcript");
+        }
+        handle_dictate_stop(&ws, &take, false).await;
+        assert!(
+            matches!(stop_rx.try_recv(), Ok(false)),
+            "abandon must still reach the take after it finished recording"
         );
     }
 }
