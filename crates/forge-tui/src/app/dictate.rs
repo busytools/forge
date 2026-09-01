@@ -88,12 +88,13 @@ impl DictateIndicator {
 /// Map a window peak onto the ramp. The floor glyph is zero: a bar
 /// that never leaves the floor is what `Outcome::NoAudio` later
 /// reports, so the meter and the verdict agree by construction.
+// frac is clamped to [0, 1] first, so the rounded step cannot truncate
+// or go negative.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub(crate) fn level_cell(peak_db: f32, floor_db: f32) -> char {
     if !peak_db.is_finite() || peak_db <= floor_db {
         return LEVEL_RAMP[0];
     }
-    // Clamped to [0, 1] first, so the rounded step stays inside the ramp.
     let frac = ((peak_db - floor_db) / -floor_db).clamp(0.0, 1.0);
     LEVEL_RAMP[(frac * 7.0).round() as usize]
 }

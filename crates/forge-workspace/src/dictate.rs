@@ -549,6 +549,7 @@ pub(crate) async fn handle_dictate_stop(
 /// Take the microphone, refusing everything a host should say no to
 /// before the first sample. Blocking (the device open waits on the
 /// recorder thread), so it runs under `spawn_blocking`.
+// The tuple is one take's handoff; a named type would say it once.
 #[allow(clippy::type_complexity)]
 fn begin_capture(
     ws: &Arc<crate::Workspace>,
@@ -601,7 +602,7 @@ async fn run_recording(
     let submit = record_until_stopped(&key, &capture, &mut stop, &updates).await;
     if !submit {
         drop(capture);
-        ws.dictate_runtime.lock().recording = None;
+        clear_recording_if_ours(&ws, &key);
         let _ = updates.send(SessionUpdate::DictateEnded {
             key,
             outcome: DictateOutcome::Cancelled,
@@ -613,7 +614,7 @@ async fn run_recording(
     let _ = updates.send(SessionUpdate::DictateTranscribing { key: key.clone() });
     let Ok(ticket) = capture.finish() else {
         tracing::warn!("dictation could not submit its take");
-        ws.dictate_runtime.lock().recording = None;
+        clear_recording_if_ours(&ws, &key);
         let _ = updates.send(SessionUpdate::DictateEnded {
             key,
             outcome: DictateOutcome::Failed,
@@ -711,6 +712,16 @@ async fn record_until_stopped(
                 return decide.unwrap_or(false);
             }
         }
+    }
+}
+
+/// Clear the recording slot only when it still belongs to `key` - a
+/// teardown may already have removed it and a newer take from another
+/// session may have installed its own, which is not ours to clear.
+fn clear_recording_if_ours(ws: &crate::Workspace, key: &SessionKey) {
+    let mut runtime = ws.dictate_runtime.lock();
+    if runtime.recording.as_ref().is_some_and(|live| &live.key == key) {
+        runtime.recording = None;
     }
 }
 
@@ -1044,10 +1055,7 @@ mod dictate_lifecycle_tests {
         // reaches the liveness check on any machine with an input.
         let dir = tempfile::tempdir().unwrap();
         let engine = forge_dictate::Engine::new(
-            forge_dictate::ConfigBuilder::new()
-                .models_dir(dir.path())
-                .normalizer(None)
-                .build(),
+            forge_dictate::ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build(),
         )
         .expect("an engine starts without its weights");
         *ws.dictate.engine.lock() = Some(engine);
