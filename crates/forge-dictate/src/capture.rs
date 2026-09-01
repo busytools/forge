@@ -415,10 +415,13 @@ mod tests_recording {
         // One channel at full scale, the other silent: the mean is -6 dBFS
         // but a meter must report the channel that is actually clipping.
         recording.push(&[1.0, 0.0], 2, LIMIT);
+        // Bound once: the read is take-and-reset, so a second call in
+        // the message would report the empty window instead of what
+        // failed.
+        let peak = recording.peak_dbfs();
         assert!(
-            recording.peak_dbfs().abs() < 0.01,
-            "the meter must read the raw peak (0 dBFS), got {}",
-            recording.peak_dbfs()
+            peak.abs() < 0.01,
+            "the meter must read the raw peak (0 dBFS), got {peak}"
         );
     }
 
