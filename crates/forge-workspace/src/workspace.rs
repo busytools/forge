@@ -4501,6 +4501,7 @@ impl Workspace {
             CatalogDecision::Stale(models) => {
                 let workspace = Arc::clone(self);
                 let base = base_url.clone();
+                let stale_empty = models.is_empty();
                 tokio::spawn(async move {
                     if let Err(error) = workspace.refresh_model_catalog(&base).await {
                         tracing::warn!(
@@ -4508,6 +4509,14 @@ impl Workspace {
                             %error,
                             "background model catalog refresh failed"
                         );
+                        // Re-arm the failure marker so an unreachable
+                        // endpoint is retried once per window, not once
+                        // per connect. Only when the stale row IS the
+                        // marker - a failed refresh must not downgrade
+                        // a good stale cache.
+                        if stale_empty {
+                            workspace.mark_catalog_fetch_failed(&base).await;
+                        }
                     }
                 });
                 Self::curated_or_discovered(&models, discovered)
@@ -4521,6 +4530,7 @@ impl Workspace {
                         %error,
                         "fetching the model catalog failed; keeping the discovered model list"
                     );
+                    self.mark_catalog_fetch_failed(&base_url).await;
                     discovered
                 }
             },
@@ -4608,6 +4618,38 @@ impl Workspace {
             return false;
         }
         true
+    }
+
+    /// Record that a fetch just failed by writing an empty-catalog row,
+    /// the failure marker [`forge_agent::cloud::model_catalog::
+    /// catalog_decision`] reads. Converts a recurring inline-fetch stall
+    /// on every connect into one inline fetch per base url, with
+    /// retries afterwards happening in the background at most once per
+    /// [`forge_agent::cloud::model_catalog::CATALOG_FAILURE_TTL`].
+    async fn mark_catalog_fetch_failed(self: &Arc<Self>, base_url: &str) {
+        let workspace = Arc::clone(self);
+        let base = base_url.to_owned();
+        let entry = forge_agent::cloud::model_catalog::CachedCatalog {
+            fetched_at: SystemTime::now(),
+            models: Vec::new(),
+        };
+        let stored =
+            tokio::task::spawn_blocking(move || workspace.store_model_catalog(&base, &entry))
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        %error,
+                        "model catalog failure-marker task failed"
+                    );
+                    false
+                });
+        if !stored {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                "the model catalog failure marker was not recorded"
+            );
+        }
     }
 
     /// Install a redb store into a test workspace so the durable-vs-
@@ -8055,10 +8097,19 @@ mod tests {
         display_name: &str,
         provider: forge_primitives::account::Provider,
     ) {
+        seed_catalog_account_at(ws, display_name, provider, "http://127.0.0.1:1");
+    }
+
+    fn seed_catalog_account_at(
+        ws: &Arc<Workspace>,
+        display_name: &str,
+        provider: forge_primitives::account::Provider,
+        base_url: &str,
+    ) {
         let env = if provider.uses_base_url() {
             std::collections::HashMap::from([(
                 "ANTHROPIC_BASE_URL".to_owned(),
-                "http://127.0.0.1:1".to_owned(),
+                base_url.to_owned(),
             )])
         } else {
             std::collections::HashMap::new()
@@ -8149,6 +8200,88 @@ mod tests {
         let discovered = discovered_models();
         let merged = ws.catalog_available_models("Or", discovered.clone()).await;
         assert_eq!(merged, discovered, "empty cache + refused fetch keeps the discovered list");
+    }
+
+    /// A loopback endpoint that answers `500` and counts every request
+    /// it receives, so "no fetch happened" is observable.
+    fn counting_error_server() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let hits = Arc::new(AtomicUsize::new(0));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let hits_thread = Arc::clone(&hits);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                hits_thread.fetch_add(1, Ordering::SeqCst);
+                let Ok(mut stream) = stream else { break };
+                let mut buf = [0u8; 4096];
+                let _ = std::io::Read::read(&mut stream, &mut buf);
+                let _ = std::io::Write::write_all(
+                    &mut stream,
+                    b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+        });
+        (format!("http://127.0.0.1:{port}"), hits)
+    }
+
+    /// The recurring-outage case: the first connect pays the inline
+    /// fetch and its failure is remembered, so connects within the
+    /// failure window serve the discovered list without touching the
+    /// endpoint again. (The window's expiry is covered by the
+    /// decision-boundary test in forge-agent.)
+    #[tokio::test]
+    async fn failed_fetch_is_negatively_cached_for_the_failure_window() {
+        let (base_url, hits) = counting_error_server();
+        let (_dir, ws) = catalog_ws();
+        seed_catalog_account_at(
+            &ws,
+            "Or",
+            forge_primitives::account::Provider::Openrouter,
+            &base_url,
+        );
+        let discovered = discovered_models();
+
+        let first = ws.catalog_available_models("Or", discovered.clone()).await;
+        assert_eq!(first, discovered, "the failed fetch falls back");
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1, "the miss fetched");
+
+        let second = ws.catalog_available_models("Or", discovered.clone()).await;
+        assert_eq!(second, discovered, "the failure marker serves the discovered list");
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "no second request within the failure window"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_catalog_without_any_curated_slug_falls_back_to_discovered() {
+        let (_dir, ws) = catalog_ws();
+        seed_catalog_account(&ws, "Or", forge_primitives::account::Provider::Openrouter);
+        // Fresh cache, but holding only models no curated slug resolves
+        // to - what OpenRouter renaming slugs would leave behind.
+        let non_curated: Vec<_> = fixture_catalog_models()
+            .into_iter()
+            .filter(|model| {
+                model.id == "ibm-granite/granite-4.2-8b"
+                    || model.id == "inclusionai/ling-3.0-flash-fin:free"
+            })
+            .collect();
+        assert!(!non_curated.is_empty(), "the fixture carries non-curated rows");
+        crate::store::model_catalog::store(
+            ws.db.lock().as_ref().expect("db"),
+            "http://127.0.0.1:1",
+            &crate::store::model_catalog::CachedCatalog {
+                fetched_at: std::time::SystemTime::now(),
+                models: non_curated,
+            },
+        )
+        .expect("store cache");
+        let discovered = discovered_models();
+        let merged = ws.catalog_available_models("Or", discovered.clone()).await;
+        assert_eq!(merged, discovered, "an empty merge must not empty the picker");
     }
 
     #[test]

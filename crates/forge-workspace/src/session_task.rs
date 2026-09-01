@@ -142,8 +142,10 @@ impl SessionTask {
     /// the curated catalog list before `translate_event` sees the
     /// `Connected` event (covering both the `Connected` and
     /// `SessionReplaced` emits). Awaited in the async run loop so
-    /// `translate_event` itself stays synchronous; on a cache miss the
-    /// inline fetch delays this session's events once per TTL window.
+    /// `translate_event` itself stays synchronous; on a cold cache the
+    /// inline fetch delays this session's events once per base url -
+    /// the failure marker written on a miss means every connect after
+    /// that serves from the cache or the discovered list.
     async fn merge_catalog_models(&self, event: AgentEvent) -> AgentEvent {
         let AgentEvent::Connected {
             session_id,

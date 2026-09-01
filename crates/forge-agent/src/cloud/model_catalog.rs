@@ -23,6 +23,11 @@ const CATALOG_TIMEOUT: Duration = Duration::from_secs(8);
 /// How long a cached catalog is served without a refetch.
 pub const CATALOG_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// How long a failed fetch is remembered, so an unreachable endpoint
+/// costs its timeout at most once per window instead of on every
+/// connect.
+pub const CATALOG_FAILURE_TTL: Duration = Duration::from_secs(10 * 60);
+
 #[derive(Debug, Error)]
 pub enum ModelCatalogError {
     #[error("model catalog request failed with HTTP {0}{1}")]
@@ -244,6 +249,8 @@ fn per_million(price: &str) -> Option<f64> {
 
 /// Compact context rendering: `1310720` -> `1.31M`, `1000000` -> `1M`.
 fn compact_ctx(context_length: u64) -> String {
+    // Context lengths are far below 2^52, so the cast cannot lose an
+    // integer digit.
     #[allow(clippy::cast_precision_loss)]
     let millions = context_length as f64 / 1_000_000.0;
     let mut text = format!("{millions:.2}");
@@ -306,7 +313,15 @@ pub async fn fetch_catalog(base_url: &str) -> Result<Vec<CatalogModel>, ModelCat
     }
 }
 
-/// What the cache says for `base_url`, judged at `now`.
+/// What the cache says for `base_url`, judged at `now`. An empty
+/// models vec is the failure marker the caller writes when a fetch
+/// fails with nothing cached: within [`CATALOG_FAILURE_TTL`] it reads
+/// as fresh-empty (serve the discovered list, no network), after it as
+/// stale-empty, which serves the same but retries the fetch in the
+/// background - so the inline fetch happens only when nothing at all
+/// is cached. A pathological `200` with zero models is stored the same
+/// way and gets the same short retry cadence rather than a full-day
+/// Fresh.
 pub fn catalog_decision(cached: Option<CachedCatalog>, now: SystemTime) -> CatalogDecision {
     let Some(cached) = cached else {
         return CatalogDecision::Miss;
@@ -314,7 +329,8 @@ pub fn catalog_decision(cached: Option<CachedCatalog>, now: SystemTime) -> Catal
     // A fetched_at in the future (clock moved back) reads as age zero,
     // i.e. fresh - serving beats refetching on skew.
     let age = now.duration_since(cached.fetched_at).unwrap_or_default();
-    if age < CATALOG_TTL {
+    let ttl = if cached.models.is_empty() { CATALOG_FAILURE_TTL } else { CATALOG_TTL };
+    if age < ttl {
         CatalogDecision::Fresh(cached.models)
     } else {
         CatalogDecision::Stale(cached.models)
@@ -498,15 +514,11 @@ mod tests {
     fn curated_rows_carry_the_kimi_cost_note() {
         let rows = curated_available_models(&specimen());
         let kimi = rows.iter().find(|r| r.id == "moonshotai/kimi-k3").expect("present");
-        let description = kimi_note_text(kimi.description.as_deref().expect("description"));
+        let description = kimi.description.as_deref().expect("description");
         assert!(
             description.contains("one heavy session can consume the account's monthly cap"),
             "the cost note must be shown, got: {description}"
         );
-    }
-
-    fn kimi_note_text(description: &str) -> &str {
-        description
     }
 
     #[test]
@@ -546,6 +558,26 @@ mod tests {
     #[test]
     fn empty_cache_is_a_miss() {
         assert_eq!(catalog_decision(None, std::time::SystemTime::now()), CatalogDecision::Miss);
+    }
+
+    /// The failure marker (an empty models vec) lives on the short
+    /// window: fresh within it, stale past it. `fresh-empty` serves the
+    /// discovered list with no network; `stale-empty` does the same
+    /// while a background retry is due.
+    #[test]
+    fn the_failure_marker_uses_the_short_window() {
+        let fetched_at = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let marker = CachedCatalog { fetched_at, models: Vec::new() };
+        let within = CATALOG_FAILURE_TTL.checked_sub(Duration::from_secs(1)).expect("ttl > 1s");
+        assert!(
+            matches!(catalog_decision(Some(marker.clone()), fetched_at + within), CatalogDecision::Fresh(models) if models.is_empty()),
+            "an in-window marker is fresh-empty, not a fetch trigger"
+        );
+        let past = CATALOG_FAILURE_TTL + Duration::from_secs(1);
+        assert!(
+            matches!(catalog_decision(Some(marker), fetched_at + past), CatalogDecision::Stale(models) if models.is_empty()),
+            "an expired marker is stale-empty, due for a background retry"
+        );
     }
 
     // -- live fetch --------------------------------------------------
