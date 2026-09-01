@@ -22,6 +22,15 @@ pub const FORGE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), env!("FORGE_B
 pub const FORGE_VERSION_SHORT: &str =
     concat!(env!("CARGO_PKG_VERSION"), env!("FORGE_BUILD_SUFFIX_SHORT"));
 
+/// How this binary was built - the marker `scripts/install.sh` sets,
+/// or empty for anything else. Surfaced at startup by
+/// [`startup::report_build_provenance`].
+pub const FORGE_BUILD_PROVENANCE: &str = env!("FORGE_BUILD_PROVENANCE");
+
+/// Digest of the lockfile this binary was built against. Meaningful
+/// only compared against the lockfile at the released tag.
+pub const FORGE_LOCKFILE_SHA: &str = env!("FORGE_LOCKFILE_SHA");
+
 #[derive(Clone, Debug, ValueEnum, PartialEq, Eq)]
 pub enum DiagnosticsPreset {
     Runtime,

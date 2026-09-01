@@ -74,9 +74,108 @@ pub fn raise_fd_limit() {
     }
 }
 
+/// The value `scripts/install.sh` exports before its cargo call. Any
+/// other value, including the empty string a build script sees when the
+/// variable is absent, means the guard did not run.
+const GUARDED_MARKER: &str = "install.sh";
+
+/// What to warn about `provenance`, or `None` when the build came
+/// through the guarded path.
+///
+/// `cargo install` ignores `Cargo.lock` unless `--locked` is passed, so
+/// a hand-rolled install silently resolves dependencies afresh and can
+/// ship a graph no CI run ever tested. That is not hypothetical: it is
+/// how a blocking terminal query reached a user while `just check` was
+/// green. The remedy belongs in the message because a log line that
+/// only names the problem leaves the reader where that incident
+/// started.
+fn build_provenance_warning(provenance: &str) -> Option<String> {
+    if provenance == GUARDED_MARKER {
+        return None;
+    }
+    Some(
+        "this binary was built outside scripts/install.sh, so its dependency graph may not be \
+         the one the lockfile pins and CI tested; rebuild with scripts/install.sh, or with \
+         cargo install --locked if installing by hand"
+            .to_owned(),
+    )
+}
+
+/// Record how this binary was built, so a drifted one says so instead
+/// of being silent.
+///
+/// Call once at startup after tracing init. The lockfile hash is
+/// reported alongside because it catches a build that honoured a
+/// locally-modified `Cargo.lock`, which provenance cannot see because
+/// the guard did run. It only means something compared against the
+/// lockfile at the released tag - a bare hash in a log is not
+/// self-evidently correct.
+pub fn report_build_provenance() {
+    let provenance = crate::FORGE_BUILD_PROVENANCE;
+    let lockfile = crate::FORGE_LOCKFILE_SHA;
+    match build_provenance_warning(provenance) {
+        None => tracing::info!(
+            target: crate::logging::targets::APP_LIFECYCLE,
+            event_name = "build_provenance",
+            message = "binary built through the guarded install path",
+            outcome = "success",
+            provenance,
+            lockfile_sha = lockfile,
+        ),
+        Some(remedy) => tracing::warn!(
+            target: crate::logging::targets::APP_LIFECYCLE,
+            event_name = "build_provenance_unguarded",
+            message = %remedy,
+            outcome = "failure",
+            provenance,
+            lockfile_sha = lockfile,
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A binary built outside the guard has to say so AND say what to
+    /// do about it - a log line that only names the problem leaves the
+    /// reader where this incident started.
+    #[test]
+    fn an_unguarded_build_reports_how_to_rebuild_it() {
+        let warning = build_provenance_warning("unguarded").expect("unguarded builds warn");
+        assert!(
+            warning.contains("scripts/install.sh"),
+            "the warning names the guarded path to rebuild with: {warning}",
+        );
+        assert!(
+            warning.contains("--locked"),
+            "the warning names the flag a hand-rolled build needs: {warning}",
+        );
+    }
+
+    /// The guarded path is the whole point of the marker: a build that
+    /// went through it must be silent, or the warning is noise on every
+    /// correct install and stops being read.
+    #[test]
+    fn a_guarded_build_does_not_warn() {
+        assert!(
+            build_provenance_warning(GUARDED_MARKER).is_none(),
+            "a build through the guarded path has nothing to report",
+        );
+    }
+
+    /// Anything that is not the marker is untrusted, including an empty
+    /// value - the default when the env var is absent, which is exactly
+    /// what a hand-rolled `cargo install` produces.
+    #[test]
+    fn an_unrecognised_marker_is_treated_as_unguarded() {
+        for value in ["", "yes", "1", "GUARDED", "guarded "] {
+            assert!(
+                build_provenance_warning(value).is_some(),
+                "{value:?} is not the marker and must not be trusted as guarded",
+            );
+        }
+    }
 
     /// Pin both branches of `raise_fd_limit`: when the inherited soft
     /// limit is already at or above `min(TARGET_NOFILE, hard)`, the

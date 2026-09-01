@@ -104,7 +104,11 @@ fi
 # what forge-tui requires.
 (
     cd "$FORGE_REPO"
-    cargo install "${CARGO_ARGS[@]}"
+    # Marks the binary as built through this script. A hand-rolled
+    # `cargo install` leaves it unset, and the binary then warns at
+    # startup that its dependency graph may not be the locked one -
+    # `cargo install` ignores Cargo.lock unless `--locked` is passed.
+    FORGE_BUILD_PROVENANCE=install.sh cargo install "${CARGO_ARGS[@]}"
 )
 
 # Resolve cargo's install root so the success line + completion step

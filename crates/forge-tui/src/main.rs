@@ -36,6 +36,7 @@ fn run() -> anyhow::Result<()> {
     // (tokio runtime, workspace I/O, etc). Sits AFTER tracing init so
     // the bump's log line lands. See #251.
     forge_tui::startup::raise_fd_limit();
+    forge_tui::startup::report_build_provenance();
     let perf_path = forge_tui::logging::resolve_perf_path(&cli)?;
 
     #[cfg(not(feature = "perf"))]

@@ -41,6 +41,38 @@ fn main() {
     let (short, full) = compute_suffixes();
     println!("cargo:rustc-env=FORGE_BUILD_SUFFIX_SHORT={short}");
     println!("cargo:rustc-env=FORGE_BUILD_SUFFIX_FULL={full}");
+
+    // How this binary was built. `scripts/install.sh` exports the
+    // marker; anything else - notably a hand-rolled `cargo install`,
+    // which ignores Cargo.lock unless `--locked` is passed - leaves it
+    // unset and the binary reports itself unguarded at startup.
+    println!("cargo:rerun-if-env-changed=FORGE_BUILD_PROVENANCE");
+    let provenance = std::env::var("FORGE_BUILD_PROVENANCE").unwrap_or_default();
+    println!("cargo:rustc-env=FORGE_BUILD_PROVENANCE={provenance}");
+
+    // Hash of the lockfile this build saw, which is a different signal
+    // from provenance: it catches a guarded build that honoured a
+    // locally-modified Cargo.lock. Empty when there is no lockfile to
+    // read, e.g. a packaged build outside the workspace.
+    println!("cargo:rerun-if-changed=../../Cargo.lock");
+    println!("cargo:rustc-env=FORGE_LOCKFILE_SHA={}", lockfile_sha());
+}
+
+/// Short hash of the workspace lockfile, or empty when it cannot be
+/// read. Uses `shasum`/`sha256sum` rather than pulling a hashing crate
+/// into the build graph for one line of provenance.
+fn lockfile_sha() -> String {
+    let Ok(bytes) = std::fs::read("../../Cargo.lock") else {
+        return String::new();
+    };
+    // FNV-1a: a dependency-free digest is enough here, because the
+    // only question asked of it is "same lockfile or not".
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
 }
 
 fn compute_suffixes() -> (String, String) {
