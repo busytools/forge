@@ -25,7 +25,7 @@
 //! only the picker handover is a geometry claim.
 
 use forge_workspace::{
-    AccountAuth, AccountLoadingRow, DictateFailure, DictateModel, DictateModelState,
+    AccountAuth, AccountLoadingRow, DictateBind, DictateFailure, DictateModel, DictateModelState,
     DictateSnapshot, LoadingState,
 };
 use ratatui::Frame;
@@ -213,6 +213,9 @@ fn panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         lines.push(heading_row("Dictation", width));
         for model in &dictate.models {
             lines.extend(model_rows(app, model, &dictate, width));
+        }
+        if let Some(bind_warning) = dictate_bind_warning(app, width) {
+            lines.push(bind_warning);
         }
     }
 
@@ -413,6 +416,20 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
 
 /// What went wrong with a model, in the crate's own words plus what to
 /// do about it.
+fn dictate_bind_warning(app: &App, width: u16) -> Option<Line<'static>> {
+    let bound = app.workspace.as_ref().is_some_and(|ws| ws.dictate_bind() != DictateBind::Off);
+    let delivered = crate::app::keyboard_enhancement_supported();
+    if !bound || delivered != Some(false) {
+        return None;
+    }
+    Some(text_row(
+        2,
+        "this terminal dropped the keyboard flags \u{b7} the push-to-talk key will not arrive",
+        Style::default().fg(theme::STATUS_WARNING),
+        width,
+    ))
+}
+
 fn dictate_detail(failure: &DictateFailure, width: u16) -> Vec<Line<'static>> {
     let error = Style::default().fg(theme::STATUS_ERROR);
     let head = Style::default().add_modifier(Modifier::BOLD);

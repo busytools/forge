@@ -358,6 +358,11 @@ pub struct App {
     /// at boot and the first to arrive would steal the tab - so a
     /// user-driven wake records its intent here instead.
     pub pending_spawn_focus: Option<forge_workspace::SessionKey>,
+    /// Dictation models are loaded and the composer may offer to
+    /// dictate. Set once by `SessionUpdate::DictateAvailability` after
+    /// preflight; never emitted when `[dictate]` is off, so the flag
+    /// stays false and nothing dictation-related renders.
+    pub dictate_available: bool,
     /// Snapshot of the durable forge crons (`mcp__forge__cron`) the
     /// active session itself created, refreshed on the ~1s ticker
     /// (`git_diff::apply_timer_tick`) from
@@ -461,11 +466,13 @@ pub struct App {
     /// Open `/dictate` overlay state; `None` when closed.
     pub dictate_picker: Option<crate::app::dictate_picker::DictatePickerState>,
     /// Push-to-talk press tracking for the configured dictate key.
-    pub(crate) dictate_key: crate::app::dictate::DictateKeyState,
-    /// Whether a dictation capture is believed to be running. The
-    /// workspace's capture is authoritative; this shadow answers the
-    /// key handler's press classification synchronously.
-    pub dictate_recording: bool,
+    pub(crate) dictate_key: crate::app::dictate_key::DictateKeyState,
+    /// Whether a dictate start has been dispatched whose echo has not
+    /// landed yet. Optimistic: set by the key handler's dispatch,
+    /// cleared by the `DictateStarted` / `DictateEnded` reducers. The
+    /// press classification reads this alongside the buckets so a
+    /// second tap before the echo cannot dispatch a duplicate start.
+    pub(crate) dictate_take_pending: bool,
     /// Session-level preference for collapsing non-Execute tool call bodies.
     /// Toggled by Ctrl+X and applied at render/layout time.
     pub tools_collapsed: bool,
@@ -1239,6 +1246,12 @@ impl App {
                     s.lifecycle_state,
                     s.has_live_background_work(),
                 )
+            })
+            || self.sessions.values().any(|s| {
+                s.dictate.as_ref().is_some_and(|d| {
+                    d.phase == crate::app::dictate::DictatePhase::Transcribing
+                        && d.transcribing_overdue()
+                })
             })
     }
 
@@ -3615,6 +3628,7 @@ impl App {
             sessions,
             active_session_key: Some(pending_key),
             pending_spawn_focus: None,
+            dictate_available: false,
             forge_crons: Vec::new(),
             forge_schedule_rows: Vec::new(),
             gotify_subs: Vec::new(),
@@ -3649,8 +3663,8 @@ impl App {
             spinner_picker: None,
             account_picker: None,
             dictate_picker: None,
-            dictate_key: crate::app::dictate::DictateKeyState::default(),
-            dictate_recording: false,
+            dictate_key: crate::app::dictate_key::DictateKeyState::default(),
+            dictate_take_pending: false,
             tools_collapsed: true,
             #[cfg(any(test, feature = "testing"))]
             last_invalidation_level: std::cell::Cell::new(None),

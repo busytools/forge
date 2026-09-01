@@ -78,15 +78,15 @@ mod workspace;
 
 pub use account::{LoadingState, UsageFetchStatus};
 pub use dictate::{
-    DictateBind, DictateFailure, DictateModel, DictateModelState, DictateOverrideUpdate,
-    DictateOverrides, DictateRole, DictateSettings, DictateSnapshot,
+    DictateBind, DictateFailure, DictateMode, DictateModel, DictateModelState,
+    DictateOverrideUpdate, DictateOverrides, DictateRole, DictateSettings, DictateSnapshot,
 };
 // The normalizer's prompt axes reach the TUI only through this
 // re-export: forge-tui depends on no forge-dictate crate of its own.
 pub use domain_session::DomainSession;
 pub use error::WorkspaceError;
 pub use forge_dictate::normalize::{Context, Structure, Styling};
-pub use protocol::{Command, DispatchError, SessionUpdate, TurnErrorClass};
+pub use protocol::{Command, DictateOutcome, DispatchError, SessionUpdate, TurnErrorClass};
 pub use target::{ProjectKey, SessionKey, SessionTarget};
 pub use ui::{RepaintCadence, SpinnerStyle};
 pub use views::{

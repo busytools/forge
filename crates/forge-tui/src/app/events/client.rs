@@ -179,15 +179,6 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 app.needs_redraw = true;
             }
         }
-        SessionUpdate::DictateFinished { key, text, notice, truncated } => {
-            session::apply_session_update_dictate_finished(
-                app,
-                &key,
-                text.as_deref(),
-                notice.as_deref(),
-                truncated,
-            );
-        }
         SessionUpdate::StatusSnapshot { session_id, account, forge_account } => {
             apply_session_update_status_snapshot(app, &session_id, account, forge_account);
         }
@@ -438,9 +429,66 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             };
             apply_session_update_chat_appended(app, &session_id, synthetic);
         }
+        SessionUpdate::DictateAvailability { available } => {
+            app.dictate_available = available;
+        }
+        SessionUpdate::DictateStarted { key, floor_db, generation } => {
+            app.dictate_take_pending = false;
+            if let Some(bucket) = app.session_mut(&key) {
+                bucket.dictate =
+                    Some(crate::app::dictate::DictateIndicator::recording(floor_db, generation));
+                bucket.dictate_notice = None;
+            }
+        }
+        SessionUpdate::DictateLevel { key, peak_db } => {
+            if let Some(bucket) = app.session_mut(&key)
+                && let Some(indicator) = bucket.dictate.as_mut()
+            {
+                indicator.push_level(peak_db);
+            }
+        }
+        SessionUpdate::DictateTranscribing { key } => {
+            if let Some(bucket) = app.session_mut(&key)
+                && let Some(indicator) = bucket.dictate.as_mut()
+            {
+                indicator.begin_transcribing();
+            }
+        }
+        SessionUpdate::DictateEnded { key, outcome, generation } => {
+            app.dictate_take_pending = false;
+            if let Some(bucket) = app.session_mut(&key) {
+                apply_dictate_outcome(bucket, &outcome, generation);
+            }
+        }
     }
     if redraw {
         app.needs_redraw = true;
+    }
+}
+
+/// `SessionUpdate::DictateEnded` reducer. Landed text inserts into the
+/// bucket's own editor - the take belongs to this session, whatever
+/// tab is focused. The notice stamps against the draft version the
+/// insert produced, so the next keystroke clears it. Only the take's
+/// own generation resets the indicator: a stale resolver arriving
+/// after a newer take started on the same key says its piece and
+/// leaves the live take alone.
+fn apply_dictate_outcome(
+    bucket: &mut crate::app::session::UiSession,
+    outcome: &forge_workspace::DictateOutcome,
+    generation: u64,
+) {
+    let floor_db = bucket.dictate.as_ref().map_or(-50.0, |indicator| indicator.floor_db);
+    let notice = crate::app::dictate::notice_for_outcome(outcome, floor_db);
+    if let forge_workspace::DictateOutcome::Landed { text, truncated: _ } = outcome {
+        bucket.input.insert_str(text);
+    }
+    let live_generation = bucket.dictate.as_ref().map(|indicator| indicator.generation);
+    if live_generation == Some(generation) {
+        bucket.dictate = None;
+    }
+    if let Some(notice) = notice {
+        bucket.set_dictate_notice(notice);
     }
 }
 
@@ -1297,53 +1345,6 @@ mod tests {
             "an echo for one session must not touch another"
         );
         assert!(app.needs_redraw);
-    }
-
-    /// Words land at the caret of the session that dictated them, even
-    /// when it is not the active one (the ticket binds to its surface).
-    #[test]
-    fn dictate_finished_text_inserts_into_the_sessions_own_editor() {
-        let mut app = App::test_default();
-        let (key_a, key_b) = seed_two_sessions(&mut app);
-        app.sessions.get_mut(&key_b).expect("bucket").input.set_text("hello ");
-
-        apply_session_update(
-            &mut app,
-            forge_workspace::SessionUpdate::DictateFinished {
-                key: key_b.clone(),
-                text: Some("world".to_owned()),
-                notice: None,
-                truncated: false,
-            },
-        );
-
-        assert_eq!(app.sessions[&key_b].input.text(), "hello world");
-        assert_eq!(
-            app.sessions[&key_a].input.text(),
-            "",
-            "the transcript lands on its own session"
-        );
-        assert!(!app.dictate_recording, "the landing re-syncs the recording shadow");
-    }
-
-    #[test]
-    fn dictate_finished_notice_is_a_message_when_no_text_lands() {
-        let mut app = App::test_default();
-        let (key_a, _key_b) = seed_two_sessions(&mut app);
-
-        apply_session_update(
-            &mut app,
-            forge_workspace::SessionUpdate::DictateFinished {
-                key: key_a,
-                text: None,
-                notice: Some("no audio picked up; speak up and press the key again".to_owned()),
-                truncated: false,
-            },
-        );
-
-        let last = app.messages().last().expect("a notice");
-        assert!(matches!(last.role, crate::app::MessageRole::System(Some(_))));
-        assert_eq!(app.input().text(), "", "no words, no insertion");
     }
 
     fn seed_two_sessions(app: &mut App) -> (SessionKey, SessionKey) {

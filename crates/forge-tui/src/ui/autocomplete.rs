@@ -75,7 +75,7 @@ pub fn render(frame: &mut Frame, input_area: Rect, app: &App) {
         return;
     }
 
-    let text_area = input::compute_render_geometry(input_area, input::hint_line_count(app)).text;
+    let text_area = input::draft_text_area(input_area, app);
     if text_area.width == 0 || text_area.height == 0 {
         return;
     }

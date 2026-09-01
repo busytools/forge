@@ -106,7 +106,7 @@ pub(crate) fn set_bucket_lifecycle_state(
 pub fn handle_terminal_event(app: &mut App, event: Event) {
     let changed = match event {
         Event::Key(key) => {
-            if crate::app::dictate::handle_key(app, key, std::time::Instant::now()) {
+            if crate::app::dictate_key::handle_key(app, key, std::time::Instant::now()) {
                 true
             } else if should_dispatch_key_event(key) {
                 dispatch_key_by_view(app, key)

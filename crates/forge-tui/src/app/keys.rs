@@ -490,6 +490,23 @@ fn handle_turn_control_key(app: &mut App, key: KeyEvent) -> bool {
         app.needs_redraw = true;
         return true;
     }
+    // A live dictation take on this composer owns Esc: it abandons the
+    // take instead of cancelling a turn. With no take the key falls
+    // through to turn cancellation as before.
+    if crate::app::dictate::dictate_owns_esc(app) {
+        if let Err(message) =
+            app.dispatch_command(|key| forge_workspace::Command::DictateStop { key, submit: false })
+        {
+            tracing::warn!(
+                target: crate::logging::targets::APP_INPUT,
+                event_name = "dictate_stop_failed",
+                message = "failed to dispatch the dictate abandon",
+                outcome = "failure",
+                error_message = %message,
+            );
+        }
+        return true;
+    }
     *app.pending_submit_mut() = None;
     // Clear any pending image attachments on Escape.
     if !app.pending_images().is_empty() {
@@ -1261,6 +1278,46 @@ mod tests {
             !app.messages()[0].turn_info.expanded,
             "the expanded flag is per-row state like a tool call's own, so collapse-all takes \
              it with the rest rather than leaving one row open",
+        );
+    }
+
+    #[test]
+    fn esc_abandons_a_live_take_instead_of_cancelling_a_turn() {
+        let mut app = App::test_default();
+        let key = app.active_session_key.clone().expect("test_default has an active bucket");
+        app.session_mut(&key).expect("bucket").dictate =
+            Some(crate::app::dictate::DictateIndicator::recording(-50.0, 1));
+        if let Some(ws) = app.workspace.as_ref() {
+            ws.enable_test_dispatch_intercept();
+        }
+
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(handle_turn_control_key(&mut app, esc), "a live take consumes Esc");
+
+        let dispatched = app.workspace.as_ref().map(|ws| ws.drain_test_dispatch_buffer());
+        let Some(dispatched) = dispatched else { panic!("test_default carries a workspace") };
+        assert!(
+            matches!(
+                &dispatched[..],
+                [forge_workspace::Command::DictateStop { submit: false, .. }]
+            ),
+            "Esc must abandon the take, got: {dispatched:?}"
+        );
+    }
+
+    #[test]
+    fn esc_without_a_take_leaves_the_dictate_path_alone() {
+        let mut app = App::test_default();
+        if let Some(ws) = app.workspace.as_ref() {
+            ws.enable_test_dispatch_intercept();
+        }
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(handle_turn_control_key(&mut app, esc), "Esc still consumes the key");
+        let dispatched =
+            app.workspace.as_ref().map(|ws| ws.drain_test_dispatch_buffer()).unwrap_or_default();
+        assert!(
+            dispatched.is_empty(),
+            "without a take no dictate stop is dispatched, got: {dispatched:?}"
         );
     }
 

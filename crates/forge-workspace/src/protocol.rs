@@ -198,22 +198,6 @@ pub enum Command {
         tool_id: String,
         outcome: QuestionOutcome,
     },
-    /// Begin a push-to-talk capture on behalf of this session. App-level
-    /// (the microphone is process-wide), but the transcript lands on
-    /// the session named here. Silently refused when `[dictate]` is
-    /// disabled or the engine is absent: the key does nothing, which is
-    /// the state the box doc calls S0.
-    DictateStart {
-        key: SessionKey,
-    },
-    /// End the session's push-to-talk capture. `cancelled` discards the
-    /// audio (a chorded release); otherwise it transcribes with the
-    /// starting session's `/dictate` overrides and lands as
-    /// `SessionUpdate::DictateFinished`.
-    DictateStop {
-        key: SessionKey,
-        cancelled: bool,
-    },
     /// Set one `/dictate` overlay axis for this session, or clear
     /// every axis at once. Workspace state on the `DomainSession`,
     /// never routed to the agent; the echo lands as
@@ -396,6 +380,21 @@ pub enum Command {
         account_display_name: String,
         launch_settings: SessionLaunchSettings,
     },
+    /// Begin dictating into the composer at `key`. App-level command
+    /// carrying the origin key, like `DeliverPeerPrompt`: the
+    /// microphone is process-global, so the recording lifecycle lives
+    /// on `Workspace` rather than on one `SessionTask`, while the
+    /// events route back to the session that started it.
+    DictateStart {
+        key: SessionKey,
+    },
+    /// Submit (`submit = true`) or abandon the take started by `key`.
+    /// During recording this is release-to-submit vs discard; during a
+    /// transcription in flight it abandons the ticket.
+    DictateStop {
+        key: SessionKey,
+        submit: bool,
+    },
 }
 
 impl Command {
@@ -474,12 +473,6 @@ impl std::fmt::Debug for Command {
                 .field("key", key)
                 .field("tool_id", tool_id)
                 .finish_non_exhaustive(),
-            Self::DictateStart { key } => f.debug_struct("DictateStart").field("key", key).finish(),
-            Self::DictateStop { key, cancelled } => f
-                .debug_struct("DictateStop")
-                .field("key", key)
-                .field("cancelled", cancelled)
-                .finish(),
             Self::SetDictateOverride { key, .. } => {
                 f.debug_struct("SetDictateOverride").field("key", key).finish_non_exhaustive()
             }
@@ -555,8 +548,35 @@ impl std::fmt::Debug for Command {
                 .field("key", key)
                 .field("account_display_name", account_display_name)
                 .finish_non_exhaustive(),
+            Self::DictateStart { key } => f.debug_struct("DictateStart").field("key", key).finish(),
+            Self::DictateStop { key, submit } => {
+                f.debug_struct("DictateStop").field("key", key).field("submit", submit).finish()
+            }
         }
     }
+}
+
+/// What one finished dictation take produced. Plain data rather than
+/// [`forge_dictate::Outcome`]: the TUI words the notices, so it gets
+/// the observations and keeps the crate's error shapes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DictateOutcome {
+    /// Words to insert at the composer's caret. `truncated` means the
+    /// take hit the capture cap or the decode budget and is partial.
+    Landed { text: String, truncated: bool },
+    /// The audio normalised to nothing - a valid answer, not a failure.
+    Empty,
+    /// Nothing rose above the silence floor. A finite `peak_db` is a
+    /// quiet room and a retry is reasonable; negative infinity means
+    /// every sample was exactly zero, which is structural and sticky.
+    NoAudio { peak_db: f32, seconds: u64 },
+    /// The take never happened. Covers a busy microphone, a device that
+    /// would not open, and dictation not being ready.
+    Refused { message: String },
+    /// Recognition failed. The response is the same whichever way.
+    Failed,
+    /// The user abandoned the take. Resets silently.
+    Cancelled,
 }
 
 /// Update envelope: forge-workspace -> forge-tui.
@@ -720,17 +740,6 @@ pub enum SessionUpdate {
         key: SessionKey,
         overrides: crate::dictate::DictateOverrides,
     },
-    /// A push-to-talk capture resolved. `text` is the transcript;
-    /// `None` with a `notice` covers the outcomes where no words land
-    /// (no audio, an empty transcript, a failure). `truncated` rides
-    /// alongside text that still landed: the capture cap or the decode
-    /// budget cut the tail.
-    DictateFinished {
-        key: SessionKey,
-        text: Option<String>,
-        notice: Option<String>,
-        truncated: bool,
-    },
     OauthCredentialsSnapshot {
         session_id: String,
         credentials: Option<OauthCredentials>,
@@ -841,6 +850,44 @@ pub enum SessionUpdate {
         waiting: usize,
         message: String,
     },
+    /// Dictation models are loaded and the composer may offer to
+    /// dictate. App-global (no key): the engine is process-wide and
+    /// every session's composer shares the availability. Never emitted
+    /// when `[dictate]` is disabled, so sessions that cannot dictate
+    /// render nothing.
+    DictateAvailability {
+        available: bool,
+    },
+    /// A recording started for the composer at `key`. `floor_db` is the
+    /// silence floor the level meter maps onto its zero glyph, so the
+    /// bar and the `NoAudio` verdict agree by construction. `generation`
+    /// identifies this take among the key's takes: a resolver that
+    /// arrives after a newer take started carries a stale one, and the
+    /// composer resets on its own generation only.
+    DictateStarted {
+        key: SessionKey,
+        floor_db: f32,
+        generation: u64,
+    },
+    /// One level reading for the recording at `key`: the peak over the
+    /// window since the previous reading, in dBFS. Emitted on the
+    /// meter clock, not the repaint clock.
+    DictateLevel {
+        key: SessionKey,
+        peak_db: f32,
+    },
+    /// The take from `key` was submitted and a transcript is in flight.
+    DictateTranscribing {
+        key: SessionKey,
+    },
+    /// A take from `key` is done: insert, notice or reset per
+    /// [`DictateOutcome`]. `generation` is the take's own, as handed
+    /// out by [`SessionUpdate::DictateStarted`].
+    DictateEnded {
+        key: SessionKey,
+        outcome: DictateOutcome,
+        generation: u64,
+    },
     FatalError(AppError),
 }
 
@@ -865,10 +912,13 @@ impl SessionUpdate {
             | Self::TurnError { key, .. }
             | Self::ForgeAccountIdentity { key, .. }
             | Self::DictateOverrides { key, .. }
-            | Self::DictateFinished { key, .. }
             | Self::SessionsListed { key, .. }
             | Self::ReviewActivityNotice { key, .. }
-            | Self::PeerInflightStatsChanged { key, .. } => Some(key.clone()),
+            | Self::PeerInflightStatsChanged { key, .. }
+            | Self::DictateStarted { key, .. }
+            | Self::DictateLevel { key, .. }
+            | Self::DictateTranscribing { key }
+            | Self::DictateEnded { key, .. } => Some(key.clone()),
             Self::RuntimeReloadCompleted { session_id }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::ChatAppended { session_id, .. }
@@ -890,6 +940,7 @@ impl SessionUpdate {
             | Self::PluginsCliActionSucceeded { .. }
             | Self::PluginsCliActionFailed { .. }
             | Self::WorkerStatusChanged { .. }
+            | Self::DictateAvailability { .. }
             | Self::FatalError(..) => None,
         }
     }
@@ -975,9 +1026,6 @@ impl std::fmt::Debug for SessionUpdate {
             Self::ForgeAccountIdentity { key, .. } => {
                 f.debug_struct("ForgeAccountIdentity").field("key", key).finish_non_exhaustive()
             }
-            Self::DictateFinished { key, .. } => {
-                f.debug_struct("DictateFinished").field("key", key).finish_non_exhaustive()
-            }
             Self::DictateOverrides { key, .. } => {
                 f.debug_struct("DictateOverrides").field("key", key).finish_non_exhaustive()
             }
@@ -1048,6 +1096,23 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("key", key)
                 .field("branch", branch)
                 .field("waiting", waiting)
+                .finish_non_exhaustive(),
+            Self::DictateAvailability { available } => {
+                f.debug_struct("DictateAvailability").field("available", available).finish()
+            }
+            Self::DictateStarted { key, .. } => {
+                f.debug_struct("DictateStarted").field("key", key).finish_non_exhaustive()
+            }
+            Self::DictateLevel { key, peak_db } => {
+                f.debug_struct("DictateLevel").field("key", key).field("peak_db", peak_db).finish()
+            }
+            Self::DictateTranscribing { key } => {
+                f.debug_struct("DictateTranscribing").field("key", key).finish()
+            }
+            Self::DictateEnded { key, outcome, .. } => f
+                .debug_struct("DictateEnded")
+                .field("key", key)
+                .field("outcome", outcome)
                 .finish_non_exhaustive(),
             Self::FatalError(err) => f.debug_struct("FatalError").field("error", err).finish(),
         }

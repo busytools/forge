@@ -500,11 +500,35 @@ pub struct UiSession {
     /// streak. Capped at `auto_continue::MAX_ATTEMPTS`; reset when a
     /// turn completes.
     pub auto_continue_attempts: u32,
+
+    /// Active dictation take on this session's composer, if any. The
+    /// take is bound to the bucket: results land here regardless of
+    /// which tab is focused when the transcript resolves.
+    pub(crate) dictate: Option<crate::app::dictate::DictateIndicator>,
+    /// Post-take notice row and the input `content_version` it was
+    /// stamped under. The next keystroke bumps the version, which is
+    /// what clears the notice - no key path needs to know about it.
+    pub(crate) dictate_notice: Option<crate::app::dictate::DictateNotice>,
+    pub(crate) dictate_notice_version: u64,
 }
 
 impl UiSession {
     pub fn new(key: SessionKey) -> Self {
         Self { key: Some(key), ..Self::default() }
+    }
+
+    /// Stamp a post-take notice against the current draft version, so
+    /// it renders until the next keystroke.
+    pub(crate) fn set_dictate_notice(&mut self, notice: crate::app::dictate::DictateNotice) {
+        self.dictate_notice_version = self.input.content_version;
+        self.dictate_notice = Some(notice);
+    }
+
+    /// The notice to render, if the draft has not been edited since it
+    /// was stamped.
+    pub(crate) fn visible_dictate_notice(&self) -> Option<&crate::app::dictate::DictateNotice> {
+        let stamped = self.dictate_notice_version;
+        self.dictate_notice.as_ref().filter(|_| self.input.content_version == stamped)
     }
 
     /// True while the session has a live backgrounded task (bash / agent /
@@ -719,6 +743,9 @@ impl Default for UiSession {
             last_api_retry: Option::default(),
             auto_continue_due_at: Option::default(),
             auto_continue_attempts: 0,
+            dictate: Option::default(),
+            dictate_notice: Option::default(),
+            dictate_notice_version: u64::default(),
         }
     }
 }

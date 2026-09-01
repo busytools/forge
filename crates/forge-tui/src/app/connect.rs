@@ -210,6 +210,7 @@ fn create_app_impl(
         sessions,
         active_session_key: Some(pre_connect_key),
         pending_spawn_focus: None,
+        dictate_available: false,
         forge_crons: Vec::new(),
         forge_schedule_rows: Vec::new(),
         gotify_subs: Vec::new(),
@@ -244,8 +245,8 @@ fn create_app_impl(
         spinner_picker: None,
         account_picker: None,
         dictate_picker: None,
-        dictate_key: crate::app::dictate::DictateKeyState::default(),
-        dictate_recording: false,
+        dictate_key: crate::app::dictate_key::DictateKeyState::default(),
+        dictate_take_pending: false,
         tools_collapsed: true,
         #[cfg(any(test, feature = "testing"))]
         last_invalidation_level: std::cell::Cell::new(None),

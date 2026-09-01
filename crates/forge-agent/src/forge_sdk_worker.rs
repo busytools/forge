@@ -14,7 +14,7 @@ use std::sync::Arc;
 use forge_primitives::{PermissionDecision, ToolPermissionContext};
 use forge_sdk::{
     Client, HookContext, HookDecision, HooksBuilder, Options, OptionsBuilder, PermissionMode,
-    PreToolUseInput, UserPromptSubmitInput,
+    PreToolUseInput,
 };
 use tokio::sync::{mpsc, oneshot};
 use tracing::Instrument;
@@ -657,14 +657,15 @@ fn build_options_with_callback(
     extra_mcp_servers: Vec<(String, forge_sdk::mcp::McpServer)>,
     binding: &AccountBinding<'_>,
 ) -> Options {
-    // Passthrough hooks emit `AgentEvent::HookObservation` for every
-    // PreToolUse / UserPromptSubmit input without altering the dispatch
-    // outcome. PreToolUse carries subagent attribution (`agent_id` +
-    // `agent_type`) - see #84.
+    // A passthrough hook emits `AgentEvent::HookObservation` for every
+    // PreToolUse input without altering the dispatch outcome, carrying
+    // subagent attribution (`agent_id` + `agent_type`) - see #84.
+    //
+    // Observation must stay off `UserPromptSubmit`: the CLI answers a
+    // callback timeout there with `suppressOriginalPrompt`, so a slow
+    // control-stream reply discards the user's prompt.
     let pre_tool_observe_tx = event_tx.clone();
     let pre_tool_observe_sid = Arc::clone(&session_id_slot);
-    let user_prompt_observe_tx = event_tx.clone();
-    let user_prompt_observe_sid = Arc::clone(&session_id_slot);
 
     let observation_hooks = HooksBuilder::new()
         .pre_tool_use("*", move |input: PreToolUseInput, _ctx: HookContext| {
@@ -678,21 +679,6 @@ fn build_options_with_callback(
                     effort: input.base.effort.as_ref().map(|e| e.level.clone()),
                     agent_id: input.subagent.agent_id.clone(),
                     agent_type: input.subagent.agent_type.clone(),
-                });
-                HookDecision::passthrough()
-            }
-        })
-        .user_prompt_submit(move |input: UserPromptSubmitInput, _ctx: HookContext| {
-            let tx = user_prompt_observe_tx.clone();
-            let session_id = user_prompt_observe_sid.lock().clone();
-            async move {
-                let _ = tx.send(AgentEvent::HookObservation {
-                    session_id,
-                    tool_use_id: None,
-                    permission_mode: input.base.permission_mode.clone(),
-                    effort: input.base.effort.as_ref().map(|e| e.level.clone()),
-                    agent_id: None,
-                    agent_type: None,
                 });
                 HookDecision::passthrough()
             }
@@ -1635,6 +1621,44 @@ mod tests {
             options.env.get("CLAUDE_CONFIG_DIR").map(String::as_str),
             Some("/cfg/codex"),
             "bound account config_dir still stamped alongside the account env",
+        );
+    }
+
+    /// A `UserPromptSubmit` callback hook puts forge's control-stream
+    /// round-trip on the prompt-submission path, and the CLI answers a
+    /// callback timeout there with `suppressOriginalPrompt` - the user's
+    /// prompt is discarded. Observation belongs on `PreToolUse`, which
+    /// carries the same `permission_mode` / `effort` plus subagent
+    /// attribution.
+    #[test]
+    fn observation_hooks_stay_off_the_prompt_submit_path() {
+        use crate::client::SessionLaunchSettings;
+        use std::path::Path;
+        use tokio::sync::mpsc;
+
+        let (event_tx, _rx) = mpsc::unbounded_channel();
+        let launch = SessionLaunchSettings::default();
+        let env = HashMap::new();
+        let options = super::build_options_with_callback(
+            "",
+            None,
+            &launch,
+            event_tx,
+            fresh_pending(),
+            fresh_pending_questions(),
+            Arc::new(Mutex::new(String::new())),
+            Vec::new(),
+            &super::AccountBinding { config_dir: Path::new("/cfg/x"), env: &env },
+        );
+
+        let desc = format!("{options:?}");
+        assert!(
+            desc.contains("user_prompt_submit_count: 0"),
+            "no UserPromptSubmit hook may be registered, or a slow reply blocks the prompt: {desc}",
+        );
+        assert!(
+            desc.contains("pre_tool_use_count: 1"),
+            "the PreToolUse observation hook is still registered: {desc}",
         );
     }
 

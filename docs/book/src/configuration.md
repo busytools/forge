@@ -228,6 +228,7 @@ Optional. Absent means dictation is off, which is also what an explicit
 | `normalizer` | boolean | `true` | Rewrite recognition output into clean text. Off halves the download and skips a pass per utterance. |
 | `max_capture_minutes` | integer | `30` | Upper bound on one recording. A capture reserves memory eagerly, about 110 MiB at the default. |
 | `bind` | string | `right_cmd` | The push-to-talk key: `right_cmd`, `left_cmd` or `off`. On Linux and Windows the cmd equivalent is the right/left Control key. |
+| `mode` | string | `auto` | How press/release maps onto recording: `auto` infers from timing (a quick tap toggles, a hold transcribes on release), `toggle` starts on a press and stops on the next press, `hold` records while held and always transcribes on release. |
 
 Unlike `[ui]`, an unrecognised key here fails the load rather than being
 ignored: a mistyped `models_dir` would otherwise fetch three gigabytes
@@ -367,8 +368,8 @@ view, which makes it safe to sync between machines.
 Everything mutable lives in a single embedded redb database at
 `<app-support>/db.redb`: durable crons, Gotify subscriptions, dynamic
 workers spawned at runtime, review threads, the `/spinner` override,
-the per-account usage cache, cached model pricing, and the `/usage`
-view's per-file token summaries.
+the per-account usage cache, cached model pricing, cached OpenRouter
+model catalogs, and the `/usage` view's per-file token summaries.
 
 `<app-support>` is `~/Library/Application Support/forge-tui` on macOS
 and `$XDG_DATA_HOME/forge-tui` on Linux.

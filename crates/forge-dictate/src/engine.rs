@@ -308,6 +308,14 @@ impl Engine {
         self.readiness.wait()
     }
 
+    /// The configured silence floor, in dBFS. A host drawing the
+    /// capture level bar needs the same floor the silence decision
+    /// uses, so the meter and the [`Outcome::NoAudio`] verdict agree
+    /// by construction rather than by a host guessing the default.
+    pub fn silence_floor(&self) -> f32 {
+        self.silence_floor
+    }
+
     /// Queue `source` for transcription.
     ///
     /// Rejects a source the models cannot read before queueing anything.
@@ -466,8 +474,15 @@ pub struct Capture {
 }
 
 impl Capture {
-    /// Loudest input so far, in dBFS. A lock-free atomic read, so it is
-    /// safe to call from a render loop.
+    /// Loudest input since the last read, in dBFS. The read is
+    /// take-and-reset - it answers "peak over the window you just
+    /// polled" and clears, which is what a level meter drawing one bar
+    /// per window wants; a read that held the all-time peak would
+    /// freeze such a meter on the first syllable.
+    ///
+    /// Still a lock-free atomic, so it is safe to call from a render
+    /// loop. The mutating read means two pollers steal windows from
+    /// each other: one reader is the assumed caller.
     pub fn level(&self) -> f32 {
         self.recording.peak_dbfs()
     }
@@ -497,6 +512,21 @@ impl Capture {
     /// Stop recording and throw the audio away.
     pub fn cancel(self) {
         drop(self);
+    }
+
+    /// Why the input never opened, if it did not. Reading it at capture
+    /// time is what lets a host refuse a dead device eagerly instead of
+    /// running the level bar over a microphone that was never open and
+    /// reporting the failure only when the caller lets go.
+    pub fn open_error(&self) -> Option<&Error> {
+        self.failed_to_open.as_ref()
+    }
+
+    /// Whether the capture reached [`Config::max_capture`] and stopped
+    /// itself. A host polling the level reads this so it can submit the
+    /// take instead of holding a microphone that is no longer running.
+    pub fn was_truncated(&self) -> bool {
+        self.recording.was_truncated()
     }
 
     /// Stop the recorder and join it, so the device is released before
@@ -550,6 +580,15 @@ impl Ticket {
     /// put a runtime in every consumer to serve one.
     pub fn recv(self) -> Result<Outcome, Error> {
         self.answer.recv().map_err(|_| Error::EngineStopped)?
+    }
+
+    /// A clone of this ticket's cancel token. Cancelling it aborts THIS
+    /// transcription - a job still queued behind another takes the
+    /// token with it and is aborted when its turn comes - which is why
+    /// a host abandoning one take among several goes through here
+    /// rather than through anything engine-wide.
+    pub fn cancel_token(&self) -> CancelToken {
+        self.cancel.clone()
     }
 }
 
@@ -776,6 +815,45 @@ mod tests_engine {
         );
     }
 
+    /// The floor a host meters against is the floor the silence verdict
+    /// uses. A getter that drifted from the config would draw a bar and
+    /// an outcome that disagree about where "nothing" starts.
+    #[test]
+    fn silence_floor_reads_the_configured_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .normalizer(None)
+            .silence_floor(-3.0)
+            .build();
+        let engine = Engine::new(cfg).expect("engine must start");
+        assert!(
+            (engine.silence_floor() + 3.0).abs() < f32::EPSILON,
+            "the getter must carry the configured floor, got {}",
+            engine.silence_floor()
+        );
+    }
+
+    /// On a machine with a working default input, a fresh capture is not
+    /// carrying an open failure. Skipped where there is no audio stack,
+    /// since there the failure arm is the only one reachable. Skipped too
+    /// when the recorder cannot open a REAL default - the workspace-level
+    /// refusal tests cover that arm without hardware.
+    #[test]
+    fn a_fresh_capture_over_a_working_device_carries_no_open_error() {
+        let Ok(found) = crate::capture::devices() else { return };
+        if !found.iter().any(|d| d.is_default) {
+            return;
+        }
+        let (_dir, engine) = engine_without_weights();
+        let capture = engine.try_capture("open-error").expect("an idle microphone must be held");
+        assert!(
+            capture.open_error().is_none(),
+            "a capture over a working default input must not report an open failure: {:?}",
+            capture.open_error().map(std::string::ToString::to_string)
+        );
+    }
+
     #[test]
     fn dropping_a_capture_releases_the_microphone() {
         let (_dir, engine) = engine_without_weights();
@@ -785,6 +863,26 @@ mod tests_engine {
         assert!(
             again.is_ok(),
             "release must ride on Drop, or a panicking caller wedges the microphone for everyone"
+        );
+    }
+
+    /// Cancelling a ticket must never wedge its own answer. With no
+    /// weights every job resolves as a load failure, which is exactly
+    /// the drain a caller abandoned mid-queue would have raced into.
+    /// A no-op cancel would survive this pin in CI - the real-weights
+    /// test below is what kills that mutation, where a cancelled job
+    /// comes back cancelled instead of with words.
+    #[test]
+    fn cancelling_a_ticket_still_resolves_its_answer() {
+        let (_dir, engine) = engine_without_weights();
+        let ticket = engine.transcribe(Samples::mono(vec![0.6; 512])).expect("queued");
+        let token = ticket.cancel_token();
+        token.cancel();
+        let answer =
+            ticket.recv().expect_err("no weights means the job answers with the load failure");
+        assert!(
+            matches!(answer, Error::ModelLoad { .. }),
+            "the cancelled job must still resolve, got: {answer:?}"
         );
     }
 
@@ -1030,6 +1128,32 @@ mod tests_real_recognition {
         assert!(
             matches!(after, Outcome::Transcript(_)),
             "an abandoned ticket must free the worker for the next caller, got: {after:?}"
+        );
+    }
+
+    /// A cancelled ticket comes back cancelled, not with words.
+    ///
+    /// Cancelled before the worker's turn (the first job's model load
+    /// gives the cancel a wide window), so this pins the whole path:
+    /// token clone, install, and the abort mapping. Assumes the model
+    /// honours cancellation - the engine logs a notice when it does
+    /// not, and there this assert would misfire.
+    #[test]
+    #[ignore = "needs the ASR weights; run with --run-ignored all after `--example fetch`"]
+    fn cancelling_a_ticket_returns_cancelled_rather_than_the_words() {
+        let clip = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/08_009s.wav");
+        let (pcm, rate) = read_wav(&clip);
+
+        let engine =
+            Engine::new(ConfigBuilder::new().normalizer(None).build()).expect("engine must start");
+        let ticket = engine.transcribe(Samples::new(pcm, rate, 1)).expect("queued");
+        ticket.cancel_token().cancel();
+        let answer = ticket
+            .recv()
+            .expect_err("a cancelled ticket is an error, never the transcript it aborted");
+        assert!(
+            matches!(answer, Error::Cancelled),
+            "cancelling before the turn must abort the job, got: {answer:?}"
         );
     }
 

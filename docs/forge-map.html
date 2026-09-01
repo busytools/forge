@@ -365,9 +365,7 @@
 
 <ol style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 16px 22px;">
   <li><code>body</code> - chat scrollback (Min 3 rows, takes the flex)</li>
-  <li><code>input_sep</code> - full-width <code>─</code> separator (1 row, DIM)</li>
-  <li><code>input</code> - input field (1 row, grows up to N as user types)</li>
-  <li><code>input_bottom_sep</code> - full-width <code>─</code> separator (1 row, DIM)</li>
+  <li><code>input</code> - the bordered input box (1 interior row, grows up to <code>MAX_INPUT_HEIGHT = 50</code> as the user types; its own thick top/bottom edges are the dividers - there are no separator rows)</li>
   <li><code>help</code> - help overlay (0 when inactive, else <code>HELP_PANEL_HEIGHT = 14</code>)</li>
 </ol>
 
@@ -396,13 +394,13 @@
   <span class="dim">│  </span>   <span class="dim">Compiling forge-tui v0.14.2</span>
   <span class="dim">└─ </span><span class="success">Summary [4.2s] 1565 tests run: 1565 passed</span>
   <span class="dim">8.7s</span>
-  <span class="muted-c">────────────────────────────────────────────────────────────────────────────</span>
-  <span class="accent">❯</span> <span class="dim italic">Type your message...</span>
-  <span class="muted-c">────────────────────────────────────────────────────────────────────────────</span>
+  <span class="accent">┏</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┓</span>
+  <span class="accent">┃</span> <span class="accent">➤</span> <span class="dim italic">Type a message...</span>                                                        <span class="accent">┃</span>
+  <span class="accent">┗</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┛</span>
 </pre>
 </div>
 
-<p class="caption">Left padding is 2 cols across the chat body. Two horizontal <code>─</code> separators in DIM frame the input - one above, one below. The chat scrollbar (overflow only) is a <code>▐</code> thumb in <code>RUST_ORANGE</code> with no track, in a 1-col gutter reserved off the body's right edge (<code>CHAT_SCROLLBAR_WIDTH</code>). The bottom of the chat frame ends at the lower <code>─</code>; the status pieces that used to sit below the input now live in the <a href="#projects-pane">Projects pane</a>'s bottom panel, and the todo list that used to sit above the input is now in the <a href="#inspector-pane">Inspector pane</a>'s <code>TASKS</code> section.</p>
+<p class="caption">Left padding is 2 cols across the chat body. The input is a thick-bordered RUST_ORANGE box; its own top and bottom edges are the dividers - no separator rows. The chat scrollbar (overflow only) is a <code>▐</code> thumb in <code>RUST_ORANGE</code> with no track, in a 1-col gutter reserved off the body's right edge (<code>CHAT_SCROLLBAR_WIDTH</code>). The bottom of the chat frame ends at the box's lower edge; the status pieces that used to sit below the input now live in the <a href="#projects-pane">Projects pane</a>'s bottom panel, and the todo list that used to sit above the input is now in the <a href="#inspector-pane">Inspector pane</a>'s <code>TASKS</code> section.</p>
 
 <div class="surface" id="projects-pane">
   <div class="surface-head">
@@ -2089,34 +2087,63 @@ chat continues here...
 <div class="surface">
   <div class="surface-head">
     <h4>Input area (default state)</h4>
-    <div class="when">visible: in <code>ActiveView::Chat</code> (hidden when a full-frame view is active). Height grows from 1 row up to <code>MAX_INPUT_HEIGHT = 12</code> as the user types.</div>
+    <div class="when">visible: in <code>ActiveView::Chat</code> (hidden when a full-frame view is active). Height grows from 1 row up to <code>MAX_INPUT_HEIGHT = 50</code> as the user types.</div>
   </div>
   <div class="surface-body">
-    <p>Backed by <code>tui-textarea</code> for cursor / selection / paste-burst handling. The input is sandwiched between two DIM <code>─</code> separators (<code>input_sep</code> above, <code>input_bottom_sep</code> below) that <code>chat_view</code> draws. Height grows from 1 row up to <code>MAX_INPUT_HEIGHT = 12</code> as the user types or pastes multi-line content. Prompt char is <code>❯</code> (<code>theme::PROMPT_CHAR</code>) in RUST_ORANGE. Placeholder text is in DIM italic. Slash commands typed in the input are coloured <code>SLASH_COMMAND</code> (light magenta) by <code>input.rs</code>.</p>
+    <p>Backed by <code>tui-textarea</code> for cursor / selection / paste-burst handling. The box is a <code>BorderType::Thick</code> <code>Borders::ALL</code> block drawn by <code>input.rs</code> in RUST_ORANGE bold - no separate separator rows. Height grows from 1 row up to <code>MAX_INPUT_HEIGHT = 50</code> as the user types or pastes multi-line content. Prompt char is <code>➤</code> (<code>theme::PROMPT_CHAR</code>, U+27A4) in RUST_ORANGE. Placeholder text is in DIM italic. Slash commands typed in the input are coloured <code>SLASH_COMMAND</code> (light magenta) by <code>input.rs</code>.</p>
     <p>Above the input there's a <strong>hint slot</strong> that grows the input region's height to accommodate. Possible hint rows (each takes 1+ lines):</p>
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
       <li><strong>Login hint</strong> (when CLI reports <code>app.login_hint</code>): "<em>Authentication required: &lt;method&gt; -- &lt;description&gt;</em>" in Yellow + dim hint "<em>Run `claude auth login` in another terminal to authenticate</em>" beneath. Two lines.</li>
       <li><strong>Cancel hint</strong> (during cancellation): spinner + "<em>Cancelling current turn... draft will auto-submit when ready.</em>" in DIM. One line.</li>
       <li><strong>Prompt suggestion</strong>: "<em>Suggestion: &lt;text&gt;    Tab to accept</em>" - "Suggestion:" in DIM, suggestion in white, accept-hint in DIM. One line.</li>
     </ul>
-    <p>When <code>app.status == AppStatus::Connecting</code>, the entire input area is replaced with a spinner + "<em>Connecting to Claude Code...</em>" in DIM (no separators are drawn around it for that variant - the input area takes its own row).</p>
+    <p>When <code>app.status == AppStatus::Connecting</code>, the entire input area is replaced with a spinner + "<em>Connecting to Claude Code...</em>" in DIM.</p>
     <div class="term">
       <pre class="indent">
-  <span class="muted-c">────────────────────────────────────────────────────────────────────────────</span>
-  <span class="accent">❯</span> <span class="dim italic">Type your message...</span>
-  <span class="muted-c">────────────────────────────────────────────────────────────────────────────</span></pre>
+  <span class="accent">┏</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┓</span>
+  <span class="accent">┃</span> <span class="accent">➤</span> <span class="dim italic">Type a message...</span>                                                        <span class="accent">┃</span>
+  <span class="accent">┗</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┛</span></pre>
     </div>
     <p class="hint">With a login-required hint above the input:</p>
     <div class="term">
       <pre class="indent">
-  <span class="muted-c">────────────────────────────────────────────────────────────────────────────</span>
   <span class="warning">Authentication required: claude.ai -- Anthropic OAuth (Pro)</span>
   <span class="dim">Run `claude auth login` in another terminal to authenticate</span>
-  <span class="accent">❯</span> <span class="dim italic">Type your message...</span>
-  <span class="muted-c">────────────────────────────────────────────────────────────────────────────</span></pre>
+  <span class="accent">┏</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┓</span>
+  <span class="accent">┃</span> <span class="accent">➤</span> <span class="dim italic">Type a message...</span>                                                        <span class="accent">┃</span>
+  <span class="accent">┗</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┛</span></pre>
     </div>
+
+    <h5 style="margin-top: 18px;">Dictation indicator</h5>
+    <p>With <code>[dictate] enabled</code> and the models loaded (one <code>SessionUpdate::DictateAvailability</code> after preflight), the <strong>top border's three leftmost cells</strong> become the dictation indicator. Idle and recording hold the same three cells in the same place - nothing in the box moves between them, no rows are added or removed, so the draft wrap, the box height and the scroll position never change. Transcribing past 3 s is the one collapse: the three become a single cell, drawn in the frames below. The only thing that ever changes the box height is the notice row. When dictation is off (the default) the border is what ships above; nothing else differs. Level readings arrive as <code>DictateLevel</code> events every 50 ms, each the peak over the window since the previous one off the take-and-reset <code>Capture::level</code>.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="accent">┏</span><span class="dim">▁▁▁</span> <span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┓</span>   idle - dictation ready, static
+  <span class="accent">┃</span> <span class="accent">➤</span> <span class="dim italic">Type a message...</span>                                                        <span class="accent">┃</span>
+  <span class="accent">┗</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┛</span>
+
+  <span class="accent">┏</span><span class="accent">▅▇▃</span> <span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┓</span>   recording - the last three 50 ms window peaks
+  <span class="accent">┃</span> <span class="accent">➤</span> <span class="dim italic">Type a message...</span>                                                        <span class="accent">┃</span>
+  <span class="accent">┗</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┛</span>
+
+  <span class="accent">┏</span><span class="accent">▆</span> <span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┓</span>   transcribing past 3 s - one pinned <code>bars_v</code> cell
+  <span class="accent">┃</span> <span class="dim">esc to cancel</span>                                                             <span class="accent">┃</span>
+  <span class="accent">┃</span> <span class="accent">➤</span> <span class="dim italic">Type a message...</span>                                                        <span class="accent">┃</span>
+  <span class="accent">┗</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┛</span></pre>
+    </div>
+    <p>The three cells carry the block ramp <code>▁▂▃▄▅▆▇█</code> mapped over the configured silence floor to 0 dBFS. Idle is static DIM floor cells - deliberately not an idle animation, which would be a permanent repaint source in every frame. A window at or below the floor draws the floor glyph in DIM, so a bar that never leaves the floor is the same condition <code>Outcome::NoAudio</code> reports. Transcribing is silent for the first 3 seconds (the warm case - roughly 115 ms for a 5-second clip - never paints), then one pinned <code>bars_v</code> cell replaces the three, at that style's 70 ms cadence regardless of the active <code>/spinner</code> choice, so three bars collapse to one bar.</p>
+    <p><strong>The notice row.</strong> Everything that is not "text landed" is one row inside the box, above the draft, cleared by the next keystroke. It is the one row that ever changes the box height, and it only appears when there is something to say:</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="accent">┏</span><span class="dim">▁▁▁</span> <span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┓</span>
+  <span class="accent">┃</span>  <span class="dim">nothing above -50 dBFS in 4s · loudest was -38.2 · try again</span>             <span class="accent">┃</span>
+  <span class="accent">┃</span> <span class="accent">➤</span> <span class="dim italic">Type a message...</span>                                                        <span class="accent">┃</span>
+  <span class="accent">┗</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┛</span></pre>
+    </div>
+    <p>Notices: a quiet room carries its own measured peak and offers a retry (DIM); every sample exactly zero is structural and sticky, so no retry is offered (red); a take that normalised to nothing says so (DIM); a truncated take lands its words plus a keep-going note (yellow); recognition failures are one grouped notice (DIM); a busy microphone names the holder, and a device that would not open is refused before recording starts (both red). Landed text inserts at the caret through the editor's own insertion path - never the paste dispatcher, so long takes are never collapsed to a placeholder. The take is bound to the session that started it: results route by session key, so switching tabs mid-transcription never moves the words to another composer. <kbd>Esc</kbd> discards a recording; while transcribing it abandons the ticket and only falls through to turn-cancellation when nothing is in flight.</p>
     <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/input.rs::render</code> · separators in <code>chat_view::render_separator</code></dd>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/input.rs::render</code> · indicator state in <code>crates/forge-tui/src/app/dictate.rs</code> · recording lifecycle in <code>crates/forge-workspace/src/dictate.rs</code></dd>
+      <dt>exits</dt><dd><kbd>Esc</kbd> discards a recording and abandons a transcription in flight; it cancels a turn only when no take is live. The key that starts a recording is not wired yet.</dd>
     </dl>
   </div>
 </div>
@@ -2806,11 +2833,11 @@ chat continues here...
     <div class="when">active: whenever <code>[dictate] bind</code> is not <code>off</code> and the terminal negotiated the kitty enhancement flags. No visual surface of its own - the visible outcomes are words at the composer caret, info-level system notices, and (once built) the composer's recording indicator.</div>
   </div>
   <div class="surface-body">
-    <p>Hold to record, release to transcribe; a clean tap shorter than 300 ms instead engages a toggle, so press-start-press-stop works without a hold. The key is configurable via <code>[dictate] bind</code> (<code>right_cmd</code> default, <code>left_cmd</code>, <code>off</code>); on Linux and Windows the cmd equivalent is the right/left Control key, mirroring how the Cmd shortcuts accept Ctrl off macOS. Detection depends on the kitty <code>REPORT_ALL_KEYS_AS_ESCAPE_CODES</code> flag, which forge negotiates at startup and re-sets on resize; a terminal or multiplexer that discards the flags is logged at boot, and with them gone the key silently never arrives. While the dictate key is down, any other key marks the hold a chord (the key still dispatches normally, so Right Cmd + V still pastes) and a chorded release cancels the speculative recording instead of transcribing it. Bare modifier presses and releases are consumed app-wide so they cannot tear down autocomplete or disturb a queued paste burst, and held keys now arrive as <code>Repeat</code> events, which are dispatched like presses. With <code>[dictate]</code> disabled the key does nothing at all. The transcript lands at the caret of the session that dictated, bound to that session however focus has moved; a notice without text covers no-audio (quiet room vs. structural silence worded differently, since only the first can be retried), an empty transcript, a failure, and a mic claimed by another holder in the process.</p>
+    <p>Hold to record, release to transcribe; a clean tap shorter than 300 ms instead engages a toggle, so press-start-press-stop works without a hold. The key is configurable via <code>[dictate] bind</code> (<code>right_cmd</code> default, <code>left_cmd</code>, <code>off</code>); on Linux and Windows the cmd equivalent is the right/left Control key, mirroring how the Cmd shortcuts accept Ctrl off macOS. The gesture itself is <code>[dictate] mode</code>: <code>auto</code> (the timing inference above), <code>toggle</code> (press starts, the next press stops, releases never stop), or <code>hold</code> (release always transcribes, however brief - no tap window). Detection depends on the kitty <code>REPORT_ALL_KEYS_AS_ESCAPE_CODES</code> flag, which forge negotiates at startup and re-sets on resize; a terminal or multiplexer that discards the flags is logged at boot AND surfaced as a warning row on the preflight Dictation section, because with the flags gone the key silently never arrives. While the dictate key is down, any other key marks the hold a chord (the key still dispatches normally, so Right Cmd + V still pastes) and a chorded release cancels the speculative recording instead of transcribing it. Bare modifier presses and releases are consumed app-wide so they cannot tear down autocomplete or disturb a queued paste burst, and held keys now arrive as <code>Repeat</code> events, which are dispatched like presses. With <code>[dictate]</code> disabled a press is refused with a notice naming the config to change rather than doing nothing silently. The transcript lands at the caret of the session that dictated, bound to that session however focus has moved; a notice without text covers no-audio (quiet room vs. structural silence worded differently, since only the first can be retried), an empty transcript, a failure, and a mic claimed by another holder in the process.</p>
 
     <dl>
       <dt>keys</dt><dd><kbd>Right Cmd</kbd> press: start recording (nothing when one already runs) · release after a hold: finish and transcribe · release after a clean tap: keep recording · second press + release: finish · any other key while held: mark a chord, dispatch normally · chorded release: cancel the speculative recording, or leave a toggled recording running.</dd>
-      <dt>code</dt><dd><code>crates/forge-tui/src/app/dictate.rs</code> (key classification + request seams) · <code>crates/forge-tui/src/app/events.rs::handle_terminal_event</code> (interception ahead of dispatch) · <code>crates/forge-workspace/src/dictate.rs::handle_dictate_start / handle_dictate_stop</code> (capture lifecycle on the blocking pool, per-session <code>NormalizeOptions</code> merge) · <code>protocol::{Command::DictateStart, Command::DictateStop, SessionUpdate::DictateFinished}</code> · <code>crates/forge-tui/src/app/events/session.rs::apply_session_update_dictate_finished</code> (insertion + notices) · <code>crates/forge-tui/src/app.rs::keyboard_enhancement_flags</code>.</dd>
+      <dt>code</dt><dd><code>crates/forge-tui/src/app/dictate_key.rs</code> (key classification + dispatch) · <code>crates/forge-tui/src/app/events.rs::handle_terminal_event</code> (interception ahead of dispatch) · <code>crates/forge-workspace/src/dictate.rs::handle_dictate_start / handle_dictate_stop</code> (generation-tracked capture lifecycle on the stop channel, per-session <code>NormalizeOptions</code> merge at submit) · <code>protocol::{Command::DictateStart, Command::DictateStop}</code> · the <code>SessionUpdate::DictateStarted / DictateLevel / DictateEnded</code> reducers in <code>crates/forge-tui/src/app/events/client.rs</code> (indicator + landing) · <code>crates/forge-tui/src/app.rs::keyboard_enhancement_flags</code>.</dd>
       <dt>scope</dt><dd>The 300 ms tap/hold boundary is the one invented constant. The recording indicator (three-bar ramp, transcribing cell) is the composer indicator work; this surface only starts and ends captures and lands their outcomes.</dd>
     </dl>
   </div>
@@ -3068,7 +3095,8 @@ chat continues here...
     <tr><td class="glyph">○</td><td class="codepoint">U+25CB</td><td>fallback tool icon · todo Pending · permission/plan-approval unfocused · Projects pane sleeping-project row glyph</td><td>open circle - reused across multiple semantics (single code point)</td></tr>
     <tr><td class="glyph">✓</td><td class="codepoint">U+2713</td><td>completed status · permission Allow icon · todo Completed</td><td><code>theme::ICON_COMPLETED</code></td></tr>
     <tr><td class="glyph">✗</td><td class="codepoint">U+2717</td><td>failed status · permission Reject icon</td><td><code>theme::ICON_FAILED</code></td></tr>
-    <tr><td class="glyph">❯</td><td class="codepoint">U+276F</td><td>input prompt</td><td><code>theme::PROMPT_CHAR</code></td></tr>
+    <tr><td class="glyph">➤</td><td class="codepoint">U+27A4</td><td>input prompt</td><td><code>theme::PROMPT_CHAR</code></td></tr>
+    <tr><td class="glyph">▁▂▃▄▅▆▇█</td><td class="codepoint">U+2581-2588</td><td>dictate level meter</td><td>block ramp - the composer's top-border indicator. Three cells at idle (DIM <code>▁▁▁</code>), live cells in RUST_ORANGE while recording, one pinned <code>bars_v</code> cell while transcribing past 3 s.</td></tr>
     <tr><td class="glyph">·</td><td class="codepoint">U+00B7</td><td>permission-prompt option separator · Projects pane Sleeping / Failed / LoggedOut row glyph</td><td>middle dot - used to space the inline options in <code>render_permission_lines</code> (<code>"  ·  "</code>, DIM); also the lifecycle glyph on a Projects-pane project / worker row whose session is Sleeping, Failed or LoggedOut (DIM)</td></tr>
     <tr><td class="glyph">•</td><td class="codepoint">U+2022</td><td>plan-approval pre-approved actions list · <code>/account</code> current-account marker</td><td>bullet - used in plan-approval prompt's optional pre-approved actions block (DIM); also marks the account a session is currently running under in the <a href="#account-picker">account-switch overlay</a></td></tr>
     <tr><td class="glyph">▸</td><td class="codepoint">U+25B8</td><td><code>/dictate</code> overlay highlight cursor</td><td>black right-pointing small triangle - <span class="accent">RUST_ORANGE</span> beside the highlighted row in the <a href="#dictate-overlay">dictate overlay</a>; the highlighted label itself goes white bold</td></tr>
