@@ -18,9 +18,10 @@ use crate::ui::theme;
 
 const WIDTH: u16 = 62;
 const NAME_W: usize = 10;
-/// Columns kept between a row's budget block and its status tag. The
-/// paragraph does not wrap, so without a guaranteed gap the two weld
-/// together and the overrun is cut with no ellipsis.
+/// Columns kept between a row's budget block and its status tag,
+/// reserved out of the name and budget widths rather than floored on
+/// the padding - a floor can only overflow a row that is already full.
+/// The paragraph does not wrap, so an overrun is cut with no ellipsis.
 const TAG_GAP: usize = 1;
 
 pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
@@ -29,7 +30,6 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
     };
     let project = app.active_project_name().unwrap_or_else(|| "project".to_owned());
 
-    let inner_w = usize::from(WIDTH.saturating_sub(2));
     let has_experimental = state.rows.iter().any(|row| row.experimental);
     // header + blank + N rows + blank + footer, inside a 1-cell border.
     // The EXPERIMENTAL group adds a blank separator + its own header.
@@ -44,6 +44,12 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
         .border_style(Style::default().fg(theme::RUST_ORANGE));
     let inner = block.inner(overlay);
     frame.render_widget(block, overlay);
+
+    // The width rows are built for has to be the width they are painted
+    // into. `centered` clamps the overlay to the terminal, so on a split
+    // pane the constant is wider than the rect and every row's tag is
+    // cut off the end.
+    let inner_w = usize::from(inner.width);
 
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(body_lines);
 
@@ -108,21 +114,11 @@ fn account_row_line(row: &AccountRow, selected: bool, inner_w: usize) -> Line<'s
     }
     used += 2;
 
-    // Name, padded. The highlighted row is accented + bold.
-    let name_style = if selected {
-        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().add_modifier(Modifier::BOLD)
-    };
-    // `truncate_pad` pads TO the column, so a name that already fills
-    // it needs the separator adding or the budget runs straight on.
-    let name = format!("{} ", truncate_pad(&row.display_name, NAME_W));
-    used += display_len(&name);
-    spans.push(Span::styled(name, name_style));
-
     // Status tag, right-aligned. Experimental rows prefix an amber
     // `experimental` tag + a dim separator so the reason they are
-    // grouped is legible even without the section header.
+    // grouped is legible even without the section header. Measured
+    // before the name, because on a narrow row the name is what gives
+    // way to keep it.
     let (tag, tag_color) =
         if row.usable { ("usable", Color::Green) } else { ("rate limited", theme::STATUS_ERROR) };
     let sep = " \u{00B7} ";
@@ -132,17 +128,30 @@ fn account_row_line(row: &AccountRow, selected: bool, inner_w: usize) -> Line<'s
         display_len(tag)
     };
 
-    // Sized against what is actually left, not against a column count
-    // assumed at authoring time: both the tag (`rate limited` is six
-    // wider than `usable`) and the figures themselves vary with the
-    // data.
+    // Name, padded, then a separator column - `truncate_pad` pads TO
+    // its width, so a name that already fills it would otherwise run
+    // straight into the budget. The column shrinks on a row too narrow
+    // to hold it beside the tag, rather than pushing the tag off.
+    let name_style = if selected {
+        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().add_modifier(Modifier::BOLD)
+    };
+    let name_w = NAME_W.min(inner_w.saturating_sub(used + tag_block + TAG_GAP));
+    let name = format!("{} ", truncate_pad(&row.display_name, name_w));
+    used += display_len(&name);
+    spans.push(Span::styled(name, name_style));
+
+    // Both the tag (`rate limited` is six wider than `usable`) and the
+    // figures vary with the data, so the block is sized against what is
+    // left rather than a fixed count.
     let budget_room = inner_w.saturating_sub(used + tag_block + TAG_GAP);
     let budget = budget_spans(&row.budget, budget_room);
     let budget_w: usize = budget.iter().map(|s| display_len(&s.content)).sum();
     spans.extend(budget);
     used += budget_w;
 
-    let pad = inner_w.saturating_sub(used + tag_block).max(TAG_GAP);
+    let pad = inner_w.saturating_sub(used + tag_block);
     spans.push(Span::raw(" ".repeat(pad)));
     if row.experimental {
         spans.push(Span::styled("experimental", Style::default().fg(theme::EXPERIMENTAL)));
@@ -184,14 +193,16 @@ fn budget_spans(budget: &AccountBudget, room: usize) -> Vec<Span<'static>> {
         // An API account has no window, so its unprobed row must not
         // print `5h` / `7d` labels - that would assert a shape it does
         // not have, which is the same invention as a fabricated zero.
-        AccountBudget::Unknown { spend_billed: true } => vec![spend_spans(None, Money::Full)],
+        AccountBudget::Unknown { spend_billed: true } => {
+            vec![spend_spans(None, SpendDensity::Full)]
+        }
         AccountBudget::Api { daily, weekly, monthly } => {
             let figures = Some((*daily, *weekly, *monthly));
             vec![
-                spend_spans(figures, Money::Full),
-                spend_spans(figures, Money::LeadingSymbolOnly),
-                spend_spans(figures, Money::Tight),
-                spend_spans(figures, Money::MonthlyOnly),
+                spend_spans(figures, SpendDensity::Full),
+                spend_spans(figures, SpendDensity::LeadingSymbolOnly),
+                spend_spans(figures, SpendDensity::Tight),
+                spend_spans(figures, SpendDensity::MonthlyOnly),
             ]
         }
     };
@@ -202,26 +213,35 @@ fn budget_spans(budget: &AccountBudget, room: usize) -> Vec<Span<'static>> {
             return candidate;
         }
     }
+    // A row with no room left carries no block at all; the ellipsis is
+    // itself a column, and emitting it here would overflow the very
+    // budget it is standing in for.
+    if room == 0 {
+        return Vec::new();
+    }
     vec![Span::styled("\u{2026}".to_owned(), Style::default().fg(theme::DIM))]
 }
 
-/// How much punctuation the spend figures can afford.
+/// How much punctuation the spend figures can afford, widest first.
 #[derive(Clone, Copy)]
-enum Money {
+enum SpendDensity {
     /// `$0.56 d $1.25 w $20.30 m`
     Full,
     /// `$0.56 d 1.25 w 20.30 m` - the symbol reads once for the row.
     LeadingSymbolOnly,
     /// `$0.56d 1.25w 20.30m`
     Tight,
-    /// `$20.30 m` - the period that answers "where am I this billing
-    /// cycle", kept when nothing else fits.
+    /// `…$20.30m` - the period that answers "where am I this billing
+    /// cycle", kept when nothing else fits. Carries the ellipsis so a
+    /// row that dropped two figures reads as truncated; without it the
+    /// same account shows three figures when usable and one when rate
+    /// limited, and the short form looks like complete data.
     MonthlyOnly,
 }
 
 /// The `d` / `w` / `m` spend columns. `None` figures render dashes for
 /// an account whose provider bills by spend but which has no reading.
-fn spend_spans(figures: Option<(f64, f64, f64)>, money: Money) -> Vec<Span<'static>> {
+fn spend_spans(figures: Option<(f64, f64, f64)>, density: SpendDensity) -> Vec<Span<'static>> {
     let amount = |value: Option<f64>, symbol: bool| -> String {
         match value {
             Some(v) if symbol => format!("${v:.2}"),
@@ -234,20 +254,21 @@ fn spend_spans(figures: Option<(f64, f64, f64)>, money: Money) -> Vec<Span<'stat
         Some((d, w, m)) => (Some(d), Some(w), Some(m)),
         None => (None, None, None),
     };
-    let columns: Vec<(String, &str)> = match money {
-        Money::MonthlyOnly => vec![(amount(monthly, true), "m")],
-        Money::Full => vec![
+    let columns: Vec<(String, &str)> = match density {
+        SpendDensity::MonthlyOnly => vec![(format!("\u{2026}{}", amount(monthly, true)), "m")],
+        SpendDensity::Full => vec![
             (amount(daily, true), "d"),
             (amount(weekly, true), "w"),
             (amount(monthly, true), "m"),
         ],
-        Money::LeadingSymbolOnly | Money::Tight => vec![
+        SpendDensity::LeadingSymbolOnly | SpendDensity::Tight => vec![
             (amount(daily, true), "d"),
             (amount(weekly, false), "w"),
             (amount(monthly, false), "m"),
         ],
     };
-    let period_gap = if matches!(money, Money::Tight) { "" } else { " " };
+    let period_gap =
+        if matches!(density, SpendDensity::Tight | SpendDensity::MonthlyOnly) { "" } else { " " };
 
     let mut spans = Vec::new();
     for (idx, (money_text, period)) in columns.into_iter().enumerate() {
@@ -311,20 +332,30 @@ fn format_reset_in(resets_at: std::time::SystemTime) -> String {
     if h > 0 { format!("resets {h}h {m}m") } else { format!("resets {m}m") }
 }
 
+/// Terminal columns `s` occupies, not chars. A CJK glyph is one char
+/// and two columns, so counting chars builds a row that fits on paper
+/// and overruns the rect it is painted into.
 fn display_len(s: &str) -> usize {
-    s.chars().count()
+    Span::raw(s).width()
 }
 
 /// Pad or hard-truncate `s` to exactly `width` columns.
+/// Pad or truncate `s` to exactly `width` terminal columns. Truncation
+/// walks columns rather than chars, and stops short by one when the
+/// next glyph is double-width, so the result never overshoots.
 fn truncate_pad(s: &str, width: usize) -> String {
-    let count = s.chars().count();
-    if count >= width {
-        s.chars().take(width).collect()
-    } else {
-        let mut out = s.to_owned();
-        out.extend(std::iter::repeat_n(' ', width - count));
-        out
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in s.chars() {
+        let w = Span::raw(ch.to_string()).width();
+        if used + w > width {
+            break;
+        }
+        out.push(ch);
+        used += w;
     }
+    out.extend(std::iter::repeat_n(' ', width - used));
+    out
 }
 
 /// A line with `left` spans on the left and `right` pushed to the far
@@ -504,13 +535,11 @@ mod tests {
     /// it is given, and its status tag survives intact with a gap
     /// before it.
     ///
-    /// This is the invariant the row builder exists to hold. The
-    /// fixtures are the ones that broke it: a three-digit month, a
-    /// three-digit-hour reset (a 7-day cap four days out), and the
-    /// widest tag combination.
+    /// The fixtures span the shapes the data can take: a three-digit
+    /// month, a three-digit-hour reset (a 7-day cap four days out), and
+    /// the widest tag combination.
     #[test]
     fn no_row_shape_overflows_or_swallows_its_tag() {
-        let inner_w = usize::from(WIDTH) - 2;
         let far = SystemTime::now() + Duration::from_secs(100 * 3600 + 41 * 60);
         let budgets = vec![
             ("unknown windows", AccountBudget::Unknown { spend_billed: false }),
@@ -543,46 +572,115 @@ mod tests {
             ),
         ];
 
-        for (label, budget) in budgets {
-            for usable in [true, false] {
-                for experimental in [true, false] {
-                    let row = AccountRow {
-                        display_name: "OpenRouter".to_owned(),
-                        config_dir: PathBuf::from("/c/x"),
-                        is_current: true,
-                        usable,
-                        budget: budget.clone(),
-                        experimental,
-                    };
-                    let line = account_row_line(&row, true, inner_w);
-                    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-                    let width = text.chars().count();
-                    let tag = if usable { "usable" } else { "rate limited" };
+        // Painted widths, not the constant: a split pane clamps the
+        // overlay, so the row has to hold at whatever it is given.
+        for inner_w in [30usize, 44, 54, 60] {
+            for (label, budget) in &budgets {
+                for usable in [true, false] {
+                    for experimental in [true, false] {
+                        let row = AccountRow {
+                            display_name: "OpenRouter".to_owned(),
+                            config_dir: PathBuf::from("/c/x"),
+                            is_current: true,
+                            usable,
+                            budget: budget.clone(),
+                            experimental,
+                        };
+                        let line = account_row_line(&row, true, inner_w);
+                        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                        let width = Span::raw(text.clone()).width();
+                        let tag = if usable { "usable" } else { "rate limited" };
+                        let case =
+                            format!("{label} w={inner_w} usable={usable} exp={experimental}");
 
-                    assert!(
-                        width <= inner_w,
-                        "{label} (usable={usable}, experimental={experimental}) overflows at \
-                         {width} of {inner_w}: |{text}|",
-                    );
-                    assert!(
-                        text.ends_with(tag),
-                        "{label} (usable={usable}, experimental={experimental}) lost its tag: \
-                         |{text}|",
-                    );
-                    assert!(
-                        text.trim_end().ends_with(tag)
-                            && text[..text.len() - tag.len()].ends_with(' ')
-                            || experimental,
-                        "{label} welded the tag onto the budget: |{text}|",
-                    );
+                        assert!(
+                            width <= inner_w,
+                            "{case} overflows at {width} of {inner_w}: |{text}|",
+                        );
+                        assert!(text.ends_with(tag), "{case} lost its tag: |{text}|");
+                        // What precedes the tag: the dim separator on an
+                        // experimental row, otherwise the padding gap.
+                        // The experimental shape is the one where
+                        // welding is possible at all, so it must not be
+                        // excused.
+                        let before = &text[..text.len() - tag.len()];
+                        let expected_lead = if experimental { " \u{00B7} " } else { " " };
+                        assert!(
+                            before.ends_with(expected_lead),
+                            "{case} welded the tag onto the budget: |{text}|",
+                        );
+                    }
                 }
             }
         }
     }
 
-    /// The widest row forge can build: an API budget, an `experimental`
-    /// prefix and a `rate limited` tag. Reachable on any spend value,
-    /// because a 429 from the key endpoint preserves the snapshot.
+    /// The overlay is clamped to the terminal, so the width a row is
+    /// built for has to be the width it is painted into. A vertical
+    /// split on a 110-column terminal gives 55.
+    #[test]
+    fn a_narrow_terminal_still_paints_the_status_tag() {
+        for term_w in [40u16, 50, 56, 62, 80] {
+            let mut app = App::test_default();
+            let rows = vec![AccountRow {
+                display_name: "Gateway".to_owned(),
+                config_dir: PathBuf::from("/c/gateway"),
+                is_current: true,
+                usable: false,
+                budget: AccountBudget::Subscription {
+                    five_hour_util: Some(100.0),
+                    seven_day_util: Some(63.0),
+                    resets_at: None,
+                },
+                experimental: false,
+            }];
+            crate::app::account_picker::open(&mut app, rows);
+
+            let lines = render_picker(&app, term_w, 16);
+            let row = lines
+                .iter()
+                .find(|l| l.contains("Gateway"))
+                .unwrap_or_else(|| panic!("row present at {term_w} columns"));
+            assert!(
+                row.contains("rate limited"),
+                "at {term_w} columns the status tag is missing entirely: |{row}|",
+            );
+        }
+    }
+
+    /// `display_len` counts chars; a wide glyph paints two columns. A
+    /// name built to fit by count overflows the row it is painted into.
+    #[test]
+    fn a_wide_glyph_name_does_not_push_the_tag_off_the_row() {
+        let mut app = App::test_default();
+        let rows = vec![AccountRow {
+            // Ten chars, twenty columns.
+            display_name:
+                "\u{4e2d}\u{6587}\u{4e2d}\u{6587}\u{4e2d}\u{6587}\u{4e2d}\u{6587}\u{4e2d}\u{6587}"
+                    .to_owned(),
+            config_dir: PathBuf::from("/c/wide"),
+            is_current: false,
+            usable: false,
+            budget: AccountBudget::Subscription {
+                five_hour_util: Some(100.0),
+                seven_day_util: Some(63.0),
+                resets_at: None,
+            },
+            experimental: false,
+        }];
+        crate::app::account_picker::open(&mut app, rows);
+
+        let lines = render_picker(&app, 80, 16);
+        let row = lines.iter().find(|l| l.contains('\u{4e2d}')).expect("row present");
+        assert!(
+            row.contains("rate limited"),
+            "a wide-glyph name must not push the tag off the row: |{row}|",
+        );
+    }
+
+    /// An API budget under the widest tag block, `experimental` plus
+    /// `rate limited`. Reachable on any spend value, because a 429 from
+    /// the key endpoint preserves the snapshot.
     #[test]
     fn the_widest_api_row_keeps_its_tag_separate_and_uncut() {
         let mut app = App::test_default();
