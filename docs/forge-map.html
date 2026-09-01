@@ -2115,7 +2115,7 @@ chat continues here...
     </div>
 
     <h5 style="margin-top: 18px;">Dictation indicator</h5>
-    <p>With <code>[dictate] enabled</code> and the models loaded (one <code>SessionUpdate::DictateAvailability</code> after preflight), the <strong>top border's three leftmost cells</strong> become the dictation indicator. The cells are the same three cells in every state and nothing in the box moves between them - no rows are added or removed, so the draft wrap, the box height and the scroll position never change. When dictation is off (the default) the border is what ships above; nothing else differs. Level readings arrive as <code>DictateLevel</code> events every 50 ms, each the peak over the window since the previous one off the take-and-reset <code>Capture::level</code>.</p>
+    <p>With <code>[dictate] enabled</code> and the models loaded (one <code>SessionUpdate::DictateAvailability</code> after preflight), the <strong>top border's three leftmost cells</strong> become the dictation indicator. Idle and recording hold the same three cells in the same place - nothing in the box moves between them, no rows are added or removed, so the draft wrap, the box height and the scroll position never change. Transcribing past 3 s is the one collapse: the three become a single cell, drawn in the frames below. The only thing that ever changes the box height is the notice row. When dictation is off (the default) the border is what ships above; nothing else differs. Level readings arrive as <code>DictateLevel</code> events every 50 ms, each the peak over the window since the previous one off the take-and-reset <code>Capture::level</code>.</p>
     <div class="term">
       <pre class="indent">
   <span class="accent">┏</span><span class="dim">▁▁▁</span> <span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┓</span>   idle - dictation ready, static
@@ -2143,7 +2143,7 @@ chat continues here...
     <p>Notices: a quiet room carries its own measured peak and offers a retry (DIM); every sample exactly zero is structural and sticky, so no retry is offered (red); a take that normalised to nothing says so (DIM); a truncated take lands its words plus a keep-going note (yellow); recognition failures are one grouped notice (DIM); a busy microphone names the holder, and a device that would not open is refused before recording starts (both red). Landed text inserts at the caret through the editor's own insertion path - never the paste dispatcher, so long takes are never collapsed to a placeholder. The take is bound to the session that started it: results route by session key, so switching tabs mid-transcription never moves the words to another composer. <kbd>Esc</kbd> discards a recording; while transcribing it abandons the ticket and only falls through to turn-cancellation when nothing is in flight.</p>
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/input.rs::render</code> · indicator state in <code>crates/forge-tui/src/app/dictate.rs</code> · recording lifecycle in <code>crates/forge-workspace/src/dictate.rs</code></dd>
-      <dt>trigger</dt><dd>the dictate keybinding (Right Command by default) starts a recording; releasing submits, <kbd>Esc</kbd> discards. Landed in the keybinding change.</dd>
+      <dt>exits</dt><dd><kbd>Esc</kbd> discards a recording and abandons a transcription in flight; it cancels a turn only when no take is live. The key that starts a recording is not wired yet.</dd>
     </dl>
   </div>
 </div>
