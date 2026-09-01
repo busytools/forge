@@ -3009,6 +3009,10 @@ impl Workspace {
     /// Callers that hold cloned handles across shutdown will need to
     /// release them for the kill-chain to fire promptly.
     pub fn shutdown(&self) {
+        // Release any live dictation before the pools go: a recording
+        // task outliving its session's teardown would otherwise hold
+        // the microphone for a composer nobody can reach.
+        crate::dictate::teardown_all(self);
         // Drop command senders first so every SessionTask sees its
         // command channel close and exits cleanly.
         let _ = self.command_senders.lock().drain().collect::<Vec<_>>();
@@ -3082,6 +3086,7 @@ impl Workspace {
     /// Use `release_session_with_cascade` instead when the caller is
     /// the lead-row close gesture.
     pub(crate) fn release_session(&self, session_key: &SessionKey) {
+        crate::dictate::teardown_for_closed_session(self, session_key);
         let removed = self.pool.lock().remove(session_key);
         drop(removed);
         let _ = self.command_senders.lock().remove(session_key);

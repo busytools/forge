@@ -669,6 +669,25 @@ fn remove_finishing(ws: &crate::Workspace, key: &SessionKey) {
     ws.dictate_runtime.lock().finishing.retain(|take| &take.key != key);
 }
 
+/// Abandon everything `key` has in flight: a held microphone goes back
+/// (dropping the entry closes the stop channel, which is what makes the
+/// recording task release the device) and a submitted take loses its
+/// cancel route. Called when the session closes.
+pub(crate) fn teardown_for_closed_session(ws: &crate::Workspace, key: &SessionKey) {
+    let mut runtime = ws.dictate_runtime.lock();
+    if runtime.recording.as_ref().is_some_and(|live| &live.key == key) {
+        runtime.recording = None;
+    }
+    runtime.finishing.retain(|take| &take.key != key);
+}
+
+/// Release every session's dictation at once, for workspace shutdown.
+pub(crate) fn teardown_all(ws: &crate::Workspace) {
+    let mut runtime = ws.dictate_runtime.lock();
+    runtime.recording = None;
+    runtime.finishing.clear();
+}
+
 /// Map the crate's answer onto the wire outcome. A normalisation that
 /// produced nothing is a valid answer, not a failure.
 fn map_outcome(outcome: forge_dictate::Outcome) -> DictateOutcome {
@@ -983,6 +1002,49 @@ mod dictate_lifecycle_tests {
         assert!(
             matches!(stop_rx.try_recv(), Ok(false)),
             "abandon must still reach the take after it finished recording"
+        );
+    }
+
+    /// Closing the session that owns a live take must release the
+    /// microphone and cut the recording task's channel - otherwise the
+    /// mic stays held and the meter keeps emitting for a composer that
+    /// no longer exists, and every later start is refused naming a
+    /// session the user closed.
+    #[tokio::test]
+    async fn closing_the_session_releases_its_live_take() {
+        let (ws, _updates) = crate::Workspace::testing_stub();
+        let owner = key("owner");
+        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(1);
+        ws.dictate_runtime.lock().recording =
+            Some(LiveRecording { key: owner.clone(), stop: stop_tx });
+        let (finishing_tx, _finishing_rx) = tokio::sync::mpsc::channel(1);
+        ws.dictate_runtime.lock().finishing =
+            vec![FinishingTake { key: owner.clone(), stop: finishing_tx }];
+
+        ws.release_session(&owner);
+
+        {
+            let runtime = ws.dictate_runtime.lock();
+            assert!(runtime.recording.is_none(), "a closed session must not keep the microphone");
+            assert!(
+                runtime.finishing.is_empty(),
+                "a closed session's submitted take must not keep a cancel route"
+            );
+        }
+        assert!(
+            matches!(
+                stop_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+            ),
+            "dropping the entry must close the channel, which is what makes the recording task abandon the take"
+        );
+
+        let Err(error) = begin_capture(&ws, &owner) else {
+            panic!("dictation is not ready on the stub, so a start must be refused");
+        };
+        assert!(
+            error.contains("not ready"),
+            "a start after the close must fail on readiness, not on a dead session holding the mic: {error}"
         );
     }
 }
