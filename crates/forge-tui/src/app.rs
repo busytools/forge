@@ -1596,6 +1596,38 @@ mod tests {
         );
     }
 
+    /// A transcribing take past the silence threshold animates its
+    /// pinned cell on a timer and pushes nothing, so the gate is what
+    /// keeps the frames coming. Before the threshold the box shows
+    /// nothing and the gate owes nobody a tick.
+    #[test]
+    fn animation_gate_counts_an_overdue_transcribing_take() {
+        use std::time::{Duration, Instant};
+
+        let mut app = App::test_default();
+        let key = app.active_session_key.clone().expect("test_default has an active bucket");
+        {
+            let bucket = app.session_mut(&key).expect("bucket");
+            let mut indicator =
+                crate::app::dictate::DictateIndicator::recording(-50.0, 1);
+            indicator.begin_transcribing();
+            bucket.dictate = Some(indicator);
+        }
+        assert!(
+            !app.shows_activity(),
+            "inside the 3 s silence the composer draws nothing at all"
+        );
+
+        {
+            let bucket = app.session_mut(&key).expect("bucket");
+            let indicator = bucket.dictate.as_mut().expect("a take is in flight");
+            indicator.transcribing_since = Some(
+                Instant::now().checked_sub(Duration::from_millis(4000)).expect("a 4 s backdate"),
+            );
+        }
+        assert!(app.shows_activity(), "past the threshold the pinned cell animates");
+    }
+
     /// The gate never lands above either pinned step, at every accepted
     /// fps rather than just the default. The tab-title pulse is written
     /// outside the repaint gate, so nothing the gate paints depends on

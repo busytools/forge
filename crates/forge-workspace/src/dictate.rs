@@ -910,6 +910,20 @@ mod dictate_lifecycle_tests {
         SessionKey::from_session_id(name.to_owned())
     }
 
+    /// The meter cadence is a decided constant - a deliberate fourth
+    /// clock, coarser than the repaint gate so every level event lands
+    /// on a repaint. Pinning it makes a silent retune a failing test
+    /// instead of a note nobody re-reads.
+    #[test]
+    fn the_meter_clock_is_the_decided_fifty_ms() {
+        assert_eq!(
+            METER_INTERVAL,
+            Duration::from_millis(50),
+            "the level meter runs at 20 Hz by decision, got {:?}",
+            METER_INTERVAL
+        );
+    }
+
     /// The words a host inserts come from the transcript text; a
     /// normalisation that produced nothing is its own outcome, and the
     /// silence answer keeps its peak so a host can split a quiet room
