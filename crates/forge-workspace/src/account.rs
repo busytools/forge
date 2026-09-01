@@ -652,7 +652,13 @@ impl AccountStateMap {
                 let tier = tier_of(*u, *e);
                 let usage_state = match u {
                     None => "no-snapshot".to_owned(),
-                    Some(s) => format!("5h={:.0}%/7d={:.0}%", five_hour_util(s), seven_day_util(s)),
+                    // A diagnostic line, so an absent window reads as 0
+                    // here deliberately rather than widening the format.
+                    Some(s) => format!(
+                        "5h={:.0}%/7d={:.0}%",
+                        five_hour_util(s).unwrap_or(0.0),
+                        seven_day_util(s).unwrap_or(0.0),
+                    ),
                 };
                 let err_state = e.map_or("none".to_owned(), |e| format!("{e:?}"));
                 format!("{}=tier{}({usage_state},err={err_state},loading={l:?})", k.0, tier)
@@ -743,21 +749,26 @@ fn backoff_delay(consecutive_failures: u32) -> std::time::Duration {
     Duration::from_secs(seconds).min(CAP)
 }
 
-pub(crate) fn five_hour_util(snapshot: &UsageSnapshot) -> f64 {
-    snapshot.five_hour.as_ref().map_or(0.0, |w| w.utilization)
+/// `None` when the snapshot carries no five-hour window, which is a
+/// documented steady state on the lenient mapper rather than a zero.
+pub(crate) fn five_hour_util(snapshot: &UsageSnapshot) -> Option<f64> {
+    snapshot.five_hour.as_ref().map(|w| w.utilization)
 }
 
 /// Binding 7-day utilisation: max across the three 7-day windows
 /// (`seven_day`, `seven_day_opus`, `seven_day_sonnet`). Whichever
 /// is most-used is the binding constraint for "is this account
 /// 7-day rate-limited."
-pub(crate) fn seven_day_util(snapshot: &UsageSnapshot) -> f64 {
+///
+/// `None` when all three are absent, which a 200 carrying only the
+/// session window produces.
+pub(crate) fn seven_day_util(snapshot: &UsageSnapshot) -> Option<f64> {
     let windows = [
         snapshot.seven_day.as_ref().map(|w| w.utilization),
         snapshot.seven_day_opus.as_ref().map(|w| w.utilization),
         snapshot.seven_day_sonnet.as_ref().map(|w| w.utilization),
     ];
-    windows.into_iter().flatten().fold(0.0_f64, f64::max)
+    windows.into_iter().flatten().reduce(f64::max)
 }
 
 /// When a rate-limited account unlocks: the latest `resets_at` among
@@ -1270,7 +1281,19 @@ mod tests {
         let mut s = snapshot(Some(20.0), Some(30.0));
         s.seven_day_opus =
             Some(UsageWindow { utilization: 80.0, resets_at: None, reset_description: None });
-        assert!((seven_day_util(&s) - 80.0).abs() < f64::EPSILON);
+        assert_eq!(seven_day_util(&s), Some(80.0), "the most-used 7d window is the binding one");
+    }
+
+    /// An empty fold produced 0.0 with nothing that looked like a
+    /// default, so a 200 carrying only the session window reported the
+    /// account as 0% used across seven days.
+    #[test]
+    fn seven_day_util_is_none_when_every_window_is_absent() {
+        let mut s = snapshot(Some(20.0), None);
+        s.seven_day_opus = None;
+        s.seven_day_sonnet = None;
+        assert_eq!(seven_day_util(&s), None, "no 7d window means no 7d reading");
+        assert_eq!(five_hour_util(&s), Some(20.0), "the window that is present still reports");
     }
 
     #[test]

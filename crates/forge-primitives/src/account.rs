@@ -36,6 +36,20 @@ impl Provider {
     pub const fn uses_base_url(self) -> bool {
         matches!(self, Self::Codex | Self::Openrouter)
     }
+
+    /// `true` when this backend charges per token rather than against a
+    /// plan allowance, so its usage is money over a period and it has
+    /// no window to be a percentage of.
+    ///
+    /// Written out per variant rather than with `matches!`, so a new
+    /// provider has to state its billing model instead of defaulting to
+    /// windows and rendering `5h` / `7d` labels it may not have.
+    pub const fn bills_by_spend(self) -> bool {
+        match self {
+            Self::Anthropic | Self::Codex => false,
+            Self::Openrouter => true,
+        }
+    }
 }
 
 #[cfg(test)]

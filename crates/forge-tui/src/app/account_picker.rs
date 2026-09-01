@@ -155,9 +155,11 @@ mod tests {
             config_dir: PathBuf::from(format!("/cfg/{name}")),
             is_current,
             usable: true,
-            five_hour_util: 10.0,
-            seven_day_util: 5.0,
-            resets_at: None,
+            budget: forge_workspace::AccountBudget::Subscription {
+                five_hour_util: Some(10.0),
+                seven_day_util: Some(5.0),
+                resets_at: None,
+            },
             experimental: false,
         }
     }
@@ -210,9 +212,11 @@ mod tests {
             config_dir: PathBuf::from("/cfg/Exp"),
             is_current: false,
             usable: true,
-            five_hour_util: 10.0,
-            seven_day_util: 5.0,
-            resets_at: None,
+            budget: forge_workspace::AccountBudget::Subscription {
+                five_hour_util: Some(10.0),
+                seven_day_util: Some(5.0),
+                resets_at: None,
+            },
             experimental: true,
         };
         open(&mut app, vec![row("A", false), exp]);
