@@ -366,8 +366,8 @@ view, which makes it safe to sync between machines.
 Everything mutable lives in a single embedded redb database at
 `<app-support>/db.redb`: durable crons, Gotify subscriptions, dynamic
 workers spawned at runtime, review threads, the `/spinner` override,
-the per-account usage cache, cached model pricing, and the `/usage`
-view's per-file token summaries.
+the per-account usage cache, cached model pricing, cached OpenRouter
+model catalogs, and the `/usage` view's per-file token summaries.
 
 `<app-support>` is `~/Library/Application Support/forge-tui` on macOS
 and `$XDG_DATA_HOME/forge-tui` on Linux.

@@ -1,0 +1,375 @@
+{
+  "data": [
+    {
+      "id": "z-ai/glm-5.3",
+      "canonical_slug": "z-ai/glm-5.3-20260816",
+      "name": "Z.ai: GLM 5.3",
+      "context_length": 1310720,
+      "architecture": {
+        "modality": "text->text",
+        "tokenizer": "Other"
+      },
+      "pricing": {
+        "prompt": "0.0000014",
+        "completion": "0.0000044",
+        "input_cache_read": "0.00000026"
+      },
+      "supported_parameters": [
+        "max_tokens",
+        "reasoning",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools"
+      ]
+    },
+    {
+      "id": "deepseek/deepseek-v4-pro-0813",
+      "canonical_slug": "deepseek/deepseek-v4-pro-20260813",
+      "name": "DeepSeek: DeepSeek V4 Pro 0813",
+      "context_length": 1048576,
+      "architecture": {
+        "modality": "text->text",
+        "tokenizer": "DeepSeek"
+      },
+      "pricing": {
+        "prompt": "0.00000066",
+        "completion": "0.00000198",
+        "input_cache_read": "0.000000022",
+        "overrides": [
+          {
+            "utc_days": [
+              "saturday",
+              "sunday"
+            ],
+            "prompt": "0.00000066",
+            "completion": "0.00000198",
+            "input_cache_read": "0.000000022"
+          },
+          {
+            "utc_days": [
+              "monday",
+              "tuesday",
+              "wednesday",
+              "thursday",
+              "friday"
+            ],
+            "utc_start": 0,
+            "utc_end": 100,
+            "prompt": "0.00000066",
+            "completion": "0.00000198",
+            "input_cache_read": "0.000000022"
+          },
+          {
+            "utc_days": [
+              "monday",
+              "tuesday",
+              "wednesday",
+              "thursday",
+              "friday"
+            ],
+            "utc_start": 100,
+            "utc_end": 400,
+            "prompt": "0.00000132",
+            "completion": "0.00000396",
+            "input_cache_read": "0.000000044"
+          },
+          {
+            "utc_days": [
+              "monday",
+              "tuesday",
+              "wednesday",
+              "thursday",
+              "friday"
+            ],
+            "utc_start": 400,
+            "utc_end": 600,
+            "prompt": "0.00000066",
+            "completion": "0.00000198",
+            "input_cache_read": "0.000000022"
+          },
+          {
+            "utc_days": [
+              "monday",
+              "tuesday",
+              "wednesday",
+              "thursday",
+              "friday"
+            ],
+            "utc_start": 600,
+            "utc_end": 1000,
+            "prompt": "0.00000132",
+            "completion": "0.00000396",
+            "input_cache_read": "0.000000044"
+          },
+          {
+            "utc_days": [
+              "monday",
+              "tuesday",
+              "wednesday",
+              "thursday",
+              "friday"
+            ],
+            "utc_start": 1000,
+            "utc_end": 0,
+            "prompt": "0.00000066",
+            "completion": "0.00000198",
+            "input_cache_read": "0.000000022"
+          }
+        ]
+      },
+      "supported_parameters": [
+        "max_tokens",
+        "reasoning",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools"
+      ]
+    },
+    {
+      "id": "moonshotai/kimi-k3",
+      "canonical_slug": "moonshotai/kimi-k3-20260715",
+      "name": "MoonshotAI: Kimi K3",
+      "context_length": 1048576,
+      "architecture": {
+        "modality": "text+image+video->text",
+        "tokenizer": "Other"
+      },
+      "pricing": {
+        "prompt": "0.000003",
+        "completion": "0.000015",
+        "input_cache_read": "0.0000003"
+      },
+      "supported_parameters": [
+        "max_tokens",
+        "reasoning",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools"
+      ]
+    },
+    {
+      "id": "z-ai/glm-5.3-flash",
+      "canonical_slug": "z-ai/glm-5.3-flash-20260826",
+      "name": "Z.ai: GLM 5.3 Flash",
+      "context_length": 1310720,
+      "architecture": {
+        "modality": "text+image+video->text",
+        "tokenizer": "Other"
+      },
+      "pricing": {
+        "prompt": "0.000000075",
+        "completion": "0.00000025",
+        "input_cache_read": "0.000000015"
+      },
+      "supported_parameters": [
+        "max_tokens",
+        "reasoning",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools"
+      ]
+    },
+    {
+      "id": "deepseek/deepseek-v4-flash",
+      "canonical_slug": "deepseek/deepseek-v4-flash-20260423",
+      "name": "DeepSeek: DeepSeek V4 Flash 0423",
+      "context_length": 1048576,
+      "architecture": {
+        "modality": "text->text",
+        "tokenizer": "DeepSeek"
+      },
+      "pricing": {
+        "prompt": "0.00000008092",
+        "completion": "0.00000016184",
+        "input_cache_read": "0.000000016184"
+      },
+      "supported_parameters": [
+        "max_tokens",
+        "reasoning",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools"
+      ]
+    },
+    {
+      "id": "minimax/minimax-m3",
+      "canonical_slug": "minimax/minimax-m3-20260531",
+      "name": "MiniMax: MiniMax M3",
+      "context_length": 1048576,
+      "architecture": {
+        "modality": "text+image+video->text",
+        "tokenizer": "Other"
+      },
+      "pricing": {
+        "prompt": "0.0000003",
+        "completion": "0.0000012",
+        "input_cache_read": "0.00000006"
+      },
+      "supported_parameters": [
+        "max_tokens",
+        "reasoning",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools"
+      ]
+    },
+    {
+      "id": "z-ai/glm-5.2",
+      "canonical_slug": "z-ai/glm-5.2-20260616",
+      "name": "Z.ai: GLM 5.2",
+      "context_length": 1048576,
+      "architecture": {
+        "modality": "text->text",
+        "tokenizer": "Other"
+      },
+      "pricing": {
+        "prompt": "0.00000119",
+        "completion": "0.00000374",
+        "input_cache_read": "0.000000221"
+      },
+      "supported_parameters": [
+        "max_tokens",
+        "reasoning",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools"
+      ]
+    },
+    {
+      "id": "google/gemini-2.5-flash",
+      "canonical_slug": "google/gemini-2.5-flash",
+      "name": "Google: Gemini 2.5 Flash",
+      "context_length": 1048576,
+      "architecture": {
+        "modality": "text+image+file+audio+video->text",
+        "tokenizer": "Gemini"
+      },
+      "pricing": {
+        "prompt": "0.0000003",
+        "completion": "0.0000025",
+        "image": "0.0000003",
+        "audio": "0.000001",
+        "input_audio_cache": "0.0000001",
+        "web_search": "0.014",
+        "internal_reasoning": "0.0000025",
+        "input_cache_read": "0.00000003",
+        "input_cache_write": "0.0000000833333333333333"
+      },
+      "supported_parameters": [
+        "max_tokens",
+        "reasoning",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools"
+      ]
+    },
+    {
+      "id": "x-ai/grok-4.3",
+      "canonical_slug": "x-ai/grok-4.3-20260430",
+      "name": "SpaceXAI: Grok 4.3",
+      "context_length": 1000000,
+      "architecture": {
+        "modality": "text+image+file->text",
+        "tokenizer": "Grok"
+      },
+      "pricing": {
+        "prompt": "0.00000125",
+        "completion": "0.0000025",
+        "web_search": "0.005",
+        "input_cache_read": "0.0000002",
+        "overrides": [
+          {
+            "min_prompt_tokens": 200000,
+            "prompt": "0.0000025",
+            "completion": "0.000005",
+            "input_cache_read": "0.0000004"
+          }
+        ]
+      },
+      "supported_parameters": [
+        "max_tokens",
+        "reasoning",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools"
+      ]
+    },
+    {
+      "id": "deepseek/deepseek-v4-pro",
+      "canonical_slug": "deepseek/deepseek-v4-pro-20260423",
+      "name": "DeepSeek: DeepSeek V4 Pro 0423",
+      "context_length": 1048576,
+      "architecture": {
+        "modality": "text->text",
+        "tokenizer": "DeepSeek"
+      },
+      "pricing": {
+        "prompt": "0.0000016",
+        "completion": "0.0000032",
+        "input_cache_read": "0.000000135"
+      },
+      "supported_parameters": [
+        "max_tokens",
+        "reasoning",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools"
+      ]
+    },
+    {
+      "id": "ibm-granite/granite-4.2-8b",
+      "canonical_slug": "ibm-granite/granite-4.2-8b-20260831",
+      "name": "IBM: Granite 4.2 8B",
+      "context_length": 131072,
+      "architecture": {
+        "modality": "text->text",
+        "tokenizer": "Other"
+      },
+      "pricing": {
+        "prompt": "0.0000001",
+        "completion": "0.00000015",
+        "input_cache_read": "0.00000005"
+      },
+      "supported_parameters": [
+        "max_tokens",
+        "reasoning",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools"
+      ]
+    },
+    {
+      "id": "inclusionai/ling-3.0-flash-fin:free",
+      "canonical_slug": "inclusionai/ling-3.0-flash-fin-20260827",
+      "name": "Ling 3.0 Flash Fin (free)",
+      "context_length": 262144,
+      "architecture": {
+        "modality": "text->text",
+        "tokenizer": "Other"
+      },
+      "pricing": {
+        "prompt": "0",
+        "completion": "0"
+      },
+      "supported_parameters": [
+        "max_tokens",
+        "reasoning",
+        "temperature",
+        "tool_choice",
+        "tools"
+      ]
+    }
+  ],
+  "total_count": 419
+}
