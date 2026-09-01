@@ -231,6 +231,8 @@ pub struct DecodeReport {
     /// Count of `control_response` frames (replies from the CLI to our
     /// outbound `control_requests` - initialize, `set_model`, interrupt, …).
     pub control_responses: usize,
+    /// Count of `tool_progress` heartbeat frames.
+    pub tool_progress: usize,
     /// Unrecognised `type` values seen. Each entry is the `type` string
     /// the CLI sent.
     pub unknown_types: Vec<String>,
@@ -626,6 +628,7 @@ pub fn decode_all_inbound(log: &TraceLog) -> DecodeReport {
             }
             Ok(DecodedLine::ControlCancel { .. }) => report.control_cancels += 1,
             Ok(DecodedLine::ControlResponse { .. }) => report.control_responses += 1,
+            Ok(DecodedLine::ToolProgress(_)) => report.tool_progress += 1,
             Ok(DecodedLine::Unknown { type_str, .. }) => {
                 report.unknown_types.push(type_str);
             }

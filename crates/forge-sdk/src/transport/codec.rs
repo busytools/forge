@@ -1,10 +1,32 @@
 //! Stream-json line encode / decode.
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::Error;
 use crate::control::ControlRequest;
 use forge_primitives::Message;
+
+/// The CLI's heartbeat for a long-running tool call, emitted every 30
+/// seconds (`elapsed_time_seconds` counting up) until the tool returns.
+/// Informational: forge's own tool lifecycle rendering covers it, so
+/// the reader drops the frame rather than surfacing it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolProgress {
+    /// The tool use in flight. The CLI appends `-heartbeat-<n>` with a
+    /// per-call counter to the original tool's id.
+    pub tool_use_id: String,
+    pub tool_name: String,
+    /// Seconds since the tool call started.
+    pub elapsed_time_seconds: f64,
+    /// True on the 30-second cadence heartbeats. Defaults to false so
+    /// a progress frame without the flag still decodes.
+    #[serde(default)]
+    pub heartbeat: bool,
+    /// The parent tool use when this call runs inside a subagent.
+    #[serde(default)]
+    pub parent_tool_use_id: Option<String>,
+}
 
 /// A single stream-json line from the subprocess - either a regular message
 /// or a control request.
@@ -36,6 +58,11 @@ pub enum DecodedLine {
         /// Full JSON payload - useful for inspection and replay.
         raw: Value,
     },
+    /// The CLI's 30-second heartbeat for a tool call in flight
+    /// (`tool_progress`). Typed rather than `Unknown` so the
+    /// conformance replay classifies it as decoded, but never surfaced
+    /// as an event - see [`ToolProgress`].
+    ToolProgress(ToolProgress),
     /// Forward-compat fallback: the CLI emitted a frame with an unrecognised
     /// top-level `type` field. Forge-sdk doesn't crash on these - it logs
     /// a warning via `tracing::warn!` in the dispatch path and lets the
@@ -133,6 +160,19 @@ pub fn decode_dispatch(line: &str, line_number: u64) -> Result<DecodedLine, Erro
             let msg: Message = serde_json::from_value(value)
                 .map_err(|e| Error::message_parse(format!("line {line_number}: {e}")))?;
             Ok(DecodedLine::Message(msg))
+        }
+        "tool_progress" => {
+            // A heartbeat that fails to fit must degrade to `Unknown`,
+            // never error: a decode error ends the whole session, and
+            // this is the one frame class that must be incapable of
+            // ending one.
+            match serde_json::from_value::<ToolProgress>(value.clone()) {
+                Ok(progress) => Ok(DecodedLine::ToolProgress(progress)),
+                Err(_) => Ok(DecodedLine::Unknown {
+                    type_str: "tool_progress (unparseable payload)".to_string(),
+                    raw: value,
+                }),
+            }
         }
         other => Ok(DecodedLine::Unknown { type_str: other.to_string(), raw: value }),
     }
