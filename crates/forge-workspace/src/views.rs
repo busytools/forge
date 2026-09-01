@@ -117,7 +117,6 @@ pub struct AccountRow {
 /// snapshot is persisted and this is not: making the stored type an
 /// enum would break every cached row, while a view type can carry the
 /// discrimination for free.
-///
 #[derive(Clone, Debug, PartialEq)]
 pub enum AccountBudget {
     /// No usable snapshot: none has landed yet, or the cached one was
@@ -126,9 +125,7 @@ pub enum AccountBudget {
     ///
     /// `spend_billed` carries the account's billing model anyway, so
     /// the row's empty columns sit under the labels it would really
-    /// have. Printing `5h` / `7d` for an account with neither would
-    /// assert a shape forge invented, which is the objection this type
-    /// exists to make.
+    /// have rather than asserting windows an API account has none of.
     Unknown { spend_billed: bool },
     /// Plan windows, as percentages of an allowance that resets. Each
     /// column is `None` when the snapshot carried no window for it -

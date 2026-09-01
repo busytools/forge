@@ -749,10 +749,8 @@ fn backoff_delay(consecutive_failures: u32) -> std::time::Duration {
     Duration::from_secs(seconds).min(CAP)
 }
 
-/// `None` when the snapshot carries no five-hour window. That is a
-/// documented steady state on the lenient mapper, not a zero: the
-/// caller has to decide what no reading means rather than inheriting
-/// one.
+/// `None` when the snapshot carries no five-hour window, which is a
+/// documented steady state on the lenient mapper rather than a zero.
 pub(crate) fn five_hour_util(snapshot: &UsageSnapshot) -> Option<f64> {
     snapshot.five_hour.as_ref().map(|w| w.utilization)
 }
@@ -762,9 +760,8 @@ pub(crate) fn five_hour_util(snapshot: &UsageSnapshot) -> Option<f64> {
 /// is most-used is the binding constraint for "is this account
 /// 7-day rate-limited."
 ///
-/// `None` when all three are absent. Folding those to 0.0 was the same
-/// fabrication as a `map_or(0.0, ..)` without looking like one, and a
-/// 200 carrying only the session window reaches it.
+/// `None` when all three are absent, which a 200 carrying only the
+/// session window produces.
 pub(crate) fn seven_day_util(snapshot: &UsageSnapshot) -> Option<f64> {
     let windows = [
         snapshot.seven_day.as_ref().map(|w| w.utilization),

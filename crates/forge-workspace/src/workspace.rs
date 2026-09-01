@@ -2221,8 +2221,11 @@ impl Workspace {
                 let usable = accounts.is_account_usable(&key);
                 let is_current = current_account == Some(name.as_str());
                 let experimental = accounts.is_experimental(&key);
-                let budget =
-                    account_budget(accounts.provider_or_anthropic(&key), accounts.usage(&key));
+                let budget = account_budget(
+                    &name,
+                    accounts.provider_or_anthropic(&key),
+                    accounts.usage(&key),
+                );
                 Some(crate::AccountRow {
                     display_name: name,
                     config_dir,
@@ -5563,6 +5566,7 @@ impl Workspace {
 /// `provider` changed still has a row in the old shape, and rendering
 /// windows as money (or the reverse) is worse than saying nothing.
 fn account_budget(
+    account: &str,
     provider: forge_primitives::account::Provider,
     snapshot: Option<&forge_primitives::usage::UsageSnapshot>,
 ) -> crate::views::AccountBudget {
@@ -5596,12 +5600,12 @@ fn account_budget(
                 // Unreachable from today's mapper, which refuses a body
                 // with no figures - same warn as a source mismatch
                 // rather than a second silent path.
-                None => unreadable_snapshot(provider, snapshot, unknown),
+                None => unreadable_snapshot(account, provider, snapshot, unknown),
             }
         }
         (Provider::Anthropic | Provider::Codex, UsageSourceKind::OpenRouterKey)
         | (Provider::Openrouter, UsageSourceKind::Oauth) => {
-            unreadable_snapshot(provider, snapshot, unknown)
+            unreadable_snapshot(account, provider, snapshot, unknown)
         }
     }
 }
@@ -5615,12 +5619,14 @@ fn account_budget(
 /// and whose new endpoint is failing would otherwise show empty columns
 /// indefinitely with nothing anywhere saying why.
 fn unreadable_snapshot(
+    account: &str,
     provider: forge_primitives::account::Provider,
     snapshot: &forge_primitives::usage::UsageSnapshot,
     unknown: crate::views::AccountBudget,
 ) -> crate::views::AccountBudget {
     tracing::warn!(
         target: "forge_workspace::account",
+        account = %account,
         provider = ?provider,
         source = snapshot.source.label(),
         "cached usage snapshot does not fit the account's provider; showing no figures until a \
@@ -6592,24 +6598,27 @@ mod tests {
         for provider in [Provider::Anthropic, Provider::Codex] {
             assert!(
                 matches!(
-                    account_budget(provider, Some(&oauth)),
+                    account_budget("Acct", provider, Some(&oauth)),
                     AccountBudget::Subscription { .. }
                 ),
                 "{provider:?} with an oauth snapshot renders windows",
             );
             assert_eq!(
-                account_budget(provider, Some(&key)),
+                account_budget("Acct", provider, Some(&key)),
                 AccountBudget::Unknown { spend_billed: false },
                 "{provider:?} must not render a spend snapshot as its own",
             );
         }
 
         assert!(
-            matches!(account_budget(Provider::Openrouter, Some(&key)), AccountBudget::Api { .. }),
+            matches!(
+                account_budget("Acct", Provider::Openrouter, Some(&key)),
+                AccountBudget::Api { .. }
+            ),
             "openrouter with a key snapshot renders spend",
         );
         assert_eq!(
-            account_budget(Provider::Openrouter, Some(&oauth)),
+            account_budget("Acct", Provider::Openrouter, Some(&oauth)),
             AccountBudget::Unknown { spend_billed: true },
             "a stale windowed row must not render as money",
         );
@@ -6617,11 +6626,11 @@ mod tests {
         // No snapshot still carries the billing model, so the empty row
         // sits under the labels the account would really have.
         assert_eq!(
-            account_budget(Provider::Anthropic, None),
+            account_budget("Acct", Provider::Anthropic, None),
             AccountBudget::Unknown { spend_billed: false },
         );
         assert_eq!(
-            account_budget(Provider::Openrouter, None),
+            account_budget("Acct", Provider::Openrouter, None),
             AccountBudget::Unknown { spend_billed: true },
         );
     }
