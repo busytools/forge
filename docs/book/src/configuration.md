@@ -112,8 +112,11 @@ a `404`, so nothing downstream could tell it apart from a real reply.
 The split is billing, not auth. `"codex"` is a base-url account whose
 proxy serves the same windowed body Anthropic does, so it reads as a
 subscription with rolling windows. `"openrouter"` is pay-per-token:
-there is no window and no allowance, so its usage is money spent over a
-period rather than a percentage.
+there is no window, so its usage is money spent over a period rather
+than a percentage of a plan. A key may carry a spending cap set from
+the provider's dashboard, and where it does forge reads the spend
+against it as a percentage too; an uncapped key has no denominator, and
+forge says so rather than showing an empty bar.
 
 Unknown keys in an `[[accounts]]` block are rejected, so a near-miss
 like `providers` fails the load instead of loading and doing nothing.

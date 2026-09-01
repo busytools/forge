@@ -121,7 +121,7 @@ pub fn replace_account_usage(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_primitives::usage::{UsageSnapshot, UsageSourceKind, UsageWindow};
+    use forge_primitives::usage::{ApiSpend, UsageSnapshot, UsageSourceKind, UsageWindow};
     use std::time::{Duration, SystemTime};
     use tempfile::tempdir;
 
@@ -245,6 +245,55 @@ mod tests {
             "the extra-usage block it carried is preserved",
         );
         assert!(snapshot.spend.is_none(), "the absent new field decodes to None");
+    }
+
+    /// The sibling case: a row whose `spend` block predates the cap
+    /// fields. The test above never reaches `ApiSpend` at all, so only
+    /// this one fails if a cap field is ever declared bare instead of
+    /// `Option` - which would make every cached API row undecodable.
+    #[test]
+    fn a_spend_row_written_before_the_cap_fields_still_decodes() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        let old_row = br#"{"snapshot":{
+            "source":"OpenRouterKey",
+            "fetched_at":{"secs_since_epoch":1735128000,"nanos_since_epoch":0},
+            "five_hour":null,"seven_day":null,
+            "seven_day_opus":null,"seven_day_sonnet":null,
+            "extra_usage":null,
+            "spend":{"daily":0.5,"weekly":1.25,"monthly":20.3}
+        }}"#;
+
+        let txn = db.database().begin_write().expect("begin");
+        {
+            let mut table = txn.open_table(ACCOUNT_USAGE).expect("open table");
+            table.insert("Api", old_row.as_slice()).expect("insert pre-cap row");
+        }
+        txn.commit().expect("commit");
+
+        let loaded = account_usage(&db).expect("read");
+        let spend = loaded
+            .get("Api")
+            .expect("the pre-cap row survives the new shape")
+            .snapshot
+            .spend
+            .as_ref()
+            .expect("the spend block it carried is preserved");
+
+        assert_eq!(
+            spend,
+            &ApiSpend {
+                daily: 0.5,
+                weekly: 1.25,
+                monthly: 20.3,
+                limit: None,
+                limit_remaining: None,
+                limit_reset: None,
+                expires_at: None,
+            },
+            "the figures it carried survive and an absent cap stays absent rather than becoming zero",
+        );
     }
 
     #[test]
