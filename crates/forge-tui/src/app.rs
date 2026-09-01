@@ -244,6 +244,26 @@ fn report_keyboard_enhancement_support() {
     }
 }
 
+/// Wipe the screen and force the next draw to repaint every cell.
+///
+/// Deliberately not `Terminal::clear`. That saves and restores the
+/// cursor, and reading the cursor back is a DSR query that blocks on a
+/// terminal reply - which cannot be answered from here, because the
+/// event loop's `EventStream` owns the reader. It times out after 2s
+/// and the error ends the session. The query is ratatui's rather than
+/// forge's, so it is not visible in this file: `Terminal::clear` grew
+/// the read in ratatui-core 0.1.2.
+///
+/// `resize` to the current area does the two things this path actually
+/// wants - clear the viewport and reset the diff buffer - and reads
+/// nothing. `Backend::size` is an ioctl, not a terminal reply.
+fn force_full_redraw<B: ratatui::backend::Backend>(
+    terminal: &mut ratatui::Terminal<B>,
+) -> Result<(), B::Error> {
+    let size = terminal.size()?;
+    terminal.resize(ratatui::layout::Rect::new(0, 0, size.width, size.height))
+}
+
 /// Emit the OSC 22 pointer-shape sequence iff the desired shape changed
 /// since the last write. Called once per loop pass, de-duped so a still
 /// pointer costs nothing - and never touches the ratatui frame (hover
@@ -431,7 +451,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             app.needs_redraw = true;
         }
         if app.force_redraw {
-            terminal.clear()?;
+            force_full_redraw(&mut terminal)?;
             app.force_redraw = false;
             app.needs_redraw = true;
         }
@@ -814,6 +834,108 @@ mod tests {
 
     use crate::app::{MessageBlock, MessageRole};
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+    /// A backend that refuses to answer a cursor read, standing in for
+    /// the real terminal while the event loop owns the reader: there,
+    /// the DSR reply never arrives and crossterm fails after 2s. Every
+    /// other operation forwards to `TestBackend`.
+    #[derive(Debug)]
+    struct NoCursorReadBackend(ratatui::backend::TestBackend);
+
+    impl ratatui::backend::Backend for NoCursorReadBackend {
+        type Error = std::io::Error;
+
+        fn get_cursor_position(&mut self) -> Result<ratatui::layout::Position, Self::Error> {
+            Err(std::io::Error::other(
+                "cursor read on the redraw path: it blocks on a terminal reply the event loop \
+                 will never let through",
+            ))
+        }
+
+        fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
+        where
+            I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+        {
+            self.0.draw(content).map_err(std::io::Error::other)
+        }
+        fn hide_cursor(&mut self) -> Result<(), Self::Error> {
+            self.0.hide_cursor().map_err(std::io::Error::other)
+        }
+        fn show_cursor(&mut self) -> Result<(), Self::Error> {
+            self.0.show_cursor().map_err(std::io::Error::other)
+        }
+        fn set_cursor_position<P: Into<ratatui::layout::Position>>(
+            &mut self,
+            position: P,
+        ) -> Result<(), Self::Error> {
+            self.0.set_cursor_position(position).map_err(std::io::Error::other)
+        }
+        fn clear(&mut self) -> Result<(), Self::Error> {
+            self.0.clear().map_err(std::io::Error::other)
+        }
+        fn clear_region(
+            &mut self,
+            clear_type: ratatui::backend::ClearType,
+        ) -> Result<(), Self::Error> {
+            self.0.clear_region(clear_type).map_err(std::io::Error::other)
+        }
+        fn size(&self) -> Result<ratatui::layout::Size, Self::Error> {
+            self.0.size().map_err(std::io::Error::other)
+        }
+        fn window_size(&mut self) -> Result<ratatui::backend::WindowSize, Self::Error> {
+            self.0.window_size().map_err(std::io::Error::other)
+        }
+        fn flush(&mut self) -> Result<(), Self::Error> {
+            self.0.flush().map_err(std::io::Error::other)
+        }
+    }
+
+    /// The property: forcing a full redraw must not read the cursor.
+    /// `Terminal::clear` does (since ratatui-core 0.1.2), and from
+    /// inside the event loop that read blocks until crossterm's 2s
+    /// timeout and then ends the session - which is what `/account`
+    /// hit, because switching account sets `force_redraw`.
+    ///
+    /// A mutation back to `Terminal::clear` SURVIVES this test on the
+    /// locked ratatui-core 0.1.0, whose `clear` does not read the
+    /// cursor - the two are equivalent there, so nothing can tell them
+    /// apart. That is unkillable by construction rather than a gap in
+    /// the assertion. The test bites the moment the tree is on a
+    /// ratatui whose `clear` reads, which is the version the shipped
+    /// binary was already using.
+    #[test]
+    fn forcing_a_full_redraw_never_reads_the_cursor() {
+        let mut terminal =
+            ratatui::Terminal::new(NoCursorReadBackend(ratatui::backend::TestBackend::new(40, 10)))
+                .expect("terminal");
+
+        force_full_redraw(&mut terminal).expect("a forced redraw must not need a cursor read");
+    }
+
+    /// The clear half of the same call: after it, the next draw has to
+    /// repaint every cell rather than diffing against what was there.
+    #[test]
+    fn forcing_a_full_redraw_repaints_every_cell() {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(6, 1)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                frame.render_widget(ratatui::widgets::Paragraph::new("abcdef"), frame.area());
+            })
+            .expect("first draw");
+
+        force_full_redraw(&mut terminal).expect("forced redraw");
+
+        // Same content again: without the diff buffer being reset this
+        // draws nothing, so the cell count proves the reset happened.
+        let completed = terminal
+            .draw(|frame| {
+                frame.render_widget(ratatui::widgets::Paragraph::new("abcdef"), frame.area());
+            })
+            .expect("second draw");
+        let repainted = completed.buffer.content().len();
+        assert_eq!(repainted, 6, "every cell is redrawn after a forced redraw");
+    }
 
     fn app_with_connection()
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
