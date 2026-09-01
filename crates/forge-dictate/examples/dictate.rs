@@ -21,7 +21,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("recording for {seconds}s...");
     for _ in 0..seconds {
         std::thread::sleep(Duration::from_secs(1));
-        println!("  level {:.1} dBFS", capture.level());
+        // `level` is take-and-reset: each read is the peak over the
+        // window since the previous one, not a running high-water mark.
+        println!("  peak since last read {:.1} dBFS", capture.level());
     }
 
     match capture.finish()?.recv()? {

@@ -423,9 +423,64 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             };
             apply_session_update_chat_appended(app, &session_id, synthetic);
         }
+        SessionUpdate::DictateAvailability { available } => {
+            app.dictate_available = available;
+        }
+        SessionUpdate::DictateStarted { key, floor_db, generation } => {
+            if let Some(bucket) = app.session_mut(&key) {
+                bucket.dictate =
+                    Some(crate::app::dictate::DictateIndicator::recording(floor_db, generation));
+                bucket.dictate_notice = None;
+            }
+        }
+        SessionUpdate::DictateLevel { key, peak_db } => {
+            if let Some(bucket) = app.session_mut(&key)
+                && let Some(indicator) = bucket.dictate.as_mut()
+            {
+                indicator.push_level(peak_db);
+            }
+        }
+        SessionUpdate::DictateTranscribing { key } => {
+            if let Some(bucket) = app.session_mut(&key)
+                && let Some(indicator) = bucket.dictate.as_mut()
+            {
+                indicator.begin_transcribing();
+            }
+        }
+        SessionUpdate::DictateEnded { key, outcome, generation } => {
+            if let Some(bucket) = app.session_mut(&key) {
+                apply_dictate_outcome(bucket, &outcome, generation);
+            }
+        }
     }
     if redraw {
         app.needs_redraw = true;
+    }
+}
+
+/// `SessionUpdate::DictateEnded` reducer. Landed text inserts into the
+/// bucket's own editor - the take belongs to this session, whatever
+/// tab is focused. The notice stamps against the draft version the
+/// insert produced, so the next keystroke clears it. Only the take's
+/// own generation resets the indicator: a stale resolver arriving
+/// after a newer take started on the same key says its piece and
+/// leaves the live take alone.
+fn apply_dictate_outcome(
+    bucket: &mut crate::app::session::UiSession,
+    outcome: &forge_workspace::DictateOutcome,
+    generation: u64,
+) {
+    let floor_db = bucket.dictate.as_ref().map_or(-50.0, |indicator| indicator.floor_db);
+    let notice = crate::app::dictate::notice_for_outcome(outcome, floor_db);
+    if let forge_workspace::DictateOutcome::Landed { text, truncated: _ } = outcome {
+        bucket.input.insert_str(text);
+    }
+    let live_generation = bucket.dictate.as_ref().map(|indicator| indicator.generation);
+    if live_generation == Some(generation) {
+        bucket.dictate = None;
+    }
+    if let Some(notice) = notice {
+        bucket.set_dictate_notice(notice);
     }
 }
 
