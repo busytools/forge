@@ -4677,6 +4677,9 @@ mod tests {
     #[test]
     fn bare_modifier_press_leaves_autocomplete_open() {
         let mut app = make_test_app();
+        if let Some(workspace) = app.workspace.as_ref() {
+            workspace.enable_test_dispatch_intercept();
+        }
         handle_terminal_event(
             &mut app,
             Event::Key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE)),
