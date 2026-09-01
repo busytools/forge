@@ -568,6 +568,13 @@ fn begin_capture(
     let capture = engine
         .try_capture(key.as_str())
         .map_err(|busy| format!("the microphone is in use by session {}", busy.holder))?;
+    // The session can close while the device open waits above. A
+    // capture handed to a session that no longer exists holds the
+    // microphone for nobody.
+    if !ws.session_is_live(key) {
+        drop(capture);
+        return Err("the session closed · dictation did not start".to_owned());
+    }
     if let Some(error) = capture.open_error() {
         tracing::warn!(?error, "dictation refused: the input device did not open");
         drop(capture);
@@ -1024,6 +1031,35 @@ mod dictate_lifecycle_tests {
             error.contains("not ready"),
             "the refusal must say dictation is not ready, got: {error}"
         );
+    }
+
+    /// The start command can lose a race with its own session closing -
+    /// the device open waits inside `begin_capture` while the close
+    /// gesture lands. A capture handed to a session that no longer
+    /// exists holds the microphone for nobody.
+    #[tokio::test]
+    async fn a_start_for_a_closed_session_never_holds_the_microphone() {
+        let (ws, _updates) = crate::Workspace::testing_stub();
+        // A real engine, so begin_capture gets past readiness and
+        // reaches the liveness check on any machine with an input.
+        let dir = tempfile::tempdir().unwrap();
+        let engine = forge_dictate::Engine::new(
+            forge_dictate::ConfigBuilder::new()
+                .models_dir(dir.path())
+                .normalizer(None)
+                .build(),
+        )
+        .expect("an engine starts without its weights");
+        *ws.dictate.engine.lock() = Some(engine);
+
+        // No command sender for the key: the session is not live.
+        match begin_capture(&ws, &key("ghost")) {
+            Ok(_) => panic!("a capture must never be handed to a session that is not live"),
+            Err(_) => assert!(
+                ws.dictate_runtime.lock().recording.is_none(),
+                "whatever refused the start, no microphone claim may survive it"
+            ),
+        }
     }
 
     /// Stop routing reaches the recording that owns the key, and an

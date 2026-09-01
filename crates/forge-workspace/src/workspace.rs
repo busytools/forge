@@ -3093,6 +3093,12 @@ impl Workspace {
         let _ = self.domain_handles.lock().remove(session_key);
     }
 
+    /// Whether a session task still exists for `key`, which is what
+    /// makes it live: its command channel is registered and routable.
+    pub(crate) fn session_is_live(&self, key: &SessionKey) -> bool {
+        self.command_senders.lock().contains_key(key)
+    }
+
     /// Supersession-safe release: drop `session_key`'s pool entry,
     /// command sender, and domain handle ONLY when the pooled agent is
     /// still `handle` (by `Arc` identity). A SessionTask whose session
