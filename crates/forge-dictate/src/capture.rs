@@ -12,8 +12,9 @@ use crate::audio::SAMPLE_RATE;
 /// What the recording thread and the handle share.
 pub(crate) struct Recording {
     samples: Mutex<Vec<f32>>,
-    /// Loudest absolute sample so far, as `f32` bits. Atomic so a caller
-    /// drawing a level meter never blocks on the audio callback.
+    /// Loudest absolute sample since the last read, as `f32` bits.
+    /// Atomic so a caller drawing a level meter never blocks on the
+    /// audio callback.
     peak_bits: AtomicU32,
     stop: AtomicBool,
     /// Set when the recorder stopped itself at the cap rather than
@@ -41,7 +42,7 @@ impl Recording {
     }
 
     /// Fold one callback's worth of audio in, downmixed to mono and
-    /// keeping the running peak.
+    /// keeping the running peak since the last read.
     ///
     /// MUST NOT ALLOCATE. This runs on the realtime audio thread, where a
     /// `malloc` can miss the deadline and drop a buffer, so the downmix
@@ -111,8 +112,10 @@ impl Recording {
         }
     }
 
+    /// Loudest input since the last read, in dBFS. Take-and-reset: the
+    /// read clears the accumulator, so a poller gets one window per ask.
     pub(crate) fn peak_dbfs(&self) -> f32 {
-        let peak = f32::from_bits(self.peak_bits.load(Ordering::Relaxed));
+        let peak = f32::from_bits(self.peak_bits.swap(0.0f32.to_bits(), Ordering::Relaxed));
         if peak <= 0.0 { f32::NEG_INFINITY } else { 20.0 * peak.log10() }
     }
 
@@ -419,8 +422,13 @@ mod tests_recording {
         );
     }
 
+    /// The read is take-and-reset: each read answers "loudest since the
+    /// last read" and then clears, which is what a windowed level meter
+    /// polls. A read that held the all-time peak would freeze a meter on
+    /// the first syllable; the deliberate change from the old peak-hold
+    /// behaviour is covered by the two quieter-push assertions below.
     #[test]
-    fn the_level_tracks_the_loudest_sample_so_far() {
+    fn the_level_read_is_take_and_reset() {
         let recording = Recording::new(LIMIT);
         let silent = recording.peak_dbfs();
         assert!(
@@ -430,12 +438,21 @@ mod tests_recording {
 
         recording.push(&[0.1, -0.5, 0.25], 1, LIMIT);
         let loud = recording.peak_dbfs();
-        recording.push(&[0.01], 1, LIMIT);
-        assert!(
-            (recording.peak_dbfs() - loud).abs() < f32::EPSILON,
-            "the peak must hold rather than follow the signal down, or a meter flickers to silence"
-        );
         // -0.5 full scale is about -6 dBFS.
         assert!((loud + 6.02).abs() < 0.1, "peak of 0.5 must read near -6 dBFS, got {loud}");
+
+        // A quieter window after the read reads its own peak, not the
+        // all-time high.
+        recording.push(&[0.01], 1, LIMIT);
+        let quiet = recording.peak_dbfs();
+        // 0.01 full scale is about -40 dBFS.
+        assert!((quiet + 40.0).abs() < 0.1, "a quieter window must read its own peak, got {quiet}");
+
+        // And having consumed it, a read with nothing new is no signal.
+        let empty = recording.peak_dbfs();
+        assert!(
+            empty.is_infinite() && empty.is_sign_negative(),
+            "a read past the last one must be empty, got {empty}"
+        );
     }
 }
