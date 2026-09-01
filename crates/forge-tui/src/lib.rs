@@ -27,9 +27,11 @@ pub const FORGE_VERSION_SHORT: &str =
 /// [`startup::report_build_provenance`].
 pub const FORGE_BUILD_PROVENANCE: &str = env!("FORGE_BUILD_PROVENANCE");
 
-/// Digest of the lockfile this binary was built against. Meaningful
-/// only compared against the lockfile at the released tag.
-pub const FORGE_LOCKFILE_SHA: &str = env!("FORGE_LOCKFILE_SHA");
+/// Digest of the `Cargo.lock` this binary was built against, not of
+/// forge's single-instance lock. FNV-1a, not a SHA, so `shasum` will
+/// not reproduce it. Meaningful only compared against the digest a
+/// build of the released tag reports.
+pub const FORGE_CARGO_LOCK_DIGEST: &str = env!("FORGE_CARGO_LOCK_DIGEST");
 
 #[derive(Clone, Debug, ValueEnum, PartialEq, Eq)]
 pub enum DiagnosticsPreset {

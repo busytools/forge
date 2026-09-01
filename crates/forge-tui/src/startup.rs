@@ -104,15 +104,15 @@ fn build_provenance_warning(provenance: &str) -> Option<String> {
 /// Record how this binary was built, so a drifted one says so instead
 /// of being silent.
 ///
-/// Call once at startup after tracing init. The lockfile hash is
+/// Call once at startup after tracing init. The `Cargo.lock` digest is
 /// reported alongside because it catches a build that honoured a
-/// locally-modified `Cargo.lock`, which provenance cannot see because
-/// the guard did run. It only means something compared against the
-/// lockfile at the released tag - a bare hash in a log is not
-/// self-evidently correct.
+/// locally-modified one, which provenance cannot see because the guard
+/// did run. It only means something compared against a build of the
+/// released tag - a bare digest in a log is not self-evidently correct,
+/// and being FNV-1a it will not match `shasum`.
 pub fn report_build_provenance() {
     let provenance = crate::FORGE_BUILD_PROVENANCE;
-    let lockfile = crate::FORGE_LOCKFILE_SHA;
+    let cargo_lock = crate::FORGE_CARGO_LOCK_DIGEST;
     match build_provenance_warning(provenance) {
         None => tracing::info!(
             target: crate::logging::targets::APP_LIFECYCLE,
@@ -120,7 +120,7 @@ pub fn report_build_provenance() {
             message = "binary built through the guarded install path",
             outcome = "success",
             provenance,
-            lockfile_sha = lockfile,
+            cargo_lock_digest = cargo_lock,
         ),
         Some(remedy) => tracing::warn!(
             target: crate::logging::targets::APP_LIFECYCLE,
@@ -128,7 +128,7 @@ pub fn report_build_provenance() {
             message = %remedy,
             outcome = "failure",
             provenance,
-            lockfile_sha = lockfile,
+            cargo_lock_digest = cargo_lock,
         ),
     }
 }

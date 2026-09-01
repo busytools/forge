@@ -50,23 +50,26 @@ fn main() {
     let provenance = std::env::var("FORGE_BUILD_PROVENANCE").unwrap_or_default();
     println!("cargo:rustc-env=FORGE_BUILD_PROVENANCE={provenance}");
 
-    // Hash of the lockfile this build saw, which is a different signal
-    // from provenance: it catches a guarded build that honoured a
-    // locally-modified Cargo.lock. Empty when there is no lockfile to
-    // read, e.g. a packaged build outside the workspace.
+    // Digest of the Cargo.lock this build saw, which is a different
+    // signal from provenance: it catches a guarded build that honoured a
+    // locally-modified Cargo.lock. Empty when there is none to read,
+    // e.g. a packaged build outside the workspace.
     println!("cargo:rerun-if-changed=../../Cargo.lock");
-    println!("cargo:rustc-env=FORGE_LOCKFILE_SHA={}", lockfile_sha());
+    println!("cargo:rustc-env=FORGE_CARGO_LOCK_DIGEST={}", cargo_lock_digest());
 }
 
-/// Short hash of the workspace lockfile, or empty when it cannot be
-/// read. Uses `shasum`/`sha256sum` rather than pulling a hashing crate
-/// into the build graph for one line of provenance.
-fn lockfile_sha() -> String {
+/// Short digest of the workspace `Cargo.lock`, or empty when it cannot
+/// be read. FNV-1a rather than a real SHA, so it is not reproducible
+/// with `shasum` - the only question asked of it is "same Cargo.lock or
+/// not", and that does not justify a hashing crate in the build graph.
+///
+/// Named for `Cargo.lock` specifically: forge's own "lockfile" is the
+/// single-instance flock under its app-support dir, and these two land
+/// in the same startup logs.
+fn cargo_lock_digest() -> String {
     let Ok(bytes) = std::fs::read("../../Cargo.lock") else {
         return String::new();
     };
-    // FNV-1a: a dependency-free digest is enough here, because the
-    // only question asked of it is "same lockfile or not".
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in bytes {
         hash ^= u64::from(byte);
