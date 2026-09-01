@@ -365,9 +365,7 @@
 
 <ol style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 16px 22px;">
   <li><code>body</code> - chat scrollback (Min 3 rows, takes the flex)</li>
-  <li><code>input_sep</code> - full-width <code>─</code> separator (1 row, DIM)</li>
-  <li><code>input</code> - input field (1 row, grows up to N as user types)</li>
-  <li><code>input_bottom_sep</code> - full-width <code>─</code> separator (1 row, DIM)</li>
+  <li><code>input</code> - the bordered input box (1 interior row, grows up to <code>MAX_INPUT_HEIGHT = 50</code> as the user types; its own thick top/bottom edges are the dividers - there are no separator rows)</li>
   <li><code>help</code> - help overlay (0 when inactive, else <code>HELP_PANEL_HEIGHT = 14</code>)</li>
 </ol>
 
@@ -396,13 +394,13 @@
   <span class="dim">│  </span>   <span class="dim">Compiling forge-tui v0.14.2</span>
   <span class="dim">└─ </span><span class="success">Summary [4.2s] 1565 tests run: 1565 passed</span>
   <span class="dim">8.7s</span>
-  <span class="muted-c">────────────────────────────────────────────────────────────────────────────</span>
-  <span class="accent">❯</span> <span class="dim italic">Type your message...</span>
-  <span class="muted-c">────────────────────────────────────────────────────────────────────────────</span>
+  <span class="accent">┏</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┓</span>
+  <span class="accent">┃</span> <span class="accent">➤</span> <span class="dim italic">Type a message...</span>                                                        <span class="accent">┃</span>
+  <span class="accent">┗</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┛</span>
 </pre>
 </div>
 
-<p class="caption">Left padding is 2 cols across the chat body. Two horizontal <code>─</code> separators in DIM frame the input - one above, one below. The chat scrollbar (overflow only) is a <code>▐</code> thumb in <code>RUST_ORANGE</code> with no track, in a 1-col gutter reserved off the body's right edge (<code>CHAT_SCROLLBAR_WIDTH</code>). The bottom of the chat frame ends at the lower <code>─</code>; the status pieces that used to sit below the input now live in the <a href="#projects-pane">Projects pane</a>'s bottom panel, and the todo list that used to sit above the input is now in the <a href="#inspector-pane">Inspector pane</a>'s <code>TASKS</code> section.</p>
+<p class="caption">Left padding is 2 cols across the chat body. The input is a thick-bordered RUST_ORANGE box; its own top and bottom edges are the dividers - no separator rows. The chat scrollbar (overflow only) is a <code>▐</code> thumb in <code>RUST_ORANGE</code> with no track, in a 1-col gutter reserved off the body's right edge (<code>CHAT_SCROLLBAR_WIDTH</code>). The bottom of the chat frame ends at the box's lower edge; the status pieces that used to sit below the input now live in the <a href="#projects-pane">Projects pane</a>'s bottom panel, and the todo list that used to sit above the input is now in the <a href="#inspector-pane">Inspector pane</a>'s <code>TASKS</code> section.</p>
 
 <div class="surface" id="projects-pane">
   <div class="surface-head">
