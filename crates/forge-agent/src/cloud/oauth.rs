@@ -117,6 +117,13 @@ pub fn snapshot_from_openrouter_key(
             daily: data.usage_daily.unwrap_or(0.0),
             weekly: data.usage_weekly.unwrap_or(0.0),
             monthly: data.usage_monthly.unwrap_or(0.0),
+            // Carried through as-is: a cap that is absent stays absent
+            // rather than becoming a zero, because zero is a cap that
+            // permits nothing and absent is a key with no cap at all.
+            limit: data.limit,
+            limit_remaining: data.limit_remaining,
+            limit_reset: data.limit_reset,
+            expires_at: data.expires_at,
         }),
     })
 }
@@ -304,6 +311,38 @@ mod tests {
             snapshot_from_openrouter_key(no_figures).is_err(),
             "an envelope with none of the three usage figures must not read as zero",
         );
+    }
+
+    /// A cap can be added or removed from the provider's dashboard
+    /// between polls, so both shapes have to map: the capped key
+    /// carries a denominator the panel can draw a bar against, the
+    /// uncapped one carries none and must not be given a synthesised
+    /// zero to stand in for it.
+    #[test]
+    fn a_cap_maps_when_present_and_stays_absent_when_not() {
+        let capped: forge_primitives::usage::openrouter::KeyResponse = serde_json::from_str(
+            r#"{"data":{"usage_daily":0.038869563,"usage_weekly":0.038869563,
+                        "usage_monthly":0.038869563,"limit":20,
+                        "limit_remaining":19.961130437,"limit_reset":"monthly",
+                        "expires_at":null}}"#,
+        )
+        .expect("decode");
+        let spend = snapshot_from_openrouter_key(capped).expect("maps").spend.expect("spend");
+        assert_eq!(spend.limit, Some(20.0), "the cap is the denominator a bar needs");
+        assert_eq!(spend.limit_remaining, Some(19.961_130_437), "what is left to spend");
+        assert_eq!(spend.limit_reset.as_deref(), Some("monthly"), "the window the cap resets on");
+        assert_eq!(spend.expires_at, None, "a key with no expiry reports none");
+
+        let uncapped: forge_primitives::usage::openrouter::KeyResponse = serde_json::from_str(
+            r#"{"data":{"usage_daily":0.56,"usage_weekly":1.25,"usage_monthly":20.30,
+                        "limit":null,"limit_remaining":null,"limit_reset":null}}"#,
+        )
+        .expect("decode");
+        let spend = snapshot_from_openrouter_key(uncapped).expect("maps").spend.expect("spend");
+        assert_eq!(spend.limit, None, "an uncapped key has no denominator to invent");
+        assert_eq!(spend.limit_remaining, None);
+        assert_eq!(spend.limit_reset, None);
+        assert!((spend.monthly - 20.30).abs() < f64::EPSILON, "spend still maps without a cap");
     }
 
     /// One figure present is a real report; its absent siblings are

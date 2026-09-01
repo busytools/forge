@@ -19,9 +19,9 @@ pub struct KeyResponse {
 /// forge does no summation and no timezone arithmetic.
 ///
 /// Deliberately partial. The payload also carries a truncated copy of
-/// the key itself, a creator id, an all-time total, a cap triple and
-/// `byok_*` figures for inference billed to a different provider
-/// account; none of them are mapped. See `ApiSpend`.
+/// the key itself, a creator id, an all-time total, and `byok_*`
+/// figures for inference billed to a different provider account; none
+/// of those are mapped. See `ApiSpend`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct KeyData {
     /// Spend since the start of today, in USD.
@@ -30,4 +30,15 @@ pub struct KeyData {
     pub usage_weekly: Option<f64>,
     /// Spend since the start of this month, in USD.
     pub usage_monthly: Option<f64>,
+    /// Spending cap on this key, in USD. `None` on an uncapped key,
+    /// which is a normal state rather than an error - a key can have a
+    /// cap added or removed from the dashboard at any time.
+    pub limit: Option<f64>,
+    /// What is left of `limit`, in USD.
+    pub limit_remaining: Option<f64>,
+    /// Cadence the cap resets on, e.g. `"monthly"`. Free-form on the
+    /// wire, so it is carried through rather than parsed.
+    pub limit_reset: Option<String>,
+    /// When the key stops working. `None` on a key with no expiry.
+    pub expires_at: Option<String>,
 }

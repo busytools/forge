@@ -1158,6 +1158,10 @@ const ACCOUNT_PANEL_MIN_PANE_HEIGHT: u16 = 24;
 /// aligns regardless of label length.
 const ACCOUNT_PANEL_ID_LABEL_WIDTH: usize = 7;
 
+/// Label column for the spend period rows. Five holds `month`, which
+/// is the widest of `day` / `week` / `month`.
+const SPEND_LABEL_WIDTH: usize = 5;
+
 /// Bar cell count derived from the pane width so the row stretches
 /// to fill the available content area (pane width minus the 2-col
 /// left indent, fixed chrome from label/gaps/pct, and the right
@@ -1482,33 +1486,48 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 && w.resets_at.is_some_and(|when| when > std::time::SystemTime::now())
         });
 
-    // Rows 9..=10: 5h bar + ETA row.
-    push_usage_window_lines(
-        &mut lines,
-        "5h",
-        app.usage().snapshot.as_ref().and_then(|s| s.five_hour.as_ref()),
-        width,
-        usage_error,
-        seven_day_at_cap,
-    );
+    // Rows 9..=13: what this account bills in. A window-billed
+    // account gets the 5h and 7d bars; a spend-billed one gets its
+    // periods and cap in the same five rows, because
+    // `ACCOUNT_PANEL_HEIGHT` is fixed and a differing row count would
+    // move the project list above.
+    let spend = app
+        .usage()
+        .snapshot
+        .as_ref()
+        .filter(|s| s.source == crate::app::UsageSourceKind::OpenRouterKey)
+        .map(|s| s.spend.as_ref());
+    if let Some(spend) = spend {
+        push_spend_lines(&mut lines, spend, width, usage_error);
+    } else {
+        // Rows 9..=10: 5h bar + ETA row.
+        push_usage_window_lines(
+            &mut lines,
+            "5h",
+            app.usage().snapshot.as_ref().and_then(|s| s.five_hour.as_ref()),
+            width,
+            usage_error,
+            seven_day_at_cap,
+        );
 
-    // Row 11: blank between 5h and 7d.
-    lines.push(Line::default());
+        // Row 11: blank between 5h and 7d.
+        lines.push(Line::default());
 
-    // Rows 12..=13: 7d bar + ETA row. The "7d cap" label only
-    // applies to the 5h indicator (it tells the user the 5h-side
-    // 429 is downstream of the 7d cap, not its own thing). The 7d
-    // row itself doesn't need that hint - its 100% bar already
-    // tells the user the cap is hit. Pass false here so 7d's label
-    // (if any) reads its own error class.
-    push_usage_window_lines(
-        &mut lines,
-        "7d",
-        app.usage().snapshot.as_ref().and_then(|s| s.seven_day.as_ref()),
-        width,
-        usage_error,
-        false,
-    );
+        // Rows 12..=13: 7d bar + ETA row. The "7d cap" label only
+        // applies to the 5h indicator (it tells the user the 5h-side
+        // 429 is downstream of the 7d cap, not its own thing). The 7d
+        // row itself doesn't need that hint - its 100% bar already
+        // tells the user the cap is hit. Pass false here so 7d's label
+        // (if any) reads its own error class.
+        push_usage_window_lines(
+            &mut lines,
+            "7d",
+            app.usage().snapshot.as_ref().and_then(|s| s.seven_day.as_ref()),
+            width,
+            usage_error,
+            false,
+        );
+    }
 
     // Row 14: blank between usage and version rows.
     lines.push(Line::default());
@@ -1638,6 +1657,129 @@ fn push_usage_window_lines(
     let right_edge = usize::from(width).saturating_sub(PANEL_RIGHT_GUTTER);
     let pad = right_edge.saturating_sub(eta_chars);
     lines.push(Line::from(vec![Span::raw(" ".repeat(pad)), Span::styled(eta_text, eta_style)]));
+}
+
+/// The five rows a spend-billed account gets where a window-billed one
+/// gets its 5h and 7d bars: `day` / `week` / `month`, then the key's
+/// cap, then a secondary line.
+///
+/// `spend` is `None` when no probe has landed. Every figure then reads
+/// `$-` rather than `$0.00`, because a zero is a reading and forge has
+/// none - the same distinction the account picker draws.
+///
+/// `cap` keeps a three-character label while the periods get whole
+/// words, so its bar is the same 19 cells as the `Ctx` bar above rather
+/// than a shorter one with a ragged edge. That is deliberate: do not
+/// "fix" it by spelling the label out.
+///
+/// Excluded on purpose and re-litigated more than once: `byok_usage_*`
+/// is inference billed to a different payer's account, so adding it to
+/// these figures would produce a total reconcilable against neither
+/// bill. `/v1/credits` is account-wide rather than per-key.
+fn push_spend_lines(
+    lines: &mut Vec<Line<'static>>,
+    spend: Option<&forge_primitives::usage::ApiSpend>,
+    width: u16,
+    usage_error: Option<forge_workspace::UsageFetchStatus>,
+) {
+    let right_edge = usize::from(width).saturating_sub(PANEL_RIGHT_GUTTER);
+    let money = |amount: Option<f64>| {
+        amount.map_or_else(|| "$-".to_owned(), |value| format!("${value:.2}"))
+    };
+
+    for (label, amount) in [
+        ("day", spend.map(|s| s.daily)),
+        ("week", spend.map(|s| s.weekly)),
+        ("month", spend.map(|s| s.monthly)),
+    ] {
+        let value = money(amount);
+        let left = 1 + SPEND_LABEL_WIDTH + 2;
+        let pad = right_edge.saturating_sub(left + value.chars().count());
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            label_span(label, SPEND_LABEL_WIDTH),
+            Span::raw("  "),
+            Span::raw(" ".repeat(pad)),
+            Span::styled(value, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        ]));
+    }
+
+    // The cap row reuses the bar-row geometry so its cells line up with
+    // `Ctx`. A key with no cap has no denominator to fill, so it says so
+    // rather than drawing an empty bar that would read as 0% used.
+    match spend.and_then(|s| s.limit.map(|limit| (limit, s.monthly))) {
+        Some((limit, monthly)) if limit > 0.0 => {
+            let pct = (monthly / limit * 100.0).clamp(0.0, 100.0);
+            let cells = bar_cells_for(width);
+            // A 0..=100 percentage rounded for a 3-cell display field.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let pct_text = format!("{:>3}%", pct.round() as i64);
+            let mut row = vec![Span::raw(" "), label_span("cap", 3), Span::raw("  ")];
+            row.extend(bar_spans(pct, cells));
+            row.push(Span::raw("  "));
+            row.push(Span::raw(pct_text));
+            lines.push(Line::from(row));
+        }
+        _ => {
+            let text = if spend.is_some() { "not set" } else { "\u{2014}" };
+            let left = 1 + 3 + 2;
+            let pad = right_edge.saturating_sub(left + text.chars().count());
+            lines.push(Line::from(vec![
+                Span::raw(" "),
+                label_span("cap", 3),
+                Span::raw("  "),
+                Span::raw(" ".repeat(pad)),
+                Span::styled(text.to_owned(), Style::default().fg(theme::DIM)),
+            ]));
+        }
+    }
+
+    // Secondary row, same slot the reset ETA occupies on a window row:
+    // what is left of the cap when there is one, otherwise whichever
+    // probe failure explains the dashes above.
+    let (text, style) = spend_secondary(spend, usage_error);
+    let pad = right_edge.saturating_sub(text.chars().count());
+    lines.push(Line::from(vec![Span::raw(" ".repeat(pad)), Span::styled(text, style)]));
+}
+
+/// Text and style for the spend block's last row. Split out so the
+/// choice between "what is left", an expiry and a probe failure is
+/// testable without rendering a frame.
+fn spend_secondary(
+    spend: Option<&forge_primitives::usage::ApiSpend>,
+    usage_error: Option<forge_workspace::UsageFetchStatus>,
+) -> (String, Style) {
+    let dim = Style::default().fg(theme::DIM);
+    let Some(spend) = spend else {
+        // No snapshot: say why the figures are dashes.
+        let style = usage_error.map_or(dim, |s| {
+            if needs_user_recovery(s) { Style::default().fg(theme::STATUS_WARNING) } else { dim }
+        });
+        let text =
+            usage_error.map_or_else(|| "no probe yet".to_owned(), |s| usage_error_label(s, false));
+        return (text, style);
+    };
+    if let Some(remaining) = spend.limit_remaining {
+        // An expiry displaces the reset cadence rather than claiming a
+        // sixth row: a key about to stop working outranks how often its
+        // cap rolls over.
+        let tail = spend.expires_at.as_deref().map_or_else(
+            || spend.limit_reset.clone().unwrap_or_else(|| "capped".to_owned()),
+            |when| format!("expires {when}"),
+        );
+        let style = if spend.expires_at.is_some() {
+            Style::default().fg(theme::STATUS_WARNING)
+        } else {
+            dim
+        };
+        return (format!("${remaining:.2} left \u{00B7} {tail}"), style);
+    }
+    let style = usage_error.map_or(dim, |s| {
+        if needs_user_recovery(s) { Style::default().fg(theme::STATUS_WARNING) } else { dim }
+    });
+    let text =
+        usage_error.map_or_else(|| "no limit set".to_owned(), |s| usage_error_label(s, false));
+    (text, style)
 }
 
 /// `true` when this status means the account can't serve requests
@@ -2200,6 +2342,122 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(!rendered.contains("compaction"), "got:\n{rendered}");
+    }
+
+    fn spend_snapshot(
+        spend: Option<forge_primitives::usage::ApiSpend>,
+    ) -> crate::app::UsageSnapshot {
+        crate::app::UsageSnapshot {
+            source: crate::app::UsageSourceKind::OpenRouterKey,
+            fetched_at: std::time::SystemTime::UNIX_EPOCH,
+            five_hour: None,
+            seven_day: None,
+            seven_day_opus: None,
+            seven_day_sonnet: None,
+            extra_usage: None,
+            spend,
+        }
+    }
+
+    fn capped(monthly: f64, limit: f64, remaining: f64) -> forge_primitives::usage::ApiSpend {
+        forge_primitives::usage::ApiSpend {
+            daily: 0.04,
+            weekly: 0.04,
+            monthly,
+            limit: Some(limit),
+            limit_remaining: Some(remaining),
+            limit_reset: Some("monthly".to_owned()),
+            expires_at: None,
+        }
+    }
+
+    /// The `Ctx` bar draws the same glyphs, so every cap assertion is
+    /// scoped to the cap row - checking the whole panel would pass on a
+    /// bar the cap row never drew.
+    fn cap_row(app: &App) -> String {
+        build_account_panel_lines(app, 32)
+            .iter()
+            .map(line_text)
+            .find(|l| l.starts_with(" cap"))
+            .expect("cap row present")
+    }
+
+    /// A capped key has a denominator, so the cap row draws a bar; an
+    /// uncapped one has none and must say so rather than drawing an
+    /// empty bar, which would read as nothing used.
+    #[test]
+    fn the_cap_row_draws_a_bar_only_when_a_cap_exists() {
+        let mut app = App::test_default();
+        app.usage_mut().snapshot = Some(spend_snapshot(Some(capped(12.40, 20.0, 7.60))));
+        let row = cap_row(&app);
+        assert!(row.contains('\u{2593}'), "a cap gives the bar something to fill: {row}");
+        assert!(row.contains("62%"), "the bar reports usage against the cap: {row}");
+
+        let panel = build_account_panel_lines(&app, 32)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(panel.contains("$7.60 left"), "what is left is the useful number: {panel}");
+
+        let mut app = App::test_default();
+        app.usage_mut().snapshot = Some(spend_snapshot(Some(forge_primitives::usage::ApiSpend {
+            daily: 0.56,
+            weekly: 1.25,
+            monthly: 20.30,
+            limit: None,
+            limit_remaining: None,
+            limit_reset: None,
+            expires_at: None,
+        })));
+        let row = cap_row(&app);
+        assert!(row.contains("not set"), "an uncapped key says so: {row}");
+        assert!(!row.contains('\u{2593}'), "no cap means no bar to fill: {row}");
+    }
+
+    /// Every period reads `$-` before a probe lands. `$0.00` is a
+    /// reading, and forge has none - the same distinction the account
+    /// picker draws, and the whole point of the sibling work.
+    #[test]
+    fn an_unprobed_spend_account_shows_dashes_not_zeroes() {
+        let mut app = App::test_default();
+        app.usage_mut().snapshot = Some(spend_snapshot(None));
+        let rendered = build_account_panel_lines(&app, 32)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("day"), "the period labels are still drawn: {rendered}");
+        assert!(rendered.contains("$-"), "an unread period shows a dash: {rendered}");
+        assert!(!rendered.contains("$0.00"), "a zero would be a reading forge does not have");
+
+        let row = cap_row(&app);
+        assert!(
+            !row.contains('%') && !row.contains('\u{2593}'),
+            "an unprobed cap has neither a percentage nor a bar: {row}",
+        );
+    }
+
+    /// Full words, because these are calendar periods rather than the
+    /// rolling windows `5h` / `7d` name. Anchored to the label column:
+    /// the secondary row carries the reset cadence, so a bare substring
+    /// search finds "month" inside "monthly" and passes whatever the
+    /// label says.
+    #[test]
+    fn the_spend_periods_are_spelled_out() {
+        let mut app = App::test_default();
+        app.usage_mut().snapshot = Some(spend_snapshot(Some(capped(0.04, 20.0, 19.96))));
+        let rendered =
+            build_account_panel_lines(&app, 32).iter().map(line_text).collect::<Vec<_>>();
+
+        for word in ["day", "week", "month"] {
+            let prefix = format!(" {word:<SPEND_LABEL_WIDTH$}  ");
+            assert!(
+                rendered.iter().any(|l| l.starts_with(&prefix)),
+                "{word} is spelled out in the label column: {rendered:?}",
+            );
+        }
     }
 
     #[test]

@@ -6593,7 +6593,15 @@ mod tests {
         key.source = UsageSourceKind::OpenRouterKey;
         key.five_hour = None;
         key.seven_day = None;
-        key.spend = Some(ApiSpend { daily: 0.5, weekly: 1.0, monthly: 2.0 });
+        key.spend = Some(ApiSpend {
+            daily: 0.5,
+            weekly: 1.0,
+            monthly: 2.0,
+            limit: None,
+            limit_remaining: None,
+            limit_reset: None,
+            expires_at: None,
+        });
 
         for provider in [Provider::Anthropic, Provider::Codex] {
             assert!(

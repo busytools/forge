@@ -54,6 +54,16 @@ pub struct ApiSpend {
     pub daily: f64,
     pub weekly: f64,
     pub monthly: f64,
+    /// Spending cap on this key, in USD, with what is left of it and
+    /// the cadence it resets on. All `None` on an uncapped key, which
+    /// is a normal state - a cap can be added or removed from the
+    /// provider's dashboard between one poll and the next, so nothing
+    /// may assume a denominator exists.
+    pub limit: Option<f64>,
+    pub limit_remaining: Option<f64>,
+    pub limit_reset: Option<String>,
+    /// When the key stops working, when it says.
+    pub expires_at: Option<String>,
 }
 
 /// One named usage window inside a snapshot (5-hour, 7-day, etc.).
