@@ -644,15 +644,32 @@ pub struct RateLimitInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     /// Input tokens this turn.
+    #[serde(default, deserialize_with = "null_as_zero")]
     pub input_tokens: u64,
     /// Output tokens this turn.
+    #[serde(default, deserialize_with = "null_as_zero")]
     pub output_tokens: u64,
     /// Tokens written to the prompt cache this turn.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_zero")]
     pub cache_creation_input_tokens: u64,
     /// Tokens read from the prompt cache this turn.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_zero")]
     pub cache_read_input_tokens: u64,
+}
+
+/// Read a counter that may arrive as an explicit `null`.
+///
+/// `serde(default)` covers an absent key and not a present-but-null
+/// one, so a backend that reports "no caching happened" as `null`
+/// rather than `0` fails the whole frame - and a frame that fails to
+/// decode ends the session's event stream, not just that message.
+/// Measured: OpenRouter sends `"cache_creation_input_tokens": null`
+/// for a model with no prompt cache.
+fn null_as_zero<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<u64>::deserialize(deserializer)?.unwrap_or(0))
 }
 
 /// Per-hook entry inside a `stop_hook_summary` system event (#273).
@@ -1653,6 +1670,35 @@ mod tests_message_extras {
 
     use crate::{AssistantMessageError, Message};
     use serde_json::json;
+
+    /// A backend with no prompt cache reports the cache counters as
+    /// `null` rather than `0`. Verbatim `usage` block measured from
+    /// OpenRouter serving `z-ai/glm-5.3-flash`; a decode failure here
+    /// ends the whole event stream, so the session dies mid-turn.
+    #[test]
+    fn usage_counters_decode_when_the_backend_sends_null() {
+        let measured = serde_json::json!({
+            "input_tokens": 13,
+            "output_tokens": 24,
+            "output_tokens_details": { "thinking_tokens": 24 },
+            "cache_creation_input_tokens": null,
+            "cache_read_input_tokens": 0,
+            "cache_creation": null,
+            "inference_geo": null,
+            "server_tool_use": null,
+            "service_tier": null,
+            "speed": "standard",
+            "cost": 1.395e-05,
+            "is_byok": false
+        });
+
+        let usage: crate::Usage =
+            serde_json::from_value(measured).expect("a null cache counter must not fail the frame");
+
+        assert_eq!(usage.cache_creation_input_tokens, 0, "a null cache counter reads as zero");
+        assert_eq!(usage.input_tokens, 13, "and the counters beside it still decode");
+        assert_eq!(usage.output_tokens, 24, "and the counters beside it still decode");
+    }
 
     #[test]
     fn assistant_error_enum_wire_names() {
