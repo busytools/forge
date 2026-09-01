@@ -118,22 +118,28 @@ pub struct AccountRow {
 /// enum would break every cached row, while a view type can carry the
 /// discrimination for free.
 ///
-/// `Unknown` is load-bearing, not a placeholder. Before it existed a
-/// missing snapshot collapsed to `(0.0, 0.0)`, so "never probed" and
-/// "probed, nothing used" rendered identically as a green 0% - the same
-/// class of invented number as a fabricated percentage on an account
-/// with no windows.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AccountBudget {
     /// No usable snapshot: none has landed yet, or the cached one was
     /// written under a different `provider` and no longer describes
     /// this account.
-    Unknown,
-    /// Plan windows, as percentages of an allowance that resets.
+    ///
+    /// `spend_billed` carries the account's billing model anyway, so
+    /// the row's empty columns sit under the labels it would really
+    /// have. Printing `5h` / `7d` for an account with neither would
+    /// assert a shape forge invented, which is the objection this type
+    /// exists to make.
+    Unknown { spend_billed: bool },
+    /// Plan windows, as percentages of an allowance that resets. Each
+    /// column is `None` when the snapshot carried no window for it -
+    /// the lenient mapper documents three states where that happens,
+    /// and the strict one requires only the five-hour window, so a
+    /// present snapshot is not a promise of a present figure.
     Subscription {
-        five_hour_util: f64,
-        /// Binding 7-day utilization: max across the three 7-day windows.
-        seven_day_util: f64,
+        five_hour_util: Option<f64>,
+        /// Binding 7-day utilization: max across the three 7-day
+        /// windows, or `None` when all three are absent.
+        seven_day_util: Option<f64>,
         /// When the account unlocks - `Some` only while it is at its
         /// cap, so the picker shows a reset ETA on limited rows only.
         resets_at: Option<SystemTime>,
