@@ -36,6 +36,13 @@ impl Provider {
     pub const fn uses_base_url(self) -> bool {
         matches!(self, Self::Codex | Self::Openrouter)
     }
+
+    /// `true` when this backend charges per token rather than against a
+    /// plan allowance, so its usage is money over a period and it has
+    /// no window to be a percentage of.
+    pub const fn bills_by_spend(self) -> bool {
+        matches!(self, Self::Openrouter)
+    }
 }
 
 #[cfg(test)]

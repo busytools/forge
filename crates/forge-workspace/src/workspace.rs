@@ -5569,9 +5569,15 @@ fn account_budget(
     use forge_primitives::account::Provider;
     use forge_primitives::usage::UsageSourceKind;
 
+    let unknown = crate::views::AccountBudget::Unknown { spend_billed: provider.bills_by_spend() };
     let Some(snapshot) = snapshot else {
-        return crate::views::AccountBudget::Unknown;
+        return unknown;
     };
+    // Written out pair by pair rather than with a catch-all, so a new
+    // variant on either enum is a compile error here. This is the one
+    // place that decides which shape a row takes, and defaulting a new
+    // provider to "unknown forever" is exactly the silent wrong answer
+    // the type exists to prevent.
     match (provider, snapshot.source) {
         (Provider::Anthropic | Provider::Codex, UsageSourceKind::Oauth) => {
             crate::views::AccountBudget::Subscription {
@@ -5581,16 +5587,46 @@ fn account_budget(
             }
         }
         (Provider::Openrouter, UsageSourceKind::OpenRouterKey) => {
-            snapshot.spend.as_ref().map_or(crate::views::AccountBudget::Unknown, |spend| {
-                crate::views::AccountBudget::Api {
+            match snapshot.spend.as_ref() {
+                Some(spend) => crate::views::AccountBudget::Api {
                     daily: spend.daily,
                     weekly: spend.weekly,
                     monthly: spend.monthly,
-                }
-            })
+                },
+                // Unreachable from today's mapper, which refuses a body
+                // with no figures - same warn as a source mismatch
+                // rather than a second silent path.
+                None => unreadable_snapshot(provider, snapshot, unknown),
+            }
         }
-        _ => crate::views::AccountBudget::Unknown,
+        (Provider::Anthropic | Provider::Codex, UsageSourceKind::OpenRouterKey)
+        | (Provider::Openrouter, UsageSourceKind::Oauth) => {
+            unreadable_snapshot(provider, snapshot, unknown)
+        }
     }
+}
+
+/// A cached snapshot the renderer cannot use under the account's
+/// declared provider.
+///
+/// Warns rather than falling back quietly: the redb row is rewritten
+/// only after a successful poll, so a stale one outlives a `forge.toml`
+/// edit and is re-seeded every boot. An account whose provider changed
+/// and whose new endpoint is failing would otherwise show empty columns
+/// indefinitely with nothing anywhere saying why.
+fn unreadable_snapshot(
+    provider: forge_primitives::account::Provider,
+    snapshot: &forge_primitives::usage::UsageSnapshot,
+    unknown: crate::views::AccountBudget,
+) -> crate::views::AccountBudget {
+    tracing::warn!(
+        target: "forge_workspace::account",
+        provider = ?provider,
+        source = snapshot.source.label(),
+        "cached usage snapshot does not fit the account's provider; showing no figures until a \
+         fresh probe lands",
+    );
+    unknown
 }
 
 /// Map an [`OauthUsageError`] to the renderer-facing
@@ -6534,6 +6570,62 @@ mod tests {
         }
     }
 
+    /// Every `(provider, source)` pair `account_budget` can be handed.
+    /// The mismatch pairs are the reason the function exists - a stale
+    /// cached row survives a `forge.toml` provider change and is
+    /// re-seeded at every boot - and simplifying the function to match
+    /// on provider alone would render windows as money with every other
+    /// test still green.
+    #[test]
+    fn account_budget_covers_every_provider_and_source_pair() {
+        use crate::views::AccountBudget;
+        use forge_primitives::account::Provider;
+        use forge_primitives::usage::{ApiSpend, UsageSourceKind};
+
+        let oauth = account_usage_snapshot(10.0, 20.0, None);
+        let mut key = account_usage_snapshot(0.0, 0.0, None);
+        key.source = UsageSourceKind::OpenRouterKey;
+        key.five_hour = None;
+        key.seven_day = None;
+        key.spend = Some(ApiSpend { daily: 0.5, weekly: 1.0, monthly: 2.0 });
+
+        for provider in [Provider::Anthropic, Provider::Codex] {
+            assert!(
+                matches!(
+                    account_budget(provider, Some(&oauth)),
+                    AccountBudget::Subscription { .. }
+                ),
+                "{provider:?} with an oauth snapshot renders windows",
+            );
+            assert_eq!(
+                account_budget(provider, Some(&key)),
+                AccountBudget::Unknown { spend_billed: false },
+                "{provider:?} must not render a spend snapshot as its own",
+            );
+        }
+
+        assert!(
+            matches!(account_budget(Provider::Openrouter, Some(&key)), AccountBudget::Api { .. }),
+            "openrouter with a key snapshot renders spend",
+        );
+        assert_eq!(
+            account_budget(Provider::Openrouter, Some(&oauth)),
+            AccountBudget::Unknown { spend_billed: true },
+            "a stale windowed row must not render as money",
+        );
+
+        // No snapshot still carries the billing model, so the empty row
+        // sits under the labels the account would really have.
+        assert_eq!(
+            account_budget(Provider::Anthropic, None),
+            AccountBudget::Unknown { spend_billed: false },
+        );
+        assert_eq!(
+            account_budget(Provider::Openrouter, None),
+            AccountBudget::Unknown { spend_billed: true },
+        );
+    }
+
     /// `project_accounts_snapshot` returns one row per allow-list entry
     /// in order, each carrying the account's config_dir, is_current
     /// marker, usable flag, 5h/7d utilization, and a reset ETA only
@@ -6587,8 +6679,8 @@ mod tests {
                 seven_day_util,
                 resets_at,
             } => {
-                assert!((five_hour_util - 100.0).abs() < f64::EPSILON);
-                assert!((seven_day_util - 63.0).abs() < f64::EPSILON);
+                assert_eq!(five_hour_util, Some(100.0));
+                assert_eq!(seven_day_util, Some(63.0));
                 assert_eq!(resets_at, Some(future), "capped account shows when it unlocks");
             }
             ref other => panic!("a window-billed account renders as a subscription, got {other:?}"),
@@ -6600,7 +6692,7 @@ mod tests {
         assert!(rows[1].usable, "B under cap on both windows");
         match rows[1].budget {
             crate::views::AccountBudget::Subscription { five_hour_util, resets_at, .. } => {
-                assert!((five_hour_util - 34.0).abs() < f64::EPSILON);
+                assert_eq!(five_hour_util, Some(34.0));
                 assert!(resets_at.is_none(), "usable account has no reset ETA");
             }
             ref other => panic!("a window-billed account renders as a subscription, got {other:?}"),
