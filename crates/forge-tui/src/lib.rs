@@ -22,6 +22,17 @@ pub const FORGE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), env!("FORGE_B
 pub const FORGE_VERSION_SHORT: &str =
     concat!(env!("CARGO_PKG_VERSION"), env!("FORGE_BUILD_SUFFIX_SHORT"));
 
+/// How this binary was built - the marker `scripts/install.sh` sets,
+/// or empty for anything else. Surfaced at startup by
+/// [`startup::report_build_provenance`].
+pub const FORGE_BUILD_PROVENANCE: &str = env!("FORGE_BUILD_PROVENANCE");
+
+/// Digest of the `Cargo.lock` this binary was built against, not of
+/// forge's single-instance lock. FNV-1a, not a SHA, so `shasum` will
+/// not reproduce it. Meaningful only compared against the digest a
+/// build of the released tag reports.
+pub const FORGE_CARGO_LOCK_DIGEST: &str = env!("FORGE_CARGO_LOCK_DIGEST");
+
 #[derive(Clone, Debug, ValueEnum, PartialEq, Eq)]
 pub enum DiagnosticsPreset {
     Runtime,

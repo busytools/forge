@@ -36,7 +36,12 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 toml = "0.8"
 dirs = "6"
-ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
+# Pinned exactly, not caret. ratatui-core 0.1.2 moved a blocking cursor
+# read into `Terminal::clear`, which a caret range let an unlocked
+# `cargo install` pick up and ship a crash with. The pin stops that for
+# this one crate only; the startup provenance warning is what
+# generalises, so do not read this as the safety net.
+ratatui = { version = "=0.30.0", features = ["unstable-rendered-line-info"] }
 crossterm = "0.29"
 image = { version = "0.25", default-features = false, features = ["png"] }
 hound = "3.5"
