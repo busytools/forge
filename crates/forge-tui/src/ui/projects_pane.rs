@@ -1762,7 +1762,9 @@ fn spend_secondary(
     if let Some(remaining) = spend.limit_remaining {
         // An expiry displaces the reset cadence rather than claiming a
         // sixth row: a key about to stop working outranks how often its
-        // cap rolls over.
+        // cap rolls over. The `capped` fallback is defensive - a cap
+        // with no cadence is a shape the endpoint has not been observed
+        // to return.
         let tail = spend.expires_at.as_deref().map_or_else(
             || spend.limit_reset.clone().unwrap_or_else(|| "capped".to_owned()),
             |when| format!("expires {when}"),
@@ -2371,6 +2373,49 @@ mod tests {
         }
     }
 
+    fn uncapped() -> forge_primitives::usage::ApiSpend {
+        forge_primitives::usage::ApiSpend {
+            daily: 0.56,
+            weekly: 4.10,
+            monthly: 20.30,
+            limit: None,
+            limit_remaining: None,
+            limit_reset: None,
+            expires_at: None,
+        }
+    }
+
+    /// The layout split subtracts `ACCOUNT_PANEL_HEIGHT` from the pane
+    /// to size the project list, so a spend account rendering a
+    /// different count shifts that list the moment the user switches
+    /// account. `build_account_panel_lines` also carries a
+    /// `debug_assert` on this, but the release profile sets no
+    /// `debug-assertions` override and so compiles it out - this
+    /// assertion is the one that holds in the shipped binary.
+    #[test]
+    fn every_billing_kind_renders_exactly_the_panel_height() {
+        let expected = usize::from(ACCOUNT_PANEL_HEIGHT);
+        assert_eq!(
+            build_account_panel_lines(&App::test_default(), 32).len(),
+            expected,
+            "a window-billed account fills the panel exactly",
+        );
+
+        for (label, spend) in [
+            ("capped", Some(capped(12.40, 20.0, 7.60))),
+            ("uncapped", Some(uncapped())),
+            ("unprobed", None),
+        ] {
+            let mut app = App::test_default();
+            app.usage_mut().snapshot = Some(spend_snapshot(spend));
+            assert_eq!(
+                build_account_panel_lines(&app, 32).len(),
+                expected,
+                "a {label} spend account fills the panel exactly",
+            );
+        }
+    }
+
     /// The `Ctx` bar draws the same glyphs, so every cap assertion is
     /// scoped to the cap row - checking the whole panel would pass on a
     /// bar the cap row never drew.
@@ -2401,15 +2446,7 @@ mod tests {
         assert!(panel.contains("$7.60 left"), "what is left is the useful number: {panel}");
 
         let mut app = App::test_default();
-        app.usage_mut().snapshot = Some(spend_snapshot(Some(forge_primitives::usage::ApiSpend {
-            daily: 0.56,
-            weekly: 1.25,
-            monthly: 20.30,
-            limit: None,
-            limit_remaining: None,
-            limit_reset: None,
-            expires_at: None,
-        })));
+        app.usage_mut().snapshot = Some(spend_snapshot(Some(uncapped())));
         let row = cap_row(&app);
         assert!(row.contains("not set"), "an uncapped key says so: {row}");
         assert!(!row.contains('\u{2593}'), "no cap means no bar to fill: {row}");
