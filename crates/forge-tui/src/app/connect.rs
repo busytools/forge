@@ -210,6 +210,7 @@ fn create_app_impl(
         sessions,
         active_session_key: Some(pre_connect_key),
         pending_spawn_focus: None,
+        dictate_available: false,
         forge_crons: Vec::new(),
         forge_schedule_rows: Vec::new(),
         gotify_subs: Vec::new(),

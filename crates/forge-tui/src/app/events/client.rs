@@ -423,9 +423,56 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             };
             apply_session_update_chat_appended(app, &session_id, synthetic);
         }
+        SessionUpdate::DictateAvailability { available } => {
+            app.dictate_available = available;
+        }
+        SessionUpdate::DictateStarted { key, floor_db } => {
+            if let Some(bucket) = app.session_mut(&key) {
+                bucket.dictate = Some(crate::app::dictate::DictateIndicator::recording(floor_db));
+                bucket.dictate_notice = None;
+            }
+        }
+        SessionUpdate::DictateLevel { key, peak_db } => {
+            if let Some(bucket) = app.session_mut(&key)
+                && let Some(indicator) = bucket.dictate.as_mut()
+            {
+                indicator.push_level(peak_db);
+            }
+        }
+        SessionUpdate::DictateTranscribing { key } => {
+            if let Some(bucket) = app.session_mut(&key)
+                && let Some(indicator) = bucket.dictate.as_mut()
+            {
+                indicator.begin_transcribing();
+            }
+        }
+        SessionUpdate::DictateEnded { key, outcome } => {
+            if let Some(bucket) = app.session_mut(&key) {
+                apply_dictate_outcome(bucket, &outcome);
+            }
+        }
     }
     if redraw {
         app.needs_redraw = true;
+    }
+}
+
+/// `SessionUpdate::DictateEnded` reducer. Landed text inserts into the
+/// bucket's own editor - the take belongs to this session, whatever
+/// tab is focused. The notice stamps against the draft version the
+/// insert produced, so the next keystroke clears it.
+fn apply_dictate_outcome(
+    bucket: &mut crate::app::session::UiSession,
+    outcome: &forge_workspace::DictateOutcome,
+) {
+    let floor_db = bucket.dictate.as_ref().map_or(-50.0, |indicator| indicator.floor_db);
+    let notice = crate::app::dictate::notice_for_outcome(outcome, floor_db);
+    if let forge_workspace::DictateOutcome::Landed { text, truncated: _ } = outcome {
+        bucket.input.insert_str(text);
+    }
+    bucket.dictate = None;
+    if let Some(notice) = notice {
+        bucket.set_dictate_notice(notice);
     }
 }
 

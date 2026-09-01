@@ -358,6 +358,11 @@ pub struct App {
     /// at boot and the first to arrive would steal the tab - so a
     /// user-driven wake records its intent here instead.
     pub pending_spawn_focus: Option<forge_workspace::SessionKey>,
+    /// Dictation models are loaded and the composer may offer to
+    /// dictate. Set once by `SessionUpdate::DictateAvailability` after
+    /// preflight; never emitted when `[dictate]` is off, so the flag
+    /// stays false and nothing dictation-related renders.
+    pub dictate_available: bool,
     /// Snapshot of the durable forge crons (`mcp__forge__cron`) the
     /// active session itself created, refreshed on the ~1s ticker
     /// (`git_diff::apply_timer_tick`) from
@@ -1231,6 +1236,12 @@ impl App {
                     s.lifecycle_state,
                     s.has_live_background_work(),
                 )
+            })
+            || self.sessions.values().any(|s| {
+                s.dictate.as_ref().is_some_and(|d| {
+                    d.phase == crate::app::dictate::DictatePhase::Transcribing
+                        && d.transcribing_overdue()
+                })
             })
     }
 
@@ -3607,6 +3618,7 @@ impl App {
             sessions,
             active_session_key: Some(pending_key),
             pending_spawn_focus: None,
+            dictate_available: false,
             forge_crons: Vec::new(),
             forge_schedule_rows: Vec::new(),
             gotify_subs: Vec::new(),

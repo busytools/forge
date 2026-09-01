@@ -23,7 +23,7 @@ const INPUT_PAD: u16 = 2;
 /// Extra right-side breathing room so text doesn't touch the padded edge.
 const INPUT_RIGHT_PAD: u16 = 1;
 
-/// Prompt column width: "❯ " = 2 columns (icon + space)
+/// Prompt column width: "➤ " = 2 columns (icon + space)
 const PROMPT_WIDTH: u16 = 2;
 
 /// Rows reserved for the input box's chrome: top border + bottom
@@ -64,8 +64,6 @@ pub(crate) struct InputRenderGeometry {
     pub hint_pad: Option<Rect>,
     pub box_area: Rect,
     pub padded: Rect,
-    pub prompt: Rect,
-    pub text: Rect,
 }
 
 fn has_prompt_suggestion_hint(app: &App) -> bool {
@@ -111,10 +109,8 @@ pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRende
         width: box_area.width.saturating_sub(2),
         height: box_area.height.saturating_sub(2),
     };
-    let [prompt, text] =
-        Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)]).areas(padded);
 
-    InputRenderGeometry { hint_pad, box_area, padded, prompt, text }
+    InputRenderGeometry { hint_pad, box_area, padded }
 }
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -242,9 +238,32 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // Padded interior fits exactly the content lines (1 to
     // MAX_INPUT_HEIGHT). No vertical slack to center against - the
-    // box height tracks the textarea row count directly.
-    let prompt_rect = geometry.prompt;
-    let text_rect = geometry.text;
+    // box height tracks the textarea row count directly. The one
+    // exception is the dictate notice row, which grows the interior
+    // by a row and pushes the draft down.
+    let notice_visible = crate::app::dictate::notice_row_visible(app);
+    let (body, notice_area) = if notice_visible {
+        let [top, rest] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(geometry.padded);
+        (rest, Some(top))
+    } else {
+        (geometry.padded, None)
+    };
+    let [prompt_rect, text_rect] =
+        Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)]).areas(body);
+
+    if let Some(notice_area) = notice_area {
+        let (text, style) = notice_row_content(app);
+        frame.render_widget(Paragraph::new(Line::from(Span::styled(text, style))), notice_area);
+    }
+
+    // Dictation indicator: three cells over the top border's leftmost
+    // columns, idle and while recording; one pinned cell past 3 s of
+    // transcribing. Painted after the block so it overwrites border.
+    if let Some(spans) = crate::app::dictate::indicator_spans(app) {
+        let area = Rect { x: geometry.box_area.x + 1, y: geometry.box_area.y, width: 4, height: 1 };
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    }
 
     // Render prompt icon
     let prompt = Line::from(Span::styled(
@@ -284,6 +303,34 @@ pub(super) fn refresh_selection_snapshot(app: &mut App) {
 
     configure_input_textarea(app);
     app.rendered_input_lines = render_lines_from_textarea(app.input().editor(), area);
+}
+
+/// The one notice row's text and colour: a stamped post-take notice
+/// when present, else the esc hint the transcribing state renders.
+fn notice_row_content(app: &App) -> (String, Style) {
+    if let Some(bucket) = app.active_session()
+        && let Some(notice) = bucket.visible_dictate_notice()
+    {
+        return (format!("  {}", notice.text), crate::app::dictate::notice_style(notice.severity));
+    }
+    ("  esc to cancel".to_owned(), Style::default().fg(theme::DIM))
+}
+
+/// The rect the draft's textarea renders into, shifted down when the
+/// dictate notice row is up. Dropdown anchoring shares this with the
+/// renderer so the two never disagree.
+pub(crate) fn draft_text_area(area: Rect, app: &App) -> Rect {
+    let geometry = compute_render_geometry(area, hint_line_count(app));
+    let body = if crate::app::dictate::notice_row_visible(app) {
+        let [_top, rest] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(geometry.padded);
+        rest
+    } else {
+        geometry.padded
+    };
+    let [_prompt, text] =
+        Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)]).areas(body);
+    text
 }
 
 fn configure_input_textarea(app: &mut App) {
@@ -453,7 +500,8 @@ pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
         .input_mut()
         .measure_visual_lines(content_width, MAX_INPUT_HEIGHT)
         .max(MIN_INPUT_INTERIOR_LINES);
-    hint + input_lines + INPUT_BORDER_LINES
+    let notice_row = u16::from(crate::app::dictate::notice_row_visible(app));
+    hint + input_lines + notice_row + INPUT_BORDER_LINES
 }
 
 #[cfg(test)]
@@ -549,7 +597,198 @@ mod tests {
         // interior is exactly 1 row at y=1.
         let area = Rect::new(0, 0, 80, 3);
         let geometry = compute_render_geometry(area, 0);
-        assert_eq!(geometry.text.y, 1, "interior starts immediately after top border");
-        assert_eq!(geometry.text.height, 1, "single-row interior for 3-row box");
+        assert_eq!(geometry.padded.y, 1, "interior starts immediately after top border");
+        assert_eq!(geometry.padded.height, 1, "single-row interior for 3-row box");
+    }
+
+    mod dictate_indicator {
+        use super::*;
+        use crate::app::events::apply_session_update;
+        use crate::ui::input::render;
+        use forge_workspace::{DictateOutcome, SessionUpdate};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use std::time::{Duration, Instant};
+
+        fn render_input(app: &mut App, w: u16, h: u16) -> Vec<String> {
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("terminal");
+            terminal.draw(|frame| render(frame, frame.area(), app)).expect("draw");
+            let buffer = terminal.backend().buffer().clone();
+            (0..h)
+                .map(|y| {
+                    (0..w)
+                        .map(|x| {
+                            buffer
+                                .cell((x, y))
+                                .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+                        })
+                        .collect::<String>()
+                        .trim_end()
+                        .to_owned()
+                })
+                .collect()
+        }
+
+        fn active_key(app: &App) -> forge_workspace::SessionKey {
+            app.active_session_key.clone().expect("test_default has an active bucket")
+        }
+
+        #[test]
+        fn with_dictation_off_the_border_is_what_shipped_yesterday() {
+            let mut app = App::test_default();
+            assert!(!app.dictate_available);
+            let rows = render_input(&mut app, 80, 4);
+            assert!(
+                rows[0].starts_with("\u{250f}\u{2501}"),
+                "no dictate support means a plain thick border, got: {}",
+                rows[0]
+            );
+        }
+
+        #[test]
+        fn the_idle_indicator_draws_three_floor_cells_at_the_border_left() {
+            let mut app = App::test_default();
+            app.dictate_available = true;
+            let rows = render_input(&mut app, 80, 4);
+            assert!(
+                rows[0].starts_with("\u{250f}\u{2581}\u{2581}\u{2581}"),
+                "idle is three static floor cells left-justified after the corner, got: {}",
+                rows[0]
+            );
+            assert!(!rows[1].contains("esc to cancel"), "idle draws no notice row");
+        }
+
+        #[test]
+        fn recording_draws_the_last_three_window_peaks() {
+            let mut app = App::test_default();
+            app.dictate_available = true;
+            let key = active_key(&app);
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0 },
+            );
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateLevel { key: key.clone(), peak_db: -6.0 },
+            );
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateLevel { key: key.clone(), peak_db: -40.0 },
+            );
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateLevel { key, peak_db: f32::NEG_INFINITY },
+            );
+
+            let rows = render_input(&mut app, 80, 4);
+            assert!(
+                rows[0].starts_with("\u{250f}\u{2587}\u{2582}\u{2581}"),
+                "the three cells hold the last three window peaks, newest last, got: {}",
+                rows[0]
+            );
+        }
+
+        #[test]
+        fn transcribing_is_silent_for_three_seconds_then_collapses_to_one_cell() {
+            let mut app = App::test_default();
+            app.dictate_available = true;
+            let key = active_key(&app);
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0 },
+            );
+            apply_session_update(&mut app, SessionUpdate::DictateTranscribing { key: key.clone() });
+
+            let rows = render_input(&mut app, 80, 5);
+            assert!(
+                !rows[0].contains("\u{2581}"),
+                "before the threshold the box shows nothing at all, got: {}",
+                rows[0]
+            );
+
+            let bucket = app.session_mut(&key).expect("bucket");
+            let indicator = bucket.dictate.as_mut().expect("a take is in flight");
+            indicator.transcribing_since = Some(
+                Instant::now()
+                    .checked_sub(Duration::from_millis(4000))
+                    .expect("a 4 s backdate is safe"),
+            );
+            let rows = render_input(&mut app, 80, 5);
+            assert!(
+                rows[0].starts_with("\u{250f}\u{2582}"),
+                "past the threshold one pinned bars_v cell replaces the three, got: {}",
+                rows[0]
+            );
+            assert!(
+                rows[1].contains("esc to cancel"),
+                "the esc hint rides the notice row, got: {}",
+                rows[1]
+            );
+        }
+
+        #[test]
+        fn a_quiet_take_leaves_a_notice_row_until_the_next_keystroke() {
+            let mut app = App::test_default();
+            app.dictate_available = true;
+            let key = active_key(&app);
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateEnded {
+                    key: key.clone(),
+                    outcome: DictateOutcome::NoAudio { peak_db: -38.2, seconds: 4 },
+                },
+            );
+
+            let rows = render_input(&mut app, 80, 5);
+            assert!(
+                rows[1].contains("-38.2") && rows[1].contains("try again"),
+                "a quiet room quotes its own measurement and offers a retry, got: {}",
+                rows[1]
+            );
+            assert_eq!(
+                visual_line_count(&mut app, 80),
+                MIN_INPUT_INTERIOR_LINES + 1 + INPUT_BORDER_LINES,
+                "the notice row is the one row that grows the box"
+            );
+
+            app.input_mut().insert_str("k");
+            let rows = render_input(&mut app, 80, 5);
+            assert!(
+                !rows[1].contains("try again"),
+                "the next keystroke clears the notice, got: {}",
+                rows[1]
+            );
+            assert_eq!(
+                visual_line_count(&mut app, 80),
+                MIN_INPUT_INTERIOR_LINES + INPUT_BORDER_LINES,
+                "the box shrinks back once the notice clears"
+            );
+        }
+
+        #[test]
+        fn landed_words_insert_at_the_caret_of_the_session_that_started() {
+            let mut app = App::test_default();
+            app.dictate_available = true;
+            let key = active_key(&app);
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateEnded {
+                    key: key.clone(),
+                    outcome: DictateOutcome::Landed {
+                        text: "run just check".to_owned(),
+                        truncated: false,
+                    },
+                },
+            );
+            assert_eq!(
+                app.session_mut(&key).expect("bucket").input.text(),
+                "run just check",
+                "the words land in the owning bucket's draft, at its caret"
+            );
+            assert!(
+                app.session_mut(&key).expect("bucket").dictate.is_none(),
+                "the take is over; the indicator falls back to idle"
+            );
+        }
     }
 }

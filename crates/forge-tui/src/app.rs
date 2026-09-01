@@ -6,6 +6,7 @@ pub(crate) mod clipboard_image;
 pub(crate) mod config;
 pub(crate) mod connect;
 mod dialog;
+pub(crate) mod dictate;
 pub(crate) mod diff_overlay;
 pub(crate) mod emoji;
 pub(crate) mod events;
