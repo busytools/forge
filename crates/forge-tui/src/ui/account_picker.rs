@@ -18,6 +18,10 @@ use crate::ui::theme;
 
 const WIDTH: u16 = 62;
 const NAME_W: usize = 10;
+/// Columns kept between a row's budget block and its status tag. The
+/// paragraph does not wrap, so without a guaranteed gap the two weld
+/// together and the overrun is cut with no ellipsis.
+const TAG_GAP: usize = 1;
 
 pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
     let Some(state) = app.account_picker.as_ref() else {
@@ -116,73 +120,6 @@ fn account_row_line(row: &AccountRow, selected: bool, inner_w: usize) -> Line<'s
     used += display_len(&name);
     spans.push(Span::styled(name, name_style));
 
-    match &row.budget {
-        AccountBudget::Unknown => {
-            for (idx, label) in ["5h ", "7d "].into_iter().enumerate() {
-                if idx > 0 {
-                    spans.push(Span::raw("  "));
-                    used += 2;
-                }
-                spans.push(Span::styled(label.to_owned(), Style::default().fg(theme::DIM)));
-                used += 3;
-                spans.push(Span::styled("-".to_owned(), Style::default().fg(theme::DIM)));
-                used += 1;
-            }
-        }
-        AccountBudget::Subscription { five_hour_util, seven_day_util, resets_at } => {
-            for (idx, (label, util)) in
-                [("5h ", *five_hour_util), ("7d ", *seven_day_util)].into_iter().enumerate()
-            {
-                if idx > 0 {
-                    spans.push(Span::raw("  "));
-                    used += 2;
-                }
-                spans.push(Span::styled(label.to_owned(), Style::default().fg(theme::DIM)));
-                used += 3;
-                let pct = format!("{util:.0}%");
-                used += display_len(&pct);
-                spans.push(Span::styled(
-                    pct,
-                    Style::default().fg(pct_color(util)).add_modifier(Modifier::BOLD),
-                ));
-            }
-
-            // Reset ETA - only while the account is at its cap
-            // (`resets_at` is populated only then), so the picker shows
-            // it on limited rows.
-            if let Some(resets_at) = resets_at {
-                spans.push(Span::raw("  "));
-                used += 2;
-                let eta = format!("\u{27F3} {}", format_reset_in(*resets_at));
-                used += display_len(&eta);
-                spans.push(Span::styled(eta, Style::default().fg(theme::STATUS_WARNING)));
-            }
-        }
-        AccountBudget::Api { daily, weekly, monthly } => {
-            // Single-letter periods because the row has 27 columns left
-            // once the name and an `experimental · usable` tag are
-            // placed, and the words do not fit. `$` asserts USD: the
-            // endpoint reports no currency, and OpenRouter credits are
-            // dollar-denominated.
-            for (idx, (amount, period)) in
-                [(*daily, "d"), (*weekly, "w"), (*monthly, "m")].into_iter().enumerate()
-            {
-                if idx > 0 {
-                    spans.push(Span::raw(" "));
-                    used += 1;
-                }
-                let money = format!("${amount:.2}");
-                used += display_len(&money);
-                spans.push(Span::styled(
-                    money,
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
-                ));
-                spans.push(Span::styled(format!(" {period}"), Style::default().fg(theme::DIM)));
-                used += 2;
-            }
-        }
-    }
-
     // Status tag, right-aligned. Experimental rows prefix an amber
     // `experimental` tag + a dim separator so the reason they are
     // grouped is legible even without the section header.
@@ -194,10 +131,19 @@ fn account_row_line(row: &AccountRow, selected: bool, inner_w: usize) -> Line<'s
     } else {
         display_len(tag)
     };
-    let pad = inner_w.saturating_sub(used + tag_block);
-    if pad > 0 {
-        spans.push(Span::raw(" ".repeat(pad)));
-    }
+
+    // Sized against what is actually left, not against a column count
+    // assumed at authoring time: both the tag (`rate limited` is six
+    // wider than `usable`) and the figures themselves vary with the
+    // data.
+    let budget_room = inner_w.saturating_sub(used + tag_block + TAG_GAP);
+    let budget = budget_spans(&row.budget, budget_room);
+    let budget_w: usize = budget.iter().map(|s| display_len(&s.content)).sum();
+    spans.extend(budget);
+    used += budget_w;
+
+    let pad = inner_w.saturating_sub(used + tag_block).max(TAG_GAP);
+    spans.push(Span::raw(" ".repeat(pad)));
     if row.experimental {
         spans.push(Span::styled("experimental", Style::default().fg(theme::EXPERIMENTAL)));
         spans.push(Span::styled(sep.to_owned(), Style::default().fg(theme::DIM)));
@@ -205,6 +151,139 @@ fn account_row_line(row: &AccountRow, selected: bool, inner_w: usize) -> Line<'s
     spans.push(Span::styled(tag.to_owned(), Style::default().fg(tag_color)));
 
     Line::from(spans)
+}
+
+/// The budget block, rendered to fit `room`.
+///
+/// Every caller-visible number is preserved or the block is not
+/// emitted at all - it degrades by dropping punctuation and then whole
+/// periods, never by letting the widget cut a figure mid-digit. When
+/// even the shortest form does not fit, an ellipsis stands in, so a
+/// squeezed row reads as truncated rather than as a smaller number.
+fn budget_spans(budget: &AccountBudget, room: usize) -> Vec<Span<'static>> {
+    let candidates = match budget {
+        AccountBudget::Unknown { spend_billed: false } => vec![window_spans(None, None)],
+        AccountBudget::Subscription { five_hour_util, seven_day_util, resets_at } => {
+            let windows = window_spans(*five_hour_util, *seven_day_util);
+            match resets_at {
+                // The ETA is the first thing to go: it is a convenience
+                // on a row whose percentages already say the account is
+                // capped.
+                Some(at) => {
+                    let mut with_eta = windows.clone();
+                    with_eta.push(Span::raw("  "));
+                    with_eta.push(Span::styled(
+                        format!("\u{27F3} {}", format_reset_in(*at)),
+                        Style::default().fg(theme::STATUS_WARNING),
+                    ));
+                    vec![with_eta, windows]
+                }
+                None => vec![windows],
+            }
+        }
+        // An API account has no window, so its unprobed row must not
+        // print `5h` / `7d` labels - that would assert a shape it does
+        // not have, which is the same invention as a fabricated zero.
+        AccountBudget::Unknown { spend_billed: true } => vec![spend_spans(None, Money::Full)],
+        AccountBudget::Api { daily, weekly, monthly } => {
+            let figures = Some((*daily, *weekly, *monthly));
+            vec![
+                spend_spans(figures, Money::Full),
+                spend_spans(figures, Money::LeadingSymbolOnly),
+                spend_spans(figures, Money::Tight),
+                spend_spans(figures, Money::MonthlyOnly),
+            ]
+        }
+    };
+
+    for candidate in candidates {
+        let width: usize = candidate.iter().map(|s| display_len(&s.content)).sum();
+        if width <= room {
+            return candidate;
+        }
+    }
+    vec![Span::styled("\u{2026}".to_owned(), Style::default().fg(theme::DIM))]
+}
+
+/// How much punctuation the spend figures can afford.
+#[derive(Clone, Copy)]
+enum Money {
+    /// `$0.56 d $1.25 w $20.30 m`
+    Full,
+    /// `$0.56 d 1.25 w 20.30 m` - the symbol reads once for the row.
+    LeadingSymbolOnly,
+    /// `$0.56d 1.25w 20.30m`
+    Tight,
+    /// `$20.30 m` - the period that answers "where am I this billing
+    /// cycle", kept when nothing else fits.
+    MonthlyOnly,
+}
+
+/// The `d` / `w` / `m` spend columns. `None` figures render dashes for
+/// an account whose provider bills by spend but which has no reading.
+fn spend_spans(figures: Option<(f64, f64, f64)>, money: Money) -> Vec<Span<'static>> {
+    let amount = |value: Option<f64>, symbol: bool| -> String {
+        match value {
+            Some(v) if symbol => format!("${v:.2}"),
+            Some(v) => format!("{v:.2}"),
+            None if symbol => "$-".to_owned(),
+            None => "-".to_owned(),
+        }
+    };
+    let (daily, weekly, monthly) = match figures {
+        Some((d, w, m)) => (Some(d), Some(w), Some(m)),
+        None => (None, None, None),
+    };
+    let columns: Vec<(String, &str)> = match money {
+        Money::MonthlyOnly => vec![(amount(monthly, true), "m")],
+        Money::Full => vec![
+            (amount(daily, true), "d"),
+            (amount(weekly, true), "w"),
+            (amount(monthly, true), "m"),
+        ],
+        Money::LeadingSymbolOnly | Money::Tight => vec![
+            (amount(daily, true), "d"),
+            (amount(weekly, false), "w"),
+            (amount(monthly, false), "m"),
+        ],
+    };
+    let period_gap = if matches!(money, Money::Tight) { "" } else { " " };
+
+    let mut spans = Vec::new();
+    for (idx, (money_text, period)) in columns.into_iter().enumerate() {
+        if idx > 0 {
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::styled(
+            money_text,
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(format!("{period_gap}{period}"), Style::default().fg(theme::DIM)));
+    }
+    spans
+}
+
+/// The `5h` / `7d` pair. A column with no figure paints a dim `-`
+/// rather than a zero: absent and zero are different answers, and only
+/// one of them is something forge measured.
+fn window_spans(five_hour: Option<f64>, seven_day: Option<f64>) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (idx, (label, util)) in [("5h ", five_hour), ("7d ", seven_day)].into_iter().enumerate() {
+        if idx > 0 {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled(label.to_owned(), Style::default().fg(theme::DIM)));
+        match util {
+            Some(util) => spans.push(Span::styled(
+                format!("{util:.0}%"),
+                Style::default().fg(pct_color(util)).add_modifier(Modifier::BOLD),
+            )),
+            None => {
+                spans.push(Span::styled("-".to_owned(), Style::default().fg(theme::DIM)));
+            }
+        }
+    }
+    spans
 }
 
 /// Colour a utilization percentage by proximity to the cap: green
@@ -332,11 +411,11 @@ mod tests {
         assert!(!row.contains("resets"), "an API account has no window to reset: {row}");
     }
 
-    /// "Never probed" and "probed, nothing used" are different answers.
-    /// Collapsing them to a green 0% reads as plenty of budget for an
-    /// account forge knows nothing about.
+    /// Three different answers that must not render alike: no snapshot,
+    /// a snapshot carrying no figure for a column, and a real zero.
+    /// Only the last is a number forge actually measured.
     #[test]
-    fn an_unprobed_row_is_distinguishable_from_a_probed_zero() {
+    fn a_column_with_no_figure_is_a_dash_not_a_zero() {
         let mut app = App::test_default();
         let rows = vec![
             AccountRow {
@@ -344,7 +423,35 @@ mod tests {
                 config_dir: PathBuf::from("/c/unprobed"),
                 is_current: false,
                 usable: true,
-                budget: AccountBudget::Unknown,
+                budget: AccountBudget::Unknown { spend_billed: false },
+                experimental: false,
+            },
+            AccountRow {
+                display_name: "NoFigures".to_owned(),
+                config_dir: PathBuf::from("/c/nofigures"),
+                is_current: false,
+                usable: true,
+                // The lenient mapper's documented steady state: a 200
+                // that carried no windows at all.
+                budget: AccountBudget::Subscription {
+                    five_hour_util: None,
+                    seven_day_util: None,
+                    resets_at: None,
+                },
+                experimental: false,
+            },
+            AccountRow {
+                display_name: "HalfKnown".to_owned(),
+                config_dir: PathBuf::from("/c/halfknown"),
+                is_current: false,
+                usable: true,
+                // The strict mapper requires five_hour only, so a 200
+                // with just the session window lands here.
+                budget: AccountBudget::Subscription {
+                    five_hour_util: Some(12.0),
+                    seven_day_util: None,
+                    resets_at: None,
+                },
                 experimental: false,
             },
             AccountRow {
@@ -353,8 +460,8 @@ mod tests {
                 is_current: false,
                 usable: true,
                 budget: AccountBudget::Subscription {
-                    five_hour_util: 0.0,
-                    seven_day_util: 0.0,
+                    five_hour_util: Some(0.0),
+                    seven_day_util: Some(0.0),
                     resets_at: None,
                 },
                 experimental: false,
@@ -363,11 +470,143 @@ mod tests {
         crate::app::account_picker::open(&mut app, rows);
 
         let lines = render_picker(&app, 80, 16);
-        let unprobed = lines.iter().find(|l| l.contains("Unprobed")).expect("unprobed row");
-        let fresh = lines.iter().find(|l| l.contains("Fresh")).expect("probed-zero row");
+        let find =
+            |name: &str| lines.iter().find(|l| l.contains(name)).expect("row present").clone();
 
-        assert!(!unprobed.contains("0%"), "an unprobed account must not claim 0%: {unprobed}");
-        assert!(fresh.contains("0%"), "a probed account genuinely at zero says so: {fresh}");
+        // Assert the dash is PRESENT, not merely that a percentage is
+        // absent: a row rendering some other wrong figure would satisfy
+        // the negative and say nothing.
+        let unprobed = find("Unprobed");
+        assert!(
+            unprobed.contains("5h -") && unprobed.contains("7d -"),
+            "no snapshot means a dash in both columns: {unprobed}",
+        );
+
+        let no_figures = find("NoFigures");
+        assert!(
+            no_figures.contains("5h -") && no_figures.contains("7d -"),
+            "a snapshot carrying no windows shows dashes, not 0%: {no_figures}",
+        );
+
+        let half = find("HalfKnown");
+        assert!(half.contains("5h 12%"), "the column that has a figure shows it: {half}");
+        assert!(half.contains("7d -"), "the column that has none shows a dash, not 0%: {half}");
+
+        let fresh = find("Fresh");
+        assert!(
+            fresh.contains("5h 0%") && fresh.contains("7d 0%"),
+            "a measured zero is still a zero: {fresh}",
+        );
+    }
+
+    /// The layout property, over every budget variant crossed with both
+    /// tags and both experimental flags: a row never exceeds the width
+    /// it is given, and its status tag survives intact with a gap
+    /// before it.
+    ///
+    /// This is the invariant the row builder exists to hold. The
+    /// fixtures are the ones that broke it: a three-digit month, a
+    /// three-digit-hour reset (a 7-day cap four days out), and the
+    /// widest tag combination.
+    #[test]
+    fn no_row_shape_overflows_or_swallows_its_tag() {
+        let inner_w = usize::from(WIDTH) - 2;
+        let far = SystemTime::now() + Duration::from_secs(100 * 3600 + 41 * 60);
+        let budgets = vec![
+            ("unknown windows", AccountBudget::Unknown { spend_billed: false }),
+            ("unknown spend", AccountBudget::Unknown { spend_billed: true }),
+            (
+                "windows with a far reset",
+                AccountBudget::Subscription {
+                    five_hour_util: Some(100.0),
+                    seven_day_util: Some(100.0),
+                    resets_at: Some(far),
+                },
+            ),
+            (
+                "windows half absent",
+                AccountBudget::Subscription {
+                    five_hour_util: Some(12.0),
+                    seven_day_util: None,
+                    resets_at: None,
+                },
+            ),
+            ("spend at zero", AccountBudget::Api { daily: 0.0, weekly: 0.0, monthly: 0.0 }),
+            ("spend typical", AccountBudget::Api { daily: 0.56, weekly: 1.25, monthly: 20.30 }),
+            (
+                "spend three digit",
+                AccountBudget::Api { daily: 12.34, weekly: 56.78, monthly: 234.56 },
+            ),
+            (
+                "spend four digit",
+                AccountBudget::Api { daily: 20.00, weekly: 100.00, monthly: 4000.00 },
+            ),
+        ];
+
+        for (label, budget) in budgets {
+            for usable in [true, false] {
+                for experimental in [true, false] {
+                    let row = AccountRow {
+                        display_name: "OpenRouter".to_owned(),
+                        config_dir: PathBuf::from("/c/x"),
+                        is_current: true,
+                        usable,
+                        budget: budget.clone(),
+                        experimental,
+                    };
+                    let line = account_row_line(&row, true, inner_w);
+                    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                    let width = text.chars().count();
+                    let tag = if usable { "usable" } else { "rate limited" };
+
+                    assert!(
+                        width <= inner_w,
+                        "{label} (usable={usable}, experimental={experimental}) overflows at \
+                         {width} of {inner_w}: |{text}|",
+                    );
+                    assert!(
+                        text.ends_with(tag),
+                        "{label} (usable={usable}, experimental={experimental}) lost its tag: \
+                         |{text}|",
+                    );
+                    assert!(
+                        text.trim_end().ends_with(tag)
+                            && text[..text.len() - tag.len()].ends_with(' ')
+                            || experimental,
+                        "{label} welded the tag onto the budget: |{text}|",
+                    );
+                }
+            }
+        }
+    }
+
+    /// The widest row forge can build: an API budget, an `experimental`
+    /// prefix and a `rate limited` tag. Reachable on any spend value,
+    /// because a 429 from the key endpoint preserves the snapshot.
+    #[test]
+    fn the_widest_api_row_keeps_its_tag_separate_and_uncut() {
+        let mut app = App::test_default();
+        let rows = vec![AccountRow {
+            display_name: "Router".to_owned(),
+            config_dir: PathBuf::from("/c/router"),
+            is_current: false,
+            usable: false,
+            budget: AccountBudget::Api { daily: 0.0, weekly: 0.0, monthly: 0.0 },
+            experimental: true,
+        }];
+        crate::app::account_picker::open(&mut app, rows);
+
+        let lines = render_picker(&app, 80, 16);
+        let row = lines.iter().find(|l| l.contains("Router")).expect("row present");
+
+        assert!(
+            row.contains("rate limited"),
+            "the status tag must not be clipped off the end: {row}",
+        );
+        assert!(
+            !row.contains("mexperimental"),
+            "the tag must not weld onto the budget block: {row}",
+        );
     }
 
     /// `truncate_pad` pads TO the name column, so a name that already
@@ -382,8 +621,8 @@ mod tests {
             is_current: false,
             usable: true,
             budget: AccountBudget::Subscription {
-                five_hour_util: 20.0,
-                seven_day_util: 8.0,
+                five_hour_util: Some(20.0),
+                seven_day_util: Some(8.0),
                 resets_at: None,
             },
             experimental: false,
@@ -414,8 +653,8 @@ mod tests {
                 is_current: true,
                 usable: false,
                 budget: AccountBudget::Subscription {
-                    five_hour_util: 100.0,
-                    seven_day_util: 63.0,
+                    five_hour_util: Some(100.0),
+                    seven_day_util: Some(63.0),
                     resets_at: Some(future),
                 },
                 experimental: false,
@@ -426,8 +665,8 @@ mod tests {
                 is_current: false,
                 usable: true,
                 budget: AccountBudget::Subscription {
-                    five_hour_util: 34.0,
-                    seven_day_util: 22.0,
+                    five_hour_util: Some(34.0),
+                    seven_day_util: Some(22.0),
                     resets_at: None,
                 },
                 experimental: false,
@@ -467,8 +706,8 @@ mod tests {
                 is_current: true,
                 usable: true,
                 budget: AccountBudget::Subscription {
-                    five_hour_util: 10.0,
-                    seven_day_util: 5.0,
+                    five_hour_util: Some(10.0),
+                    seven_day_util: Some(5.0),
                     resets_at: None,
                 },
                 experimental: false,
@@ -479,8 +718,8 @@ mod tests {
                 is_current: false,
                 usable: true,
                 budget: AccountBudget::Subscription {
-                    five_hour_util: 20.0,
-                    seven_day_util: 8.0,
+                    five_hour_util: Some(20.0),
+                    seven_day_util: Some(8.0),
                     resets_at: None,
                 },
                 experimental: true,

@@ -156,8 +156,8 @@ mod tests {
             is_current,
             usable: true,
             budget: forge_workspace::AccountBudget::Subscription {
-                five_hour_util: 10.0,
-                seven_day_util: 5.0,
+                five_hour_util: Some(10.0),
+                seven_day_util: Some(5.0),
                 resets_at: None,
             },
             experimental: false,
@@ -213,8 +213,8 @@ mod tests {
             is_current: false,
             usable: true,
             budget: forge_workspace::AccountBudget::Subscription {
-                five_hour_util: 10.0,
-                seven_day_util: 5.0,
+                five_hour_util: Some(10.0),
+                seven_day_util: Some(5.0),
                 resets_at: None,
             },
             experimental: true,
