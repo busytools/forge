@@ -832,10 +832,14 @@ pub enum SessionUpdate {
     },
     /// A recording started for the composer at `key`. `floor_db` is the
     /// silence floor the level meter maps onto its zero glyph, so the
-    /// bar and the `NoAudio` verdict agree by construction.
+    /// bar and the `NoAudio` verdict agree by construction. `generation`
+    /// identifies this take among the key's takes: a resolver that
+    /// arrives after a newer take started carries a stale one, and the
+    /// composer resets on its own generation only.
     DictateStarted {
         key: SessionKey,
         floor_db: f32,
+        generation: u64,
     },
     /// One level reading for the recording at `key`: the peak over the
     /// window since the previous reading, in dBFS. Emitted on the
@@ -849,10 +853,12 @@ pub enum SessionUpdate {
         key: SessionKey,
     },
     /// A take from `key` is done: insert, notice or reset per
-    /// [`DictateOutcome`].
+    /// [`DictateOutcome`]. `generation` is the take's own, as handed
+    /// out by [`SessionUpdate::DictateStarted`].
     DictateEnded {
         key: SessionKey,
         outcome: DictateOutcome,
+        generation: u64,
     },
     FatalError(AppError),
 }
@@ -1071,8 +1077,8 @@ impl std::fmt::Debug for SessionUpdate {
             Self::DictateTranscribing { key } => {
                 f.debug_struct("DictateTranscribing").field("key", key).finish()
             }
-            Self::DictateEnded { key, outcome } => {
-                f.debug_struct("DictateEnded").field("key", key).field("outcome", outcome).finish()
+            Self::DictateEnded { key, outcome, .. } => {
+                f.debug_struct("DictateEnded").field("key", key).field("outcome", outcome).finish_non_exhaustive()
             }
             Self::FatalError(err) => f.debug_struct("FatalError").field("error", err).finish(),
         }

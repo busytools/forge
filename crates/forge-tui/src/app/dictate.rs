@@ -27,6 +27,10 @@ pub(crate) struct DictateIndicator {
     /// Last three window peaks, oldest first.
     pub(crate) levels: [f32; 3],
     pub(crate) transcribing_since: Option<Instant>,
+    /// This take's generation, as the workspace handed out at start. A
+    /// resolver for a smaller number belongs to an older take of the
+    /// same key and resets nothing.
+    pub(crate) generation: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,12 +56,13 @@ pub(crate) enum NoticeSeverity {
 }
 
 impl DictateIndicator {
-    pub(crate) fn recording(floor_db: f32) -> Self {
+    pub(crate) fn recording(floor_db: f32, generation: u64) -> Self {
         Self {
             floor_db,
             phase: DictatePhase::Recording,
             levels: [f32::NEG_INFINITY; 3],
             transcribing_since: None,
+            generation,
         }
     }
 
@@ -221,7 +226,7 @@ mod tests {
 
     #[test]
     fn level_history_keeps_the_last_three_windows() {
-        let mut indicator = DictateIndicator::recording(-50.0);
+        let mut indicator = DictateIndicator::recording(-50.0, 1);
         assert!(
             indicator.levels.iter().all(|l| l.is_infinite() && l.is_sign_negative()),
             "a fresh take starts on the floor"
@@ -257,7 +262,7 @@ mod tests {
 
     #[test]
     fn transcribing_stays_silent_for_the_first_three_seconds() {
-        let mut indicator = DictateIndicator::recording(-50.0);
+        let mut indicator = DictateIndicator::recording(-50.0, 1);
         indicator.phase = DictatePhase::Transcribing;
         indicator.transcribing_since = Some(
             Instant::now()

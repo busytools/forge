@@ -1281,7 +1281,7 @@ mod tests {
         let mut app = App::test_default();
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
         app.session_mut(&key).expect("bucket").dictate =
-            Some(crate::app::dictate::DictateIndicator::recording(-50.0));
+            Some(crate::app::dictate::DictateIndicator::recording(-50.0, 1));
         if let Some(ws) = app.workspace.as_ref() {
             ws.enable_test_dispatch_intercept();
         }

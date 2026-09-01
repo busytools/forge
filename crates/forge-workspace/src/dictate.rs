@@ -473,10 +473,20 @@ pub(crate) struct FinishingTake {
 /// Process-wide dictation state. One microphone, so at most one
 /// [`LiveRecording`]; several takes can be finishing at once, because a
 /// new recording never waits for the previous transcript.
-#[derive(Default)]
 pub(crate) struct DictateRuntime {
     pub(crate) recording: Option<LiveRecording>,
     pub(crate) finishing: Vec<FinishingTake>,
+    /// Handed out with every take's `DictateStarted` and echoed on its
+    /// `DictateEnded`, so a resolver arriving after a newer take on the
+    /// same key is recognisably stale. Starts at 1; 0 is the "matches
+    /// nothing" value refusals carry.
+    pub(crate) next_generation: u64,
+}
+
+impl Default for DictateRuntime {
+    fn default() -> Self {
+        Self { recording: None, finishing: Vec::new(), next_generation: 1 }
+    }
 }
 
 impl DictateRuntime {
@@ -499,14 +509,21 @@ pub(crate) async fn handle_dictate_start(ws: &Arc<crate::Workspace>, key: Sessio
     let opened =
         tokio::task::spawn_blocking(move || begin_capture(&ws_for_capture, &key_for_capture)).await;
     match opened {
-        Ok(Ok((capture, floor_db, stop_rx))) => {
-            let _ = updates.send(SessionUpdate::DictateStarted { key: key.clone(), floor_db });
-            tokio::spawn(run_recording(Arc::clone(ws), key, capture, stop_rx, updates));
+        Ok(Ok((capture, floor_db, generation, stop_rx))) => {
+            let _ = updates.send(SessionUpdate::DictateStarted {
+                key: key.clone(),
+                floor_db,
+                generation,
+            });
+            tokio::spawn(run_recording(Arc::clone(ws), key, capture, generation, stop_rx, updates));
         }
         Ok(Err(message)) => {
             let _ = updates.send(SessionUpdate::DictateEnded {
                 key,
                 outcome: DictateOutcome::Refused { message },
+                // Nothing started, so there is no generation to echo;
+                // zero matches nothing a bucket could hold.
+                generation: 0,
             });
         }
         Err(source) => {
@@ -536,7 +553,7 @@ pub(crate) async fn handle_dictate_stop(
 fn begin_capture(
     ws: &Arc<crate::Workspace>,
     key: &SessionKey,
-) -> Result<(forge_dictate::Capture, f32, tokio::sync::mpsc::Receiver<bool>), String> {
+) -> Result<(forge_dictate::Capture, f32, u64, tokio::sync::mpsc::Receiver<bool>), String> {
     let (stop_tx, stop_rx) = tokio::sync::mpsc::channel(1);
     let mut runtime = ws.dictate_runtime.lock();
     if let Some(live) = runtime.recording.as_ref() {
@@ -558,7 +575,9 @@ fn begin_capture(
     }
     runtime.recording = Some(LiveRecording { key: key.clone(), stop: stop_tx });
     let floor_db = engine.silence_floor();
-    Ok((capture, floor_db, stop_rx))
+    let generation = runtime.next_generation;
+    runtime.next_generation = runtime.next_generation.wrapping_add(1);
+    Ok((capture, floor_db, generation, stop_rx))
 }
 
 /// Own one take from first sample to delivered transcript: stream
@@ -568,6 +587,7 @@ async fn run_recording(
     ws: Arc<crate::Workspace>,
     key: SessionKey,
     capture: forge_dictate::Capture,
+    generation: u64,
     mut stop: tokio::sync::mpsc::Receiver<bool>,
     updates: tokio::sync::mpsc::UnboundedSender<SessionUpdate>,
 ) {
@@ -575,8 +595,11 @@ async fn run_recording(
     if !submit {
         drop(capture);
         ws.dictate_runtime.lock().recording = None;
-        let _ =
-            updates.send(SessionUpdate::DictateEnded { key, outcome: DictateOutcome::Cancelled });
+        let _ = updates.send(SessionUpdate::DictateEnded {
+            key,
+            outcome: DictateOutcome::Cancelled,
+            generation,
+        });
         return;
     }
 
@@ -584,7 +607,11 @@ async fn run_recording(
     let Ok(ticket) = capture.finish() else {
         tracing::warn!("dictation could not submit its take");
         ws.dictate_runtime.lock().recording = None;
-        let _ = updates.send(SessionUpdate::DictateEnded { key, outcome: DictateOutcome::Failed });
+        let _ = updates.send(SessionUpdate::DictateEnded {
+            key,
+            outcome: DictateOutcome::Failed,
+            generation,
+        });
         return;
     };
     // The microphone is released; the runtime entry moves from holding
@@ -622,7 +649,7 @@ async fn run_recording(
     };
     remove_finishing(&ws, &key);
     let outcome = if cancelled { DictateOutcome::Cancelled } else { outcome };
-    let _ = updates.send(SessionUpdate::DictateEnded { key, outcome });
+    let _ = updates.send(SessionUpdate::DictateEnded { key, outcome, generation });
 }
 
 /// Stream level events until a stop decision or the capture cap stops

@@ -665,7 +665,7 @@ mod tests {
             let key = active_key(&app);
             apply_session_update(
                 &mut app,
-                SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0 },
+                SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
             );
             apply_session_update(
                 &mut app,
@@ -695,7 +695,7 @@ mod tests {
             let key = active_key(&app);
             apply_session_update(
                 &mut app,
-                SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0 },
+                SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
             );
             apply_session_update(&mut app, SessionUpdate::DictateTranscribing { key: key.clone() });
 
@@ -735,6 +735,7 @@ mod tests {
                 &mut app,
                 SessionUpdate::DictateEnded {
                     key: key.clone(),
+                    generation: 1,
                     outcome: DictateOutcome::NoAudio { peak_db: -38.2, seconds: 4 },
                 },
             );
@@ -774,6 +775,7 @@ mod tests {
                 &mut app,
                 SessionUpdate::DictateEnded {
                     key: key.clone(),
+                    generation: 1,
                     outcome: DictateOutcome::Landed {
                         text: "run just check".to_owned(),
                         truncated: false,
@@ -788,6 +790,57 @@ mod tests {
             assert!(
                 app.session_mut(&key).expect("bucket").dictate.is_none(),
                 "the take is over; the indicator falls back to idle"
+            );
+        }
+
+        #[test]
+        fn a_stale_take_does_not_wipe_a_live_recording_on_the_same_key() {
+            let mut app = App::test_default();
+            app.dictate_available = true;
+            let key = active_key(&app);
+            // Generation 2 is live and recording; generation 1 is an older
+            // take of the same session still finishing.
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 2 },
+            );
+
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateEnded {
+                    key: key.clone(),
+                    generation: 1,
+                    outcome: DictateOutcome::Landed { text: "stale words".to_owned(), truncated: false },
+                },
+            );
+            {
+                let bucket = app.session_mut(&key).expect("bucket");
+                assert_eq!(
+                    bucket.input.text(),
+                    "stale words",
+                    "the older take's words still land"
+                );
+                assert!(
+                    bucket.dictate.is_some(),
+                    "the live recording must survive a stale outcome on the same key"
+                );
+            }
+            assert!(
+                crate::app::dictate::dictate_owns_esc(&app),
+                "Esc keeps abandoning the live take"
+            );
+
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateEnded {
+                    key: key.clone(),
+                    generation: 2,
+                    outcome: DictateOutcome::Cancelled,
+                },
+            );
+            assert!(
+                app.session_mut(&key).expect("bucket").dictate.is_none(),
+                "the take's own outcome still resets the indicator"
             );
         }
     }
