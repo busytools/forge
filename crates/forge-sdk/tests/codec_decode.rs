@@ -132,3 +132,66 @@ fn dispatch_routes_well_formed_control_response_to_control_response() {
         other => panic!("expected ControlResponse, got: {other:?}"),
     }
 }
+
+/// The CLI's 30-second heartbeat during a long-running tool call.
+/// Fixture is a raw specimen from the live log (2026-09-01 07:53:09),
+/// not a constructed value - the point is that this exact wire shape
+/// decodes.
+#[test]
+fn dispatch_models_the_tool_progress_heartbeat() {
+    use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
+
+    let line = r#"{"type":"tool_progress","tool_use_id":"toolu_01QhFqNDEgKeskhhiYpzeHnL-heartbeat-0","tool_name":"Bash","parent_tool_use_id":"toolu_01QhFqNDEgKeskhhiYpzeHnL","elapsed_time_seconds":30,"heartbeat":true,"session_id":"428903f7-79b3-46ed-aafc-86b0b02ad8b6","uuid":"35fb7d4d-831f-4ae3-9bf0-1740057edeeb"}"#;
+    let decoded = decode_dispatch(line, 40).expect("decode");
+    match decoded {
+        DecodedLine::ToolProgress(progress) => {
+            assert_eq!(progress.tool_use_id, "toolu_01QhFqNDEgKeskhhiYpzeHnL-heartbeat-0");
+            assert_eq!(progress.tool_name, "Bash");
+            assert!((progress.elapsed_time_seconds - 30.0).abs() < f64::EPSILON);
+            assert!(progress.heartbeat, "the specimen is a heartbeat");
+            assert_eq!(
+                progress.parent_tool_use_id.as_deref(),
+                Some("toolu_01QhFqNDEgKeskhhiYpzeHnL")
+            );
+        }
+        other => panic!("expected ToolProgress, got: {other:?}"),
+    }
+}
+
+/// A heartbeat for a top-level tool call has no parent tool use. The
+/// specimen above is subagent-side; this is the absent-key case the
+/// top-level shape would carry.
+#[test]
+fn tool_progress_without_a_parent_tool_still_decodes() {
+    use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
+
+    let line = r#"{"type":"tool_progress","tool_use_id":"toolu_01ABC-heartbeat-3","tool_name":"Bash","elapsed_time_seconds":60}"#;
+    let decoded = decode_dispatch(line, 41).expect("decode");
+    match decoded {
+        DecodedLine::ToolProgress(progress) => {
+            assert_eq!(progress.parent_tool_use_id, None);
+            assert!(!progress.heartbeat, "absent flag defaults to false");
+        }
+        other => panic!("expected ToolProgress, got: {other:?}"),
+    }
+}
+
+/// A `tool_progress` line whose payload does not fit must degrade to
+/// `Unknown`, not error - a decode error ends the whole session, and a
+/// heartbeat is exactly the frame that must never be able to do that.
+#[test]
+fn a_malformed_tool_progress_degrades_to_unknown_not_an_error() {
+    use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
+
+    let line = r#"{"type":"tool_progress","tool_use_id":null,"tool_name":"Bash"}"#;
+    let decoded = decode_dispatch(line, 41).expect("decode succeeds");
+    match decoded {
+        DecodedLine::Unknown { type_str, .. } => {
+            assert!(
+                type_str.contains("tool_progress"),
+                "the type name should survive for triage, got: {type_str}"
+            );
+        }
+        other => panic!("expected Unknown, got: {other:?}"),
+    }
+}

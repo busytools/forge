@@ -224,6 +224,20 @@ async fn handle_line(
             );
             events_tx.send(Ok(Message::Unknown { type_str, raw })).is_ok()
         }
+        Ok(DecodedLine::ToolProgress(progress)) => {
+            // Dropped on purpose: informational only, forge's own tool
+            // lifecycle rendering covers it. Debug, not warn - a 30s
+            // cadence at warn is 10MB of log rotation per session-hour.
+            tracing::debug!(
+                target: crate::logging::targets::SDK_READER,
+                tool_name = %progress.tool_name,
+                elapsed_time_seconds = progress.elapsed_time_seconds,
+                heartbeat = progress.heartbeat,
+                line = line_number,
+                "tool_progress heartbeat dropped",
+            );
+            true
+        }
         Err(e) => {
             let err_text = e.to_string();
             if events_tx.send(Err(e)).is_err() {
@@ -269,4 +283,39 @@ pub(crate) type SharedSessionId = Arc<RwLock<String>>;
 /// Build a fresh empty session-id holder.
 pub(crate) fn new_shared_session_id() -> SharedSessionId {
     Arc::new(RwLock::new(String::new()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transport::process::SharedWriter;
+
+    /// A heartbeat is dropped: the read loop continues and nothing
+    /// reaches the events channel. Mutating the arm to `return false`
+    /// would end the session on every 30-second tick - the blast
+    /// radius this test exists to pin.
+    #[tokio::test]
+    async fn a_tool_progress_heartbeat_is_dropped_without_ending_the_stream() {
+        let (writer, _lines) = SharedWriter::test_stub();
+        let dispatch = ControlDispatchHandle::new(
+            Arc::new(writer),
+            None,
+            None,
+            crate::mcp::orchestration::McpHosts::new(Vec::new(), HashMap::new()),
+            HashMap::new(),
+            new_shared_session_id(),
+        );
+        let pending: PendingControls = Arc::new(Mutex::new(HashMap::new()));
+        let inflight: InflightDispatches = Arc::new(Mutex::new(HashMap::new()));
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+
+        let line = r#"{"type":"tool_progress","tool_use_id":"toolu_01QhFqNDEgKeskhhiYpzeHnL-heartbeat-0","tool_name":"Bash","parent_tool_use_id":"toolu_01QhFqNDEgKeskhhiYpzeHnL","elapsed_time_seconds":30,"heartbeat":true,"session_id":"s","uuid":"u"}"#;
+        let keep_going = handle_line(&dispatch, &pending, &inflight, &events_tx, 40, line).await;
+
+        assert!(keep_going, "a heartbeat must not end the read loop");
+        assert!(
+            events_rx.try_recv().is_err(),
+            "a heartbeat must not surface an event to the agent"
+        );
+    }
 }

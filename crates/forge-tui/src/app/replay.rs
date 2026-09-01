@@ -221,10 +221,12 @@ pub(crate) fn replay_baseline(name: &str) -> ReplayHarness {
             // forge<->CLI handshake / outbound-cancel surface. Production
             // routes them through the SDK's control loop, NOT the App
             // reducer. Replay skips them - the reducer never sees these
-            // frames in live operation.
+            // frames in live operation. ToolProgress is dropped by the
+            // reader in production, so replay skips it the same way.
             DecodedLine::Control(_)
             | DecodedLine::ControlResponse { .. }
-            | DecodedLine::ControlCancel { .. } => {}
+            | DecodedLine::ControlCancel { .. }
+            | DecodedLine::ToolProgress(_) => {}
             DecodedLine::Unknown { type_str, .. } => {
                 panic!(
                     "replay_baseline {name}: line {line_no} decoded as Unknown \
