@@ -4,11 +4,14 @@
 //! the session's available models - the curated OpenRouter catalog on an
 //! `openrouter` account, the CLI-advertised regular models elsewhere.
 //! `enter` switches the session to the highlighted model; `esc` closes
-//! without switching. Rows are snapshotted at open; a session reporting
-//! no models never opens the picker (the `/model` submit falls back to
-//! the current-model info line).
+//! without switching. Rows are snapshotted at open together with the
+//! session they came from; a commit whose session is no longer active is
+//! refused (the rows are stale), and a session reporting no models never
+//! opens the picker (the `/model` submit falls back to the current-model
+//! info line).
 
 use crossterm::event::{KeyCode, KeyEvent};
+use forge_workspace::SessionKey;
 
 use super::App;
 use crate::agent::model;
@@ -20,6 +23,9 @@ pub struct ModelPickerState {
     pub rows: Vec<model::AvailableModel>,
     /// Index into [`ModelPickerState::rows`] of the highlighted row.
     pub highlight: usize,
+    /// Session the rows were snapshotted from. A commit is refused when
+    /// this is no longer the active session.
+    pub session_key: Option<SessionKey>,
 }
 
 /// The pickable rows for the active session: the CLI-advertised models
@@ -53,7 +59,8 @@ pub(crate) fn open(app: &mut App) -> bool {
             })
         })
         .unwrap_or(0);
-    app.model_picker = Some(ModelPickerState { rows, highlight });
+    let session_key = app.active_session_key.clone();
+    app.model_picker = Some(ModelPickerState { rows, highlight, session_key });
     app.needs_redraw = true;
     true
 }
@@ -65,7 +72,7 @@ pub(crate) fn open(app: &mut App) -> bool {
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     enum Action {
         Move(usize),
-        Commit(String),
+        Commit(String, Option<SessionKey>),
         Close,
     }
     let Some(state) = app.model_picker.as_ref() else {
@@ -75,7 +82,9 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     let action = match key.code {
         KeyCode::Up => Action::Move((state.highlight + count - 1) % count),
         KeyCode::Down => Action::Move((state.highlight + 1) % count),
-        KeyCode::Enter => Action::Commit(state.rows[state.highlight].id.clone()),
+        KeyCode::Enter => {
+            Action::Commit(state.rows[state.highlight].id.clone(), state.session_key.clone())
+        }
         KeyCode::Esc => Action::Close,
         _ => return true,
     };
@@ -86,8 +95,24 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             }
             app.needs_redraw = true;
         }
-        Action::Commit(id) => {
+        Action::Commit(id, stamped_key) => {
             close(app);
+            if super::slash::require_active_session(
+                app,
+                "Cannot switch model: not connected yet.",
+                "Cannot switch model: no active session.",
+            )
+            .is_none()
+            {
+                return true;
+            }
+            if app.active_session_key.as_ref() != stamped_key.as_ref() {
+                crate::app::slash::push_system_message(
+                    app,
+                    "Session changed since the model picker opened; switch cancelled.",
+                );
+                return true;
+            }
             crate::app::slash::switch_model(app, &id);
         }
         Action::Close => close(app),
@@ -134,6 +159,9 @@ mod tests {
         app.try_active_bucket_mut()
             .expect("test_default seeds an active bucket")
             .available_models = rows;
+        // A connected shape: the commit path gates on the session id the
+        // same way `/model <id>` does.
+        app.set_session_id(Some(model::SessionId::new("picker-session")));
         app
     }
 
@@ -231,6 +259,7 @@ mod tests {
     #[test]
     fn enter_switches_to_the_highlighted_model_and_closes() {
         let mut app = app_with_rows(curated_rows());
+        let _agent = app.install_testing_stub();
         if let Some(ws) = app.workspace.as_ref() {
             ws.enable_test_dispatch_intercept();
         }
@@ -247,6 +276,51 @@ mod tests {
                 [forge_workspace::Command::SetModel { model, .. }]
                     if model == "deepseek/deepseek-v4-pro-0813"),
             "enter dispatches SetModel for the highlighted row, got: {dispatched:?}",
+        );
+    }
+
+    /// The open-to-commit window: the picker's rows belong to the
+    /// session they were snapshotted from. Committing after the active
+    /// session changed must refuse visibly and dispatch nothing - the
+    /// rows are stale, and `dispatch_command` would stamp whichever
+    /// session is now active.
+    #[test]
+    fn commit_after_a_session_switch_refuses_and_does_not_dispatch() {
+        let mut app = app_with_rows(curated_rows());
+        let _agent = app.install_testing_stub();
+        if let Some(ws) = app.workspace.as_ref() {
+            ws.enable_test_dispatch_intercept();
+        }
+        assert!(open(&mut app));
+
+        let other = forge_workspace::SessionKey::from_session_id("other-session");
+        let mut bucket = crate::app::session::UiSession::new(other.clone());
+        bucket.session_id = Some(forge_primitives::SessionId::new("other-session"));
+        app.sessions.insert(other.clone(), bucket);
+        app.switch_active_session(other);
+        let _other_agent = app.install_testing_stub();
+
+        assert!(handle_key(&mut app, key(KeyCode::Enter)));
+
+        assert!(app.model_picker.is_none(), "the picker closes on the refused commit");
+        let dispatched =
+            app.workspace.as_ref().map(|ws| ws.drain_test_dispatch_buffer()).unwrap_or_default();
+        assert!(
+            dispatched.is_empty(),
+            "a stale snapshot must not reach the switched session, got: {dispatched:?}",
+        );
+        let last = app.messages().last().expect("a visible refusal");
+        let text: String = last
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                crate::app::MessageBlock::Text(t) => Some(t.markdown.full_text()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            text.contains("Session changed"),
+            "the refusal names what happened, got: {text}",
         );
     }
 

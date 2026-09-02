@@ -87,7 +87,7 @@ fn normalize_slash_name(name: &str) -> String {
     if name.starts_with('/') { name.to_owned() } else { format!("/{name}") }
 }
 
-pub(super) fn push_system_message(app: &mut App, text: impl Into<String>) {
+pub(crate) fn push_system_message(app: &mut App, text: impl Into<String>) {
     let text = text.into();
     app.push_message_tracked(ChatMessage::new(
         MessageRole::System(None),
@@ -130,7 +130,7 @@ fn require_connection(app: &mut App, not_connected_msg: &'static str) -> bool {
     true
 }
 
-fn require_active_session(
+pub(crate) fn require_active_session(
     app: &mut App,
     not_connected_msg: &'static str,
     no_session_msg: &'static str,
