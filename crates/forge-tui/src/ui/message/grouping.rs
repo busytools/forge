@@ -1091,6 +1091,42 @@ mod tests {
         assert_eq!(line.targets, vec!["query-docs".to_owned()]);
     }
 
+    /// A Skill call's child row carries the invoked skill name (+ args
+    /// when present), not the bare "Skill" the old title fallback
+    /// produced. Skill has no bespoke extractor, so family_target
+    /// resolves it wholly through strip_title_prefix on the title
+    /// `tool_title` builds; the raw_input-less call pins the title as
+    /// the target's only source.
+    #[test]
+    fn tally_skill_target_is_the_invoked_skill() {
+        let mut k = KindSummary::default();
+        tally_block(
+            &mut k,
+            &tool_call_block_with_input(
+                "s1",
+                "Skill",
+                "Skill pr-review-loop 661",
+                Some(serde_json::json!({"skill": "pr-review-loop", "args": "661"})),
+            ),
+        );
+        tally_block(
+            &mut k,
+            &tool_call_block_with_input(
+                "s2",
+                "Skill",
+                "Skill code-review",
+                Some(serde_json::json!({"skill": "code-review"})),
+            ),
+        );
+        let line = kind_line(&k, "skill").expect("skill line");
+        assert_eq!(line.count, 2);
+        assert_eq!(line.targets, vec!["pr-review-loop 661".to_owned(), "code-review".to_owned()],);
+
+        let fallback = tool_call_block_with_input("s3", "Skill", "Skill code-review", None);
+        let MessageBlock::ToolCall(tc) = &fallback else { unreachable!() };
+        assert_eq!(super::family_target(tc), Some("code-review".to_owned()));
+    }
+
     /// Each kind line collects representative targets: Reads pull the
     /// full file_path (relativized + nested at render), Bash its
     /// `command`, Grep/Glob the `pattern`, WebSearch its `query` (now on
