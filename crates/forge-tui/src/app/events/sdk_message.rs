@@ -906,15 +906,12 @@ fn handle_system(app: &mut App, msg: Message) {
                     let _: () = app.with_turn_state_mut(|ts| ts.mode = Some(parsed));
                     let supports_auto_mode =
                         app.current_model().is_some_and(|m| m.supports_auto_mode == Some(true));
-                    let (supports_bypass, unavailable_modes) = app.with_turn_state(|ts| {
-                        (
-                            ts.supports_bypass_permissions_mode,
-                            ts.runtime_unavailable_mode_ids.clone(),
-                        )
-                    });
+                    let unavailable_modes =
+                        app.with_turn_state(|ts| ts.runtime_unavailable_mode_ids.clone());
+                    let bypass_offered = super::bypass_mode_offered(app);
                     let supported = supported_mode_ids_filtered(
                         supports_auto_mode,
-                        supports_bypass,
+                        bypass_offered,
                         Some(parsed),
                         &unavailable_modes,
                     );
@@ -1135,24 +1132,13 @@ fn apply_mode_state_from_init(app: &mut App, data: &Value) {
     let Some(mode) = PermissionMode::from_wire(mode_str) else { return };
     let _: () = app.with_turn_state_mut(|ts| ts.mode = Some(mode));
 
-    // System(init) is the canonical source for `supportsBypassPermissionsMode`.
-    // Without this write the bypass chip / `/mode` option stays hidden even
-    // when the CLI declares it supported.
-    if let Some(supports_bypass) =
-        record.get("supportsBypassPermissionsMode").and_then(Value::as_bool)
-    {
-        let _: () =
-            app.with_turn_state_mut(|ts| ts.supports_bypass_permissions_mode = supports_bypass);
-    }
-
     let supports_auto_mode =
         app.current_model().is_some_and(|m| m.supports_auto_mode == Some(true));
-    let (supports_bypass, unavailable_modes) = app.with_turn_state(|ts| {
-        (ts.supports_bypass_permissions_mode, ts.runtime_unavailable_mode_ids.clone())
-    });
+    let unavailable_modes = app.with_turn_state(|ts| ts.runtime_unavailable_mode_ids.clone());
+    let bypass_offered = super::bypass_mode_offered(app);
     let supported = supported_mode_ids_filtered(
         supports_auto_mode,
-        supports_bypass,
+        bypass_offered,
         Some(mode),
         &unavailable_modes,
     );
@@ -1160,6 +1146,42 @@ fn apply_mode_state_from_init(app: &mut App, data: &Value) {
 
     let wire_mode_state = build_mode_state_from_supported(mode, &supported);
     super::apply_mode_state_update(app, wire_mode_state);
+}
+
+#[cfg(test)]
+mod bypass_mode_list_tests {
+    use super::apply_mode_state_from_init;
+    use crate::app::App;
+    use serde_json::json;
+
+    fn offers_bypass(app: &App) -> bool {
+        app.mode()
+            .is_some_and(|state| state.available_modes.iter().any(|m| m.id == "bypassPermissions"))
+    }
+
+    #[test]
+    fn bypass_launch_seeds_the_offer_and_it_survives_switching_away() {
+        let mut app = App::test_default();
+
+        // First init of a session launched into bypass.
+        apply_mode_state_from_init(&mut app, &json!({"permissionMode": "bypassPermissions"}));
+        assert!(offers_bypass(&app), "bypass launch seeds the picker offer");
+
+        // The session cycles away to plan; the next turn's init
+        // reports the new current mode, and bypass must stay offered
+        // so cycling back works.
+        apply_mode_state_from_init(&mut app, &json!({"permissionMode": "plan"}));
+        assert!(offers_bypass(&app), "bypass stays offered after switching away");
+    }
+
+    #[test]
+    fn normally_launched_sessions_never_get_the_offer() {
+        let mut app = App::test_default();
+
+        apply_mode_state_from_init(&mut app, &json!({"permissionMode": "acceptEdits"}));
+        apply_mode_state_from_init(&mut app, &json!({"permissionMode": "plan"}));
+        assert!(!offers_bypass(&app), "no bypass offer without a bypass launch");
+    }
 }
 
 /// When the SDK fires a System(local_command_output), forward the

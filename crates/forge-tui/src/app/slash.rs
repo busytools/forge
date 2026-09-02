@@ -636,6 +636,45 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn mode_bypass_dispatches_like_the_other_modes() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let mut rx = app.install_testing_stub();
+                app.set_session_id(Some("sess-1".into()));
+                // The candidate list is the real producer's output for a
+                // bypass-launched session, not a hand-written list.
+                let supported =
+                    forge_workspace::commands::supported_mode_ids_filtered(false, true, None, &[]);
+                app.set_mode(Some(forge_workspace::commands::build_mode_state_from_supported(
+                    forge_workspace::PermissionMode::Ask,
+                    &supported,
+                )));
+
+                let consumed = try_handle_submit(&mut app, "/mode bypassPermissions");
+                assert!(consumed);
+                assert_eq!(
+                    app.mode().map(|m| m.current_mode_id.as_str()),
+                    Some("bypassPermissions"),
+                    "bypass applies synchronously like the other modes",
+                );
+                tokio::task::yield_now().await;
+                let cmd = rx.try_recv().expect("SetMode dispatched");
+                assert!(
+                    matches!(
+                        cmd,
+                        forge_primitives::AgentCommand::SetMode { ref session_id, mode }
+                            if session_id.as_str() == "sess-1"
+                                && mode
+                                    == forge_primitives::permission::PermissionMode::BypassPermissions
+                    ),
+                    "bypass dispatches the SetMode the other modes dispatch: {cmd:?}",
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn model_apply_synchronously_during_submit() {
         // /model applies CurrentModelUpdate optimistically App-side.
         // The apply is synchronous, so no CommandPending state is

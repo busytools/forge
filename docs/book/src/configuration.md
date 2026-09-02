@@ -131,9 +131,9 @@ values are the CLI's mode names, `"default"`, `"acceptEdits"`, `"plan"`,
 `"dontAsk"`, `"auto"` and `"bypassPermissions"`, plus the legacy aliases
 `"ask"`, `"deny"`, `"accept_edits"`, `"dont_ask"` and
 `"bypass_permissions"`; anything else fails the load listing them. The
-mode the session actually runs is what the CLI reports back on connect;
-the `/permissions` picker keeps its own capability check, so bypass
-appears there only when the running CLI reports support for it.
+mode the session actually runs is what the CLI reports back on connect,
+and the `/mode` picker offers `bypassPermissions` only on sessions
+launched into it; the CLI refuses a mid-session switch to bypass.
 
 ## `[env]`
 

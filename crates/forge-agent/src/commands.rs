@@ -20,12 +20,13 @@ const CANONICAL_ORDER: [PermissionMode; 6] = [
 
 /// Returns the supported-mode list filtered by the runtime-unavailable
 /// list (but keeping the current mode if it's still set). Mirrors the
-/// upstream rules: BASE + Auto (if model supports it) + BypassPermissions
-/// (if session allows) + the current mode itself (so the active mode
-/// never disappears mid-session).
+/// upstream rules: BASE + Auto (if model supports it) + the current
+/// mode itself (so the active mode never disappears mid-session).
+/// BypassPermissions is offered only when the session launched into
+/// it - the CLI refuses a mid-session entry.
 pub fn supported_mode_ids_filtered(
     current_model_supports_auto_mode: bool,
-    supports_bypass_permissions_mode: bool,
+    launched_into_bypass: bool,
     current_mode: Option<PermissionMode>,
     runtime_unavailable_mode_ids: &[PermissionMode],
 ) -> Vec<PermissionMode> {
@@ -33,7 +34,7 @@ pub fn supported_mode_ids_filtered(
     if current_model_supports_auto_mode {
         seen.insert(PermissionMode::Auto);
     }
-    if supports_bypass_permissions_mode {
+    if launched_into_bypass {
         seen.insert(PermissionMode::BypassPermissions);
     }
     if let Some(mode) = current_mode {
@@ -71,7 +72,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn base_supported_modes_default_to_four() {
+    fn base_supported_modes_exclude_bypass() {
         let supported = supported_mode_ids_filtered(false, false, None, &[]);
         assert_eq!(
             supported,
@@ -85,15 +86,15 @@ mod tests {
     }
 
     #[test]
-    fn auto_mode_appears_when_current_model_supports_it() {
-        let supported = supported_mode_ids_filtered(true, false, None, &[]);
-        assert!(supported.contains(&PermissionMode::Auto));
+    fn bypass_offered_when_launched_into_it() {
+        let supported = supported_mode_ids_filtered(false, true, None, &[]);
+        assert!(supported.contains(&PermissionMode::BypassPermissions));
     }
 
     #[test]
-    fn bypass_appears_when_session_supports_it() {
-        let supported = supported_mode_ids_filtered(false, true, None, &[]);
-        assert!(supported.contains(&PermissionMode::BypassPermissions));
+    fn auto_mode_appears_when_current_model_supports_it() {
+        let supported = supported_mode_ids_filtered(true, false, None, &[]);
+        assert!(supported.contains(&PermissionMode::Auto));
     }
 
     #[test]

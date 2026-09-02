@@ -315,22 +315,18 @@ async fn emit_connected(
         .as_deref()
         .and_then(PermissionMode::from_wire)
         .or(Some(PermissionMode::Ask));
-    let supports_bypass = init_record
-        .and_then(|r| r.get("supportsBypassPermissionsMode"))
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-
     let current_model = session_lifecycle::resolve_current_model_from_inputs(
         &init_model_id,
         None,
         None,
         &available_models,
     );
+    let launched_into_bypass = init_permission_mode == Some(PermissionMode::BypassPermissions);
     let mode = init_permission_mode.map(|m| {
         let supports_auto_mode = current_model.supports_auto_mode == Some(true);
         let supported = bridge_commands::supported_mode_ids_filtered(
             supports_auto_mode,
-            supports_bypass,
+            launched_into_bypass,
             Some(m),
             &[],
         );

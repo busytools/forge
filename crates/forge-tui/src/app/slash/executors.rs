@@ -306,12 +306,11 @@ fn apply_optimistic_mode_change(app: &mut App, requested_mode: &str) {
     let _: () = app.with_turn_state_mut(|ts| ts.mode = Some(parsed));
     let supports_auto_mode =
         app.current_model().is_some_and(|m| m.supports_auto_mode == Some(true));
-    let (supports_bypass, unavailable_modes) = app.with_turn_state(|ts| {
-        (ts.supports_bypass_permissions_mode, ts.runtime_unavailable_mode_ids.clone())
-    });
+    let unavailable_modes = app.with_turn_state(|ts| ts.runtime_unavailable_mode_ids.clone());
+    let bypass_offered = crate::app::events::bypass_mode_offered(app);
     let supported = supported_mode_ids_filtered(
         supports_auto_mode,
-        supports_bypass,
+        bypass_offered,
         Some(parsed),
         &unavailable_modes,
     );
@@ -408,12 +407,11 @@ fn apply_optimistic_model_change(app: &mut App, model_name: &str) {
     if let Some(mode) = mode_opt {
         let supports_auto_mode =
             app.current_model().is_some_and(|m| m.supports_auto_mode == Some(true));
-        let (supports_bypass, unavailable_modes) = app.with_turn_state(|ts| {
-            (ts.supports_bypass_permissions_mode, ts.runtime_unavailable_mode_ids.clone())
-        });
+        let unavailable_modes = app.with_turn_state(|ts| ts.runtime_unavailable_mode_ids.clone());
+        let bypass_offered = crate::app::events::bypass_mode_offered(app);
         let supported = supported_mode_ids_filtered(
             supports_auto_mode,
-            supports_bypass,
+            bypass_offered,
             Some(mode),
             &unavailable_modes,
         );
