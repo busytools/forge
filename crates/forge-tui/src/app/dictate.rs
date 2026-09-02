@@ -11,10 +11,6 @@ use crate::app::App;
 use crate::app::session::UiSession;
 use crate::ui::theme;
 
-/// Silence before a transcribing composer says it is waiting. The warm
-/// path resolves in well under this; only a cold start ever draws.
-pub(crate) const TRANSCRIBING_INDICATOR_MS: u128 = 3000;
-
 /// The block ramp for the meter cells, floor to full scale.
 pub(crate) const LEVEL_RAMP: [char; 8] = [
     '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}',
@@ -223,7 +219,6 @@ pub(crate) struct DictateIndicator {
     pub(crate) started: Instant,
     /// Elapsed recording time, frozen when transcription begins.
     pub(crate) recording_duration: Option<Duration>,
-    pub(crate) transcribing_since: Option<Instant>,
     /// The cursor spot's held dB figure and when it was stamped.
     db_shown: f32,
     db_shown_at: Instant,
@@ -248,7 +243,6 @@ impl DictateIndicator {
             meter: DictateMeter::new(floor_db),
             started: now,
             recording_duration: None,
-            transcribing_since: None,
             db_shown: START_ENV_DB,
             db_shown_at: now,
             generation,
@@ -269,7 +263,6 @@ impl DictateIndicator {
             self.recording_duration = Some(self.started.elapsed());
         }
         self.phase = DictatePhase::Transcribing;
-        self.transcribing_since = Some(Instant::now());
     }
 
     /// The mm:ss figure the status row shows: live while recording,
@@ -281,7 +274,7 @@ impl DictateIndicator {
         }
     }
 
-    /// The cursor spot's dB figure and its colour level, throttled to
+    /// The status row's dB figure and its colour level, throttled to
     /// 5 Hz display-side. Between refreshes the held figure stands.
     pub(crate) fn db_readout(&mut self, now: Instant) -> (f32, f32) {
         if now.duration_since(self.db_shown_at).as_millis() >= DB_READOUT_MS {
@@ -289,13 +282,6 @@ impl DictateIndicator {
             self.db_shown_at = now;
         }
         (self.db_shown, self.meter.current())
-    }
-
-    /// Past the silence threshold, so the status row may draw. Before
-    /// it the box shows nothing at all.
-    pub(crate) fn transcribing_overdue(&self) -> bool {
-        self.transcribing_since
-            .is_some_and(|since| since.elapsed().as_millis() >= TRANSCRIBING_INDICATOR_MS)
     }
 }
 
@@ -478,22 +464,15 @@ pub(crate) fn dictate_owns_esc(app: &App) -> bool {
 }
 
 /// Whether the composer renders its one interior row: a stamped
-/// post-take notice, or the status row while a take is live - always
-/// while recording, and only past the silence threshold while
-/// transcribing. Drives both the render and the layout height so the
-/// two never disagree.
+/// post-take notice, or the status row while a take is live - either
+/// phase, however brief the transcription. Drives both the render and
+/// the layout height so the two never disagree.
 pub(crate) fn dictate_row_visible(app: &App) -> bool {
     let Some(bucket) = app.active_session() else { return false };
     if bucket.visible_dictate_notice().is_some() {
         return true;
     }
-    match bucket.dictate.as_ref() {
-        None => false,
-        Some(indicator) => match indicator.phase {
-            DictatePhase::Recording => true,
-            DictatePhase::Transcribing => indicator.transcribing_overdue(),
-        },
-    }
+    bucket.dictate.is_some()
 }
 
 /// The row's content: a stamped post-take notice when present, else
@@ -653,29 +632,20 @@ mod tests {
             normalize(f32::NEG_INFINITY, -30.0, -46.0, floor).abs() < f32::EPSILON,
             "no signal is silence"
         );
-        assert!(
-            normalize(-40.0, -30.0, -46.0, floor) > 0.0,
-            "above the gate has signal"
-        );
+        assert!(normalize(-40.0, -30.0, -46.0, floor) > 0.0, "above the gate has signal");
     }
 
     #[test]
     fn headroom_keeps_a_fresh_peak_just_under_full_scale() {
         let at_max = normalize(-20.0, -20.0, -34.0, -50.0);
-        assert!(
-            at_max < 1.0,
-            "a peak at the recent max does not pin full scale, got {at_max}"
-        );
+        assert!(at_max < 1.0, "a peak at the recent max does not pin full scale, got {at_max}");
         let past_max = normalize(-20.0, -24.0, -34.0, -50.0);
         assert!(
             (past_max - 1.0).abs() < f32::EPSILON,
             "a peak past the recent max may touch full scale"
         );
         let flat = normalize(-20.0, -20.0, -26.0, -50.0);
-        assert!(
-            flat > 0.4,
-            "the floored span keeps a flat feed finite and readable, got {flat}"
-        );
+        assert!(flat > 0.4, "the floored span keeps a flat feed finite and readable, got {flat}");
     }
 
     #[test]
@@ -722,14 +692,12 @@ mod tests {
             "the climb stops a span short of the envelope, so a steady tone keeps a range, \
              got {capped}"
         );
-        assert_eq!(
-            recent_min_step(-28.0, -24.0, -50.0),
-            -28.0,
+        assert!(
+            (recent_min_step(-28.0, -24.0, -50.0) - -28.0).abs() < 1e-4,
             "a shallow dip holds the min instead of yanking it down"
         );
-        assert_eq!(
-            recent_min_step(-30.0, -52.0, -50.0),
-            -30.0,
+        assert!(
+            (recent_min_step(-30.0, -52.0, -50.0) - -30.0).abs() < 1e-4,
             "structural silence teaches the min nothing"
         );
     }
@@ -815,10 +783,7 @@ mod tests {
         let mut glyphs: Vec<char> = window.iter().map(|frac| level_cell(*frac)).collect();
         glyphs.sort_unstable();
         glyphs.dedup();
-        assert!(
-            glyphs.len() >= 4,
-            "the rendered cells cover several ramp steps, got {glyphs:?}"
-        );
+        assert!(glyphs.len() >= 4, "the rendered cells cover several ramp steps, got {glyphs:?}");
     }
 
     #[test]
@@ -907,7 +872,10 @@ mod tests {
         let cells: Vec<&str> = line.spans.iter().map(|span| span.content.as_ref()).collect();
         assert_eq!(
             &cells[8..16],
-            &["\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}"],
+            &[
+                "\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}",
+                "\u{2581}"
+            ],
             "a narrow meter renders the newest frames, so the right edge is now"
         );
     }
@@ -961,31 +929,14 @@ mod tests {
     }
 
     #[test]
-    fn transcribing_hides_the_row_until_three_seconds_then_brings_it_back() {
+    fn transcribing_shows_the_row_the_moment_the_phase_flips() {
         let mut app = App::test_default();
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
-        {
-            let bucket = app.session_mut(&key).expect("bucket");
-            let mut indicator = DictateIndicator::recording(-50.0, 1);
-            indicator.begin_transcribing();
-            bucket.dictate = Some(indicator);
-        }
-        assert!(
-            !dictate_row_visible(&app),
-            "a warm take never flashes the row back after the collapse"
-        );
-
         let bucket = app.session_mut(&key).expect("bucket");
-        let indicator = bucket.dictate.as_mut().expect("a take is in flight");
-        indicator.transcribing_since = Some(
-            Instant::now()
-                .checked_sub(Duration::from_millis(3001))
-                .expect("a 3 s backdate is safe"),
-        );
-        assert!(
-            dictate_row_visible(&app),
-            "only a cold start past the silence threshold redraws the row"
-        );
+        let mut indicator = DictateIndicator::recording(-50.0, 1);
+        indicator.begin_transcribing();
+        bucket.dictate = Some(indicator);
+        assert!(dictate_row_visible(&app), "the transcribing row renders however brief the phase");
     }
 
     #[test]
@@ -1268,11 +1219,7 @@ mod tests {
             texts[timer + 4].starts_with("listening"),
             "the label follows the figure, got {texts:?}"
         );
-        assert_eq!(
-            line.spans[timer + 2].style.fg,
-            Some(theme::DIM),
-            "a gated figure dims"
-        );
+        assert_eq!(line.spans[timer + 2].style.fg, Some(theme::DIM), "a gated figure dims");
 
         {
             let bucket = app.session_mut(&key).expect("bucket");

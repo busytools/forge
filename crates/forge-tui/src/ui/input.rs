@@ -721,7 +721,7 @@ mod tests {
         }
 
         #[test]
-        fn transcribing_hides_the_row_until_three_seconds_then_freezes_the_meter() {
+        fn transcribing_shows_the_row_immediately_and_freezes_the_meter() {
             let mut app = App::test_default();
             let key = active_key(&app);
             apply_session_update(
@@ -741,22 +741,8 @@ mod tests {
 
             let rows = render_input(&mut app, 80, 5);
             assert!(
-                !rows[1].contains("transcribing") && !rows[1].contains("listening"),
-                "a warm take never flashes the row back, got: {}",
-                rows[1]
-            );
-
-            let bucket = app.session_mut(&key).expect("bucket");
-            let indicator = bucket.dictate.as_mut().expect("a take is in flight");
-            indicator.transcribing_since = Some(
-                Instant::now()
-                    .checked_sub(Duration::from_millis(4000))
-                    .expect("a 4 s backdate is safe"),
-            );
-            let rows = render_input(&mut app, 80, 5);
-            assert!(
                 rows[1].contains("transcribing") && rows[1].contains("esc cancel"),
-                "past the threshold the row reappears in transcribing form, got: {}",
+                "the row renders the moment the phase flips, got: {}",
                 rows[1]
             );
             assert!(
