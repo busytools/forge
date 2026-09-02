@@ -463,6 +463,27 @@ pub(crate) fn dictate_owns_esc(app: &App) -> bool {
     app.active_session().is_some_and(|bucket| bucket.dictate.is_some())
 }
 
+/// The one-cell circle a non-chat surface carries while a take is
+/// live: fixed in place, pulsing bright and dim like the status row's
+/// dot, orange while recording, blue while transcribing, gone once
+/// the take resolves. The blip is the whole indicator on those
+/// surfaces - no timer, no dB figure, no meter.
+pub(crate) fn blip_span(app: &App, pulse_ms: f32) -> Option<Span<'static>> {
+    let indicator = app.active_session()?.dictate.as_ref()?;
+    let base = match indicator.phase {
+        DictatePhase::Recording => ORANGE,
+        DictatePhase::Transcribing => BLUE,
+    };
+    let alpha = if app.config.prefers_reduced_motion_effective() {
+        1.0
+    } else {
+        let t = (pulse_ms % PULSE_PERIOD_MS) / PULSE_PERIOD_MS;
+        let wave = (1.0 - (2.0 * std::f32::consts::PI * t).cos()) / 2.0;
+        PULSE_FLOOR + (1.0 - PULSE_FLOOR) * (1.0 - wave)
+    };
+    Some(Span::styled("\u{25cf} ".to_owned(), Style::default().fg(rgbf(mix3(CANVAS, base, alpha)))))
+}
+
 /// Whether the composer renders its one interior row: a stamped
 /// post-take notice, or the status row while a take is live - either
 /// phase, however brief the transcription. Drives both the render and
@@ -1212,6 +1233,33 @@ mod tests {
         assert!((held - still).abs() < f32::EPSILON, "inside the 200 ms window the figure holds");
         let (fresh, _) = indicator.db_readout(t0 + Duration::from_millis(250));
         assert!(fresh > held, "past the window the figure refreshes toward the louder feed");
+    }
+
+    #[test]
+    fn the_blip_follows_the_take_phase_and_pulses_in_place() {
+        let mut app = App::test_default();
+        let key = app.active_session_key.clone().expect("test_default has an active bucket");
+        assert_eq!(blip_span(&app, 0.0), None, "idle draws no blip");
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+        );
+        let hot = blip_span(&app, 0.0).expect("a live take blips");
+        assert_eq!(hot.style.fg, Some(Color::Rgb(244, 118, 0)), "recording pulses orange");
+        let dimmed =
+            blip_span(&app, PULSE_PERIOD_MS / 2.0).expect("the blip holds through the wave");
+        assert_ne!(
+            dimmed.style.fg, hot.style.fg,
+            "the blip pulses bright and dim in place, got {dimmed:?} against {hot:?}"
+        );
+
+        let bucket = app.session_mut(&key).expect("bucket");
+        let indicator = bucket.dictate.as_mut().expect("a take is in flight");
+        indicator.begin_transcribing();
+        let cold = blip_span(&app, 0.0).expect("a transcribing take still blips");
+        assert_eq!(cold.style.fg, Some(Color::Rgb(97, 160, 224)), "transcription turns it blue");
+        assert_eq!(cold.content, hot.content, "one glyph, colour changes on the handoff");
     }
 
     #[test]

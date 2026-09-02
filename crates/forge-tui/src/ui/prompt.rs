@@ -21,6 +21,7 @@ pub fn render(
     prompt: &PromptState,
     queue_depth: usize,
     notes_text: Option<&str>,
+    blip: Option<&Span<'static>>,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -32,7 +33,7 @@ pub fn render(
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    let lines = build_lines(prompt, queue_depth, inner.width as usize, notes_text);
+    let lines = build_lines(prompt, queue_depth, inner.width as usize, notes_text, blip);
     Paragraph::new(lines).render(inner, buf);
 }
 
@@ -50,8 +51,9 @@ pub fn prompt_required_lines(
     notes_text: Option<&str>,
 ) -> u16 {
     // Block borders eat 2 cols; Padding::horizontal(2) eats 4 more.
+    // The blip replaces the pointer inline, so it costs no rows here.
     let inner_width = area_width.saturating_sub(6).max(1) as usize;
-    let lines = build_lines(prompt, queue_depth, inner_width, notes_text);
+    let lines = build_lines(prompt, queue_depth, inner_width, notes_text, None);
     u16::try_from(lines.len().saturating_add(2)).unwrap_or(u16::MAX)
 }
 
@@ -60,6 +62,7 @@ fn build_lines(
     queue_depth: usize,
     content_width: usize,
     notes_text: Option<&str>,
+    blip: Option<&Span<'static>>,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     // 1 empty row top.
@@ -78,7 +81,7 @@ fn build_lines(
     lines.push(Line::default());
 
     // Options stack.
-    lines.extend(build_option_lines(prompt, content_width, notes_text));
+    lines.extend(build_option_lines(prompt, content_width, notes_text, blip));
 
     // Footer hint.
     lines.push(Line::default());
@@ -184,6 +187,7 @@ fn build_option_lines(
     prompt: &PromptState,
     content_width: usize,
     notes_text: Option<&str>,
+    blip: Option<&Span<'static>>,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let is_multi = prompt.is_multi_select();
@@ -225,6 +229,14 @@ fn build_option_lines(
             Style::default().fg(Color::Gray)
         };
         let mut spans: Vec<Span<'static>> = vec![Span::styled(pointer.to_string(), pointer_style)];
+        // A live dictate take aimed at the notes draft takes the
+        // pointer's place on its row: same left edge, same 2 cells.
+        if is_focused
+            && is_notes_kind
+            && let Some(blip) = blip
+        {
+            spans[0] = blip.clone();
+        }
         let checkbox_str = if is_multi { if is_toggled { "[x] " } else { "[ ] " } } else { "" };
         if is_multi {
             let checkbox_style = if is_toggled {
@@ -370,7 +382,7 @@ mod tests {
     ) -> String {
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
-        render(area, &mut buf, prompt, queue_depth, None);
+        render(area, &mut buf, prompt, queue_depth, None, None);
         (0..height)
             .map(|y| (0..width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
             .collect::<Vec<_>>()
@@ -500,7 +512,7 @@ mod tests {
         // Render into a buffer so we can inspect cell modifiers.
         let area = Rect::new(0, 0, 80, 14);
         let mut buf = Buffer::empty(area);
-        render(area, &mut buf, &prompt, 1, None);
+        render(area, &mut buf, &prompt, 1, None, None);
         // Locate the `B` of "Blue" on its row.
         let mut found = false;
         for y in 0..area.height {
@@ -546,7 +558,7 @@ mod tests {
         assert!(prompt.selected_option_indices.is_empty());
         let area = Rect::new(0, 0, 80, 18);
         let mut buf = Buffer::empty(area);
-        render(area, &mut buf, &prompt, 1, Some("a note about etiquette"));
+        render(area, &mut buf, &prompt, 1, Some("a note about etiquette"), None);
         let out: String = (0..area.height)
             .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
             .collect::<Vec<_>>()
@@ -565,7 +577,7 @@ mod tests {
         let prompt = PromptState::from_question("tc-q".into(), request);
         let area = Rect::new(0, 0, 80, 18);
         let mut buf = Buffer::empty(area);
-        render(area, &mut buf, &prompt, 1, None);
+        render(area, &mut buf, &prompt, 1, None, None);
         let out: String = (0..area.height)
             .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
             .collect::<Vec<_>>()
@@ -778,7 +790,7 @@ mod tests {
         prompt.focused_option_index = prompt.options.len() - 1;
         let area = Rect::new(0, 0, 80, 24);
         let mut buf = Buffer::empty(area);
-        render(area, &mut buf, &prompt, 1, Some("HELLO WORLD"));
+        render(area, &mut buf, &prompt, 1, Some("HELLO WORLD"), None);
         let out: String = (0..area.height)
             .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
             .collect::<Vec<_>>()
@@ -796,7 +808,7 @@ mod tests {
         prompt.focused_option_index = prompt.options.len() - 1;
         let area = Rect::new(0, 0, 80, 24);
         let mut buf = Buffer::empty(area);
-        render(area, &mut buf, &prompt, 1, Some(""));
+        render(area, &mut buf, &prompt, 1, Some(""), None);
         let out: String = (0..area.height)
             .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
             .collect::<Vec<_>>()
@@ -814,7 +826,7 @@ mod tests {
         // focus stays on option 0 (not Notes).
         let area = Rect::new(0, 0, 80, 24);
         let mut buf = Buffer::empty(area);
-        render(area, &mut buf, &prompt, 1, Some("SHOULD NOT APPEAR"));
+        render(area, &mut buf, &prompt, 1, Some("SHOULD NOT APPEAR"), None);
         let out: String = (0..area.height)
             .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
             .collect::<Vec<_>>()
@@ -830,5 +842,40 @@ mod tests {
         let prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
         let out = render_to_string(&prompt, 1, 80, 14);
         assert!(!out.contains("Preview:"), "Permission prompts shouldn't render a Preview block");
+    }
+
+    /// A live dictate take puts the circle blip on the focused Notes
+    /// row's left edge, in place of the pointer; no take, no blip.
+    #[test]
+    fn the_notes_option_carries_the_blip_while_a_take_is_live() {
+        let request = make_question_request(false);
+        let mut prompt = PromptState::from_question("tc-q".into(), request);
+        prompt.focused_option_index = prompt.options.len() - 1;
+        let area = Rect::new(0, 0, 80, 24);
+        let blip = Span::styled("\u{25cf} ", Style::default().fg(Color::Rgb(244, 118, 0)));
+
+        let mut buf = Buffer::empty(area);
+        render(area, &mut buf, &prompt, 1, Some(""), Some(&blip));
+        let notes_row = (0..area.height).find_map(|y| {
+            let row: String = (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect();
+            row.contains("Tell Claude something else").then_some((y, row))
+        });
+        let (y, row) = notes_row.expect("the focused Notes option renders");
+        assert!(row.contains("\u{25cf}"), "the blip rides the notes row, got: {row}");
+        assert!(!row.contains("\u{25b8}"), "the blip takes the pointer's place, got: {row}");
+        let cell = (0..4).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>();
+        assert!(
+            cell.contains("\u{25cf}"),
+            "the blip sits on the row's left edge (border + padding, then the circle), got: {cell:?}"
+        );
+
+        // No take, no blip: the pointer returns.
+        let mut buf = Buffer::empty(area);
+        render(area, &mut buf, &prompt, 1, Some(""), None);
+        let row: String = (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect();
+        assert!(
+            row.contains("\u{25b8}") && !row.contains("\u{25cf}"),
+            "without a take the pointer stands and no circle draws, got: {row}"
+        );
     }
 }

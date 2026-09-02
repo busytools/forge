@@ -122,6 +122,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // its queue, the dock morphs into the unified prompt widget. The
     // widget owns its own chrome (thick orange block) and inner
     // padding, so we skip the normal chat-input rendering entirely.
+    let pulse_ms = app.spinner_epoch.elapsed().as_secs_f32() * 1000.0;
+    let blip = crate::app::dictate::blip_span(app, pulse_ms);
     if let Some(session) = app.active_session()
         && let Some(prompt) = session.prompt_queue.front()
     {
@@ -134,6 +136,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             &prompt,
             queue_depth,
             Some(notes_text.as_str()),
+            blip.as_ref(),
         );
         return;
     }
