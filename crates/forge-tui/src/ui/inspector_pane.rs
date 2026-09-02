@@ -32,17 +32,14 @@
 //!   command, memory and pid, joined by
 //!   `crate::app::mcp_servers::collect_mcp_servers`. The whole
 //!   section is a click-through to the `/mcp` view.
-//! - `PROCESSES` - rendered when the active session has at least
-//!   one currently-in-flight long-running tool call. Three kinds
-//!   surface here: backgrounded `Bash` (via `run_in_background:
-//!   true` OR `assistant_auto_backgrounded`), `Monitor` streaming-
-//!   process watchers, and `CronCreate` scheduled prompts. Live
-//!   monitor only - completed / failed / killed rows are filtered
-//!   out at the collector level so the section disappears once
-//!   work wraps up. Rows are built by
-//!   `crate::app::processes::collect_active_processes` from each
-//!   tool call's `raw_input` + status; the renderer chooses glyphs
-//!   + colours per `ProcessKind`.
+//! - `PROCESSES` - rendered when the OS walk finds at least one
+//!   non-MCP process alive under claude, or the CLI's registry carries
+//!   a backgrounded `local_bash` the scan missed. Wire-tracked `Bash`
+//!   calls overlay their description when their `command` substring-
+//!   matches a process cmdline; the renderer chooses glyphs + colours
+//!   per `ProcessKind` (rows built by
+//!   `crate::app::processes::collect_active_processes`, which skips
+//!   the pids the MCP SERVERS join claims).
 //!
 //! Reads from per-session state on `UiSession.todos` and
 //! `UiSession.git_diff_snapshot`.
