@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use serde::Deserialize;
@@ -614,12 +614,20 @@ pub(crate) struct DictateRuntime {
     /// same key is recognisably stale. Starts at 1; 0 is the "matches
     /// nothing" value refusals carry.
     pub(crate) next_generation: u64,
-    /// A stop that arrived before the start it answers had registered.
-    /// `begin_capture` checks it under the same lock that registers the
-    /// take and pre-loads the abandon, so the take cannot outlive a
-    /// stop the scheduler ordered first.
-    pub(crate) stop_pending: Option<SessionKey>,
+    /// A stop that arrived before the start it answers had registered,
+    /// stamped on arrival. `begin_capture` honours it only while it is
+    /// fresh - the race it exists for is scheduler-scale, so a park
+    /// older than the window is a stop whose take already resolved
+    /// (a refusal, a cap self-submit) and must not poison the next
+    /// attempt.
+    pub(crate) stop_pending: Option<(SessionKey, Instant)>,
 }
+
+/// How long after parking a stop is still treated as racing its
+/// start's registration. The gap it covers is the scheduler's delay
+/// between two spawned tasks, so anything older is a stop whose take
+/// is already gone.
+const STOP_PARK_WINDOW: Duration = Duration::from_millis(200);
 
 impl Default for DictateRuntime {
     fn default() -> Self {
@@ -635,6 +643,32 @@ impl DictateRuntime {
             return Some(recording.stop.clone());
         }
         self.finishing.iter().find(|take| &take.key == key).map(|take| take.stop.clone())
+    }
+
+    /// Consume `key`'s parked stop, answering whether it still races
+    /// its start's registration and should pre-load an abandon. A
+    /// stale park for the key is consumed without honour; another
+    /// key's park is left alone.
+    fn take_parked_stop(&mut self, key: &SessionKey, now: Instant) -> bool {
+        let ours = self.stop_pending.as_ref().is_some_and(|(parked, _)| parked == key);
+        if !ours {
+            return false;
+        }
+        let fresh = self
+            .stop_pending
+            .as_ref()
+            .is_some_and(|(_, at)| now.duration_since(*at) < STOP_PARK_WINDOW);
+        self.stop_pending = None;
+        fresh
+    }
+
+    /// Drop `key`'s parked stop, if any: the take it answered has
+    /// resolved some other way, and a left-behind park would poison
+    /// the session's next attempt.
+    fn clear_stop_pending(&mut self, key: &SessionKey) {
+        if self.stop_pending.as_ref().is_some_and(|(parked, _)| parked == key) {
+            self.stop_pending = None;
+        }
     }
 }
 
@@ -656,6 +690,9 @@ pub(crate) async fn handle_dictate_start(ws: &Arc<crate::Workspace>, key: Sessio
             tokio::spawn(run_recording(Arc::clone(ws), key, capture, generation, stop_rx, updates));
         }
         Ok(Err(message)) => {
+            // The start refused, so any park the press's release left
+            // behind answers a take that will never exist.
+            ws.dictate_runtime.lock().clear_stop_pending(&key);
             let _ = updates.send(SessionUpdate::DictateEnded {
                 key,
                 outcome: DictateOutcome::Refused { message },
@@ -671,11 +708,13 @@ pub(crate) async fn handle_dictate_start(ws: &Arc<crate::Workspace>, key: Sessio
 }
 
 /// `Command::DictateStop`: submit (`true`) or abandon the take that
-/// `key` started. A take that already resolved has nothing to route
-/// to, and that is fine. A stop that arrives before its start has
-/// registered is parked in `stop_pending` for `begin_capture` to
-/// honour, rather than dropped: dropping it would orphan a take until
-/// the capture cap released the microphone.
+/// `key` started. A stop that arrives before its start has registered
+/// is parked in `stop_pending` for `begin_capture` to honour, rather
+/// than dropped: dropping it would orphan a take until the capture cap
+/// released the microphone. A stop whose take already resolved parks
+/// too - the park cannot tell the two apart on arrival - but it is
+/// only honoured while fresh, and every take-resolution path clears
+/// it, so it never poisons the session's next attempt.
 pub(crate) async fn handle_dictate_stop(
     ws: &Arc<crate::Workspace>,
     key: &SessionKey,
@@ -687,7 +726,7 @@ pub(crate) async fn handle_dictate_stop(
             runtime.stop_pending = None;
             Some(stop)
         } else {
-            runtime.stop_pending = Some(key.clone());
+            runtime.stop_pending = Some((key.clone(), Instant::now()));
             None
         }
     };
@@ -734,9 +773,9 @@ fn begin_capture(
     runtime.recording = Some(LiveRecording { key: key.clone(), stop: stop_tx.clone() });
     // A stop the scheduler ordered before this registration is honoured
     // here: pre-load the abandon so the take ends the moment the
-    // recording task starts reading its channel.
-    if runtime.stop_pending.as_ref().is_some_and(|pending| pending == key) {
-        runtime.stop_pending = None;
+    // recording task starts reading its channel. A stale park - a stop
+    // whose take resolved without it - is consumed without honour.
+    if runtime.take_parked_stop(key, Instant::now()) {
         let _ = stop_tx.try_send(false);
     }
     let floor_db = engine.silence_floor();
@@ -887,6 +926,7 @@ fn clear_recording_if_ours(ws: &crate::Workspace, key: &SessionKey) {
     if runtime.recording.as_ref().is_some_and(|live| &live.key == key) {
         runtime.recording = None;
     }
+    runtime.clear_stop_pending(key);
 }
 
 /// Move this take's stop channel from the recording slot to the
@@ -902,7 +942,9 @@ fn move_to_finishing(ws: &crate::Workspace, key: &SessionKey) {
 
 /// Drop this take's finishing entry, whatever took it out of routing.
 fn remove_finishing(ws: &crate::Workspace, key: &SessionKey) {
-    ws.dictate_runtime.lock().finishing.retain(|take| &take.key != key);
+    let mut runtime = ws.dictate_runtime.lock();
+    runtime.finishing.retain(|take| &take.key != key);
+    runtime.clear_stop_pending(key);
 }
 
 /// Abandon everything `key` has in flight: a held microphone goes back
@@ -915,6 +957,7 @@ pub(crate) fn teardown_for_closed_session(ws: &crate::Workspace, key: &SessionKe
         runtime.recording = None;
     }
     runtime.finishing.retain(|take| &take.key != key);
+    runtime.clear_stop_pending(key);
 }
 
 /// Release every session's dictation at once, for workspace shutdown.
@@ -922,6 +965,7 @@ pub(crate) fn teardown_all(ws: &crate::Workspace) {
     let mut runtime = ws.dictate_runtime.lock();
     runtime.recording = None;
     runtime.finishing.clear();
+    runtime.stop_pending = None;
 }
 
 /// Map the crate's answer onto the wire outcome. A normalisation that
@@ -1512,9 +1556,8 @@ mod dictate_lifecycle_tests {
         let owner = key("owner");
 
         handle_dictate_stop(&ws, &owner, true).await;
-        assert_eq!(
-            ws.dictate_runtime.lock().stop_pending.as_ref(),
-            Some(&owner),
+        assert!(
+            matches!(&ws.dictate_runtime.lock().stop_pending, Some((parked, _)) if *parked == owner),
             "a stop with nothing to route parks itself for the start"
         );
 
@@ -1526,6 +1569,68 @@ mod dictate_lifecycle_tests {
         handle_dictate_stop(&ws, &owner, true).await;
         assert_eq!(stop_rx.recv().await, Some(true));
         assert_eq!(ws.dictate_runtime.lock().stop_pending, None);
+    }
+
+    /// A parked stop is only honoured while fresh: the race it covers
+    /// is the scheduler's gap between two spawned tasks, so a park
+    /// older than the window is a stop whose take resolved some other
+    /// way, and honouring it would waste the session's next attempt.
+    #[test]
+    fn a_stale_park_is_consumed_without_honour() {
+        let mut runtime = DictateRuntime::default();
+        let owner = key("owner");
+        let stale = Instant::now()
+            .checked_sub(STOP_PARK_WINDOW + Duration::from_millis(50))
+            .expect("a process one window old can still backdate a park; boot is far older");
+        runtime.stop_pending = Some((owner.clone(), stale));
+
+        assert!(!runtime.take_parked_stop(&owner, Instant::now()));
+        assert_eq!(runtime.stop_pending, None, "the stale park is consumed either way");
+
+        runtime.stop_pending = Some((owner.clone(), Instant::now()));
+        assert!(runtime.take_parked_stop(&owner, Instant::now()), "a fresh park is honoured");
+        assert_eq!(runtime.stop_pending, None);
+
+        // A park for a different key is never honoured and never
+        // disturbs this key's own state.
+        let other = key("other");
+        runtime.stop_pending = Some((other.clone(), Instant::now()));
+        assert!(!runtime.take_parked_stop(&owner, Instant::now()));
+        assert!(runtime.stop_pending.is_some(), "the other key's park survives");
+    }
+
+    /// Teardown drops a session's park: an inert entry for a closed
+    /// session would otherwise sit in the Option forever.
+    #[tokio::test]
+    async fn closing_the_session_clears_its_parked_stop() {
+        let (ws, _updates) = crate::Workspace::testing_stub();
+        let owner = key("owner");
+        handle_dictate_stop(&ws, &owner, true).await;
+        assert!(ws.dictate_runtime.lock().stop_pending.is_some());
+
+        ws.release_session(&owner);
+
+        assert_eq!(ws.dictate_runtime.lock().stop_pending, None);
+    }
+
+    /// A refused start clears the key's park: the release that follows
+    /// the refusal parks AFTER this clear, and that later park is
+    /// handled by the freshness window, but a park that arrived before
+    /// the refusal must not survive it.
+    #[tokio::test]
+    async fn a_refused_start_clears_the_park() {
+        let (ws, mut updates) = crate::Workspace::testing_stub();
+        let owner = key("owner");
+        ws.dictate_runtime.lock().stop_pending = Some((owner.clone(), Instant::now()));
+
+        handle_dictate_start(&ws, owner.clone()).await;
+
+        assert_eq!(ws.dictate_runtime.lock().stop_pending, None);
+        let ended = updates.recv().await.expect("the refusal echo");
+        assert!(matches!(
+            ended,
+            SessionUpdate::DictateEnded { outcome: DictateOutcome::Refused { .. }, .. }
+        ));
     }
 
     /// Closing the session that owns a live take must release the
