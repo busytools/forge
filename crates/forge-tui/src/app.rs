@@ -1652,7 +1652,7 @@ mod tests {
             let bucket = app.session_mut(&key).expect("bucket");
             bucket.dictate = None;
             bucket.dictate_border =
-                Some(crate::app::dictate::DictateBorder::new(None, Instant::now()));
+                Some(crate::app::dictate::DictateBorder::live(None, Instant::now()));
         }
         assert!(app.shows_activity(), "the afterglow keeps easing after the take resolves");
 

@@ -1247,7 +1247,12 @@ impl App {
                     s.has_live_background_work(),
                 )
             })
-            || self.sessions.values().any(|s| s.dictate.is_some() || s.dictate_border.is_some())
+            || self.sessions.values().any(|s| {
+                s.dictate.is_some()
+                    || s.dictate_border
+                        .as_ref()
+                        .is_some_and(|border| border.animating(Instant::now()))
+            })
     }
 
     /// Set the active session's `is_compacting` flag.

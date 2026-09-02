@@ -831,16 +831,16 @@ mod tests {
                 "the landed take starts the border toward the green beat, got {corner:?}"
             );
 
-            // Backdate the beat window and keep rendering until the
-            // afterglow settles.
+            // Backdate the afterglow past its window and keep
+            // rendering until the state settles away.
             {
                 let bucket = app.session_mut(&active_key(&app)).expect("bucket");
                 let border = bucket.dictate_border.as_mut().expect("border state");
-                border.beat_until = Some(
-                    Instant::now()
-                        .checked_sub(Duration::from_millis(1))
-                        .expect("a 1 ms backdate is safe"),
-                );
+                if let crate::app::dictate::DictateBorder::Afterglow { started, .. } = border {
+                    *started = Instant::now()
+                        .checked_sub(Duration::from_millis(5_000))
+                        .expect("a 5 s backdate is safe");
+                }
             }
             for _ in 0..120 {
                 terminal.draw(|frame| render(frame, frame.area(), &mut app)).expect("draw");

@@ -443,7 +443,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 let previous =
                     bucket.dictate_border.as_ref().map(crate::app::dictate::DictateBorder::rgb);
                 bucket.dictate_border =
-                    Some(crate::app::dictate::DictateBorder::new(previous, Instant::now()));
+                    Some(crate::app::dictate::DictateBorder::live(previous, Instant::now()));
             }
         }
         SessionUpdate::DictateLevel { key, peak_db } => {
@@ -491,12 +491,14 @@ fn apply_dictate_outcome(
     }
     let live_generation = bucket.dictate.as_ref().map(|indicator| indicator.generation);
     if live_generation == Some(generation) {
+        let beat = matches!(outcome, forge_workspace::DictateOutcome::Landed { .. });
+        let frozen = bucket.dictate_border.take().map(|border| border.rgb());
         bucket.dictate = None;
-        if matches!(outcome, forge_workspace::DictateOutcome::Landed { .. })
-            && let Some(border) = bucket.dictate_border.as_mut()
-        {
-            border.beat_until = Some(Instant::now() + crate::app::dictate::GREEN_BEAT);
-        }
+        bucket.dictate_border = frozen.map(|rgb| crate::app::dictate::DictateBorder::Afterglow {
+            started: Instant::now(),
+            rgb,
+            beat,
+        });
     }
     if let Some(notice) = notice {
         bucket.set_dictate_notice(notice);

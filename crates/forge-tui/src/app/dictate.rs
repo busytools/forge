@@ -251,45 +251,77 @@ impl DictateIndicator {
     }
 }
 
-/// The border's eased colour state for one session's composer. It
-/// exists only while a take is live or its afterglow is still
-/// settling; once the colour is back at the composer's orange the
-/// bucket drops it, so idle rendering stays untouched.
+/// The composer border's dictate state for one session: the eased
+/// colour while a take is live, then a frozen snapshot the afterglow
+/// computes from, so nothing on a background bucket needs a render
+/// visit to die.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct DictateBorder {
-    pub(crate) rgb: [f32; 3],
-    pub(crate) beat_until: Option<Instant>,
-    pub(crate) last_step: Instant,
+pub(crate) enum DictateBorder {
+    Live { rgb: [f32; 3], last_step: Instant },
+    Afterglow { started: Instant, rgb: [f32; 3], beat: bool },
 }
 
 impl DictateBorder {
     /// A new take carries over wherever the border currently sits, so
     /// a quick re-dictate never snaps.
-    pub(crate) fn new(previous: Option<[f32; 3]>, now: Instant) -> Self {
-        Self { rgb: previous.unwrap_or(ORANGE), beat_until: None, last_step: now }
+    pub(crate) fn live(previous: Option<[f32; 3]>, now: Instant) -> Self {
+        Self::Live { rgb: previous.unwrap_or(ORANGE), last_step: now }
     }
 
     pub(crate) fn rgb(&self) -> [f32; 3] {
-        self.rgb
+        match self {
+            Self::Live { rgb, .. } | Self::Afterglow { rgb, .. } => *rgb,
+        }
+    }
+
+    /// Whether the border still owes frames: a live take always, an
+    /// afterglow only until its colour is analytically home.
+    pub(crate) fn animating(&self, now: Instant) -> bool {
+        match self {
+            Self::Live { .. } => true,
+            Self::Afterglow { .. } => afterglow_colour(self, now).is_some(),
+        }
     }
 }
 
 /// The border target per take state. Recording rides the level toward
-/// the hot tint; transcription hands off to blue; the landed beat is
-/// green for its window, then the composer's normal orange.
-pub(crate) fn border_target(bucket: &UiSession, now: Instant) -> [f32; 3] {
-    if let Some(indicator) = bucket.dictate.as_ref() {
-        return match indicator.phase {
+/// the hot tint; transcription hands off to blue; with no take the
+/// afterglow easing carries the target instead.
+fn border_target(bucket: &UiSession) -> [f32; 3] {
+    match bucket.dictate.as_ref() {
+        Some(indicator) => match indicator.phase {
             DictatePhase::Recording => mix3(ORANGE, HOT, indicator.meter.current() * 0.35),
             DictatePhase::Transcribing => BLUE,
-        };
+        },
+        None => ORANGE,
     }
-    let beat_live = bucket
-        .dictate_border
-        .as_ref()
-        .and_then(|border| border.beat_until)
-        .is_some_and(|until| now < until);
-    if beat_live { GREEN } else { ORANGE }
+}
+
+/// One eased step toward `to_db`, 0.12 per 50 ms of elapsed time.
+fn eased(from: [f32; 3], to: [f32; 3], elapsed_ms: f32) -> [f32; 3] {
+    let ticks = (elapsed_ms / 50.0).max(1.0);
+    let t = 1.0 - (1.0 - BORDER_EASE_PER_TICK).powf(ticks);
+    mix3(from, to, t)
+}
+
+/// The afterglow's colour, computed purely from its own snapshot: a
+/// landed take beats green for the beat window, then everything eases
+/// home. `None` once back within a colour step of the composer's
+/// orange, which is how the state expires without a render visit.
+fn afterglow_colour(border: &DictateBorder, now: Instant) -> Option<[f32; 3]> {
+    let DictateBorder::Afterglow { started, rgb, beat } = border else {
+        return Some(border.rgb());
+    };
+    let elapsed_ms = now.saturating_duration_since(*started).as_secs_f32() * 1000.0;
+    let beat_ms = GREEN_BEAT.as_secs_f32() * 1000.0;
+    let (from, to, step_ms) = if *beat && elapsed_ms < beat_ms {
+        (*rgb, GREEN, elapsed_ms)
+    } else {
+        let tail_ms = if *beat { elapsed_ms - beat_ms } else { elapsed_ms };
+        (if *beat { GREEN } else { *rgb }, ORANGE, tail_ms)
+    };
+    let colour = eased(from, to, step_ms);
+    (colour_distance(colour, ORANGE) >= 0.5).then_some(colour)
 }
 
 /// Advance the active composer's border easing one render and return
@@ -297,22 +329,24 @@ pub(crate) fn border_target(bucket: &UiSession, now: Instant) -> [f32; 3] {
 /// and the plain orange must stand.
 pub(crate) fn border_color(app: &mut App, now: Instant) -> Option<Color> {
     let bucket = app.try_active_bucket_mut()?;
-    let target = border_target(bucket, now);
-    let take_live = bucket.dictate.is_some();
-    let border = bucket.dictate_border.as_mut()?;
-    let elapsed_ms = now.duration_since(border.last_step).as_secs_f32() * 1000.0;
-    border.last_step = now;
-    let ticks = (elapsed_ms / 50.0).max(1.0);
-    let t = 1.0 - (1.0 - BORDER_EASE_PER_TICK).powf(ticks);
-    for (i, &component) in target.iter().enumerate() {
-        border.rgb[i] += (component - border.rgb[i]) * t;
+    if bucket.dictate_border.as_ref().is_some_and(|border| matches!(border, DictateBorder::Live { .. })) {
+        let target = border_target(bucket);
+        if let Some(DictateBorder::Live { rgb, last_step }) = bucket.dictate_border.as_mut() {
+            let elapsed_ms = now.duration_since(*last_step).as_secs_f32() * 1000.0;
+            *last_step = now;
+            *rgb = eased(*rgb, target, elapsed_ms);
+            if bucket.dictate.is_none() && colour_distance(*rgb, ORANGE) < 0.5 {
+                bucket.dictate_border = None;
+                return None;
+            }
+            return Some(rgbf(*rgb));
+        }
     }
-    let beat_live = border.beat_until.is_some_and(|until| now < until);
-    if !take_live && !beat_live && colour_distance(border.rgb, ORANGE) < 0.5 {
+    let Some(colour) = afterglow_colour(bucket.dictate_border.as_ref()?, now) else {
         bucket.dictate_border = None;
         return None;
-    }
-    Some(rgbf(border.rgb))
+    };
+    Some(rgbf(colour))
 }
 
 /// The one notice row the box shows after a take resolves. Lives on
@@ -536,7 +570,8 @@ pub(crate) fn notice_style(severity: NoticeSeverity) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_workspace::DictateOutcome;
+    use crate::app::events::apply_session_update;
+    use forge_workspace::{DictateOutcome, SessionUpdate};
 
     fn rgb_distance(a: Color, b: Color) -> f32 {
         let (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) = (a, b) else {
@@ -784,14 +819,13 @@ mod tests {
 
     #[test]
     fn border_targets_follow_the_take_state() {
-        let now = Instant::now();
         let mut bucket = UiSession {
             dictate: Some(DictateIndicator::recording(-50.0, 1)),
             ..UiSession::default()
         };
-        let quiet = border_target(&bucket, now);
+        let quiet = border_target(&bucket);
         bucket.dictate.as_mut().expect("live").push_level(-6.0);
-        let loud = border_target(&bucket, now);
+        let loud = border_target(&bucket);
         assert!(
             colour_distance(loud, HOT) < colour_distance(quiet, HOT),
             "a louder frame rides the border toward the hot tint"
@@ -799,24 +833,91 @@ mod tests {
 
         bucket.dictate.as_mut().expect("bucket").begin_transcribing();
         assert!(
-            same_colour(border_target(&bucket, now), BLUE),
+            same_colour(border_target(&bucket), BLUE),
             "transcription hands the border to blue"
         );
 
         bucket.dictate = None;
-        bucket.dictate_border = Some(DictateBorder::new(None, now));
         assert!(
-            same_colour(border_target(&bucket, now), ORANGE),
+            same_colour(border_target(&bucket), ORANGE),
             "a resolved take targets the normal orange"
         );
-        bucket.dictate_border.as_mut().expect("border").beat_until =
-            Some(now + Duration::from_millis(100));
-        assert!(same_colour(border_target(&bucket, now), GREEN), "the landed take beats green");
-        bucket.dictate_border.as_mut().expect("border").beat_until =
-            Some(now.checked_sub(Duration::from_millis(1)).expect("a 1 ms backdate is safe"));
+    }
+
+    #[test]
+    fn the_afterglow_beats_green_then_eases_home() {
+        let now = Instant::now();
+        let beat = DictateBorder::Afterglow { started: now, rgb: BLUE, beat: true };
+        let mid_beat = afterglow_colour(&beat, now + Duration::from_millis(200))
+            .expect("inside the beat window the colour stands");
         assert!(
-            same_colour(border_target(&bucket, now), ORANGE),
-            "past the beat the border eases back to the composer's normal orange"
+            colour_distance(mid_beat, GREEN) < colour_distance(BLUE, GREEN),
+            "the beat eases the frozen colour toward green, got {mid_beat:?}"
+        );
+        let tail = afterglow_colour(&beat, now + Duration::from_millis(700))
+            .expect("early in the tail the colour stands");
+        assert!(
+            colour_distance(tail, ORANGE) < colour_distance(GREEN, ORANGE),
+            "past the beat the colour eases home to orange, got {tail:?}"
+        );
+        assert_eq!(
+            afterglow_colour(&beat, now + Duration::from_millis(10_000)),
+            None,
+            "past the window the afterglow is gone with no render visit"
+        );
+
+        let cancelled = DictateBorder::Afterglow {
+            started: now,
+            rgb: BLUE,
+            beat: false,
+        };
+        let easing_home = afterglow_colour(&cancelled, now + Duration::from_millis(50))
+            .expect("a cancelled take eases home too");
+        assert!(
+            colour_distance(easing_home, ORANGE) < colour_distance(BLUE, ORANGE),
+            "no beat: the frozen colour eases straight home, got {easing_home:?}"
+        );
+    }
+
+    #[test]
+    fn an_afterglow_self_expires_without_render_visits() {
+        let mut app = App::test_default();
+        let other = forge_workspace::SessionKey::from_session_id("other-project");
+        app.sessions.insert(other.clone(), UiSession::new(other.clone()));
+        {
+            let bucket = app.sessions.get_mut(&other).expect("bucket");
+            bucket.dictate = Some(DictateIndicator::recording(-50.0, 1));
+            bucket.dictate_border = Some(DictateBorder::live(None, Instant::now()));
+        }
+        assert!(app.shows_activity(), "a background take is live work");
+
+        // Its take resolves while another session holds the focus; the
+        // reducer runs and leaves the afterglow behind.
+        apply_session_update(
+            &mut app,
+            SessionUpdate::DictateEnded {
+                key: other.clone(),
+                generation: 1,
+                outcome: DictateOutcome::Landed { text: "landed".to_owned(), truncated: false },
+            },
+        );
+        assert!(app.shows_activity(), "the beat is still inside its window");
+
+        let bucket = app.sessions.get_mut(&other).expect("bucket");
+        let border = bucket.dictate_border.as_mut().expect("the afterglow persists on the bucket");
+        let DictateBorder::Afterglow { started, .. } = border else {
+            panic!("the resolved take left an afterglow, got {border:?}");
+        };
+        *started = Instant::now()
+            .checked_sub(Duration::from_millis(5_000))
+            .expect("a 5 s backdate is safe");
+        assert!(
+            !app.shows_activity(),
+            "the afterglow self-expires with no border_color call in between"
+        );
+        assert!(
+            !app.sessions.get(&other).expect("bucket").dictate.is_some(),
+            "and the resolved take is gone from the bucket"
         );
     }
 
@@ -827,9 +928,11 @@ mod tests {
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
         {
             let bucket = app.session_mut(&key).expect("bucket");
-            let mut border = DictateBorder::new(None, Instant::now());
-            border.rgb = BLUE;
-            bucket.dictate_border = Some(border);
+            bucket.dictate_border = Some(DictateBorder::Afterglow {
+                started: Instant::now(),
+                rgb: BLUE,
+                beat: false,
+            });
         }
         let now = Instant::now();
         assert!(
@@ -837,8 +940,8 @@ mod tests {
             "a settling afterglow still draws its eased colour"
         );
         let mut dropped = false;
-        for _ in 0..200 {
-            if border_color(&mut app, now + Duration::from_millis(50)).is_none() {
+        for step in 1..400 {
+            if border_color(&mut app, now + Duration::from_millis(step * 50)).is_none() {
                 dropped = true;
                 break;
             }
@@ -857,7 +960,7 @@ mod tests {
             let mut indicator = DictateIndicator::recording(-50.0, 1);
             indicator.begin_transcribing();
             bucket.dictate = Some(indicator);
-            bucket.dictate_border = Some(DictateBorder::new(None, Instant::now()));
+            bucket.dictate_border = Some(DictateBorder::live(None, Instant::now()));
         }
         let now = Instant::now();
         let first = border_color(&mut app, now).expect("mid-ease colour");
