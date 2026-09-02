@@ -299,6 +299,11 @@ mod tests {
                     if model == "deepseek/deepseek-v4-pro-0813"),
             "enter dispatches SetModel for the highlighted row, got: {dispatched:?}",
         );
+        assert_eq!(
+            app.current_model().map(|current| current.resolved_id.as_str()),
+            Some("deepseek/deepseek-v4-pro-0813"),
+            "the optimistic apply already shows the committed model",
+        );
     }
 
     /// The open-to-commit window: the picker's rows belong to the
