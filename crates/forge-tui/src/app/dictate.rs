@@ -498,31 +498,29 @@ pub(crate) fn dictate_row_visible(app: &App) -> bool {
 
 /// The row's content: a stamped post-take notice when present, else
 /// the live take's status row. The two never share the slot.
-pub(crate) fn dictate_row_content(app: &App, width: usize) -> Line<'static> {
-    let Some(bucket) = app.active_session() else { return Line::default() };
+pub(crate) fn dictate_row_content(app: &mut App, width: usize) -> Line<'static> {
+    let reduced_motion = app.config.prefers_reduced_motion_effective();
+    let pulse_ms = app.spinner_epoch.elapsed().as_secs_f32() * 1000.0;
+    let Some(bucket) = app.try_active_bucket_mut() else { return Line::default() };
     if let Some(notice) = bucket.visible_dictate_notice() {
         return Line::from(Span::styled(
             format!("  {}", notice.text),
             notice_style(notice.severity),
         ));
     }
-    let Some(indicator) = bucket.dictate.as_ref() else { return Line::default() };
-    status_row(
-        indicator,
-        width,
-        app.config.prefers_reduced_motion_effective(),
-        app.spinner_epoch.elapsed().as_secs_f32() * 1000.0,
-    )
+    let Some(indicator) = bucket.dictate.as_mut() else { return Line::default() };
+    status_row(indicator, width, reduced_motion, pulse_ms, Instant::now())
 }
 
-/// The status row for a live take: indicator dot, mm:ss timer, label,
-/// meter, right-aligned esc hint. Both live states share the anatomy;
-/// only colour and freeze change on the handoff.
+/// The status row for a live take: indicator dot, mm:ss timer, live dB
+/// figure, label, meter, right-aligned esc hint. Both live states share
+/// the anatomy; only colour and freeze change on the handoff.
 fn status_row(
-    indicator: &DictateIndicator,
+    indicator: &mut DictateIndicator,
     width: usize,
     reduced_motion: bool,
     pulse_ms: f32,
+    now: Instant,
 ) -> Line<'static> {
     let recording = indicator.phase == DictatePhase::Recording;
     let dot_glyph = if recording { "\u{25cf}" } else { "\u{25cc}" };
@@ -530,8 +528,27 @@ fn status_row(
     let timer_text = format_clock(indicator.take_elapsed());
     let label = if recording { "listening " } else { "transcribing " };
     let esc = "esc cancel";
+    // The dB figure the caret spot used to carry: its text is the 5 Hz
+    // held reading, its colour follows the live level and dims when
+    // gated. Transcription holds it DIM beside the frozen meter.
+    let (db, level) = indicator.db_readout(now);
+    #[allow(clippy::cast_possible_truncation)]
+    let whole_db = db.round() as i64;
+    let db_text = format!("{whole_db} dB");
+    let db_colour = if recording && level > FLOOR_FRAC {
+        rgbf(mix3(mix3(METER_LOW, ORANGE, 0.4 + 0.6 * level), HOT, level * 0.5))
+    } else {
+        theme::DIM
+    };
 
-    let prefix_len = 2 + 1 + 1 + timer_text.chars().count() + 1 + label.chars().count();
+    let prefix_len = 2
+        + 1
+        + 1
+        + timer_text.chars().count()
+        + 1
+        + db_text.chars().count()
+        + 1
+        + label.chars().count();
     let space = width.saturating_sub(prefix_len + esc.len());
     let meter_len = METER_WIDTH.min(space.saturating_sub(1));
     let pad = space - meter_len;
@@ -553,6 +570,8 @@ fn status_row(
             timer_text,
             Style::default().fg(if recording { theme::RUST_ORANGE } else { theme::DIM }),
         ),
+        Span::raw(" "),
+        Span::styled(db_text, Style::default().fg(db_colour)),
         Span::raw(" "),
         Span::styled(label.to_owned(), Style::default().fg(theme::DIM)),
     ];
@@ -588,39 +607,6 @@ fn meter_cell_colour(frac: f32, phase: DictatePhase) -> Color {
 fn format_clock(elapsed: Duration) -> String {
     let secs = elapsed.as_secs();
     format!("{}:{:02}", secs / 60, secs % 60)
-}
-
-/// The cursor spot's live dB readout while recording: the text to
-/// paint at the caret and its colour. `None` outside a recording, so
-/// the normal blinking cursor stands.
-pub(crate) fn active_db_readout(app: &mut App, now: Instant) -> Option<(String, Color)> {
-    let bucket = app.try_active_bucket_mut()?;
-    let indicator = bucket.dictate.as_mut()?;
-    if indicator.phase != DictatePhase::Recording {
-        return None;
-    }
-    // The readout paints the cells after the caret, so it only shows
-    // at end-of-draft, where the design depicts it; mid-draft the
-    // blinking cursor stands and the draft keeps its text.
-    let (row, col) = bucket.input.cursor();
-    let last_row = bucket.input.lines().len().saturating_sub(1);
-    let last_col = bucket.input.lines().last().map_or(0, |line| line.chars().count());
-    if row != last_row || col != last_col {
-        return None;
-    }
-    let (db, _) = indicator.db_readout(now);
-    // Rounded to whole dB; the environment sits within (-100, 0), so
-    // the value is a small integer already.
-    #[allow(clippy::cast_possible_truncation)]
-    let whole_db = db.round() as i64;
-    let text = format!("{whole_db} dB");
-    let level = indicator.meter.current();
-    let colour = if level > FLOOR_FRAC {
-        rgbf(mix3(mix3(METER_LOW, ORANGE, 0.4 + 0.6 * level), HOT, level * 0.5))
-    } else {
-        theme::DIM
-    };
-    Some((text, colour))
 }
 
 /// Colour for a stamped notice's severity.
@@ -914,14 +900,14 @@ mod tests {
         }
         bucket.dictate = Some(indicator);
 
-        // At 35 cols the meter shrinks to five cells; the newest five
-        // frames are silence, so those cells are the floor glyph - the
-        // loud frames have already scrolled off the left.
-        let line = dictate_row_content(&app, 35);
+        // At 45 cols the meter shrinks to eight cells; the newest
+        // eight frames are silence, so those cells are the floor
+        // glyph - the loud frames have already scrolled off the left.
+        let line = dictate_row_content(&mut app, 45);
         let cells: Vec<&str> = line.spans.iter().map(|span| span.content.as_ref()).collect();
         assert_eq!(
-            &cells[6..11],
-            &["\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}"],
+            &cells[8..16],
+            &["\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}"],
             "a narrow meter renders the newest frames, so the right edge is now"
         );
     }
@@ -1014,7 +1000,7 @@ mod tests {
         });
 
         assert!(dictate_row_visible(&app), "the notice keeps its row");
-        let line = dictate_row_content(&app, 74);
+        let line = dictate_row_content(&mut app, 74);
         let text: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
         assert!(
             text.contains("try again") && !text.contains("listening"),
@@ -1267,18 +1253,68 @@ mod tests {
     }
 
     #[test]
-    fn the_db_readout_is_a_recording_only_surface() {
+    fn the_db_figure_rides_the_status_row() {
         let mut app = App::test_default();
-        assert_eq!(active_db_readout(&mut app, Instant::now()), None, "idle has no readout");
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
-        let bucket = app.session_mut(&key).expect("bucket");
-        let mut indicator = DictateIndicator::recording(-50.0, 1);
-        indicator.begin_transcribing();
-        bucket.dictate = Some(indicator);
+        {
+            let bucket = app.session_mut(&key).expect("bucket");
+            bucket.dictate = Some(DictateIndicator::recording(-50.0, 1));
+        }
+        let line = dictate_row_content(&mut app, 74);
+        let texts: Vec<&str> = line.spans.iter().map(|span| span.content.as_ref()).collect();
+        let timer = texts.iter().position(|t| *t == "0:00").expect("the timer is on the row");
+        assert_eq!(texts[timer + 2], "-50 dB", "the live figure sits right after the timer");
+        assert!(
+            texts[timer + 4].starts_with("listening"),
+            "the label follows the figure, got {texts:?}"
+        );
         assert_eq!(
-            active_db_readout(&mut app, Instant::now()),
-            None,
-            "transcription returns the normal blinking cursor"
+            line.spans[timer + 2].style.fg,
+            Some(theme::DIM),
+            "a gated figure dims"
+        );
+
+        {
+            let bucket = app.session_mut(&key).expect("bucket");
+            let indicator = bucket.dictate.as_mut().expect("a take is in flight");
+            for _ in 0..10 {
+                indicator.push_level(-6.0);
+            }
+        }
+        let line = dictate_row_content(&mut app, 74);
+        let texts: Vec<&str> = line.spans.iter().map(|span| span.content.as_ref()).collect();
+        let timer = texts.iter().position(|t| *t == "0:00").expect("the timer is on the row");
+        assert_ne!(
+            line.spans[timer + 2].style.fg,
+            Some(theme::DIM),
+            "a loud figure takes the level colour, got {:?}",
+            line.spans[timer + 2].style.fg
+        );
+    }
+
+    #[test]
+    fn the_transcribing_row_holds_the_figure_dim() {
+        let mut app = App::test_default();
+        let key = app.active_session_key.clone().expect("test_default has an active bucket");
+        {
+            let bucket = app.session_mut(&key).expect("bucket");
+            let mut indicator = DictateIndicator::recording(-50.0, 1);
+            for _ in 0..10 {
+                indicator.push_level(-6.0);
+            }
+            indicator.begin_transcribing();
+            bucket.dictate = Some(indicator);
+        }
+        let line = dictate_row_content(&mut app, 74);
+        let texts: Vec<&str> = line.spans.iter().map(|span| span.content.as_ref()).collect();
+        let figure = texts
+            .iter()
+            .position(|t| t.ends_with(" dB"))
+            .expect("the frozen figure stays on the row");
+        assert_eq!(
+            line.spans[figure].style.fg,
+            Some(theme::DIM),
+            "the frozen figure dims alongside the frozen meter"
         );
     }
 
