@@ -668,7 +668,20 @@ mod tests {
         fn an_idle_dictate_available_composer_is_a_plain_box() {
             let mut app = App::test_default();
             app.dictate_available = true;
-            let rows = render_input(&mut app, 80, 4);
+            let mut terminal = Terminal::new(TestBackend::new(80, 4)).expect("terminal");
+            terminal.draw(|frame| render(frame, frame.area(), &mut app)).expect("draw");
+            let buffer = terminal.backend().buffer().clone();
+            let rows: Vec<String> = (0..4)
+                .map(|y| {
+                    (0..80)
+                        .map(|x| {
+                            buffer.cell((x, y)).map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+                        })
+                        .collect::<String>()
+                        .trim_end()
+                        .to_owned()
+                })
+                .collect();
             assert!(
                 rows[0].starts_with("\u{250f}\u{2501}"),
                 "idle reserves nothing on the border, got: {}",
@@ -681,6 +694,17 @@ mod tests {
             assert!(
                 !rows.iter().any(|row| row.contains("esc")),
                 "idle draws no esc hint anywhere in the box"
+            );
+            let corner = buffer.cell((0, 0)).expect("corner").style();
+            assert_eq!(
+                corner.fg,
+                Some(crate::ui::theme::RUST_ORANGE),
+                "the idle border is the composer's own orange, got {:?}",
+                corner.fg
+            );
+            assert!(
+                corner.add_modifier.contains(ratatui::style::Modifier::BOLD),
+                "the idle border keeps its bold chrome"
             );
             assert_eq!(
                 visual_line_count(&mut app, 80),
