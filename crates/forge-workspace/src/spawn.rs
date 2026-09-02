@@ -94,11 +94,13 @@ pub(crate) fn stamp_account_permission_mode(
         return;
     };
     let perms = map
-        .entry("permissions".to_owned())
+        .entry(SessionLaunchSettings::PERMISSIONS_KEY.to_owned())
         .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
     if let Some(perms) = perms.as_object_mut() {
-        perms
-            .insert("defaultMode".to_owned(), serde_json::Value::String(mode.as_wire().to_owned()));
+        perms.insert(
+            SessionLaunchSettings::PERMISSIONS_DEFAULT_MODE_KEY.to_owned(),
+            serde_json::Value::String(mode.as_wire().to_owned()),
+        );
     }
 }
 

@@ -303,9 +303,11 @@ async fn emit_connected(
         .map(str::to_owned)
         .or_else(|| {
             launch_settings_record
-                .and_then(|r| r.get("permissions"))
+                .and_then(|r| r.get(crate::client::SessionLaunchSettings::PERMISSIONS_KEY))
                 .and_then(serde_json::Value::as_object)
-                .and_then(|p| p.get("defaultMode"))
+                .and_then(|p| {
+                    p.get(crate::client::SessionLaunchSettings::PERMISSIONS_DEFAULT_MODE_KEY)
+                })
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned)
         });
@@ -766,10 +768,12 @@ fn build_options_with_callback(
     if let Some(settings_value) = launch_settings.settings.as_ref()
         && let Some(settings_record) = settings_value.as_object()
     {
-        if let Some(perms) =
-            settings_record.get("permissions").and_then(serde_json::Value::as_object)
-            && let Some(default_mode_str) =
-                perms.get("defaultMode").and_then(serde_json::Value::as_str)
+        if let Some(perms) = settings_record
+            .get(crate::client::SessionLaunchSettings::PERMISSIONS_KEY)
+            .and_then(serde_json::Value::as_object)
+            && let Some(default_mode_str) = perms
+                .get(crate::client::SessionLaunchSettings::PERMISSIONS_DEFAULT_MODE_KEY)
+                .and_then(serde_json::Value::as_str)
             && let Ok(mode) = parse_permission_mode(default_mode_str)
         {
             b = b.permission_mode(mode);
