@@ -105,8 +105,8 @@ fn tool_title(name: &str, input: &Value) -> String {
             if file_path.is_empty() { name.to_owned() } else { format!("{name} {file_path}") }
         }
         "Move" => {
-            let from = s("from");
-            let to = s("to");
+            let from = s("from_path");
+            let to = s("to_path");
             match (from.is_empty(), to.is_empty()) {
                 (false, false) => format!("Move {from} -> {to}"),
                 (false, true) => format!("Move {from}"),
@@ -1132,7 +1132,7 @@ mod tests {
         let move_both = create_tool_call(
             "tu_m1",
             "Move",
-            &json!({"from": "/a/old.rs", "to": "/b/new.rs"}),
+            &json!({"from_path": "/a/old.rs", "to_path": "/b/new.rs"}),
             None,
         );
         assert_eq!(move_both.title, "Move /a/old.rs -> /b/new.rs");
