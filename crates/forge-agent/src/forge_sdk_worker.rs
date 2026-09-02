@@ -264,6 +264,39 @@ pub(crate) async fn spawn_session(
     Ok(())
 }
 
+/// The Connected payload's mode state: the launch-time mode read from
+/// the init record, falling back to the launch settings' stamped
+/// defaultMode, with bypass offered only when the session launched
+/// into it.
+fn initial_mode_state(
+    init_record: Option<&serde_json::Map<String, serde_json::Value>>,
+    launch_settings_record: Option<&serde_json::Map<String, serde_json::Value>>,
+    supports_auto_mode: bool,
+) -> forge_primitives::ModeState {
+    let raw_permission_mode = init_record
+        .and_then(|r| r.get("permissionMode"))
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            launch_settings_record
+                .and_then(|r| r.get(crate::client::SessionLaunchSettings::PERMISSIONS_KEY))
+                .and_then(serde_json::Value::as_object)
+                .and_then(|p| {
+                    p.get(crate::client::SessionLaunchSettings::PERMISSIONS_DEFAULT_MODE_KEY)
+                })
+                .and_then(serde_json::Value::as_str)
+        });
+    let mode =
+        raw_permission_mode.and_then(PermissionMode::from_wire).unwrap_or(PermissionMode::Ask);
+    let launched_into_bypass = mode == PermissionMode::BypassPermissions;
+    let supported = bridge_commands::supported_mode_ids_filtered(
+        supports_auto_mode,
+        launched_into_bypass,
+        Some(mode),
+        &[],
+    );
+    bridge_commands::build_mode_state_from_supported(mode, &supported)
+}
+
 /// Build the typed `Connected` envelope from the SDK's cached init data
 /// + the initialize `control_response`, and emit it onto `event_tx`.
 async fn emit_connected(
@@ -297,41 +330,17 @@ async fn emit_connected(
         })
         .unwrap_or("")
         .to_owned();
-    let raw_permission_mode = init_record
-        .and_then(|r| r.get("permissionMode"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
-        .or_else(|| {
-            launch_settings_record
-                .and_then(|r| r.get(crate::client::SessionLaunchSettings::PERMISSIONS_KEY))
-                .and_then(serde_json::Value::as_object)
-                .and_then(|p| {
-                    p.get(crate::client::SessionLaunchSettings::PERMISSIONS_DEFAULT_MODE_KEY)
-                })
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        });
-    let init_permission_mode = raw_permission_mode
-        .as_deref()
-        .and_then(PermissionMode::from_wire)
-        .or(Some(PermissionMode::Ask));
     let current_model = session_lifecycle::resolve_current_model_from_inputs(
         &init_model_id,
         None,
         None,
         &available_models,
     );
-    let launched_into_bypass = init_permission_mode == Some(PermissionMode::BypassPermissions);
-    let mode = init_permission_mode.map(|m| {
-        let supports_auto_mode = current_model.supports_auto_mode == Some(true);
-        let supported = bridge_commands::supported_mode_ids_filtered(
-            supports_auto_mode,
-            launched_into_bypass,
-            Some(m),
-            &[],
-        );
-        bridge_commands::build_mode_state_from_supported(m, &supported)
-    });
+    let mode = Some(initial_mode_state(
+        init_record,
+        launch_settings_record,
+        current_model.supports_auto_mode == Some(true),
+    ));
 
     let resumed = resume_id
         .map(|prev_session_id| load_history_messages(config_dir, prev_session_id, cwd, session_id));
@@ -1397,7 +1406,7 @@ pub(crate) fn clamp_percentage_to_u8(p: f64) -> u8 {
 mod tests {
     use super::{
         PendingQuestions, PendingResponses, build_forge_system_prompt, deliver_permission_response,
-        deliver_question_response, frame_session_id, log_failed_mcp_servers,
+        deliver_question_response, frame_session_id, initial_mode_state, log_failed_mcp_servers,
         synth_permission_request,
     };
 
@@ -1655,6 +1664,17 @@ mod tests {
             &super::AccountBinding { config_dir: Path::new("/cfg/x"), env: &HashMap::new() },
         );
         assert_eq!(options.permission_mode, PermissionMode::Ask);
+    }
+
+    #[test]
+    fn bypass_init_record_seeds_the_connected_mode_list() {
+        let init_record = serde_json::json!({ "permissionMode": "bypassPermissions" });
+        let state = initial_mode_state(init_record.as_object(), None, false);
+        assert!(
+            state.available_modes.iter().any(|m| m.id == "bypassPermissions"),
+            "bypass launch offers bypass at connect: {:?}",
+            state.available_modes,
+        );
     }
 
     #[test]
