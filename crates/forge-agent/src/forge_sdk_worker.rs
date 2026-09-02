@@ -526,20 +526,33 @@ async fn reader_loop(
                     && init_data_of(&msg)
                         .is_some_and(|data| sdk_servers_missing_tools(data, &sdk_server_names));
                 if event_tx
-                    .send(AgentEvent::SdkMessage { session_id: session_id_for_sdk_msg, msg })
+                    .send(AgentEvent::SdkMessage {
+                        session_id: session_id_for_sdk_msg.clone(),
+                        msg,
+                    })
                     .is_err()
                 {
                     return;
                 }
                 if needs_heal {
                     heal_attempted = true;
-                    if let Err(err) = readd_sdk_mcp_servers(&client, &sdk_server_names).await {
-                        tracing::warn!(
-                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                            error = %err,
-                            "sdk mcp tool re-add failed; the session keeps its boot-time tool set"
-                        );
-                    }
+                    let client = client.clone();
+                    let names = sdk_server_names.clone();
+                    let session_id = session_id_for_sdk_msg;
+                    // Detached: the CLI answers mcp_set_servers only after
+                    // the re-handshake it triggers completes, so awaiting
+                    // inline would freeze this event pump for the whole
+                    // re-handshake.
+                    tokio::spawn(async move {
+                        if let Err(err) = readd_sdk_mcp_servers(&client, &names).await {
+                            tracing::warn!(
+                                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                                session_id = %session_id,
+                                error = %err,
+                                "sdk mcp tool re-add failed; tools remain missing"
+                            );
+                        }
+                    });
                 }
             }
             Err(err) => {
@@ -587,17 +600,29 @@ fn sdk_servers_missing_tools(init_data: &serde_json::Value, server_names: &[Stri
     })
 }
 
+/// The CLI answers `mcp_set_servers` only after the re-handshake it
+/// triggers completes, so the wait is bounded past the CLI's own ~30s
+/// request budget.
+const SDK_MCP_READD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Force the CLI to re-handshake every registered sdk MCP server by
 /// removing them from its dynamic set and adding them back. Answers run
 /// promptly once the session is up, so the re-handshake revives the
 /// tools the boot-time handshake lost.
 async fn readd_sdk_mcp_servers(client: &Client, server_names: &[String]) -> anyhow::Result<()> {
-    client.mcp_set_servers(serde_json::json!({})).await?;
+    tokio::time::timeout(SDK_MCP_READD_TIMEOUT, client.mcp_set_servers(serde_json::json!({})))
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out waiting for the sdk server removal to answer"))??;
     let servers: serde_json::Map<String, serde_json::Value> = server_names
         .iter()
         .map(|name| (name.clone(), serde_json::json!({ "type": "sdk", "name": name })))
         .collect();
-    let response = client.mcp_set_servers(serde_json::json!(servers)).await?;
+    let response = tokio::time::timeout(
+        SDK_MCP_READD_TIMEOUT,
+        client.mcp_set_servers(serde_json::json!(servers)),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out waiting for the sdk server re-add to answer"))??;
     tracing::info!(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
         added = ?response.added,
