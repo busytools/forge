@@ -111,9 +111,10 @@ pub use permissions::{
 };
 pub use public_types::{
     AccountInfo, ContextUsageCategory, ContextUsageResponse, ForgeAccountIdentity, McpServerConfig,
-    McpServerConnectionStatus, McpServerInfo, McpServerStatus, McpStatusResponse,
-    McpToolAnnotations, McpToolInfo, SDKSessionInfo, SandboxIgnoreViolations, SandboxNetworkConfig,
-    SandboxSettings, SessionHistory, SessionMessage, SessionMessageKind, StreamEvent,
+    McpServerConnectionStatus, McpServerInfo, McpServerStatus, McpSetServersResponse,
+    McpStatusResponse, McpToolAnnotations, McpToolInfo, SDKSessionInfo, SandboxIgnoreViolations,
+    SandboxNetworkConfig, SandboxSettings, SessionHistory, SessionMessage, SessionMessageKind,
+    StreamEvent,
 };
 pub use question::{
     QuestionAnnotation, QuestionOption, QuestionOutcome, QuestionPrompt, QuestionRequest,

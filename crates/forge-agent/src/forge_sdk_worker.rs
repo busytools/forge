@@ -186,6 +186,8 @@ pub(crate) async fn spawn_session(
     let config_dir = bridge.config_dir();
     let display_name = bridge.display_name();
     let extra_mcp_servers = bridge.extra_mcp_servers();
+    let sdk_server_names: Vec<String> =
+        extra_mcp_servers.iter().map(|(name, _)| name.clone()).collect();
     let account_env = bridge.env();
     let options = build_options_with_callback(
         cwd,
@@ -259,7 +261,8 @@ pub(crate) async fn spawn_session(
     let reader_client = client.clone();
     let span = tracing::info_span!("sdk_reader", session_id = %reader_session_id);
     tokio::spawn(
-        reader_loop(events, reader_event_tx, reader_session_id, reader_client).instrument(span),
+        reader_loop(events, reader_event_tx, reader_session_id, reader_client, sdk_server_names)
+            .instrument(span),
     );
     Ok(())
 }
@@ -510,18 +513,33 @@ async fn reader_loop(
     event_tx: mpsc::UnboundedSender<AgentEvent>,
     spawn_session_id: String,
     client: Client,
+    sdk_server_names: Vec<String>,
 ) {
+    let mut heal_attempted = false;
     while let Some(item) = events.recv().await {
         match item {
             Ok(msg) => {
                 let session_id_for_sdk_msg =
                     frame_session_id(msg.session_id(), &client.session_id(), &spawn_session_id);
                 log_failed_mcp_servers(&msg, &session_id_for_sdk_msg);
+                let needs_heal = !heal_attempted
+                    && init_data_of(&msg)
+                        .is_some_and(|data| sdk_servers_missing_tools(data, &sdk_server_names));
                 if event_tx
                     .send(AgentEvent::SdkMessage { session_id: session_id_for_sdk_msg, msg })
                     .is_err()
                 {
                     return;
+                }
+                if needs_heal {
+                    heal_attempted = true;
+                    if let Err(err) = readd_sdk_mcp_servers(&client, &sdk_server_names).await {
+                        tracing::warn!(
+                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                            error = %err,
+                            "sdk mcp tool re-add failed; the session keeps its boot-time tool set"
+                        );
+                    }
                 }
             }
             Err(err) => {
@@ -538,6 +556,56 @@ async fn reader_loop(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
         "forge_sdk reader: events stream closed",
     );
+}
+
+/// The `data` payload of a `system/init` frame, else `None`.
+fn init_data_of(msg: &forge_primitives::Message) -> Option<&serde_json::Value> {
+    let forge_primitives::Message::System { subtype, data, .. } = msg else {
+        return None;
+    };
+    (subtype == "init").then_some(data)
+}
+
+/// True when any registered sdk MCP server contributed no tools to the
+/// session's init frame. The CLI serves an sdk server's handshake over
+/// the control channel with a bounded request budget; when boot stalls
+/// outlive it, the handshake is abandoned and the CLI then reports the
+/// server `connected` with zero tools and never re-runs the handshake
+/// itself.
+fn sdk_servers_missing_tools(init_data: &serde_json::Value, server_names: &[String]) -> bool {
+    if server_names.is_empty() {
+        return false;
+    }
+    let tools = init_data.get("tools").and_then(serde_json::Value::as_array);
+    server_names.iter().any(|name| {
+        let prefix = format!("mcp__{name}__");
+        !tools
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .any(|tool| tool.starts_with(&prefix))
+    })
+}
+
+/// Force the CLI to re-handshake every registered sdk MCP server by
+/// removing them from its dynamic set and adding them back. Answers run
+/// promptly once the session is up, so the re-handshake revives the
+/// tools the boot-time handshake lost.
+async fn readd_sdk_mcp_servers(client: &Client, server_names: &[String]) -> anyhow::Result<()> {
+    client.mcp_set_servers(serde_json::json!({})).await?;
+    let servers: serde_json::Map<String, serde_json::Value> = server_names
+        .iter()
+        .map(|name| (name.clone(), serde_json::json!({ "type": "sdk", "name": name })))
+        .collect();
+    let response = client.mcp_set_servers(serde_json::json!(servers)).await?;
+    tracing::info!(
+        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+        added = ?response.added,
+        removed = ?response.removed,
+        errors = ?response.errors,
+        "sdk mcp tool re-add issued for a boot handshake that surfaced no tools"
+    );
+    Ok(())
 }
 
 /// Record any MCP server the init handshake reports as `failed`.
@@ -1459,6 +1527,56 @@ mod tests {
         let log = capture_logs(|| log_failed_mcp_servers(&init_frame_with_a_failed_server(), "s1"));
         assert!(log.contains("jetbrains"), "the record names the failed server: {log}");
         assert!(log.contains("s1"), "the record carries the resolved session id: {log}");
+    }
+
+    /// An init frame whose `tools` array carries the sdk server's tools
+    /// under their `mcp__<name>__` prefixes - the healthy-boot shape.
+    fn init_frame_with_forge_tools() -> serde_json::Value {
+        serde_json::json!({
+            "tools": [
+                "Bash", "Read", "Edit",
+                "mcp__forge__workers__tell",
+                "mcp__forge__workers__ask",
+            ],
+        })
+    }
+
+    #[test]
+    fn sdk_servers_missing_tools_is_true_when_no_tool_carries_the_prefix() {
+        let no_forge = serde_json::json!({ "tools": ["Bash", "Read", "Edit"] });
+        assert!(
+            super::sdk_servers_missing_tools(&no_forge, &["forge".to_owned()]),
+            "an init frame without mcp__forge__* tools means the sdk handshake was abandoned"
+        );
+    }
+
+    #[test]
+    fn sdk_servers_missing_tools_is_false_when_any_tool_carries_the_prefix() {
+        assert!(
+            !super::sdk_servers_missing_tools(
+                &init_frame_with_forge_tools(),
+                &["forge".to_owned()]
+            ),
+            "a healthy boot surfaces forge tools and needs no heal"
+        );
+    }
+
+    #[test]
+    fn sdk_servers_missing_tools_is_false_without_registered_servers() {
+        let no_forge = serde_json::json!({ "tools": ["Bash", "Read"] });
+        assert!(
+            !super::sdk_servers_missing_tools(&no_forge, &[]),
+            "a spawn with no sdk servers registered must never trigger the heal"
+        );
+    }
+
+    #[test]
+    fn sdk_servers_missing_tools_is_true_when_the_tools_array_is_absent() {
+        let empty = serde_json::json!({});
+        assert!(
+            super::sdk_servers_missing_tools(&empty, &["forge".to_owned()]),
+            "a missing tools array hides every sdk server's tools"
+        );
     }
 
     #[test]

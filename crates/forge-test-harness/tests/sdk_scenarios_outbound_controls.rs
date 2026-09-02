@@ -79,6 +79,54 @@ async fn wire_capture_mcp_toggle() {
     .expect("scenario run");
 }
 
+/// Remove the registered sdk server from the CLI's dynamic set and add
+/// it back. The re-add forces the CLI to re-handshake the sdk server
+/// over `mcp_message`, so the trace carries the full
+/// remove/re-add/re-handshake surface the boot-time tool heal drives.
+#[tokio::test]
+#[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
+async fn wire_capture_mcp_set_servers() {
+    use async_trait::async_trait;
+    use forge_sdk::mcp::{McpServerBuilder, Tool, ToolInput, ToolOutput};
+
+    struct PingTool;
+
+    #[async_trait]
+    impl Tool for PingTool {
+        fn name(&self) -> &'static str {
+            "ping"
+        }
+        fn description(&self) -> &'static str {
+            "Reply pong"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        async fn call(&self, _input: ToolInput) -> ToolOutput {
+            ToolOutput::text("pong")
+        }
+    }
+
+    let server = McpServerBuilder::new("probe", "0.0.1").tool(PingTool).build();
+    let opts = OptionsBuilder::new()
+        .max_turns(1)
+        .permission_mode(PermissionMode::BypassPermissions)
+        .mcp_server("probe", server)
+        .build();
+
+    run_live_scenario("mcp_set_servers", opts, |client, events| async move {
+        // Remove (dynamic set empties) then re-add (fresh sdk handshake).
+        client.mcp_set_servers(serde_json::json!({})).await?;
+        client
+            .mcp_set_servers(serde_json::json!({"probe": {"type": "sdk", "name": "probe"}}))
+            .await?;
+        client.send_user_message("Reply with only OK.").await?;
+        Ok((client, events))
+    })
+    .await
+    .expect("scenario run");
+}
+
 #[tokio::test]
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
 async fn wire_capture_stop_task() {
