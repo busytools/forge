@@ -327,10 +327,10 @@ fn rows_from_os_snapshot<'a>(
     wire_alive: &'a [&'a ToolCallInfo],
     claimed_pids: &HashSet<u32>,
 ) -> Vec<ProcessRow> {
-    // Index by pid + build a parent → children adjacency list. Both
-    // exclude claimed pids: the walk never descends into a claimed
-    // subtree, and its subtree-memory totals must not count processes
-    // that moved to the MCP section.
+    // Index by pid + build a parent → children adjacency list. The
+    // children list excludes claimed pids: the walk never descends into
+    // a claimed subtree, and its subtree-memory totals must not count
+    // processes that moved to the MCP section.
     let by_pid: HashMap<u32, &ProcessEntry> =
         snapshot.processes.iter().map(|e| (e.pid, e)).collect();
     let mut children_of: HashMap<u32, Vec<&ProcessEntry>> = HashMap::new();
