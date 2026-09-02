@@ -9,7 +9,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
 pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
@@ -32,23 +32,21 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
 
 fn render_top_region(frame: &mut Frame, area: Rect, app: &App) {
     if search_enabled(app.plugins.active_tab) {
+        // The unified single-line field: the query embedded in a one-row
+        // thick border, orange while focused, DIM otherwise. A live
+        // dictate take blips inside the border, left of the content.
+        let style = if app.plugins.search_focused {
+            crate::ui::composer::border_style()
+        } else {
+            Style::default().fg(theme::DIM)
+        };
+        let content = search_field_line(app);
         frame.render_widget(
-            Paragraph::new(search_field_line(app))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(if app.plugins.search_focused {
-                            " Search "
-                        } else {
-                            " Search (Up to focus) "
-                        })
-                        .border_style(if app.plugins.search_focused {
-                            Style::default().fg(theme::RUST_ORANGE)
-                        } else {
-                            Style::default().fg(theme::DIM)
-                        }),
-                )
-                .wrap(Wrap { trim: false }),
+            Paragraph::new(crate::ui::composer::single_line_field(
+                content,
+                usize::from(area.width),
+                style,
+            )),
             area,
         );
         return;
@@ -80,15 +78,9 @@ fn render_list_region(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn top_region_height(app: &App, width: u16) -> u16 {
-    if !search_enabled(app.plugins.active_tab) {
-        return 1;
-    }
-
-    let content_height = Paragraph::new(search_field_line(app))
-        .wrap(Wrap { trim: false })
-        .line_count(width.saturating_sub(2).max(1));
-    u16::try_from(content_height).unwrap_or(u16::MAX).max(1).saturating_add(2)
+fn top_region_height(_app: &App, _width: u16) -> u16 {
+    // The single-line field is one row whatever the query length.
+    1
 }
 
 fn tab_header_line(app: &App) -> Line<'static> {
@@ -130,24 +122,29 @@ fn search_field_line(app: &App) -> Line<'static> {
     let hint_style = Style::default().fg(theme::DIM);
     let query = app.plugins.search_query_for(app.plugins.active_tab);
 
+    let mut spans = Vec::new();
+    if app.plugins.search_focused
+        && let Some(blip) =
+            crate::app::dictate::blip_span(app, app.spinner_epoch.elapsed().as_secs_f32() * 1000.0)
+    {
+        spans.push(blip);
+    }
     if query.is_empty() {
         if app.plugins.search_focused {
-            return Line::from(vec![
-                Span::styled(" ".to_owned(), cursor_style),
-                Span::styled("Type to filter this list".to_owned(), hint_style),
-            ]);
+            spans.push(Span::styled(" ".to_owned(), cursor_style));
         }
-        return Line::from(Span::styled("Type to filter this list", hint_style));
+        spans.push(Span::styled("Type to filter this list".to_owned(), hint_style));
+        return Line::from(spans);
     }
 
     if app.plugins.search_focused {
-        return Line::from(vec![
-            Span::styled(query, text_style),
-            Span::styled(" ".to_owned(), cursor_style),
-        ]);
+        spans.push(Span::styled(query, text_style));
+        spans.push(Span::styled(" ".to_owned(), cursor_style));
+        return Line::from(spans);
     }
 
-    Line::from(Span::styled(query, text_style))
+    spans.push(Span::styled(query, text_style));
+    Line::from(spans)
 }
 
 fn installed_list(app: &App, viewport_width: u16, viewport_height: u16) -> RenderedList {
@@ -470,24 +467,48 @@ mod tests {
     use super::{search_field_line, top_region_height};
     use crate::app::App;
     use crate::app::plugins::PluginsViewTab;
-    use ratatui::widgets::{Paragraph, Wrap};
+    use crate::ui::theme;
+    use ratatui::style::Style;
 
+    /// The unified single-line field is one row whatever the query
+    /// length; long queries clip instead of growing the region.
     #[test]
-    fn top_region_height_grows_for_wrapped_search_query() {
+    fn top_region_height_stays_single_row_for_a_long_query() {
         let mut app = App::test_default();
         app.plugins.active_tab = PluginsViewTab::Installed;
         app.plugins.search_focused = true;
         app.plugins
             .installed_search_query
-            .set_text("search query that should wrap across multiple lines");
+            .set_text("search query long enough to have wrapped multiple lines");
 
-        let expected = Paragraph::new(search_field_line(&app))
-            .wrap(Wrap { trim: false })
-            .line_count(10)
-            .max(1)
-            .saturating_add(2);
+        assert_eq!(usize::from(top_region_height(&app, 12)), 1);
+    }
 
-        assert_eq!(usize::from(top_region_height(&app, 12)), expected);
-        assert!(top_region_height(&app, 12) > 3);
+    /// A focused search field embeds the query in the one-row thick
+    /// border; unfocused it dims.
+    #[test]
+    fn the_search_field_wears_the_single_line_chrome() {
+        let mut app = App::test_default();
+        app.plugins.active_tab = PluginsViewTab::Installed;
+        app.plugins.search_focused = true;
+        app.plugins.installed_search_query.set_text("retry");
+
+        let row = crate::ui::composer::single_line_field(
+            search_field_line(&app),
+            40,
+            crate::ui::composer::border_style(),
+        );
+        let text: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
+        assert!(
+            text.starts_with("\u{250f}\u{2501} ") && text.ends_with("\u{2513}"),
+            "the field is the one-row thick border, got: {text}"
+        );
+        assert!(text.contains("retry"), "the query rides inside the border, got: {text}");
+
+        // Unfocused: same shape, DIM border.
+        app.plugins.search_focused = false;
+        let dim = Style::default().fg(theme::DIM);
+        let row = crate::ui::composer::single_line_field(search_field_line(&app), 40, dim);
+        assert_eq!(row.spans[0].style.fg, Some(theme::DIM), "unfocused dims the border");
     }
 }

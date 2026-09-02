@@ -103,6 +103,23 @@ pub(crate) fn side_bordered(row: Line<'static>, width: usize, style: Style) -> L
     Line::from(spans)
 }
 
+/// The single-line field face: the content embedded in a one-row thick
+/// border, for the compact text fields. A leading blip rides inside
+/// the border, left of the content.
+pub(crate) fn single_line_field(
+    content: Line<'static>,
+    width: usize,
+    style: Style,
+) -> Line<'static> {
+    let content_width: usize = content.spans.iter().map(|span| span.content.width()).sum();
+    let fill = width.saturating_sub(content_width + 4);
+    let mut spans = vec![Span::styled("\u{250f}\u{2501} ", style)];
+    spans.extend(content.spans);
+    spans.push(Span::styled("\u{2501}".repeat(fill), style));
+    spans.push(Span::styled("\u{2513}", style));
+    Line::from(spans)
+}
+
 fn border_row(head: String, width: usize, style: Style, corner: &str) -> Line<'static> {
     let fill = width.saturating_sub(head.width() + corner.width());
     let mut spans = Vec::new();

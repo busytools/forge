@@ -48,12 +48,12 @@ pub(super) fn render_text_input_field(
     placeholder: &str,
 ) {
     let content = text_input_line(&editor.text(), editor.cursor_char_offset(), placeholder);
-    let mut spans = Vec::with_capacity(content.spans.len().saturating_add(2));
-    spans.push(Span::styled(" ", Style::default().bg(theme::USER_MSG_BG)));
-    spans.extend(content.spans);
-    spans.push(Span::styled(" ", Style::default().bg(theme::USER_MSG_BG)));
     frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme::USER_MSG_BG)),
+        Paragraph::new(crate::ui::composer::single_line_field(
+            content,
+            usize::from(area.width),
+            crate::ui::composer::border_style(),
+        )),
         area,
     );
 }

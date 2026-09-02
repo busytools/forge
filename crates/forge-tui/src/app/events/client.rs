@@ -518,7 +518,20 @@ fn dictate_destination<'a>(
         crate::app::InputFocus::DiffFinishReview => {
             app.diff_overlay.as_mut()?.finish_review.as_mut().map(|finish| &mut finish.editor)
         }
-        crate::app::InputFocus::None => None,
+        crate::app::InputFocus::None => match app.active_view {
+            crate::app::ActiveView::Plugins => {
+                // The add-marketplace field when its overlay is up, else
+                // the focused tab's search query.
+                if let Some(overlay) = app.config.add_marketplace_overlay_mut() {
+                    return Some(&mut overlay.editor);
+                }
+                if app.plugins.search_focused {
+                    return app.plugins.active_search_query_mut();
+                }
+                None
+            }
+            _ => None,
+        },
     }
 }
 

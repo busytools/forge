@@ -430,7 +430,10 @@ mod tests {
         assert!(rendered.contains("Installed (1)"));
         assert!(rendered.contains("Plugins (1)"));
         assert!(rendered.contains("Marketplace (1)"));
-        assert!(rendered.contains("Search"));
+        assert!(
+            rendered.contains("Type to filter this list"),
+            "the search field reads its placeholder now that the title row is gone"
+        );
         assert!(rendered.contains("Frontend Design From Claude Plugins Official"));
         assert!(rendered.contains("SKILL"));
         assert!(rendered.contains("Left/Right switch list"));
