@@ -581,6 +581,7 @@ fn apply_turn_error_presentation(
             bucket.turn_state = forge_primitives::runtime::SessionTurnState::default();
         }
         if !cancelled_requested {
+            clear_failed_turn_clock(app, session_key);
             handle_dead_turn(app, session_key);
         }
         super::set_bucket_lifecycle_state(
@@ -727,6 +728,7 @@ fn apply_turn_error_presentation(
             &key,
             crate::app::session::SessionLifecycleState::Idle,
         );
+        clear_failed_turn_clock(app, &key);
         handle_dead_turn(app, &key);
     }
     crate::app::session_runtime::request_context_usage_refresh(app);
@@ -746,6 +748,26 @@ fn handle_dead_turn(app: &mut App, key: &SessionKey) {
         return;
     }
     record_failed_turn(app, key);
+}
+
+/// A turn that ended in error has no duration to settle, so drop the
+/// live clock and the latest assistant's unsettled row: a failed
+/// dispatch must not leave a bar counting forever.
+fn clear_failed_turn_clock(app: &mut App, key: &SessionKey) {
+    let Some(bucket) = app.sessions.get_mut(key) else {
+        return;
+    };
+    bucket.live_turn = crate::app::state::messages::LiveTurn::default();
+    let Some(idx) = bucket.messages.iter().rposition(|m| matches!(m.role, MessageRole::Assistant))
+    else {
+        return;
+    };
+    if let Some(msg) = bucket.messages.get_mut(idx)
+        && !msg.turn_info.is_settled()
+    {
+        msg.turn_info = crate::app::state::messages::TurnInfo::default();
+        msg.invalidate_render_cache();
+    }
 }
 
 /// Stamp the bucket's `failed_turn` from the classification the turn's
