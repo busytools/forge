@@ -167,6 +167,10 @@ pub struct UiSession {
     pub available_agents: Vec<model::AvailableAgent>,
     /// Latest mode snapshot from the SDK's `system/status` events.
     pub mode: Option<ModeState>,
+    /// Pre-apply snapshot taken by the optimistic `/mode` apply, used
+    /// to roll the chip back when the CLI refuses the switch
+    /// (`SessionUpdate::SetModeFailed`).
+    pub pending_mode_rollback: Option<ModeRollback>,
     /// Hook-observed permission mode. Higher fidelity than [`Self::mode`]
     /// when the CLI changes mode without re-emitting status (#88).
     pub observed_permission_mode: Option<forge_workspace::PermissionMode>,
@@ -630,6 +634,15 @@ pub fn session_shows_spinner(lifecycle: SessionLifecycleState, has_background_wo
         || (matches!(lifecycle, SessionLifecycleState::Idle) && has_background_work)
 }
 
+/// What the optimistic `/mode` apply changed, snapshotted so a CLI
+/// refusal (`SessionUpdate::SetModeFailed`) can restore it.
+#[derive(Debug, Clone)]
+pub struct ModeRollback {
+    pub mode_state: Option<ModeState>,
+    pub turn_mode: Option<forge_workspace::PermissionMode>,
+    pub supported_mode_ids: Vec<forge_workspace::PermissionMode>,
+}
+
 impl Default for UiSession {
     fn default() -> Self {
         // Hand-rolled because `next_paste_session_id` seeds to 1;
@@ -673,6 +686,7 @@ impl Default for UiSession {
             available_commands: Vec::default(),
             available_agents: Vec::default(),
             mode: Option::default(),
+            pending_mode_rollback: Option::default(),
             observed_permission_mode: Option::default(),
             observed_effort: Option::default(),
             observed_assistant_model: Option::default(),

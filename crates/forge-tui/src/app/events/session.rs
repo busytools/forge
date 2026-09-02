@@ -929,6 +929,43 @@ pub(super) fn apply_session_update_slash_command_error(
     handle_slash_command_error_event(app, key, message);
 }
 
+/// `SessionUpdate::SetModeFailed` reducer: restore the pre-apply mode
+/// snapshot the optimistic `/mode` apply parked on the bucket, then
+/// surface the CLI's refusal as a system message.
+pub(super) fn apply_session_update_set_mode_failed(
+    app: &mut App,
+    key: &SessionKey,
+    mode: forge_workspace::PermissionMode,
+    message: &str,
+) {
+    let Some(session) = app.sessions.get_mut(key) else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "set_mode_failed_dropped",
+            message = "set mode failure dropped for an unknown session",
+            outcome = "dropped",
+            session_key = %key.as_str(),
+            reason = "unknown_session",
+        );
+        return;
+    };
+    if let Some(snapshot) = session.pending_mode_rollback.take() {
+        let mode_changed = session.mode.as_ref().map(|m| m.current_mode_id.as_str())
+            != snapshot.mode_state.as_ref().map(|m| m.current_mode_id.as_str());
+        session.mode = snapshot.mode_state;
+        session.turn_state.mode = snapshot.turn_mode;
+        session.turn_state.supported_mode_ids = snapshot.supported_mode_ids;
+        if mode_changed {
+            app.invalidate_layout(crate::app::state::LayoutInvalidation::Global);
+        }
+    }
+    handle_slash_command_error_event(
+        app,
+        key,
+        &format!("Mode switch to {} was refused by the CLI: {message}", mode.as_wire()),
+    );
+}
+
 pub(super) fn apply_session_update_service_status(
     app: &mut App,
     severity: forge_primitives::cloud::service_status::ServiceSeverity,

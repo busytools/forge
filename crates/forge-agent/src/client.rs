@@ -90,6 +90,15 @@ pub enum AgentEvent {
         session_id: String,
         message: String,
     },
+    /// The CLI refused (or failed) a `set_permission_mode` control
+    /// request. `message` carries the underlying error text so the
+    /// consumer can roll back the optimistic mode change and surface
+    /// the reason.
+    SetModeFailed {
+        session_id: String,
+        mode: forge_primitives::PermissionMode,
+        message: String,
+    },
     SessionsListed {
         sessions: Vec<types::SessionListEntry>,
     },

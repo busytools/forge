@@ -343,8 +343,21 @@ impl ForgeSdkBridge {
         if !self.check_session_id(&session_id, "set_mode") {
             return Ok(());
         }
+        let event_tx = self.inner.event_tx.clone();
         self.dispatch("set_mode", move |client| async move {
-            client.set_permission_mode(mode).await?;
+            if let Err(e) = client.set_permission_mode(mode).await {
+                let message = format!("{e}");
+                if event_tx
+                    .send(AgentEvent::SetModeFailed { session_id, mode, message: message.clone() })
+                    .is_err()
+                {
+                    tracing::warn!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        error = %message,
+                        "event channel closed; SetModeFailed dropped",
+                    );
+                }
+            }
             Ok(())
         })
     }

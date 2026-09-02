@@ -164,6 +164,9 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::SlashCommandError { key, message } => {
             session::apply_session_update_slash_command_error(app, &key, &message);
         }
+        SessionUpdate::SetModeFailed { key, mode, message } => {
+            session::apply_session_update_set_mode_failed(app, &key, mode, &message);
+        }
         SessionUpdate::ServiceStatus { severity, message } => {
             session::apply_session_update_service_status(app, severity, &message);
         }

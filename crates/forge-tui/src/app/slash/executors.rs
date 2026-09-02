@@ -303,6 +303,11 @@ fn apply_optimistic_mode_change(app: &mut App, requested_mode: &str) {
     use forge_workspace::commands::{build_mode_state_from_supported, supported_mode_ids_filtered};
 
     let Some(parsed) = PermissionMode::from_wire(requested_mode) else { return };
+    let rollback = crate::app::session::ModeRollback {
+        mode_state: app.mode().cloned(),
+        turn_mode: app.with_turn_state(|ts| ts.mode),
+        supported_mode_ids: app.with_turn_state(|ts| ts.supported_mode_ids.clone()),
+    };
     let _: () = app.with_turn_state_mut(|ts| ts.mode = Some(parsed));
     let supports_auto_mode =
         app.current_model().is_some_and(|m| m.supports_auto_mode == Some(true));
@@ -322,6 +327,7 @@ fn apply_optimistic_mode_change(app: &mut App, requested_mode: &str) {
     let wire_mode_state = build_mode_state_from_supported(parsed, &supported);
     let model_mode_state = wire_mode_state;
     crate::app::events::apply_mode_state_update(app, model_mode_state);
+    app.set_pending_mode_rollback(Some(rollback));
 }
 
 fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
