@@ -2019,8 +2019,19 @@ impl App {
     /// than starting one, so the clock and the usage/thinking
     /// accumulators keep running; the message that was streaming sheds
     /// the row it held, leaving one bar where the Result will settle.
+    ///
+    /// A turn whose clock nobody started still starts the bucket clock
+    /// here, so the first usage frame cannot restart the row's elapsed
+    /// and the settled-row render gate cannot read the stamped row as
+    /// not running.
     pub fn continue_live_turn(&mut self, at: std::time::Instant) {
-        let live_started = self.active_session().and_then(|s| s.live_turn.started_at).unwrap_or(at);
+        let bucket_clock = self.active_session().and_then(|s| s.live_turn.started_at);
+        let live_started = if let Some(started) = bucket_clock {
+            started
+        } else {
+            self.active_bucket_mut().live_turn.start(at);
+            at
+        };
         let fresh_row = || crate::app::state::messages::TurnInfo {
             started_at: Some(live_started),
             ..crate::app::state::messages::TurnInfo::default()
@@ -2040,6 +2051,12 @@ impl App {
         let Some(target_idx) = target_idx else {
             return;
         };
+        // The take waits until the target gate has passed, so a gate
+        // failure cannot silently drop the row it just carried.
+        if self.active_messages_mut().get(target_idx).is_some_and(|msg| msg.turn_info.is_settled())
+        {
+            return;
+        }
         let carried = source_idx
             .and_then(|idx| self.active_messages_mut().get_mut(idx))
             .filter(|msg| !msg.turn_info.is_settled() && !msg.turn_info.is_empty())
@@ -2048,9 +2065,7 @@ impl App {
                 msg.invalidate_render_cache();
                 carried
             });
-        if let Some(msg) = self.active_messages_mut().get_mut(target_idx)
-            && !msg.turn_info.is_settled()
-        {
+        if let Some(msg) = self.active_messages_mut().get_mut(target_idx) {
             msg.turn_info = carried;
             msg.invalidate_render_cache();
         }

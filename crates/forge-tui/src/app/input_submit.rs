@@ -321,6 +321,42 @@ mod tests {
         ));
     }
 
+    /// `anticipate_buffered_next_turn` opens a placeholder and flips the
+    /// status without starting the live turn, so a submit in that window
+    /// takes the continue branch with no bucket clock. The fallback must
+    /// start it, or the first usage frame restarts the row's elapsed
+    /// backward and the render gate reads the stamped row as not running.
+    #[test]
+    fn a_submit_in_a_buffered_placeholder_window_still_starts_the_bucket_clock() {
+        let (mut app, mut rx) = app_with_connection();
+        app.status = AppStatus::Running;
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete("queued prompt"))],
+        ));
+        app.push_active_turn_assistant_placeholder();
+
+        app.input_mut().set_text("next");
+        submit_input(&mut app);
+
+        let bucket_clock = app.active_session().and_then(|s| s.live_turn.started_at);
+        assert!(bucket_clock.is_some(), "the continue fallback starts the bucket clock");
+        let row_clock = app
+            .messages()
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, MessageRole::Assistant))
+            .expect("the submit opened a placeholder")
+            .turn_info
+            .started_at;
+        assert_eq!(
+            bucket_clock, row_clock,
+            "the row and the bucket read the same clock, so a usage frame cannot restart the \
+             elapsed",
+        );
+        let _ = rx.try_recv();
+    }
+
     #[test]
     fn submit_input_while_running_appends_bubble_and_reparents_active_idx() {
         // Mid-turn submit: user bubble appears immediately AND a
