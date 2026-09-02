@@ -15,6 +15,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 use ratatui::widgets::{Block, BorderType, Borders};
+use std::time::Instant;
+
 use tui_textarea::TextArea;
 
 /// Horizontal padding to match header/footer inset.
@@ -140,10 +142,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // Bordered frame around the input area - the chat input is THE
     // primary action surface, so the box renders with thick line
     // chrome in RUST_ORANGE + BOLD to grab the eye on first glance.
+    // A live dictate take hands the border colour over through the
+    // easing state; `None` means the plain orange stands untouched.
+    let border_fg =
+        crate::app::dictate::border_color(app, Instant::now()).unwrap_or(theme::RUST_ORANGE);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Thick)
-        .border_style(Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD));
+        .border_style(Style::default().fg(border_fg).add_modifier(Modifier::BOLD));
     frame.render_widget(block, geometry.box_area);
 
     if let Some(hint_pad) = geometry.hint_pad {
@@ -239,9 +245,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // Padded interior fits exactly the content lines (1 to
     // MAX_INPUT_HEIGHT). No vertical slack to center against - the
     // box height tracks the textarea row count directly. The one
-    // exception is the dictate notice row, which grows the interior
-    // by a row and pushes the draft down.
-    let notice_visible = crate::app::dictate::notice_row_visible(app);
+    // exception is the dictate row, which grows the interior by a row
+    // and pushes the draft down: a stamped notice, or the live take's
+    // status row.
+    let notice_visible = crate::app::dictate::dictate_row_visible(app);
     let (body, notice_area) = if notice_visible {
         let [top, rest] =
             Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(geometry.padded);
@@ -253,16 +260,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)]).areas(body);
 
     if let Some(notice_area) = notice_area {
-        let (text, style) = notice_row_content(app);
-        frame.render_widget(Paragraph::new(Line::from(Span::styled(text, style))), notice_area);
-    }
-
-    // Dictation indicator: three cells over the top border's leftmost
-    // columns, idle and while recording; one pinned cell past 3 s of
-    // transcribing. Painted after the block so it overwrites border.
-    if let Some(spans) = crate::app::dictate::indicator_spans(app) {
-        let area = Rect { x: geometry.box_area.x + 1, y: geometry.box_area.y, width: 4, height: 1 };
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        let line = crate::app::dictate::dictate_row_content(app, geometry.padded.width as usize);
+        frame.render_widget(Paragraph::new(line), notice_area);
     }
 
     // Render prompt icon
@@ -282,6 +281,22 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         refresh_selection_snapshot(app);
     }
     frame.render_widget(app.input().editor(), text_rect);
+
+    // While a take is recording, the cursor spot carries the live dB
+    // figure instead of the blinking block. The caret cell is the one
+    // the textarea drew with the cursor style; the readout overwrites
+    // it and the cells after it.
+    if let Some((text, colour)) = crate::app::dictate::active_db_readout(app, Instant::now())
+        && let Some((x, y)) = caret_cell(frame, text_rect)
+    {
+        let width = u16::try_from(text.chars().count()).unwrap_or(u16::MAX);
+        let area = Rect { x, y, width, height: 1 };
+        // The caret cell carries the cursor's blink style; the readout
+        // must fully own the cells it covers.
+        frame.buffer_mut().set_style(area, Style::reset());
+        let readout = Paragraph::new(Line::from(Span::styled(text, Style::default().fg(colour))));
+        frame.render_widget(readout, area);
+    }
 
     if let Some(sel) = app.selection().copied()
         && sel.kind == crate::app::SelectionKind::Input
@@ -305,23 +320,12 @@ pub(super) fn refresh_selection_snapshot(app: &mut App) {
     app.rendered_input_lines = render_lines_from_textarea(app.input().editor(), area);
 }
 
-/// The one notice row's text and colour: a stamped post-take notice
-/// when present, else the esc hint the transcribing state renders.
-fn notice_row_content(app: &App) -> (String, Style) {
-    if let Some(bucket) = app.active_session()
-        && let Some(notice) = bucket.visible_dictate_notice()
-    {
-        return (format!("  {}", notice.text), crate::app::dictate::notice_style(notice.severity));
-    }
-    ("  esc to cancel".to_owned(), Style::default().fg(theme::DIM))
-}
-
 /// The rect the draft's textarea renders into, shifted down when the
-/// dictate notice row is up. Dropdown anchoring shares this with the
+/// dictate row is up. Dropdown anchoring shares this with the
 /// renderer so the two never disagree.
 pub(crate) fn draft_text_area(area: Rect, app: &App) -> Rect {
     let geometry = compute_render_geometry(area, hint_line_count(app));
-    let body = if crate::app::dictate::notice_row_visible(app) {
+    let body = if crate::app::dictate::dictate_row_visible(app) {
         let [_top, rest] =
             Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(geometry.padded);
         rest
@@ -331,6 +335,21 @@ pub(crate) fn draft_text_area(area: Rect, app: &App) -> Rect {
     let [_prompt, text] =
         Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)]).areas(body);
     text
+}
+
+/// The caret's on-screen cell: the one cell the textarea drew with the
+/// cursor's slow-blink style.
+fn caret_cell(frame: &mut Frame, area: Rect) -> Option<(u16, u16)> {
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            if let Some(cell) = frame.buffer_mut().cell((x, y))
+                && cell.style().add_modifier.contains(Modifier::SLOW_BLINK)
+            {
+                return Some((x, y));
+            }
+        }
+    }
+    None
 }
 
 fn configure_input_textarea(app: &mut App) {
@@ -500,7 +519,7 @@ pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
         .input_mut()
         .measure_visual_lines(content_width, MAX_INPUT_HEIGHT)
         .max(MIN_INPUT_INTERIOR_LINES);
-    let notice_row = u16::from(crate::app::dictate::notice_row_visible(app));
+    let notice_row = u16::from(crate::app::dictate::dictate_row_visible(app));
     hint + input_lines + notice_row + INPUT_BORDER_LINES
 }
 
@@ -646,20 +665,71 @@ mod tests {
         }
 
         #[test]
-        fn the_idle_indicator_draws_three_floor_cells_at_the_border_left() {
+        fn an_idle_dictate_available_composer_is_a_plain_box() {
             let mut app = App::test_default();
             app.dictate_available = true;
             let rows = render_input(&mut app, 80, 4);
             assert!(
-                rows[0].starts_with("\u{250f}\u{2581}\u{2581}\u{2581}"),
-                "idle is three static floor cells left-justified after the corner, got: {}",
+                rows[0].starts_with("\u{250f}\u{2501}"),
+                "idle reserves nothing on the border, got: {}",
                 rows[0]
             );
-            assert!(!rows[1].contains("esc to cancel"), "idle draws no notice row");
+            assert!(
+                !rows.iter().any(|row| row.contains("\u{2581}")),
+                "the old dim meter cells are gone at idle"
+            );
+            assert!(
+                !rows.iter().any(|row| row.contains("esc")),
+                "idle draws no esc hint anywhere in the box"
+            );
+            assert_eq!(
+                visual_line_count(&mut app, 80),
+                MIN_INPUT_INTERIOR_LINES + INPUT_BORDER_LINES,
+                "the box does not grow at idle"
+            );
         }
 
         #[test]
-        fn recording_draws_the_last_three_window_peaks() {
+        fn recording_draws_the_status_row_and_grows_the_box() {
+            let mut app = App::test_default();
+            app.dictate_available = true;
+            let key = active_key(&app);
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+            );
+            apply_session_update(&mut app, SessionUpdate::DictateLevel { key, peak_db: -6.0 });
+
+            let rows = render_input(&mut app, 80, 4);
+            assert!(
+                rows[0].starts_with("\u{250f}\u{2501}"),
+                "the border carries no meter cells, got: {}",
+                rows[0]
+            );
+            assert!(
+                rows[1].contains("listening") && rows[1].contains("0:00"),
+                "the status row names the state and the elapsed time, got: {}",
+                rows[1]
+            );
+            assert!(
+                rows[1].contains("\u{25cf}") && rows[1].contains("\u{2588}"),
+                "an orange dot and the live meter share the row, got: {}",
+                rows[1]
+            );
+            assert!(
+                rows[1].contains("esc cancel") && !rows[1].contains("esc to cancel"),
+                "the esc hint rides the status row in its own wording, got: {}",
+                rows[1]
+            );
+            assert_eq!(
+                visual_line_count(&mut app, 80),
+                MIN_INPUT_INTERIOR_LINES + 1 + INPUT_BORDER_LINES,
+                "the status row is the row that grows the box"
+            );
+        }
+
+        #[test]
+        fn transcribing_hides_the_row_until_three_seconds_then_freezes_the_meter() {
             let mut app = App::test_default();
             app.dictate_available = true;
             let key = active_key(&app);
@@ -671,39 +741,18 @@ mod tests {
                 &mut app,
                 SessionUpdate::DictateLevel { key: key.clone(), peak_db: -6.0 },
             );
-            apply_session_update(
-                &mut app,
-                SessionUpdate::DictateLevel { key: key.clone(), peak_db: -40.0 },
-            );
-            apply_session_update(
-                &mut app,
-                SessionUpdate::DictateLevel { key, peak_db: f32::NEG_INFINITY },
-            );
-
-            let rows = render_input(&mut app, 80, 4);
-            assert!(
-                rows[0].starts_with("\u{250f}\u{2587}\u{2582}\u{2581}"),
-                "the three cells hold the last three window peaks, newest last, got: {}",
-                rows[0]
-            );
-        }
-
-        #[test]
-        fn transcribing_is_silent_for_three_seconds_then_collapses_to_one_cell() {
-            let mut app = App::test_default();
-            app.dictate_available = true;
-            let key = active_key(&app);
-            apply_session_update(
-                &mut app,
-                SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
-            );
             apply_session_update(&mut app, SessionUpdate::DictateTranscribing { key: key.clone() });
+            // A reading that races past the handoff must not redraw the row.
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateLevel { key: key.clone(), peak_db: -2.0 },
+            );
 
             let rows = render_input(&mut app, 80, 5);
             assert!(
-                !rows[0].contains("\u{2581}"),
-                "before the threshold the box shows nothing at all, got: {}",
-                rows[0]
+                !rows[1].contains("transcribing") && !rows[1].contains("listening"),
+                "a warm take never flashes the row back, got: {}",
+                rows[1]
             );
 
             let bucket = app.session_mut(&key).expect("bucket");
@@ -715,14 +764,99 @@ mod tests {
             );
             let rows = render_input(&mut app, 80, 5);
             assert!(
-                rows[0].starts_with("\u{250f}\u{2582}"),
-                "past the threshold one pinned bars_v cell replaces the three, got: {}",
-                rows[0]
+                rows[1].contains("transcribing") && rows[1].contains("esc cancel"),
+                "past the threshold the row reappears in transcribing form, got: {}",
+                rows[1]
             );
             assert!(
-                rows[1].contains("esc to cancel"),
-                "the esc hint rides the notice row, got: {}",
+                rows[1].contains("\u{25cc}") && rows[1].contains("\u{2588}"),
+                "the blue dot and the frozen meter hold the last recording frame, got: {}",
                 rows[1]
+            );
+        }
+
+        #[test]
+        fn a_landed_take_beats_the_border_green_then_settles() {
+            let mut app = App::test_default();
+            app.dictate_available = true;
+            let key = active_key(&app);
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+            );
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateEnded {
+                    key,
+                    generation: 1,
+                    outcome: DictateOutcome::Landed {
+                        text: "run just check".to_owned(),
+                        truncated: false,
+                    },
+                },
+            );
+
+            let mut terminal = Terminal::new(TestBackend::new(80, 4)).expect("terminal");
+            terminal.draw(|frame| render(frame, frame.area(), &mut app)).expect("draw");
+            let corner = terminal.backend().buffer().cell((0, 0)).expect("corner").style().fg;
+            let Some(ratatui::style::Color::Rgb(_, g, b)) = corner else {
+                panic!("the border is rgb during the handoff, got {corner:?}");
+            };
+            assert!(
+                g > 118 && b > 0,
+                "the landed take starts the border toward the green beat, got {corner:?}"
+            );
+
+            // Backdate the beat window and keep rendering until the
+            // afterglow settles.
+            {
+                let bucket = app.session_mut(&active_key(&app)).expect("bucket");
+                let border = bucket.dictate_border.as_mut().expect("border state");
+                border.beat_until = Some(
+                    Instant::now()
+                        .checked_sub(Duration::from_millis(1))
+                        .expect("a 1 ms backdate is safe"),
+                );
+            }
+            for _ in 0..120 {
+                terminal.draw(|frame| render(frame, frame.area(), &mut app)).expect("draw");
+            }
+            let corner = terminal.backend().buffer().cell((0, 0)).expect("corner").style().fg;
+            assert_eq!(
+                corner,
+                Some(ratatui::style::Color::Rgb(244, 118, 0)),
+                "past the beat the border settles at the composer's normal orange"
+            );
+            let bucket = app.session_mut(&active_key(&app)).expect("bucket");
+            assert!(bucket.dictate_border.is_none(), "the settled border leaves no state behind");
+        }
+
+        #[test]
+        fn the_recording_cursor_spot_shows_the_live_db_figure() {
+            let mut app = App::test_default();
+            app.dictate_available = true;
+            let key = active_key(&app);
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1 },
+            );
+
+            let mut terminal = Terminal::new(TestBackend::new(80, 4)).expect("terminal");
+            terminal.draw(|frame| render(frame, frame.area(), &mut app)).expect("draw");
+            let buffer = terminal.backend().buffer().clone();
+            let draft_row: String = (0..80)
+                .map(|x| {
+                    buffer.cell((x, 2)).map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+                })
+                .collect();
+            assert!(
+                draft_row.contains("-50 dB"),
+                "the caret cell carries the live dB figure, got: {draft_row}"
+            );
+            let caret = buffer.cell((3, 2)).expect("caret cell").style();
+            assert!(
+                !caret.add_modifier.contains(ratatui::style::Modifier::SLOW_BLINK),
+                "the readout replaces the blinking block, not a bouncing block beside it"
             );
         }
 

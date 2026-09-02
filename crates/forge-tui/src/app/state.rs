@@ -1247,12 +1247,7 @@ impl App {
                     s.has_live_background_work(),
                 )
             })
-            || self.sessions.values().any(|s| {
-                s.dictate.as_ref().is_some_and(|d| {
-                    d.phase == crate::app::dictate::DictatePhase::Transcribing
-                        && d.transcribing_overdue()
-                })
-            })
+            || self.sessions.values().any(|s| s.dictate.is_some() || s.dictate_border.is_some())
     }
 
     /// Set the active session's `is_compacting` flag.

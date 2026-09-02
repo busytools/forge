@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use super::{App, session, turn};
 use forge_workspace::{SessionKey, SessionUpdate};
 
@@ -438,6 +440,10 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 bucket.dictate =
                     Some(crate::app::dictate::DictateIndicator::recording(floor_db, generation));
                 bucket.dictate_notice = None;
+                let previous =
+                    bucket.dictate_border.as_ref().map(crate::app::dictate::DictateBorder::rgb);
+                bucket.dictate_border =
+                    Some(crate::app::dictate::DictateBorder::new(previous, Instant::now()));
             }
         }
         SessionUpdate::DictateLevel { key, peak_db } => {
@@ -486,6 +492,11 @@ fn apply_dictate_outcome(
     let live_generation = bucket.dictate.as_ref().map(|indicator| indicator.generation);
     if live_generation == Some(generation) {
         bucket.dictate = None;
+        if matches!(outcome, forge_workspace::DictateOutcome::Landed { .. })
+            && let Some(border) = bucket.dictate_border.as_mut()
+        {
+            border.beat_until = Some(Instant::now() + crate::app::dictate::GREEN_BEAT);
+        }
     }
     if let Some(notice) = notice {
         bucket.set_dictate_notice(notice);
