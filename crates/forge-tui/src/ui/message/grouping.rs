@@ -1093,9 +1093,10 @@ mod tests {
 
     /// A Skill call's child row carries the invoked skill name (+ args
     /// when present), not the bare "Skill" the old title fallback
-    /// produced. The primary path resolves through the title that
-    /// `tool_title` now builds ("Skill <name> <args>"); the defensive
-    /// raw_input-absent path strips the same label from the same title.
+    /// produced. Skill has no bespoke extractor, so family_target
+    /// resolves it wholly through strip_title_prefix on the title
+    /// `tool_title` builds; the raw_input-less call pins the title as
+    /// the target's only source.
     #[test]
     fn tally_skill_target_is_the_invoked_skill() {
         let mut k = KindSummary::default();
