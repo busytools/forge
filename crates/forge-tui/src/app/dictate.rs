@@ -139,7 +139,9 @@ impl DictateMeter {
 
     /// One 50 ms window peak; the oldest normalized frame falls off.
     pub(crate) fn push(&mut self, peak_db: f32) {
-        let raw = peak_db.max(SILENCE_DB);
+        // A non-finite reading is silence: +inf would latch the
+        // reference and poison the meter for the rest of the take.
+        let raw = if peak_db.is_finite() { peak_db.clamp(SILENCE_DB, 0.0) } else { SILENCE_DB };
         self.env_db = envelope_step(self.env_db, raw);
         self.reference_db = reference_step(self.env_db, self.reference_db);
         let frac = normalize(self.env_db, self.reference_db, self.floor_db);
@@ -666,6 +668,16 @@ mod tests {
         );
         meter.push(-18.0);
         assert_eq!(meter.window().len(), METER_WIDTH, "one more push evicts, never grows");
+    }
+
+    #[test]
+    fn a_positive_infinity_peak_does_not_poison_the_meter() {
+        let mut meter = DictateMeter::new(-50.0);
+        meter.push(f32::INFINITY);
+        meter.push(f32::NAN);
+        meter.push(-6.0);
+        assert!(meter.env_db().is_finite(), "a non-finite reading is silence, not +inf");
+        assert!(meter.current() > 0.0, "the meter answers speech after the bad reading");
     }
 
     #[test]
