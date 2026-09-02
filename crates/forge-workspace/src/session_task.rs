@@ -525,6 +525,10 @@ impl SessionTask {
             AgentEvent::RuntimeReloadFailed { session_id, message } => {
                 self.emit(SessionUpdate::RuntimeReloadFailed { session_id, message });
             }
+            AgentEvent::SetModeFailed { session_id, mode, message } => {
+                let session_key = SessionKey::from_session_id(session_id);
+                self.emit(SessionUpdate::SetModeFailed { key: session_key, mode, message });
+            }
             AgentEvent::SessionsListed { sessions } => {
                 // Route via `spawn_key` while the pre-Connect bucket
                 // is still in place - same pattern as `AuthRequired`

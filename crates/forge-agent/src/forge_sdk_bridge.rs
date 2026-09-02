@@ -339,12 +339,75 @@ impl ForgeSdkBridge {
         })
     }
 
+    /// `send_control` parks until the CLI's `control_response`; this
+    /// bounds the wait at the CLI's own hook budget so a silent CLI
+    /// surfaces as a refusal instead of a chip stuck on a mode that
+    /// never took.
+    const SET_MODE_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// The CLI's own refusal text for a failed `set_permission_mode`.
+    /// The SDK wraps it twice (`MessageParse` Display + a
+    /// `control failed: ` prefix); strip both so the chat line carries
+    /// the reason, not the wrapper.
+    fn set_mode_rejection_text(err: &forge_sdk::Error) -> String {
+        if let forge_sdk::Error::MessageParse { reason, .. } = err
+            && let Some(cli_reason) = reason.strip_prefix("control failed: ")
+        {
+            return cli_reason.to_owned();
+        }
+        err.to_string()
+    }
+
     pub(crate) fn set_mode(&self, session_id: String, mode: PermissionMode) -> anyhow::Result<()> {
         if !self.check_session_id(&session_id, "set_mode") {
+            // A session-swap race dropped the dispatch; surface it on
+            // the attempted session so the chip doesn't stay flipped.
+            let _ = self.inner.event_tx.send(AgentEvent::SetModeFailed {
+                session_id,
+                mode,
+                message: "the session it was sent to is no longer active".to_owned(),
+            });
             return Ok(());
         }
+        let event_tx = self.inner.event_tx.clone();
         self.dispatch("set_mode", move |client| async move {
-            client.set_permission_mode(mode).await?;
+            let outcome = tokio::time::timeout(
+                Self::SET_MODE_RESPONSE_TIMEOUT,
+                client.set_permission_mode(mode),
+            )
+            .await;
+            let failure = match outcome {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => {
+                    let text = Self::set_mode_rejection_text(&e);
+                    Some(if text.trim().is_empty() { "no reason given".to_owned() } else { text })
+                }
+                Err(_) => Some("no response from the CLI".to_owned()),
+            };
+            if let Some(message) = failure {
+                if event_tx
+                    .send(AgentEvent::SetModeFailed {
+                        session_id: session_id.clone(),
+                        mode,
+                        message: message.clone(),
+                    })
+                    .is_err()
+                {
+                    tracing::warn!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        error = %message,
+                        "event channel closed; SetModeFailed dropped",
+                    );
+                } else {
+                    tracing::warn!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        session_id = %session_id,
+                        mode = %mode.as_wire(),
+                        error = %message,
+                        "set_permission_mode rejected; SetModeFailed emitted",
+                    );
+                }
+            }
             Ok(())
         })
     }
@@ -855,5 +918,19 @@ mod tests {
         let bridge = test_bridge();
         let err = bridge.cancel("session-1".to_owned()).unwrap_err();
         assert!(err.to_string().contains("before active session"));
+    }
+
+    #[test]
+    fn set_mode_rejection_text_strips_the_control_failed_wrapper() {
+        let err = forge_sdk::Error::message_parse("control failed: mode not permitted");
+        assert_eq!(ForgeSdkBridge::set_mode_rejection_text(&err), "mode not permitted");
+        let other = forge_sdk::Error::Connection {
+            reason: "subprocess closed before set_permission_mode response".into(),
+        };
+        assert_eq!(
+            ForgeSdkBridge::set_mode_rejection_text(&other),
+            other.to_string(),
+            "non-control errors pass through as their Display",
+        );
     }
 }

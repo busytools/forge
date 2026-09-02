@@ -703,23 +703,16 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
         .map(|m| ModeInfo { id: m.id.clone(), name: m.name.clone(), description: None })
         .collect();
 
-    if app.has_active_agent()
-        && app.session_id().is_some()
-        && let Some(parsed_mode) = forge_primitives::permission::PermissionMode::from_wire(&next_id)
-        && let Err(e) =
-            app.dispatch_command(|key| forge_workspace::Command::SetMode { key, mode: parsed_mode })
-    {
-        tracing::error!(
-            target: crate::logging::targets::APP_INPUT,
-            event_name = "mode_change_request_failed",
-            message = "failed to request mode change",
-            outcome = "failure",
-            error_message = %e,
-        );
-    }
+    // The apply below is optimistic, so park the pre-apply state for
+    // the SetModeFailed rollback, same as the /mode submit path.
+    let rollback = crate::app::session::ModeRollback {
+        mode_state: app.mode().cloned(),
+        turn_mode: app.with_turn_state(|ts| ts.mode),
+        supported_mode_ids: app.with_turn_state(|ts| ts.supported_mode_ids.clone()),
+    };
 
     app.set_mode(Some(ModeState {
-        current_mode_id: next_id,
+        current_mode_id: next_id.clone(),
         current_mode_name: next_name,
         available_modes: modes,
     }));
@@ -729,6 +722,31 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
     // next async update, so the mode chip (and any UI surface that
     // reads `app.mode()`) lags behind the keypress.
     app.needs_redraw = true;
+
+    if app.has_active_agent()
+        && app.session_id().is_some()
+        && let Some(parsed_mode) = forge_primitives::permission::PermissionMode::from_wire(&next_id)
+    {
+        // Park before the dispatch: a synchronous failure must find
+        // this cycle's own snapshot to restore, not a foreign one.
+        if app.pending_mode_rollback().is_none() {
+            app.set_pending_mode_rollback(Some(rollback));
+        }
+        if let Err(e) =
+            app.dispatch_command(|key| forge_workspace::Command::SetMode { key, mode: parsed_mode })
+        {
+            tracing::error!(
+                target: crate::logging::targets::APP_INPUT,
+                event_name = "mode_change_request_failed",
+                message = "failed to request mode change",
+                outcome = "failure",
+                error_message = %e,
+            );
+            if app.rollback_pending_mode() {
+                app.invalidate_layout(InvalidationLevel::Global);
+            }
+        }
+    }
     true
 }
 
@@ -1268,6 +1286,35 @@ mod tests {
     use crossterm::event::{KeyCode, KeyModifiers};
     use ratatui::layout::Rect;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn mode_cycle_with_dead_dispatch_restores_pre_cycle_mode() {
+        let mut app = App::test_default();
+        let rx = app.install_testing_stub();
+        drop(rx);
+        app.set_session_id(Some("sess-1".into()));
+        let supported =
+            forge_workspace::commands::supported_mode_ids_filtered(false, true, None, &[]);
+        app.set_mode(Some(forge_workspace::commands::build_mode_state_from_supported(
+            forge_workspace::PermissionMode::Ask,
+            &supported,
+        )));
+        app.with_turn_state_mut(|ts| ts.mode = Some(forge_workspace::PermissionMode::Ask));
+
+        assert!(handle_mode_cycle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE)
+        ));
+        assert_eq!(
+            app.mode().map(|m| m.current_mode_id.as_str()),
+            Some("default"),
+            "a failed dispatch must not leave the chip on the never-dispatched mode",
+        );
+        assert!(
+            app.pending_mode_rollback().is_none(),
+            "the failure arm consumes the snapshot it rolled back",
+        );
+    }
 
     #[test]
     fn toggle_all_resets_a_turn_info_row_clicked_open() {

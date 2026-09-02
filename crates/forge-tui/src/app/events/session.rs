@@ -929,6 +929,51 @@ pub(super) fn apply_session_update_slash_command_error(
     handle_slash_command_error_event(app, key, message);
 }
 
+/// `SessionUpdate::SetModeFailed` reducer: restore the pre-apply mode
+/// snapshot the optimistic `/mode` apply parked on the bucket, then
+/// surface the CLI's refusal as a system message. Rapid submits
+/// overlap, so a refusal only rolls back when it names the mode the
+/// chip currently shows - a refusal for a superseded request leaves
+/// the newer optimistic apply (and its snapshot) alone.
+pub(super) fn apply_session_update_set_mode_failed(
+    app: &mut App,
+    key: &SessionKey,
+    mode: forge_workspace::PermissionMode,
+    message: &str,
+) {
+    let Some(session) = app.sessions.get_mut(key) else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "set_mode_failed_dropped",
+            message = "set mode failure dropped for an unknown session",
+            outcome = "dropped",
+            session_key = %key.as_str(),
+            reason = "unknown_session",
+        );
+        return;
+    };
+    let attempted = mode.as_wire();
+    let chip_shows_attempted =
+        session.mode.as_ref().is_some_and(|m| m.current_mode_id == attempted);
+    if chip_shows_attempted && session.rollback_pending_mode() {
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "set_mode_rollback_applied",
+            message = "mode chip rolled back after a CLI refusal",
+            outcome = "failure",
+            session_key = %key.as_str(),
+            mode = %attempted,
+            error_message = %message,
+        );
+        app.invalidate_layout(crate::app::state::LayoutInvalidation::Global);
+    }
+    handle_slash_command_error_event(
+        app,
+        key,
+        &format!("Mode switch to {attempted} was refused by the CLI: {message}"),
+    );
+}
+
 pub(super) fn apply_session_update_service_status(
     app: &mut App,
     severity: forge_primitives::cloud::service_status::ServiceSeverity,

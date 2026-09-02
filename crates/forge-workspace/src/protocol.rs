@@ -680,6 +680,14 @@ pub enum SessionUpdate {
         session_id: String,
         message: String,
     },
+    /// The CLI refused (or failed) a `set_permission_mode` control
+    /// request for `key`. `message` carries the underlying error text;
+    /// the TUI rolls the optimistic mode chip back and surfaces it.
+    SetModeFailed {
+        key: SessionKey,
+        mode: PermissionMode,
+        message: String,
+    },
     /// Permission prompt. No response_tx - TUI replies via
     /// `Command::RespondPermission { tool_id, outcome }`.
     PermissionRequest {
@@ -902,6 +910,7 @@ impl SessionUpdate {
             | Self::ConnectionFailed { key, .. }
             | Self::AuthRequired { key, .. }
             | Self::SlashCommandError { key, .. }
+            | Self::SetModeFailed { key, .. }
             | Self::PermissionRequest { key, .. }
             | Self::QuestionRequest { key, .. }
             | Self::McpOperationError { key, .. }
@@ -987,6 +996,9 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("RuntimeReloadFailed")
                 .field("session_id", session_id)
                 .finish_non_exhaustive(),
+            Self::SetModeFailed { key, .. } => {
+                f.debug_struct("SetModeFailed").field("key", key).finish_non_exhaustive()
+            }
             Self::PermissionRequest { key, tool_id, .. } => f
                 .debug_struct("PermissionRequest")
                 .field("key", key)

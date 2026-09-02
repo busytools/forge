@@ -290,6 +290,11 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
     if let Err(e) =
         app.dispatch_command(|key| forge_workspace::Command::SetMode { key, mode: parsed_mode })
     {
+        // The command never left, so no SetModeFailed can arrive;
+        // undo the optimistic apply here.
+        if app.rollback_pending_mode() {
+            app.invalidate_layout(crate::app::state::LayoutInvalidation::Global);
+        }
         let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
             key: session_key,
             message: format!("Failed to run /mode: {e}"),
@@ -303,6 +308,18 @@ fn apply_optimistic_mode_change(app: &mut App, requested_mode: &str) {
     use forge_workspace::commands::{build_mode_state_from_supported, supported_mode_ids_filtered};
 
     let Some(parsed) = PermissionMode::from_wire(requested_mode) else { return };
+    // Rapid submits overlap: park only the FIRST pre-apply state, so a
+    // rejection of any in-flight request restores the true original and
+    // a refusal for a superseded request cannot consume a newer one.
+    let rollback = if app.pending_mode_rollback().is_none() {
+        Some(crate::app::session::ModeRollback {
+            mode_state: app.mode().cloned(),
+            turn_mode: app.with_turn_state(|ts| ts.mode),
+            supported_mode_ids: app.with_turn_state(|ts| ts.supported_mode_ids.clone()),
+        })
+    } else {
+        None
+    };
     let _: () = app.with_turn_state_mut(|ts| ts.mode = Some(parsed));
     let supports_auto_mode =
         app.current_model().is_some_and(|m| m.supports_auto_mode == Some(true));
@@ -322,6 +339,9 @@ fn apply_optimistic_mode_change(app: &mut App, requested_mode: &str) {
     let wire_mode_state = build_mode_state_from_supported(parsed, &supported);
     let model_mode_state = wire_mode_state;
     crate::app::events::apply_mode_state_update(app, model_mode_state);
+    if let Some(rollback) = rollback {
+        app.set_pending_mode_rollback(Some(rollback));
+    }
 }
 
 fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
