@@ -232,6 +232,31 @@ mod tests {
         );
     }
 
+    /// On OpenRouter the requested id and the resolved id genuinely
+    /// diverge (requested `z-ai/glm-5.3-flash`, resolved with a context
+    /// suffix), so the requested-id arm of the highlight match is live
+    /// in production: the highlight follows the requested id onto its
+    /// row, not the resolved one.
+    #[test]
+    fn open_seeds_the_highlight_from_the_requested_id_when_it_differs() {
+        let mut app = app_with_rows(curated_rows());
+        let current = model::CurrentModel::new(
+            "z-ai/glm-5.3-flash[1m]",
+            "GLM 5.3 Flash [1M]",
+            "GLM 5.3 Flash [1M]",
+        )
+        .requested_id("z-ai/glm-5.3-flash");
+        app.set_current_model(Some(current));
+
+        assert!(crate::app::slash::try_handle_submit(&mut app, "/model"));
+
+        let picker = app.model_picker.expect("picker open");
+        assert_eq!(
+            picker.rows[picker.highlight].id, "z-ai/glm-5.3-flash",
+            "the highlight follows the requested id",
+        );
+    }
+
     // -- navigation --------------------------------------------------
 
     #[test]
