@@ -405,8 +405,6 @@ pub struct SessionTurnState {
     pub supported_mode_ids: Vec<crate::permission::PermissionMode>,
     /// Permission modes recognised but currently unavailable.
     pub runtime_unavailable_mode_ids: Vec<crate::permission::PermissionMode>,
-    /// Whether `bypassPermissions` mode is allowed for this session.
-    pub supports_bypass_permissions_mode: bool,
     /// Current mode resolution alongside the human-readable label.
     pub mode_state: Option<ModeState>,
 

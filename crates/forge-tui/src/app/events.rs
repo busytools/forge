@@ -277,6 +277,15 @@ pub(super) fn apply_available_agents_update(app: &mut App, agents: model::Availa
     }
 }
 
+/// Whether the supported-mode list should keep offering bypass. The
+/// list seeds it from the launch stamp at spawn or the CLI's first
+/// bypass report (only a bypass-launched session can report one);
+/// later recomputes preserve it so cycling away can return.
+pub(super) fn bypass_mode_offered(app: &App) -> bool {
+    let bypass = forge_primitives::permission::PermissionMode::BypassPermissions;
+    app.mode().is_some_and(|state| state.available_modes.iter().any(|m| m.id == bypass.as_wire()))
+}
+
 pub fn apply_mode_state_update(app: &mut App, mode: crate::app::ModeState) {
     let mode_changed = app.mode().map(|current| current.current_mode_id.as_str())
         != Some(mode.current_mode_id.as_str());
