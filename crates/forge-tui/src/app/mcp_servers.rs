@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use forge_primitives::{McpServerConnectionStatus, McpServerStatus};
 use forge_workspace::env::processes::{
     ProcessEntry, ProcessSnapshot, RootProcess, basename_exe, configured_mcp_servers,
-    elect_unmatched_server, resolve_infra_label, strip_plugin_namespace,
+    configured_text_match, elect_unmatched_server, strip_plugin_namespace,
 };
 use serde_json::Value;
 
@@ -100,10 +100,9 @@ pub fn collect_mcp_servers(app: &App) -> McpServerSection {
 }
 
 /// Join each snapshot server to at most one OS process: by configured
-/// command + args text (or package convention) first, then by the
-/// elimination election for a server whose process shares no text with
-/// its config. Records the winner per stripped server name plus every
-/// pid its subtree claims.
+/// command + args text first, then by the elimination election for a
+/// server whose process shares no text with its config. Records the
+/// winner per stripped server name plus every pid its subtree claims.
 fn join_processes_to_servers<'a>(
     snapshot: &'a ProcessSnapshot,
     servers: &[McpServerStatus],
@@ -119,16 +118,21 @@ fn join_processes_to_servers<'a>(
         children_of.entry(entry.parent_pid).or_default().push(entry);
     }
 
-    // Per-entry resolution, the same resolver the old PROCESSES row
-    // builder used. A process an alive wire tool call already claims is
-    // tracked work, never a server's backing process.
+    // Per-entry claims on configured TEXT evidence only. A process that
+    // matches no configured command - or matches several - stays
+    // unclaimed: the section is snapshot-sourced, and a package-derived
+    // name for a server the snapshot does not list is guessing by
+    // construction. Unclaimed processes keep rendering in PROCESSES.
     let mut candidates: HashMap<String, Vec<u32>> = HashMap::new();
     for entry in &snapshot.processes {
         if crate::app::processes::wire_match(entry, wire_alive).is_some() {
             continue;
         }
-        if let Some(label) = resolve_infra_label(&entry.command, &configured) {
-            candidates.entry(label.name).or_default().push(entry.pid);
+        if let Some(server) = configured_text_match(&entry.command, &configured) {
+            candidates
+                .entry(strip_plugin_namespace(&server.name).to_owned())
+                .or_default()
+                .push(entry.pid);
         }
     }
 
@@ -186,8 +190,7 @@ fn subtree_bytes(root: &ProcessEntry, children_of: &HashMap<u32, Vec<&ProcessEnt
 }
 
 /// Among candidates for one server, the process that reaches all the
-/// others (the `npm exec` parent over its collapsed `node` child);
-/// lowest pid when none does.
+/// others (the `npm exec` parent over its collapsed `node` child).
 fn pick_ancestor(pids: &[u32], children_of: &HashMap<u32, Vec<&ProcessEntry>>) -> Option<u32> {
     let first = *pids.first()?;
     let mut best = first;
@@ -378,6 +381,44 @@ mod tests {
         assert_eq!(forge_row.detail, "sdk \u{00B7} 18 tools");
         assert_eq!(forge_row.process, None, "an sdk server has no process");
         assert!(section.claimed_pids.is_empty());
+    }
+
+    #[test]
+    fn a_recognized_process_with_no_configured_claim_stays_in_processes() {
+        // The reviewer's shape: `npm exec @upstash/context7-mcp` running
+        // while NO configured server is named context7 (here: airmail,
+        // whose wrapper script shares no text with the process). The
+        // package name the old resolution derived would claim the
+        // process into a void - no row carries `context7` - so the join
+        // claims on configured text evidence only and the process keeps
+        // rendering in PROCESSES.
+        let servers = vec![McpServerStatus {
+            config: Some(serde_json::json!({
+                "type": "stdio",
+                "command": "sh",
+                "args": ["-c", "wrapper=$(mktemp -d)/w.mjs && exec node \"$wrapper\""],
+            })),
+            scope: Some("user".to_owned()),
+            ..server("airmail", McpServerConnectionStatus::Connected)
+        }];
+        let app = app_with(
+            servers,
+            Some(ProcessSnapshot {
+                scanned_at: std::time::SystemTime::now(),
+                processes: vec![entry(500, 1, "npm exec @upstash/context7-mcp", 46 * 1024 * 1024)],
+            }),
+        );
+
+        let section = collect_mcp_servers(&app);
+        assert!(section.rows[0].process.is_none(), "no text match, no claim; got {section:?}");
+        assert!(section.claimed_pids.is_empty(), "got {:?}", section.claimed_pids);
+        let coll = crate::app::processes::collect_active_processes(&app);
+        assert_eq!(
+            coll.rows.iter().map(|r| r.headline.as_str()).collect::<Vec<_>>(),
+            vec!["npm exec @upstash/context7-mcp"],
+            "the process keeps rendering in PROCESSES; got {:?}",
+            coll.rows,
+        );
     }
 
     #[test]
