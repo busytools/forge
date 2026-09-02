@@ -668,8 +668,8 @@ mod tests {
         );
         let decayed = recent_max_step(-20.0, -40.0);
         assert!(
-            (decayed - (-20.0 - MAX_DECAY_DB)).abs() < 1e-4,
-            "away from the envelope the max decays one slow step, got {decayed}"
+            (decayed - -20.35).abs() < 1e-4,
+            "away from the envelope the max decays exactly the 0.35 dB step, got {decayed}"
         );
         assert!(decayed > -40.0, "the decay never drops below the envelope");
     }
@@ -678,8 +678,8 @@ mod tests {
     fn the_recent_min_catches_a_valley_and_climbs_off_it_slowly() {
         let caught = recent_min_step(-26.0, -32.0, -50.0);
         assert!(
-            caught < -26.0 && caught > -32.0,
-            "a dip below the min pulls it down, got {caught}"
+            (caught - -29.0).abs() < 1e-4,
+            "a dip below the min falls exactly the 0.5 step, got {caught}"
         );
         let climbed = recent_min_step(-32.0, -20.0, -50.0);
         assert!(
@@ -847,6 +847,17 @@ mod tests {
         assert!(
             (meter.current() - 1.0).abs() < 1e-3,
             "once the envelope passes the recent max the meter reads full scale, got {}",
+            meter.current()
+        );
+        meter.push(-40.0);
+        assert!(
+            (meter.env_db() + 26.44).abs() < 1e-3,
+            "one release step at 0.25 from -21.92 lands at -26.44, got {}",
+            meter.env_db()
+        );
+        assert!(
+            (meter.current() - 0.767).abs() < 1e-3,
+            "the dip frame scales against the decayed max and the risen min, got {}",
             meter.current()
         );
     }
