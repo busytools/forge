@@ -527,8 +527,16 @@ async fn reader_loop(
                     init_data_of(&msg).is_some_and(|data| {
                         sdk_servers_missing_tools(data, &sdk_server_names)
                     });
-                let needs_heal =
-                    matches!(heal_latch, HealLatch::Waiting) && frame_missing_tools;
+                // Boot-frame-only: every init frame advances the latch, so
+                // a mid-session init that lacks the tools (a user toggled
+                // the server off) is never "healed" back on.
+                let needs_heal = frame_is_init
+                    && matches!(heal_latch, HealLatch::Waiting)
+                    && frame_missing_tools;
+                if frame_is_init && matches!(heal_latch, HealLatch::Waiting) {
+                    heal_latch =
+                        if frame_missing_tools { HealLatch::Verify } else { HealLatch::Done };
+                }
                 let verify_due =
                     matches!(heal_latch, HealLatch::Verify) && frame_is_init;
                 if event_tx
