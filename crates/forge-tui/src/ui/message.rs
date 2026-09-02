@@ -76,6 +76,11 @@ pub struct SpinnerState {
     /// `None` when no subagent is active. ADDITIVE to the turn info
     /// row, which renders beneath it while the turn runs.
     pub running_subagents: Option<RunningSubagentsLine>,
+    /// True while the session's live-turn clock is running - a Result
+    /// settles it. Status alone reads busy for post-turn traffic
+    /// (monitor/notification text re-binds the spinner anchor), which
+    /// must not revive the turn indicators.
+    pub live_turn_running: bool,
 }
 
 impl SpinnerState {
@@ -307,10 +312,12 @@ fn renders_bare_role_label_only(
     {
         return false;
     }
-    if spinner.show_empty_thinking
+    if (spinner.show_empty_thinking && spinner.live_turn_running)
         || spinner.show_compacting
-        || spinner.show_thinking
-        || (spinner.running_subagents.is_some() && spinner.is_active_turn_assistant)
+        || (spinner.show_thinking && spinner.live_turn_running)
+        || (spinner.running_subagents.is_some()
+            && spinner.is_active_turn_assistant
+            && spinner.live_turn_running)
     {
         return false;
     }
@@ -945,6 +952,7 @@ fn append_assistant_blocks(
     if let Some(running) = spinner.running_subagents.as_ref()
         && !show_compacting
         && spinner.is_active_turn_assistant
+        && spinner.live_turn_running
     {
         if state.has_body_content {
             layout.push_blank();
@@ -3576,6 +3584,7 @@ mod tests {
             show_thinking: false,
             show_compacting: false,
             running_subagents: None,
+            live_turn_running: false,
         }
     }
 
@@ -3796,6 +3805,7 @@ mod tests {
         let spinner = SpinnerState {
             is_active_turn_assistant: true,
             show_empty_thinking: true,
+            live_turn_running: true,
             ..idle_spinner()
         };
         let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new());
@@ -3827,6 +3837,7 @@ mod tests {
         let spinner = SpinnerState {
             is_active_turn_assistant: true,
             show_empty_thinking: true,
+            live_turn_running: true,
             ..idle_spinner()
         };
         let mut measured_msg = ChatMessage::new(MessageRole::Assistant, Vec::new());
@@ -3886,6 +3897,7 @@ mod tests {
         let spinner = SpinnerState {
             is_active_turn_assistant: true,
             show_empty_thinking: true,
+            live_turn_running: true,
             ..idle_spinner()
         };
         let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new());
@@ -4204,6 +4216,7 @@ mod tests {
         let spinner = SpinnerState {
             is_active_turn_assistant: true,
             show_empty_thinking: true,
+            live_turn_running: true,
             ..idle_spinner()
         };
         let mut msg = make_text_message(MessageRole::Assistant, "done");
@@ -4302,8 +4315,12 @@ mod tests {
         let mut msg = make_text_message(MessageRole::Assistant, "cached");
         msg.turn_info = running_turn_info();
         let base_spinner = idle_spinner();
-        let thinking_spinner =
-            SpinnerState { show_thinking: true, glyph: '\u{2819}', ..idle_spinner() };
+        let thinking_spinner = SpinnerState {
+            show_thinking: true,
+            live_turn_running: true,
+            glyph: '\u{2819}',
+            ..idle_spinner()
+        };
         let options = default_options();
 
         let base_cache = get_or_build_message_render_cache(
@@ -4767,43 +4784,12 @@ mod tests {
     }
 
     #[test]
-    fn assistant_render_shows_subagent_line_when_only_subagent_active() {
-        let spinner = SpinnerState {
-            is_active_turn_assistant: true,
-            running_subagents: Some(RunningSubagentsLine {
-                count: 1,
-                primary_label: Some("Explore".to_owned()),
-            }),
-            ..idle_spinner()
-        };
-        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new());
-        let mut lines = Vec::new();
-
-        render_message(
-            &mut msg,
-            &spinner,
-            MessageRenderContext::new(None, 120, 0, default_options()),
-            &mut lines,
-        );
-
-        let rendered = render_lines_to_strings(&lines);
-        assert!(
-            rendered.iter().any(|line| line.contains("running subagent: Explore")),
-            "expected the running-subagent line; got {rendered:?}",
-        );
-        assert!(
-            !rendered.iter().any(|line| is_turn_info_row(line)),
-            "the turn is not in flight, so the row stays away - being the bound assistant is \
-             not the same as running: {rendered:?}",
-        );
-    }
-
-    #[test]
     fn assistant_render_stacks_the_subagent_line_above_the_turn_row() {
         let spinner = SpinnerState {
             is_active_turn_assistant: true,
             show_thinking: true,
             running_subagents: Some(RunningSubagentsLine { count: 2, primary_label: None }),
+            live_turn_running: true,
             ..idle_spinner()
         };
         let mut msg = make_text_message(MessageRole::Assistant, "streaming");
@@ -4890,6 +4876,82 @@ mod tests {
         assert!(
             !rendered.iter().any(|line| line.contains("running subagent")),
             "non-active assistant messages must not render the chat-wide status line; got {rendered:?}",
+        );
+    }
+
+    /// Post-turn traffic (monitor/notification text re-binding the
+    /// spinner anchor) leaves a body-bearing message at
+    /// `active_turn_assistant` while no turn is in flight. The live
+    /// clock is settled, so the running-subagents line may not render -
+    /// the Inspector is the only subagent surface once the turn ends.
+    #[test]
+    fn turn_indicators_need_a_live_turn_even_on_the_active_assistant() {
+        let spinner = SpinnerState {
+            is_active_turn_assistant: true,
+            show_thinking: true,
+            running_subagents: Some(RunningSubagentsLine {
+                count: 1,
+                primary_label: Some("Explore".to_owned()),
+            }),
+            live_turn_running: false,
+            ..idle_spinner()
+        };
+        let mut msg = make_text_message(MessageRole::Assistant, "Monitor closed cleanly.");
+        let mut lines = Vec::new();
+
+        render_message(
+            &mut msg,
+            &spinner,
+            MessageRenderContext::new(None, 120, 0, default_options()),
+            &mut lines,
+        );
+
+        let rendered = render_lines_to_strings(&lines);
+        assert!(
+            rendered.iter().any(|line| line.contains("Monitor closed cleanly.")),
+            "fixture guard: the post-turn body renders; got {rendered:?}",
+        );
+        assert!(
+            !rendered.iter().any(|line| line.contains("running subagent")),
+            "no live turn means no subagent line in chat, even on the anchored message; got {rendered:?}",
+        );
+    }
+
+    /// The designed live-turn shape the gate above must not eat: with
+    /// the clock running, the anchored mid-stream message carries its
+    /// body, the running-subagents line and the turn info row.
+    #[test]
+    fn turn_indicators_render_while_a_live_turn_runs() {
+        let spinner = SpinnerState {
+            is_active_turn_assistant: true,
+            show_thinking: true,
+            running_subagents: Some(RunningSubagentsLine {
+                count: 1,
+                primary_label: Some("Explore".to_owned()),
+            }),
+            live_turn_running: true,
+            ..idle_spinner()
+        };
+        let mut msg = make_text_message(MessageRole::Assistant, "streaming reply");
+        msg.turn_info =
+            TurnInfo { started_at: Some(std::time::Instant::now()), ..TurnInfo::default() };
+        let mut lines = Vec::new();
+
+        render_message(
+            &mut msg,
+            &spinner,
+            MessageRenderContext::new(None, 120, 0, default_options()),
+            &mut lines,
+        );
+
+        let rendered = render_lines_to_strings(&lines);
+        assert!(
+            rendered.iter().any(|line| line.contains("running subagent")),
+            "a live turn plus a running subagent renders the line; got {rendered:?}",
+        );
+        assert!(
+            rendered.iter().any(|line| line.contains("[▶ expand]")),
+            "a live turn's message wears the turn info row; got {rendered:?}",
         );
     }
 
@@ -5221,7 +5283,7 @@ mod tests {
     }
 
     #[test]
-    fn a_row_with_no_clock_is_a_bare_spinner_not_a_headless_field_list() {
+    fn a_row_with_no_clock_renders_nothing_rather_than_a_headless_field_list() {
         let running = SpinnerState {
             is_active_turn_assistant: true,
             show_empty_thinking: true,
@@ -5236,9 +5298,10 @@ mod tests {
 
         assert_eq!(
             turn_info_row_text_with(&mut msg, &running, 80),
-            "\u{280b} [\u{25b6} expand]",
-            "elapsed anchors the row, so a field that arrives before it waits rather than \
-             rendering as the row's first and only figure",
+            "",
+            "both turn-open paths stamp the clock before any estimate can land, so an \
+             estimate with no clock behind it is a stale row and renders nothing rather \
+             than as a bare loader",
         );
     }
 
@@ -5247,6 +5310,7 @@ mod tests {
         let running = SpinnerState {
             is_active_turn_assistant: true,
             show_thinking: true,
+            live_turn_running: true,
             glyph: '\u{280b}',
             ..idle_spinner()
         };
@@ -5354,6 +5418,7 @@ mod tests {
         let spinner = SpinnerState {
             show_empty_thinking: true,
             is_active_turn_assistant: true,
+            live_turn_running: true,
             ..idle_spinner()
         };
         let mut msg = ChatMessage::new(MessageRole::Assistant, vec![]);
@@ -5393,6 +5458,7 @@ mod tests {
                 count: 1,
                 primary_label: Some("Explore".to_owned()),
             }),
+            live_turn_running: true,
             ..idle_spinner()
         };
         let mut lines_b = Vec::new();
@@ -5421,6 +5487,7 @@ mod tests {
                 count: 1,
                 primary_label: Some("Explore".to_owned()),
             }),
+            live_turn_running: true,
             ..idle_spinner()
         };
         let mut lines_a = Vec::new();
@@ -5434,6 +5501,7 @@ mod tests {
         let many = SpinnerState {
             is_active_turn_assistant: true,
             running_subagents: Some(RunningSubagentsLine { count: 3, primary_label: None }),
+            live_turn_running: true,
             ..idle_spinner()
         };
         let mut lines_b = Vec::new();
