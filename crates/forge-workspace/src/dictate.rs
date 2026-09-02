@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use serde::Deserialize;
@@ -24,6 +24,131 @@ use crate::protocol::{DictateOutcome, SessionUpdate};
 /// Matches the crate's own default; a capture reserves 4 bytes a sample
 /// eagerly, so this is about 110 MiB held for the run.
 const DEFAULT_MAX_CAPTURE_MINUTES: u64 = 30;
+
+/// The push-to-talk key. Right Cmd is the default; on Linux and
+/// Windows there is no Cmd key, so the cmd equivalent is the right
+/// Control key, mirroring how the Cmd shortcuts accept Ctrl off macOS
+/// (`is_cmd_shortcut`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DictateBind {
+    #[default]
+    RightCmd,
+    LeftCmd,
+    Off,
+}
+
+/// How a press/release pair maps onto starting and stopping a take.
+/// `Auto` infers from timing; the forced modes bypass the tap window
+/// entirely.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DictateMode {
+    /// Sub-window tap toggles, hold transcribes on release.
+    #[default]
+    Auto,
+    /// Press starts, the next press stops; releases never stop.
+    Toggle,
+    /// Hold records, release stops, however brief the hold.
+    Hold,
+}
+
+impl DictateMode {
+    /// What the forge.toml key accepts.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Toggle => "toggle",
+            Self::Hold => "hold",
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for DictateMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "auto" => Ok(Self::Auto),
+            "toggle" => Ok(Self::Toggle),
+            "hold" => Ok(Self::Hold),
+            other => Err(serde::de::Error::unknown_variant(other, &["auto", "toggle", "hold"])),
+        }
+    }
+}
+
+/// What a session has overridden on the normalizer's prompt axes.
+/// `None` on an axis means "the crate default"; the `●` the `/dictate`
+/// dialog draws marks exactly this, not the value in force.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DictateOverrides {
+    pub styling: Option<forge_dictate::normalize::Styling>,
+    pub structure: Option<forge_dictate::normalize::Structure>,
+    pub context: Option<forge_dictate::normalize::Context>,
+}
+
+impl DictateOverrides {
+    /// The per-recording options this session dictates with: crate
+    /// defaults with each overridden axis replaced.
+    pub fn normalize_options(self) -> forge_dictate::NormalizeOptions {
+        let mut options = forge_dictate::NormalizeOptions::default();
+        if let Some(v) = self.styling {
+            options.styling = v;
+        }
+        if let Some(v) = self.structure {
+            options.structure = v;
+        }
+        if let Some(v) = self.context {
+            options.context = v;
+        }
+        options
+    }
+
+    /// `true` when nothing is overridden: the reset row is inert and
+    /// the dialog draws no markers.
+    pub fn is_empty(self) -> bool {
+        self.styling.is_none() && self.structure.is_none() && self.context.is_none()
+    }
+}
+
+/// One edit the `/dictate` dialog asks for: set a single axis, or
+/// clear them all. Enter on an already-set row re-sets the same value;
+/// there is no per-axis clear, so the reset row is the only way back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DictateOverrideUpdate {
+    Styling(forge_dictate::normalize::Styling),
+    Structure(forge_dictate::normalize::Structure),
+    Context(forge_dictate::normalize::Context),
+    Reset,
+}
+
+impl DictateBind {
+    /// What the forge.toml key accepts.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::RightCmd => "right_cmd",
+            Self::LeftCmd => "left_cmd",
+            Self::Off => "off",
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for DictateBind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "right_cmd" => Ok(Self::RightCmd),
+            "left_cmd" => Ok(Self::LeftCmd),
+            "off" => Ok(Self::Off),
+            other => {
+                Err(serde::de::Error::unknown_variant(other, &["right_cmd", "left_cmd", "off"]))
+            }
+        }
+    }
+}
 
 /// The `[dictate]` section. Every field has a default, so an absent
 /// section is exactly `enabled = false`.
@@ -62,6 +187,12 @@ pub struct DictateSettings {
     /// itself here rather than holding the microphone indefinitely.
     #[serde(default = "default_max_capture_minutes")]
     pub max_capture_minutes: u64,
+    /// The push-to-talk key.
+    #[serde(default)]
+    pub bind: DictateBind,
+    /// How press/release maps onto starting and stopping a take.
+    #[serde(default)]
+    pub mode: DictateMode,
 }
 
 fn enabled_by_default() -> bool {
@@ -81,6 +212,8 @@ impl Default for DictateSettings {
             language: None,
             normalizer: true,
             max_capture_minutes: DEFAULT_MAX_CAPTURE_MINUTES,
+            bind: DictateBind::default(),
+            mode: DictateMode::default(),
         }
     }
 }
@@ -481,11 +614,24 @@ pub(crate) struct DictateRuntime {
     /// same key is recognisably stale. Starts at 1; 0 is the "matches
     /// nothing" value refusals carry.
     pub(crate) next_generation: u64,
+    /// A stop that arrived before the start it answers had registered,
+    /// stamped on arrival. `begin_capture` honours it only while it is
+    /// fresh - the race it exists for is scheduler-scale, so a park
+    /// older than the window is a stop whose take already resolved
+    /// (a refusal, a cap self-submit) and must not poison the next
+    /// attempt.
+    pub(crate) stop_pending: Option<(SessionKey, Instant)>,
 }
+
+/// How long after parking a stop is still treated as racing its
+/// start's registration. The gap it covers is the scheduler's delay
+/// between two spawned tasks, so anything older is a stop whose take
+/// is already gone.
+const STOP_PARK_WINDOW: Duration = Duration::from_millis(200);
 
 impl Default for DictateRuntime {
     fn default() -> Self {
-        Self { recording: None, finishing: Vec::new(), next_generation: 1 }
+        Self { recording: None, finishing: Vec::new(), next_generation: 1, stop_pending: None }
     }
 }
 
@@ -497,6 +643,32 @@ impl DictateRuntime {
             return Some(recording.stop.clone());
         }
         self.finishing.iter().find(|take| &take.key == key).map(|take| take.stop.clone())
+    }
+
+    /// Consume `key`'s parked stop, answering whether it still races
+    /// its start's registration and should pre-load an abandon. A
+    /// stale park for the key is consumed without honour; another
+    /// key's park is left alone.
+    fn take_parked_stop(&mut self, key: &SessionKey, now: Instant) -> bool {
+        let ours = self.stop_pending.as_ref().is_some_and(|(parked, _)| parked == key);
+        if !ours {
+            return false;
+        }
+        let fresh = self
+            .stop_pending
+            .as_ref()
+            .is_some_and(|(_, at)| now.duration_since(*at) < STOP_PARK_WINDOW);
+        self.stop_pending = None;
+        fresh
+    }
+
+    /// Drop `key`'s parked stop, if any: the take it answered has
+    /// resolved some other way, and a left-behind park would poison
+    /// the session's next attempt.
+    fn clear_stop_pending(&mut self, key: &SessionKey) {
+        if self.stop_pending.as_ref().is_some_and(|(parked, _)| parked == key) {
+            self.stop_pending = None;
+        }
     }
 }
 
@@ -518,6 +690,9 @@ pub(crate) async fn handle_dictate_start(ws: &Arc<crate::Workspace>, key: Sessio
             tokio::spawn(run_recording(Arc::clone(ws), key, capture, generation, stop_rx, updates));
         }
         Ok(Err(message)) => {
+            // The start refused, so any park the press's release left
+            // behind answers a take that will never exist.
+            ws.dictate_runtime.lock().clear_stop_pending(&key);
             let _ = updates.send(SessionUpdate::DictateEnded {
                 key,
                 outcome: DictateOutcome::Refused { message },
@@ -533,14 +708,28 @@ pub(crate) async fn handle_dictate_start(ws: &Arc<crate::Workspace>, key: Sessio
 }
 
 /// `Command::DictateStop`: submit (`true`) or abandon the take that
-/// `key` started. A take that already resolved has nothing to route
-/// to, and that is fine.
+/// `key` started. A stop that arrives before its start has registered
+/// is parked in `stop_pending` for `begin_capture` to honour, rather
+/// than dropped: dropping it would orphan a take until the capture cap
+/// released the microphone. A stop whose take already resolved parks
+/// too - the park cannot tell the two apart on arrival - but it is
+/// only honoured while fresh, and every take-resolution path clears
+/// it, so it never poisons the session's next attempt.
 pub(crate) async fn handle_dictate_stop(
     ws: &Arc<crate::Workspace>,
     key: &SessionKey,
     submit: bool,
 ) {
-    let stop = ws.dictate_runtime.lock().stop_channel_for(key);
+    let stop = {
+        let mut runtime = ws.dictate_runtime.lock();
+        if let Some(stop) = runtime.stop_channel_for(key) {
+            runtime.stop_pending = None;
+            Some(stop)
+        } else {
+            runtime.stop_pending = Some((key.clone(), Instant::now()));
+            None
+        }
+    };
     if let Some(stop) = stop {
         let _ = stop.send(submit).await;
     }
@@ -581,7 +770,14 @@ fn begin_capture(
         drop(capture);
         return Err("no input device is available · dictation did not start".to_owned());
     }
-    runtime.recording = Some(LiveRecording { key: key.clone(), stop: stop_tx });
+    runtime.recording = Some(LiveRecording { key: key.clone(), stop: stop_tx.clone() });
+    // A stop the scheduler ordered before this registration is honoured
+    // here: pre-load the abandon so the take ends the moment the
+    // recording task starts reading its channel. A stale park - a stop
+    // whose take resolved without it - is consumed without honour.
+    if runtime.take_parked_stop(key, Instant::now()) {
+        let _ = stop_tx.try_send(false);
+    }
     let floor_db = engine.silence_floor();
     let generation = runtime.next_generation;
     runtime.next_generation = runtime.next_generation.wrapping_add(1);
@@ -612,7 +808,14 @@ async fn run_recording(
     }
 
     let _ = updates.send(SessionUpdate::DictateTranscribing { key: key.clone() });
-    let Ok(ticket) = capture.finish() else {
+    // The take normalizes with the starting session's /dictate
+    // overrides merged over the crate defaults; the session may have
+    // closed since, in which case the defaults stand.
+    let options = ws
+        .domain_session_for(&key)
+        .map(|domain| domain.lock().dictate_overrides.normalize_options())
+        .unwrap_or_default();
+    let Ok(ticket) = capture.finish_with(options) else {
         tracing::warn!("dictation could not submit its take");
         clear_recording_if_ours(&ws, &key);
         let _ = updates.send(SessionUpdate::DictateEnded {
@@ -723,6 +926,7 @@ fn clear_recording_if_ours(ws: &crate::Workspace, key: &SessionKey) {
     if runtime.recording.as_ref().is_some_and(|live| &live.key == key) {
         runtime.recording = None;
     }
+    runtime.clear_stop_pending(key);
 }
 
 /// Move this take's stop channel from the recording slot to the
@@ -738,7 +942,9 @@ fn move_to_finishing(ws: &crate::Workspace, key: &SessionKey) {
 
 /// Drop this take's finishing entry, whatever took it out of routing.
 fn remove_finishing(ws: &crate::Workspace, key: &SessionKey) {
-    ws.dictate_runtime.lock().finishing.retain(|take| &take.key != key);
+    let mut runtime = ws.dictate_runtime.lock();
+    runtime.finishing.retain(|take| &take.key != key);
+    runtime.clear_stop_pending(key);
 }
 
 /// Abandon everything `key` has in flight: a held microphone goes back
@@ -751,6 +957,7 @@ pub(crate) fn teardown_for_closed_session(ws: &crate::Workspace, key: &SessionKe
         runtime.recording = None;
     }
     runtime.finishing.retain(|take| &take.key != key);
+    runtime.clear_stop_pending(key);
 }
 
 /// Release every session's dictation at once, for workspace shutdown.
@@ -758,6 +965,7 @@ pub(crate) fn teardown_all(ws: &crate::Workspace) {
     let mut runtime = ws.dictate_runtime.lock();
     runtime.recording = None;
     runtime.finishing.clear();
+    runtime.stop_pending = None;
 }
 
 /// Map the crate's answer onto the wire outcome. A normalisation that
@@ -846,6 +1054,8 @@ mod transfer_progress_tests {
 mod tests {
     use super::*;
 
+    use crate::{Command, SessionUpdate};
+
     /// An absent `[dictate]` section must not download three gigabytes
     /// because forge started, so the whole section defaults off.
     #[test]
@@ -884,6 +1094,144 @@ mod tests {
             off.initial_models().len(),
             1,
             "with no normalizer configured preflight has one model to fetch, not two"
+        );
+    }
+
+    /// The push-to-talk keybinding is a config knob, not a constant.
+    /// Right Cmd is the default; `left_cmd` and `off` exist so the key
+    /// can be moved or switched off, and a typo must fail the load the
+    /// way every other `[dictate]` key does.
+    #[test]
+    fn bind_defaults_to_right_cmd_and_parses_the_three_values() {
+        let settings: DictateSettings = toml::from_str("").expect("an empty section parses");
+        assert_eq!(settings.bind, DictateBind::RightCmd);
+
+        let left: DictateSettings = toml::from_str("bind = \"left_cmd\"\n").expect("parse");
+        assert_eq!(left.bind, DictateBind::LeftCmd);
+
+        let off: DictateSettings = toml::from_str("bind = \"off\"\n").expect("parse");
+        assert_eq!(off.bind, DictateBind::Off);
+
+        let err = toml::from_str::<DictateSettings>("bind = \"right_command\"\n")
+            .expect_err("an unknown value must be refused");
+        assert!(
+            err.to_string().contains("right_command"),
+            "the error must name the value that was not understood, got: {err}"
+        );
+    }
+
+    /// The overlay's one reset control clears every axis, and the merged
+    /// options must equal the crate defaults when nothing is set.
+    #[test]
+    fn normalize_options_merge_overridden_axes_over_the_crate_defaults() {
+        let empty = DictateOverrides::default();
+        let merged = empty.normalize_options();
+        assert_eq!(merged, forge_dictate::NormalizeOptions::default());
+        assert!(empty.is_empty(), "a fresh session has nothing to reset");
+
+        let overridden = DictateOverrides {
+            styling: Some(forge_dictate::normalize::Styling::Formal),
+            ..DictateOverrides::default()
+        };
+        let merged = overridden.normalize_options();
+        assert_eq!(merged.styling, forge_dictate::normalize::Styling::Formal);
+        assert_eq!(
+            merged.structure,
+            forge_dictate::NormalizeOptions::default().structure,
+            "an unset axis keeps the crate default"
+        );
+        assert!(!overridden.is_empty());
+    }
+
+    #[test]
+    fn a_set_override_lands_on_its_own_session_and_echoes_back() {
+        let (workspace, mut updates) = crate::Workspace::testing_stub();
+        let a = crate::SessionKey::from_session_id("dictate-a");
+        let b = crate::SessionKey::from_session_id("dictate-b");
+        workspace.register_domain_session(a.clone(), None);
+        workspace.register_domain_session(b.clone(), None);
+
+        workspace
+            .dispatch(Command::SetDictateOverride {
+                key: a.clone(),
+                update: DictateOverrideUpdate::Styling(forge_dictate::normalize::Styling::Formal),
+            })
+            .expect("dispatch");
+
+        let a_binding = workspace.domain_session_for(&a).expect("session a");
+        assert_eq!(
+            a_binding.lock().dictate_overrides.styling,
+            Some(forge_dictate::normalize::Styling::Formal),
+        );
+        let b_binding = workspace.domain_session_for(&b).expect("session b");
+        assert_eq!(b_binding.lock().dictate_overrides, DictateOverrides::default());
+
+        let echo = updates.try_recv().expect("an echo for the session that set it");
+        match echo {
+            SessionUpdate::DictateOverrides { key, overrides } => {
+                assert_eq!(key, a);
+                assert_eq!(overrides.styling, Some(forge_dictate::normalize::Styling::Formal));
+            }
+            other => panic!("unexpected update: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reset_clears_every_axis_at_once() {
+        let (workspace, mut updates) = crate::Workspace::testing_stub();
+        let key = crate::SessionKey::from_session_id("dictate-reset");
+        workspace.register_domain_session(key.clone(), None);
+
+        for update in [
+            DictateOverrideUpdate::Styling(forge_dictate::normalize::Styling::Casual),
+            DictateOverrideUpdate::Context(forge_dictate::normalize::Context::Email),
+        ] {
+            workspace
+                .dispatch(Command::SetDictateOverride { key: key.clone(), update })
+                .expect("dispatch");
+        }
+        workspace.dispatch(Command::ResetDictateOverrides { key: key.clone() }).expect("dispatch");
+
+        let binding = workspace.domain_session_for(&key).expect("session");
+        assert_eq!(binding.lock().dictate_overrides, DictateOverrides::default());
+
+        let mut echoes = 0;
+        while let Ok(update) = updates.try_recv() {
+            if matches!(update, SessionUpdate::DictateOverrides { .. }) {
+                echoes += 1;
+            }
+        }
+        assert_eq!(echoes, 3, "each set echoes, and the reset does too");
+    }
+
+    #[test]
+    fn an_override_for_an_unknown_session_is_refused() {
+        let (workspace, _updates) = crate::Workspace::testing_stub();
+        let key = crate::SessionKey::from_session_id("never-registered");
+        let err = workspace
+            .dispatch(Command::ResetDictateOverrides { key })
+            .expect_err("an unknown session must be refused");
+        assert!(matches!(err, crate::DispatchError::UnknownSession(_)));
+    }
+
+    /// The mode rides the same parsing rules as `bind`: three values,
+    /// default `auto`, and a typo fails the load naming the value.
+    #[test]
+    fn mode_defaults_to_auto_and_parses_the_three_values() {
+        let settings: DictateSettings = toml::from_str("").expect("an empty section parses");
+        assert_eq!(settings.mode, DictateMode::Auto);
+
+        let toggle: DictateSettings = toml::from_str("mode = \"toggle\"\n").expect("parse");
+        assert_eq!(toggle.mode, DictateMode::Toggle);
+
+        let hold: DictateSettings = toml::from_str("mode = \"hold\"\n").expect("parse");
+        assert_eq!(hold.mode, DictateMode::Hold);
+
+        let err = toml::from_str::<DictateSettings>("mode = \"press\"\n")
+            .expect_err("an unknown value must be refused");
+        assert!(
+            err.to_string().contains("press"),
+            "the error must name the value that was not understood, got: {err}"
         );
     }
 
@@ -1197,6 +1545,92 @@ mod dictate_lifecycle_tests {
                 panic!("a submit decision during a transcription must keep waiting")
             }
         }
+    }
+
+    /// A stop the scheduler ordered before its start registered is
+    /// parked, not dropped: dropping it orphans the take until the
+    /// capture cap releases the microphone.
+    #[tokio::test]
+    async fn a_stop_before_its_start_is_parked_for_the_registration() {
+        let (ws, _updates) = crate::Workspace::testing_stub();
+        let owner = key("owner");
+
+        handle_dictate_stop(&ws, &owner, true).await;
+        assert!(
+            matches!(&ws.dictate_runtime.lock().stop_pending, Some((parked, _)) if *parked == owner),
+            "a stop with nothing to route parks itself for the start"
+        );
+
+        // A stop that DOES find a take neither parks nor leaves a stale
+        // park behind.
+        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(1);
+        ws.dictate_runtime.lock().recording =
+            Some(LiveRecording { key: owner.clone(), stop: stop_tx });
+        handle_dictate_stop(&ws, &owner, true).await;
+        assert_eq!(stop_rx.recv().await, Some(true));
+        assert_eq!(ws.dictate_runtime.lock().stop_pending, None);
+    }
+
+    /// A parked stop is only honoured while fresh: the race it covers
+    /// is the scheduler's gap between two spawned tasks, so a park
+    /// older than the window is a stop whose take resolved some other
+    /// way, and honouring it would waste the session's next attempt.
+    #[test]
+    fn a_stale_park_is_consumed_without_honour() {
+        let mut runtime = DictateRuntime::default();
+        let owner = key("owner");
+        let stale = Instant::now()
+            .checked_sub(STOP_PARK_WINDOW + Duration::from_millis(50))
+            .expect("a process one window old can still backdate a park; boot is far older");
+        runtime.stop_pending = Some((owner.clone(), stale));
+
+        assert!(!runtime.take_parked_stop(&owner, Instant::now()));
+        assert_eq!(runtime.stop_pending, None, "the stale park is consumed either way");
+
+        runtime.stop_pending = Some((owner.clone(), Instant::now()));
+        assert!(runtime.take_parked_stop(&owner, Instant::now()), "a fresh park is honoured");
+        assert_eq!(runtime.stop_pending, None);
+
+        // A park for a different key is never honoured and never
+        // disturbs this key's own state.
+        let other = key("other");
+        runtime.stop_pending = Some((other.clone(), Instant::now()));
+        assert!(!runtime.take_parked_stop(&owner, Instant::now()));
+        assert!(runtime.stop_pending.is_some(), "the other key's park survives");
+    }
+
+    /// Teardown drops a session's park: an inert entry for a closed
+    /// session would otherwise sit in the Option forever.
+    #[tokio::test]
+    async fn closing_the_session_clears_its_parked_stop() {
+        let (ws, _updates) = crate::Workspace::testing_stub();
+        let owner = key("owner");
+        handle_dictate_stop(&ws, &owner, true).await;
+        assert!(ws.dictate_runtime.lock().stop_pending.is_some());
+
+        ws.release_session(&owner);
+
+        assert_eq!(ws.dictate_runtime.lock().stop_pending, None);
+    }
+
+    /// A refused start clears the key's park: the release that follows
+    /// the refusal parks AFTER this clear, and that later park is
+    /// handled by the freshness window, but a park that arrived before
+    /// the refusal must not survive it.
+    #[tokio::test]
+    async fn a_refused_start_clears_the_park() {
+        let (ws, mut updates) = crate::Workspace::testing_stub();
+        let owner = key("owner");
+        ws.dictate_runtime.lock().stop_pending = Some((owner.clone(), Instant::now()));
+
+        handle_dictate_start(&ws, owner.clone()).await;
+
+        assert_eq!(ws.dictate_runtime.lock().stop_pending, None);
+        let ended = updates.recv().await.expect("the refusal echo");
+        assert!(matches!(
+            ended,
+            SessionUpdate::DictateEnded { outcome: DictateOutcome::Refused { .. }, .. }
+        ));
     }
 
     /// Closing the session that owns a live take must release the

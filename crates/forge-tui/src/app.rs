@@ -7,6 +7,8 @@ pub(crate) mod config;
 pub(crate) mod connect;
 mod dialog;
 pub(crate) mod dictate;
+pub(crate) mod dictate_key;
+pub(crate) mod dictate_picker;
 pub(crate) mod diff_overlay;
 pub(crate) mod emoji;
 pub(crate) mod events;
@@ -168,6 +170,9 @@ fn keyboard_enhancement_flags() -> KeyboardEnhancementFlags {
     KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
         | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
         | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+        // Standalone modifier presses and releases, which push-to-talk
+        // dictation needs, are only reported under this flag.
+        | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
 }
 
 /// The kitty set form, which replaces the active flags: crossterm
@@ -215,6 +220,10 @@ pub(crate) fn resume_terminal() {
     report_keyboard_enhancement_support();
 }
 
+/// The startup keyboard-enhancement negotiation's answer, set once by
+/// [`report_keyboard_enhancement_support`].
+static KEYBOARD_ENHANCEMENT_SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
 /// Ask whether the flags just pushed actually took, so a terminal or
 /// multiplexer that discards them leaves a record rather than silence.
 /// Cmd bindings and key-release events both need the enhanced protocol,
@@ -227,22 +236,38 @@ pub(crate) fn resume_terminal() {
 /// flags half, which is a prompt `Ok(false)`; a terminal that answers
 /// neither costs crossterm's 2s timeout once at startup.
 fn report_keyboard_enhancement_support() {
-    match crossterm::terminal::supports_keyboard_enhancement() {
-        Ok(true) => {}
-        Ok(false) => tracing::warn!(
-            target: crate::logging::targets::APP_LIFECYCLE,
-            event_name = "keyboard_enhancement_unsupported",
-            message = "terminal discarded the keyboard enhancement flags; Cmd bindings and key-release events will not arrive",
-            outcome = "failure",
-        ),
-        Err(error) => tracing::warn!(
-            target: crate::logging::targets::APP_LIFECYCLE,
-            event_name = "keyboard_enhancement_query_failed",
-            message = "could not read keyboard enhancement support from the terminal",
-            outcome = "failure",
-            error_message = %error,
-        ),
-    }
+    let supported = match crossterm::terminal::supports_keyboard_enhancement() {
+        Ok(true) => true,
+        Ok(false) => {
+            tracing::warn!(
+                target: crate::logging::targets::APP_LIFECYCLE,
+                event_name = "keyboard_enhancement_unsupported",
+                message = "terminal discarded the keyboard enhancement flags; Cmd bindings, key-release events and push-to-talk dictation will not arrive",
+                outcome = "failure",
+            );
+            false
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: crate::logging::targets::APP_LIFECYCLE,
+                event_name = "keyboard_enhancement_query_failed",
+                message = "could not read keyboard enhancement support from the terminal",
+                outcome = "failure",
+                error_message = %error,
+            );
+            false
+        }
+    };
+    // Queried once, before the event loop owns the reader; a binding
+    // that can never arrive is surfaced on the dictate preflight row
+    // rather than left to this log.
+    let _ = KEYBOARD_ENHANCEMENT_SUPPORTED.set(supported);
+}
+
+/// The startup negotiation's verdict, `None` before
+/// [`report_keyboard_enhancement_support`] has run.
+pub(crate) fn keyboard_enhancement_supported() -> Option<bool> {
+    KEYBOARD_ENHANCEMENT_SUPPORTED.get().copied()
 }
 
 /// Wipe the screen and force the next draw to repaint every cell.

@@ -173,6 +173,12 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::ForgeAccountIdentity { key, display_name } => {
             apply_session_update_forge_account_identity(app, &key, display_name);
         }
+        SessionUpdate::DictateOverrides { key, overrides } => {
+            if let Some(bucket) = app.sessions.get_mut(&key) {
+                bucket.dictate_overrides = overrides;
+                app.needs_redraw = true;
+            }
+        }
         SessionUpdate::StatusSnapshot { session_id, account, forge_account } => {
             apply_session_update_status_snapshot(app, &session_id, account, forge_account);
         }
@@ -427,6 +433,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             app.dictate_available = available;
         }
         SessionUpdate::DictateStarted { key, floor_db, generation } => {
+            app.dictate_take_pending = false;
             if let Some(bucket) = app.session_mut(&key) {
                 bucket.dictate =
                     Some(crate::app::dictate::DictateIndicator::recording(floor_db, generation));
@@ -448,6 +455,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             }
         }
         SessionUpdate::DictateEnded { key, outcome, generation } => {
+            app.dictate_take_pending = false;
             if let Some(bucket) = app.session_mut(&key) {
                 apply_dictate_outcome(bucket, &outcome, generation);
             }
@@ -1312,6 +1320,32 @@ mod tests {
 
     use super::*;
     use crate::app::session::{SessionLifecycleState, UiSession};
+
+    /// The echo is the only source the dialog's markers and reset row
+    /// read, so it must land on the addressed bucket and nothing else.
+    #[test]
+    fn dictate_override_echo_lands_on_the_addressed_bucket_only() {
+        let mut app = App::test_default();
+        let (key_a, key_b) = seed_two_sessions(&mut app);
+
+        let overrides = forge_workspace::DictateOverrides {
+            styling: Some(forge_workspace::Styling::Formal),
+            context: Some(forge_workspace::Context::Email),
+            ..Default::default()
+        };
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::DictateOverrides { key: key_a.clone(), overrides },
+        );
+
+        assert_eq!(app.sessions[&key_a].dictate_overrides, overrides);
+        assert_eq!(
+            app.sessions[&key_b].dictate_overrides,
+            forge_workspace::DictateOverrides::default(),
+            "an echo for one session must not touch another"
+        );
+        assert!(app.needs_redraw);
+    }
 
     fn seed_two_sessions(app: &mut App) -> (SessionKey, SessionKey) {
         let key_a = SessionKey::from_str_for_test("session-a");

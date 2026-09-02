@@ -1189,7 +1189,12 @@ pub(crate) fn execute_command_via_handle(
         }
         // App-level commands are caught in Workspace::dispatch's
         // app-level branch; they never reach this helper.
-        misrouted @ (Command::SpawnProject { .. }
+        // Handled inline in `Workspace::dispatch`; never agent traffic.
+        misrouted @ (Command::SetDictateOverride { .. }
+        | Command::ResetDictateOverrides { .. }
+        | Command::DictateStart { .. }
+        | Command::DictateStop { .. }
+        | Command::SpawnProject { .. }
         | Command::SpawnSession { .. }
         | Command::StartDefault { .. }
         | Command::DeliverPeerPrompt { .. }
@@ -1199,9 +1204,7 @@ pub(crate) fn execute_command_via_handle(
         | Command::DeliverWorkerPrompt { .. }
         | Command::DeliverWorkerPromptToLead { .. }
         | Command::DeliverGotifyMessage { .. }
-        | Command::SwitchAccount { .. }
-        | Command::DictateStart { .. }
-        | Command::DictateStop { .. }) => {
+        | Command::SwitchAccount { .. }) => {
             tracing::warn!(
                 target: "forge_workspace::session_task",
                 key = %key.as_str(),

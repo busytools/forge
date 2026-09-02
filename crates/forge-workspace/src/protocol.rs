@@ -198,6 +198,18 @@ pub enum Command {
         tool_id: String,
         outcome: QuestionOutcome,
     },
+    /// Set one `/dictate` overlay axis for this session, or clear
+    /// every axis at once. Workspace state on the `DomainSession`,
+    /// never routed to the agent; the echo lands as
+    /// `SessionUpdate::DictateOverrides`.
+    SetDictateOverride {
+        key: SessionKey,
+        update: crate::dictate::DictateOverrideUpdate,
+    },
+    /// Clear every `/dictate` override this session holds.
+    ResetDictateOverrides {
+        key: SessionKey,
+    },
     /// Reconnect a configured MCP server.
     ReconnectMcpServer {
         key: SessionKey,
@@ -403,10 +415,14 @@ impl Command {
             | Self::RespondPermission { key, .. }
             | Self::RespondQuestion { key, .. }
             | Self::ReconnectMcpServer { key, .. }
-            | Self::ToggleMcpServer { key, .. } => Some(key),
+            | Self::ToggleMcpServer { key, .. }
+            | Self::SetDictateOverride { key, .. }
+            | Self::ResetDictateOverrides { key } => Some(key),
             Self::SpawnProject { .. }
             | Self::SpawnSession { .. }
             | Self::StartDefault { .. }
+            | Self::DictateStart { .. }
+            | Self::DictateStop { .. }
             | Self::DeliverPeerPrompt { .. }
             | Self::SpawnWorker { .. }
             | Self::CloseWorker { .. }
@@ -414,9 +430,7 @@ impl Command {
             | Self::DeliverWorkerPrompt { .. }
             | Self::DeliverWorkerPromptToLead { .. }
             | Self::DeliverGotifyMessage { .. }
-            | Self::SwitchAccount { .. }
-            | Self::DictateStart { .. }
-            | Self::DictateStop { .. } => None,
+            | Self::SwitchAccount { .. } => None,
         }
     }
 }
@@ -459,6 +473,12 @@ impl std::fmt::Debug for Command {
                 .field("key", key)
                 .field("tool_id", tool_id)
                 .finish_non_exhaustive(),
+            Self::SetDictateOverride { key, .. } => {
+                f.debug_struct("SetDictateOverride").field("key", key).finish_non_exhaustive()
+            }
+            Self::ResetDictateOverrides { key } => {
+                f.debug_struct("ResetDictateOverrides").field("key", key).finish()
+            }
             Self::ReconnectMcpServer { key, server_name } => f
                 .debug_struct("ReconnectMcpServer")
                 .field("key", key)
@@ -712,6 +732,14 @@ pub enum SessionUpdate {
         key: SessionKey,
         display_name: String,
     },
+    /// The full override set a session holds after a `/dictate` edit
+    /// landed. Sent after every `SetDictateOverride` and
+    /// `ResetDictateOverrides` so the dialog's markers and its reset
+    /// row read from this, not from a TUI-side copy.
+    DictateOverrides {
+        key: SessionKey,
+        overrides: crate::dictate::DictateOverrides,
+    },
     OauthCredentialsSnapshot {
         session_id: String,
         credentials: Option<OauthCredentials>,
@@ -883,6 +911,7 @@ impl SessionUpdate {
             | Self::TurnCancelled { key }
             | Self::TurnError { key, .. }
             | Self::ForgeAccountIdentity { key, .. }
+            | Self::DictateOverrides { key, .. }
             | Self::SessionsListed { key, .. }
             | Self::ReviewActivityNotice { key, .. }
             | Self::PeerInflightStatsChanged { key, .. }
@@ -996,6 +1025,9 @@ impl std::fmt::Debug for SessionUpdate {
                 .finish_non_exhaustive(),
             Self::ForgeAccountIdentity { key, .. } => {
                 f.debug_struct("ForgeAccountIdentity").field("key", key).finish_non_exhaustive()
+            }
+            Self::DictateOverrides { key, .. } => {
+                f.debug_struct("DictateOverrides").field("key", key).finish_non_exhaustive()
             }
             Self::OauthCredentialsSnapshot { session_id, .. } => f
                 .debug_struct("OauthCredentialsSnapshot")

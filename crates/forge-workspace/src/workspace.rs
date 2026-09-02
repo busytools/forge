@@ -828,6 +828,28 @@ impl Workspace {
         self.config.ui.clone()
     }
 
+    /// The push-to-talk key from forge.toml `[dictate] bind`. Read by
+    /// the TUI's key handler per event; config is boot-frozen so the
+    /// value never changes mid-run.
+    pub fn dictate_bind(&self) -> crate::dictate::DictateBind {
+        self.config.dictate.bind
+    }
+
+    /// How press/release maps onto starting and stopping a take, from
+    /// forge.toml `[dictate] mode`. Read by the TUI's key handler per
+    /// event; config is boot-frozen so the value never changes mid-run.
+    pub fn dictate_mode(&self) -> crate::dictate::DictateMode {
+        self.config.dictate.mode
+    }
+
+    /// Whether dictation is on at all. The key handler reads this so a
+    /// press with `[dictate]` disabled is dead rather than a refusal:
+    /// the box doc's S0 is "nothing at all", and with the section
+    /// absent every Cmd chord would otherwise pop an error.
+    pub fn dictate_enabled(&self) -> bool {
+        self.config.dictate.enabled
+    }
+
     /// The `[gotify]` server connection from forge.toml, or `None`
     /// when the section is absent. `None` keeps the Gotify subsystem
     /// dormant and makes `gotify__subscribe` error. Read-only - forge
@@ -2589,6 +2611,43 @@ impl Workspace {
         self.domain_session_for(key).is_some_and(|d| d.lock().conn.is_some())
     }
 
+    /// Apply a `/dictate` override edit to the session's `DomainSession`
+    /// and echo the full set back. An unknown session is refused the same
+    /// way the per-session commands are: there is nothing to edit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DispatchError::UnknownSession`] when no `DomainSession`
+    /// is registered for the key.
+    fn apply_dictate_override(
+        self: &Arc<Self>,
+        key: &SessionKey,
+        update: crate::dictate::DictateOverrideUpdate,
+    ) -> Result<(), DispatchError> {
+        let Some(domain) = self.domain_session_for(key) else {
+            return Err(DispatchError::UnknownSession(key.clone()));
+        };
+        match update {
+            crate::dictate::DictateOverrideUpdate::Styling(v) => {
+                domain.lock().dictate_overrides.styling = Some(v);
+            }
+            crate::dictate::DictateOverrideUpdate::Structure(v) => {
+                domain.lock().dictate_overrides.structure = Some(v);
+            }
+            crate::dictate::DictateOverrideUpdate::Context(v) => {
+                domain.lock().dictate_overrides.context = Some(v);
+            }
+            crate::dictate::DictateOverrideUpdate::Reset => {
+                domain.lock().dictate_overrides = crate::dictate::DictateOverrides::default();
+            }
+        }
+        let overrides = domain.lock().dictate_overrides;
+        let _ = self
+            .update_sender()
+            .send(SessionUpdate::DictateOverrides { key: key.clone(), overrides });
+        Ok(())
+    }
+
     /// Route a [`Command`]. Per-session commands (`cmd.key() ==
     /// Some(key)`) fan out to the matching `SessionTask`. App-level
     /// commands (`cmd.key() == None` - `SpawnProject`,
@@ -2624,6 +2683,21 @@ impl Workspace {
             }
         }
         if let Some(key) = cmd.key() {
+            // The /dictate override edits are workspace state on the
+            // DomainSession, never agent traffic: apply inline and
+            // echo, ahead of the SessionTask routing below.
+            match cmd {
+                Command::SetDictateOverride { key, update } => {
+                    return self.apply_dictate_override(&key, update);
+                }
+                Command::ResetDictateOverrides { key } => {
+                    return self.apply_dictate_override(
+                        &key,
+                        crate::dictate::DictateOverrideUpdate::Reset,
+                    );
+                }
+                _ => {}
+            }
             let key = key.clone();
             let senders = self.command_senders.lock();
             if let Some(sender) = senders.get(&key) {
@@ -6478,6 +6552,17 @@ impl Workspace {
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_dictate_snapshot(&self, snapshot: crate::dictate::DictateSnapshot) {
         *self.dictate.snapshot.lock() = snapshot;
+    }
+
+    /// A `testing_stub` whose `[dictate] enabled` is true, so a
+    /// cross-crate test exercises the key handler's enabled path
+    /// without a model download. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn testing_stub_with_dictate_enabled() -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>)
+    {
+        let mut config = LoadedConfig::empty_for_test();
+        config.dictate.enabled = true;
+        Self::testing_stub_with_config(PathBuf::from("/tmp/forge-testing-stub-dictate"), config)
     }
 
     /// Give `label` an assignment-plan entry the way a spawn does, so a

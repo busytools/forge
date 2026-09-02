@@ -463,6 +463,16 @@ pub struct App {
     pub spinner_picker: Option<crate::app::spinner_picker::SpinnerPickerState>,
     /// Open `/account` picker overlay state; `None` when closed.
     pub account_picker: Option<crate::app::account_picker::AccountPickerState>,
+    /// Open `/dictate` overlay state; `None` when closed.
+    pub dictate_picker: Option<crate::app::dictate_picker::DictatePickerState>,
+    /// Push-to-talk press tracking for the configured dictate key.
+    pub(crate) dictate_key: crate::app::dictate_key::DictateKeyState,
+    /// Whether a dictate start has been dispatched whose echo has not
+    /// landed yet. Optimistic: set by the key handler's dispatch,
+    /// cleared by the `DictateStarted` / `DictateEnded` reducers. The
+    /// press classification reads this alongside the buckets so a
+    /// second tap before the echo cannot dispatch a duplicate start.
+    pub(crate) dictate_take_pending: bool,
     /// Session-level preference for collapsing non-Execute tool call bodies.
     /// Toggled by Ctrl+X and applied at render/layout time.
     pub tools_collapsed: bool,
@@ -3652,6 +3662,9 @@ impl App {
             repaint_cadence: forge_workspace::RepaintCadence::default(),
             spinner_picker: None,
             account_picker: None,
+            dictate_picker: None,
+            dictate_key: crate::app::dictate_key::DictateKeyState::default(),
+            dictate_take_pending: false,
             tools_collapsed: true,
             #[cfg(any(test, feature = "testing"))]
             last_invalidation_level: std::cell::Cell::new(None),
