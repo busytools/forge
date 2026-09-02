@@ -343,12 +343,13 @@ pub struct Workspace {
     test_extra_projects: Mutex<Vec<LoadedProject>>,
 }
 
-/// Pool entry wrapping the live `Arc<AgentHandle>`. Tests assert
-/// which account each spawn was bound to; that binding lives behind
-/// `cfg(test)` so production carries no dead field.
+/// Pool entry wrapping the live `Arc<AgentHandle>` and the account key
+/// the subprocess is bound to.
 pub(crate) struct PooledAgent {
     pub handle: Arc<AgentHandle>,
-    #[cfg(test)]
+    /// The account the subprocess is bound to, resolved at spawn; the
+    /// dispatch path reads it to stamp `permission_mode` onto `/new`
+    /// and `/resume` re-spawns.
     pub account: AccountKey,
 }
 
@@ -1267,11 +1268,7 @@ impl Workspace {
             }
             pool.insert(
                 session_key.clone(),
-                PooledAgent {
-                    handle: Arc::clone(&arc),
-                    #[cfg(test)]
-                    account: account_key,
-                },
+                PooledAgent { handle: Arc::clone(&arc), account: account_key },
             );
         }
 
@@ -2677,7 +2674,7 @@ impl Workspace {
     /// is registered for the requested key (e.g., the session was
     /// just closed), or [`DispatchError::SessionClosed`] when the
     /// task's command receiver has been dropped.
-    pub fn dispatch(self: &Arc<Self>, cmd: Command) -> Result<(), DispatchError> {
+    pub fn dispatch(self: &Arc<Self>, mut cmd: Command) -> Result<(), DispatchError> {
         // Test intercept (when armed): capture EVERY Command - both
         // app-level and per-session - before any routing. Tests use
         // this to assert what would have been dispatched without
@@ -2708,6 +2705,43 @@ impl Workspace {
                 _ => {}
             }
             let key = key.clone();
+            // /new and /resume re-spawn on the already-pooled handle, where
+            // get_agent_handle_with_spawn_key's stamp never runs.
+            if let Command::NewSession { launch_settings, .. }
+            | Command::ResumeSession { launch_settings, .. } = &mut cmd
+            {
+                let account_key = self.pool.lock().get(&key).map(|p| p.account.clone());
+                match account_key {
+                    None => tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        key = %key.as_str(),
+                        "permission_mode stamp skipped: respawn routed but no pool entry \
+                         (release_session teardown window)",
+                    ),
+                    Some(account_key) => {
+                        let accounts = self.accounts.lock();
+                        if accounts.provider(&account_key).is_none() {
+                            tracing::warn!(
+                                target: "forge_workspace::workspace",
+                                key = %key.as_str(),
+                                account = %account_key.0,
+                                "permission_mode stamp skipped: pooled account is not in the \
+                                 account map",
+                            );
+                        } else if let Some(mode) = accounts.permission_mode(&account_key) {
+                            spawn::stamp_account_permission_mode(launch_settings, mode);
+                        } else {
+                            tracing::debug!(
+                                target: "forge_workspace::workspace",
+                                key = %key.as_str(),
+                                account = %account_key.0,
+                                "respawn keeps the launcher default: account sets no \
+                                 permission_mode",
+                            );
+                        }
+                    }
+                }
+            }
             let senders = self.command_senders.lock();
             if let Some(sender) = senders.get(&key) {
                 // Stamp turn_pending only on the routed path (set + route
@@ -9916,11 +9950,7 @@ SOLO_TOKEN = "solo-secret"
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),
-            PooledAgent {
-                handle: Arc::new(handle),
-                #[cfg(test)]
-                account: AccountKey("test".to_owned()),
-            },
+            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
         );
 
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
@@ -10164,11 +10194,7 @@ SOLO_TOKEN = "solo-secret"
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),
-            PooledAgent {
-                handle: Arc::new(handle),
-                #[cfg(test)]
-                account: AccountKey("test".to_owned()),
-            },
+            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
         );
 
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
@@ -10202,11 +10228,7 @@ SOLO_TOKEN = "solo-secret"
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),
-            PooledAgent {
-                handle: Arc::new(handle),
-                #[cfg(test)]
-                account: AccountKey("test".to_owned()),
-            },
+            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
         );
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
 
@@ -10710,6 +10732,130 @@ provider = "anthropic"
         assert!(matches!(cmd, forge_primitives::AgentCommand::Cancel { .. }));
     }
 
+    /// `/new` and `/resume` re-spawn on the already-pooled handle, where
+    /// the spawn-path stamp in `get_agent_handle_with_spawn_key` never
+    /// runs - the launch settings must pick the pooled account's mode up
+    /// at dispatch instead.
+    #[test]
+    fn respawn_commands_on_a_pooled_session_carry_the_account_mode() {
+        use forge_primitives::permission::PermissionMode;
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        *workspace.accounts.lock() =
+            crate::account::AccountStateMap::new(&[crate::config::LoadedAccount {
+                display_name: "Openrouter".to_owned(),
+                config_dir: PathBuf::from("/cfg/Openrouter"),
+                provider: forge_primitives::account::Provider::Openrouter,
+                env: HashMap::new(),
+                experimental: false,
+                permission_mode: Some(PermissionMode::BypassPermissions),
+            }]);
+        let key = SessionKey::from_str_for_test("respawn-mode-test");
+        let (handle, mut agent_rx) = Workspace::testing_stub_handle();
+        workspace.pool.lock().insert(
+            key.clone(),
+            PooledAgent { handle: Arc::new(handle), account: AccountKey("Openrouter".to_owned()) },
+        );
+
+        let auto_settings = || SessionLaunchSettings {
+            settings: Some(serde_json::json!({ "permissions": { "defaultMode": "auto" } })),
+            ..SessionLaunchSettings::default()
+        };
+        workspace
+            .dispatch(Command::NewSession {
+                key: key.clone(),
+                cwd: "/tmp".to_owned(),
+                launch_settings: auto_settings(),
+            })
+            .expect("dispatch new");
+        workspace
+            .dispatch(Command::ResumeSession {
+                key: key.clone(),
+                session_id: "old-uuid".to_owned(),
+                cwd: "/tmp".to_owned(),
+                launch_settings: auto_settings(),
+            })
+            .expect("dispatch resume");
+
+        let carried_mode = |value: &serde_json::Value| -> Option<String> {
+            value
+                .get("settings")
+                .and_then(|s| s.get(SessionLaunchSettings::PERMISSIONS_KEY))
+                .and_then(|p| p.get(SessionLaunchSettings::PERMISSIONS_DEFAULT_MODE_KEY))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        let first = agent_rx.try_recv().expect("new session agent command");
+        let second = agent_rx.try_recv().expect("resume agent command");
+        let forge_primitives::AgentCommand::NewSession { launch_settings: new, .. } = first else {
+            panic!("expected a NewSession agent command");
+        };
+        let forge_primitives::AgentCommand::ResumeSession { launch_settings: resume, .. } = second
+        else {
+            panic!("expected a ResumeSession agent command");
+        };
+        assert_eq!(
+            carried_mode(&new).as_deref(),
+            Some("bypassPermissions"),
+            "/new must carry the pooled account's mode, not the TUI session default",
+        );
+        assert_eq!(
+            carried_mode(&resume).as_deref(),
+            Some("bypassPermissions"),
+            "/resume must carry the pooled account's mode, not the TUI session default",
+        );
+    }
+
+    /// A mode-less account must not gain a fallback mode at dispatch:
+    /// the launcher's own session default survives a respawn.
+    #[test]
+    fn respawn_commands_on_a_modeless_account_keep_the_launcher_default() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        *workspace.accounts.lock() =
+            crate::account::AccountStateMap::new(&[crate::config::LoadedAccount {
+                display_name: "Plain".to_owned(),
+                config_dir: PathBuf::from("/cfg/Plain"),
+                provider: forge_primitives::account::Provider::Anthropic,
+                env: HashMap::new(),
+                experimental: false,
+                permission_mode: None,
+            }]);
+        let key = SessionKey::from_str_for_test("respawn-modeless-test");
+        let (handle, mut agent_rx) = Workspace::testing_stub_handle();
+        workspace.pool.lock().insert(
+            key.clone(),
+            PooledAgent { handle: Arc::new(handle), account: AccountKey("Plain".to_owned()) },
+        );
+
+        workspace
+            .dispatch(Command::NewSession {
+                key: key.clone(),
+                cwd: "/tmp".to_owned(),
+                launch_settings: SessionLaunchSettings {
+                    // "plan", not the real launcher default "auto": an Auto
+                    // fallback mutant would survive an auto seed.
+                    settings: Some(serde_json::json!({ "permissions": { "defaultMode": "plan" } })),
+                    ..SessionLaunchSettings::default()
+                },
+            })
+            .expect("dispatch new");
+
+        let forge_primitives::AgentCommand::NewSession { launch_settings, .. } =
+            agent_rx.try_recv().expect("new session agent command")
+        else {
+            panic!("expected a NewSession agent command");
+        };
+        let carried = launch_settings
+            .get("settings")
+            .and_then(|s| s.get(SessionLaunchSettings::PERMISSIONS_KEY))
+            .and_then(|p| p.get(SessionLaunchSettings::PERMISSIONS_DEFAULT_MODE_KEY))
+            .and_then(serde_json::Value::as_str);
+        assert_eq!(
+            carried,
+            Some("plan"),
+            "an account without permission_mode must keep the launcher's session default",
+        );
+    }
+
     // ---- Session-task rekey tests ----
     //
     // Pin dispatch routing across session-task key migration. The
@@ -10733,11 +10879,7 @@ provider = "anthropic"
         let arc = Arc::new(handle);
         workspace.pool.lock().insert(
             key.clone(),
-            PooledAgent {
-                handle: Arc::clone(&arc),
-                #[cfg(test)]
-                account: AccountKey("test".to_owned()),
-            },
+            PooledAgent { handle: Arc::clone(&arc), account: AccountKey("test".to_owned()) },
         );
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
         workspace.command_senders.lock().insert(key.clone(), cmd_tx);
