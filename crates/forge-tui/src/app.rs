@@ -220,6 +220,10 @@ pub(crate) fn resume_terminal() {
     report_keyboard_enhancement_support();
 }
 
+/// The startup keyboard-enhancement negotiation's answer, set once by
+/// [`report_keyboard_enhancement_support`].
+static KEYBOARD_ENHANCEMENT_SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
 /// Ask whether the flags just pushed actually took, so a terminal or
 /// multiplexer that discards them leaves a record rather than silence.
 /// Cmd bindings and key-release events both need the enhanced protocol,
@@ -231,10 +235,6 @@ pub(crate) fn resume_terminal() {
 /// reader. GNU screen answers the device-attributes half and not the
 /// flags half, which is a prompt `Ok(false)`; a terminal that answers
 /// neither costs crossterm's 2s timeout once at startup.
-/// The startup keyboard-enhancement negotiation's answer, set once by
-/// [`report_keyboard_enhancement_support`].
-static KEYBOARD_ENHANCEMENT_SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
 fn report_keyboard_enhancement_support() {
     let supported = match crossterm::terminal::supports_keyboard_enhancement() {
         Ok(true) => true,

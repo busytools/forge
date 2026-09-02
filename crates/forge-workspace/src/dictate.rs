@@ -614,11 +614,16 @@ pub(crate) struct DictateRuntime {
     /// same key is recognisably stale. Starts at 1; 0 is the "matches
     /// nothing" value refusals carry.
     pub(crate) next_generation: u64,
+    /// A stop that arrived before the start it answers had registered.
+    /// `begin_capture` checks it under the same lock that registers the
+    /// take and pre-loads the abandon, so the take cannot outlive a
+    /// stop the scheduler ordered first.
+    pub(crate) stop_pending: Option<SessionKey>,
 }
 
 impl Default for DictateRuntime {
     fn default() -> Self {
-        Self { recording: None, finishing: Vec::new(), next_generation: 1 }
+        Self { recording: None, finishing: Vec::new(), next_generation: 1, stop_pending: None }
     }
 }
 
@@ -667,13 +672,25 @@ pub(crate) async fn handle_dictate_start(ws: &Arc<crate::Workspace>, key: Sessio
 
 /// `Command::DictateStop`: submit (`true`) or abandon the take that
 /// `key` started. A take that already resolved has nothing to route
-/// to, and that is fine.
+/// to, and that is fine. A stop that arrives before its start has
+/// registered is parked in `stop_pending` for `begin_capture` to
+/// honour, rather than dropped: dropping it would orphan a take until
+/// the capture cap released the microphone.
 pub(crate) async fn handle_dictate_stop(
     ws: &Arc<crate::Workspace>,
     key: &SessionKey,
     submit: bool,
 ) {
-    let stop = ws.dictate_runtime.lock().stop_channel_for(key);
+    let stop = {
+        let mut runtime = ws.dictate_runtime.lock();
+        if let Some(stop) = runtime.stop_channel_for(key) {
+            runtime.stop_pending = None;
+            Some(stop)
+        } else {
+            runtime.stop_pending = Some(key.clone());
+            None
+        }
+    };
     if let Some(stop) = stop {
         let _ = stop.send(submit).await;
     }
@@ -714,7 +731,14 @@ fn begin_capture(
         drop(capture);
         return Err("no input device is available · dictation did not start".to_owned());
     }
-    runtime.recording = Some(LiveRecording { key: key.clone(), stop: stop_tx });
+    runtime.recording = Some(LiveRecording { key: key.clone(), stop: stop_tx.clone() });
+    // A stop the scheduler ordered before this registration is honoured
+    // here: pre-load the abandon so the take ends the moment the
+    // recording task starts reading its channel.
+    if runtime.stop_pending.as_ref().is_some_and(|pending| pending == key) {
+        runtime.stop_pending = None;
+        let _ = stop_tx.try_send(false);
+    }
     let floor_db = engine.silence_floor();
     let generation = runtime.next_generation;
     runtime.next_generation = runtime.next_generation.wrapping_add(1);
@@ -1477,6 +1501,31 @@ mod dictate_lifecycle_tests {
                 panic!("a submit decision during a transcription must keep waiting")
             }
         }
+    }
+
+    /// A stop the scheduler ordered before its start registered is
+    /// parked, not dropped: dropping it orphans the take until the
+    /// capture cap releases the microphone.
+    #[tokio::test]
+    async fn a_stop_before_its_start_is_parked_for_the_registration() {
+        let (ws, _updates) = crate::Workspace::testing_stub();
+        let owner = key("owner");
+
+        handle_dictate_stop(&ws, &owner, true).await;
+        assert_eq!(
+            ws.dictate_runtime.lock().stop_pending.as_ref(),
+            Some(&owner),
+            "a stop with nothing to route parks itself for the start"
+        );
+
+        // A stop that DOES find a take neither parks nor leaves a stale
+        // park behind.
+        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(1);
+        ws.dictate_runtime.lock().recording =
+            Some(LiveRecording { key: owner.clone(), stop: stop_tx });
+        handle_dictate_stop(&ws, &owner, true).await;
+        assert_eq!(stop_rx.recv().await, Some(true));
+        assert_eq!(ws.dictate_runtime.lock().stop_pending, None);
     }
 
     /// Closing the session that owns a live take must release the

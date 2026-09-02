@@ -136,6 +136,10 @@ fn configured_mode(app: &App) -> DictateMode {
     app.workspace.as_ref().map(|w| w.dictate_mode()).unwrap_or_default()
 }
 
+fn dictate_enabled(app: &App) -> bool {
+    app.workspace.as_ref().is_some_and(|w| w.dictate_enabled())
+}
+
 /// Whether a take is live anywhere in the UI. The composer indicator
 /// the `DictateStarted` reducer installed is the truth, and the
 /// microphone it mirrors is process-wide, so any bucket's take counts.
@@ -162,6 +166,12 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent, now: Instant) -> bool {
         }
         app.dictate_key.mark_chorded();
         return false;
+    }
+    // [dictate] off is the box doc's S0: the key is dead, not a refusal.
+    // Without this gate the section's absence would turn every Cmd chord's
+    // modifier half into an error notice in the composer.
+    if !dictate_enabled(app) {
+        return true;
     }
     let (consumed, action) =
         app.dictate_key.classify(key.kind, recording_active(app), now, configured_mode(app));
@@ -194,8 +204,20 @@ fn request_start(app: &mut App) {
 
 fn request_stop(app: &mut App, cancelled: bool) {
     app.dictate_take_pending = false;
-    if let Err(error) = app
-        .dispatch_command(|key| forge_workspace::Command::DictateStop { key, submit: !cancelled })
+    // A live take may belong to a background session: the microphone is
+    // process-wide, so the stop routes to the bucket holding the
+    // indicator, falling back to the active session when nothing is
+    // live yet (a release racing its start's echo).
+    let target = app
+        .sessions
+        .iter()
+        .find(|(_, bucket)| bucket.dictate.is_some())
+        .map(|(key, _)| key.clone())
+        .or_else(|| app.active_session_key.clone());
+    let Some(key) = target else { return };
+    let Some(workspace) = app.workspace.as_ref() else { return };
+    if let Err(error) =
+        workspace.dispatch(forge_workspace::Command::DictateStop { key, submit: !cancelled })
     {
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
@@ -210,6 +232,21 @@ fn request_stop(app: &mut App, cancelled: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::ModifierKeyCode as M;
+
+    /// Pins each cfg arm's exact resolution: the end-to-end tests press
+    /// whatever this mapping returns, so a flipped variant inside
+    /// either arm would stay self-consistent and pass them.
+    #[test]
+    fn the_cmd_bindings_resolve_to_the_platforms_modifier_keys() {
+        if cfg!(target_os = "macos") {
+            assert_eq!(bound_modifier(DictateBind::RightCmd), Some(M::RightSuper));
+            assert_eq!(bound_modifier(DictateBind::LeftCmd), Some(M::LeftSuper));
+        } else {
+            assert_eq!(bound_modifier(DictateBind::RightCmd), Some(M::RightControl));
+            assert_eq!(bound_modifier(DictateBind::LeftCmd), Some(M::LeftControl));
+        }
+    }
 
     fn press(key: crossterm::event::ModifierKeyCode) -> KeyEvent {
         KeyEvent::new(KeyCode::Modifier(key), crossterm::event::KeyModifiers::NONE)
@@ -247,6 +284,17 @@ mod tests {
         now: Instant,
     ) -> (bool, Option<DictateAction>) {
         state.classify(kind, recording_active, now, DictateMode::Auto)
+    }
+
+    /// An app whose workspace stub has `[dictate] enabled` and the
+    /// dispatch intercept armed: the setup every dispatch-asserting
+    /// test shares.
+    fn app_with_dictate_enabled() -> (App, std::sync::Arc<forge_workspace::Workspace>) {
+        let mut app = App::test_default();
+        let (workspace, _updates) = forge_workspace::Workspace::testing_stub_with_dictate_enabled();
+        workspace.enable_test_dispatch_intercept();
+        app.workspace = Some(workspace.clone());
+        (app, workspace)
     }
 
     #[test]
@@ -417,9 +465,7 @@ mod tests {
 
     #[test]
     fn other_bare_modifiers_are_consumed_and_the_bound_key_is_tracked() {
-        let mut app = App::test_default();
-        let workspace = app.workspace.clone().expect("test workspace");
-        workspace.enable_test_dispatch_intercept();
+        let (mut app, workspace) = app_with_dictate_enabled();
         let now = Instant::now();
         // No workspace-visible override in a test app resolves the
         // default binding, so Right Cmd is the dictate key and every
@@ -450,9 +496,7 @@ mod tests {
 
     #[test]
     fn the_end_to_end_hold_dispatches_start_then_submit() {
-        let mut app = App::test_default();
-        let workspace = app.workspace.clone().expect("test workspace");
-        workspace.enable_test_dispatch_intercept();
+        let (mut app, workspace) = app_with_dictate_enabled();
         let start = base();
         assert!(handle_key(&mut app, press(right_cmd_key()), start));
 
@@ -476,9 +520,7 @@ mod tests {
 
     #[test]
     fn a_chorded_end_to_end_press_dispatches_an_abandon() {
-        let mut app = App::test_default();
-        let workspace = app.workspace.clone().expect("test workspace");
-        workspace.enable_test_dispatch_intercept();
+        let (mut app, workspace) = app_with_dictate_enabled();
         let now = Instant::now();
         assert!(handle_key(&mut app, press(right_cmd_key()), now));
         // A plain key arrives while the dictate key is down: it marks
@@ -507,9 +549,7 @@ mod tests {
 
     #[test]
     fn a_clean_tap_dispatches_no_stop_until_the_next_release() {
-        let mut app = App::test_default();
-        let workspace = app.workspace.clone().expect("test workspace");
-        workspace.enable_test_dispatch_intercept();
+        let (mut app, workspace) = app_with_dictate_enabled();
         let start = base();
         assert!(handle_key(&mut app, press(right_cmd_key()), start));
         let tap = KeyEvent::new_with_kind(
@@ -543,9 +583,7 @@ mod tests {
 
     #[test]
     fn a_live_take_anywhere_means_a_press_starts_nothing() {
-        let mut app = App::test_default();
-        let workspace = app.workspace.clone().expect("test workspace");
-        workspace.enable_test_dispatch_intercept();
+        let (mut app, workspace) = app_with_dictate_enabled();
         let key = app.active_session_key.clone().expect("active session");
         app.sessions.get_mut(&key).expect("bucket").dictate =
             Some(crate::app::dictate::DictateIndicator::recording(-50.0, 1));
@@ -564,5 +602,58 @@ mod tests {
         );
         assert!(handle_key(&mut app, release, start + Duration::from_millis(400)));
         assert_eq!(workspace.drain_test_dispatch_buffer().len(), 1, "the release ends it");
+    }
+
+    #[test]
+    fn a_press_with_dictation_disabled_is_dead_not_an_error() {
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("test workspace");
+        workspace.enable_test_dispatch_intercept();
+        // The testing stub's config is the default: `[dictate]` absent,
+        // which is disabled. The press stays consumed (a bare modifier)
+        // but dispatches nothing and records nothing.
+        let now = Instant::now();
+        assert!(handle_key(&mut app, press(right_cmd_key()), now));
+        assert!(!handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('v'), crossterm::event::KeyModifiers::NONE),
+            now
+        ));
+        assert!(handle_key(&mut app, with_kind(right_cmd_key(), KeyEventKind::Release), now));
+        assert!(
+            workspace.drain_test_dispatch_buffer().is_empty(),
+            "a disabled dictation never dispatches"
+        );
+        assert!(!recording_active(&app));
+    }
+
+    #[test]
+    fn the_stop_routes_to_the_session_holding_the_live_take() {
+        let (mut app, workspace) = app_with_dictate_enabled();
+        let active = app.active_session_key.clone().expect("active session");
+        let background = forge_workspace::SessionKey::from_session_id("background-take");
+        app.sessions
+            .insert(background.clone(), crate::app::session::UiSession::new(background.clone()));
+        app.sessions.get_mut(&background).expect("bucket").dictate =
+            Some(crate::app::dictate::DictateIndicator::recording(-50.0, 1));
+
+        let start = base();
+        assert!(handle_key(&mut app, press(right_cmd_key()), start));
+        let release = KeyEvent::new_with_kind(
+            KeyCode::Modifier(right_cmd_key()),
+            crossterm::event::KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+        assert!(handle_key(&mut app, release, start + Duration::from_millis(400)));
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        match dispatched.last() {
+            Some(forge_workspace::Command::DictateStop { key, submit }) => {
+                assert_eq!(key, &background, "the stop names the take's own session");
+                assert!(submit);
+            }
+            other => panic!("a stop for the live take, got {other:?}"),
+        }
+        assert_eq!(active, app.active_session_key.clone().expect("active session"));
     }
 }

@@ -842,6 +842,14 @@ impl Workspace {
         self.config.dictate.mode
     }
 
+    /// Whether dictation is on at all. The key handler reads this so a
+    /// press with `[dictate]` disabled is dead rather than a refusal:
+    /// the box doc's S0 is "nothing at all", and with the section
+    /// absent every Cmd chord would otherwise pop an error.
+    pub fn dictate_enabled(&self) -> bool {
+        self.config.dictate.enabled
+    }
+
     /// The `[gotify]` server connection from forge.toml, or `None`
     /// when the section is absent. `None` keeps the Gotify subsystem
     /// dormant and makes `gotify__subscribe` error. Read-only - forge
@@ -2603,29 +2611,14 @@ impl Workspace {
         self.domain_session_for(key).is_some_and(|d| d.lock().conn.is_some())
     }
 
-    /// Route a [`Command`]. Per-session commands (`cmd.key() ==
-    /// Some(key)`) fan out to the matching `SessionTask`. App-level
-    /// commands (`cmd.key() == None` - `SpawnProject`,
-    /// `SpawnSession`, `StartDefault`) route to the workspace's own
-    /// handler.
-    ///
-    /// Test fallback: when no `SessionTask` is registered for `key`
-    /// but a `DomainSession` carries a stub `AgentHandle` (e.g., the
-    /// `Workspace::testing_stub` path), the command runs
-    /// synchronously against that handle. This keeps `#[test]`-flavor
-    /// unit tests (no tokio runtime) able to observe the
-    /// `forge_primitives::AgentCommand` emitted on the stub's channel
-    /// without spinning up an async actor.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DispatchError::UnknownSession`] when no `SessionTask`
-    /// is registered for the requested key (e.g., the session was
-    /// just closed), or [`DispatchError::SessionClosed`] when the
-    /// task's command receiver has been dropped.
     /// Apply a `/dictate` override edit to the session's `DomainSession`
     /// and echo the full set back. An unknown session is refused the same
     /// way the per-session commands are: there is nothing to edit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DispatchError::UnknownSession`] when no `DomainSession`
+    /// is registered for the key.
     fn apply_dictate_override(
         self: &Arc<Self>,
         key: &SessionKey,
@@ -6559,6 +6552,17 @@ impl Workspace {
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_dictate_snapshot(&self, snapshot: crate::dictate::DictateSnapshot) {
         *self.dictate.snapshot.lock() = snapshot;
+    }
+
+    /// A `testing_stub` whose `[dictate] enabled` is true, so a
+    /// cross-crate test exercises the key handler's enabled path
+    /// without a model download. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn testing_stub_with_dictate_enabled() -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>)
+    {
+        let mut config = LoadedConfig::empty_for_test();
+        config.dictate.enabled = true;
+        Self::testing_stub_with_config(PathBuf::from("/tmp/forge-testing-stub-dictate"), config)
     }
 
     /// Give `label` an assignment-plan entry the way a spawn does, so a
