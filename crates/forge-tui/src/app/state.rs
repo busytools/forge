@@ -461,6 +461,8 @@ pub struct App {
     pub repaint_cadence: forge_workspace::RepaintCadence,
     /// Open `/spinner` picker overlay state; `None` when closed.
     pub spinner_picker: Option<crate::app::spinner_picker::SpinnerPickerState>,
+    /// Open `/model` picker overlay state; `None` when closed.
+    pub model_picker: Option<crate::app::model_picker::ModelPickerState>,
     /// Open `/account` picker overlay state; `None` when closed.
     pub account_picker: Option<crate::app::account_picker::AccountPickerState>,
     /// Open `/dictate` overlay state; `None` when closed.
@@ -3661,6 +3663,7 @@ impl App {
             spinner_epoch: Instant::now(),
             repaint_cadence: forge_workspace::RepaintCadence::default(),
             spinner_picker: None,
+            model_picker: None,
             account_picker: None,
             dictate_picker: None,
             dictate_key: crate::app::dictate_key::DictateKeyState::default(),

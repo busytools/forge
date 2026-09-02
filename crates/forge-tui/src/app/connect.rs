@@ -243,6 +243,7 @@ fn create_app_impl(
         spinner_epoch: std::time::Instant::now(),
         repaint_cadence: ui_settings.fps,
         spinner_picker: None,
+        model_picker: None,
         account_picker: None,
         dictate_picker: None,
         dictate_key: crate::app::dictate_key::DictateKeyState::default(),

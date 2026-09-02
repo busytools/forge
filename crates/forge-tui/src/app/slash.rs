@@ -25,6 +25,7 @@ pub const MAX_VISIBLE: usize = 20;
 use super::MAX_CANDIDATES;
 
 // Re-export public API
+pub(crate) use executors::switch_model;
 pub use executors::try_handle_submit;
 pub use navigation::{
     activate, confirm_selection, deactivate, move_down, move_up, sync_with_cursor, update_query,

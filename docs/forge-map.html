@@ -2743,6 +2743,38 @@ chat continues here...
   </div>
 </div>
 
+<div class="surface" id="model-picker">
+  <div class="surface-head">
+    <h4>Model picker (<code>/model</code>)</h4>
+    <div class="when">visible: when <code>/model</code> (no arg) runs AND the session advertises models - a transient centered overlay drawn over whatever view is active. A session with no advertised models keeps the current-model info line instead; <code>/model &lt;id&gt;</code> switches directly without the overlay.</div>
+  </div>
+  <div class="surface-body">
+    <p>Pick the session's model from one overlay. The rows are the session's available models - the curated OpenRouter catalog (tiered ten with benchmark, price and context in each row's description) on an <code>openrouter</code> account, the CLI-advertised regular models elsewhere. The pseudo <code>default</code> row the CLI lists is hidden - the same filter the <code>/model</code> argument autocomplete applies. The overlay opens with the highlight on the running model (matched against the model's requested id, then its resolved id) and a <code>●</code> marker beside it; descriptions clip at the overlay edge.</p>
+
+    <div class="term">
+      <pre class="indent">
+                    <span class="dim">┌─ model ───────────────────────────────────────────────────────────┐</span>
+                    <span class="dim">│</span> <span class="accent-bold">▶ Z.ai: GLM 5.3 (Opus-class)  SWE-bench V 97% (vals.ai) · $4.40/M</span> <span class="dim">│</span>
+                    <span class="dim">│</span>   DeepSeek: DeepSeek V4 Pro 0813 (Opus-class)  <span class="dim">96.4% / 80.6% · $3.20/M</span> <span class="dim">│</span>
+                    <span class="dim">│</span>   MoonshotAI: Kimi K3 (Opus-class)  <span class="dim">SWE-bench V 93.4% (anotherwrapper)</span> <span class="dim">│</span>
+                    <span class="dim">│</span> <span class="accent">●</span> Z.ai: GLM 5.3 Flash (Opus-class)  <span class="dim">~93% (vals.ai, independent)</span>      <span class="dim">│</span>
+                    <span class="dim">│</span>   DeepSeek: DeepSeek V4 Flash (Strong)  <span class="dim">SWE-bench V 91% (vals.ai)</span>     <span class="dim">│</span>
+                    <span class="dim">│</span>   <span class="dim">...</span>                                                               <span class="dim">│</span>
+                    <span class="dim">│</span>                                                                     <span class="dim">│</span>
+                    <span class="dim">│</span> <span class="dim">↑↓ move   enter switch   esc cancel   ● current</span>                     <span class="dim">│</span>
+                    <span class="dim">└───────────────────────────────────────────────────────────────────┘</span></pre>
+    </div>
+
+    <dl>
+      <dt>keys</dt><dd><kbd>↑</kbd> <kbd>↓</kbd> move the highlight (wrapping) · <kbd>Enter</kbd> switch the session to the highlighted model and close · <kbd>Esc</kbd> close without switching. The overlay is modal - it captures every key while open. Keyboard-only; mouse-click selection is a possible follow-up.</dd>
+      <dt>switch mechanics</dt><dd><kbd>Enter</kbd> takes the same path as <code>/model &lt;id&gt;</code>: an optimistic footer-chip update, then the <code>SetModel</code> command dispatch to the session - the CLI confirms the live model on its next frame.</dd>
+      <dt>code</dt><dd><code>crates/forge-tui/src/app/model_picker.rs</code> (state + key handling: open / move / commit / cancel) · <code>crates/forge-tui/src/ui/model_picker.rs::render</code> (centered overlay) · <code>/model</code> handler at <code>crates/forge-tui/src/app/slash/executors.rs::handle_model_submit</code> with the shared switch at <code>switch_model</code> · rows from the session's <code>available_models</code>, which <code>crates/forge-workspace/src/session_task.rs::merge_catalog_models</code> swaps for the curated catalog on OpenRouter accounts.</dd>
+      <dt>color</dt><dd>border + selection marker (<code>▶</code>) + current-model dot (<code>●</code>): <span class="accent">RUST_ORANGE</span> · highlighted row (name): <span class="accent">RUST_ORANGE</span> bold · unselected name: default fg · unselected description + footer hints: <code>DIM</code>.</dd>
+      <dt>scope</dt><dd>Fully transient - rows snapshot at open, nothing persists. Works identically from chat and the launchpad.</dd>
+    </dl>
+  </div>
+</div>
+
 <div class="surface" id="account-picker">
   <div class="surface-head">
     <h4>Account picker (<code>/account</code>)</h4>
