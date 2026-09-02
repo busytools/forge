@@ -10810,14 +10810,15 @@ provider = "anthropic"
     #[test]
     fn respawn_commands_on_a_modeless_account_keep_the_launcher_default() {
         let (workspace, _update_rx) = Workspace::testing_stub();
-        *workspace.accounts.lock() = crate::account::AccountStateMap::new(&[crate::config::LoadedAccount {
-            display_name: "Plain".to_owned(),
-            config_dir: PathBuf::from("/cfg/Plain"),
-            provider: forge_primitives::account::Provider::Anthropic,
-            env: HashMap::new(),
-            experimental: false,
-            permission_mode: None,
-        }]);
+        *workspace.accounts.lock() =
+            crate::account::AccountStateMap::new(&[crate::config::LoadedAccount {
+                display_name: "Plain".to_owned(),
+                config_dir: PathBuf::from("/cfg/Plain"),
+                provider: forge_primitives::account::Provider::Anthropic,
+                env: HashMap::new(),
+                experimental: false,
+                permission_mode: None,
+            }]);
         let key = SessionKey::from_str_for_test("respawn-modeless-test");
         let (handle, mut agent_rx) = Workspace::testing_stub_handle();
         workspace.pool.lock().insert(
