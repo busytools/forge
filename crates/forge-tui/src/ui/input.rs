@@ -741,7 +741,7 @@ mod tests {
                 rows[1]
             );
             assert!(
-                rows[1].contains("esc cancel") && !rows[1].contains("esc to cancel"),
+                rows[1].ends_with("esc cancel\u{2503}") && !rows[1].contains("esc to cancel"),
                 "the esc hint rides the status row in its own wording, got: {}",
                 rows[1]
             );
