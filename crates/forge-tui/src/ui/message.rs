@@ -4917,6 +4917,34 @@ mod tests {
         );
     }
 
+    /// The headline phantom: post-turn traffic binding the spinner
+    /// anchor onto a pure empty message while the clock is settled. It
+    /// paints nothing - no bare loader row, no line of any kind.
+    #[test]
+    fn an_empty_anchored_message_without_a_live_turn_paints_nothing() {
+        let spinner = SpinnerState {
+            is_active_turn_assistant: true,
+            show_empty_thinking: true,
+            live_turn_running: false,
+            ..idle_spinner()
+        };
+        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new());
+        let mut lines = Vec::new();
+
+        render_message(
+            &mut msg,
+            &spinner,
+            MessageRenderContext::new(None, 120, 0, default_options()),
+            &mut lines,
+        );
+
+        let rendered = render_lines_to_strings(&lines);
+        assert!(
+            rendered.iter().all(|line| line.trim().is_empty()),
+            "the empty phantom post-turn anchor paints nothing; got {rendered:?}",
+        );
+    }
+
     /// The designed live-turn shape the gate above must not eat: with
     /// the clock running, the anchored mid-stream message carries its
     /// body, the running-subagents line and the turn info row.
