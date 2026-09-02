@@ -27,8 +27,8 @@ pub struct Hooks {
     pub(crate) notification: Vec<Arc<dyn ErasedHookCallback>>,
     pub(crate) permission_request: Vec<(String, Arc<dyn ErasedHookCallback>)>,
     /// Timeout (seconds) the CLI should apply to every hook callback.
-    /// `None` means "use the default forge-sdk emits" (30 - matches
-    /// the CLI's per-matcher default). Overridable via
+    /// `None` means "use the default forge-sdk emits"
+    /// ([`DEFAULT_HOOK_TIMEOUT_SECS`]). Overridable via
     /// [`HooksBuilder::default_timeout_secs`] for scenarios that need
     /// to provoke `control_cancel_request` on slow callbacks.
     pub(crate) default_timeout_secs: Option<u64>,
@@ -119,7 +119,7 @@ pub(crate) struct HookRegistry {
 
 impl HookRegistry {
     /// Render the `hooks` field of the `initialize` `control_request`:
-    /// `{"PreToolUse": [{"matcher": "...", "hookCallbackIds": ["hook_0"], "timeout": 30}, ...], ...}`.
+    /// `{"PreToolUse": [{"matcher": "...", "hookCallbackIds": ["hook_0"], "timeout": 120}, ...], ...}`.
     pub(crate) fn to_initialize_payload(&self) -> serde_json::Value {
         use std::collections::BTreeMap;
 
@@ -151,7 +151,9 @@ impl HookRegistry {
                     );
                     spec.insert(
                         "timeout".into(),
-                        serde_json::json!(self.default_timeout_secs.unwrap_or(30)),
+                        serde_json::json!(
+                            self.default_timeout_secs.unwrap_or(DEFAULT_HOOK_TIMEOUT_SECS)
+                        ),
                     );
                     serde_json::Value::Object(spec)
                 })
@@ -161,6 +163,13 @@ impl HookRegistry {
         serde_json::Value::Object(map)
     }
 }
+
+/// Timeout (seconds) emitted per hook matcher when
+/// [`HooksBuilder::default_timeout_secs`] is unset. Raised from the
+/// CLI's per-matcher default of 30 so a hook response already written
+/// by forge survives a CLI stdin pump wedged on an inline
+/// `get_context_usage` computation (#827).
+pub(crate) const DEFAULT_HOOK_TIMEOUT_SECS: u64 = 120;
 
 /// One entry describing a minted hook id.
 #[derive(Debug, Clone)]
@@ -174,6 +183,29 @@ pub(crate) struct HookRegistryEntry {
 #[derive(Default)]
 pub struct HooksBuilder {
     inner: Hooks,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hooks::HookDecision;
+
+    /// Pins the deliberate hook-budget raise: the initialize payload
+    /// must emit the raised default, not the CLI's per-matcher 30.
+    #[test]
+    fn initialize_payload_emits_the_deliberate_hook_timeout() {
+        let hooks = HooksBuilder::new()
+            .pre_tool_use("*", |_input: PreToolUseInput, _ctx| async {
+                HookDecision::passthrough()
+            })
+            .build();
+        let payload = hooks.mint_registry().to_initialize_payload();
+        assert_eq!(
+            payload["PreToolUse"][0]["timeout"],
+            serde_json::json!(120),
+            "the raised hook budget must reach the wire"
+        );
+    }
 }
 
 impl std::fmt::Debug for HooksBuilder {
@@ -192,7 +224,7 @@ impl HooksBuilder {
     /// initialize `control_request`. The CLI uses this to decide how
     /// long to wait on each `hook_callback` reply before giving up and
     /// emitting a `control_cancel_request`. Default when unset is
-    /// 30 seconds. Lower it for scenarios
+    /// [`DEFAULT_HOOK_TIMEOUT_SECS`]. Lower it for scenarios
     /// that deliberately provoke cancellation; raise it for
     /// long-running callbacks (e.g. LLM sub-calls inside a hook).
     pub fn default_timeout_secs(mut self, secs: u64) -> Self {

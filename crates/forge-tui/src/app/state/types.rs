@@ -579,6 +579,10 @@ pub struct SessionUsageState {
     pub context_max_tokens: Option<u64>,
     pub context_usage_in_flight: bool,
     pub context_usage_refresh_pending: bool,
+    /// When the last `get_context_usage` was actually sent for this
+    /// session. Bounds the auto refresh to one send per
+    /// `CONTEXT_USAGE_MIN_SEND_INTERVAL`.
+    pub context_usage_last_sent: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

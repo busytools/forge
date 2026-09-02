@@ -1,4 +1,17 @@
+use std::time::{Duration, Instant};
+
 use crate::app::App;
+
+/// Minimum spacing between actual `get_context_usage` sends per
+/// session. Rapid pane switches coalesce into the first send instead
+/// of re-asking the CLI to recompute over the whole transcript.
+const CONTEXT_USAGE_MIN_SEND_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Retained history bytes at or above which the auto refresh is
+/// skipped: the CLI answers `get_context_usage` inline over the full
+/// transcript, and past this size that computation alone can exceed
+/// the hook timeout (#827).
+const CONTEXT_USAGE_LARGE_TRANSCRIPT_BYTES: usize = 8 * 1024 * 1024;
 
 pub(crate) enum RuntimeReloadRequestOutcome {
     Requested,
@@ -43,11 +56,51 @@ pub(crate) fn request_runtime_reload(app: &mut App) -> RuntimeReloadRequestOutco
 }
 
 pub(crate) fn request_context_usage_refresh(app: &mut App) {
+    request_context_usage_refresh_at(app, Instant::now());
+}
+
+fn request_context_usage_refresh_at(app: &mut App, now: Instant) {
     if app.session_usage().context_usage_in_flight {
         app.session_usage_mut().context_usage_refresh_pending = true;
         return;
     }
 
+    if app.retained_history_bytes() >= CONTEXT_USAGE_LARGE_TRANSCRIPT_BYTES {
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "context_usage_refresh_skipped",
+            message = "auto context usage refresh skipped on large transcript",
+            retained_bytes = app.retained_history_bytes(),
+        );
+        return;
+    }
+
+    if let Some(last) = app.session_usage().context_usage_last_sent
+        && now.duration_since(last) < CONTEXT_USAGE_MIN_SEND_INTERVAL
+    {
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "context_usage_refresh_debounced",
+            message = "auto context usage refresh inside min send interval",
+        );
+        return;
+    }
+
+    send_context_usage_request(app, now);
+}
+
+/// Unconditional refresh: no size gate, no debounce. The manual-class
+/// path - today the post-/compact refresh, where the displayed
+/// percentage is guaranteed stale.
+pub(crate) fn request_context_usage_refresh_forced(app: &mut App) {
+    if app.session_usage().context_usage_in_flight {
+        app.session_usage_mut().context_usage_refresh_pending = true;
+        return;
+    }
+    send_context_usage_request(app, Instant::now());
+}
+
+fn send_context_usage_request(app: &mut App, now: Instant) {
     let Some(workspace) = app.workspace.clone() else {
         clear_context_usage_refresh_state(app);
         return;
@@ -66,6 +119,7 @@ pub(crate) fn request_context_usage_refresh(app: &mut App) {
         let usage = app.session_usage_mut();
         usage.context_usage_in_flight = true;
         usage.context_usage_refresh_pending = false;
+        usage.context_usage_last_sent = Some(now);
     }
     match workspace.refresh_context_usage(&key) {
         Ok(()) => tracing::debug!(
@@ -170,6 +224,7 @@ fn clear_context_usage_refresh_state(app: &mut App) {
 mod tests {
     use super::{
         RuntimeReloadRequestOutcome, apply_context_usage_snapshot, request_context_usage_refresh,
+        request_context_usage_refresh_at, request_context_usage_refresh_forced,
         request_runtime_reload, request_status_snapshot_refresh,
     };
     use crate::agent::model;
@@ -225,7 +280,64 @@ mod tests {
     }
 
     #[test]
-    fn apply_context_usage_snapshot_replays_pending_refresh() {
+    fn request_context_usage_refresh_debounces_to_one_send_per_interval() {
+        let (mut app, mut rx) = app_with_connection();
+        let t0 = std::time::Instant::now();
+
+        request_context_usage_refresh_at(&mut app, t0);
+        let _ = rx.try_recv().expect("first refresh sends");
+        apply_context_usage_snapshot(&mut app, Some(62), Some(200_000));
+
+        request_context_usage_refresh_at(&mut app, t0 + std::time::Duration::from_secs(30));
+        assert!(rx.try_recv().is_err(), "a request inside the min interval must not send again");
+
+        request_context_usage_refresh_at(&mut app, t0 + std::time::Duration::from_secs(61));
+        let envelope = rx.try_recv().expect("past the interval the next request sends");
+        assert!(matches!(
+            envelope,
+            forge_primitives::AgentCommand::GetContextUsage { session_id } if session_id == "session-1"
+        ));
+    }
+
+    #[test]
+    fn request_context_usage_refresh_skips_auto_refresh_on_large_transcripts() {
+        let (mut app, mut rx) = app_with_connection();
+
+        *app.retained_history_bytes_mut() = super::CONTEXT_USAGE_LARGE_TRANSCRIPT_BYTES;
+        request_context_usage_refresh(&mut app);
+        assert!(
+            rx.try_recv().is_err(),
+            "at or above the transcript threshold the auto refresh is skipped"
+        );
+        assert!(!app.session_usage().context_usage_in_flight);
+
+        *app.retained_history_bytes_mut() = super::CONTEXT_USAGE_LARGE_TRANSCRIPT_BYTES - 1;
+        request_context_usage_refresh(&mut app);
+        let envelope = rx.try_recv().expect("below the threshold the refresh still sends");
+        assert!(matches!(
+            envelope,
+            forge_primitives::AgentCommand::GetContextUsage { session_id } if session_id == "session-1"
+        ));
+    }
+
+    #[test]
+    fn request_context_usage_refresh_forced_bypasses_both_gates() {
+        let (mut app, mut rx) = app_with_connection();
+
+        *app.retained_history_bytes_mut() = super::CONTEXT_USAGE_LARGE_TRANSCRIPT_BYTES;
+        app.session_usage_mut().context_usage_last_sent = Some(std::time::Instant::now());
+
+        request_context_usage_refresh_forced(&mut app);
+
+        let envelope = rx.try_recv().expect("forced refresh sends despite both gates");
+        assert!(matches!(
+            envelope,
+            forge_primitives::AgentCommand::GetContextUsage { session_id } if session_id == "session-1"
+        ));
+    }
+
+    #[test]
+    fn apply_context_usage_snapshot_leaves_pending_refresh_to_the_debounce() {
         let (mut app, mut rx) = app_with_connection();
         request_context_usage_refresh(&mut app);
         request_context_usage_refresh(&mut app);
@@ -234,13 +346,12 @@ mod tests {
         apply_context_usage_snapshot(&mut app, Some(62), Some(200_000));
 
         assert_eq!(app.session_usage().context_usage_percent, Some(62));
-        assert!(app.session_usage().context_usage_in_flight);
+        assert!(!app.session_usage().context_usage_in_flight);
         assert!(!app.session_usage().context_usage_refresh_pending);
-        let envelope = rx.try_recv().expect("replayed context usage command");
-        assert!(matches!(
-            envelope,
-            forge_primitives::AgentCommand::GetContextUsage { session_id } if session_id == "session-1"
-        ));
+        assert!(
+            rx.try_recv().is_err(),
+            "the pending refresh inside the min interval is served by the fresh snapshot, not re-sent"
+        );
     }
 
     #[test]
