@@ -357,6 +357,56 @@ mod tests {
         let _ = rx.try_recv();
     }
 
+    /// Interrupt-then-type: a prompt submitted while a cancel is pending
+    /// must take the FRESH branch even though the status still reads
+    /// busy - the CLI fuses the prompt into the same turn, and #803's
+    /// reuse semantics want a new clock and a wiped accumulator, not the
+    /// interrupted turn's figures carried forward.
+    #[test]
+    fn a_prompt_submitted_over_a_pending_cancel_starts_a_fresh_clock() {
+        let (mut app, mut rx) = app_with_connection();
+        let t0 = std::time::Instant::now();
+        app.status = AppStatus::Running;
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete("first"))],
+        ));
+        app.push_active_turn_assistant_placeholder();
+        app.start_live_turn(t0);
+        app.set_latest_thinking_tokens(Some(50));
+        app.set_pending_cancel(true);
+
+        app.input_mut().set_text("second");
+        submit_input(&mut app);
+
+        let live_bars: Vec<_> = app
+            .messages()
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::Assistant))
+            .filter(|m| !m.turn_info.is_empty() && !m.turn_info.is_settled())
+            .collect();
+        assert_eq!(
+            live_bars.len(),
+            1,
+            "the fresh branch re-stamps the reused row, not a second one"
+        );
+        assert_ne!(
+            live_bars[0].turn_info.started_at,
+            Some(t0),
+            "the fresh clock starts at the submit, not at the interrupted turn's start",
+        );
+        assert!(
+            app.latest_thinking_tokens().is_none(),
+            "the accumulator reset belongs to the fresh branch - a cancel-then-type submit \
+             must not keep adding to the interrupted turn's estimate",
+        );
+        let prompt = rx.try_recv().expect("prompt dispatched");
+        assert!(matches!(
+            prompt,
+            forge_primitives::AgentCommand::PromptWithImages { text, .. } if text == "second"
+        ));
+    }
+
     #[test]
     fn submit_input_while_running_appends_bubble_and_reparents_active_idx() {
         // Mid-turn submit: user bubble appears immediately AND a
