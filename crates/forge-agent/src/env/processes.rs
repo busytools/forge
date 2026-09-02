@@ -389,6 +389,28 @@ pub fn configured_mcp_servers(servers: &[McpServerStatus]) -> Vec<ConfiguredMcpS
         .collect()
 }
 
+/// The configured server whose command + args uniquely text-match
+/// `cmdline`. `None` when none matches or several do - the ambiguous case
+/// declines rather than guesses.
+///
+/// Deliberately no package-convention fallback: this is the claim
+/// evidence for the MCP SERVERS join, which is snapshot-sourced - a
+/// package-derived name for a server the snapshot does not list is
+/// guessing by construction.
+pub fn configured_text_match<'a>(
+    cmdline: &str,
+    configured: &'a [ConfiguredMcpServer],
+) -> Option<&'a ConfiguredMcpServer> {
+    let inner = extract_inner_command(cmdline).unwrap_or_else(|| cmdline.to_owned());
+    let haystack = normalize_ws(&inner);
+    let matched: Vec<&ConfiguredMcpServer> =
+        configured.iter().filter(|server| configured_server_matches(&haystack, server)).collect();
+    match matched.as_slice() {
+        [only] => Some(only),
+        _ => None,
+    }
+}
+
 /// Friendly label for a known-infra process: the CONFIGURED MCP server name
 /// when the process's command + args uniquely match one of `configured`,
 /// else the package-derived name from [`classify_known_infra`]. `None` when

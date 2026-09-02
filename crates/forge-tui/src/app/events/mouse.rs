@@ -4,6 +4,7 @@
 #![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
 
 use super::super::selection::clear_selection;
+use super::super::slash::push_system_message;
 use super::super::state::ScrollbarDragState;
 use super::super::{
     App, MessageBlock, PaneHitTarget, ScrollbarGeometry, SelectionKind, SelectionPoint,
@@ -962,6 +963,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
                     | PaneHitTarget::OverlayClose { .. }
                     | PaneHitTarget::CloseSession { .. }
                     | PaneHitTarget::InspectorGitOpenDiff { .. }
+                    | PaneHitTarget::InspectorMcpOpenStatus { .. }
                     | PaneHitTarget::InspectorAttentionRow { .. }
                     | PaneHitTarget::CopySessionId { .. }
                     | PaneHitTarget::CloseWorker { .. }
@@ -1001,6 +1003,13 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             }
             PaneHitTarget::InspectorGitOpenDiff { .. } => {
                 crate::app::diff_overlay::open_default(app);
+                app.needs_redraw = true;
+                return true;
+            }
+            PaneHitTarget::InspectorMcpOpenStatus { .. } => {
+                if let Err(err) = crate::app::config::open_mcp(app) {
+                    push_system_message(app, format!("Failed to open MCP: {err}"));
+                }
                 app.needs_redraw = true;
                 return true;
             }
@@ -1061,6 +1070,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             | PaneHitTarget::OverlayClose { .. }
             | PaneHitTarget::CloseSession { .. }
             | PaneHitTarget::InspectorGitOpenDiff { .. }
+            | PaneHitTarget::InspectorMcpOpenStatus { .. }
             | PaneHitTarget::InspectorAttentionRow { .. }
             | PaneHitTarget::CopySessionId { .. }
             | PaneHitTarget::CloseWorker { .. } => true,
@@ -1099,6 +1109,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
         | PaneHitTarget::OverlayClose { .. }
         | PaneHitTarget::CloseSession { .. }
         | PaneHitTarget::InspectorGitOpenDiff { .. }
+        | PaneHitTarget::InspectorMcpOpenStatus { .. }
         | PaneHitTarget::InspectorAttentionRow { .. }
         | PaneHitTarget::CopySessionId { .. }
         | PaneHitTarget::CloseWorker { .. } => true,
@@ -1955,6 +1966,48 @@ mod tests {
     /// reducer finish the move. Dropping that record leaves the click
     /// dispatching a spawn with no visible effect, which is what made
     /// a cold row read as unclickable.
+    #[test]
+    fn mcp_servers_section_click_opens_the_mcp_view() {
+        // The full click-through path: the renderer stamps the section's
+        // rect, a click anywhere on it mounts the same view the /mcp
+        // slash command opens.
+        use crate::app::ActiveView;
+        use crossterm::event::MouseButton;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = App::test_default();
+        let dir = tempfile::tempdir().expect("tempdir");
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.mcp_mut().servers = vec![forge_primitives::McpServerStatus {
+            name: "context7".to_owned(),
+            status: forge_primitives::McpServerConnectionStatus::Connected,
+            ..Default::default()
+        }];
+
+        let mut terminal = Terminal::new(TestBackend::new(140, 48)).expect("terminal");
+        terminal.draw(|f| crate::ui::render(f, &mut app)).expect("draw");
+
+        let target = app
+            .pane_hit_targets
+            .iter()
+            .find(|t| matches!(t, PaneHitTarget::InspectorMcpOpenStatus { .. }))
+            .cloned()
+            .expect("the MCP SERVERS section stamps its click-through");
+        let PaneHitTarget::InspectorMcpOpenStatus { y, height, x_start, x_end } = target else {
+            unreachable!("filtered above")
+        };
+        assert!(height > 1, "the band covers the whole section, not just the header");
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x_start + (x_end - x_start) / 2,
+            row: y + height / 2,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+        assert!(handle_pane_click(&mut app, mouse), "the section consumes the click");
+        assert_eq!(app.active_view, ActiveView::Mcp, "the click mounts the /mcp view");
+    }
+
     #[test]
     fn cold_project_click_records_where_it_was_headed() {
         let mut app = App::test_default();

@@ -19,6 +19,7 @@ pub(crate) mod input;
 mod input_submit;
 pub(crate) mod keys;
 pub(crate) mod launchpad;
+pub(crate) mod mcp_servers;
 pub(crate) mod mention;
 pub(crate) mod model_picker;
 pub(crate) mod monitor_output;
