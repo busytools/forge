@@ -261,6 +261,15 @@ pub(crate) fn handle_deliver_peer_prompt(
                 error = ?err,
                 "DeliverPeerPrompt dispatch to running target failed"
             );
+            // The echo already opened a turn in the TUI; without this
+            // its bar counts forever and the bucket spinner never
+            // drops (mirrors the typed-submit compensation).
+            let _ = workspace.update_sender().send(SessionUpdate::TurnError {
+                key: target_key,
+                message: err.to_string(),
+                class: None,
+                terminal_reason: None,
+            });
         }
         return;
     }
@@ -360,7 +369,7 @@ pub(crate) fn deliver_cron_prompt(
         let text = missed_cron_text(&prompt, missed);
         push_cron_prompt_into_chat(workspace, &target_key, &text);
         return match workspace.dispatch(Command::Prompt {
-            key: target_key,
+            key: target_key.clone(),
             text,
             attachments: Vec::new(),
         }) {
@@ -372,6 +381,15 @@ pub(crate) fn deliver_cron_prompt(
                     error = ?err,
                     "cron fire dispatch to live owner failed",
                 );
+                // The echo already opened a turn in the TUI; without
+                // this its bar counts forever and the bucket spinner
+                // never drops (mirrors the typed-submit compensation).
+                let _ = workspace.update_sender().send(SessionUpdate::TurnError {
+                    key: target_key,
+                    message: err.to_string(),
+                    class: None,
+                    terminal_reason: None,
+                });
                 CronFireOutcome::DispatchFailed
             }
         };
@@ -500,7 +518,7 @@ pub(crate) fn deliver_gotify_message(
             // drains first (mirrors handle_deliver_peer_prompt).
             push_gotify_notification_into_chat(workspace, &worker_key, &notification);
             if let Err(err) = workspace.dispatch(Command::Prompt {
-                key: worker_key,
+                key: worker_key.clone(),
                 text: notification.to_prose(),
                 attachments: Vec::new(),
             }) {
@@ -511,6 +529,15 @@ pub(crate) fn deliver_gotify_message(
                     error = ?err,
                     "gotify deliver to running team worker failed",
                 );
+                // The echo already opened a turn in the TUI; without
+                // this its bar counts forever and the bucket spinner
+                // never drops (mirrors the typed-submit compensation).
+                let _ = workspace.update_sender().send(SessionUpdate::TurnError {
+                    key: worker_key,
+                    message: err.to_string(),
+                    class: None,
+                    terminal_reason: None,
+                });
             }
         } else if let Some(domain) = workspace.domain_session_for(&worker_key) {
             domain.lock().pending_gotify_prompts.push(notification);

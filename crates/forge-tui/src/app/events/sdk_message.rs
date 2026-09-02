@@ -3435,6 +3435,63 @@ mod inbound_message_surfacing_tests {
         assert!(placeholder.turn_info.started_at.is_some(), "the row carries the fresh clock");
     }
 
+    /// A delivered dispatch that fails surfaces as TurnError for the
+    /// target key (the workspace mirrors the typed-submit
+    /// compensation), and the turn-error path must then drop the live
+    /// clock and the unsettled row - a failed delivery must not leave a
+    /// bar counting forever beside a Running spinner.
+    #[test]
+    fn a_turn_error_settles_a_delivered_turn_bar() {
+        use crate::app::session::SessionLifecycleState;
+        let mut app = App::test_default();
+        app.set_session_id(Some(crate::agent::model::SessionId::new("session-a".to_owned())));
+        let background_key = seed_background_bucket(&mut app, "session-b");
+
+        crate::app::events::client::apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::CronPromptAppended {
+                session_id: "session-b".to_owned(),
+                text: "check the queue".to_owned(),
+            },
+        );
+        assert!(
+            app.sessions.get(&background_key).expect("bucket").live_turn.started_at.is_some(),
+            "fixture guard: the delivered turn opened a clock",
+        );
+
+        crate::app::events::client::apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::TurnError {
+                key: background_key.clone(),
+                message: "dispatch failed".to_owned(),
+                class: None,
+                terminal_reason: None,
+            },
+        );
+
+        let background = app.sessions.get(&background_key).expect("bucket");
+        assert!(
+            background.live_turn.started_at.is_none(),
+            "no live clock survives the failed delivery",
+        );
+        let live_bars: Vec<_> = background
+            .messages
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::Assistant))
+            .filter(|m| !m.turn_info.is_empty() && !m.turn_info.is_settled())
+            .collect();
+        assert!(
+            live_bars.is_empty(),
+            "no live bar remains after the failed delivery; got {} unsettled rows",
+            live_bars.len(),
+        );
+        assert_eq!(
+            background.lifecycle_state,
+            SessionLifecycleState::Idle,
+            "the bucket spinner drops with the failed turn",
+        );
+    }
+
     /// Bug B for gotify: the same running indicator fires for a
     /// delivered gotify notification.
     #[test]
