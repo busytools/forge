@@ -6,6 +6,7 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders};
+use unicode_width::UnicodeWidthStr;
 
 use crate::ui::theme;
 
@@ -45,12 +46,16 @@ impl ComposerChrome {
 
     /// The prompt glyph line, when the surface carries it.
     pub(crate) fn prompt_line(&self) -> Option<Line<'static>> {
-        self.prompt_glyph.then(|| {
-            Line::from(Span::styled(
-                format!("{} ", theme::PROMPT_CHAR),
-                Style::default().fg(theme::RUST_ORANGE),
-            ))
-        })
+        self.prompt_glyph.then(Self::prompt_span_line)
+    }
+
+    /// The prompt glyph as one span, for the Line face's first row.
+    pub(crate) fn prompt_span() -> Span<'static> {
+        Span::styled(format!("{} ", theme::PROMPT_CHAR), Style::default().fg(theme::RUST_ORANGE))
+    }
+
+    fn prompt_span_line() -> Line<'static> {
+        Line::from(Self::prompt_span())
     }
 
     /// The cursor style textarea-backed surfaces share.
@@ -58,10 +63,55 @@ impl ComposerChrome {
         Style::default().add_modifier(Modifier::REVERSED).add_modifier(Modifier::SLOW_BLINK)
     }
 
+    /// The caret cell the Line face draws at the editor's caret.
+    pub(crate) fn caret_span() -> Span<'static> {
+        Span::styled(" ", Self::cursor_style())
+    }
+
     /// The placeholder style textarea-backed surfaces share.
     pub(crate) fn placeholder_style() -> Style {
         Style::default().fg(theme::DIM)
     }
+}
+
+/// The orange bold style the thick border glyphs carry.
+pub(crate) fn border_style() -> Style {
+    Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+}
+
+/// Top border row of the Line face, title embedded, padded to
+/// `width` display columns.
+pub(crate) fn top_border(title: &str, width: usize, style: Style) -> Line<'static> {
+    border_row(format!("\u{250f}\u{2501} {title} "), width, style, "\u{2513}")
+}
+
+/// Bottom border row of the Line face.
+pub(crate) fn bottom_border(width: usize, style: Style) -> Line<'static> {
+    border_row("\u{2517}".to_owned(), width, style, "\u{251b}")
+}
+
+/// Wrap one content row in the side borders, padding to `width`
+/// display columns. Content wider than the box is the caller's to
+/// truncate; the pad simply empties.
+pub(crate) fn side_bordered(row: Line<'static>, width: usize, style: Style) -> Line<'static> {
+    let row_width: usize = row.spans.iter().map(|span| span.content.width()).sum();
+    let pad = width.saturating_sub(row_width + 4);
+    let mut spans = vec![Span::styled("\u{2503} ", style)];
+    spans.extend(row.spans);
+    spans.push(Span::styled(" ".repeat(pad), style));
+    spans.push(Span::styled(" \u{2503}", style));
+    Line::from(spans)
+}
+
+fn border_row(head: String, width: usize, style: Style, corner: &str) -> Line<'static> {
+    let fill = width.saturating_sub(head.width() + corner.width());
+    let mut spans = Vec::new();
+    if !head.is_empty() {
+        spans.push(Span::styled(head, style));
+    }
+    spans.push(Span::styled("\u{2501}".repeat(fill), style));
+    spans.push(Span::styled(corner.to_owned(), style));
+    Line::from(spans)
 }
 
 #[cfg(test)]
