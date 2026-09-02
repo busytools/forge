@@ -823,6 +823,7 @@ mod tests {
             show_thinking: false,
             show_compacting: false,
             running_subagents: None,
+            live_turn_running: false,
         };
         let mut lines = Vec::new();
         crate::ui::message::render_message(

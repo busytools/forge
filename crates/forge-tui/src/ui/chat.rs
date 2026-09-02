@@ -467,6 +467,7 @@ fn build_base_spinner(app: &App, subagents: &[crate::app::SubagentEntry]) -> Spi
         show_thinking: turn_in_flight,
         show_compacting: app.is_compacting(),
         running_subagents: derive_running_subagents(subagents),
+        live_turn_running: app.active_session().is_some_and(|s| s.live_turn.started_at.is_some()),
     }
 }
 
@@ -1299,6 +1300,7 @@ mod tests {
             show_thinking: false,
             show_compacting: false,
             running_subagents: None,
+            live_turn_running: false,
         }
     }
 
@@ -1467,6 +1469,104 @@ mod tests {
         let spinner = super::build_base_spinner(&app, &app.subagents_view());
         assert!(spinner.running_subagents.is_none());
         assert!(spinner.show_thinking, "thinking remains independent of the subagent surface");
+    }
+
+    #[test]
+    fn base_spinner_live_turn_running_follows_the_clock() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Running;
+        assert!(
+            !super::build_base_spinner(&app, &[]).live_turn_running,
+            "no turn opened yet, no clock"
+        );
+        app.start_live_turn(std::time::Instant::now());
+        assert!(
+            super::build_base_spinner(&app, &[]).live_turn_running,
+            "the opened turn runs the clock"
+        );
+        app.settle_live_turn(1_000);
+        assert!(
+            !super::build_base_spinner(&app, &[]).live_turn_running,
+            "the Result settles the clock"
+        );
+    }
+
+    /// Post-turn traffic (monitor/notification text re-binding the
+    /// spinner anchor) leaves the session status busy with a non-terminal
+    /// subagent on the roster while the turn's clock is settled. The
+    /// assembled spinner must carry the subagent entry WITHOUT a live
+    /// turn, so the paint gate keeps the line and the bar out of chat.
+    #[test]
+    fn base_spinner_keeps_the_subagent_entry_without_a_live_turn_after_the_result() {
+        let mut app = App::test_default();
+        app.register_tool_call_scope(
+            "tu-root-1".to_owned(),
+            crate::app::ToolCallScope::SubagentRoot,
+        );
+        let root = crate::app::ToolCallInfo {
+            id: "tu-root-1".to_owned(),
+            title: "Task".to_owned(),
+            sdk_tool_name: "Task".to_owned(),
+            raw_input: Some(serde_json::json!({
+                "subagent_type": "Explore",
+                "description": "map the code",
+            })),
+            raw_input_bytes: 0,
+            output_metadata: None,
+            task_metadata: None,
+            status: crate::agent::model::ToolCallStatus::InProgress,
+            content: Vec::new(),
+            hidden: true,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+            monitor_output_tail: Vec::default(),
+            monitor_status: None,
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            last_measured_tools_collapsed: false,
+            cache: crate::app::BlockCache::default(),
+            collapsed_override: None,
+            last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
+        };
+        app.active_messages_mut().push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(root))],
+        ));
+
+        // The turn Resulted: status went Ready and the clock settled.
+        app.settle_live_turn(1_000);
+        app.clear_active_turn_assistant();
+        // Post-turn text then re-binds the anchor and flips status back
+        // to Running (the streaming fallback).
+        app.active_messages_mut().push(assistant_text_message("Monitor closed cleanly."));
+        app.bind_active_turn_assistant_to_tail();
+        app.status = AppStatus::Running;
+
+        let base = super::build_base_spinner(&app, &app.subagents_view());
+        assert!(
+            base.running_subagents.is_some(),
+            "fixture guard: the backgrounded subagent is still on the roster"
+        );
+        assert!(
+            !base.live_turn_running,
+            "no Result is owed for post-turn text, so no turn is in flight"
+        );
+        let tail = app.messages().len() - 1;
+        let spinner =
+            super::msg_spinner(&base, tail, app.active_turn_assistant_idx(), &app.messages()[tail]);
+        assert!(
+            spinner.is_active_turn_assistant && !spinner.live_turn_running,
+            "the anchored post-turn message must not paint turn indicators",
+        );
     }
 
     /// #383 follow-up (pointer desync): the thinking spinner renders only
@@ -2599,7 +2699,8 @@ mod tests {
         assert_eq!(app.active_turn_assistant_idx(), Some(2));
 
         let _ = app.active_viewport_mut().on_frame(40, 8);
-        let spinner = SpinnerState { show_empty_thinking: true, ..idle_spinner() };
+        let spinner =
+            SpinnerState { show_empty_thinking: true, live_turn_running: true, ..idle_spinner() };
 
         update_visual_heights(&mut app, &spinner, 40, 8);
         app.active_viewport_mut().rebuild_prefix_sums();
