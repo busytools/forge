@@ -634,6 +634,32 @@ mod tests {
     }
 
     #[test]
+    fn the_meter_curve_pins_the_approved_constants() {
+        let mut meter = DictateMeter::new(-50.0);
+        meter.push(-20.0);
+        assert!(
+            (meter.env_db() + 32.0).abs() < 1e-3,
+            "one attack step at 0.6 from -50 lands at -32, got {}",
+            meter.env_db()
+        );
+        assert!(
+            (meter.current() - 0.9392).abs() < 1e-3,
+            "the first frame scales -32 against the decayed -30.7 reference under the 0.9 \
+             gamma, got {}",
+            meter.current()
+        );
+        meter.push(-20.0);
+        assert!((meter.env_db() + 24.8).abs() < 1e-3, "the second attack step lands at -24.8");
+        meter.push(-20.0);
+        assert!((meter.env_db() + 21.92).abs() < 1e-3, "the third attack step lands at -21.92");
+        assert!(
+            (meter.current() - 1.0).abs() < 1e-3,
+            "once the reference meets the envelope the meter reads full scale, got {}",
+            meter.current()
+        );
+    }
+
+    #[test]
     fn a_truncated_meter_keeps_the_newest_frames() {
         let mut app = App::test_default();
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
