@@ -1496,6 +1496,12 @@ impl App {
         self.active_session().and_then(|s| s.pending_mode_rollback.as_ref())
     }
 
+    /// Restore the active session's parked optimistic-`/mode`
+    /// snapshot. Returns false when no snapshot is parked.
+    pub fn rollback_pending_mode(&mut self) -> bool {
+        self.active_bucket_mut().rollback_pending_mode()
+    }
+
     /// Mutable borrow of the active session's mode snapshot.
     pub fn mode_mut(&mut self) -> Option<&mut ModeState> {
         self.active_bucket_mut().mode.as_mut()

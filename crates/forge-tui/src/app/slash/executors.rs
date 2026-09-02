@@ -290,6 +290,11 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
     if let Err(e) =
         app.dispatch_command(|key| forge_workspace::Command::SetMode { key, mode: parsed_mode })
     {
+        // The command never left, so no SetModeFailed can arrive;
+        // undo the optimistic apply here.
+        if app.rollback_pending_mode() {
+            app.invalidate_layout(crate::app::state::LayoutInvalidation::Global);
+        }
         let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
             key: session_key,
             message: format!("Failed to run /mode: {e}"),
