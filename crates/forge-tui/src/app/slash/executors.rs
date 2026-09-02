@@ -374,16 +374,15 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
 
 /// Switch the active session to `model_name`: optimistic UI apply plus
 /// the `SetModel` dispatch. Shared by the `/model <id>` submit path and
-/// the `/model` picker's Enter. Returns `false` (with a system notice)
-/// when the session advertises models and `model_name` is not one of
-/// them; the picker's rows come from that same list, so it always
-/// passes.
-pub(crate) fn switch_model(app: &mut App, model_name: &str) -> bool {
+/// the `/model` picker's Enter. A no-op with a system notice when the
+/// session advertises models and `model_name` is not one of them; the
+/// picker's rows come from that same list, so it always passes.
+pub(crate) fn switch_model(app: &mut App, model_name: &str) {
     if !app.available_models().is_empty()
         && !app.available_models().iter().any(|candidate| candidate.id == model_name)
     {
         push_system_message(app, format!("Unknown model: {model_name}"));
-        return false;
+        return;
     }
 
     // Apply CurrentModelUpdate (and a refreshed ModeStateUpdate
@@ -404,7 +403,6 @@ pub(crate) fn switch_model(app: &mut App, model_name: &str) -> bool {
             message: format!("Failed to run /model: {e}"),
         });
     }
-    true
 }
 
 fn apply_optimistic_model_change(app: &mut App, model_name: &str) {
