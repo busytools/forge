@@ -14,7 +14,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
-use ratatui::widgets::{Block, BorderType, Borders};
 use std::time::Instant;
 
 use tui_textarea::TextArea;
@@ -123,6 +122,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // its queue, the dock morphs into the unified prompt widget. The
     // widget owns its own chrome (thick orange block) and inner
     // padding, so we skip the normal chat-input rendering entirely.
+    let pulse_ms = app.spinner_epoch.elapsed().as_secs_f32() * 1000.0;
+    let blip = crate::app::dictate::blip_span(app, pulse_ms);
     if let Some(session) = app.active_session()
         && let Some(prompt) = session.prompt_queue.front()
     {
@@ -135,6 +136,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             &prompt,
             queue_depth,
             Some(notes_text.as_str()),
+            blip.as_ref(),
         );
         return;
     }
@@ -146,11 +148,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // easing state; `None` means the plain orange stands untouched.
     let border_fg =
         crate::app::dictate::border_color(app, Instant::now()).unwrap_or(theme::RUST_ORANGE);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Thick)
-        .border_style(Style::default().fg(border_fg).add_modifier(Modifier::BOLD));
-    frame.render_widget(block, geometry.box_area);
+    let chrome = crate::ui::composer::ComposerChrome::chat();
+    frame.render_widget(
+        crate::ui::composer::ComposerChrome::border_block(border_fg),
+        geometry.box_area,
+    );
 
     if let Some(hint_pad) = geometry.hint_pad {
         let mut hint_y = hint_pad.y;
@@ -265,11 +267,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     // Render prompt icon
-    let prompt = Line::from(Span::styled(
-        format!("{} ", theme::PROMPT_CHAR),
-        Style::default().fg(theme::RUST_ORANGE),
-    ));
-    frame.render_widget(Paragraph::new(prompt), prompt_rect);
+    if let Some(prompt) = chrome.prompt_line() {
+        frame.render_widget(Paragraph::new(prompt), prompt_rect);
+    }
 
     if text_rect.width == 0 {
         return;
@@ -326,12 +326,10 @@ fn configure_input_textarea(app: &mut App) {
 
     {
         let textarea = app.input_mut().editor_mut();
-        textarea.set_placeholder_text("Type a message...");
-        textarea.set_placeholder_style(Style::default().fg(theme::DIM));
+        textarea.set_placeholder_text(crate::ui::composer::ComposerChrome::chat().placeholder);
+        textarea.set_placeholder_style(crate::ui::composer::ComposerChrome::placeholder_style());
         textarea.set_cursor_line_style(Style::default());
-        textarea.set_cursor_style(
-            Style::default().add_modifier(Modifier::REVERSED).add_modifier(Modifier::SLOW_BLINK),
-        );
+        textarea.set_cursor_style(crate::ui::composer::ComposerChrome::cursor_style());
     }
 
     if needs_highlight_update {
@@ -942,13 +940,9 @@ mod tests {
                 assert_eq!(bucket.input.text(), "stale words", "the older take's words still land");
                 assert!(
                     bucket.dictate.is_some(),
-                    "the live recording must survive a stale outcome on the same key"
+                    "the live recording must survive a stale outcome on the same key, so Esc keeps abandoning the live take"
                 );
             }
-            assert!(
-                crate::app::dictate::dictate_owns_esc(&app),
-                "Esc keeps abandoning the live take"
-            );
 
             apply_session_update(
                 &mut app,

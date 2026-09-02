@@ -467,6 +467,42 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         }
         SessionUpdate::DictateEnded { key, outcome, generation } => {
             app.dictate_take_pending = false;
+            if let Some(text) = clipboard_text_for_outcome(&outcome) {
+                let _ = crate::app::keys::write_text_to_clipboard(text.to_owned());
+                let truncated = matches!(
+                    outcome,
+                    forge_workspace::DictateOutcome::Landed { truncated: true, .. }
+                );
+                let landing = dictate_landing(app, &key);
+                match dictate_destination(app, &key) {
+                    Some(editor) => editor.insert_str(text),
+                    None => {
+                        if let Some(bucket) = app.session_mut(&key) {
+                            bucket.input.insert_str(text);
+                            // The words arrived in a draft the user was
+                            // not looking at; say so until the next
+                            // keystroke. An outcome notice (the
+                            // truncation warning) stamps over this.
+                            bucket.set_dictate_notice(crate::app::dictate::DictateNotice {
+                                severity: crate::app::dictate::NoticeSeverity::Dim,
+                                text: "dictated words landed here".to_owned(),
+                            });
+                        } else {
+                            tracing::warn!(
+                                target: crate::logging::targets::APP_INPUT,
+                                event_name = "dictate_transcript_dropped",
+                                message = "dictated transcript discarded: session closed mid-take",
+                                outcome = "failure",
+                            );
+                        }
+                    }
+                }
+                // A truncated take warns where its words landed, not
+                // only on the chat composer's notice row.
+                if truncated {
+                    stamp_truncation_warning(app, landing);
+                }
+            }
             if let Some(bucket) = app.session_mut(&key) {
                 apply_dictate_outcome(bucket, &outcome, generation);
             }
@@ -487,13 +523,97 @@ fn clipboard_text_for_outcome(outcome: &forge_workspace::DictateOutcome) -> Opti
     }
 }
 
-/// `SessionUpdate::DictateEnded` reducer. Landed text inserts into the
-/// bucket's own editor - the take belongs to this session, whatever
-/// tab is focused. The notice stamps against the draft version the
-/// insert produced, so the next keystroke clears it. Only the take's
-/// own generation resets the indicator: a stale resolver arriving
-/// after a newer take started on the same key says its piece and
-/// leaves the live take alone.
+/// Where a landed take's words went - the same question
+/// [`dictate_destination`] answers, without the borrow, so the
+/// truncation warning can follow the words after the insert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DictateLanding {
+    Chat,
+    Diff,
+    PluginsField,
+    Fallback,
+}
+
+fn dictate_landing(app: &App, key: &forge_workspace::SessionKey) -> DictateLanding {
+    if app.active_session_key.as_ref() != Some(key) {
+        return DictateLanding::Fallback;
+    }
+    match app.input_focus() {
+        crate::app::InputFocus::Chat => DictateLanding::Chat,
+        crate::app::InputFocus::DiffComment | crate::app::InputFocus::DiffFinishReview => {
+            DictateLanding::Diff
+        }
+        crate::app::InputFocus::None => match app.active_view {
+            crate::app::ActiveView::Plugins => DictateLanding::PluginsField,
+            _ => DictateLanding::Fallback,
+        },
+    }
+}
+
+/// Stamp the truncation warning on the surface that received the
+/// words: the diff overlay's notice line, the plugins status line, or
+/// the chat composer's notice row (which `apply_dictate_outcome`
+/// stamps from the outcome itself).
+fn stamp_truncation_warning(app: &mut App, landing: DictateLanding) {
+    let text = crate::app::dictate::truncated_notice_text().to_owned();
+    match landing {
+        DictateLanding::Diff => {
+            if let Some(overlay) = app.diff_overlay.as_mut() {
+                overlay.dictate_notice = Some(text);
+            }
+        }
+        DictateLanding::PluginsField => {
+            // The plugins view's own status field is rendered by
+            // nothing; the config scaffold's status line is what shows.
+            app.config.status_message = Some(format!("dictation truncated - {text}"));
+        }
+        DictateLanding::Chat | DictateLanding::Fallback => {}
+    }
+}
+
+/// The editor a landed take's words go to: the focused editor of the
+/// take's own session - the chat draft, an open diff comment editor,
+/// or the finish-review overview - falling back to the owning
+/// session's chat draft when another tab holds the focus or no editor
+/// is open. The take stays bound to its session whatever the focus.
+fn dictate_destination<'a>(
+    app: &'a mut App,
+    key: &forge_workspace::SessionKey,
+) -> Option<&'a mut crate::app::input::InputState> {
+    if app.active_session_key.as_ref() != Some(key) {
+        return None;
+    }
+    match app.input_focus() {
+        crate::app::InputFocus::Chat => Some(app.input_mut()),
+        crate::app::InputFocus::DiffComment => {
+            app.diff_overlay.as_mut()?.active_input.as_mut().map(|input| &mut input.editor)
+        }
+        crate::app::InputFocus::DiffFinishReview => {
+            app.diff_overlay.as_mut()?.finish_review.as_mut().map(|finish| &mut finish.editor)
+        }
+        crate::app::InputFocus::None => match app.active_view {
+            crate::app::ActiveView::Plugins => {
+                // The add-marketplace field when its overlay is up, else
+                // the focused tab's search query.
+                if let Some(overlay) = app.config.add_marketplace_overlay_mut() {
+                    return Some(&mut overlay.editor);
+                }
+                if app.plugins.search_focused {
+                    return app.plugins.active_search_query_mut();
+                }
+                None
+            }
+            _ => None,
+        },
+    }
+}
+
+/// `SessionUpdate::DictateEnded` reducer. The landed text was routed
+/// before this runs; what is left is the notice, stamped against the
+/// draft version the insert produced so the next keystroke clears it,
+/// and the indicator reset. Only the take's own generation resets the
+/// indicator: a stale resolver arriving after a newer take started on
+/// the same key says its piece and leaves the live take alone.
 fn apply_dictate_outcome(
     bucket: &mut crate::app::session::UiSession,
     outcome: &forge_workspace::DictateOutcome,
@@ -501,10 +621,6 @@ fn apply_dictate_outcome(
 ) {
     let floor_db = bucket.dictate.as_ref().map_or(-50.0, |indicator| indicator.floor_db);
     let notice = crate::app::dictate::notice_for_outcome(outcome, floor_db);
-    if let Some(text) = clipboard_text_for_outcome(outcome) {
-        bucket.input.insert_str(text);
-        let _ = crate::app::keys::write_text_to_clipboard(text.to_owned());
-    }
     let live_generation = bucket.dictate.as_ref().map(|indicator| indicator.generation);
     if live_generation == Some(generation) {
         let beat = matches!(outcome, forge_workspace::DictateOutcome::Landed { .. });

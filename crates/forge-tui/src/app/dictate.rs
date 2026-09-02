@@ -416,6 +416,11 @@ pub(crate) enum NoticeSeverity {
     Error,
 }
 
+/// The warning a truncated take leaves beside its words.
+pub(crate) fn truncated_notice_text() -> &'static str {
+    "this is what fitted \u{b7} keep going from the end"
+}
+
 /// The notice a finished take leaves, worded per outcome. A finite
 /// quiet-room peak quotes its own measurement; structural silence
 /// offers no retry because it is sticky within the process.
@@ -428,7 +433,7 @@ pub(crate) fn notice_for_outcome(
         | forge_workspace::DictateOutcome::Cancelled => None,
         forge_workspace::DictateOutcome::Landed { truncated: true, .. } => Some(DictateNotice {
             severity: NoticeSeverity::Warn,
-            text: "this is what fitted \u{b7} keep going from the end".to_owned(),
+            text: truncated_notice_text().to_owned(),
         }),
         forge_workspace::DictateOutcome::Empty => Some(DictateNotice {
             severity: NoticeSeverity::Dim,
@@ -459,8 +464,68 @@ pub(crate) fn notice_for_outcome(
 
 /// Whether the active composer has a live take, which is what gives
 /// Esc its discard/abandon meaning.
-pub(crate) fn dictate_owns_esc(app: &App) -> bool {
-    app.active_session().is_some_and(|bucket| bucket.dictate.is_some())
+/// Dispatch the abandon for the live take. Esc ownership is per
+/// surface; the stop itself is the same command everywhere.
+pub(crate) fn dispatch_stop(app: &App) {
+    if let Err(message) =
+        app.dispatch_command(|key| forge_workspace::Command::DictateStop { key, submit: false })
+    {
+        tracing::warn!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "dictate_stop_failed",
+            message = "failed to dispatch the dictate abandon",
+            outcome = "failure",
+            error_message = %message,
+        );
+    }
+}
+
+/// Abandon the live take: dispatch the stop AND clear the indicator
+/// optimistically, so the next Esc reaches the surface's own semantics
+/// instead of being eaten waiting for the async echo, and a duplicate
+/// stop cannot arrive inside the workspace's freshness window to
+/// pre-abandon a newer take at birth. The border eases home from
+/// wherever the take froze it. False when no take is live.
+pub(crate) fn abandon_take(app: &mut App) -> bool {
+    let Some(key) = app.active_session_key.clone() else { return false };
+    let cleared = {
+        let Some(bucket) = app.session_mut(&key) else { return false };
+        if bucket.dictate.take().is_none() {
+            return false;
+        }
+        let frozen = bucket.dictate_border.take().map(|border| border.rgb());
+        bucket.dictate_border = frozen.map(|rgb| DictateBorder::Afterglow {
+            started: Instant::now(),
+            rgb,
+            beat: false,
+        });
+        true
+    };
+    if cleared {
+        dispatch_stop(app);
+    }
+    cleared
+}
+
+/// The one-cell circle a non-chat surface carries while a take is
+/// live: fixed in place, pulsing bright and dim like the status row's
+/// dot, orange while recording, blue while transcribing, gone once
+/// the take resolves. The blip is the whole indicator on those
+/// surfaces - no timer, no dB figure, no meter.
+pub(crate) fn blip_span(app: &App, pulse_ms: f32) -> Option<Span<'static>> {
+    let indicator = app.active_session()?.dictate.as_ref()?;
+    let base = match indicator.phase {
+        DictatePhase::Recording => ORANGE,
+        DictatePhase::Transcribing => BLUE,
+    };
+    let alpha = if app.config.prefers_reduced_motion_effective() {
+        1.0
+    } else {
+        let t = (pulse_ms % PULSE_PERIOD_MS) / PULSE_PERIOD_MS;
+        let wave = (1.0 - (2.0 * std::f32::consts::PI * t).cos()) / 2.0;
+        PULSE_FLOOR + (1.0 - PULSE_FLOOR) * (1.0 - wave)
+    };
+    Some(Span::styled("\u{25cf} ".to_owned(), Style::default().fg(rgbf(mix3(CANVAS, base, alpha)))))
 }
 
 /// Whether the composer renders its one interior row: a stamped
@@ -1054,6 +1119,26 @@ mod tests {
         );
         assert!(app.shows_activity(), "the beat is still inside its window");
 
+        // The session-bound fallback: the words went to the owning
+        // session's draft, never to whichever session holds the focus,
+        // and the event is stamped visible on that draft.
+        assert_eq!(
+            app.sessions.get(&other).expect("bucket").input.text(),
+            "landed",
+            "the fallback lands the words in the owning session's draft"
+        );
+        assert!(app.input().text().is_empty(), "the focused session's draft keeps nothing");
+        let notice = app
+            .sessions
+            .get(&other)
+            .expect("bucket")
+            .visible_dictate_notice()
+            .expect("the fallback landing is announced");
+        assert_eq!(
+            notice.text, "dictated words landed here",
+            "the DIM notice explains the landing"
+        );
+
         let bucket = app.sessions.get_mut(&other).expect("bucket");
         let border = bucket.dictate_border.as_mut().expect("the afterglow persists on the bucket");
         let DictateBorder::Afterglow { started, .. } = border else {
@@ -1212,6 +1297,33 @@ mod tests {
         assert!((held - still).abs() < f32::EPSILON, "inside the 200 ms window the figure holds");
         let (fresh, _) = indicator.db_readout(t0 + Duration::from_millis(250));
         assert!(fresh > held, "past the window the figure refreshes toward the louder feed");
+    }
+
+    #[test]
+    fn the_blip_follows_the_take_phase_and_pulses_in_place() {
+        let mut app = App::test_default();
+        let key = app.active_session_key.clone().expect("test_default has an active bucket");
+        assert_eq!(blip_span(&app, 0.0), None, "idle draws no blip");
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+        );
+        let hot = blip_span(&app, 0.0).expect("a live take blips");
+        assert_eq!(hot.style.fg, Some(Color::Rgb(244, 118, 0)), "recording pulses orange");
+        let dimmed =
+            blip_span(&app, PULSE_PERIOD_MS / 2.0).expect("the blip holds through the wave");
+        assert_ne!(
+            dimmed.style.fg, hot.style.fg,
+            "the blip pulses bright and dim in place, got {dimmed:?} against {hot:?}"
+        );
+
+        let bucket = app.session_mut(&key).expect("bucket");
+        let indicator = bucket.dictate.as_mut().expect("a take is in flight");
+        indicator.begin_transcribing();
+        let cold = blip_span(&app, 0.0).expect("a transcribing take still blips");
+        assert_eq!(cold.style.fg, Some(Color::Rgb(97, 160, 224)), "transcription turns it blue");
+        assert_eq!(cold.content, hot.content, "one glyph, colour changes on the handoff");
     }
 
     #[test]

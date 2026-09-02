@@ -49,6 +49,7 @@ use crate::app::diff_overlay::DiffOverlayState;
 use crate::app::emoji;
 use crate::ui::autocomplete;
 use crate::ui::chat_tree;
+use crate::ui::composer::{self, ComposerChrome};
 use crate::ui::highlight::LineHighlighter;
 use crate::ui::theme;
 use crate::ui::wrap::{expand_tabs, replace_control_chars, take_prefix_by_width};
@@ -66,6 +67,8 @@ const STEPPER_HEIGHT: u16 = 4;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     app.cached_frame_area = frame.area();
+
+    let blip = blip_span_for(app);
 
     let Some(overlay) = app.diff_overlay.as_ref() else {
         super::page::render_page(frame, "Diff review", None, Line::default(), |frame, body| {
@@ -88,8 +91,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // that has written nothing never reaches the store.
     let seals = overlay.comments.iter().any(|c| c.authored_this_session)
         && crate::app::diff_overlay::would_file(app);
-    let footer =
-        footer_line(overlay, effective_view_mode(overlay.view_mode, pane_width), body_width, seals);
+    let footer = footer_line(
+        overlay,
+        effective_view_mode(overlay.view_mode, pane_width),
+        body_width,
+        seals,
+        blip.as_ref(),
+    );
 
     super::page::render_page(frame, "Diff review", None, footer, |frame, body| {
         render_diff_body(frame, body, app);
@@ -121,6 +129,23 @@ fn render_diff_body(frame: &mut Frame, area: Rect, app: &mut App) {
     {
         let notice_area = Rect { height: 1, ..usable_area };
         frame.render_widget(Paragraph::new(notice), notice_area);
+        usable_area.y = usable_area.y.saturating_add(1);
+        usable_area.height = usable_area.height.saturating_sub(1);
+    }
+
+    // A truncated take's warning, stamped where its words landed.
+    if app.diff_overlay.as_ref().is_some_and(|o| o.dictate_notice.is_some())
+        && usable_area.height > 0
+    {
+        let line = Line::from(Span::styled(
+            format!(
+                "  dictated words truncated - {}",
+                crate::app::dictate::truncated_notice_text()
+            ),
+            Style::default().fg(theme::STATUS_WARNING),
+        ));
+        let notice_area = Rect { height: 1, ..usable_area };
+        frame.render_widget(Paragraph::new(line), notice_area);
         usable_area.y = usable_area.y.saturating_add(1);
         usable_area.height = usable_area.height.saturating_sub(1);
     }
@@ -592,19 +617,6 @@ fn render_jump_dropdown(frame: &mut Frame, area: Rect, overlay: &DiffOverlayStat
     frame.render_widget(Paragraph::new(lines), rect);
 }
 
-/// One `│ <text> │` content row of the Finish-review modal, fitted to the
-/// box's inner width.
-fn finish_row(text: &str, inner: usize, border: Style, style: Style) -> Line<'static> {
-    let fitted = fit_box_content(text, inner);
-    let pad = inner.saturating_sub(fitted.width());
-    Line::from(vec![
-        Span::styled("\u{2502} ", border),
-        Span::styled(fitted, style),
-        Span::raw(" ".repeat(pad)),
-        Span::styled(" \u{2502}", border),
-    ])
-}
-
 /// Render the Finish-review modal centered over the diff: the session's
 /// comment count + a short list, the optional overview editor, and the
 /// `[ Submit review ]` button. Stashes the button's screen span on the
@@ -615,10 +627,8 @@ fn render_finish_review(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlay
     // grow the modal past the screen.
     const MAX_LIST: usize = 6;
     const EDITOR_ROWS: usize = 4;
-    let orange = Style::default().fg(theme::RUST_ORANGE);
     let dim = Style::default().fg(theme::DIM);
-    let accent_bold = orange.add_modifier(Modifier::BOLD);
-    let plain = Style::default();
+    let accent_bold = composer::border_style();
 
     // One row per thread, and the row has to be the card the last rebuild
     // touched: hydrate leaves out-of-scope cards first, so taking the
@@ -644,72 +654,93 @@ fn render_finish_review(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlay
     let box_width = area.width.saturating_sub(8).clamp(44, 68);
     let bw = usize::from(box_width);
     let inner = bw.saturating_sub(4);
+    let border = composer::border_style();
 
     let mut rows: Vec<Line<'static>> = Vec::new();
-    let title = " Finish review ";
-    let dash = bw.saturating_sub(3 + title.chars().count() + 1);
-    rows.push(Line::from(Span::styled(
-        format!("\u{250c}\u{2500}{title}{}\u{2510}", "\u{2500}".repeat(dash)),
-        orange,
-    )));
+    // The count folds into the thick title.
+    let title =
+        format!("Finish review \u{b7} {count} comment{}", if count == 1 { "" } else { "s" });
+    rows.push(composer::top_border(&title, bw, border));
 
-    rows.push(finish_row(
-        &format!(" {count} comment{} in this review", if count == 1 { "" } else { "s" }),
-        inner,
-        orange,
-        plain,
-    ));
     for c in authored.iter().take(MAX_LIST) {
         let name = c.path.rsplit('/').next().unwrap_or(c.path.as_str());
         let snippet = c.comment_text.lines().next().unwrap_or("");
-        rows.push(finish_row(
-            &format!("   \u{b7} {name}:{}   {snippet}", c.line),
-            inner,
-            orange,
-            dim,
-        ));
+        let list_row = fit_box_content(&format!("   \u{b7} {name}:{}   {snippet}", c.line), inner);
+        rows.push(composer::side_bordered(Line::from(Span::styled(list_row, dim)), bw, border));
     }
     if count > MAX_LIST {
-        rows.push(finish_row(&format!("   +{} more", count - MAX_LIST), inner, orange, dim));
+        rows.push(composer::side_bordered(
+            Line::from(Span::styled(format!("   +{} more", count - MAX_LIST), dim)),
+            bw,
+            border,
+        ));
     }
 
-    rows.push(finish_row("", inner, orange, plain));
-    rows.push(finish_row(" Overview (optional)", inner, orange, plain));
+    rows.push(composer::side_bordered(Line::default(), bw, border));
+
+    // The overview editor opens with the prompt glyph; the label row it
+    // replaces is the placeholder now.
     let editor_lines =
         overlay.finish_review.as_ref().map(|f| f.editor.lines().to_vec()).unwrap_or_default();
+    let (caret_row, caret_col) =
+        overlay.finish_review.as_ref().map_or((0, 0), |f| f.editor.cursor());
     if editor_lines.iter().all(String::is_empty) {
-        rows.push(finish_row("   a short summary, sent with the review", inner, orange, dim));
+        let mut content = vec![ComposerChrome::prompt_span()];
+        // The caret cell rides this row too, so its budget is one
+        // column tighter than a plain body row's.
+        content.push(Span::styled(
+            fit_box_content(PLACEHOLDER_OVERVIEW, inner.saturating_sub(3)),
+            dim,
+        ));
+        content.push(ComposerChrome::caret_span());
+        rows.push(composer::side_bordered(Line::from(content), bw, border));
         for _ in 1..EDITOR_ROWS {
-            rows.push(finish_row("", inner, orange, plain));
+            rows.push(composer::side_bordered(Line::default(), bw, border));
         }
     } else {
-        for line in editor_lines.iter().take(EDITOR_ROWS) {
-            rows.push(finish_row(&format!("   {line}"), inner, orange, plain));
+        for (idx, line) in editor_lines.iter().take(EDITOR_ROWS).enumerate() {
+            let mut content: Vec<Span<'static>> = Vec::new();
+            if idx == 0 {
+                content.push(ComposerChrome::prompt_span());
+            } else {
+                content.push(Span::raw("  "));
+            }
+            // The glyph or indent costs the text two of the inner
+            // columns, so a long overview line truncates inside the
+            // box; the caret row is one column tighter still, or a
+            // full-width line spills past the right border.
+            let budget = if idx == caret_row { inner - 3 } else { inner - 2 };
+            let fitted = fit_box_content(line, budget);
+            if idx == caret_row {
+                let (head, tail) = split_at_char(&fitted, caret_col.min(fitted.chars().count()));
+                content.push(Span::raw(head.to_owned()));
+                content.push(ComposerChrome::caret_span());
+                content.push(Span::raw(tail.to_owned()));
+            } else {
+                content.push(Span::raw(fitted));
+            }
+            rows.push(composer::side_bordered(Line::from(content), bw, border));
         }
     }
 
-    rows.push(finish_row("", inner, orange, plain));
+    rows.push(composer::side_bordered(Line::default(), bw, border));
 
     // Button row, built with explicit spans so the submit hit-span is known.
     let btn = "[ Submit review ]";
     let hint = "Ctrl+Enter submit \u{b7} Esc back";
-    let used = 1 + btn.width() + 5 + hint.width();
-    let pad = inner.saturating_sub(used.min(inner));
-    rows.push(Line::from(vec![
-        Span::styled("\u{2502} ", orange),
-        Span::raw(" "),
-        Span::styled(btn, accent_bold),
-        Span::raw("     "),
-        Span::styled(hint, dim),
-        Span::raw(" ".repeat(pad)),
-        Span::styled(" \u{2502}", orange),
-    ]));
+    rows.push(composer::side_bordered(
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(btn, accent_bold),
+            Span::raw("     "),
+            Span::styled(hint, dim),
+        ]),
+        bw,
+        border,
+    ));
     let button_row_idx = rows.len() - 1;
 
-    rows.push(Line::from(Span::styled(
-        format!("\u{2514}{}\u{2518}", "\u{2500}".repeat(bw.saturating_sub(2))),
-        orange,
-    )));
+    rows.push(composer::bottom_border(bw, border));
 
     let box_height = u16::try_from(rows.len()).unwrap_or(u16::MAX).min(area.height);
     let x = area.x + area.width.saturating_sub(box_width) / 2;
@@ -1146,16 +1177,23 @@ fn render_separator(frame: &mut Frame, area: Rect) {
 /// `seals` has to be answered from the same source Esc consults; taken
 /// from the cards it offers a review for a thread another view has
 /// already deleted, and Esc then closes without one.
+/// The key-hints bar. `blip` leads it when a take is live - the
+/// overlay's fixed blip spot, visible however far the editor row has
+/// scrolled.
 fn footer_line(
     overlay: &DiffOverlayState,
     mode: DiffViewMode,
     width: u16,
     seals: bool,
+    blip: Option<&Span<'static>>,
 ) -> Line<'static> {
     let dim = Style::default().fg(theme::DIM);
     let orange = Style::default().fg(theme::RUST_ORANGE);
     let count = overlay.comments.len();
     let mut spans = vec![Span::raw("  ")];
+    if let Some(blip) = blip {
+        spans.push(blip.clone());
+    }
     // In commit mode the running total already lives in the stepper
     // ("● N comments so far"), so the footer skips the redundant prefix
     // (and reclaims the width for the extra commit-nav hints).
@@ -2399,12 +2437,28 @@ fn wrap_chip_body(text: &str, max_cols: usize) -> Vec<String> {
 ///
 /// Box geometry:
 /// ```text
-///   ┌── Comment on line 371 ──────────────────┐
-///   │ user typed text here                    │
-///   │ another line of the comment             │
-///   │ Enter save · Esc cancel                 │  (DIM hint)
-///   └─────────────────────────────────────────┘
+///   ┏━ Comment on line 371 ━━━━━━━━━━━━━━━━━━━┓
+///   ┃ ➤ user typed text here                  ┃
+///   ┃   another line of the comment           ┃
+///   ┃ Enter save · Esc cancel                 ┃  (DIM hint)
+///   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 /// ```
+const PLACEHOLDER_COMMENT: &str = "Add a comment\u{2026}";
+const HINT_SAVE_CANCEL: &str = "Enter save \u{b7} Esc cancel";
+const PLACEHOLDER_OVERVIEW: &str = "Overview (optional)\u{2026}";
+
+/// The blip for the active session's live take, if any.
+fn blip_span_for(app: &App) -> Option<Span<'static>> {
+    crate::app::dictate::blip_span(app, app.spinner_epoch.elapsed().as_secs_f32() * 1000.0)
+}
+
+/// Split a row at the `n`th char for the caret insert, char-counted
+/// like the editor's own caret columns.
+fn split_at_char(text: &str, n: usize) -> (&str, &str) {
+    let byte = text.char_indices().nth(n).map_or(text.len(), |(i, _)| i);
+    text.split_at(byte)
+}
+
 fn render_active_input(
     input: &ActiveCommentInput,
     gutter_width: usize,
@@ -2420,64 +2474,87 @@ fn render_active_input(
     let left_offset = 2 + indent_cols;
     let right_pad = 2usize;
     let box_width = usize::from(pane_width).saturating_sub(left_offset + right_pad).max(20);
-    let orange = Style::default().fg(theme::RUST_ORANGE);
+    let border = crate::ui::composer::border_style();
     let dim = Style::default().fg(theme::DIM);
 
+    let mut push_row = |spans: Vec<Span<'static>>, keys: &mut Vec<BodyRowKey>| {
+        let mut row = vec![Span::raw("  "), Span::raw(indent.clone())];
+        row.extend(spans);
+        lines.push(Line::from(row));
+        keys.push(BodyRowKey::InputRow(input.key));
+    };
+
     // Top border with embedded title.
-    let title = format!(" Comment on line {anchor_line} ");
-    let title_chars = title.chars().count();
-    let dash_after = box_width.saturating_sub(1 + 2 + title_chars + 1);
-    let top = format!("┌──{title}{}┐", "─".repeat(dash_after));
-    lines.push(Line::from(vec![
-        Span::raw("  "),
-        Span::raw(indent.clone()),
-        Span::styled(top, orange),
-    ]));
-    keys.push(BodyRowKey::InputRow(input.key));
+    let top = crate::ui::composer::top_border(
+        &format!("Comment on line {anchor_line}"),
+        box_width,
+        border,
+    );
+    push_row(top.spans, keys);
 
     // Body rows - one per editor line. Empty editor shows a single
-    // placeholder row so the user sees where typing will land.
-    let inner_width = box_width.saturating_sub(2); // `│ ... │`
+    // placeholder row so the user sees where typing will land. The
+    // prompt glyph leads the draft and costs the body two columns.
+    let inner_width = box_width.saturating_sub(4);
     let editor_lines = input.editor.lines();
-    let body_rows: Vec<String> =
-        if editor_lines.is_empty() || editor_lines.iter().all(String::is_empty) {
-            vec!["(type your comment)".to_owned()]
+    let (caret_row, caret_col) = input.editor.cursor();
+    let empty = editor_lines.is_empty() || editor_lines.iter().all(String::is_empty);
+    let body_rows: Vec<String> = if empty { Vec::new() } else { editor_lines.to_vec() };
+    if empty {
+        let mut content = vec![ComposerChrome::prompt_span()];
+        // The caret cell rides this row too, so its budget is one
+        // column tighter than a plain body row's.
+        content.push(Span::styled(
+            fit_box_content(PLACEHOLDER_COMMENT, inner_width.saturating_sub(3)),
+            dim,
+        ));
+        content.push(ComposerChrome::caret_span());
+        push_row(
+            crate::ui::composer::side_bordered(Line::from(content), box_width, border).spans,
+            keys,
+        );
+    }
+    for (idx, body_row) in body_rows.iter().enumerate() {
+        // The caret row carries the caret cell beside its text, so its
+        // budget is one column tighter or a full-width line spills past
+        // the right border.
+        let budget = if idx == caret_row { inner_width - 3 } else { inner_width - 2 };
+        let fitted = fit_box_content(body_row, budget);
+        let mut content: Vec<Span<'static>> = Vec::new();
+        if idx == 0 {
+            content.push(ComposerChrome::prompt_span());
         } else {
-            editor_lines.to_vec()
-        };
-    for body_row in &body_rows {
-        let placeholder = body_rows.len() == 1 && body_row == "(type your comment)";
-        let fitted = fit_box_content(body_row, inner_width.saturating_sub(2));
-        let pad = inner_width.saturating_sub(2).saturating_sub(fitted.width());
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::raw(indent.clone()),
-            Span::styled("│ ", orange),
-            if placeholder { Span::styled(fitted, dim) } else { Span::raw(fitted) },
-            Span::raw(" ".repeat(pad)),
-            Span::styled(" │", orange),
-        ]));
-        keys.push(BodyRowKey::InputRow(input.key));
+            content.push(Span::raw("  "));
+        }
+        if idx == caret_row {
+            let (head, tail) = split_at_char(&fitted, caret_col.min(fitted.chars().count()));
+            content.push(Span::raw(head.to_owned()));
+            content.push(ComposerChrome::caret_span());
+            content.push(Span::raw(tail.to_owned()));
+        } else {
+            content.push(Span::raw(fitted));
+        }
+        push_row(
+            crate::ui::composer::side_bordered(Line::from(content), box_width, border).spans,
+            keys,
+        );
     }
 
     // In-box hint row (DIM).
-    let hint = "Enter save · Esc cancel";
-    let hint_fitted = fit_box_content(hint, inner_width.saturating_sub(2));
-    let hint_pad = inner_width.saturating_sub(2).saturating_sub(hint_fitted.width());
-    lines.push(Line::from(vec![
-        Span::raw("  "),
-        Span::raw(indent.clone()),
-        Span::styled("│ ", orange),
-        Span::styled(hint_fitted, dim),
-        Span::raw(" ".repeat(hint_pad)),
-        Span::styled(" │", orange),
-    ]));
-    keys.push(BodyRowKey::InputRow(input.key));
+    let hint_fitted = fit_box_content(HINT_SAVE_CANCEL, inner_width.saturating_sub(2));
+    push_row(
+        crate::ui::composer::side_bordered(
+            Line::from(vec![Span::styled(hint_fitted, dim)]),
+            box_width,
+            border,
+        )
+        .spans,
+        keys,
+    );
 
     // Bottom border.
-    let bottom = format!("└{}┘", "─".repeat(box_width.saturating_sub(2)));
-    lines.push(Line::from(vec![Span::raw("  "), Span::raw(indent), Span::styled(bottom, orange)]));
-    keys.push(BodyRowKey::InputRow(input.key));
+    let bottom = crate::ui::composer::bottom_border(box_width, border);
+    push_row(bottom.spans, keys);
 }
 
 /// Trim `text` to fit within `max_cols` terminal columns. Used by the
@@ -2789,10 +2866,319 @@ mod tests {
         );
     }
 
-    /// Every row of the comment editor box - top border, body rows, hint,
-    /// bottom border - has to land on the same column count, or the right
-    /// border staircases away from the box as soon as a comment contains
-    /// an emoji.
+    #[test]
+    fn the_comment_editor_wears_the_unified_thick_chrome() {
+        let input = ActiveCommentInput {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            editor: crate::app::InputState::new(),
+            prior_comment: None,
+            edit_turn: None,
+        };
+        let mut lines = Vec::new();
+        let mut keys = Vec::new();
+        render_active_input(&input, 4, 42, 80, &mut lines, &mut keys);
+
+        let texts: Vec<String> = lines
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+        assert!(
+            texts[0].contains("\u{250f}\u{2501} Comment on line 42 ")
+                && texts[0].ends_with("\u{2513}"),
+            "the top border is thick with the title embedded, got: {}",
+            texts[0]
+        );
+        assert!(
+            texts.iter().all(|t| !t.contains('\u{250c}') && !t.contains("\u{2502}")),
+            "no thin chrome remains, got: {texts:?}"
+        );
+        let border = lines[0].spans[2].style;
+        assert_eq!(border.fg, Some(theme::RUST_ORANGE), "the chrome is orange");
+        assert!(border.add_modifier.contains(ratatui::style::Modifier::BOLD), "and bold");
+
+        let body = &texts[1];
+        assert!(
+            body.contains("\u{27a4}") && body.contains("Add a comment\u{2026}"),
+            "the glyph leads and the placeholder reads the unified wording, got: {body}"
+        );
+        let placeholder_span = lines[1]
+            .spans
+            .iter()
+            .find(|span| span.content.contains("Add a comment"))
+            .expect("the placeholder span");
+        assert_eq!(placeholder_span.style.fg, Some(theme::DIM), "the placeholder dims");
+        let caret = lines[1]
+            .spans
+            .iter()
+            .find(|span| span.style.add_modifier.contains(ratatui::style::Modifier::REVERSED))
+            .expect("a caret cell rides the placeholder row");
+        assert_eq!(caret.content, " ", "the caret is a cell, not a glyph");
+
+        assert!(
+            texts[2].contains("Enter save \u{b7} Esc cancel"),
+            "the hint row stands, got: {}",
+            texts[2]
+        );
+        let bottom = &texts[texts.len() - 1];
+        assert!(
+            bottom.contains("\u{2517}") && bottom.ends_with("\u{251b}"),
+            "the bottom border is thick, got: {bottom}"
+        );
+    }
+
+    #[test]
+    fn the_comment_editor_shows_the_caret_in_its_box_rows() {
+        let mut editor = crate::app::InputState::new();
+        editor.insert_str("ship it");
+        let input = ActiveCommentInput {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            editor,
+            prior_comment: None,
+            edit_turn: None,
+        };
+        let mut lines = Vec::new();
+        let mut keys = Vec::new();
+        render_active_input(&input, 4, 42, 80, &mut lines, &mut keys);
+        let body =
+            lines[1].spans.iter().map(|span| span.content.as_ref()).collect::<Vec<_>>().join("");
+        assert!(body.contains("ship it"), "the draft renders, got: {body}");
+        let caret = lines[1]
+            .spans
+            .iter()
+            .find(|span| span.style.add_modifier.contains(ratatui::style::Modifier::REVERSED))
+            .expect("the caret cell rides the caret row");
+        assert_eq!(caret.content, " ", "the caret sits after the last typed char");
+        assert!(
+            !lines[1].spans.iter().any(|span| span.content.contains("Add a comment")),
+            "a non-empty draft carries no placeholder"
+        );
+    }
+
+    /// The reviewer's reproduction, finish-review shape: a full-width
+    /// overview line with the caret parked at its end must not push the
+    /// caret cell past the modal's right border.
+    #[test]
+    fn a_full_width_overview_line_keeps_the_border() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut state =
+            DiffOverlayState::new(std::path::PathBuf::from("/tmp/repo"), "main".to_owned(), vec![]);
+        state.finish_review = Some(crate::app::diff_overlay::FinishReviewState {
+            editor: crate::app::input::InputState::new(),
+        });
+        state.finish_review.as_mut().expect("finish review").editor.insert_str(&"x".repeat(61));
+
+        let (width, height) = (80u16, 20u16);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                render_finish_review(
+                    frame,
+                    ratatui::layout::Rect { x: 0, y: 0, width, height },
+                    &mut state,
+                );
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let w = usize::from(width);
+        let modal_width = usize::from(width.saturating_sub(8).clamp(44, 68));
+        let modal_x =
+            usize::from(width.saturating_sub(u16::try_from(modal_width).unwrap_or(0)) / 2);
+        for r in 0..usize::from(height) {
+            let row: String = (0..w).map(|x| buffer.content[r * w + x].symbol()).collect();
+            let inside: String = row.chars().skip(modal_x).take(modal_width).collect();
+            assert!(
+                crate::ui::wrap::display_width(inside.trim_end()) <= modal_width,
+                "row {r} spills past the modal's {modal_width} columns: {inside:?}"
+            );
+        }
+        let overview_row = (0..usize::from(height))
+            .map(|r| (0..w).map(|x| buffer.content[r * w + x].symbol()).collect::<String>())
+            .find(|row| row.contains('\u{27a4}'))
+            .expect("the overview editor renders");
+        assert!(
+            overview_row.trim_end().ends_with('\u{2503}'),
+            "the right border survives the caret cell, got: {overview_row:?}"
+        );
+    }
+
+    /// The reviewer's reproduction: a line exactly as wide as the
+    /// caret row's budget, caret parked at its end. The caret cell has
+    /// to fit beside the text - a full-width line must not push the
+    /// caret row past the right border.
+    #[test]
+    fn a_full_width_line_with_the_caret_at_its_end_keeps_the_border() {
+        let mut editor = crate::app::InputState::new();
+        // 61 chars: exactly the caret row's budget at this geometry.
+        editor.insert_str(&"x".repeat(61));
+        let input = ActiveCommentInput {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            editor,
+            prior_comment: None,
+            edit_turn: None,
+        };
+        let mut lines = Vec::new();
+        let mut keys = Vec::new();
+        render_active_input(&input, 4, 42, 80, &mut lines, &mut keys);
+
+        let widths: Vec<usize> = lines.iter().map(crate::ui::wrap::line_display_width).collect();
+        assert!(
+            widths.windows(2).all(|w| w[0] == w[1]),
+            "every row keeps the box's width with the caret cell fitted in, got {widths:?}"
+        );
+        let caret_row = &lines[1];
+        let text: String = caret_row.spans.iter().map(|span| span.content.as_ref()).collect();
+        assert!(text.ends_with(" \u{2503}"), "the right border survives, got: {text:?}");
+        assert!(
+            caret_row
+                .spans
+                .iter()
+                .any(|span| span.style.add_modifier.contains(ratatui::style::Modifier::REVERSED)),
+            "the caret cell rides the full-width row"
+        );
+    }
+
+    /// With a take live, the overlay's key-hints bar carries the circle
+    /// blip - the fixed spot, visible however far the editor row has
+    /// scrolled - and the editor's glyph stands.
+    #[test]
+    fn the_key_hints_bar_blips_while_a_take_is_live() {
+        use forge_workspace::SessionUpdate;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut app = crate::app::App::test_default();
+        let key = app.active_session_key.clone().expect("test_default has an active bucket");
+        let mut state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp/repo"),
+            "main".to_owned(),
+            vec![FileHunks {
+                path: "src/x.rs".into(),
+                status: FileStatus::Added,
+                oversize: false,
+                hunks: vec![Hunk {
+                    old_start: 1,
+                    old_count: 0,
+                    new_start: 1,
+                    new_count: 1,
+                    lines: vec![forge_workspace::env::git_diff::hunks::DiffLine {
+                        kind: DiffLineKind::Added,
+                        text: "let y = compute();".into(),
+                        old_line: None,
+                        new_line: Some(1),
+                    }],
+                }],
+            }],
+        );
+        state.active_input = Some(crate::app::diff_overlay::ActiveCommentInput {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            editor: crate::app::InputState::new(),
+            prior_comment: None,
+            edit_turn: None,
+        });
+        app.diff_overlay = Some(state);
+        crate::app::view::set_active_view(&mut app, crate::app::ActiveView::Diff);
+        crate::app::events::apply_session_update(
+            &mut app,
+            SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1 },
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+        let buffer = terminal.backend().buffer();
+        let w = 100usize;
+        let rows: Vec<String> = (0..30)
+            .map(|y| (0..w).map(|x| buffer.content[y * w + x].symbol()).collect::<String>())
+            .collect();
+        assert!(
+            rows.iter().any(|row| row.contains('\u{25cf}')),
+            "the blip shows somewhere on the overlay while a take is live, got: {rows:?}"
+        );
+        let editor_row = rows
+            .iter()
+            .find(|row| row.contains(PLACEHOLDER_COMMENT))
+            .expect("the comment editor renders");
+        assert!(
+            editor_row.contains('\u{27a4}') && !editor_row.contains('\u{25cf}'),
+            "the editor's glyph stands; the blip lives on the chrome, got: {editor_row}"
+        );
+    }
+
+    #[test]
+    fn the_finish_review_wears_the_unified_thick_chrome() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut state =
+            DiffOverlayState::new(std::path::PathBuf::from("/tmp/repo"), "main".to_owned(), vec![]);
+        state.finish_review = Some(crate::app::diff_overlay::FinishReviewState {
+            editor: crate::app::input::InputState::new(),
+        });
+        let mut long = chip_comment(5, "FIRST", ReviewStatus::Open);
+        long.thread.id = "thread-FIRST".to_owned();
+        long.comment_text = format!("{} overflow", "a very long review snippet ".repeat(4));
+        long.authored_this_session = true;
+        state.comments.push(long);
+        let mut c = chip_comment(5, "SECOND", ReviewStatus::Open);
+        c.thread.id = "thread-SECOND".to_owned();
+        c.comment_text = "SECOND".to_owned();
+        c.authored_this_session = true;
+        state.comments.push(c);
+
+        let (width, height) = (80u16, 20u16);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                render_finish_review(
+                    frame,
+                    ratatui::layout::Rect { x: 0, y: 0, width, height },
+                    &mut state,
+                );
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let w = usize::from(width);
+        let rows: String = (0..usize::from(height))
+            .map(|r| (0..w).map(|x| buffer.content[r * w + x].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // The modal is 68 wide at an 80-col area; no row may spill past
+        // its right border, whatever the snippet length.
+        let modal_width = usize::from(width.saturating_sub(8).clamp(44, 68));
+        let modal_x =
+            usize::from(width.saturating_sub(u16::try_from(modal_width).unwrap_or(0)) / 2);
+        for r in 0..usize::from(height) {
+            let row: String = (0..w).map(|x| buffer.content[r * w + x].symbol()).collect();
+            let inside: String = row.chars().skip(modal_x).take(modal_width).collect();
+            let row_width = crate::ui::wrap::display_width(inside.trim_end());
+            assert!(
+                row_width <= modal_width,
+                "row {r} spills past the modal's {modal_width} columns: {inside:?}"
+            );
+        }
+
+        assert!(
+            rows.contains("\u{250f}\u{2501} Finish review \u{b7} 2 comments "),
+            "the count folds into the thick title, got:\n{rows}"
+        );
+        assert!(
+            !rows.contains("in this review"),
+            "the old count row is absorbed into the title, got:\n{rows}"
+        );
+        assert!(
+            rows.contains('\u{27a4}') && rows.contains("Overview (optional)\u{2026}"),
+            "the overview editor opens with the glyph and the unified placeholder, got:\n{rows}"
+        );
+        assert!(!rows.contains('\u{250c}'), "no thin corners remain, got:\n{rows}");
+        assert!(rows.contains("[ Submit review ]"), "the submit affordance stays, got:\n{rows}");
+        assert!(
+            rows.contains("\u{2517}") && rows.contains("\u{251b}"),
+            "the bottom border is thick, got:\n{rows}"
+        );
+    }
+
+    /// Emoji occupy two terminal columns. Wrapping a card body by
+    /// character count lets a row of them render twice as wide as the
+    /// card, spilling past its right border.
     #[test]
     fn comment_editor_box_rows_align_with_an_emoji_in_the_body() {
         let mut editor = crate::app::InputState::new();
@@ -4600,7 +4986,7 @@ mod tests {
                 hunks: Vec::new(),
             }],
         );
-        let text = line_text(&footer_line(&state, DiffViewMode::Unified, 160, false));
+        let text = line_text(&footer_line(&state, DiffViewMode::Unified, 160, false, None));
         assert!(text.contains("comment"), "still hints click-to-comment");
         assert!(!text.contains("resolve"), "no global resolve hint");
         assert!(!text.contains("reopen"), "no global reopen hint");
@@ -4616,11 +5002,11 @@ mod tests {
             "HEAD".to_owned(),
             Vec::new(),
         );
-        let closing = line_text(&footer_line(&state, DiffViewMode::Unified, 200, false));
+        let closing = line_text(&footer_line(&state, DiffViewMode::Unified, 200, false, None));
         assert!(closing.contains("close"), "nothing to seal reads close; got: {closing}");
         assert!(!closing.contains("finish review"), "and must not offer a review");
 
-        let sealing = line_text(&footer_line(&state, DiffViewMode::Unified, 200, true));
+        let sealing = line_text(&footer_line(&state, DiffViewMode::Unified, 200, true, None));
         assert!(sealing.contains("finish review"), "work to seal reads finish review");
     }
 }

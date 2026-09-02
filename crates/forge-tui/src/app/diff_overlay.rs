@@ -1170,6 +1170,10 @@ pub struct DiffOverlayState {
     /// `[ Submit review ]` button, stashed each render so a click can
     /// resolve onto it. `None` until the modal first renders.
     pub finish_submit_span: Option<(u16, u16, u16)>,
+    /// A dictate warning stamped on the overlay - a truncated take
+    /// landing its words in a review editor - cleared by the next
+    /// overlay key.
+    pub dictate_notice: Option<String>,
     /// Submitted reviews for `(project, branch)`, loaded alongside the
     /// threads on hydrate. Maps a comment's `review_id` to its `R{number}`
     /// chip tag and backs the `l` reviews list.
@@ -1675,6 +1679,7 @@ impl DiffOverlayState {
             review_load_error: None,
             finish_review: None,
             finish_submit_span: None,
+            dictate_notice: None,
             reviews: Vec::new(),
             reviews_open: false,
             reviews_selected: 0,
@@ -1772,6 +1777,7 @@ impl DiffOverlayState {
             review_load_error: None,
             finish_review: None,
             finish_submit_span: None,
+            dictate_notice: None,
             reviews: Vec::new(),
             reviews_open: false,
             reviews_selected: 0,
@@ -2186,6 +2192,20 @@ fn refresh_replies_waiting(app: &mut App) {
 ///     through `input_submit::dispatch_review_nudge` so the user sees the
 ///     bubble appear immediately.
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
+    // A stamped dictate warning dies with the next overlay key.
+    if let Some(overlay) = app.diff_overlay.as_mut().filter(|o| o.dictate_notice.is_some()) {
+        overlay.dictate_notice = None;
+        app.needs_redraw = true;
+    }
+    // A live take owns the first Esc on every surface it can be started
+    // from: it is abandoned and the editor underneath stands.
+    if matches!(key.code, KeyCode::Esc)
+        && app.emoji.is_none()
+        && crate::app::dictate::abandon_take(app)
+    {
+        app.needs_redraw = true;
+        return;
+    }
     // A paste queued earlier in this drain cycle owns any editing-like
     // key that follows it - without this a chunked paste's trailing
     // newline saves the comment instead of landing in the text.
@@ -2228,6 +2248,10 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
             // dictated / pasted payload, so it goes to the buffer instead.
             KeyCode::Enter if app.paste_burst.on_enter(Instant::now()) => {}
             KeyCode::Enter if !key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) => {
+                // An explicit save is a deliberate act: the user
+                // submitted without the take's words, so the take is
+                // abandoned rather than orphaned to the fallback.
+                crate::app::dictate::abandon_take(app);
                 save_active_input(app);
             }
             _ => route_key_into_review_editor(app, key),
@@ -2272,6 +2296,9 @@ fn handle_finish_review_key(app: &mut App, key: KeyEvent) {
             }
         }
         KeyCode::Enter if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+            // An explicit submit is a deliberate act: the take is
+            // abandoned rather than orphaned to the fallback.
+            crate::app::dictate::abandon_take(app);
             submit_finish_review(app);
         }
         _ => route_key_into_review_editor(app, key),
@@ -3804,7 +3831,247 @@ fn finalize_review_close(app: &mut App, overview: Option<&str>, seal_ids: &[Stri
 mod tests {
     use super::*;
     use forge_workspace::env::git_diff::hunks::FileStatus;
+    use forge_workspace::{DictateOutcome, SessionUpdate};
     use std::time::Duration;
+
+    /// A take resolved while the diff comment editor is focused lands
+    /// its words into the editor - not into the chat draft.
+    #[test]
+    fn a_take_lands_in_the_focused_comment_editor() {
+        let mut app = app_with_comment_editor();
+        let key = app.active_session_key.clone().expect("test_default has an active bucket");
+        crate::app::events::apply_session_update(
+            &mut app,
+            SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+        );
+
+        crate::app::events::apply_session_update(
+            &mut app,
+            SessionUpdate::DictateEnded {
+                key: key.clone(),
+                generation: 1,
+                outcome: DictateOutcome::Landed {
+                    text: "dictated words".to_owned(),
+                    truncated: false,
+                },
+            },
+        );
+        let after = overlay(&app);
+        assert_eq!(
+            after.active_input.as_ref().map(|input| input.editor.text().clone()).as_deref(),
+            Some("dictated words"),
+            "the words land in the focused comment editor"
+        );
+        assert!(app.input().text().is_empty(), "the chat draft keeps nothing");
+    }
+
+    /// Esc ownership: with a take live, the first Esc abandons the take
+    /// and the comment editor stands; only the next Esc cancels it.
+    #[test]
+    fn esc_abandons_the_take_before_cancelling_the_editor() {
+        let mut app = app_with_comment_editor();
+        let key = app.active_session_key.clone().expect("test_default has an active bucket");
+        crate::app::events::apply_session_update(
+            &mut app,
+            SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1 },
+        );
+        if let Some(ws) = app.workspace.as_ref() {
+            ws.enable_test_dispatch_intercept();
+        }
+
+        handle_key(&mut app, KeyEvent::from(KeyCode::Esc));
+
+        let after = overlay(&app);
+        assert!(after.active_input.is_some(), "the first Esc leaves the editor open");
+        let dispatched = app.workspace.as_ref().map(|ws| ws.drain_test_dispatch_buffer());
+        let Some(dispatched) = dispatched else { panic!("test_default carries a workspace") };
+        assert!(
+            dispatched
+                .iter()
+                .any(|command| matches!(command, forge_workspace::Command::DictateStop { .. })),
+            "Esc dispatched the abandon: {dispatched:?}"
+        );
+    }
+
+    /// The sister case: with no take live, Esc cancels the editor as
+    /// before.
+    #[test]
+    fn esc_without_a_take_still_cancels_the_editor() {
+        let mut app = app_with_comment_editor();
+
+        handle_key(&mut app, KeyEvent::from(KeyCode::Esc));
+
+        let after = overlay(&app);
+        assert!(after.active_input.is_none(), "no take, Esc cancels the editor");
+    }
+
+    /// The abandon clears the indicator optimistically, so a second
+    /// Esc reaches the surface instead of being eaten by the still-live
+    /// take while the async echo is in flight.
+    #[test]
+    fn the_second_esc_reaches_the_editor_once_the_take_is_abandoned() {
+        let mut app = app_with_comment_editor();
+        let key = app.active_session_key.clone().expect("test_default has an active bucket");
+        crate::app::events::apply_session_update(
+            &mut app,
+            SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+        );
+        if let Some(ws) = app.workspace.as_ref() {
+            ws.enable_test_dispatch_intercept();
+        }
+
+        handle_key(&mut app, KeyEvent::from(KeyCode::Esc));
+        assert!(
+            app.sessions.get(&key).expect("bucket").dictate.is_none(),
+            "the abandon clears the indicator up front"
+        );
+        handle_key(&mut app, KeyEvent::from(KeyCode::Esc));
+        let after = overlay(&app);
+        assert!(after.active_input.is_none(), "the second Esc cancels the editor");
+        let dispatched = app.workspace.as_ref().map(|ws| ws.drain_test_dispatch_buffer());
+        let Some(dispatched) = dispatched else { panic!("test_default carries a workspace") };
+        let stops = dispatched
+            .iter()
+            .filter(|command| matches!(command, forge_workspace::Command::DictateStop { .. }))
+            .count();
+        assert_eq!(stops, 1, "exactly one stop dispatches; the second Esc is the editor's");
+    }
+
+    /// An explicit save of the comment editor abandons its live take:
+    /// the user submitted without the words, a deliberate act.
+    #[test]
+    fn saving_the_comment_abandons_the_live_take() {
+        let mut app = app_with_comment_editor();
+        let key = app.active_session_key.clone().expect("test_default has an active bucket");
+        crate::app::events::apply_session_update(
+            &mut app,
+            SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1 },
+        );
+        if let Some(ws) = app.workspace.as_ref() {
+            ws.enable_test_dispatch_intercept();
+        }
+        if let Some(input) = app.diff_overlay.as_mut().and_then(|o| o.active_input.as_mut()) {
+            input.editor.insert_str("typed first");
+        }
+
+        handle_key(&mut app, KeyEvent::from(KeyCode::Enter));
+
+        let after = overlay(&app);
+        assert_eq!(after.comments.len(), 1, "the comment saves its own text");
+        assert_eq!(
+            after.comments[0].comment_text, "typed first",
+            "the take's words are not in the saved comment, the take was still recording"
+        );
+        let key = app.active_session_key.clone().expect("active session");
+        assert!(
+            app.sessions.get(&key).expect("bucket").dictate.is_none(),
+            "the save abandons the live take"
+        );
+        let dispatched = app.workspace.as_ref().map(|ws| ws.drain_test_dispatch_buffer());
+        let Some(dispatched) = dispatched else { panic!("test_default carries a workspace") };
+        assert!(
+            dispatched
+                .iter()
+                .any(|command| matches!(command, forge_workspace::Command::DictateStop { .. })),
+            "the abandon dispatches the stop: {dispatched:?}"
+        );
+    }
+
+    /// An explicit Ctrl+Enter of the finish-review modal abandons its
+    /// live take the same way.
+    #[test]
+    fn submitting_the_finish_review_abandons_the_live_take() {
+        let mut app = app_with_comment_editor();
+        app.diff_overlay.as_mut().expect("overlay").finish_review =
+            Some(FinishReviewState { editor: crate::app::input::InputState::new() });
+        let key = app.active_session_key.clone().expect("test_default has an active bucket");
+        crate::app::events::apply_session_update(
+            &mut app,
+            SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1 },
+        );
+        if let Some(ws) = app.workspace.as_ref() {
+            ws.enable_test_dispatch_intercept();
+        }
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::CONTROL),
+        );
+
+        let key = app.active_session_key.clone().expect("active session");
+        assert!(
+            app.sessions.get(&key).expect("bucket").dictate.is_none(),
+            "the submit abandons the live take"
+        );
+    }
+
+    /// A truncated take warns where its words landed: the overlay's
+    /// notice line, not only the chat composer's notice row.
+    #[test]
+    fn a_truncated_take_warns_on_the_landing_overlay() {
+        let mut app = app_with_comment_editor();
+        let key = app.active_session_key.clone().expect("test_default has an active bucket");
+        crate::app::events::apply_session_update(
+            &mut app,
+            SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+        );
+
+        crate::app::events::apply_session_update(
+            &mut app,
+            SessionUpdate::DictateEnded {
+                key,
+                generation: 1,
+                outcome: DictateOutcome::Landed {
+                    text: "half a thought".to_owned(),
+                    truncated: true,
+                },
+            },
+        );
+        let after = overlay(&app);
+        assert_eq!(
+            after.active_input.as_ref().map(|input| input.editor.text().clone()).as_deref(),
+            Some("half a thought"),
+            "the truncated words land in the comment editor"
+        );
+        assert_eq!(
+            after.dictate_notice.as_deref(),
+            Some(crate::app::dictate::truncated_notice_text()),
+            "the truncation warning rides the overlay"
+        );
+    }
+
+    /// A take resolved while the Finish-review modal is open lands its
+    /// words into the overview editor - not into the chat draft.
+    #[test]
+    fn a_take_lands_in_the_finish_review_overview() {
+        let mut app = app_with_comment_editor();
+        app.diff_overlay.as_mut().expect("overlay").finish_review =
+            Some(FinishReviewState { editor: crate::app::input::InputState::new() });
+        let key = app.active_session_key.clone().expect("test_default has an active bucket");
+        crate::app::events::apply_session_update(
+            &mut app,
+            SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+        );
+
+        crate::app::events::apply_session_update(
+            &mut app,
+            SessionUpdate::DictateEnded {
+                key,
+                generation: 1,
+                outcome: DictateOutcome::Landed {
+                    text: "overview words".to_owned(),
+                    truncated: false,
+                },
+            },
+        );
+        let after = overlay(&app);
+        assert_eq!(
+            after.finish_review.as_ref().map(|finish| finish.editor.text().clone()).as_deref(),
+            Some("overview words"),
+            "the words land in the overview editor"
+        );
+        assert!(app.input().text().is_empty(), "the chat draft keeps nothing");
+    }
 
     fn sample_state() -> DiffOverlayState {
         let mut state = DiffOverlayState::new(

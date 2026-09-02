@@ -46,14 +46,19 @@ pub(super) fn render_text_input_field(
     area: Rect,
     editor: &InputState,
     placeholder: &str,
+    blip: Option<&ratatui::text::Span<'static>>,
 ) {
-    let content = text_input_line(&editor.text(), editor.cursor_char_offset(), placeholder);
-    let mut spans = Vec::with_capacity(content.spans.len().saturating_add(2));
-    spans.push(Span::styled(" ", Style::default().bg(theme::USER_MSG_BG)));
-    spans.extend(content.spans);
-    spans.push(Span::styled(" ", Style::default().bg(theme::USER_MSG_BG)));
+    let mut content = Vec::new();
+    if let Some(blip) = blip {
+        content.push(blip.clone());
+    }
+    content.extend(text_input_line(&editor.text(), editor.cursor_char_offset(), placeholder).spans);
     frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme::USER_MSG_BG)),
+        Paragraph::new(crate::ui::composer::single_line_field(
+            Line::from(content),
+            usize::from(area.width),
+            crate::ui::composer::border_style(),
+        )),
         area,
     );
 }

@@ -21,6 +21,7 @@ pub fn render(
     prompt: &PromptState,
     queue_depth: usize,
     notes_text: Option<&str>,
+    blip: Option<&Span<'static>>,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -32,7 +33,7 @@ pub fn render(
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    let lines = build_lines(prompt, queue_depth, inner.width as usize, notes_text);
+    let lines = build_lines(prompt, queue_depth, inner.width as usize, notes_text, blip);
     Paragraph::new(lines).render(inner, buf);
 }
 
@@ -50,8 +51,9 @@ pub fn prompt_required_lines(
     notes_text: Option<&str>,
 ) -> u16 {
     // Block borders eat 2 cols; Padding::horizontal(2) eats 4 more.
+    // The blip replaces the pointer inline, so it costs no rows here.
     let inner_width = area_width.saturating_sub(6).max(1) as usize;
-    let lines = build_lines(prompt, queue_depth, inner_width, notes_text);
+    let lines = build_lines(prompt, queue_depth, inner_width, notes_text, None);
     u16::try_from(lines.len().saturating_add(2)).unwrap_or(u16::MAX)
 }
 
@@ -60,6 +62,7 @@ fn build_lines(
     queue_depth: usize,
     content_width: usize,
     notes_text: Option<&str>,
+    blip: Option<&Span<'static>>,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     // 1 empty row top.
@@ -80,9 +83,10 @@ fn build_lines(
     // Options stack.
     lines.extend(build_option_lines(prompt, content_width, notes_text));
 
-    // Footer hint.
+    // Footer hint. A live take's blip leads it - the dock's fixed
+    // blip spot, visible whichever option holds the focus.
     lines.push(Line::default());
-    lines.push(build_footer_line(prompt));
+    lines.push(build_footer_line(prompt, blip));
 
     // 1 empty row bottom.
     lines.push(Line::default());
@@ -334,7 +338,7 @@ fn build_option_lines(
     lines
 }
 
-fn build_footer_line(prompt: &PromptState) -> Line<'static> {
+fn build_footer_line(prompt: &PromptState, blip: Option<&Span<'static>>) -> Line<'static> {
     let text = match prompt.mode {
         PromptMode::OptionPicker => {
             if prompt.is_multi_select() {
@@ -345,7 +349,12 @@ fn build_footer_line(prompt: &PromptState) -> Line<'static> {
         }
         PromptMode::EditingInput => "⏎ submit  esc back to options",
     };
-    Line::from(Span::styled(text.to_owned(), Style::default().fg(theme::DIM)))
+    let mut spans = Vec::new();
+    if let Some(blip) = blip {
+        spans.push(blip.clone());
+    }
+    spans.push(Span::styled(text.to_owned(), Style::default().fg(theme::DIM)));
+    Line::from(spans)
 }
 
 fn icon_for_kind(kind: PermissionOptionKind) -> (&'static str, Color) {
@@ -370,7 +379,7 @@ mod tests {
     ) -> String {
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
-        render(area, &mut buf, prompt, queue_depth, None);
+        render(area, &mut buf, prompt, queue_depth, None, None);
         (0..height)
             .map(|y| (0..width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
             .collect::<Vec<_>>()
@@ -500,7 +509,7 @@ mod tests {
         // Render into a buffer so we can inspect cell modifiers.
         let area = Rect::new(0, 0, 80, 14);
         let mut buf = Buffer::empty(area);
-        render(area, &mut buf, &prompt, 1, None);
+        render(area, &mut buf, &prompt, 1, None, None);
         // Locate the `B` of "Blue" on its row.
         let mut found = false;
         for y in 0..area.height {
@@ -546,7 +555,7 @@ mod tests {
         assert!(prompt.selected_option_indices.is_empty());
         let area = Rect::new(0, 0, 80, 18);
         let mut buf = Buffer::empty(area);
-        render(area, &mut buf, &prompt, 1, Some("a note about etiquette"));
+        render(area, &mut buf, &prompt, 1, Some("a note about etiquette"), None);
         let out: String = (0..area.height)
             .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
             .collect::<Vec<_>>()
@@ -565,7 +574,7 @@ mod tests {
         let prompt = PromptState::from_question("tc-q".into(), request);
         let area = Rect::new(0, 0, 80, 18);
         let mut buf = Buffer::empty(area);
-        render(area, &mut buf, &prompt, 1, None);
+        render(area, &mut buf, &prompt, 1, None, None);
         let out: String = (0..area.height)
             .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
             .collect::<Vec<_>>()
@@ -778,7 +787,7 @@ mod tests {
         prompt.focused_option_index = prompt.options.len() - 1;
         let area = Rect::new(0, 0, 80, 24);
         let mut buf = Buffer::empty(area);
-        render(area, &mut buf, &prompt, 1, Some("HELLO WORLD"));
+        render(area, &mut buf, &prompt, 1, Some("HELLO WORLD"), None);
         let out: String = (0..area.height)
             .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
             .collect::<Vec<_>>()
@@ -796,7 +805,7 @@ mod tests {
         prompt.focused_option_index = prompt.options.len() - 1;
         let area = Rect::new(0, 0, 80, 24);
         let mut buf = Buffer::empty(area);
-        render(area, &mut buf, &prompt, 1, Some(""));
+        render(area, &mut buf, &prompt, 1, Some(""), None);
         let out: String = (0..area.height)
             .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
             .collect::<Vec<_>>()
@@ -814,7 +823,7 @@ mod tests {
         // focus stays on option 0 (not Notes).
         let area = Rect::new(0, 0, 80, 24);
         let mut buf = Buffer::empty(area);
-        render(area, &mut buf, &prompt, 1, Some("SHOULD NOT APPEAR"));
+        render(area, &mut buf, &prompt, 1, Some("SHOULD NOT APPEAR"), None);
         let out: String = (0..area.height)
             .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
             .collect::<Vec<_>>()
@@ -830,5 +839,46 @@ mod tests {
         let prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
         let out = render_to_string(&prompt, 1, 80, 14);
         assert!(!out.contains("Preview:"), "Permission prompts shouldn't render a Preview block");
+    }
+
+    /// A live dictate take puts the circle blip on the focused Notes
+    /// A live dictate take puts the circle blip on the dock's footer
+    /// hint row - the fixed chrome spot, visible whichever option holds
+    /// the focus.
+    #[test]
+    fn the_dock_footer_blips_while_a_take_is_live() {
+        let request = make_question_request(false);
+        let mut prompt = PromptState::from_question("tc-q".into(), request);
+        let area = Rect::new(0, 0, 80, 24);
+        let blip = Span::styled("\u{25cf} ", Style::default().fg(Color::Rgb(244, 118, 0)));
+
+        // Non-Notes option focused: the blip's whole point is that it
+        // still shows where the dictated words will land.
+        prompt.focused_option_index = 0;
+        let footer_row = |buf: &Buffer| {
+            (0..area.height).find_map(|y| {
+                let row: String =
+                    (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect();
+                row.contains("\u{23ce} confirm").then_some(row)
+            })
+        };
+        let mut buf = Buffer::empty(area);
+        render(area, &mut buf, &prompt, 1, Some(""), Some(&blip));
+        let row = footer_row(&buf).expect("the footer hint renders");
+        assert!(row.contains("\u{25cf}"), "the blip leads the hint row, got: {row}");
+
+        // Notes focused: same fixed spot, however much the inline
+        // editor grows above the footer.
+        prompt.focused_option_index = prompt.options.len() - 1;
+        let mut buf = Buffer::empty(area);
+        render(area, &mut buf, &prompt, 1, Some(""), Some(&blip));
+        let row = footer_row(&buf).expect("the footer hint renders");
+        assert!(row.contains("\u{25cf}"), "the blip holds with the notes option focused");
+
+        // No take, no blip.
+        let mut buf = Buffer::empty(area);
+        render(area, &mut buf, &prompt, 1, Some(""), None);
+        let row = footer_row(&buf).expect("the footer hint renders");
+        assert!(!row.contains("\u{25cf}"), "without a take no circle draws, got: {row}");
     }
 }
