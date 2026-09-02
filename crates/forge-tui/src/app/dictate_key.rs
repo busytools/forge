@@ -210,7 +210,6 @@ fn request_stop(app: &mut App, cancelled: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::ModifierKeyCode as M;
 
     fn press(key: crossterm::event::ModifierKeyCode) -> KeyEvent {
         KeyEvent::new(KeyCode::Modifier(key), crossterm::event::KeyModifiers::NONE)
@@ -222,6 +221,21 @@ mod tests {
 
     fn base() -> Instant {
         Instant::now().checked_sub(Duration::from_secs(1)).unwrap_or_else(Instant::now)
+    }
+
+    /// The modifier the default `right_cmd` binding resolves to on the
+    /// platform running the test, read through the production mapping:
+    /// the binding is Right Cmd on macOS and the right Control key
+    /// elsewhere, so hardcoding either side breaks the end-to-end
+    /// tests on the other.
+    fn right_cmd_key() -> crossterm::event::ModifierKeyCode {
+        bound_modifier(DictateBind::RightCmd).expect("right_cmd binds to a key")
+    }
+
+    /// The `left_cmd` equivalent, which the tests use as an UNBOUND
+    /// modifier against the default right-side binding.
+    fn left_cmd_key() -> crossterm::event::ModifierKeyCode {
+        bound_modifier(DictateBind::LeftCmd).expect("left_cmd binds to a key")
     }
 
     /// The existing classification tests exercise the default `auto`
@@ -410,8 +424,14 @@ mod tests {
         // No workspace-visible override in a test app resolves the
         // default binding, so Right Cmd is the dictate key and every
         // other bare modifier is absorbed here.
-        assert!(handle_key(&mut app, press(M::LeftSuper), now), "an unbound modifier is consumed");
-        assert!(handle_key(&mut app, press(M::RightSuper), now), "the bound key press is consumed");
+        assert!(
+            handle_key(&mut app, press(left_cmd_key()), now),
+            "an unbound modifier is consumed"
+        );
+        assert!(
+            handle_key(&mut app, press(right_cmd_key()), now),
+            "the bound key press is consumed"
+        );
         assert!(
             !handle_key(
                 &mut app,
@@ -420,7 +440,7 @@ mod tests {
             ),
             "a plain key still dispatches"
         );
-        assert!(handle_key(&mut app, with_kind(M::RightSuper, KeyEventKind::Release), now));
+        assert!(handle_key(&mut app, with_kind(right_cmd_key(), KeyEventKind::Release), now));
         assert_eq!(
             workspace.drain_test_dispatch_buffer().len(),
             2,
@@ -434,10 +454,10 @@ mod tests {
         let workspace = app.workspace.clone().expect("test workspace");
         workspace.enable_test_dispatch_intercept();
         let start = base();
-        assert!(handle_key(&mut app, press(M::RightSuper), start));
+        assert!(handle_key(&mut app, press(right_cmd_key()), start));
 
         let release = KeyEvent::new_with_kind(
-            KeyCode::Modifier(M::RightSuper),
+            KeyCode::Modifier(right_cmd_key()),
             crossterm::event::KeyModifiers::NONE,
             KeyEventKind::Release,
         );
@@ -460,7 +480,7 @@ mod tests {
         let workspace = app.workspace.clone().expect("test workspace");
         workspace.enable_test_dispatch_intercept();
         let now = Instant::now();
-        assert!(handle_key(&mut app, press(M::RightSuper), now));
+        assert!(handle_key(&mut app, press(right_cmd_key()), now));
         // A plain key arrives while the dictate key is down: it marks
         // the chord AND still dispatches.
         assert!(!handle_key(
@@ -469,7 +489,7 @@ mod tests {
             now
         ));
         let release = KeyEvent::new_with_kind(
-            KeyCode::Modifier(M::RightSuper),
+            KeyCode::Modifier(right_cmd_key()),
             crossterm::event::KeyModifiers::NONE,
             KeyEventKind::Release,
         );
@@ -491,9 +511,9 @@ mod tests {
         let workspace = app.workspace.clone().expect("test workspace");
         workspace.enable_test_dispatch_intercept();
         let start = base();
-        assert!(handle_key(&mut app, press(M::RightSuper), start));
+        assert!(handle_key(&mut app, press(right_cmd_key()), start));
         let tap = KeyEvent::new_with_kind(
-            KeyCode::Modifier(M::RightSuper),
+            KeyCode::Modifier(right_cmd_key()),
             crossterm::event::KeyModifiers::NONE,
             KeyEventKind::Release,
         );
@@ -505,9 +525,9 @@ mod tests {
         );
 
         // The next press+release ends it.
-        assert!(handle_key(&mut app, press(M::RightSuper), start + Duration::from_millis(220)));
+        assert!(handle_key(&mut app, press(right_cmd_key()), start + Duration::from_millis(220)));
         let tap = KeyEvent::new_with_kind(
-            KeyCode::Modifier(M::RightSuper),
+            KeyCode::Modifier(right_cmd_key()),
             crossterm::event::KeyModifiers::NONE,
             KeyEventKind::Release,
         );
@@ -531,14 +551,14 @@ mod tests {
             Some(crate::app::dictate::DictateIndicator::recording(-50.0, 1));
 
         let start = base();
-        assert!(handle_key(&mut app, press(M::RightSuper), start));
+        assert!(handle_key(&mut app, press(right_cmd_key()), start));
         assert!(
             workspace.drain_test_dispatch_buffer().is_empty(),
             "a press while a take is live asks for nothing"
         );
 
         let release = KeyEvent::new_with_kind(
-            KeyCode::Modifier(M::RightSuper),
+            KeyCode::Modifier(right_cmd_key()),
             crossterm::event::KeyModifiers::NONE,
             KeyEventKind::Release,
         );
