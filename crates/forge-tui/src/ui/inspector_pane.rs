@@ -4259,6 +4259,16 @@ mod tests {
         let cargo_idx =
             texts.iter().position(|t| t.contains("cargo build")).expect("generic row stays");
         assert!(cargo_idx > processes_hdr, "the non-MCP process renders under PROCESSES");
+        // Row shape pinned to its full extent - pad + spinner glyph + space +
+        // headline + memory, the same exactness the MCP rows assert. The
+        // spinner frame is the one char the test does not control, so the
+        // anchor is ends_with + length rather than a bare contains.
+        let cargo_row = &texts[cargo_idx];
+        let tail = "cargo build \u{00B7} 20 MB";
+        assert!(
+            cargo_row.ends_with(tail) && cargo_row.chars().count() == tail.chars().count() + 3,
+            "generic row renders as glyph + headline + memory; got {cargo_row:?}"
+        );
         let processes_text: String = texts[processes_hdr..].iter().map(String::as_str).collect();
         assert!(
             !processes_text.contains("context7"),
