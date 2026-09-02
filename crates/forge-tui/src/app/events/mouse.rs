@@ -13,6 +13,15 @@ use ratatui::layout::Rect;
 
 pub(super) const MOUSE_SCROLL_LINES: usize = 3;
 
+/// Any of the picker overlays. While one is open the click path is
+/// inert - the modal already owns every key.
+fn modal_picker_open(app: &App) -> bool {
+    app.model_picker.is_some()
+        || app.spinner_picker.is_some()
+        || app.account_picker.is_some()
+        || app.dictate_picker.is_some()
+}
+
 /// OS mouse-pointer shapes forge requests via OSC 22. Only the three
 /// macOS-Ghostty-supported shapes are used (`text`/`pointer`/`default`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -99,6 +108,13 @@ struct MouseSelectionPoint {
 pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
     match mouse.kind {
         MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+            // A picker modal owns the screen while open (the same
+            // contract that swallows every key): clicks behind it would
+            // reach chrome the user cannot see, session switches above
+            // all.
+            if modal_picker_open(app) {
+                return;
+            }
             if handle_pane_click(app, mouse) {
                 return;
             }
@@ -2640,5 +2656,57 @@ mod tests {
                 "closing {closing} must land on the row drawn next to it",
             );
         }
+    }
+
+    /// A picker modal owns the screen while open. A click on a pane row
+    /// that would switch the active session must not reach the pane
+    /// router, or a commit in the picker would land on the clicked-to
+    /// session. Control first: the same click switches with no modal.
+    #[test]
+    fn a_picker_modal_swallows_the_session_switching_click() {
+        let mut app = App::test_default();
+        let prior = app.active_session_key.clone().expect("test_default has an active session");
+        let worker_key = forge_workspace::SessionKey::from_session_id("worker-uuid");
+        app.sessions.insert(worker_key.clone(), UiSession::new(worker_key.clone()));
+        app.pane_hit_targets.push(PaneHitTarget::WorkerRow {
+            project_key: forge_workspace::ProjectKey::new_for_test("p"),
+            label: "steward".to_owned(),
+            session_key: worker_key.clone(),
+            y: 0,
+            height: 1,
+            x_start: 0,
+            x_end: 20,
+        });
+        // The row-routing fallthrough only runs inside the inline pane
+        // rect; a test_default App has none painted.
+        app.layout.pane = Some(Rect { x: 0, y: 0, width: 32, height: 30 });
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: 5,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+
+        handle_mouse_event(&mut app, click);
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&worker_key),
+            "control: with no modal the row click switches",
+        );
+
+        app.switch_active_session(prior.clone());
+        app.try_active_bucket_mut()
+            .expect("active bucket")
+            .available_models =
+            vec![crate::agent::model::AvailableModel::new("a", "A")];
+        assert!(crate::app::model_picker::open(&mut app), "the picker opens on the active session");
+
+        handle_mouse_event(&mut app, click);
+        assert_eq!(
+            app.active_session_key,
+            Some(prior),
+            "the modal swallows the click: no session switch behind it",
+        );
+        assert!(app.model_picker.is_some(), "the picker stays open");
     }
 }
