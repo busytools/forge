@@ -168,7 +168,7 @@ impl HookRegistry {
 /// [`HooksBuilder::default_timeout_secs`] is unset. Raised from the
 /// CLI's per-matcher default of 30 so a hook response already written
 /// by forge survives a CLI stdin pump wedged on an inline
-/// `get_context_usage` computation (#827).
+/// `get_context_usage` computation.
 pub(crate) const DEFAULT_HOOK_TIMEOUT_SECS: u64 = 120;
 
 /// One entry describing a minted hook id.

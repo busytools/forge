@@ -336,7 +336,7 @@ impl ControlDispatchHandle {
         // The three traces below bracket the hook dispatch so a
         // CLI-side hook timeout (control_cancel_request) can always be
         // attributed: either forge answered late or the CLI never read
-        // the response. See the #827 incident.
+        // the response.
         tracing::debug!(
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
             session_id = %session_id,
