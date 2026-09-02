@@ -343,9 +343,8 @@ pub struct Workspace {
     test_extra_projects: Mutex<Vec<LoadedProject>>,
 }
 
-/// Pool entry wrapping the live `Arc<AgentHandle>`. Tests assert
-/// which account each spawn was bound to; that binding lives behind
-/// `cfg(test)` so production carries no dead field.
+/// Pool entry wrapping the live `Arc<AgentHandle>` and the account key
+/// the subprocess is bound to.
 pub(crate) struct PooledAgent {
     pub handle: Arc<AgentHandle>,
     /// The account the subprocess is bound to, resolved at spawn; the
