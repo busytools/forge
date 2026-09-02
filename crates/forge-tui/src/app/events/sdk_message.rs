@@ -3402,9 +3402,10 @@ mod inbound_message_surfacing_tests {
     }
 
     /// The mirror shape: the focused session is busy while the background
-    /// bucket is idle. Reading `app.status` here would take the continue
-    /// branch on an empty accumulator and the first usage frame would
-    /// restart the row's clock, jumping the elapsed backward.
+    /// bucket is idle, so the predicate must not read `app.status`. The
+    /// delivered continue branch on an idle bucket would leave the
+    /// accumulator unstamped; the fresh branch starts the bucket clock
+    /// and the row carries it.
     #[test]
     fn delivered_prompt_to_an_idle_background_bucket_starts_a_fresh_clock() {
         let mut app = App::test_default();
