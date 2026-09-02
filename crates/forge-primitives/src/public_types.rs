@@ -258,6 +258,20 @@ pub struct McpStatusResponse {
     pub mcp_servers: Vec<McpServerStatus>,
 }
 
+/// Response from `Client::mcp_set_servers()`. Wire shape: the CLI's
+/// `mcp_set_servers` result.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpSetServersResponse {
+    /// Server names the CLI newly connected.
+    pub added: Vec<String>,
+    /// Server names the CLI dropped.
+    pub removed: Vec<String>,
+    /// Per-server connect errors, keyed by server name.
+    #[serde(default)]
+    pub errors: std::collections::HashMap<String, String>,
+}
+
 /// One breakdown row in [`ContextUsageResponse::categories`]. Mirrors
 /// the CLI's `ContextUsageCategory`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

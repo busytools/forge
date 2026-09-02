@@ -79,6 +79,28 @@ impl Client {
         Ok(())
     }
 
+    /// Replace the CLI's dynamically managed MCP server set. Sdk servers
+    /// are entries of `{"type":"sdk","name":<n>}`; the CLI re-handshakes
+    /// everything it adds, so this is the one lever that revives an sdk
+    /// server whose boot-time handshake was abandoned (the CLI reports
+    /// such a server `connected` with zero tools and never re-runs the
+    /// handshake itself).
+    ///
+    /// # Errors
+    ///
+    /// See the outbound control error cases, plus [`Error::MessageParse`]
+    /// when the CLI payload doesn't match
+    /// [`McpSetServersResponse`](forge_primitives::McpSetServersResponse).
+    pub async fn mcp_set_servers(
+        &self,
+        servers: serde_json::Value,
+    ) -> Result<forge_primitives::McpSetServersResponse, Error> {
+        let raw =
+            self.send_control("mcp_set_servers", serde_json::json!({ "servers": servers })).await?;
+        serde_json::from_value(raw)
+            .map_err(|e| Error::message_parse(format!("mcp_set_servers: {e}")))
+    }
+
     /// Kill an in-flight sub-agent task by its `task_id` (from the
     /// `TaskStarted` system message).
     ///

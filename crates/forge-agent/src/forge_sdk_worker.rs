@@ -186,6 +186,8 @@ pub(crate) async fn spawn_session(
     let config_dir = bridge.config_dir();
     let display_name = bridge.display_name();
     let extra_mcp_servers = bridge.extra_mcp_servers();
+    let sdk_server_names: Vec<String> =
+        extra_mcp_servers.iter().map(|(name, _)| name.clone()).collect();
     let account_env = bridge.env();
     let options = build_options_with_callback(
         cwd,
@@ -259,7 +261,8 @@ pub(crate) async fn spawn_session(
     let reader_client = client.clone();
     let span = tracing::info_span!("sdk_reader", session_id = %reader_session_id);
     tokio::spawn(
-        reader_loop(events, reader_event_tx, reader_session_id, reader_client).instrument(span),
+        reader_loop(events, reader_event_tx, reader_session_id, reader_client, sdk_server_names)
+            .instrument(span),
     );
     Ok(())
 }
@@ -515,18 +518,36 @@ async fn reader_loop(
     event_tx: mpsc::UnboundedSender<AgentEvent>,
     spawn_session_id: String,
     client: Client,
+    sdk_server_names: Vec<String>,
 ) {
+    let mut heal_evaluated = false;
     while let Some(item) = events.recv().await {
         match item {
             Ok(msg) => {
                 let session_id_for_sdk_msg =
                     frame_session_id(msg.session_id(), &client.session_id(), &spawn_session_id);
                 log_failed_mcp_servers(&msg, &session_id_for_sdk_msg);
+                let fire = heal_due(&msg, &mut heal_evaluated, &sdk_server_names);
                 if event_tx
-                    .send(AgentEvent::SdkMessage { session_id: session_id_for_sdk_msg, msg })
+                    .send(AgentEvent::SdkMessage {
+                        session_id: session_id_for_sdk_msg.clone(),
+                        msg,
+                    })
                     .is_err()
                 {
                     return;
+                }
+                if fire {
+                    let client = client.clone();
+                    let names = sdk_server_names.clone();
+                    let session_id = session_id_for_sdk_msg;
+                    // Detached: the CLI answers mcp_set_servers only
+                    // after the re-handshake it triggers completes, so
+                    // awaiting inline would freeze this event pump for
+                    // the whole re-handshake.
+                    tokio::spawn(async move {
+                        readd_sdk_mcp_servers(&client, &names, &session_id).await;
+                    });
                 }
             }
             Err(err) => {
@@ -542,6 +563,144 @@ async fn reader_loop(
     tracing::info!(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
         "forge_sdk reader: events stream closed",
+    );
+}
+
+/// The `data` payload of a `system/init` frame, else `None`.
+fn init_data_of(msg: &forge_primitives::Message) -> Option<&serde_json::Value> {
+    let forge_primitives::Message::System { subtype, data, .. } = msg else {
+        return None;
+    };
+    (subtype == "init").then_some(data)
+}
+
+/// Whether the frame just received should fire the boot-tool heal. Pure
+/// so the frame gate, the latch, and the predicate are testable without
+/// a client. Only the boot `system/init` frame can fire it - the latch
+/// advances on the first init frame seen either way - so a mid-session
+/// init that lacks the tools (a user toggled the server off) is never
+/// "healed" back on. The heal's OUTCOME is not checked here: init is
+/// emitted per user message, so a "next frame" may never come or may
+/// land inside the heal window; the re-add response itself carries the
+/// outcome (see `readd_sdk_mcp_servers`).
+///
+/// Detection depends on the boot init frame reaching this loop:
+/// `Client::spawn` swallows any pre-initialize init into its cached
+/// init data, and today the CLI emits init only after a user message,
+/// so the boot frame always lands here - if that seam changes, the
+/// predicate silently never runs.
+fn heal_due(
+    msg: &forge_primitives::Message,
+    boot_evaluated: &mut bool,
+    server_names: &[String],
+) -> bool {
+    let Some(data) = init_data_of(msg) else { return false };
+    if *boot_evaluated {
+        return false;
+    }
+    *boot_evaluated = true;
+    sdk_servers_missing_tools(data, server_names)
+}
+
+/// True when any registered sdk MCP server contributed no tools to the
+/// session's init frame. The CLI serves an sdk server's handshake over
+/// the control channel with a bounded request budget; when boot stalls
+/// outlive it, the handshake is abandoned and the CLI then reports the
+/// server `connected` with zero tools and never re-runs the handshake
+/// itself.
+fn sdk_servers_missing_tools(init_data: &serde_json::Value, server_names: &[String]) -> bool {
+    let tools = init_data.get("tools").and_then(serde_json::Value::as_array);
+    server_names.iter().any(|name| {
+        let prefix = format!("mcp__{name}__");
+        !tools
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .any(|tool| tool.starts_with(&prefix))
+    })
+}
+
+/// The CLI answers `mcp_set_servers` only after the re-handshake it
+/// triggers completes, so the wait is bounded past the CLI's own ~30s
+/// request budget.
+const SDK_MCP_READD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Force the CLI to re-handshake every registered sdk MCP server by
+/// removing them from its dynamic set and adding them back. The CLI
+/// sends the re-add response only after the re-handshake completes, so
+/// the response is the outcome: `errors` empty plus a non-empty `added`
+/// means the tools are registered again. Every outcome logs here - a
+/// "next init frame" is no verification signal, since init is emitted
+/// per user message.
+async fn readd_sdk_mcp_servers(client: &Client, server_names: &[String], session_id: &str) {
+    if let Err(err) =
+        tokio::time::timeout(SDK_MCP_READD_TIMEOUT, client.mcp_set_servers(serde_json::json!({})))
+            .await
+    {
+        // The removal never landed, so the CLI-side dynamic set is
+        // untouched and the boot-time registration stands.
+        tracing::warn!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            session_id = %session_id,
+            error = %err,
+            "sdk mcp tool heal: removal did not answer; boot-time registration kept"
+        );
+        return;
+    }
+    let servers: serde_json::Map<String, serde_json::Value> = server_names
+        .iter()
+        .map(|name| (name.clone(), serde_json::json!({ "type": "sdk", "name": name })))
+        .collect();
+    let response = match tokio::time::timeout(
+        SDK_MCP_READD_TIMEOUT,
+        client.mcp_set_servers(serde_json::json!(servers)),
+    )
+    .await
+    {
+        Ok(Ok(response)) => response,
+        Ok(Err(err)) => {
+            tracing::error!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                session_id = %session_id,
+                error = %err,
+                "sdk mcp tool heal: re-add failed after a landed removal; \
+                 the sdk servers are deregistered - restart the session"
+            );
+            return;
+        }
+        Err(_) => {
+            tracing::error!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                session_id = %session_id,
+                "sdk mcp tool heal: re-add timed out after a landed removal; \
+                 the sdk servers are deregistered - restart the session"
+            );
+            return;
+        }
+    };
+    for (name, message) in &response.errors {
+        tracing::warn!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            session_id = %session_id,
+            server = %name,
+            error = %message,
+            "sdk mcp tool heal: server failed to re-handshake on re-add"
+        );
+    }
+    if response.added.is_empty() {
+        tracing::warn!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            session_id = %session_id,
+            removed = ?response.removed,
+            "sdk mcp tool heal: re-add reported nothing added; tools not restored"
+        );
+        return;
+    }
+    tracing::info!(
+        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+        session_id = %session_id,
+        added = ?response.added,
+        "sdk mcp tool heal: tools re-registered, outcome verified from the re-add response"
     );
 }
 
@@ -1464,6 +1623,153 @@ mod tests {
         let log = capture_logs(|| log_failed_mcp_servers(&init_frame_with_a_failed_server(), "s1"));
         assert!(log.contains("jetbrains"), "the record names the failed server: {log}");
         assert!(log.contains("s1"), "the record carries the resolved session id: {log}");
+    }
+
+    /// An init frame whose `tools` array carries the sdk server's tools
+    /// under their `mcp__<name>__` prefixes - the healthy-boot shape.
+    fn init_frame_with_forge_tools() -> serde_json::Value {
+        serde_json::json!({
+            "tools": [
+                "Bash", "Read", "Edit",
+                "mcp__forge__workers__tell",
+                "mcp__forge__workers__ask",
+            ],
+        })
+    }
+
+    #[test]
+    fn sdk_servers_missing_tools_is_true_when_no_tool_carries_the_prefix() {
+        let no_forge = serde_json::json!({ "tools": ["Bash", "Read", "Edit"] });
+        assert!(
+            super::sdk_servers_missing_tools(&no_forge, &["forge".to_owned()]),
+            "an init frame without mcp__forge__* tools means the sdk handshake was abandoned"
+        );
+    }
+
+    #[test]
+    fn sdk_servers_missing_tools_is_false_when_any_tool_carries_the_prefix() {
+        assert!(
+            !super::sdk_servers_missing_tools(
+                &init_frame_with_forge_tools(),
+                &["forge".to_owned()]
+            ),
+            "a healthy boot surfaces forge tools and needs no heal"
+        );
+    }
+
+    #[test]
+    fn an_empty_server_list_is_never_missing_tools() {
+        let no_forge = serde_json::json!({ "tools": ["Bash", "Read"] });
+        assert!(
+            !super::sdk_servers_missing_tools(&no_forge, &[]),
+            "a spawn with no sdk servers registered must never trigger the heal"
+        );
+    }
+
+    #[test]
+    fn sdk_servers_missing_tools_is_true_when_the_tools_array_is_absent() {
+        let empty = serde_json::json!({});
+        assert!(
+            super::sdk_servers_missing_tools(&empty, &["forge".to_owned()]),
+            "a missing tools array hides every sdk server's tools"
+        );
+    }
+
+    /// Frames the heal gate must ignore, decoded from real wire shapes.
+    /// Measured on the committed baselines: `hook_started` arrives BEFORE
+    /// init, so a gate keyed on the wrong subtype would fire the heal
+    /// mid-boot on healthy sessions.
+    fn frame_gate_fixtures() -> (forge_primitives::Message, forge_primitives::Message) {
+        let hook_started: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "hook_started",
+            "hook_id": "h-1",
+            "hook_name": "SessionStart:startup",
+            "hook_event": "SessionStart",
+        }))
+        .expect("hook_started frame decodes into Message");
+        let assistant: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "session_id": "s-1",
+            "message": {"id": "m-1", "role": "assistant", "model": "claude-opus-5",
+                        "content": [{"type": "text", "text": "hi"}]},
+        }))
+        .expect("assistant frame decodes into Message");
+        (hook_started, assistant)
+    }
+
+    #[test]
+    fn the_heal_gate_fires_only_on_init_frames() {
+        let names = ["forge".to_owned()];
+        let init: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "init",
+            "session_id": "s-1",
+            "tools": ["Bash"],
+        }))
+        .expect("init frame decodes into Message");
+        let (hook_started, assistant) = frame_gate_fixtures();
+
+        let mut evaluated = false;
+        assert!(super::heal_due(&init, &mut evaluated, &names));
+
+        let mut untouched = false;
+        assert!(
+            !super::heal_due(&hook_started, &mut untouched, &names),
+            "a hook_started frame is not an init frame"
+        );
+        assert!(!untouched, "a non-init frame must not advance the latch");
+        assert!(
+            !super::heal_due(&assistant, &mut evaluated, &names),
+            "an assistant frame is not an init frame"
+        );
+    }
+
+    #[test]
+    fn the_heal_fires_only_on_a_missing_boot_frame() {
+        let names = ["forge".to_owned()];
+        let missing = || {
+            let msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+                "type": "system",
+                "subtype": "init",
+                "session_id": "s-1",
+                "tools": ["Bash"],
+            }))
+            .expect("init frame decodes into Message");
+            msg
+        };
+        let healed = || {
+            let msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+                "type": "system",
+                "subtype": "init",
+                "session_id": "s-1",
+                "tools": ["Bash", "mcp__forge__workers__tell"],
+            }))
+            .expect("init frame decodes into Message");
+            msg
+        };
+
+        // Healthy boot: no fire, and a later init never re-evaluates.
+        let mut evaluated = false;
+        assert!(!super::heal_due(&healed(), &mut evaluated, &names));
+        assert!(evaluated);
+        assert!(
+            !super::heal_due(&missing(), &mut evaluated, &names),
+            "a mid-session init missing the tools must not fire the heal"
+        );
+
+        // Missing boot fires exactly once; later inits never re-fire.
+        let mut evaluated = false;
+        assert!(super::heal_due(&missing(), &mut evaluated, &names));
+        assert!(evaluated);
+        assert!(
+            !super::heal_due(&missing(), &mut evaluated, &names),
+            "the boot frame is evaluated once, whatever its verdict"
+        );
+        assert!(
+            !super::heal_due(&healed(), &mut evaluated, &names),
+            "a later init never fires the heal"
+        );
     }
 
     #[test]
