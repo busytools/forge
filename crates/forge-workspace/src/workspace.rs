@@ -2711,10 +2711,35 @@ impl Workspace {
             | Command::ResumeSession { launch_settings, .. } = &mut cmd
             {
                 let account_key = self.pool.lock().get(&key).map(|p| p.account.clone());
-                if let Some(account_key) = account_key
-                    && let Some(mode) = self.accounts.lock().permission_mode(&account_key)
-                {
-                    spawn::stamp_account_permission_mode(launch_settings, mode);
+                match account_key {
+                    None => tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        key = %key.as_str(),
+                        "permission_mode stamp skipped: respawn routed but no pool entry \
+                         (release_session teardown window)",
+                    ),
+                    Some(account_key) => {
+                        let accounts = self.accounts.lock();
+                        if accounts.provider(&account_key).is_none() {
+                            tracing::warn!(
+                                target: "forge_workspace::workspace",
+                                key = %key.as_str(),
+                                account = %account_key.0,
+                                "permission_mode stamp skipped: pooled account is not in the \
+                                 account map",
+                            );
+                        } else if let Some(mode) = accounts.permission_mode(&account_key) {
+                            spawn::stamp_account_permission_mode(launch_settings, mode);
+                        } else {
+                            tracing::debug!(
+                                target: "forge_workspace::workspace",
+                                key = %key.as_str(),
+                                account = %account_key.0,
+                                "respawn keeps the launcher default: account sets no \
+                                 permission_mode",
+                            );
+                        }
+                    }
                 }
             }
             let senders = self.command_senders.lock();
