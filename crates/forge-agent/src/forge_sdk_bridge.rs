@@ -339,14 +339,29 @@ impl ForgeSdkBridge {
         })
     }
 
+    /// `send_control` parks until the CLI's `control_response`; this
+    /// bounds the wait at the CLI's own hook budget so a silent CLI
+    /// surfaces as a refusal instead of a chip stuck on a mode that
+    /// never took.
+    const SET_MODE_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
     pub(crate) fn set_mode(&self, session_id: String, mode: PermissionMode) -> anyhow::Result<()> {
         if !self.check_session_id(&session_id, "set_mode") {
             return Ok(());
         }
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("set_mode", move |client| async move {
-            if let Err(e) = client.set_permission_mode(mode).await {
-                let message = format!("{e}");
+            let outcome = tokio::time::timeout(
+                Self::SET_MODE_RESPONSE_TIMEOUT,
+                client.set_permission_mode(mode),
+            )
+            .await;
+            let failure = match outcome {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => Some(format!("{e}")),
+                Err(_) => Some("no response from the CLI".to_owned()),
+            };
+            if let Some(message) = failure {
                 if event_tx
                     .send(AgentEvent::SetModeFailed { session_id, mode, message: message.clone() })
                     .is_err()
