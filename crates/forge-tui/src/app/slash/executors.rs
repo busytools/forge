@@ -358,26 +358,29 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
 
-    if require_active_session(
+    let Some(sid) = require_active_session(
         app,
         "Cannot switch model: not connected yet.",
         "Cannot switch model: no active session.",
-    )
-    .is_none()
-    {
+    ) else {
         return true;
-    }
+    };
 
-    switch_model(app, model_name);
+    switch_model(app, forge_workspace::SessionKey::from_session_id(sid.to_string()), model_name);
     true
 }
 
-/// Switch the active session to `model_name`: optimistic UI apply plus
-/// the `SetModel` dispatch. Shared by the `/model <id>` submit path and
-/// the `/model` picker's Enter. A no-op with a system notice when the
+/// Switch the session `session_key` to `model_name`: optimistic UI apply
+/// plus the `SetModel` dispatch. Shared by the `/model <id>` submit path
+/// and the `/model` picker's Enter; both validate the session before
+/// calling and hand the key down. A no-op with a system notice when the
 /// session advertises models and `model_name` is not one of them; the
 /// picker's rows come from that same list, so it always passes.
-pub(crate) fn switch_model(app: &mut App, model_name: &str) {
+pub(crate) fn switch_model(
+    app: &mut App,
+    session_key: forge_workspace::SessionKey,
+    model_name: &str,
+) {
     if !app.available_models().is_empty()
         && !app.available_models().iter().any(|candidate| candidate.id == model_name)
     {
@@ -394,10 +397,6 @@ pub(crate) fn switch_model(app: &mut App, model_name: &str) {
         key,
         model: model_name.to_owned(),
     }) {
-        let session_key = app
-            .active_session_key
-            .clone()
-            .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY));
         let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
             key: session_key,
             message: format!("Failed to run /model: {e}"),

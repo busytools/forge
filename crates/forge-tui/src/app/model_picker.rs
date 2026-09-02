@@ -116,7 +116,8 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 );
                 return true;
             }
-            crate::app::slash::switch_model(app, &id);
+            let Some(session_key) = stamped_key else { return true };
+            crate::app::slash::switch_model(app, session_key, &id);
         }
         Action::Close => close(app),
     }
