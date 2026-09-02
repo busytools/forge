@@ -100,9 +100,49 @@ fn tool_title(name: &str, input: &Value) -> String {
             let query = s("query");
             if query.is_empty() { name.to_owned() } else { format!("WebSearch {query}") }
         }
-        "Read" | "Write" | "Edit" => {
+        "Read" | "Write" | "Edit" | "Delete" => {
             let file_path = s("file_path");
             if file_path.is_empty() { name.to_owned() } else { format!("{name} {file_path}") }
+        }
+        "Move" => {
+            let from = s("from_path");
+            let to = s("to_path");
+            match (from.is_empty(), to.is_empty()) {
+                (false, false) => format!("Move {from} -> {to}"),
+                (false, true) => format!("Move {from}"),
+                (true, false) => format!("Move {to}"),
+                (true, true) => name.to_owned(),
+            }
+        }
+        "SendMessage" => {
+            let to = match s("to") {
+                "" => s("recipient"),
+                to => to,
+            };
+            let body = match s("summary") {
+                "" => s("message"),
+                summary => summary,
+            };
+            match (to.is_empty(), body.is_empty()) {
+                (false, false) => format!("SendMessage to {to}: {body}"),
+                (false, true) => format!("SendMessage to {to}"),
+                (true, false) => format!("SendMessage {body}"),
+                (true, true) => name.to_owned(),
+            }
+        }
+        "LSP" => {
+            let operation = s("operation");
+            let file_path = s("filePath");
+            match (operation.is_empty(), file_path.is_empty()) {
+                (false, false) => format!("LSP {operation} {file_path}"),
+                (false, true) => format!("LSP {operation}"),
+                (true, false) => format!("LSP {file_path}"),
+                (true, true) => name.to_owned(),
+            }
+        }
+        "PushNotification" => {
+            let message = s("message");
+            if message.is_empty() { name.to_owned() } else { format!("PushNotification {message}") }
         }
         "ReadMcpResource" => {
             let uri = s("uri");
@@ -1031,6 +1071,105 @@ mod tests {
             !empty.title.ends_with(' '),
             "empty-input title must not end with whitespace; got {:?}",
             empty.title,
+        );
+    }
+
+    /// SendMessage's live wire shape (59 occurrences in Ved's own
+    /// transcripts, all carrying the same six fields): `to` and
+    /// `recipient` duplicate each other, `summary` is the bounded
+    /// human-readable line and `message` the full text - the same
+    /// description-over-command preference Bash's title makes.
+    #[test]
+    fn create_tool_call_titles_send_message_carries_recipient_and_summary() {
+        let full = create_tool_call(
+            "tu_sm1",
+            "SendMessage",
+            &json!({
+                "to": "aa32ac1c4e464f26d",
+                "recipient": "aa32ac1c4e464f26d",
+                "summary": "Add record-ordering check to round 7 A/B",
+                "message": "One addition to your brief, and it is genuinely not implied by what I already sent.",
+                "content": "One addition to your brief…",
+                "type": "message",
+            }),
+            None,
+        );
+        assert_eq!(
+            full.title,
+            "SendMessage to aa32ac1c4e464f26d: Add record-ordering check to round 7 A/B"
+        );
+
+        let recipient_only_key = create_tool_call(
+            "tu_sm2",
+            "SendMessage",
+            &json!({"recipient": "planner", "summary": "s"}),
+            None,
+        );
+        assert_eq!(recipient_only_key.title, "SendMessage to planner: s");
+
+        let no_summary = create_tool_call(
+            "tu_sm3",
+            "SendMessage",
+            &json!({"to": "planner", "message": "the full body line"}),
+            None,
+        );
+        assert_eq!(no_summary.title, "SendMessage to planner: the full body line");
+
+        let empty = create_tool_call("tu_sm4", "SendMessage", &json!({}), None);
+        assert_eq!(empty.title, "SendMessage");
+    }
+
+    /// Delete and Move arms per issue #848. UNVERIFIED wire shapes:
+    /// zero live traffic, no reference capture, and no tool definition
+    /// in the CLI bundle - the field names follow the issue's spec, and
+    /// a mismatch renders the bare name exactly as the missing arm did.
+    #[test]
+    fn create_tool_call_titles_delete_and_move_carry_paths() {
+        let delete = create_tool_call("tu_d1", "Delete", &json!({"file_path": "/x/f.rs"}), None);
+        assert_eq!(delete.title, "Delete /x/f.rs");
+        assert_eq!(create_tool_call("tu_d2", "Delete", &json!({}), None).title, "Delete");
+
+        let move_both = create_tool_call(
+            "tu_m1",
+            "Move",
+            &json!({"from_path": "/a/old.rs", "to_path": "/b/new.rs"}),
+            None,
+        );
+        assert_eq!(move_both.title, "Move /a/old.rs -> /b/new.rs");
+        assert_eq!(create_tool_call("tu_m2", "Move", &json!({}), None).title, "Move",);
+    }
+
+    /// LSP and PushNotification shapes from the reference captures
+    /// (lsp.jsonl: operation + filePath + line/character;
+    /// push_notification.jsonl: message + status). The title carries
+    /// the discriminative fields and drops the positional ones.
+    #[test]
+    fn create_tool_call_titles_lsp_and_push_notification_carry_payload() {
+        let lsp = create_tool_call(
+            "tu_l1",
+            "LSP",
+            &json!({
+                "operation": "documentSymbol",
+                "filePath": "crates/forge-primitives/src/messages.rs",
+                "line": 1,
+                "character": 1,
+            }),
+            None,
+        );
+        assert_eq!(lsp.title, "LSP documentSymbol crates/forge-primitives/src/messages.rs");
+
+        let push = create_tool_call(
+            "tu_p1",
+            "PushNotification",
+            &json!({"message": "reference capture: forge wire shape probe", "status": "proactive"}),
+            None,
+        );
+        assert_eq!(push.title, "PushNotification reference capture: forge wire shape probe");
+
+        assert_eq!(create_tool_call("tu_l2", "LSP", &json!({}), None).title, "LSP");
+        assert_eq!(
+            create_tool_call("tu_p2", "PushNotification", &json!({}), None).title,
+            "PushNotification",
         );
     }
 
