@@ -703,23 +703,16 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
         .map(|m| ModeInfo { id: m.id.clone(), name: m.name.clone(), description: None })
         .collect();
 
-    if app.has_active_agent()
-        && app.session_id().is_some()
-        && let Some(parsed_mode) = forge_primitives::permission::PermissionMode::from_wire(&next_id)
-        && let Err(e) =
-            app.dispatch_command(|key| forge_workspace::Command::SetMode { key, mode: parsed_mode })
-    {
-        tracing::error!(
-            target: crate::logging::targets::APP_INPUT,
-            event_name = "mode_change_request_failed",
-            message = "failed to request mode change",
-            outcome = "failure",
-            error_message = %e,
-        );
-    }
+    // The apply below is optimistic, so park the pre-apply state for
+    // the SetModeFailed rollback, same as the /mode submit path.
+    let rollback = crate::app::session::ModeRollback {
+        mode_state: app.mode().cloned(),
+        turn_mode: app.with_turn_state(|ts| ts.mode),
+        supported_mode_ids: app.with_turn_state(|ts| ts.supported_mode_ids.clone()),
+    };
 
     app.set_mode(Some(ModeState {
-        current_mode_id: next_id,
+        current_mode_id: next_id.clone(),
         current_mode_name: next_name,
         available_modes: modes,
     }));
@@ -729,6 +722,33 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
     // next async update, so the mode chip (and any UI surface that
     // reads `app.mode()`) lags behind the keypress.
     app.needs_redraw = true;
+
+    if app.has_active_agent()
+        && app.session_id().is_some()
+        && let Some(parsed_mode) = forge_primitives::permission::PermissionMode::from_wire(&next_id)
+    {
+        match app
+            .dispatch_command(|key| forge_workspace::Command::SetMode { key, mode: parsed_mode })
+        {
+            Ok(()) => {
+                if app.pending_mode_rollback().is_none() {
+                    app.set_pending_mode_rollback(Some(rollback));
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    target: crate::logging::targets::APP_INPUT,
+                    event_name = "mode_change_request_failed",
+                    message = "failed to request mode change",
+                    outcome = "failure",
+                    error_message = %e,
+                );
+                if app.rollback_pending_mode() {
+                    app.invalidate_layout(InvalidationLevel::Global);
+                }
+            }
+        }
+    }
     true
 }
 
