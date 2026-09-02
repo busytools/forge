@@ -28,7 +28,6 @@ pub(crate) const METER_WIDTH: usize = 26;
 const ATTACK: f32 = 0.6;
 const RELEASE: f32 = 0.25;
 const REFERENCE_DECAY_DB: f32 = 0.7;
-const GATE_DB: f32 = -46.0;
 const MIN_SPAN_DB: f32 = 6.0;
 const GAMMA: f32 = 0.9;
 /// Floor the raw feed stands in at for structural silence, so the
@@ -94,14 +93,15 @@ fn reference_step(env_db: f32, reference_db: f32) -> f32 {
 }
 
 /// Gate, scale against the reference span, then soften with the mock's
-/// gamma. Anything at or under the gate is structurally zero - the
-/// same condition `Outcome::NoAudio` reports.
-fn normalize(env_db: f32, reference_db: f32) -> f32 {
-    if !env_db.is_finite() || env_db <= GATE_DB {
+/// gamma. Anything at or under the take's own silence floor is
+/// structurally zero - the same condition `Outcome::NoAudio` reports,
+/// so the meter and the verdict agree by construction.
+fn normalize(env_db: f32, reference_db: f32, floor_db: f32) -> f32 {
+    if !env_db.is_finite() || env_db <= floor_db {
         return 0.0;
     }
-    let span = (reference_db - GATE_DB).max(MIN_SPAN_DB);
-    (((env_db - GATE_DB) / span).clamp(0.0, 1.0)).powf(GAMMA)
+    let span = (reference_db - floor_db).max(MIN_SPAN_DB);
+    (((env_db - floor_db) / span).clamp(0.0, 1.0)).powf(GAMMA)
 }
 
 /// Map a normalized fraction onto the ramp. The floor glyph is zero: a
@@ -120,6 +120,7 @@ pub(crate) fn level_cell(frac: f32) -> char {
 /// envelope ballistics, autosens reference, noise gate - lives here.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DictateMeter {
+    floor_db: f32,
     env_db: f32,
     reference_db: f32,
     /// Newest-last sliding window of normalized fractions.
@@ -127,8 +128,9 @@ pub(crate) struct DictateMeter {
 }
 
 impl DictateMeter {
-    fn new() -> Self {
+    fn new(floor_db: f32) -> Self {
         Self {
+            floor_db,
             env_db: START_ENV_DB,
             reference_db: START_REFERENCE_DB,
             levels: vec![0.0; METER_WIDTH],
@@ -140,7 +142,7 @@ impl DictateMeter {
         let raw = peak_db.max(SILENCE_DB);
         self.env_db = envelope_step(self.env_db, raw);
         self.reference_db = reference_step(self.env_db, self.reference_db);
-        let frac = normalize(self.env_db, self.reference_db);
+        let frac = normalize(self.env_db, self.reference_db, self.floor_db);
         if self.levels.len() >= METER_WIDTH {
             self.levels.remove(0);
         }
@@ -195,7 +197,7 @@ impl DictateIndicator {
         Self {
             floor_db,
             phase: DictatePhase::Recording,
-            meter: DictateMeter::new(),
+            meter: DictateMeter::new(floor_db),
             started: now,
             recording_duration: None,
             transcribing_since: None,
@@ -552,10 +554,14 @@ mod tests {
 
     #[test]
     fn the_noise_gate_holds_everything_below_the_floor() {
-        assert!(normalize(-52.0, -30.0).abs() < f32::EPSILON, "below the gate is silence");
-        assert!(normalize(GATE_DB, -30.0).abs() < f32::EPSILON, "at the gate is silence");
-        assert!(normalize(f32::NEG_INFINITY, -30.0).abs() < f32::EPSILON, "no signal is silence");
-        assert!(normalize(-40.0, -30.0) > 0.0, "above the gate has signal");
+        let floor = -46.0;
+        assert!(normalize(-52.0, -30.0, floor).abs() < f32::EPSILON, "below the gate is silence");
+        assert!(normalize(floor, -30.0, floor).abs() < f32::EPSILON, "at the gate is silence");
+        assert!(
+            normalize(f32::NEG_INFINITY, -30.0, floor).abs() < f32::EPSILON,
+            "no signal is silence"
+        );
+        assert!(normalize(-40.0, -30.0, floor) > 0.0, "above the gate has signal");
     }
 
     #[test]
@@ -595,7 +601,7 @@ mod tests {
 
     #[test]
     fn the_rolling_reference_scales_a_softer_voice_below_the_burst() {
-        let mut meter = DictateMeter::new();
+        let mut meter = DictateMeter::new(-50.0);
         for _ in 0..40 {
             meter.push(-18.0);
         }
@@ -613,7 +619,7 @@ mod tests {
 
     #[test]
     fn the_meter_holds_a_fixed_window_and_drops_the_oldest_frame() {
-        let mut meter = DictateMeter::new();
+        let mut meter = DictateMeter::new(-50.0);
         #[allow(clippy::cast_precision_loss)]
         for i in 0..(METER_WIDTH + 4) {
             meter.push(-50.0 + i as f32);
