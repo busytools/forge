@@ -55,7 +55,7 @@ pub struct McpServerSection {
 }
 
 /// Collect the MCP SERVERS rows for the active session, ordered
-/// connected first (by scope then name), then pending, then failed.
+/// connected first by name, then pending, then failed.
 pub fn collect_mcp_servers(app: &App) -> McpServerSection {
     let Some(session) = app.active_session() else {
         return McpServerSection { rows: Vec::new(), claimed_pids: HashSet::new() };
@@ -469,24 +469,22 @@ mod tests {
     }
 
     #[test]
-    fn connected_first_by_scope_then_name_then_pending_then_failed() {
-        // Input order is the CLI's; the section's order is the design's:
-        // connected (scope, then name), pending, failed.
+    fn connected_first_by_name_then_pending_then_failed() {
+        // Input order is the CLI's; the section's order is connected by
+        // name, pending, failed.
         let mut failed = server("aaa", McpServerConnectionStatus::Failed);
         failed.scope = Some("user".to_owned());
         let mut pending = server("bbb", McpServerConnectionStatus::Pending);
         pending.scope = Some("user".to_owned());
-        let mut zebra = connected_stdio("zebra", "npx", &["@z"], 1);
-        zebra.scope = Some("user".to_owned());
-        let mut alpha = connected_stdio("alpha", "npx", &["@a"], 1);
-        alpha.scope = Some("project".to_owned());
+        let zebra = connected_stdio("zebra", "npx", &["@z"], 1);
+        let alpha = connected_stdio("alpha", "npx", &["@a"], 1);
         let app = app_with(vec![failed, pending, zebra, alpha], None);
 
         let section = collect_mcp_servers(&app);
         assert_eq!(
             section.rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
             vec!["alpha", "zebra", "bbb", "aaa"],
-            "connected (scope, name) then pending then failed; got {section:?}",
+            "connected by name, then pending, then failed; got {section:?}",
         );
     }
 
