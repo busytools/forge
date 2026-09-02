@@ -50,6 +50,11 @@ fn apply_connected_presentation(
     let session_id_for_log = session_id.to_string();
     let history_message_count = history_messages.len();
     let available_model_count = available_models.len();
+    // Log the event's own values: the app-level accessors resolve the
+    // user's FOCUSED session, which on a background connect is some
+    // unrelated tab.
+    let cwd_for_log = cwd.clone();
+    let model_for_log = current_model.clone();
     if was_active {
         // Active path: the user is watching this session. Run the
         // full active-session apply chain so welcome / file-index /
@@ -123,8 +128,8 @@ fn apply_connected_presentation(
         message = "session connected and applied",
         outcome = "success",
         session_id = %session_id_for_log,
-        cwd = %app.cwd_raw(),
-        current_model = ?app.current_model().map(|model| model.resolved_id.clone()),
+        cwd = %cwd_for_log,
+        current_model = ?Some(model_for_log.resolved_id.clone()),
         history_message_count,
         available_model_count,
         was_active,
@@ -1133,5 +1138,79 @@ mod teardown_clears_background_registry_tests {
         let bucket = app.sessions.get(&key).expect("bucket");
         assert!(!bucket.has_live_background_work(), "auth-required clears background_tasks");
         assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared too");
+    }
+}
+
+#[cfg(test)]
+mod connected_log_tests {
+    use super::apply_connected_presentation;
+    use crate::agent::model;
+    use crate::app::{App, session::UiSession};
+    use forge_workspace::SessionKey;
+
+    /// The session_connected log must carry the CONNECTING session's cwd
+    /// and model, not whatever session the user has focused. A background
+    /// connect (every worker) used to print the focused session's cwd -
+    /// which made the worker-boot log name the wrong project entirely.
+    #[test]
+    fn background_connect_logs_the_event_cwd_not_the_focused_cwd() {
+        let mut app = App::test_default();
+        let focused = SessionKey::from_session_id("focused-uuid");
+        let mut focused_bucket = UiSession::new(focused.clone());
+        focused_bucket.cwd_raw = "/Users/vedhavyas/Projects/granite-backend".to_owned();
+        app.sessions.insert(focused.clone(), focused_bucket);
+        app.active_session_key = Some(focused);
+
+        let worker = SessionKey::from_session_id("worker-uuid");
+        let log = capture_logs(|| {
+            apply_connected_presentation(
+                &mut app,
+                &worker,
+                model::SessionId::new("worker-uuid"),
+                "/Users/vedhavyas/Projects/companies".to_owned(),
+                model::CurrentModel::new("claude-opus-5", "opus", "Opus"),
+                Vec::new(),
+                None,
+                &[],
+                false,
+            );
+        });
+        assert!(
+            log.contains("cwd=/Users/vedhavyas/Projects/companies"),
+            "the log must carry the connecting session's cwd; got: {log}"
+        );
+        assert!(
+            !log.contains("granite-backend"),
+            "the focused session's cwd must not leak into the log; got: {log}"
+        );
+        assert!(
+            log.contains("claude-opus-5"),
+            "the log must carry the connecting session's model; got: {log}"
+        );
+    }
+
+    /// Log capture mirroring `forge_agent`'s test helper - the tracing
+    /// line is the artifact under test.
+    fn capture_logs(f: impl FnOnce()) -> String {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct Writer(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Writer {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("capture lock").extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let capture: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let writer = Writer(Arc::clone(&capture));
+        let subscriber =
+            tracing_subscriber::fmt().with_ansi(false).with_writer(move || writer.clone()).finish();
+        tracing::subscriber::with_default(subscriber, f);
+        String::from_utf8_lossy(&capture.lock().expect("capture lock")).into_owned()
     }
 }
