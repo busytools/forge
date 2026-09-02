@@ -561,6 +561,14 @@ pub struct UsageState {
     pub last_error: Option<String>,
 }
 
+/// Which refresh class is queued behind an in-flight
+/// `get_context_usage` request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshPending {
+    Auto,
+    Forced,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SessionUsageState {
     pub last_compaction_trigger: Option<model::CompactionTrigger>,
@@ -578,7 +586,13 @@ pub struct SessionUsageState {
     /// returns a snapshot for this session.
     pub context_max_tokens: Option<u64>,
     pub context_usage_in_flight: bool,
-    pub context_usage_refresh_pending: bool,
+    /// Class of the refresh queued behind the in-flight one. A queued
+    /// forced refresh replays past the gates when the response lands.
+    pub context_usage_refresh_pending: Option<RefreshPending>,
+    /// When the last `get_context_usage` was actually sent for this
+    /// session. Bounds the auto refresh to one send per
+    /// `CONTEXT_USAGE_MIN_SEND_INTERVAL`.
+    pub context_usage_last_sent: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

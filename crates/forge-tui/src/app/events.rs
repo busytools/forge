@@ -356,7 +356,9 @@ pub(super) fn apply_session_status_update(app: &mut App, status: model::SessionS
         clear_compaction_state(app, true);
     }
     if was_compacting && matches!(status, model::SessionStatus::Idle) {
-        crate::app::session_runtime::request_context_usage_refresh(app);
+        // The chip is guaranteed stale after a compaction, so this
+        // refresh bypasses the auto gates.
+        crate::app::session_runtime::request_context_usage_refresh_forced(app);
     }
 }
 
