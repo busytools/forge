@@ -276,6 +276,17 @@ impl DictateBorder {
         }
     }
 
+    /// The colour the border shows right now: the eased rgb while a
+    /// take is live, the analytic afterglow colour while settling, and
+    /// the composer's orange once expired - what a new take carries
+    /// over, so a quick re-dictate never snaps.
+    pub(crate) fn current_colour(&self, now: Instant) -> [f32; 3] {
+        match self {
+            Self::Live { .. } => self.rgb(),
+            Self::Afterglow { .. } => afterglow_colour(self, now).unwrap_or(ORANGE),
+        }
+    }
+
     /// Whether the border still owes frames: a live take always, an
     /// afterglow only until its colour is analytically home.
     pub(crate) fn animating(&self, now: Instant) -> bool {
@@ -319,8 +330,10 @@ fn afterglow_colour(border: &DictateBorder, now: Instant) -> Option<[f32; 3]> {
     let (from, to, step_ms) = if *beat && elapsed_ms < beat_ms {
         (*rgb, GREEN, elapsed_ms)
     } else {
-        let tail_ms = if *beat { elapsed_ms - beat_ms } else { elapsed_ms };
-        (if *beat { GREEN } else { *rgb }, ORANGE, tail_ms)
+        // The tail starts from wherever the beat phase actually ended,
+        // not from full green, or the boundary pops.
+        let beat_end = if *beat { eased(*rgb, GREEN, beat_ms) } else { *rgb };
+        (beat_end, ORANGE, elapsed_ms - if *beat { beat_ms } else { 0.0 })
     };
     let colour = eased(from, to, step_ms);
     (colour_distance(colour, ORANGE) >= 0.5).then_some(colour)
@@ -931,6 +944,67 @@ mod tests {
         assert!(
             app.sessions.get(&other).expect("bucket").dictate.is_none(),
             "and the resolved take is gone from the bucket"
+        );
+    }
+
+    #[test]
+    fn a_new_take_carries_the_analytic_in_flight_colour() {
+        let mut app = App::test_default();
+        let key = app.active_session_key.clone().expect("test_default has an active bucket");
+        let started = Instant::now()
+            .checked_sub(Duration::from_millis(200))
+            .expect("a 200 ms backdate is safe");
+        {
+            let bucket = app.session_mut(&key).expect("bucket");
+            bucket.dictate_border =
+                Some(DictateBorder::Afterglow { started, rgb: BLUE, beat: true });
+        }
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+        );
+        let carried = {
+            let bucket = app.session_mut(&key).expect("bucket");
+            let border = bucket.dictate_border.as_ref().expect("the new take holds a border");
+            border.rgb()
+        };
+        let in_flight = afterglow_colour(
+            &DictateBorder::Afterglow { started, rgb: BLUE, beat: true },
+            Instant::now(),
+        )
+        .expect("the afterglow is still inside its window");
+        assert!(
+            colour_distance(carried, in_flight) < 0.5,
+            "a re-dictate mid-afterglow carries the eased colour, not the frozen rgb: \
+             carried {carried:?} against in-flight {in_flight:?}"
+        );
+        assert!(
+            colour_distance(carried, BLUE) > 1.0,
+            "the frozen rgb would be a snap, got {carried:?}"
+        );
+
+        // A late re-dictate, the afterglow long expired, starts from
+        // the composer's own orange.
+        let mut app = App::test_default();
+        let key = app.active_session_key.clone().expect("test_default has an active bucket");
+        let started = Instant::now()
+            .checked_sub(Duration::from_millis(5_000))
+            .expect("a 5 s backdate is safe");
+        {
+            let bucket = app.session_mut(&key).expect("bucket");
+            bucket.dictate_border =
+                Some(DictateBorder::Afterglow { started, rgb: BLUE, beat: true });
+        }
+        apply_session_update(
+            &mut app,
+            SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+        );
+        let bucket = app.session_mut(&key).expect("bucket");
+        let carried = bucket.dictate_border.as_ref().expect("the new take holds a border").rgb();
+        assert!(
+            same_colour(carried, ORANGE),
+            "an expired afterglow carries the plain orange, got {carried:?}"
         );
     }
 

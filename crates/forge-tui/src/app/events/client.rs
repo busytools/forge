@@ -440,8 +440,10 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 bucket.dictate =
                     Some(crate::app::dictate::DictateIndicator::recording(floor_db, generation));
                 bucket.dictate_notice = None;
-                let previous =
-                    bucket.dictate_border.as_ref().map(crate::app::dictate::DictateBorder::rgb);
+                let previous = bucket
+                    .dictate_border
+                    .as_ref()
+                    .map(|border| border.current_colour(Instant::now()));
                 bucket.dictate_border =
                     Some(crate::app::dictate::DictateBorder::live(previous, Instant::now()));
             }
