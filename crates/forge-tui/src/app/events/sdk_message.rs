@@ -510,6 +510,18 @@ fn push_peer_envelope_user_turn_if_present(
         app.strip_trailing_empty_assistant_placeholder();
         append_or_push_envelope(app, envelope_kind, text);
         app.push_active_turn_assistant_placeholder();
+        // The clock starts here rather than at the first frame, so the
+        // turn-info row never sits as a bare loader while it waits for
+        // usage; a prompt delivered mid-turn rides the live bar instead
+        // of starting a second one.
+        if matches!(app.status, crate::app::AppStatus::Thinking | crate::app::AppStatus::Running)
+            && !app.pending_cancel()
+            && !app.is_compacting()
+        {
+            app.continue_live_turn(std::time::Instant::now());
+        } else {
+            app.start_live_turn(std::time::Instant::now());
+        }
         app.status = crate::app::AppStatus::Thinking;
         if let Some(key) = app.active_session_key.clone() {
             super::set_bucket_lifecycle_state(
@@ -3284,6 +3296,31 @@ mod inbound_message_surfacing_tests {
             active_lifecycle(&app),
             SessionLifecycleState::Running,
             "the Projects-pane row spins while the agent works the delivered prompt",
+        );
+    }
+
+    /// A delivered prompt opens its turn's clock immediately. Between
+    /// the turn-open and the first usage-carrying assistant frame the
+    /// turn-info row has nothing to show but the loader glyph - a
+    /// window that used to last the whole turn whenever the turn never
+    /// produced such a frame.
+    #[test]
+    fn delivered_prompt_opens_its_turn_clock_immediately() {
+        let mut app = App::test_default();
+        idle_active_bucket(&mut app);
+        app.status = AppStatus::Ready;
+
+        handle_user(&mut app, delivered_user_turn(PEER_REPLY));
+
+        let placeholder = app
+            .messages()
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, MessageRole::Assistant))
+            .expect("the delivered turn opens an assistant placeholder");
+        assert!(
+            placeholder.turn_info.started_at.is_some(),
+            "the delivered turn's clock starts at the turn-open, not at its first frame",
         );
     }
 
