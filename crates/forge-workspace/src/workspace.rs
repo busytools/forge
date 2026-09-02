@@ -1099,15 +1099,7 @@ impl Workspace {
             let accounts = self.accounts.lock();
             accounts.env(&account_key).cloned().unwrap_or_default()
         };
-        // An account carrying `[[accounts]] permission_mode` owns the
-        // mode for every session it spawns.
-        let account_mode = {
-            let accounts = self.accounts.lock();
-            accounts.permission_mode(&account_key)
-        };
-        if let Some(mode) = account_mode {
-            crate::spawn::stamp_account_permission_mode(&mut settings, mode);
-        }
+        apply_account_permission_mode(&self.accounts.lock(), &account_key, &mut settings);
         let session_env = self.session_env_for(&target, &account_env);
 
         // Hoist DomainSession creation to BEFORE Agent::spawn so the
@@ -6811,6 +6803,18 @@ async fn tag_session_with_retry(
     }))
 }
 
+/// An account carrying `[[accounts]] permission_mode` owns the mode
+/// for every session it spawns; a no-op without the key.
+fn apply_account_permission_mode(
+    accounts: &AccountStateMap,
+    account_key: &AccountKey,
+    settings: &mut SessionLaunchSettings,
+) {
+    if let Some(mode) = accounts.permission_mode(account_key) {
+        spawn::stamp_account_permission_mode(settings, mode);
+    }
+}
+
 /// Test helper: ensure `forge/` exists and return the production
 /// `forge/forge.toml` path, so tests write where forge reads (not the
 /// legacy top-level fallback).
@@ -6894,6 +6898,59 @@ mod resolver_tests {
     #[test]
     fn resolver_returns_none_for_empty() {
         assert!(resolve_lead_session(&[]).is_none());
+    }
+}
+
+#[cfg(test)]
+mod account_stamp_tests {
+    use super::*;
+    use crate::config::LoadedAccount;
+
+    fn account_map(
+        permission_mode: Option<forge_primitives::permission::PermissionMode>,
+    ) -> AccountStateMap {
+        let accounts = [LoadedAccount {
+            display_name: "Stargate".to_owned(),
+            config_dir: PathBuf::from("/tmp/claude-stargate"),
+            provider: forge_primitives::account::Provider::Anthropic,
+            env: HashMap::new(),
+            experimental: false,
+            permission_mode,
+        }];
+        AccountStateMap::new(&accounts)
+    }
+
+    fn stamped_mode(settings: &SessionLaunchSettings) -> Option<String> {
+        settings
+            .settings
+            .as_ref()
+            .and_then(|s| s.get("permissions"))
+            .and_then(|p| p.get("defaultMode"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    }
+
+    #[test]
+    fn account_mode_stamps_fresh_spawn_settings_and_modeless_account_leaves_them() {
+        let mut stamped = SessionLaunchSettings::default();
+        apply_account_permission_mode(
+            &account_map(Some(forge_primitives::permission::PermissionMode::BypassPermissions)),
+            &AccountKey("Stargate".to_owned()),
+            &mut stamped,
+        );
+        assert_eq!(
+            stamped_mode(&stamped).as_deref(),
+            Some("bypassPermissions"),
+            "an account carrying permission_mode stamps the fresh spawn settings",
+        );
+
+        let mut untouched = SessionLaunchSettings::default();
+        apply_account_permission_mode(
+            &account_map(None),
+            &AccountKey("Stargate".to_owned()),
+            &mut untouched,
+        );
+        assert!(untouched.settings.is_none(), "a modeless account leaves fresh settings untouched");
     }
 }
 
