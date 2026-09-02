@@ -563,7 +563,9 @@ fn stamp_truncation_warning(app: &mut App, landing: DictateLanding) {
             }
         }
         DictateLanding::PluginsField => {
-            app.plugins.status_message = Some(format!("dictation truncated - {text}"));
+            // The plugins view's own status field is rendered by
+            // nothing; the config scaffold's status line is what shows.
+            app.config.status_message = Some(format!("dictation truncated - {text}"));
         }
         DictateLanding::Chat | DictateLanding::Fallback => {}
     }

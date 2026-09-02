@@ -33,8 +33,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
 fn render_top_region(frame: &mut Frame, area: Rect, app: &App) {
     if search_enabled(app.plugins.active_tab) {
         // The unified single-line field: the query embedded in a one-row
-        // thick border, orange while focused, DIM otherwise. A live
-        // dictate take blips inside the border, left of the content.
+        // thick border, orange while focused, DIM otherwise.
         let style = if app.plugins.search_focused {
             crate::ui::composer::border_style()
         } else {

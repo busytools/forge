@@ -849,24 +849,36 @@ mod tests {
     fn the_dock_footer_blips_while_a_take_is_live() {
         let request = make_question_request(false);
         let mut prompt = PromptState::from_question("tc-q".into(), request);
-        prompt.focused_option_index = prompt.options.len() - 1;
         let area = Rect::new(0, 0, 80, 24);
         let blip = Span::styled("\u{25cf} ", Style::default().fg(Color::Rgb(244, 118, 0)));
 
+        // Non-Notes option focused: the blip's whole point is that it
+        // still shows where the dictated words will land.
+        prompt.focused_option_index = 0;
+        let footer_row = |buf: &Buffer| {
+            (0..area.height).find_map(|y| {
+                let row: String =
+                    (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect();
+                row.contains("\u{23ce} confirm").then_some(row)
+            })
+        };
         let mut buf = Buffer::empty(area);
         render(area, &mut buf, &prompt, 1, Some(""), Some(&blip));
-        let footer_y = (0..area.height).find(|&y| {
-            let row: String = (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect();
-            row.contains("\u{23ce} confirm")
-        });
-        let y = footer_y.expect("the footer hint renders");
-        let row: String = (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect();
+        let row = footer_row(&buf).expect("the footer hint renders");
         assert!(row.contains("\u{25cf}"), "the blip leads the hint row, got: {row}");
+
+        // Notes focused: same fixed spot, however much the inline
+        // editor grows above the footer.
+        prompt.focused_option_index = prompt.options.len() - 1;
+        let mut buf = Buffer::empty(area);
+        render(area, &mut buf, &prompt, 1, Some(""), Some(&blip));
+        let row = footer_row(&buf).expect("the footer hint renders");
+        assert!(row.contains("\u{25cf}"), "the blip holds with the notes option focused");
 
         // No take, no blip.
         let mut buf = Buffer::empty(area);
         render(area, &mut buf, &prompt, 1, Some(""), None);
-        let row: String = (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect();
+        let row = footer_row(&buf).expect("the footer hint renders");
         assert!(!row.contains("\u{25cf}"), "without a take no circle draws, got: {row}");
     }
 }

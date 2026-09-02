@@ -940,13 +940,9 @@ mod tests {
                 assert_eq!(bucket.input.text(), "stale words", "the older take's words still land");
                 assert!(
                     bucket.dictate.is_some(),
-                    "the live recording must survive a stale outcome on the same key"
+                    "the live recording must survive a stale outcome on the same key, so Esc keeps abandoning the live take"
                 );
             }
-            assert!(
-                crate::app::dictate::dictate_owns_esc(&app),
-                "Esc keeps abandoning the live take"
-            );
 
             apply_session_update(
                 &mut app,

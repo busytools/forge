@@ -464,10 +464,6 @@ pub(crate) fn notice_for_outcome(
 
 /// Whether the active composer has a live take, which is what gives
 /// Esc its discard/abandon meaning.
-pub(crate) fn dictate_owns_esc(app: &App) -> bool {
-    app.active_session().is_some_and(|bucket| bucket.dictate.is_some())
-}
-
 /// Dispatch the abandon for the live take. Esc ownership is per
 /// surface; the stop itself is the same command everywhere.
 pub(crate) fn dispatch_stop(app: &App) {

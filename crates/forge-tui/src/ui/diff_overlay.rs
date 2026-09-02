@@ -686,8 +686,10 @@ fn render_finish_review(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlay
         overlay.finish_review.as_ref().map_or((0, 0), |f| f.editor.cursor());
     if editor_lines.iter().all(String::is_empty) {
         let mut content = vec![ComposerChrome::prompt_span()];
+        // The caret cell rides this row too, so its budget is one
+        // column tighter than a plain body row's.
         content.push(Span::styled(
-            fit_box_content(PLACEHOLDER_OVERVIEW, inner.saturating_sub(2)),
+            fit_box_content(PLACEHOLDER_OVERVIEW, inner.saturating_sub(3)),
             dim,
         ));
         content.push(ComposerChrome::caret_span());
@@ -704,8 +706,11 @@ fn render_finish_review(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlay
                 content.push(Span::raw("  "));
             }
             // The glyph or indent costs the text two of the inner
-            // columns, so a long overview line truncates inside the box.
-            let fitted = fit_box_content(line, inner.saturating_sub(2));
+            // columns, so a long overview line truncates inside the
+            // box; the caret row is one column tighter still, or a
+            // full-width line spills past the right border.
+            let budget = if idx == caret_row { inner - 3 } else { inner - 2 };
+            let fitted = fit_box_content(line, budget);
             if idx == caret_row {
                 let (head, tail) = split_at_char(&fitted, caret_col.min(fitted.chars().count()));
                 content.push(Span::raw(head.to_owned()));
@@ -2489,8 +2494,7 @@ fn render_active_input(
 
     // Body rows - one per editor line. Empty editor shows a single
     // placeholder row so the user sees where typing will land. The
-    // prompt glyph leads the draft and costs the body two columns; a
-    // live take's blip takes the glyph's place.
+    // prompt glyph leads the draft and costs the body two columns.
     let inner_width = box_width.saturating_sub(4);
     let editor_lines = input.editor.lines();
     let (caret_row, caret_col) = input.editor.cursor();
@@ -2498,8 +2502,10 @@ fn render_active_input(
     let body_rows: Vec<String> = if empty { Vec::new() } else { editor_lines.to_vec() };
     if empty {
         let mut content = vec![ComposerChrome::prompt_span()];
+        // The caret cell rides this row too, so its budget is one
+        // column tighter than a plain body row's.
         content.push(Span::styled(
-            fit_box_content(PLACEHOLDER_COMMENT, inner_width.saturating_sub(2)),
+            fit_box_content(PLACEHOLDER_COMMENT, inner_width.saturating_sub(3)),
             dim,
         ));
         content.push(ComposerChrome::caret_span());
@@ -2509,7 +2515,11 @@ fn render_active_input(
         );
     }
     for (idx, body_row) in body_rows.iter().enumerate() {
-        let fitted = fit_box_content(body_row, inner_width.saturating_sub(2));
+        // The caret row carries the caret cell beside its text, so its
+        // budget is one column tighter or a full-width line spills past
+        // the right border.
+        let budget = if idx == caret_row { inner_width - 3 } else { inner_width - 2 };
+        let fitted = fit_box_content(body_row, budget);
         let mut content: Vec<Span<'static>> = Vec::new();
         if idx == 0 {
             content.push(ComposerChrome::prompt_span());
@@ -2941,6 +2951,90 @@ mod tests {
         assert!(
             !lines[1].spans.iter().any(|span| span.content.contains("Add a comment")),
             "a non-empty draft carries no placeholder"
+        );
+    }
+
+    /// The reviewer's reproduction, finish-review shape: a full-width
+    /// overview line with the caret parked at its end must not push the
+    /// caret cell past the modal's right border.
+    #[test]
+    fn a_full_width_overview_line_keeps_the_border() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut state =
+            DiffOverlayState::new(std::path::PathBuf::from("/tmp/repo"), "main".to_owned(), vec![]);
+        state.finish_review = Some(crate::app::diff_overlay::FinishReviewState {
+            editor: crate::app::input::InputState::new(),
+        });
+        state.finish_review.as_mut().expect("finish review").editor.insert_str(&"x".repeat(61));
+
+        let (width, height) = (80u16, 20u16);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                render_finish_review(
+                    frame,
+                    ratatui::layout::Rect { x: 0, y: 0, width, height },
+                    &mut state,
+                );
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let w = usize::from(width);
+        let modal_width = usize::from(width.saturating_sub(8).clamp(44, 68));
+        let modal_x =
+            usize::from(width.saturating_sub(u16::try_from(modal_width).unwrap_or(0)) / 2);
+        for r in 0..usize::from(height) {
+            let row: String = (0..w).map(|x| buffer.content[r * w + x].symbol()).collect();
+            let inside: String = row.chars().skip(modal_x).take(modal_width).collect();
+            assert!(
+                crate::ui::wrap::display_width(inside.trim_end()) <= modal_width,
+                "row {r} spills past the modal's {modal_width} columns: {inside:?}"
+            );
+        }
+        let overview_row = (0..usize::from(height))
+            .map(|r| (0..w).map(|x| buffer.content[r * w + x].symbol()).collect::<String>())
+            .find(|row| row.contains('\u{27a4}'))
+            .expect("the overview editor renders");
+        assert!(
+            overview_row.trim_end().ends_with('\u{2503}'),
+            "the right border survives the caret cell, got: {overview_row:?}"
+        );
+    }
+
+    /// The reviewer's reproduction: a line exactly as wide as the
+    /// caret row's budget, caret parked at its end. The caret cell has
+    /// to fit beside the text - a full-width line must not push the
+    /// caret row past the right border.
+    #[test]
+    fn a_full_width_line_with_the_caret_at_its_end_keeps_the_border() {
+        let mut editor = crate::app::InputState::new();
+        // 61 chars: exactly the caret row's budget at this geometry.
+        editor.insert_str(&"x".repeat(61));
+        let input = ActiveCommentInput {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            editor,
+            prior_comment: None,
+            edit_turn: None,
+        };
+        let mut lines = Vec::new();
+        let mut keys = Vec::new();
+        render_active_input(&input, 4, 42, 80, &mut lines, &mut keys);
+
+        let widths: Vec<usize> = lines.iter().map(crate::ui::wrap::line_display_width).collect();
+        assert!(
+            widths.windows(2).all(|w| w[0] == w[1]),
+            "every row keeps the box's width with the caret cell fitted in, got {widths:?}"
+        );
+        let caret_row = &lines[1];
+        let text: String = caret_row.spans.iter().map(|span| span.content.as_ref()).collect();
+        assert!(text.ends_with(" \u{2503}"), "the right border survives, got: {text:?}");
+        assert!(
+            caret_row
+                .spans
+                .iter()
+                .any(|span| span.style.add_modifier.contains(ratatui::style::Modifier::REVERSED)),
+            "the caret cell rides the full-width row"
         );
     }
 

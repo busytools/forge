@@ -497,18 +497,7 @@ fn handle_turn_control_key(app: &mut App, key: KeyEvent) -> bool {
     // A live dictation take on this composer owns Esc: it abandons the
     // take instead of cancelling a turn. With no take the key falls
     // through to turn cancellation as before.
-    if crate::app::dictate::dictate_owns_esc(app) {
-        if let Err(message) =
-            app.dispatch_command(|key| forge_workspace::Command::DictateStop { key, submit: false })
-        {
-            tracing::warn!(
-                target: crate::logging::targets::APP_INPUT,
-                event_name = "dictate_stop_failed",
-                message = "failed to dispatch the dictate abandon",
-                outcome = "failure",
-                error_message = %message,
-            );
-        }
+    if crate::app::dictate::abandon_take(app) {
         return true;
     }
     *app.pending_submit_mut() = None;
