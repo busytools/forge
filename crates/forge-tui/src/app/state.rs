@@ -2014,6 +2014,48 @@ impl App {
         }
     }
 
+    /// Carry the in-flight turn's bar onto a freshly opened tail
+    /// placeholder. A mid-turn submit rides the running turn rather
+    /// than starting one, so the clock and the usage/thinking
+    /// accumulators keep running; the message that was streaming sheds
+    /// the row it held, leaving one bar where the Result will settle.
+    pub fn continue_live_turn(&mut self, at: std::time::Instant) {
+        let live_started = self.active_session().and_then(|s| s.live_turn.started_at).unwrap_or(at);
+        let fresh_row = || crate::app::state::messages::TurnInfo {
+            started_at: Some(live_started),
+            ..crate::app::state::messages::TurnInfo::default()
+        };
+        let mut source_idx = None;
+        let mut target_idx = None;
+        for idx in self
+            .messages()
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| matches!(m.role, crate::app::MessageRole::Assistant))
+            .map(|(idx, _)| idx)
+        {
+            source_idx = target_idx;
+            target_idx = Some(idx);
+        }
+        let Some(target_idx) = target_idx else {
+            return;
+        };
+        let carried = source_idx
+            .and_then(|idx| self.active_messages_mut().get_mut(idx))
+            .filter(|msg| !msg.turn_info.is_settled() && !msg.turn_info.is_empty())
+            .map_or_else(fresh_row, |msg| {
+                let carried = std::mem::take(&mut msg.turn_info);
+                msg.invalidate_render_cache();
+                carried
+            });
+        if let Some(msg) = self.active_messages_mut().get_mut(target_idx)
+            && !msg.turn_info.is_settled()
+        {
+            msg.turn_info = carried;
+            msg.invalidate_render_cache();
+        }
+    }
+
     /// Fold one assistant frame's usage into the live turn, returning
     /// the turn's start and running totals. Starts the turn if nothing
     /// did - cron, auto-continue and peer traffic arrive with it

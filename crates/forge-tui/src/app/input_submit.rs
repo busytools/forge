@@ -126,6 +126,13 @@ pub(super) fn request_cancel(app: &mut App) -> Result<(), String> {
 /// cost of the always-reparent design.
 fn dispatch_prompt(app: &mut App, text: String) {
     let busy = is_turn_busy(app);
+    // A submit while the turn is genuinely still running (steering, no
+    // cancel intent and no compaction) rides the in-flight turn: the
+    // live bar must keep its clock rather than restart, so the
+    // turn-open below carries it instead of starting a second one.
+    let mid_turn = matches!(app.status, AppStatus::Thinking | AppStatus::Running)
+        && !app.pending_cancel()
+        && !app.is_compacting();
 
     if !busy {
         // Pre-flight for a new turn: stop any leftover in-progress
@@ -180,7 +187,11 @@ fn dispatch_prompt(app: &mut App, text: String) {
     // claude's continuing tokens land below the new user bubble
     // instead of above it.
     app.push_active_turn_assistant_placeholder();
-    app.start_live_turn(std::time::Instant::now());
+    if mid_turn {
+        app.continue_live_turn(std::time::Instant::now());
+    } else {
+        app.start_live_turn(std::time::Instant::now());
+    }
     app.status = AppStatus::Thinking;
     if let Some(key) = app.active_session_key.clone() {
         crate::app::events::set_bucket_lifecycle_state(
@@ -258,6 +269,55 @@ mod tests {
         assert!(matches!(
             prompt,
             forge_primitives::AgentCommand::PromptWithImages { session_id, .. } if session_id == "session-1"
+        ));
+    }
+
+    /// A message sent while the turn is still running must not start a
+    /// second think bar. The in-flight turn owns the bar: the submit
+    /// carries it onto the new tail placeholder with its original
+    /// clock, and the streamed message sheds the row it was holding.
+    #[test]
+    fn mid_turn_submit_keeps_the_live_turn_bar() {
+        let (mut app, mut rx) = app_with_connection();
+        let t0 = std::time::Instant::now();
+        app.status = AppStatus::Running;
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete("first"))],
+        ));
+        app.push_active_turn_assistant_placeholder();
+        app.start_live_turn(t0);
+        // claude streamed a body into the placeholder before the user
+        // typed again.
+        if let Some(msg) = app.active_messages_mut().last_mut() {
+            msg.blocks.push(MessageBlock::Text(TextBlock::from_complete("streamed so far")));
+        }
+
+        app.input_mut().set_text("second");
+        submit_input(&mut app);
+
+        let live_bars: Vec<_> = app
+            .messages()
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::Assistant))
+            .filter(|m| !m.turn_info.is_empty() && !m.turn_info.is_settled())
+            .collect();
+        assert_eq!(
+            live_bars.len(),
+            1,
+            "exactly one live bar: a mid-turn submit rides the in-flight turn's bar instead \
+             of starting a second one beside it",
+        );
+        assert_eq!(
+            live_bars[0].turn_info.started_at,
+            Some(t0),
+            "the surviving bar keeps the in-flight turn's clock instead of restarting at the \
+             submit",
+        );
+        let prompt = rx.try_recv().expect("prompt dispatched");
+        assert!(matches!(
+            prompt,
+            forge_primitives::AgentCommand::PromptWithImages { text, .. } if text == "second"
         ));
     }
 
