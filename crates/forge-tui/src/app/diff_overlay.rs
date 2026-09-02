@@ -3846,7 +3846,7 @@ mod tests {
         );
         let after = overlay(&app);
         assert_eq!(
-            after.active_input.as_ref().map(|input| input.editor.text().to_owned()).as_deref(),
+            after.active_input.as_ref().map(|input| input.editor.text().clone()).as_deref(),
             Some("dictated words"),
             "the words land in the focused comment editor"
         );

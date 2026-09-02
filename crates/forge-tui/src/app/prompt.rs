@@ -945,9 +945,6 @@ pub(crate) mod tests {
         assert!(!handled);
     }
 
-    /// Routing printable characters through the burst detector must not
-    /// cost the notes field its ordinary editing keys.
-    #[test]
     /// A live take owns the first Esc over the dock: it is abandoned
     /// and the prompt stays up for the next Esc.
     #[test]
