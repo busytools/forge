@@ -10831,7 +10831,9 @@ provider = "anthropic"
                 key: key.clone(),
                 cwd: "/tmp".to_owned(),
                 launch_settings: SessionLaunchSettings {
-                    settings: Some(serde_json::json!({ "permissions": { "defaultMode": "auto" } })),
+                    // "plan", not the real launcher default "auto": an Auto
+                    // fallback mutant would survive an auto seed.
+                    settings: Some(serde_json::json!({ "permissions": { "defaultMode": "plan" } })),
                     ..SessionLaunchSettings::default()
                 },
             })
@@ -10849,7 +10851,7 @@ provider = "anthropic"
             .and_then(serde_json::Value::as_str);
         assert_eq!(
             carried,
-            Some("auto"),
+            Some("plan"),
             "an account without permission_mode must keep the launcher's session default",
         );
     }
