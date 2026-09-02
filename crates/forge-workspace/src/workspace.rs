@@ -1538,7 +1538,7 @@ impl Workspace {
                 // only on success, and every failure path ends the run,
                 // so a held engine is the whole availability signal.
                 if state.engine.lock().is_some() {
-                    let _ = updates.send(SessionUpdate::DictateAvailability { available: true });
+                    let _ = updates.send(SessionUpdate::DictateAvailability);
                 }
             }
             .instrument(span),

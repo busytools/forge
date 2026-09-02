@@ -756,7 +756,6 @@ mod tests {
     #[test]
     fn the_status_row_exists_only_while_a_take_is_live() {
         let mut app = App::test_default();
-        app.dictate_available = true;
         assert!(!dictate_row_visible(&app), "idle reserves nothing");
 
         let key = app.active_session_key.clone().expect("test_default has an active bucket");

@@ -431,9 +431,9 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             };
             apply_session_update_chat_appended(app, &session_id, synthetic);
         }
-        SessionUpdate::DictateAvailability { available } => {
-            app.dictate_available = available;
-        }
+        // The event's existence is the availability signal; nothing
+        // caches it.
+        SessionUpdate::DictateAvailability => {}
         SessionUpdate::DictateStarted { key, floor_db, generation } => {
             app.dictate_take_pending = false;
             if let Some(bucket) = app.session_mut(&key) {

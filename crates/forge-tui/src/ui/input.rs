@@ -655,7 +655,6 @@ mod tests {
         #[test]
         fn with_dictation_off_the_border_is_what_shipped_yesterday() {
             let mut app = App::test_default();
-            assert!(!app.dictate_available);
             let rows = render_input(&mut app, 80, 4);
             assert!(
                 rows[0].starts_with("\u{250f}\u{2501}"),
@@ -667,7 +666,6 @@ mod tests {
         #[test]
         fn an_idle_dictate_available_composer_is_a_plain_box() {
             let mut app = App::test_default();
-            app.dictate_available = true;
             let mut terminal = Terminal::new(TestBackend::new(80, 4)).expect("terminal");
             terminal.draw(|frame| render(frame, frame.area(), &mut app)).expect("draw");
             let buffer = terminal.backend().buffer().clone();
@@ -716,7 +714,6 @@ mod tests {
         #[test]
         fn recording_draws_the_status_row_and_grows_the_box() {
             let mut app = App::test_default();
-            app.dictate_available = true;
             let key = active_key(&app);
             apply_session_update(
                 &mut app,
@@ -755,7 +752,6 @@ mod tests {
         #[test]
         fn transcribing_hides_the_row_until_three_seconds_then_freezes_the_meter() {
             let mut app = App::test_default();
-            app.dictate_available = true;
             let key = active_key(&app);
             apply_session_update(
                 &mut app,
@@ -802,7 +798,6 @@ mod tests {
         #[test]
         fn a_landed_take_beats_the_border_green_then_settles() {
             let mut app = App::test_default();
-            app.dictate_available = true;
             let key = active_key(&app);
             apply_session_update(
                 &mut app,
@@ -858,7 +853,6 @@ mod tests {
         #[test]
         fn the_recording_cursor_spot_shows_the_live_db_figure() {
             let mut app = App::test_default();
-            app.dictate_available = true;
             let key = active_key(&app);
             apply_session_update(
                 &mut app,
@@ -908,7 +902,6 @@ mod tests {
         #[test]
         fn a_quiet_take_leaves_a_notice_row_until_the_next_keystroke() {
             let mut app = App::test_default();
-            app.dictate_available = true;
             let key = active_key(&app);
             apply_session_update(
                 &mut app,
@@ -948,7 +941,6 @@ mod tests {
         #[test]
         fn landed_words_insert_at_the_caret_of_the_session_that_started() {
             let mut app = App::test_default();
-            app.dictate_available = true;
             let key = active_key(&app);
             apply_session_update(
                 &mut app,
@@ -975,7 +967,6 @@ mod tests {
         #[test]
         fn a_stale_take_does_not_wipe_a_live_recording_on_the_same_key() {
             let mut app = App::test_default();
-            app.dictate_available = true;
             let key = active_key(&app);
             // Generation 2 is live and recording; generation 1 is an older
             // take of the same session still finishing.
