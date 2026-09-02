@@ -78,6 +78,7 @@ An array of tables. At least one is required, or the load fails with
 | `config_dir` | string | yes | | The `claude` config directory this account uses. `~/` is expanded. |
 | `provider` | string | yes | | One of `"anthropic"`, `"codex"`, `"openrouter"`. Decides how the account is probed and how its usage reads. |
 | `experimental` | bool | no | `false` | Excludes the account from automatic assignment while leaving it selectable by hand. |
+| `permission_mode` | string | no | | Stamps the CLI's permission mode onto every session this account spawns, overriding the session default. |
 | `env` | table | no | `{}` | Written as `[accounts.env]`. See [Environment layering](#environment-layering). |
 
 `config_dir` is what forge exports as `CLAUDE_CONFIG_DIR` to the
@@ -120,6 +121,19 @@ forge says so rather than showing an empty bar.
 
 Unknown keys in an `[[accounts]]` block are rejected, so a near-miss
 like `providers` fails the load instead of loading and doing nothing.
+
+`permission_mode` stamps a permission mode onto every session the
+account spawns, overriding the launcher's per-session default, so one
+account can run bypassed while the rest keep the session default. The
+key lives on the account rather than a project because the account owns
+the CLI's credential and endpoint, so it owns the mode. The accepted
+values are the CLI's mode names, `"default"`, `"acceptEdits"`, `"plan"`,
+`"dontAsk"`, `"auto"` and `"bypassPermissions"`, plus the legacy aliases
+`"ask"`, `"deny"`, `"accept_edits"`, `"dont_ask"` and
+`"bypass_permissions"`; anything else fails the load listing them. The
+mode the session actually runs is what the CLI reports back on connect;
+the `/permissions` picker keeps its own capability check, so bypass
+appears there only when the running CLI reports support for it.
 
 ## `[env]`
 

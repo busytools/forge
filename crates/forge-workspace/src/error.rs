@@ -54,6 +54,13 @@ pub enum WorkspaceError {
     OpenrouterBaseUrlNotApiRoot { path: PathBuf, name: String },
 
     #[error(
+        "account '{name}' in forge.toml at {} sets permission_mode = \"{value}\"; accepted values: {}",
+        path.display(),
+        forge_primitives::permission::PermissionMode::ACCEPTED
+    )]
+    AccountInvalidPermissionMode { path: PathBuf, name: String, value: String },
+
+    #[error(
         "account '{name}' in forge.toml at {} declares a base-url provider but has no ANTHROPIC_BASE_URL in [accounts.env]",
         path.display()
     )]

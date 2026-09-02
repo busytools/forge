@@ -1393,6 +1393,7 @@ mod tests {
             provider: forge_primitives::account::Provider::Anthropic,
             env: std::collections::HashMap::new(),
             experimental: false,
+            permission_mode: None,
         }
     }
 

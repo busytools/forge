@@ -37,6 +37,13 @@ pub enum PermissionMode {
 }
 
 impl PermissionMode {
+    /// Every wire string [`Self::from_wire`] accepts, quoted for load
+    /// errors naming the accepted set. Kept in one place with
+    /// `from_wire` so an added alias updates both or neither.
+    pub const ACCEPTED: &'static str = "\"default\", \"ask\", \"acceptEdits\", \"accept_edits\", \
+         \"plan\", \"dontAsk\", \"dont_ask\", \"deny\", \"auto\", \"bypassPermissions\", \
+         \"bypass_permissions\"";
+
     /// The string the `claude` binary expects via `--permission-mode`
     /// and the JSON wire string.
     pub fn as_wire(self) -> &'static str {
@@ -129,5 +136,31 @@ mod tests {
         assert_eq!(value, "\"dontAsk\"");
         let decoded: PermissionMode = serde_json::from_str("\"acceptEdits\"").expect("deserialize");
         assert_eq!(decoded, PermissionMode::AcceptEdits);
+    }
+
+    #[test]
+    fn accepted_names_every_wire_form_from_wire_parses() {
+        for wire in [
+            "default",
+            "ask",
+            "acceptEdits",
+            "accept_edits",
+            "plan",
+            "dontAsk",
+            "dont_ask",
+            "deny",
+            "auto",
+            "bypassPermissions",
+            "bypass_permissions",
+        ] {
+            assert!(
+                PermissionMode::from_wire(wire).is_some(),
+                "from_wire must accept \"{wire}\" or ACCEPTED lists a dead value",
+            );
+            assert!(
+                PermissionMode::ACCEPTED.contains(format!("\"{wire}\"").as_str()),
+                "ACCEPTED must name \"{wire}\", or the load error omits an accepted value",
+            );
+        }
     }
 }

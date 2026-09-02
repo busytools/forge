@@ -79,6 +79,29 @@ fn apply_lead_charter(settings: &mut SessionLaunchSettings) {
     settings.charter = Some(DEFAULT_LEAD_CHARTER.to_owned());
 }
 
+/// Stamp the account's `[[accounts]] permission_mode` into the launch
+/// settings' `permissions.defaultMode`, where the existing
+/// `applied_permission_mode` arm in `forge_sdk_worker` picks it up.
+/// Overrides a launcher-supplied default because the account owns the
+/// CLI's credential and endpoint.
+pub(crate) fn stamp_account_permission_mode(
+    settings: &mut SessionLaunchSettings,
+    mode: forge_primitives::permission::PermissionMode,
+) {
+    let object =
+        settings.settings.get_or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    let Some(map) = object.as_object_mut() else {
+        return;
+    };
+    let perms = map
+        .entry("permissions".to_owned())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if let Some(perms) = perms.as_object_mut() {
+        perms
+            .insert("defaultMode".to_owned(), serde_json::Value::String(mode.as_wire().to_owned()));
+    }
+}
+
 /// Emit a `SessionUpdate` and log at debug when the receiver is gone
 /// (TUI is shutting down or has crashed). The send is logically
 /// best-effort - no caller can act on the failure - but visibility
@@ -1567,6 +1590,55 @@ provider = "anthropic"
 "#,
         )
         .expect("write forge.toml");
+    }
+
+    #[test]
+    fn account_permission_mode_stamps_into_absent_settings() {
+        let mut settings = SessionLaunchSettings::default();
+        stamp_account_permission_mode(
+            &mut settings,
+            forge_primitives::permission::PermissionMode::BypassPermissions,
+        );
+        let mode = settings
+            .settings
+            .as_ref()
+            .and_then(|s| s.get("permissions"))
+            .and_then(|p| p.get("defaultMode"))
+            .and_then(serde_json::Value::as_str);
+        assert_eq!(
+            mode,
+            Some("bypassPermissions"),
+            "the account mode reaches the settings JSON the worker's applied_permission_mode arm reads",
+        );
+    }
+
+    #[test]
+    fn account_permission_mode_overrides_the_launcher_default_and_keeps_siblings() {
+        let mut settings = SessionLaunchSettings {
+            settings: Some(serde_json::json!({
+                "permissions": { "defaultMode": "default" },
+                "model": "haiku",
+            })),
+            ..SessionLaunchSettings::default()
+        };
+        stamp_account_permission_mode(
+            &mut settings,
+            forge_primitives::permission::PermissionMode::BypassPermissions,
+        );
+        let record = settings.settings.as_ref().expect("settings kept");
+        assert_eq!(
+            record
+                .get("permissions")
+                .and_then(|p| p.get("defaultMode"))
+                .and_then(serde_json::Value::as_str),
+            Some("bypassPermissions"),
+            "the account mode wins over the launcher's session default",
+        );
+        assert_eq!(
+            record.get("model").and_then(serde_json::Value::as_str),
+            Some("haiku"),
+            "sibling settings keys survive the stamp",
+        );
     }
 
     /// `handle_spawn_project` for an unknown project name must not

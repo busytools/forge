@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 
 use forge_primitives::GotifyConfig;
 use forge_primitives::account::Provider;
+use forge_primitives::permission::PermissionMode;
 use serde::Deserialize;
 
 use crate::error::WorkspaceError;
@@ -128,6 +129,13 @@ struct AccountEntry {
     /// false so existing accounts keep rotating normally.
     #[serde(default)]
     experimental: bool,
+    /// Optional CLI permission mode stamped onto every session this
+    /// account spawns, overriding the launcher's session default. The
+    /// account owns the CLI's credential and endpoint, so it owns the
+    /// mode; that is also why the key lives here and not per-project.
+    /// Validated against `PermissionMode::from_wire` at load.
+    #[serde(default)]
+    permission_mode: Option<String>,
 }
 
 #[derive(Debug)]
@@ -143,6 +151,9 @@ pub(crate) struct LoadedAccount {
     /// Excluded from auto-assignment, picker-only. See
     /// [`AccountEntry::experimental`].
     pub experimental: bool,
+    /// Optional CLI permission mode stamped into launch settings at
+    /// spawn. See [`AccountEntry::permission_mode`].
+    pub permission_mode: Option<PermissionMode>,
 }
 
 #[derive(Debug)]
@@ -323,6 +334,19 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 names: vec![entry.display_name],
             });
         };
+        let permission_mode = match entry.permission_mode.as_deref() {
+            None => None,
+            Some(raw) => match PermissionMode::from_wire(raw) {
+                Some(mode) => Some(mode),
+                None => {
+                    return Err(WorkspaceError::AccountInvalidPermissionMode {
+                        path,
+                        name: entry.display_name.clone(),
+                        value: raw.to_owned(),
+                    });
+                }
+            },
+        };
         let mut env = global_env.clone();
         env.extend(entry.env);
         // A base-url provider probes `{ANTHROPIC_BASE_URL}/...`, so an
@@ -367,6 +391,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             provider,
             env,
             experimental: entry.experimental,
+            permission_mode,
         });
     }
 
@@ -794,6 +819,107 @@ ANTHROPIC_BASE_URL = "   "
         let account = &config.accounts[0];
         assert!(account.env.is_empty(), "no [accounts.env] -> empty map");
         assert!(!account.experimental, "absent experimental field defaults to false");
+    }
+
+    #[test]
+    fn account_permission_mode_parses_into_the_loaded_account() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Openrouter"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Openrouter"
+config_dir = "~/.claude-openrouter"
+provider = "openrouter"
+permission_mode = "bypassPermissions"
+[accounts.env]
+ANTHROPIC_BASE_URL = "https://openrouter.ai/api"
+ANTHROPIC_AUTH_TOKEN = "unused"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        assert_eq!(
+            config.accounts[0].permission_mode,
+            Some(PermissionMode::BypassPermissions),
+            "a valid mode lands on the LoadedAccount verbatim",
+        );
+    }
+
+    #[test]
+    fn account_without_permission_mode_loads_with_none() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), minimal_config());
+        let config = load_from_dir(dir.path()).expect("absent key must not block the load");
+        assert_eq!(
+            config.accounts[0].permission_mode, None,
+            "accounts without the key keep every spawn unchanged",
+        );
+    }
+
+    #[test]
+    fn account_with_invalid_permission_mode_fails_naming_the_accepted_set() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Openrouter"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Openrouter"
+config_dir = "~/.claude-openrouter-bad"
+provider = "openrouter"
+permission_mode = "bypass"
+[accounts.env]
+ANTHROPIC_BASE_URL = "https://openrouter.ai/api"
+ANTHROPIC_AUTH_TOKEN = "unused"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("an invalid mode must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("bypass") && message.contains("Openrouter"),
+            "the error has to name the offending value and account, got: {message}",
+        );
+        assert!(
+            message.contains("bypassPermissions") && message.contains("acceptEdits"),
+            "the error has to list the accepted values, got: {message}",
+        );
+    }
+
+    #[test]
+    fn mistyped_permission_mode_key_is_still_rejected() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Stargate"
+config_dir = "~/.claude-mistyped-mode"
+provider = "anthropic"
+permissionmode = "bypassPermissions"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("a mistyped account key must not load");
+        assert!(
+            err.to_string().contains("permissionmode"),
+            "deny_unknown_fields has to catch the near-miss, got: {err}",
+        );
     }
 
     #[test]
