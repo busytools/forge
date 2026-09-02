@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use crate::app::App;
-use crate::app::state::types::SessionUsageState;
+use crate::app::state::types::{RefreshPending, SessionUsageState};
 
 /// Minimum spacing between actual `get_context_usage` sends per
 /// session. Rapid pane switches coalesce into the first send instead
@@ -71,7 +71,7 @@ pub(crate) fn request_context_usage_refresh(app: &mut App) {
 
 fn request_context_usage_refresh_at(app: &mut App, now: Instant) {
     if app.session_usage().context_usage_in_flight {
-        app.session_usage_mut().context_usage_refresh_pending = true;
+        app.session_usage_mut().context_usage_refresh_pending = Some(RefreshPending::Auto);
         return;
     }
 
@@ -106,7 +106,7 @@ fn request_context_usage_refresh_at(app: &mut App, now: Instant) {
 /// percentage is guaranteed stale.
 pub(crate) fn request_context_usage_refresh_forced(app: &mut App) {
     if app.session_usage().context_usage_in_flight {
-        app.session_usage_mut().context_usage_refresh_pending = true;
+        app.session_usage_mut().context_usage_refresh_pending = Some(RefreshPending::Forced);
         return;
     }
     send_context_usage_request(app, Instant::now());
@@ -130,7 +130,7 @@ fn send_context_usage_request(app: &mut App, now: Instant) {
     {
         let usage = app.session_usage_mut();
         usage.context_usage_in_flight = true;
-        usage.context_usage_refresh_pending = false;
+        usage.context_usage_refresh_pending = None;
         usage.context_usage_last_sent = Some(now);
     }
     match workspace.refresh_context_usage(&key) {
@@ -221,15 +221,17 @@ pub(crate) fn apply_context_usage_snapshot(
         usage.context_usage_in_flight = false;
         std::mem::take(&mut usage.context_usage_refresh_pending)
     };
-    if refresh_pending {
-        request_context_usage_refresh(app);
+    match refresh_pending {
+        Some(RefreshPending::Forced) => request_context_usage_refresh_forced(app),
+        Some(RefreshPending::Auto) => request_context_usage_refresh(app),
+        None => {}
     }
 }
 
 fn clear_context_usage_refresh_state(app: &mut App) {
     let usage = app.session_usage_mut();
     usage.context_usage_in_flight = false;
-    usage.context_usage_refresh_pending = false;
+    usage.context_usage_refresh_pending = None;
 }
 
 #[cfg(test)]
@@ -282,7 +284,10 @@ mod tests {
         request_context_usage_refresh(&mut app);
 
         assert!(app.session_usage().context_usage_in_flight);
-        assert!(app.session_usage().context_usage_refresh_pending);
+        assert_eq!(
+            app.session_usage().context_usage_refresh_pending,
+            Some(super::RefreshPending::Auto)
+        );
         let envelope = rx.try_recv().expect("context usage command");
         assert!(matches!(
             envelope,
@@ -367,6 +372,28 @@ mod tests {
     }
 
     #[test]
+    fn apply_context_usage_snapshot_replays_a_forced_refresh_past_the_gates() {
+        let (mut app, mut rx) = app_with_connection();
+
+        request_context_usage_refresh(&mut app);
+        let _ = rx.try_recv().expect("initial send");
+        request_context_usage_refresh_forced(&mut app);
+        assert_eq!(
+            app.session_usage().context_usage_refresh_pending,
+            Some(super::RefreshPending::Forced)
+        );
+        assert!(rx.try_recv().is_err(), "still in flight, nothing new sent");
+
+        apply_context_usage_snapshot(&mut app, Some(50), Some(200_000));
+
+        let envelope = rx.try_recv().expect("queued forced refresh must replay past the gates");
+        assert!(matches!(
+            envelope,
+            forge_primitives::AgentCommand::GetContextUsage { session_id } if session_id == "session-1"
+        ));
+    }
+
+    #[test]
     fn apply_context_usage_snapshot_leaves_pending_refresh_to_the_debounce() {
         let (mut app, mut rx) = app_with_connection();
         request_context_usage_refresh(&mut app);
@@ -377,7 +404,7 @@ mod tests {
 
         assert_eq!(app.session_usage().context_usage_percent, Some(62));
         assert!(!app.session_usage().context_usage_in_flight);
-        assert!(!app.session_usage().context_usage_refresh_pending);
+        assert!(app.session_usage().context_usage_refresh_pending.is_none());
         assert!(
             rx.try_recv().is_err(),
             "the pending refresh inside the min interval is served by the fresh snapshot, not re-sent"

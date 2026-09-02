@@ -781,7 +781,7 @@ fn apply_context_usage_snapshot_presentation(
         // Drop the refresh-pending flag too - once a fresh value
         // landed, queueing another refresh is wasteful for a
         // background bucket.
-        session.session_usage.context_usage_refresh_pending = false;
+        session.session_usage.context_usage_refresh_pending = None;
     } else {
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,

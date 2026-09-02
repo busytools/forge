@@ -6014,7 +6014,7 @@ mod tests {
         let usage = app.session_usage_mut();
         usage.context_usage_percent = Some(62);
         usage.context_usage_in_flight = true;
-        usage.context_usage_refresh_pending = true;
+        usage.context_usage_refresh_pending = Some(crate::app::state::types::RefreshPending::Auto);
         usage.last_compaction_pre_tokens = Some(123_456);
 
         app.clear_session_runtime_identity();
