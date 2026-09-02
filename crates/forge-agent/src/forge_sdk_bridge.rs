@@ -347,6 +347,13 @@ impl ForgeSdkBridge {
 
     pub(crate) fn set_mode(&self, session_id: String, mode: PermissionMode) -> anyhow::Result<()> {
         if !self.check_session_id(&session_id, "set_mode") {
+            // A session-swap race dropped the dispatch; surface it on
+            // the attempted session so the chip doesn't stay flipped.
+            let _ = self.inner.event_tx.send(AgentEvent::SetModeFailed {
+                session_id,
+                mode,
+                message: "the session it was sent to is no longer active".to_owned(),
+            });
             return Ok(());
         }
         let event_tx = self.inner.event_tx.clone();
