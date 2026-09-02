@@ -130,6 +130,21 @@ fn tool_title(name: &str, input: &Value) -> String {
             let query = s("query");
             if query.is_empty() { "WebSearch".to_owned() } else { format!("WebSearch {query}") }
         }
+        // Wire shape: `{skill: "<name>", args?: "<free text>"}`. The
+        // args ride the title like Bash's command; the render clips.
+        "Skill" => {
+            let skill = s("skill");
+            if skill.is_empty() {
+                name.to_owned()
+            } else {
+                let args = s("args");
+                if args.is_empty() {
+                    format!("Skill {skill}")
+                } else {
+                    format!("Skill {skill} {args}")
+                }
+            }
+        }
         "web_fetch" => {
             let url = s("url");
             if url.is_empty() { "WebFetch".to_owned() } else { format!("WebFetch {url}") }
@@ -990,6 +1005,33 @@ mod tests {
         let advisor =
             create_tool_call("stu5", "advisor", &json!({"query": "how to handle X"}), None);
         assert_eq!(advisor.title, "Advisor how to handle X");
+    }
+
+    /// The CLI's Skill tool_use input is a `skill` name plus optional
+    /// free-text `args` (live shape, reference-captures/skill.jsonl and
+    /// Ved's own transcripts). Without an arm the title fell back to
+    /// the bare "Skill", so the L1 card header and the L2 group child
+    /// row carried no argument information.
+    #[test]
+    fn create_tool_call_titles_skill_carries_skill_name_and_args() {
+        let with_args = create_tool_call(
+            "tu_s1",
+            "Skill",
+            &json!({"skill": "pr-review-loop", "args": "661"}),
+            None,
+        );
+        assert_eq!(with_args.title, "Skill pr-review-loop 661");
+
+        let name_only = create_tool_call("tu_s2", "Skill", &json!({"skill": "code-review"}), None);
+        assert_eq!(name_only.title, "Skill code-review");
+
+        let empty = create_tool_call("tu_s3", "Skill", &json!({}), None);
+        assert_eq!(empty.title, "Skill");
+        assert!(
+            !empty.title.ends_with(' '),
+            "empty-input title must not end with whitespace; got {:?}",
+            empty.title,
+        );
     }
 
     /// CLIENT-side `ToolSearch` (deferred-tools tool a forge agent

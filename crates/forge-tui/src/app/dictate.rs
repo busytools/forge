@@ -11,10 +11,6 @@ use crate::app::App;
 use crate::app::session::UiSession;
 use crate::ui::theme;
 
-/// Silence before a transcribing composer says it is waiting. The warm
-/// path resolves in well under this; only a cold start ever draws.
-pub(crate) const TRANSCRIBING_INDICATOR_MS: u128 = 3000;
-
 /// The block ramp for the meter cells, floor to full scale.
 pub(crate) const LEVEL_RAMP: [char; 8] = [
     '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}',
@@ -23,20 +19,34 @@ pub(crate) const LEVEL_RAMP: [char; 8] = [
 /// Meter cells in the status row.
 pub(crate) const METER_WIDTH: usize = 26;
 
-/// Envelope, reference and gate constants are per 50 ms tick, the
+/// Envelope, follower and gate constants are per 50 ms tick, the
 /// cadence `DictateLevel` arrives on.
 const ATTACK: f32 = 0.6;
 const RELEASE: f32 = 0.25;
-const REFERENCE_DECAY_DB: f32 = 0.7;
-const MIN_SPAN_DB: f32 = 6.0;
+/// The recent-max follower: grabs a new peak in a tick or two and
+/// forgets it slowly, so it stands for the loudest moment of the last
+/// couple of seconds.
+const MAX_ATTACK: f32 = 0.6;
+const MAX_DECAY_DB: f32 = 0.35;
+/// The recent-min follower: falls toward a new valley faster than it
+/// climbs back off one.
+const MIN_FALL: f32 = 0.5;
+const MIN_RISE: f32 = 0.15;
+/// The min's climb stops this far short of the envelope and the
+/// normalize span never drops under the same floor, so a flat feed
+/// still has a range to read against.
+const MIN_SPAN_DB: f32 = 8.0;
+/// Added to the span, so a fresh peak maps just under full scale
+/// instead of pinning it.
+const HEADROOM_DB: f32 = 2.0;
 const GAMMA: f32 = 0.9;
 /// Floor the raw feed stands in at for structural silence, so the
 /// envelope arithmetic stays finite.
 const SILENCE_DB: f32 = -52.0;
-/// Envelope and reference start points: under the gate, with an
+/// Envelope and follower start points: under the gate, with an
 /// autosens prior a quiet first syllable can still rise against.
 const START_ENV_DB: f32 = -50.0;
-const START_REFERENCE_DB: f32 = -30.0;
+const START_MAX_DB: f32 = -30.0;
 
 // The v3 handoff palette. Blue and green match the review accents'
 // values but carry dictate semantics, so they are named here rather
@@ -86,22 +96,50 @@ fn envelope_step(env_db: f32, raw_db: f32) -> f32 {
     env_db + (raw_db - env_db) * rate
 }
 
-/// The rolling reference decays slowly and never drops below the
-/// envelope, so it is the take's own loudness the meter scales against.
-fn reference_step(env_db: f32, reference_db: f32) -> f32 {
-    env_db.max(reference_db - REFERENCE_DECAY_DB)
+/// The loudest envelope moment of the last couple of seconds. The
+/// decay never drops below the envelope.
+fn recent_max_step(max_db: f32, env_db: f32) -> f32 {
+    if env_db > max_db {
+        max_db + (env_db - max_db) * MAX_ATTACK
+    } else {
+        (max_db - MAX_DECAY_DB).max(env_db)
+    }
 }
 
-/// Gate, scale against the reference span, then soften with the mock's
-/// gamma. Anything at or under the take's own silence floor is
-/// structurally zero - the same condition `Outcome::NoAudio` reports,
-/// so the meter and the verdict agree by construction.
-fn normalize(env_db: f32, reference_db: f32, floor_db: f32) -> f32 {
+/// The recent-min follower, the max's mirror over speech valleys. It
+/// falls toward a new low faster than it climbs back off one, and the
+/// climb stops a span short of the envelope so a flat feed keeps a
+/// range to read against. Structural silence teaches it nothing: a
+/// pause is not part of the speech the meter scales against.
+fn recent_min_step(min_db: f32, env_db: f32, floor_db: f32) -> f32 {
+    if env_db <= floor_db {
+        return min_db;
+    }
+    if env_db < min_db {
+        min_db + (env_db - min_db) * MIN_FALL
+    } else {
+        // The margin caps the climb but never pulls the min down, or
+        // a shallow dip would lose its depth against the span.
+        let risen = min_db + (env_db - min_db) * MIN_RISE;
+        risen.min(min_db.max(env_db - MIN_SPAN_DB))
+    }
+}
+
+/// Gate, scale against the envelope's recent dynamic range, then
+/// soften with the mock's gamma. Real mic AGC compresses syllables
+/// into a narrow band, so the meter scales against the recent max-min
+/// span and shows speech shape invariant to the mic's overall gain;
+/// the span floor keeps a flat feed finite and the headroom keeps a
+/// fresh peak just under full scale. Anything at or under the take's
+/// own silence floor is structurally zero - the same condition
+/// `Outcome::NoAudio` reports, so the meter and the verdict agree by
+/// construction.
+fn normalize(env_db: f32, recent_max_db: f32, recent_min_db: f32, floor_db: f32) -> f32 {
     if !env_db.is_finite() || env_db <= floor_db {
         return 0.0;
     }
-    let span = (reference_db - floor_db).max(MIN_SPAN_DB);
-    (((env_db - floor_db) / span).clamp(0.0, 1.0)).powf(GAMMA)
+    let span = (recent_max_db - recent_min_db).max(MIN_SPAN_DB) + HEADROOM_DB;
+    (((env_db - recent_min_db) / span).clamp(0.0, 1.0)).powf(GAMMA)
 }
 
 /// Map a normalized fraction onto the ramp. The floor glyph is zero: a
@@ -117,12 +155,14 @@ pub(crate) fn level_cell(frac: f32) -> char {
 
 /// The TUI-side normalized meter. `forge-dictate` stays host-blind: it
 /// keeps feeding per-window `peak_db`, and everything display-side -
-/// envelope ballistics, autosens reference, noise gate - lives here.
+/// envelope ballistics, recent dynamic-range followers, noise gate -
+/// lives here.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DictateMeter {
     floor_db: f32,
     env_db: f32,
-    reference_db: f32,
+    recent_max_db: f32,
+    recent_min_db: f32,
     /// Newest-last sliding window of normalized fractions.
     levels: Vec<f32>,
 }
@@ -132,7 +172,8 @@ impl DictateMeter {
         Self {
             floor_db,
             env_db: START_ENV_DB,
-            reference_db: START_REFERENCE_DB,
+            recent_max_db: START_MAX_DB,
+            recent_min_db: START_ENV_DB,
             levels: vec![0.0; METER_WIDTH],
         }
     }
@@ -140,11 +181,12 @@ impl DictateMeter {
     /// One 50 ms window peak; the oldest normalized frame falls off.
     pub(crate) fn push(&mut self, peak_db: f32) {
         // A non-finite reading is silence: +inf would latch the
-        // reference and poison the meter for the rest of the take.
+        // followers and poison the meter for the rest of the take.
         let raw = if peak_db.is_finite() { peak_db.clamp(SILENCE_DB, 0.0) } else { SILENCE_DB };
         self.env_db = envelope_step(self.env_db, raw);
-        self.reference_db = reference_step(self.env_db, self.reference_db);
-        let frac = normalize(self.env_db, self.reference_db, self.floor_db);
+        self.recent_max_db = recent_max_step(self.recent_max_db, self.env_db);
+        self.recent_min_db = recent_min_step(self.recent_min_db, self.env_db, self.floor_db);
+        let frac = normalize(self.env_db, self.recent_max_db, self.recent_min_db, self.floor_db);
         if self.levels.len() >= METER_WIDTH {
             self.levels.remove(0);
         }
@@ -177,7 +219,6 @@ pub(crate) struct DictateIndicator {
     pub(crate) started: Instant,
     /// Elapsed recording time, frozen when transcription begins.
     pub(crate) recording_duration: Option<Duration>,
-    pub(crate) transcribing_since: Option<Instant>,
     /// The cursor spot's held dB figure and when it was stamped.
     db_shown: f32,
     db_shown_at: Instant,
@@ -202,7 +243,6 @@ impl DictateIndicator {
             meter: DictateMeter::new(floor_db),
             started: now,
             recording_duration: None,
-            transcribing_since: None,
             db_shown: START_ENV_DB,
             db_shown_at: now,
             generation,
@@ -223,7 +263,6 @@ impl DictateIndicator {
             self.recording_duration = Some(self.started.elapsed());
         }
         self.phase = DictatePhase::Transcribing;
-        self.transcribing_since = Some(Instant::now());
     }
 
     /// The mm:ss figure the status row shows: live while recording,
@@ -235,7 +274,7 @@ impl DictateIndicator {
         }
     }
 
-    /// The cursor spot's dB figure and its colour level, throttled to
+    /// The status row's dB figure and its colour level, throttled to
     /// 5 Hz display-side. Between refreshes the held figure stands.
     pub(crate) fn db_readout(&mut self, now: Instant) -> (f32, f32) {
         if now.duration_since(self.db_shown_at).as_millis() >= DB_READOUT_MS {
@@ -243,13 +282,6 @@ impl DictateIndicator {
             self.db_shown_at = now;
         }
         (self.db_shown, self.meter.current())
-    }
-
-    /// Past the silence threshold, so the status row may draw. Before
-    /// it the box shows nothing at all.
-    pub(crate) fn transcribing_overdue(&self) -> bool {
-        self.transcribing_since
-            .is_some_and(|since| since.elapsed().as_millis() >= TRANSCRIBING_INDICATOR_MS)
     }
 }
 
@@ -432,51 +464,42 @@ pub(crate) fn dictate_owns_esc(app: &App) -> bool {
 }
 
 /// Whether the composer renders its one interior row: a stamped
-/// post-take notice, or the status row while a take is live - always
-/// while recording, and only past the silence threshold while
-/// transcribing. Drives both the render and the layout height so the
-/// two never disagree.
+/// post-take notice, or the status row while a take is live - either
+/// phase, however brief the transcription. Drives both the render and
+/// the layout height so the two never disagree.
 pub(crate) fn dictate_row_visible(app: &App) -> bool {
     let Some(bucket) = app.active_session() else { return false };
     if bucket.visible_dictate_notice().is_some() {
         return true;
     }
-    match bucket.dictate.as_ref() {
-        None => false,
-        Some(indicator) => match indicator.phase {
-            DictatePhase::Recording => true,
-            DictatePhase::Transcribing => indicator.transcribing_overdue(),
-        },
-    }
+    bucket.dictate.is_some()
 }
 
 /// The row's content: a stamped post-take notice when present, else
 /// the live take's status row. The two never share the slot.
-pub(crate) fn dictate_row_content(app: &App, width: usize) -> Line<'static> {
-    let Some(bucket) = app.active_session() else { return Line::default() };
+pub(crate) fn dictate_row_content(app: &mut App, width: usize) -> Line<'static> {
+    let reduced_motion = app.config.prefers_reduced_motion_effective();
+    let pulse_ms = app.spinner_epoch.elapsed().as_secs_f32() * 1000.0;
+    let Some(bucket) = app.try_active_bucket_mut() else { return Line::default() };
     if let Some(notice) = bucket.visible_dictate_notice() {
         return Line::from(Span::styled(
             format!("  {}", notice.text),
             notice_style(notice.severity),
         ));
     }
-    let Some(indicator) = bucket.dictate.as_ref() else { return Line::default() };
-    status_row(
-        indicator,
-        width,
-        app.config.prefers_reduced_motion_effective(),
-        app.spinner_epoch.elapsed().as_secs_f32() * 1000.0,
-    )
+    let Some(indicator) = bucket.dictate.as_mut() else { return Line::default() };
+    status_row(indicator, width, reduced_motion, pulse_ms, Instant::now())
 }
 
-/// The status row for a live take: indicator dot, mm:ss timer, label,
-/// meter, right-aligned esc hint. Both live states share the anatomy;
-/// only colour and freeze change on the handoff.
+/// The status row for a live take: indicator dot, mm:ss timer, live dB
+/// figure, label, meter, right-aligned esc hint. Both live states share
+/// the anatomy; only colour and freeze change on the handoff.
 fn status_row(
-    indicator: &DictateIndicator,
+    indicator: &mut DictateIndicator,
     width: usize,
     reduced_motion: bool,
     pulse_ms: f32,
+    now: Instant,
 ) -> Line<'static> {
     let recording = indicator.phase == DictatePhase::Recording;
     let dot_glyph = if recording { "\u{25cf}" } else { "\u{25cc}" };
@@ -484,8 +507,27 @@ fn status_row(
     let timer_text = format_clock(indicator.take_elapsed());
     let label = if recording { "listening " } else { "transcribing " };
     let esc = "esc cancel";
+    // The dB figure the caret spot used to carry: its text is the 5 Hz
+    // held reading, its colour follows the live level and dims when
+    // gated. Transcription holds it DIM beside the frozen meter.
+    let (db, level) = indicator.db_readout(now);
+    #[allow(clippy::cast_possible_truncation)]
+    let whole_db = db.round() as i64;
+    let db_text = format!("{whole_db} dB");
+    let db_colour = if recording && level > FLOOR_FRAC {
+        rgbf(mix3(mix3(METER_LOW, ORANGE, 0.4 + 0.6 * level), HOT, level * 0.5))
+    } else {
+        theme::DIM
+    };
 
-    let prefix_len = 2 + 1 + 1 + timer_text.chars().count() + 1 + label.chars().count();
+    let prefix_len = 2
+        + 1
+        + 1
+        + timer_text.chars().count()
+        + 1
+        + db_text.chars().count()
+        + 1
+        + label.chars().count();
     let space = width.saturating_sub(prefix_len + esc.len());
     let meter_len = METER_WIDTH.min(space.saturating_sub(1));
     let pad = space - meter_len;
@@ -507,6 +549,8 @@ fn status_row(
             timer_text,
             Style::default().fg(if recording { theme::RUST_ORANGE } else { theme::DIM }),
         ),
+        Span::raw(" "),
+        Span::styled(db_text, Style::default().fg(db_colour)),
         Span::raw(" "),
         Span::styled(label.to_owned(), Style::default().fg(theme::DIM)),
     ];
@@ -544,39 +588,6 @@ fn format_clock(elapsed: Duration) -> String {
     format!("{}:{:02}", secs / 60, secs % 60)
 }
 
-/// The cursor spot's live dB readout while recording: the text to
-/// paint at the caret and its colour. `None` outside a recording, so
-/// the normal blinking cursor stands.
-pub(crate) fn active_db_readout(app: &mut App, now: Instant) -> Option<(String, Color)> {
-    let bucket = app.try_active_bucket_mut()?;
-    let indicator = bucket.dictate.as_mut()?;
-    if indicator.phase != DictatePhase::Recording {
-        return None;
-    }
-    // The readout paints the cells after the caret, so it only shows
-    // at end-of-draft, where the design depicts it; mid-draft the
-    // blinking cursor stands and the draft keeps its text.
-    let (row, col) = bucket.input.cursor();
-    let last_row = bucket.input.lines().len().saturating_sub(1);
-    let last_col = bucket.input.lines().last().map_or(0, |line| line.chars().count());
-    if row != last_row || col != last_col {
-        return None;
-    }
-    let (db, _) = indicator.db_readout(now);
-    // Rounded to whole dB; the environment sits within (-100, 0), so
-    // the value is a small integer already.
-    #[allow(clippy::cast_possible_truncation)]
-    let whole_db = db.round() as i64;
-    let text = format!("{whole_db} dB");
-    let level = indicator.meter.current();
-    let colour = if level > FLOOR_FRAC {
-        rgbf(mix3(mix3(METER_LOW, ORANGE, 0.4 + 0.6 * level), HOT, level * 0.5))
-    } else {
-        theme::DIM
-    };
-    Some((text, colour))
-}
-
 /// Colour for a stamped notice's severity.
 pub(crate) fn notice_style(severity: NoticeSeverity) -> Style {
     match severity {
@@ -609,13 +620,32 @@ mod tests {
     #[test]
     fn the_noise_gate_holds_everything_below_the_floor() {
         let floor = -46.0;
-        assert!(normalize(-52.0, -30.0, floor).abs() < f32::EPSILON, "below the gate is silence");
-        assert!(normalize(floor, -30.0, floor).abs() < f32::EPSILON, "at the gate is silence");
         assert!(
-            normalize(f32::NEG_INFINITY, -30.0, floor).abs() < f32::EPSILON,
+            normalize(-52.0, -30.0, -46.0, floor).abs() < f32::EPSILON,
+            "below the gate is silence"
+        );
+        assert!(
+            normalize(floor, -30.0, -46.0, floor).abs() < f32::EPSILON,
+            "at the gate is silence"
+        );
+        assert!(
+            normalize(f32::NEG_INFINITY, -30.0, -46.0, floor).abs() < f32::EPSILON,
             "no signal is silence"
         );
-        assert!(normalize(-40.0, -30.0, floor) > 0.0, "above the gate has signal");
+        assert!(normalize(-40.0, -30.0, -46.0, floor) > 0.0, "above the gate has signal");
+    }
+
+    #[test]
+    fn headroom_keeps_a_fresh_peak_just_under_full_scale() {
+        let at_max = normalize(-20.0, -20.0, -34.0, -50.0);
+        assert!(at_max < 1.0, "a peak at the recent max does not pin full scale, got {at_max}");
+        let past_max = normalize(-20.0, -24.0, -34.0, -50.0);
+        assert!(
+            (past_max - 1.0).abs() < f32::EPSILON,
+            "a peak past the recent max may touch full scale"
+        );
+        let flat = normalize(-20.0, -20.0, -26.0, -50.0);
+        assert!(flat > 0.4, "the floored span keeps a flat feed finite and readable, got {flat}");
     }
 
     #[test]
@@ -630,17 +660,45 @@ mod tests {
     }
 
     #[test]
-    fn the_rolling_reference_decays_slowly_and_never_drops_below_the_envelope() {
-        let decayed = reference_step(-40.0, -30.0);
+    fn the_recent_max_grabs_a_peak_and_forgets_it_slowly() {
+        let grabbed = recent_max_step(-30.0, -20.0);
         assert!(
-            (decayed - (-30.0 - REFERENCE_DECAY_DB)).abs() < 1e-5,
-            "one tick decays exactly the reference step, got {decayed}"
+            grabbed > -25.0,
+            "one tick closes most of a 10 dB gap onto a new peak, got {grabbed}"
         );
-        let floored = reference_step(-20.0, -30.0);
-        assert!((floored + 20.0).abs() < f32::EPSILON, "the envelope floors the reference");
+        let decayed = recent_max_step(-20.0, -40.0);
         assert!(
-            reference_step(-40.0, -30.0) > -38.0,
-            "a second of decay is under 14 dB, so quiet speech still scales against the reference"
+            (decayed - -20.35).abs() < 1e-4,
+            "away from the envelope the max decays exactly the 0.35 dB step, got {decayed}"
+        );
+        assert!(decayed > -40.0, "the decay never drops below the envelope");
+    }
+
+    #[test]
+    fn the_recent_min_catches_a_valley_and_climbs_off_it_slowly() {
+        let caught = recent_min_step(-26.0, -32.0, -50.0);
+        assert!(
+            (caught - -29.0).abs() < 1e-4,
+            "a dip below the min falls exactly the 0.5 step, got {caught}"
+        );
+        let climbed = recent_min_step(-32.0, -20.0, -50.0);
+        assert!(
+            (climbed - (-32.0 + (-20.0 + 32.0) * MIN_RISE)).abs() < 1e-4,
+            "speech above the min climbs it one proportional step, got {climbed}"
+        );
+        let capped = recent_min_step(-29.0, -20.0, -50.0);
+        assert!(
+            (capped - (-20.0 - MIN_SPAN_DB)).abs() < 1e-4,
+            "the climb stops a span short of the envelope, so a steady tone keeps a range, \
+             got {capped}"
+        );
+        assert!(
+            (recent_min_step(-28.0, -24.0, -50.0) - -28.0).abs() < 1e-4,
+            "a shallow dip holds the min instead of yanking it down"
+        );
+        assert!(
+            (recent_min_step(-30.0, -52.0, -50.0) - -30.0).abs() < 1e-4,
+            "structural silence teaches the min nothing"
         );
     }
 
@@ -653,21 +711,91 @@ mod tests {
         assert_eq!(level_cell(2.0), LEVEL_RAMP[7], "over-scale clamps to the full block");
     }
 
+    /// One spoken syllable at `level` with a short shallow dip after
+    /// it, into a fresh meter; answers the loudest frame read during
+    /// the syllable itself.
+    fn syllable_peak(meter: &mut DictateMeter, level: f32) -> f32 {
+        let mut peak: f32 = 0.0;
+        for _ in 0..6 {
+            meter.push(level);
+            peak = peak.max(meter.current());
+        }
+        for _ in 0..2 {
+            meter.push(-40.0);
+        }
+        peak
+    }
+
     #[test]
-    fn the_rolling_reference_scales_a_softer_voice_below_the_burst() {
-        let mut meter = DictateMeter::new(-50.0);
-        for _ in 0..40 {
-            meter.push(-18.0);
+    fn two_syllables_ten_db_apart_read_several_ramp_steps_apart() {
+        let mut gaps = Vec::new();
+        for offset in [0.0, -12.0] {
+            let mut meter = DictateMeter::new(-50.0);
+            let loud = syllable_peak(&mut meter, -20.0 + offset);
+            let quiet = syllable_peak(&mut meter, -30.0 + offset);
+            assert!(
+                loud > quiet,
+                "the meter shows the shape: the louder syllable reads higher \
+                 (offset {offset}: loud {loud:.2}, quiet {quiet:.2})"
+            );
+            gaps.push((loud - quiet) * 7.0);
         }
-        let burst = meter.current();
-        for _ in 0..8 {
-            meter.push(-34.0);
+        for (offset, gap) in [0.0, -12.0].iter().zip(gaps.iter()) {
+            assert!(
+                *gap >= 3.0,
+                "syllables 10 dB apart land several ramp steps apart whatever the \
+                 absolute level (offset {offset}: {gap:.1} steps)"
+            );
         }
-        let softer = meter.current();
         assert!(
-            softer > 0.1 && softer < burst,
-            "after a loud burst the reference holds, so a softer voice reads mid-scale \
-             instead of pegging: softer {softer:.2}, burst {burst:.2}"
+            (gaps[0] - gaps[1]).abs() <= 2.0,
+            "the step gap is roughly invariant to the mic's overall gain, got \
+             {:.1} vs {:.1} steps",
+            gaps[0],
+            gaps[1]
+        );
+    }
+
+    #[test]
+    fn the_meter_dances_through_a_three_push_take() {
+        // AGC-compressed speech: syllable peaks within a couple of dB,
+        // short shallow dips between them. The window must span the
+        // ramp instead of pinning in the top cells.
+        let mut meter = DictateMeter::new(-50.0);
+        for level in [-20.0, -21.0, -19.0] {
+            for _ in 0..6 {
+                meter.push(level);
+            }
+            for _ in 0..2 {
+                meter.push(-40.0);
+            }
+        }
+        let window = meter.window();
+        let lowest = window.iter().copied().reduce(f32::min).expect("the window is never empty");
+        let highest = window.iter().copied().reduce(f32::max).expect("the window is never empty");
+        assert!(lowest < 0.3, "the meter comes down between pushes, got {lowest:.2}");
+        assert!(highest > 0.6, "the meter rises onto the pushes, got {highest:.2}");
+        assert!(
+            highest - lowest >= 0.5,
+            "the meter dances across the ramp instead of pinning, span {:.2}",
+            highest - lowest
+        );
+        let mut glyphs: Vec<char> = window.iter().map(|frac| level_cell(*frac)).collect();
+        glyphs.sort_unstable();
+        glyphs.dedup();
+        assert!(glyphs.len() >= 4, "the rendered cells cover several ramp steps, got {glyphs:?}");
+    }
+
+    #[test]
+    fn a_steady_tone_holds_mid_scale_instead_of_collapsing() {
+        let mut meter = DictateMeter::new(-50.0);
+        for _ in 0..80 {
+            meter.push(-20.0);
+        }
+        let steady = meter.current();
+        assert!(
+            (0.6..=0.9).contains(&steady),
+            "a sustained tone keeps a span against itself and reads mid-scale, got {steady:.2}"
         );
     }
 
@@ -707,9 +835,9 @@ mod tests {
             meter.env_db()
         );
         assert!(
-            (meter.current() - 0.9392).abs() < 1e-3,
-            "the first frame scales -32 against the decayed -30.7 reference under the 0.9 \
-             gamma, got {}",
+            (meter.current() - 0.825).abs() < 1e-2,
+            "the first frame scales -32 against the -30.35 max and the -47.3 min under \
+             the floored span, got {}",
             meter.current()
         );
         meter.push(-20.0);
@@ -718,7 +846,18 @@ mod tests {
         assert!((meter.env_db() + 21.92).abs() < 1e-3, "the third attack step lands at -21.92");
         assert!(
             (meter.current() - 1.0).abs() < 1e-3,
-            "once the reference meets the envelope the meter reads full scale, got {}",
+            "once the envelope passes the recent max the meter reads full scale, got {}",
+            meter.current()
+        );
+        meter.push(-40.0);
+        assert!(
+            (meter.env_db() + 26.44).abs() < 1e-3,
+            "one release step at 0.25 from -21.92 lands at -26.44, got {}",
+            meter.env_db()
+        );
+        assert!(
+            (meter.current() - 0.767).abs() < 1e-3,
+            "the dip frame scales against the decayed max and the risen min, got {}",
             meter.current()
         );
     }
@@ -737,14 +876,17 @@ mod tests {
         }
         bucket.dictate = Some(indicator);
 
-        // At 35 cols the meter shrinks to five cells; the newest five
-        // frames are silence, so those cells are the floor glyph - the
-        // loud frames have already scrolled off the left.
-        let line = dictate_row_content(&app, 35);
+        // At 45 cols the meter shrinks to eight cells; the newest
+        // eight frames are silence, so those cells are the floor
+        // glyph - the loud frames have already scrolled off the left.
+        let line = dictate_row_content(&mut app, 45);
         let cells: Vec<&str> = line.spans.iter().map(|span| span.content.as_ref()).collect();
         assert_eq!(
-            &cells[6..11],
-            &["\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}"],
+            &cells[8..16],
+            &[
+                "\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}",
+                "\u{2581}"
+            ],
             "a narrow meter renders the newest frames, so the right edge is now"
         );
     }
@@ -798,31 +940,14 @@ mod tests {
     }
 
     #[test]
-    fn transcribing_hides_the_row_until_three_seconds_then_brings_it_back() {
+    fn transcribing_shows_the_row_the_moment_the_phase_flips() {
         let mut app = App::test_default();
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
-        {
-            let bucket = app.session_mut(&key).expect("bucket");
-            let mut indicator = DictateIndicator::recording(-50.0, 1);
-            indicator.begin_transcribing();
-            bucket.dictate = Some(indicator);
-        }
-        assert!(
-            !dictate_row_visible(&app),
-            "a warm take never flashes the row back after the collapse"
-        );
-
         let bucket = app.session_mut(&key).expect("bucket");
-        let indicator = bucket.dictate.as_mut().expect("a take is in flight");
-        indicator.transcribing_since = Some(
-            Instant::now()
-                .checked_sub(Duration::from_millis(3001))
-                .expect("a 3 s backdate is safe"),
-        );
-        assert!(
-            dictate_row_visible(&app),
-            "only a cold start past the silence threshold redraws the row"
-        );
+        let mut indicator = DictateIndicator::recording(-50.0, 1);
+        indicator.begin_transcribing();
+        bucket.dictate = Some(indicator);
+        assert!(dictate_row_visible(&app), "the transcribing row renders however brief the phase");
     }
 
     #[test]
@@ -837,7 +962,7 @@ mod tests {
         });
 
         assert!(dictate_row_visible(&app), "the notice keeps its row");
-        let line = dictate_row_content(&app, 74);
+        let line = dictate_row_content(&mut app, 74);
         let text: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
         assert!(
             text.contains("try again") && !text.contains("listening"),
@@ -1090,18 +1215,64 @@ mod tests {
     }
 
     #[test]
-    fn the_db_readout_is_a_recording_only_surface() {
+    fn the_db_figure_rides_the_status_row() {
         let mut app = App::test_default();
-        assert_eq!(active_db_readout(&mut app, Instant::now()), None, "idle has no readout");
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
-        let bucket = app.session_mut(&key).expect("bucket");
-        let mut indicator = DictateIndicator::recording(-50.0, 1);
-        indicator.begin_transcribing();
-        bucket.dictate = Some(indicator);
+        {
+            let bucket = app.session_mut(&key).expect("bucket");
+            bucket.dictate = Some(DictateIndicator::recording(-50.0, 1));
+        }
+        let line = dictate_row_content(&mut app, 74);
+        let texts: Vec<&str> = line.spans.iter().map(|span| span.content.as_ref()).collect();
+        let timer = texts.iter().position(|t| *t == "0:00").expect("the timer is on the row");
+        assert_eq!(texts[timer + 2], "-50 dB", "the live figure sits right after the timer");
+        assert!(
+            texts[timer + 4].starts_with("listening"),
+            "the label follows the figure, got {texts:?}"
+        );
+        assert_eq!(line.spans[timer + 2].style.fg, Some(theme::DIM), "a gated figure dims");
+
+        {
+            let bucket = app.session_mut(&key).expect("bucket");
+            let indicator = bucket.dictate.as_mut().expect("a take is in flight");
+            for _ in 0..10 {
+                indicator.push_level(-6.0);
+            }
+        }
+        let line = dictate_row_content(&mut app, 74);
+        let texts: Vec<&str> = line.spans.iter().map(|span| span.content.as_ref()).collect();
+        let timer = texts.iter().position(|t| *t == "0:00").expect("the timer is on the row");
+        assert_ne!(
+            line.spans[timer + 2].style.fg,
+            Some(theme::DIM),
+            "a loud figure takes the level colour, got {:?}",
+            line.spans[timer + 2].style.fg
+        );
+    }
+
+    #[test]
+    fn the_transcribing_row_holds_the_figure_dim() {
+        let mut app = App::test_default();
+        let key = app.active_session_key.clone().expect("test_default has an active bucket");
+        {
+            let bucket = app.session_mut(&key).expect("bucket");
+            let mut indicator = DictateIndicator::recording(-50.0, 1);
+            for _ in 0..10 {
+                indicator.push_level(-6.0);
+            }
+            indicator.begin_transcribing();
+            bucket.dictate = Some(indicator);
+        }
+        let line = dictate_row_content(&mut app, 74);
+        let texts: Vec<&str> = line.spans.iter().map(|span| span.content.as_ref()).collect();
+        let figure = texts
+            .iter()
+            .position(|t| t.ends_with(" dB"))
+            .expect("the frozen figure stays on the row");
         assert_eq!(
-            active_db_readout(&mut app, Instant::now()),
-            None,
-            "transcription returns the normal blinking cursor"
+            line.spans[figure].style.fg,
+            Some(theme::DIM),
+            "the frozen figure dims alongside the frozen meter"
         );
     }
 

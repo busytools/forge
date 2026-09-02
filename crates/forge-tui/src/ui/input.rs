@@ -282,22 +282,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     }
     frame.render_widget(app.input().editor(), text_rect);
 
-    // While a take is recording, the cursor spot carries the live dB
-    // figure instead of the blinking block. The caret cell is the one
-    // the textarea drew with the cursor style; the readout overwrites
-    // it and the cells after it.
-    if let Some((text, colour)) = crate::app::dictate::active_db_readout(app, Instant::now())
-        && let Some((x, y)) = caret_cell(frame, text_rect)
-    {
-        let width = u16::try_from(text.chars().count()).unwrap_or(u16::MAX);
-        let area = Rect { x, y, width, height: 1 };
-        // The caret cell carries the cursor's blink style; the readout
-        // must fully own the cells it covers.
-        frame.buffer_mut().set_style(area, Style::reset());
-        let readout = Paragraph::new(Line::from(Span::styled(text, Style::default().fg(colour))));
-        frame.render_widget(readout, area);
-    }
-
     if let Some(sel) = app.selection().copied()
         && sel.kind == crate::app::SelectionKind::Input
     {
@@ -335,21 +319,6 @@ pub(crate) fn draft_text_area(area: Rect, app: &App) -> Rect {
     let [_prompt, text] =
         Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)]).areas(body);
     text
-}
-
-/// The caret's on-screen cell: the one cell the textarea drew with the
-/// cursor's slow-blink style.
-fn caret_cell(frame: &mut Frame, area: Rect) -> Option<(u16, u16)> {
-    for y in area.y..area.bottom() {
-        for x in area.x..area.right() {
-            if let Some(cell) = frame.buffer_mut().cell((x, y))
-                && cell.style().add_modifier.contains(Modifier::SLOW_BLINK)
-            {
-                return Some((x, y));
-            }
-        }
-    }
-    None
 }
 
 fn configure_input_textarea(app: &mut App) {
@@ -752,7 +721,7 @@ mod tests {
         }
 
         #[test]
-        fn transcribing_hides_the_row_until_three_seconds_then_freezes_the_meter() {
+        fn transcribing_shows_the_row_immediately_and_freezes_the_meter() {
             let mut app = App::test_default();
             let key = active_key(&app);
             apply_session_update(
@@ -772,22 +741,8 @@ mod tests {
 
             let rows = render_input(&mut app, 80, 5);
             assert!(
-                !rows[1].contains("transcribing") && !rows[1].contains("listening"),
-                "a warm take never flashes the row back, got: {}",
-                rows[1]
-            );
-
-            let bucket = app.session_mut(&key).expect("bucket");
-            let indicator = bucket.dictate.as_mut().expect("a take is in flight");
-            indicator.transcribing_since = Some(
-                Instant::now()
-                    .checked_sub(Duration::from_millis(4000))
-                    .expect("a 4 s backdate is safe"),
-            );
-            let rows = render_input(&mut app, 80, 5);
-            assert!(
                 rows[1].contains("transcribing") && rows[1].contains("esc cancel"),
-                "past the threshold the row reappears in transcribing form, got: {}",
+                "the row renders the moment the phase flips, got: {}",
                 rows[1]
             );
             assert!(
@@ -856,13 +811,15 @@ mod tests {
         }
 
         #[test]
-        fn the_recording_cursor_spot_shows_the_live_db_figure() {
+        fn the_recording_caret_keeps_the_normal_blinking_block() {
             let mut app = App::test_default();
             let key = active_key(&app);
             apply_session_update(
                 &mut app,
                 SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1 },
             );
+            app.input_mut().set_text("hello world");
+            app.input_mut().set_cursor_col(11);
 
             let mut terminal = Terminal::new(TestBackend::new(80, 4)).expect("terminal");
             terminal.draw(|frame| render(frame, frame.area(), &mut app)).expect("draw");
@@ -873,34 +830,17 @@ mod tests {
                 })
                 .collect();
             assert!(
-                draft_row.contains("-50 dB"),
-                "the caret cell carries the live dB figure, got: {draft_row}"
+                draft_row.contains("hello world"),
+                "the landed draft renders untouched while recording, got: {draft_row}"
             );
-            let caret = buffer.cell((3, 2)).expect("caret cell").style();
-            assert!(
-                !caret.add_modifier.contains(ratatui::style::Modifier::SLOW_BLINK),
-                "the readout replaces the blinking block, not a bouncing block beside it"
-            );
-
-            // Mid-draft the readout would paint over real words, so it
-            // stands down and the normal cursor returns.
-            app.input_mut().set_text("hello world");
-            app.input_mut().set_cursor_col(5);
-            terminal.draw(|frame| render(frame, frame.area(), &mut app)).expect("draw");
-            let buffer = terminal.backend().buffer().clone();
-            let draft_row: String = (0..80)
-                .map(|x| {
-                    buffer.cell((x, 2)).map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
-                })
-                .collect();
             assert!(
                 !draft_row.contains("dB"),
-                "a mid-draft caret keeps the readout off, got: {draft_row}"
+                "no readout paints over the draft any more, got: {draft_row}"
             );
-            let caret = buffer.cell((8, 2)).expect("caret cell mid-draft").style();
+            let caret = buffer.cell((14, 2)).expect("caret cell").style();
             assert!(
                 caret.add_modifier.contains(ratatui::style::Modifier::SLOW_BLINK),
-                "the blinking cursor stands in the readout's place"
+                "the caret is the normal blinking block while recording"
             );
         }
 

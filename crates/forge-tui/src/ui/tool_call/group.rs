@@ -795,6 +795,20 @@ mod tests {
         }
     }
 
+    /// A lone skill run nests the invoked skill name (+ args) under the
+    /// `✦ skill` row - the bare "Skill" child row the old title fallback
+    /// produced is gone, with no click needed to see which skill ran.
+    #[test]
+    fn lone_skill_nests_the_invoked_skill() {
+        let s = summary(vec![kl("\u{2726}", "skill", 1, &["pr-review-loop 661"])]);
+        let lines = render(&s, ToolCallStatus::Completed, 80);
+        let text: Vec<String> = lines.iter().map(line_text).collect();
+        assert_eq!(lines.len(), 3, "parent + bare skill row + one child: {text:?}");
+        assert_eq!(text[0], "  \u{2713} 1 tool call   ctrl+x to expand", "{:?}", text[0]);
+        assert_eq!(text[1], "  \u{2514}\u{2500} \u{2726} skill", "{:?}", text[1]);
+        assert_eq!(text[2], "     \u{2514}\u{2500} pr-review-loop 661", "{:?}", text[2]);
+    }
+
     /// A lone MCP call (count 1, one tool sub-name) nests the sub-name
     /// under the server row, like a server with several calls.
     #[test]
