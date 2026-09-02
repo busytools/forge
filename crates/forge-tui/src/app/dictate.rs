@@ -457,7 +457,7 @@ fn status_row(
     ];
     // A narrow interior truncates the meter from the left: the right
     // edge is always the newest frame.
-    spans.extend(indicator.meter.window().iter().take(meter_len).map(|frac| {
+    spans.extend(indicator.meter.window().iter().rev().take(meter_len).rev().map(|frac| {
         Span::styled(
             level_cell(*frac).to_string(),
             Style::default().fg(meter_cell_colour(*frac, indicator.phase)),
@@ -625,6 +625,32 @@ mod tests {
         );
         meter.push(-18.0);
         assert_eq!(meter.window().len(), METER_WIDTH, "one more push evicts, never grows");
+    }
+
+    #[test]
+    fn a_truncated_meter_keeps_the_newest_frames() {
+        let mut app = App::test_default();
+        let key = app.active_session_key.clone().expect("test_default has an active bucket");
+        let bucket = app.session_mut(&key).expect("bucket");
+        let mut indicator = DictateIndicator::recording(-50.0, 1);
+        for _ in 0..10 {
+            indicator.push_level(-6.0);
+        }
+        for _ in 0..20 {
+            indicator.push_level(-52.0);
+        }
+        bucket.dictate = Some(indicator);
+
+        // At 35 cols the meter shrinks to five cells; the newest five
+        // frames are silence, so those cells are the floor glyph - the
+        // loud frames have already scrolled off the left.
+        let line = dictate_row_content(&app, 35);
+        let cells: Vec<&str> = line.spans.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(
+            &cells[6..11],
+            &["\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}", "\u{2581}"],
+            "a narrow meter renders the newest frames, so the right edge is now"
+        );
     }
 
     #[test]
