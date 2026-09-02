@@ -189,19 +189,17 @@ fn subtree_bytes(root: &ProcessEntry, children_of: &HashMap<u32, Vec<&ProcessEnt
     visit(root, children_of, &mut visited)
 }
 
-/// Among candidates for one server, the process that reaches all the
-/// others (the `npm exec` parent over its collapsed `node` child).
+/// The one candidate that reaches all the others (the `npm exec`
+/// parent over its collapsed `node` child). `None` when the candidates
+/// are disjoint siblings - picking one would be snapshot-order luck, so
+/// the bucket claims nothing and every candidate keeps rendering in
+/// PROCESSES.
 fn pick_ancestor(pids: &[u32], children_of: &HashMap<u32, Vec<&ProcessEntry>>) -> Option<u32> {
-    let first = *pids.first()?;
-    let mut best = first;
-    for &pid in pids {
+    pids.iter().copied().find(|&pid| {
         let mut reachable = HashSet::new();
         collect_descendants(pid, children_of, &mut reachable);
-        if reachable.contains(&best) {
-            best = pid;
-        }
-    }
-    Some(best)
+        pids.iter().all(|&other| other == pid || reachable.contains(&other))
+    })
 }
 
 fn claim_subtree(
@@ -419,6 +417,36 @@ mod tests {
             "the process keeps rendering in PROCESSES; got {:?}",
             coll.rows,
         );
+    }
+
+    #[test]
+    fn sibling_processes_matching_one_server_claim_nothing() {
+        // Subset-args shape: a bare `npm exec <pkg>` beside the full
+        // `npm exec <pkg> --cdp-endpoint ...` both text-match a config
+        // that carries no distinguishing args. One bucket, disjoint
+        // siblings - picking either would be snapshot-order luck, so the
+        // bucket claims nothing and both keep rendering in PROCESSES.
+        let servers =
+            vec![connected_stdio("playwright", "npx", &["-y", "@playwright/mcp@latest"], 24)];
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                entry(200, 1, "npm exec @playwright/mcp@latest", 40 * 1024 * 1024),
+                entry(
+                    300,
+                    1,
+                    "npm exec @playwright/mcp@latest --cdp-endpoint http://127.0.0.1:9222",
+                    40 * 1024 * 1024,
+                ),
+            ],
+        };
+        let app = app_with(servers, Some(snapshot));
+
+        let section = collect_mcp_servers(&app);
+        assert!(section.rows[0].process.is_none(), "siblings decline; got {section:?}");
+        assert!(section.claimed_pids.is_empty(), "got {:?}", section.claimed_pids);
+        let coll = crate::app::processes::collect_active_processes(&app);
+        assert_eq!(coll.rows.len(), 2, "both siblings stay in PROCESSES; got {:?}", coll.rows);
     }
 
     #[test]
