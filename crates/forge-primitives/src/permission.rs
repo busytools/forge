@@ -38,8 +38,7 @@ pub enum PermissionMode {
 
 impl PermissionMode {
     /// Every wire string [`Self::from_wire`] accepts, quoted for load
-    /// errors naming the accepted set. Kept in one place with
-    /// `from_wire` so an added alias updates both or neither.
+    /// errors naming the accepted set.
     pub const ACCEPTED: &'static str = "\"default\", \"ask\", \"acceptEdits\", \"accept_edits\", \
          \"plan\", \"dontAsk\", \"dont_ask\", \"deny\", \"auto\", \"bypassPermissions\", \
          \"bypass_permissions\"";
@@ -154,12 +153,17 @@ mod tests {
             "bypass_permissions",
         ] {
             assert!(
-                PermissionMode::from_wire(wire).is_some(),
-                "from_wire must accept \"{wire}\" or ACCEPTED lists a dead value",
-            );
-            assert!(
                 PermissionMode::ACCEPTED.contains(format!("\"{wire}\"").as_str()),
                 "ACCEPTED must name \"{wire}\", or the load error omits an accepted value",
+            );
+        }
+        // Read back out of ACCEPTED so a value that from_wire no longer
+        // parses cannot survive in the load error's list.
+        for token in PermissionMode::ACCEPTED.split(", ") {
+            let wire = token.trim_matches('"');
+            assert!(
+                PermissionMode::from_wire(wire).is_some(),
+                "from_wire must accept \"{wire}\" or ACCEPTED lists a dead value",
             );
         }
     }
