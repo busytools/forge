@@ -10781,6 +10781,54 @@ provider = "anthropic"
         );
     }
 
+    /// A mode-less account must not gain a fallback mode at dispatch:
+    /// the launcher's own session default survives a respawn.
+    #[test]
+    fn respawn_commands_on_a_modeless_account_keep_the_launcher_default() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        *workspace.accounts.lock() = crate::account::AccountStateMap::new(&[crate::config::LoadedAccount {
+            display_name: "Plain".to_owned(),
+            config_dir: PathBuf::from("/cfg/Plain"),
+            provider: forge_primitives::account::Provider::Anthropic,
+            env: HashMap::new(),
+            experimental: false,
+            permission_mode: None,
+        }]);
+        let key = SessionKey::from_str_for_test("respawn-modeless-test");
+        let (handle, mut agent_rx) = Workspace::testing_stub_handle();
+        workspace.pool.lock().insert(
+            key.clone(),
+            PooledAgent { handle: Arc::new(handle), account: AccountKey("Plain".to_owned()) },
+        );
+
+        workspace
+            .dispatch(Command::NewSession {
+                key: key.clone(),
+                cwd: "/tmp".to_owned(),
+                launch_settings: SessionLaunchSettings {
+                    settings: Some(serde_json::json!({ "permissions": { "defaultMode": "auto" } })),
+                    ..SessionLaunchSettings::default()
+                },
+            })
+            .expect("dispatch new");
+
+        let forge_primitives::AgentCommand::NewSession { launch_settings, .. } =
+            agent_rx.try_recv().expect("new session agent command")
+        else {
+            panic!("expected a NewSession agent command");
+        };
+        let carried = launch_settings
+            .get("settings")
+            .and_then(|s| s.get(SessionLaunchSettings::PERMISSIONS_KEY))
+            .and_then(|p| p.get(SessionLaunchSettings::PERMISSIONS_DEFAULT_MODE_KEY))
+            .and_then(serde_json::Value::as_str);
+        assert_eq!(
+            carried,
+            Some("auto"),
+            "an account without permission_mode must keep the launcher's session default",
+        );
+    }
+
     // ---- Session-task rekey tests ----
     //
     // Pin dispatch routing across session-task key migration. The
