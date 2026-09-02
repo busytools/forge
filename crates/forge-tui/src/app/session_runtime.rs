@@ -1,17 +1,27 @@
 use std::time::{Duration, Instant};
 
 use crate::app::App;
+use crate::app::state::types::SessionUsageState;
 
 /// Minimum spacing between actual `get_context_usage` sends per
 /// session. Rapid pane switches coalesce into the first send instead
 /// of re-asking the CLI to recompute over the whole transcript.
 const CONTEXT_USAGE_MIN_SEND_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Retained history bytes at or above which the auto refresh is
-/// skipped: the CLI answers `get_context_usage` inline over the full
-/// transcript, and past this size that computation alone can exceed
-/// the hook timeout (#827).
-const CONTEXT_USAGE_LARGE_TRANSCRIPT_BYTES: usize = 8 * 1024 * 1024;
+/// Used-context tokens at or above which the auto refresh is skipped:
+/// the CLI answers `get_context_usage` inline over the full
+/// transcript, and only a [1m]-class window can reach this size,
+/// where that computation alone can exceed the hook timeout.
+const CONTEXT_USAGE_TOKEN_GATE: u64 = 500_000;
+
+/// Used tokens implied by the last context snapshot. Tracks the CLI's
+/// transcript - compaction lowers it and reopens the gate - unlike
+/// retained chat bytes, which compaction never shrinks.
+fn snapshot_transcript_tokens(usage: &SessionUsageState) -> Option<u64> {
+    let percent = u64::from(usage.context_usage_percent?);
+    let max_tokens = usage.context_max_tokens?;
+    Some(percent.saturating_mul(max_tokens) / 100)
+}
 
 pub(crate) enum RuntimeReloadRequestOutcome {
     Requested,
@@ -65,12 +75,14 @@ fn request_context_usage_refresh_at(app: &mut App, now: Instant) {
         return;
     }
 
-    if app.retained_history_bytes() >= CONTEXT_USAGE_LARGE_TRANSCRIPT_BYTES {
+    if let Some(tokens) = snapshot_transcript_tokens(app.session_usage())
+        && tokens >= CONTEXT_USAGE_TOKEN_GATE
+    {
         tracing::debug!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "context_usage_refresh_skipped",
             message = "auto context usage refresh skipped on large transcript",
-            retained_bytes = app.retained_history_bytes(),
+            context_tokens = tokens,
         );
         return;
     }
@@ -303,17 +315,34 @@ mod tests {
     fn request_context_usage_refresh_skips_auto_refresh_on_large_transcripts() {
         let (mut app, mut rx) = app_with_connection();
 
-        *app.retained_history_bytes_mut() = super::CONTEXT_USAGE_LARGE_TRANSCRIPT_BYTES;
+        app.session_usage_mut().context_usage_percent = Some(50);
+        app.session_usage_mut().context_max_tokens = Some(1_000_000);
         request_context_usage_refresh(&mut app);
-        assert!(
-            rx.try_recv().is_err(),
-            "at or above the transcript threshold the auto refresh is skipped"
-        );
+        assert!(rx.try_recv().is_err(), "at the token gate the auto refresh is skipped");
         assert!(!app.session_usage().context_usage_in_flight);
 
-        *app.retained_history_bytes_mut() = super::CONTEXT_USAGE_LARGE_TRANSCRIPT_BYTES - 1;
+        app.session_usage_mut().context_usage_percent = Some(40);
         request_context_usage_refresh(&mut app);
-        let envelope = rx.try_recv().expect("below the threshold the refresh still sends");
+        let envelope = rx.try_recv().expect("below the token gate the refresh still sends");
+        assert!(matches!(
+            envelope,
+            forge_primitives::AgentCommand::GetContextUsage { session_id } if session_id == "session-1"
+        ));
+    }
+
+    #[test]
+    fn auto_context_usage_refresh_resumes_after_compaction_lowers_the_snapshot() {
+        let (mut app, mut rx) = app_with_connection();
+
+        app.session_usage_mut().context_usage_percent = Some(80);
+        app.session_usage_mut().context_max_tokens = Some(1_000_000);
+        request_context_usage_refresh(&mut app);
+        assert!(rx.try_recv().is_err(), "gated while the snapshot is huge");
+
+        apply_context_usage_snapshot(&mut app, Some(30), Some(1_000_000));
+
+        request_context_usage_refresh(&mut app);
+        let envelope = rx.try_recv().expect("compaction lowered the snapshot, gate reopens");
         assert!(matches!(
             envelope,
             forge_primitives::AgentCommand::GetContextUsage { session_id } if session_id == "session-1"
@@ -324,7 +353,8 @@ mod tests {
     fn request_context_usage_refresh_forced_bypasses_both_gates() {
         let (mut app, mut rx) = app_with_connection();
 
-        *app.retained_history_bytes_mut() = super::CONTEXT_USAGE_LARGE_TRANSCRIPT_BYTES;
+        app.session_usage_mut().context_usage_percent = Some(80);
+        app.session_usage_mut().context_max_tokens = Some(1_000_000);
         app.session_usage_mut().context_usage_last_sent = Some(std::time::Instant::now());
 
         request_context_usage_refresh_forced(&mut app);
