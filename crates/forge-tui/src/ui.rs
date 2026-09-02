@@ -18,6 +18,7 @@ pub mod launchpad;
 pub(crate) mod layout;
 pub(crate) mod markdown;
 pub(crate) mod message;
+pub(crate) mod model_picker;
 pub(crate) mod page;
 pub(crate) mod peer_block;
 pub mod preflight;
@@ -62,6 +63,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if app.spinner_picker.is_some() {
         let area = frame.area();
         spinner_picker::render(frame, area, app);
+    }
+    if app.model_picker.is_some() {
+        let area = frame.area();
+        model_picker::render(frame, area, app);
     }
     if app.account_picker.is_some() {
         let area = frame.area();

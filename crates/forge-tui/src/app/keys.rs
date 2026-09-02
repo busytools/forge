@@ -240,6 +240,10 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
         return crate::app::spinner_picker::handle_key(app, key);
     }
 
+    if app.model_picker.is_some() {
+        return crate::app::model_picker::handle_key(app, key);
+    }
+
     // The `/account` picker overlay is modal too.
     if app.account_picker.is_some() {
         return crate::app::account_picker::handle_key(app, key);
@@ -1318,6 +1322,40 @@ mod tests {
         assert!(
             dispatched.is_empty(),
             "without a take no dictate stop is dispatched, got: {dispatched:?}"
+        );
+    }
+
+    /// The modal routing seam: with the model picker open,
+    /// `dispatch_key_by_focus` must hand keys to the picker, not to the
+    /// composer. A navigation key reaches it; an unhandled key is
+    /// swallowed while the picker stays open and the draft is untouched.
+    #[test]
+    fn the_model_picker_captures_its_keys_through_the_modal_dispatch() {
+        let mut app = App::test_default();
+        app.try_active_bucket_mut()
+            .expect("test_default seeds an active bucket")
+            .available_models = vec![
+            crate::agent::model::AvailableModel::new("a", "A"),
+            crate::agent::model::AvailableModel::new("b", "B"),
+        ];
+        assert!(crate::app::model_picker::open(&mut app), "the picker opens on the seeded rows");
+
+        let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+        assert!(dispatch_key_by_focus(&mut app, down), "the modal consumes the key");
+        assert_eq!(
+            app.model_picker.as_ref().expect("still open").highlight,
+            1,
+            "the navigation key reached the picker",
+        );
+
+        app.input_mut().set_text("draft");
+        let x = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+        assert!(dispatch_key_by_focus(&mut app, x), "an unhandled key is still swallowed");
+        assert!(app.model_picker.is_some(), "the picker stays open");
+        assert_eq!(
+            app.input().text(),
+            "draft",
+            "the composer does not receive keys while the modal is open",
         );
     }
 

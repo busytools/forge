@@ -326,6 +326,9 @@ fn apply_optimistic_mode_change(app: &mut App, requested_mode: &str) {
 
 fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
     if args.is_empty() {
+        if crate::app::model_picker::open(app) {
+            return true;
+        }
         let label = app.current_model().map_or_else(
             || "no active model".to_owned(),
             |model| {
@@ -362,11 +365,29 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     };
 
+    switch_model(app, forge_workspace::SessionKey::from_session_id(sid.to_string()), model_name);
+    true
+}
+
+/// Switch the session `session_key` to `model_name`: optimistic UI apply
+/// plus the `SetModel` dispatch. Shared by the `/model <id>` submit path
+/// and the `/model` picker's Enter; both validate the session before
+/// calling and hand the key down. A no-op with a system notice when the
+/// session advertises models and `model_name` is not one of them; the
+/// picker's rows come from that same list, so it always passes.
+pub(crate) fn switch_model(
+    app: &mut App,
+    session_key: forge_workspace::SessionKey,
+    model_name: &str,
+) {
     if !app.available_models().is_empty()
-        && !app.available_models().iter().any(|candidate| candidate.id == model_name)
+        && !app
+            .available_models()
+            .iter()
+            .any(|candidate| candidate.id.eq_ignore_ascii_case(model_name))
     {
         push_system_message(app, format!("Unknown model: {model_name}"));
-        return true;
+        return;
     }
 
     // Apply CurrentModelUpdate (and a refreshed ModeStateUpdate
@@ -374,17 +395,15 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
     // is synchronous so no `CommandPending` state is needed.
     apply_optimistic_model_change(app, model_name);
 
-    let model_name = model_name.to_owned();
-    let session_key = forge_workspace::SessionKey::from_session_id(sid.to_string());
-    if let Err(e) =
-        app.dispatch_command(|key| forge_workspace::Command::SetModel { key, model: model_name })
-    {
+    if let Err(e) = app.dispatch_command(|key| forge_workspace::Command::SetModel {
+        key,
+        model: model_name.to_owned(),
+    }) {
         let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
             key: session_key,
             message: format!("Failed to run /model: {e}"),
         });
     }
-    true
 }
 
 fn apply_optimistic_model_change(app: &mut App, model_name: &str) {
