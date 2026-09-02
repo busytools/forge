@@ -27,8 +27,8 @@ pub struct Hooks {
     pub(crate) notification: Vec<Arc<dyn ErasedHookCallback>>,
     pub(crate) permission_request: Vec<(String, Arc<dyn ErasedHookCallback>)>,
     /// Timeout (seconds) the CLI should apply to every hook callback.
-    /// `None` means "use the default forge-sdk emits"
-    /// ([`DEFAULT_HOOK_TIMEOUT_SECS`]). Overridable via
+    /// `None` means "use the default forge-sdk emits" (120 seconds).
+    /// Overridable via
     /// [`HooksBuilder::default_timeout_secs`] for scenarios that need
     /// to provoke `control_cancel_request` on slow callbacks.
     pub(crate) default_timeout_secs: Option<u64>,
@@ -224,7 +224,7 @@ impl HooksBuilder {
     /// initialize `control_request`. The CLI uses this to decide how
     /// long to wait on each `hook_callback` reply before giving up and
     /// emitting a `control_cancel_request`. Default when unset is
-    /// [`DEFAULT_HOOK_TIMEOUT_SECS`]. Lower it for scenarios
+    /// 120 seconds. Lower it for scenarios
     /// that deliberately provoke cancellation; raise it for
     /// long-running callbacks (e.g. LLM sub-calls inside a hook).
     pub fn default_timeout_secs(mut self, secs: u64) -> Self {
