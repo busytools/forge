@@ -52,8 +52,14 @@ fn apply_connected_presentation(
     let available_model_count = available_models.len();
     // Log the event's own values: the app-level accessors resolve the
     // user's FOCUSED session, which on a background connect is some
-    // unrelated tab.
-    let cwd_for_log = cwd.clone();
+    // unrelated tab. Resume connects deliberately carry an empty event
+    // cwd (the bucket was pre-seeded at spawn), so fall back to the
+    // connecting bucket's value - read before the arms below rewrite it.
+    let cwd_for_log = if cwd.is_empty() {
+        app.sessions.get(session_key).map(|b| b.cwd_raw.clone()).unwrap_or_default()
+    } else {
+        cwd.clone()
+    };
     let model_for_log = current_model.clone();
     if was_active {
         // Active path: the user is watching this session. Run the
@@ -129,7 +135,7 @@ fn apply_connected_presentation(
         outcome = "success",
         session_id = %session_id_for_log,
         cwd = %cwd_for_log,
-        current_model = ?Some(model_for_log.resolved_id.clone()),
+        current_model = %model_for_log.resolved_id,
         history_message_count,
         available_model_count,
         was_active,
@@ -1186,6 +1192,48 @@ mod connected_log_tests {
         assert!(
             log.contains("claude-opus-5"),
             "the log must carry the connecting session's model; got: {log}"
+        );
+    }
+
+    /// A resume connect carries an EMPTY event cwd (the bucket was
+    /// pre-seeded at spawn); the log must fall back to that pre-seeded
+    /// value, not print an empty path.
+    #[test]
+    fn empty_event_cwd_falls_back_to_the_buckets_seeded_cwd() {
+        let mut app = App::test_default();
+        let focused = SessionKey::from_session_id("focused-uuid");
+        let mut focused_bucket = UiSession::new(focused.clone());
+        focused_bucket.cwd_raw = "/Users/vedhavyas/Projects/granite-backend".to_owned();
+        app.sessions.insert(focused.clone(), focused_bucket);
+        app.active_session_key = Some(focused);
+
+        let worker = SessionKey::from_session_id("worker-uuid");
+        let mut worker_bucket = UiSession::new(worker.clone());
+        worker_bucket.cwd_raw =
+            "/Users/vedhavyas/Projects/forge/.claude/worktrees/reviewer".to_owned();
+        app.sessions.insert(worker.clone(), worker_bucket);
+
+        let log = capture_logs(|| {
+            apply_connected_presentation(
+                &mut app,
+                &worker,
+                model::SessionId::new("worker-uuid"),
+                String::new(),
+                model::CurrentModel::new("claude-opus-5", "opus", "Opus"),
+                Vec::new(),
+                None,
+                &[],
+                false,
+            );
+        });
+        assert!(
+            log.contains("cwd=/Users/vedhavyas/Projects/forge/.claude/worktrees/reviewer"),
+            "the log must fall back to the bucket's pre-seeded cwd on an empty event cwd; got: {log}"
+        );
+        assert!(
+            !log.contains("cwd=granite-backend")
+                && !log.contains("cwd=/Users/vedhavyas/Projects/granite-backend"),
+            "the focused session's cwd must not leak into the log; got: {log}"
         );
     }
 

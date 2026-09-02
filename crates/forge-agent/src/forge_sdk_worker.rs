@@ -652,9 +652,6 @@ fn heal_action(
 /// server `connected` with zero tools and never re-runs the handshake
 /// itself.
 fn sdk_servers_missing_tools(init_data: &serde_json::Value, server_names: &[String]) -> bool {
-    if server_names.is_empty() {
-        return false;
-    }
     let tools = init_data.get("tools").and_then(serde_json::Value::as_array);
     server_names.iter().any(|name| {
         let prefix = format!("mcp__{name}__");
@@ -687,11 +684,9 @@ const SDK_MCP_READD_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// promptly once the session is up, so the re-handshake revives the
 /// tools the boot-time handshake lost.
 async fn readd_sdk_mcp_servers(client: &Client, server_names: &[String]) -> anyhow::Result<()> {
-    if let Err(err) = tokio::time::timeout(
-        SDK_MCP_READD_TIMEOUT,
-        client.mcp_set_servers(serde_json::json!({})),
-    )
-    .await
+    if let Err(err) =
+        tokio::time::timeout(SDK_MCP_READD_TIMEOUT, client.mcp_set_servers(serde_json::json!({})))
+            .await
     {
         // The removal never landed, so the CLI-side dynamic set is
         // untouched and the boot-time registration stands.
@@ -1695,7 +1690,7 @@ mod tests {
     }
 
     #[test]
-    fn sdk_servers_missing_tools_is_false_without_registered_servers() {
+    fn an_empty_server_list_is_never_missing_tools() {
         let no_forge = serde_json::json!({ "tools": ["Bash", "Read"] });
         assert!(
             !super::sdk_servers_missing_tools(&no_forge, &[]),
@@ -1804,7 +1799,10 @@ mod tests {
 
         // Missing boot fires; the next init verifies once and settles.
         let mut latch = super::HealLatch::default();
-        assert_eq!(super::heal_action(&missing(), &mut latch, &names), Some(super::HealAction::Fire));
+        assert_eq!(
+            super::heal_action(&missing(), &mut latch, &names),
+            Some(super::HealAction::Fire)
+        );
         assert_eq!(latch, super::HealLatch::Verify);
         assert_eq!(
             super::heal_action(&healed(), &mut latch, &names),
@@ -1819,7 +1817,10 @@ mod tests {
 
         // The failure arm of the verification.
         let mut latch = super::HealLatch::default();
-        assert_eq!(super::heal_action(&missing(), &mut latch, &names), Some(super::HealAction::Fire));
+        assert_eq!(
+            super::heal_action(&missing(), &mut latch, &names),
+            Some(super::HealAction::Fire)
+        );
         assert_eq!(
             super::heal_action(&missing(), &mut latch, &names),
             Some(super::HealAction::StillMissing)
