@@ -2596,6 +2596,7 @@ fn truncate_with_ellipsis(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn wrap_short_text_returns_single_line() {
@@ -3032,7 +3033,7 @@ mod tests {
             }],
         });
 
-        let coll = crate::app::processes::collect_active_processes(&app, &Default::default());
+        let coll = crate::app::processes::collect_active_processes(&app, &HashSet::default());
         let count = coll.rows.iter().filter(|row| row.headline == "Run unit tests").count();
         assert_eq!(count, 1, "backgrounded bash renders exactly once; rows: {:?}", coll.rows);
     }
@@ -4275,6 +4276,94 @@ mod tests {
             !processes_text.contains("context7"),
             "the MCP server's process must leave PROCESSES: {processes_text:?}"
         );
+    }
+
+    #[test]
+    fn mcp_click_band_clips_and_disappears_with_scroll() {
+        // The band is the section's on-screen rect: clipped at either
+        // edge when the section scrolls partially off, gone when it
+        // scrolls fully off. render_scrollable_body runs directly so the
+        // body rect is the test's own, not the layout's.
+        use forge_workspace::env::processes::{ProcessEntry, ProcessSnapshot};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = App::test_default();
+        app.mcp_mut().servers = vec![forge_primitives::McpServerStatus {
+            name: "forge".to_owned(),
+            status: forge_primitives::McpServerConnectionStatus::Connected,
+            config: Some(serde_json::json!({ "type": "sdk", "name": "forge" })),
+            ..Default::default()
+        }];
+        // Content below the section so the body can scroll it fully off.
+        app.set_active_process_snapshot_for_test(ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: (0..12u32)
+                .map(|i| ProcessEntry {
+                    pid: 100 + i,
+                    parent_pid: 1,
+                    name: "worker".to_owned(),
+                    command: format!("worker{i} --serve"),
+                    memory_bytes: 10 * 1024 * 1024,
+                })
+                .collect(),
+        });
+
+        let band = |app: &crate::app::App| {
+            app.pane_hit_targets.iter().find_map(|t| match t {
+                crate::app::PaneHitTarget::InspectorMcpOpenStatus { y, height, .. } => {
+                    Some((*y, *height))
+                }
+                _ => None,
+            })
+        };
+        let set_offset = |app: &mut App, offset: u16| {
+            if let Some(bucket) = app.try_active_bucket_mut() {
+                bucket.inspector_scroll_offset = offset;
+            }
+        };
+
+        // Offset 0 over a tall body: the band covers the whole section.
+        // render_scrollable_body stamps without clearing (the full
+        // `render` entry owns the clear), so each draw clears first.
+        let mut terminal = Terminal::new(TestBackend::new(40, 60)).expect("terminal");
+        app.pane_hit_targets.clear();
+        terminal
+            .draw(|f| render_scrollable_body(f, Rect::new(0, 0, 40, 60), &mut app, &[]))
+            .expect("draw");
+        let (start, full_h) = band(&app).expect("band stamped at offset 0");
+        assert!(full_h > 1, "band covers header + rows; got {full_h}");
+
+        // Bottom edge: a body two rows too short clips the band there.
+        let short_h = start + full_h - 2;
+        let mut terminal = Terminal::new(TestBackend::new(40, short_h)).expect("terminal");
+        set_offset(&mut app, 0);
+        app.pane_hit_targets.clear();
+        terminal
+            .draw(|f| render_scrollable_body(f, Rect::new(0, 0, 40, short_h), &mut app, &[]))
+            .expect("draw");
+        assert_eq!(
+            band(&app),
+            Some((start, short_h - start)),
+            "band clips at the pane's bottom edge",
+        );
+
+        // Top edge: one row past the section top clips the band there.
+        set_offset(&mut app, start + 1);
+        app.pane_hit_targets.clear();
+        terminal
+            .draw(|f| render_scrollable_body(f, Rect::new(0, 0, 40, short_h), &mut app, &[]))
+            .expect("draw");
+        assert_eq!(band(&app), Some((0, full_h - 1)), "band clips at the viewport's top edge");
+
+        // Fully scrolled off: enough content below for the scroll range
+        // to move the section past the viewport - nothing stamps.
+        set_offset(&mut app, start + full_h);
+        app.pane_hit_targets.clear();
+        terminal
+            .draw(|f| render_scrollable_body(f, Rect::new(0, 0, 40, short_h), &mut app, &[]))
+            .expect("draw");
+        assert!(band(&app).is_none(), "a fully scrolled-off section stamps nothing");
     }
 
     #[test]

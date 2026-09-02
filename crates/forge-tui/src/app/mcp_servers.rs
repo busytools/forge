@@ -450,6 +450,18 @@ mod tests {
     }
 
     #[test]
+    fn a_scopeless_stdio_server_falls_back_to_session() {
+        // A stdio server the CLI reports no scope for: the detail line
+        // still reads as something, matching the /mcp view's fallback.
+        let mut playwright = connected_stdio("playwright", "npx", &["@playwright/mcp"], 24);
+        playwright.scope = None;
+        let app = app_with(vec![playwright], None);
+
+        let section = collect_mcp_servers(&app);
+        assert_eq!(section.rows[0].detail, "session \u{00B7} 24 tools");
+    }
+
+    #[test]
     fn pending_and_failed_servers_render_their_state_on_the_detail_line() {
         // Wire shapes from the live mcp_status baseline: pending with a
         // scope, failed with the CLI's error text.
