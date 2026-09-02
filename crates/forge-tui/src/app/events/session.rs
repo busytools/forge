@@ -931,7 +931,10 @@ pub(super) fn apply_session_update_slash_command_error(
 
 /// `SessionUpdate::SetModeFailed` reducer: restore the pre-apply mode
 /// snapshot the optimistic `/mode` apply parked on the bucket, then
-/// surface the CLI's refusal as a system message.
+/// surface the CLI's refusal as a system message. Rapid submits
+/// overlap, so a refusal only rolls back when it names the mode the
+/// chip currently shows - a refusal for a superseded request leaves
+/// the newer optimistic apply (and its snapshot) alone.
 pub(super) fn apply_session_update_set_mode_failed(
     app: &mut App,
     key: &SessionKey,
@@ -949,20 +952,16 @@ pub(super) fn apply_session_update_set_mode_failed(
         );
         return;
     };
-    if let Some(snapshot) = session.pending_mode_rollback.take() {
-        let mode_changed = session.mode.as_ref().map(|m| m.current_mode_id.as_str())
-            != snapshot.mode_state.as_ref().map(|m| m.current_mode_id.as_str());
-        session.mode = snapshot.mode_state;
-        session.turn_state.mode = snapshot.turn_mode;
-        session.turn_state.supported_mode_ids = snapshot.supported_mode_ids;
-        if mode_changed {
-            app.invalidate_layout(crate::app::state::LayoutInvalidation::Global);
-        }
+    let attempted = mode.as_wire();
+    let chip_shows_attempted =
+        session.mode.as_ref().is_some_and(|m| m.current_mode_id == attempted);
+    if chip_shows_attempted && session.rollback_pending_mode() {
+        app.invalidate_layout(crate::app::state::LayoutInvalidation::Global);
     }
     handle_slash_command_error_event(
         app,
         key,
-        &format!("Mode switch to {} was refused by the CLI: {message}", mode.as_wire()),
+        &format!("Mode switch to {attempted} was refused by the CLI: {message}"),
     );
 }
 

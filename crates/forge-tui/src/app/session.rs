@@ -643,6 +643,18 @@ pub struct ModeRollback {
     pub supported_mode_ids: Vec<forge_workspace::PermissionMode>,
 }
 
+impl UiSession {
+    /// Restore the snapshot parked by the optimistic `/mode` apply.
+    /// Returns false when no snapshot is parked.
+    pub fn rollback_pending_mode(&mut self) -> bool {
+        let Some(snapshot) = self.pending_mode_rollback.take() else { return false };
+        self.mode = snapshot.mode_state;
+        self.turn_state.mode = snapshot.turn_mode;
+        self.turn_state.supported_mode_ids = snapshot.supported_mode_ids;
+        true
+    }
+}
+
 impl Default for UiSession {
     fn default() -> Self {
         // Hand-rolled because `next_paste_session_id` seeds to 1;

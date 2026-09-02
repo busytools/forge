@@ -1490,6 +1490,12 @@ impl App {
         self.active_bucket_mut().pending_mode_rollback = value;
     }
 
+    /// The active session's parked optimistic-`/mode` snapshot, if a
+    /// switch is awaiting the CLI's verdict.
+    pub fn pending_mode_rollback(&self) -> Option<&crate::app::session::ModeRollback> {
+        self.active_session().and_then(|s| s.pending_mode_rollback.as_ref())
+    }
+
     /// Mutable borrow of the active session's mode snapshot.
     pub fn mode_mut(&mut self) -> Option<&mut ModeState> {
         self.active_bucket_mut().mode.as_mut()

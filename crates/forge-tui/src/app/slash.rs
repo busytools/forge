@@ -807,6 +807,86 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn stale_mode_rejection_does_not_consume_the_live_rollback() {
+        // Two rapid submits overlap: the first refusal must leave the
+        // newer optimistic apply (and its rollback snapshot) alone, and
+        // the second refusal must restore the true pre-apply state so
+        // the chip never shows a doubly-refused mode.
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let _rx = app.install_testing_stub();
+                seed_ask_session(&mut app);
+
+                assert!(try_handle_submit(&mut app, "/mode plan"));
+                assert!(try_handle_submit(&mut app, "/mode acceptEdits"));
+                assert_eq!(app.mode().map(|m| m.current_mode_id.as_str()), Some("acceptEdits"));
+
+                let key = app.active_session_key.clone().expect("test bucket key");
+                let refused = |mode| forge_workspace::SessionUpdate::SetModeFailed {
+                    key: key.clone(),
+                    mode,
+                    message: "refused".into(),
+                };
+                crate::app::events::apply_session_update(
+                    &mut app,
+                    refused(forge_primitives::permission::PermissionMode::Plan),
+                );
+                assert_eq!(
+                    app.mode().map(|m| m.current_mode_id.as_str()),
+                    Some("acceptEdits"),
+                    "a refusal for a superseded request must not roll the chip back",
+                );
+
+                crate::app::events::apply_session_update(
+                    &mut app,
+                    refused(forge_primitives::permission::PermissionMode::AcceptEdits),
+                );
+                assert_eq!(
+                    app.mode().map(|m| m.current_mode_id.as_str()),
+                    Some("default"),
+                    "the chip must restore the pre-apply mode, not a refused one",
+                );
+                assert_eq!(
+                    app.with_turn_state(|ts| ts.mode),
+                    Some(forge_workspace::PermissionMode::Ask),
+                    "the typed turn-state mode restores with the chip",
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn confirmed_mode_clears_the_rollback_snapshot() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let _rx = app.install_testing_stub();
+                seed_ask_session(&mut app);
+                assert!(try_handle_submit(&mut app, "/mode plan"));
+
+                let session_id = app.session_id().unwrap_or_default().to_string();
+                crate::app::events::apply_session_update(
+                    &mut app,
+                    forge_workspace::SessionUpdate::ChatAppended {
+                        session_id,
+                        msg: forge_primitives::Message::System {
+                            subtype: "status".into(),
+                            data: serde_json::json!({"permissionMode": "plan"}),
+                            session_id: None,
+                        },
+                    },
+                );
+
+                assert!(
+                    app.pending_mode_rollback().is_none(),
+                    "a CLI-confirmed mode retires the pending rollback",
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn model_apply_synchronously_during_submit() {
         // /model applies CurrentModelUpdate optimistically App-side.
         // The apply is synchronous, so no CommandPending state is

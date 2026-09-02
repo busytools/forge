@@ -904,6 +904,10 @@ fn handle_system(app: &mut App, msg: Message) {
                 if let Some(parsed) = forge_workspace::PermissionMode::from_wire(mode_str) {
                     use forge_workspace::commands::supported_mode_ids_filtered;
                     let _: () = app.with_turn_state_mut(|ts| ts.mode = Some(parsed));
+                    // The CLI confirming a mode retires the optimistic
+                    // `/mode` rollback snapshot - there is no switch
+                    // awaiting a verdict anymore.
+                    app.set_pending_mode_rollback(None);
                     let supports_auto_mode =
                         app.current_model().is_some_and(|m| m.supports_auto_mode == Some(true));
                     let unavailable_modes =
