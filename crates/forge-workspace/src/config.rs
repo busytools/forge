@@ -878,7 +878,7 @@ path = "~/Projects/forge"
 display_name = "Openrouter"
 config_dir = "~/.claude-openrouter-bad"
 provider = "openrouter"
-permission_mode = "bypass"
+permission_mode = "yolo"
 [accounts.env]
 ANTHROPIC_BASE_URL = "https://openrouter.ai/api"
 ANTHROPIC_AUTH_TOKEN = "unused"
@@ -887,7 +887,7 @@ ANTHROPIC_AUTH_TOKEN = "unused"
         let err = load_from_dir(dir.path()).expect_err("an invalid mode must not load");
         let message = err.to_string();
         assert!(
-            message.contains("bypass") && message.contains("Openrouter"),
+            message.contains("yolo") && message.contains("Openrouter"),
             "the error has to name the offending value and account, got: {message}",
         );
         assert!(
