@@ -68,6 +68,11 @@ const STEPPER_HEIGHT: u16 = 4;
 pub fn render(frame: &mut Frame, app: &mut App) {
     app.cached_frame_area = frame.area();
 
+    let blip = blip_span_for(app);
+    if let Some(overlay) = app.diff_overlay.as_mut() {
+        overlay.dictate_blip = blip;
+    }
+
     let Some(overlay) = app.diff_overlay.as_ref() else {
         super::page::render_page(frame, "Diff review", None, Line::default(), |frame, body| {
             render_missing_state(frame, body);
@@ -665,8 +670,9 @@ fn render_finish_review(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlay
         overlay.finish_review.as_ref().map(|f| f.editor.lines().to_vec()).unwrap_or_default();
     let (caret_row, caret_col) =
         overlay.finish_review.as_ref().map_or((0, 0), |f| f.editor.cursor());
+    let blip = overlay.dictate_blip.as_ref();
     if editor_lines.iter().all(String::is_empty) {
-        let mut content = vec![ComposerChrome::prompt_span()];
+        let mut content = vec![leading_draft_span(blip)];
         content.push(Span::styled(
             fit_box_content(PLACEHOLDER_OVERVIEW, inner.saturating_sub(2)),
             dim,
@@ -680,7 +686,7 @@ fn render_finish_review(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlay
         for (idx, line) in editor_lines.iter().take(EDITOR_ROWS).enumerate() {
             let mut content: Vec<Span<'static>> = Vec::new();
             if idx == 0 {
-                content.push(ComposerChrome::prompt_span());
+                content.push(leading_draft_span(blip));
             } else {
                 content.push(Span::raw("  "));
             }
@@ -1826,6 +1832,7 @@ fn push_unified_body(
                             gutter_width,
                             row.line_no.unwrap_or(0),
                             pane_width,
+                            overlay.dictate_blip.as_ref(),
                             lines,
                             keys,
                         );
@@ -1944,7 +1951,15 @@ fn push_split_body(
                             diff_line.new_line.unwrap_or(0)
                         }
                     };
-                    render_active_input(input, gutter_width, anchor_line, pane_width, lines, keys);
+                    render_active_input(
+                        input,
+                        gutter_width,
+                        anchor_line,
+                        pane_width,
+                        overlay.dictate_blip.as_ref(),
+                        lines,
+                        keys,
+                    );
                 }
             }
         }
@@ -2413,6 +2428,17 @@ const PLACEHOLDER_COMMENT: &str = "Add a comment\u{2026}";
 const HINT_SAVE_CANCEL: &str = "Enter save \u{b7} Esc cancel";
 const PLACEHOLDER_OVERVIEW: &str = "Overview (optional)\u{2026}";
 
+/// The blip for the active session's live take, if any.
+fn blip_span_for(app: &App) -> Option<Span<'static>> {
+    crate::app::dictate::blip_span(app, app.spinner_epoch.elapsed().as_secs_f32() * 1000.0)
+}
+
+/// The span leading a draft's first row: the prompt glyph, or the
+/// blip of a live take in its place.
+fn leading_draft_span(blip: Option<&Span<'static>>) -> Span<'static> {
+    blip.cloned().unwrap_or_else(ComposerChrome::prompt_span)
+}
+
 /// Split a row at the `n`th char for the caret insert, char-counted
 /// like the editor's own caret columns.
 fn split_at_char(text: &str, n: usize) -> (&str, &str) {
@@ -2425,6 +2451,7 @@ fn render_active_input(
     gutter_width: usize,
     anchor_line: u32,
     pane_width: u16,
+    blip: Option<&Span<'static>>,
     lines: &mut Vec<Line<'static>>,
     keys: &mut Vec<BodyRowKey>,
 ) {
@@ -2455,14 +2482,15 @@ fn render_active_input(
 
     // Body rows - one per editor line. Empty editor shows a single
     // placeholder row so the user sees where typing will land. The
-    // prompt glyph leads the draft and costs the body two columns.
+    // prompt glyph leads the draft and costs the body two columns; a
+    // live take's blip takes the glyph's place.
     let inner_width = box_width.saturating_sub(4);
     let editor_lines = input.editor.lines();
     let (caret_row, caret_col) = input.editor.cursor();
     let empty = editor_lines.is_empty() || editor_lines.iter().all(String::is_empty);
     let body_rows: Vec<String> = if empty { Vec::new() } else { editor_lines.to_vec() };
     if empty {
-        let mut content = vec![ComposerChrome::prompt_span()];
+        let mut content = vec![leading_draft_span(blip)];
         content.push(Span::styled(
             fit_box_content(PLACEHOLDER_COMMENT, inner_width.saturating_sub(2)),
             dim,
@@ -2477,7 +2505,7 @@ fn render_active_input(
         let fitted = fit_box_content(body_row, inner_width.saturating_sub(2));
         let mut content: Vec<Span<'static>> = Vec::new();
         if idx == 0 {
-            content.push(ComposerChrome::prompt_span());
+            content.push(leading_draft_span(blip));
         } else {
             content.push(Span::raw("  "));
         }
@@ -2831,7 +2859,7 @@ mod tests {
         };
         let mut lines = Vec::new();
         let mut keys = Vec::new();
-        render_active_input(&input, 4, 42, 80, &mut lines, &mut keys);
+        render_active_input(&input, 4, 42, 80, None, &mut lines, &mut keys);
 
         let texts: Vec<String> = lines
             .iter()
@@ -2893,7 +2921,7 @@ mod tests {
         };
         let mut lines = Vec::new();
         let mut keys = Vec::new();
-        render_active_input(&input, 4, 42, 80, &mut lines, &mut keys);
+        render_active_input(&input, 4, 42, 80, None, &mut lines, &mut keys);
         let body =
             lines[1].spans.iter().map(|span| span.content.as_ref()).collect::<Vec<_>>().join("");
         assert!(body.contains("ship it"), "the draft renders, got: {body}");
@@ -2906,6 +2934,70 @@ mod tests {
         assert!(
             !lines[1].spans.iter().any(|span| span.content.contains("Add a comment")),
             "a non-empty draft carries no placeholder"
+        );
+    }
+
+    /// With a take live, the comment editor's draft row carries the
+    /// circle blip in the prompt glyph's place.
+    #[test]
+    fn the_comment_editor_blips_while_a_take_is_live() {
+        use forge_workspace::SessionUpdate;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut app = crate::app::App::test_default();
+        let key = app.active_session_key.clone().expect("test_default has an active bucket");
+        let mut state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp/repo"),
+            "main".to_owned(),
+            vec![FileHunks {
+                path: "src/x.rs".into(),
+                status: FileStatus::Added,
+                oversize: false,
+                hunks: vec![Hunk {
+                    old_start: 1,
+                    old_count: 0,
+                    new_start: 1,
+                    new_count: 1,
+                    lines: vec![forge_workspace::env::git_diff::hunks::DiffLine {
+                        kind: DiffLineKind::Added,
+                        text: "let y = compute();".into(),
+                        old_line: None,
+                        new_line: Some(1),
+                    }],
+                }],
+            }],
+        );
+        state.active_input = Some(crate::app::diff_overlay::ActiveCommentInput {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            editor: crate::app::InputState::new(),
+            prior_comment: None,
+            edit_turn: None,
+        });
+        app.diff_overlay = Some(state);
+        crate::app::view::set_active_view(&mut app, crate::app::ActiveView::Diff);
+        crate::app::events::apply_session_update(
+            &mut app,
+            SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1 },
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+        let buffer = terminal.backend().buffer();
+        let w = 100usize;
+        let rows: Vec<String> = (0..30)
+            .map(|y| (0..w).map(|x| buffer.content[y * w + x].symbol()).collect::<String>())
+            .collect();
+        let editor_row = rows
+            .iter()
+            .find(|row| row.contains(PLACEHOLDER_COMMENT))
+            .expect("the comment editor renders");
+        assert!(
+            editor_row.contains('\u{25cf}'),
+            "the blip rides the editor's draft row, got: {editor_row}"
+        );
+        assert!(
+            !editor_row.contains('\u{27a4}'),
+            "the blip takes the prompt glyph's place, got: {editor_row}"
         );
     }
 
@@ -2980,7 +3072,7 @@ mod tests {
         let mut lines = Vec::new();
         let mut keys = Vec::new();
 
-        render_active_input(&input, 4, 371, 80, &mut lines, &mut keys);
+        render_active_input(&input, 4, 371, 80, None, &mut lines, &mut keys);
 
         let widths: Vec<usize> = lines.iter().map(crate::ui::wrap::line_display_width).collect();
         assert!(widths.len() >= 4, "border, body, hint, border");

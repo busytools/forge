@@ -467,6 +467,17 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         }
         SessionUpdate::DictateEnded { key, outcome, generation } => {
             app.dictate_take_pending = false;
+            if let Some(text) = clipboard_text_for_outcome(&outcome) {
+                let _ = crate::app::keys::write_text_to_clipboard(text.to_owned());
+                match dictate_destination(app, &key) {
+                    Some(editor) => editor.insert_str(text),
+                    None => {
+                        if let Some(bucket) = app.session_mut(&key) {
+                            bucket.input.insert_str(text);
+                        }
+                    }
+                }
+            }
             if let Some(bucket) = app.session_mut(&key) {
                 apply_dictate_outcome(bucket, &outcome, generation);
             }
@@ -487,13 +498,36 @@ fn clipboard_text_for_outcome(outcome: &forge_workspace::DictateOutcome) -> Opti
     }
 }
 
-/// `SessionUpdate::DictateEnded` reducer. Landed text inserts into the
-/// bucket's own editor - the take belongs to this session, whatever
-/// tab is focused. The notice stamps against the draft version the
-/// insert produced, so the next keystroke clears it. Only the take's
-/// own generation resets the indicator: a stale resolver arriving
-/// after a newer take started on the same key says its piece and
-/// leaves the live take alone.
+/// The editor a landed take's words go to: the focused editor of the
+/// take's own session - the chat draft, an open diff comment editor,
+/// or the finish-review overview - falling back to the owning
+/// session's chat draft when another tab holds the focus or no editor
+/// is open. The take stays bound to its session whatever the focus.
+fn dictate_destination<'a>(
+    app: &'a mut App,
+    key: &forge_workspace::SessionKey,
+) -> Option<&'a mut crate::app::input::InputState> {
+    if app.active_session_key.as_ref() != Some(key) {
+        return None;
+    }
+    match app.input_focus() {
+        crate::app::InputFocus::Chat => Some(app.input_mut()),
+        crate::app::InputFocus::DiffComment => {
+            app.diff_overlay.as_mut()?.active_input.as_mut().map(|input| &mut input.editor)
+        }
+        crate::app::InputFocus::DiffFinishReview => {
+            app.diff_overlay.as_mut()?.finish_review.as_mut().map(|finish| &mut finish.editor)
+        }
+        crate::app::InputFocus::None => None,
+    }
+}
+
+/// `SessionUpdate::DictateEnded` reducer. The landed text was routed
+/// before this runs; what is left is the notice, stamped against the
+/// draft version the insert produced so the next keystroke clears it,
+/// and the indicator reset. Only the take's own generation resets the
+/// indicator: a stale resolver arriving after a newer take started on
+/// the same key says its piece and leaves the live take alone.
 fn apply_dictate_outcome(
     bucket: &mut crate::app::session::UiSession,
     outcome: &forge_workspace::DictateOutcome,
@@ -501,10 +535,6 @@ fn apply_dictate_outcome(
 ) {
     let floor_db = bucket.dictate.as_ref().map_or(-50.0, |indicator| indicator.floor_db);
     let notice = crate::app::dictate::notice_for_outcome(outcome, floor_db);
-    if let Some(text) = clipboard_text_for_outcome(outcome) {
-        bucket.input.insert_str(text);
-        let _ = crate::app::keys::write_text_to_clipboard(text.to_owned());
-    }
     let live_generation = bucket.dictate.as_ref().map(|indicator| indicator.generation);
     if live_generation == Some(generation) {
         let beat = matches!(outcome, forge_workspace::DictateOutcome::Landed { .. });

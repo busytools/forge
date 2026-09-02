@@ -463,6 +463,22 @@ pub(crate) fn dictate_owns_esc(app: &App) -> bool {
     app.active_session().is_some_and(|bucket| bucket.dictate.is_some())
 }
 
+/// Dispatch the abandon for the live take. Esc ownership is per
+/// surface; the stop itself is the same command everywhere.
+pub(crate) fn dispatch_stop(app: &App) {
+    if let Err(message) =
+        app.dispatch_command(|key| forge_workspace::Command::DictateStop { key, submit: false })
+    {
+        tracing::warn!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "dictate_stop_failed",
+            message = "failed to dispatch the dictate abandon",
+            outcome = "failure",
+            error_message = %message,
+        );
+    }
+}
+
 /// The one-cell circle a non-chat surface carries while a take is
 /// live: fixed in place, pulsing bright and dim like the status row's
 /// dot, orange while recording, blue while transcribing, gone once

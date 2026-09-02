@@ -1170,6 +1170,9 @@ pub struct DiffOverlayState {
     /// `[ Submit review ]` button, stashed each render so a click can
     /// resolve onto it. `None` until the modal first renders.
     pub finish_submit_span: Option<(u16, u16, u16)>,
+    /// The active session's dictate blip, stashed each render so the
+    /// editors deep in the body can read it without App access.
+    pub dictate_blip: Option<ratatui::text::Span<'static>>,
     /// Submitted reviews for `(project, branch)`, loaded alongside the
     /// threads on hydrate. Maps a comment's `review_id` to its `R{number}`
     /// chip tag and backs the `l` reviews list.
@@ -1675,6 +1678,7 @@ impl DiffOverlayState {
             review_load_error: None,
             finish_review: None,
             finish_submit_span: None,
+            dictate_blip: None,
             reviews: Vec::new(),
             reviews_open: false,
             reviews_selected: 0,
@@ -1772,6 +1776,7 @@ impl DiffOverlayState {
             review_load_error: None,
             finish_review: None,
             finish_submit_span: None,
+            dictate_blip: None,
             reviews: Vec::new(),
             reviews_open: false,
             reviews_selected: 0,
@@ -2186,6 +2191,16 @@ fn refresh_replies_waiting(app: &mut App) {
 ///     through `input_submit::dispatch_review_nudge` so the user sees the
 ///     bubble appear immediately.
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
+    // A live take owns the first Esc on every surface it can be started
+    // from: it is abandoned and the editor underneath stands.
+    if matches!(key.code, KeyCode::Esc)
+        && app.emoji.is_none()
+        && crate::app::dictate::dictate_owns_esc(app)
+    {
+        crate::app::dictate::dispatch_stop(app);
+        app.needs_redraw = true;
+        return;
+    }
     // A paste queued earlier in this drain cycle owns any editing-like
     // key that follows it - without this a chunked paste's trailing
     // newline saves the comment instead of landing in the text.
@@ -3804,7 +3819,79 @@ fn finalize_review_close(app: &mut App, overview: Option<&str>, seal_ids: &[Stri
 mod tests {
     use super::*;
     use forge_workspace::env::git_diff::hunks::FileStatus;
+    use forge_workspace::{DictateOutcome, SessionUpdate};
     use std::time::Duration;
+
+    /// A take resolved while the diff comment editor is focused lands
+    /// its words into the editor - not into the chat draft.
+    #[test]
+    fn a_take_lands_in_the_focused_comment_editor() {
+        let mut app = app_with_comment_editor();
+        let key = app.active_session_key.clone().expect("test_default has an active bucket");
+        crate::app::events::apply_session_update(
+            &mut app,
+            SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+        );
+
+        crate::app::events::apply_session_update(
+            &mut app,
+            SessionUpdate::DictateEnded {
+                key: key.clone(),
+                generation: 1,
+                outcome: DictateOutcome::Landed {
+                    text: "dictated words".to_owned(),
+                    truncated: false,
+                },
+            },
+        );
+        let after = overlay(&app);
+        assert_eq!(
+            after.active_input.as_ref().map(|input| input.editor.text().to_owned()).as_deref(),
+            Some("dictated words"),
+            "the words land in the focused comment editor"
+        );
+        assert!(app.input().text().is_empty(), "the chat draft keeps nothing");
+    }
+
+    /// Esc ownership: with a take live, the first Esc abandons the take
+    /// and the comment editor stands; only the next Esc cancels it.
+    #[test]
+    fn esc_abandons_the_take_before_cancelling_the_editor() {
+        let mut app = app_with_comment_editor();
+        let key = app.active_session_key.clone().expect("test_default has an active bucket");
+        crate::app::events::apply_session_update(
+            &mut app,
+            SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1 },
+        );
+        if let Some(ws) = app.workspace.as_ref() {
+            ws.enable_test_dispatch_intercept();
+        }
+
+        handle_key(&mut app, KeyEvent::from(KeyCode::Esc));
+
+        let after = overlay(&app);
+        assert!(after.active_input.is_some(), "the first Esc leaves the editor open");
+        let dispatched = app.workspace.as_ref().map(|ws| ws.drain_test_dispatch_buffer());
+        let Some(dispatched) = dispatched else { panic!("test_default carries a workspace") };
+        assert!(
+            dispatched
+                .iter()
+                .any(|command| matches!(command, forge_workspace::Command::DictateStop { .. })),
+            "Esc dispatched the abandon: {dispatched:?}"
+        );
+    }
+
+    /// The sister case: with no take live, Esc cancels the editor as
+    /// before.
+    #[test]
+    fn esc_without_a_take_still_cancels_the_editor() {
+        let mut app = app_with_comment_editor();
+
+        handle_key(&mut app, KeyEvent::from(KeyCode::Esc));
+
+        let after = overlay(&app);
+        assert!(after.active_input.is_none(), "no take, Esc cancels the editor");
+    }
 
     fn sample_state() -> DiffOverlayState {
         let mut state = DiffOverlayState::new(

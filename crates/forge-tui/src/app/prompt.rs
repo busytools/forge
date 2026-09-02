@@ -292,6 +292,14 @@ pub fn handle_key_editing_input(prompt: &mut PromptState, key: KeyEvent) -> Prom
 pub fn dispatch_key(app: &mut crate::app::App, key: KeyEvent) -> bool {
     use forge_primitives::permission_ui::PermissionOptionKind as Kind;
 
+    // A live take owns the first Esc over the dock: it is abandoned
+    // and the prompt stands for the next one.
+    if matches!(key.code, KeyCode::Esc) && crate::app::dictate::dictate_owns_esc(app) {
+        crate::app::dictate::dispatch_stop(app);
+        app.needs_redraw = true;
+        return true;
+    }
+
     // Short-lived read to capture focus state without holding the mut borrow
     // across an `app.input_mut()` call below.
     let focused_kind = {
@@ -939,6 +947,39 @@ pub(crate) mod tests {
 
     /// Routing printable characters through the burst detector must not
     /// cost the notes field its ordinary editing keys.
+    #[test]
+    /// A live take owns the first Esc over the dock: it is abandoned
+    /// and the prompt stays up for the next Esc.
+    #[test]
+    fn esc_abandons_a_live_take_before_rejecting_the_dock() {
+        let mut app = app_with_focused_notes();
+        let key = app.active_session_key.clone().expect("active session");
+        crate::app::events::apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1 },
+        );
+        if let Some(ws) = app.workspace.as_ref() {
+            ws.enable_test_dispatch_intercept();
+        }
+
+        assert!(dispatch_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        let session = app.active_session().expect("session");
+        assert!(
+            session.prompt_queue.front().is_some(),
+            "the first Esc abandons the take, the prompt stands"
+        );
+        let dispatched = app.workspace.as_ref().map(|ws| ws.drain_test_dispatch_buffer());
+        let Some(dispatched) = dispatched else { panic!("test_default carries a workspace") };
+        assert!(
+            dispatched
+                .iter()
+                .any(|command| matches!(command, forge_workspace::Command::DictateStop { .. })),
+            "Esc dispatched the abandon: {dispatched:?}"
+        );
+    }
+
+    /// Typed characters have to reach the notes editor through
+    /// dispatch_key's Notes branch.
     #[test]
     fn notes_field_still_takes_editing_keys() {
         let mut app = app_with_focused_notes();
