@@ -4,6 +4,7 @@ pub(crate) mod chat;
 pub(crate) mod chat_tree;
 mod chat_view;
 pub(crate) mod collapse;
+mod composer;
 mod config;
 pub(crate) mod dictate_picker;
 mod diff;
