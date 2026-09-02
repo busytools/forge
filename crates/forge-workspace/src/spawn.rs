@@ -569,7 +569,7 @@ pub(crate) fn deliver_gotify_message(
     if let Some(target_key) = running_lead {
         push_gotify_notification_into_chat(workspace, &target_key, &notification);
         if let Err(err) = workspace.dispatch(Command::Prompt {
-            key: target_key,
+            key: target_key.clone(),
             text: notification.to_prose(),
             attachments: Vec::new(),
         }) {
@@ -579,6 +579,15 @@ pub(crate) fn deliver_gotify_message(
                 error = ?err,
                 "gotify deliver to running project failed",
             );
+            // The echo already opened a turn in the TUI; without this
+            // its bar counts forever and the bucket spinner never
+            // drops (mirrors the typed-submit compensation).
+            let _ = workspace.update_sender().send(SessionUpdate::TurnError {
+                key: target_key,
+                message: err.to_string(),
+                class: None,
+                terminal_reason: None,
+            });
         }
         return;
     }
@@ -1509,9 +1518,11 @@ pub(crate) fn handle_deliver_worker_prompt(
     let text = wrapped.to_prose();
     push_peer_user_turn_into_chat(workspace, &target_key, &wrapped);
     drop(wrapped);
-    if let Err(err) =
-        workspace.dispatch(Command::Prompt { key: target_key, text, attachments: Vec::new() })
-    {
+    if let Err(err) = workspace.dispatch(Command::Prompt {
+        key: target_key.clone(),
+        text,
+        attachments: Vec::new(),
+    }) {
         tracing::warn!(
             target: "forge_workspace::spawn",
             project = %project_key.as_str(),
@@ -1519,6 +1530,15 @@ pub(crate) fn handle_deliver_worker_prompt(
             error = ?err,
             "DeliverWorkerPrompt dispatch to worker failed"
         );
+        // The echo already opened a turn in the TUI; without this
+        // its bar counts forever and the bucket spinner never
+        // drops (mirrors the typed-submit compensation).
+        let _ = workspace.update_sender().send(SessionUpdate::TurnError {
+            key: target_key,
+            message: err.to_string(),
+            class: None,
+            terminal_reason: None,
+        });
     }
 }
 
@@ -1581,6 +1601,15 @@ pub(crate) fn handle_deliver_worker_prompt_to_lead(
             error = ?err,
             "DeliverWorkerPromptToLead dispatch to lead failed"
         );
+        // The echo already opened a turn in the TUI; without this
+        // its bar counts forever and the bucket spinner never
+        // drops (mirrors the typed-submit compensation).
+        let _ = workspace.update_sender().send(SessionUpdate::TurnError {
+            key: target_lead_key.clone(),
+            message: err.to_string(),
+            class: None,
+            terminal_reason: None,
+        });
     }
 }
 
