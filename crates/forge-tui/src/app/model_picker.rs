@@ -51,9 +51,8 @@ pub(crate) fn open(app: &mut App) -> bool {
         .iter()
         .position(|row| {
             current.is_some_and(|model| {
-                // Case-insensitive like the default-row filter: the CLI's
-                // ids are case-tolerant and the three id comparisons
-                // (filter, seeding, running dot) must agree.
+                // Case-insensitive like the other three id comparisons -
+                // default filter, switch membership, running dot.
                 model
                     .requested_id
                     .as_deref()
