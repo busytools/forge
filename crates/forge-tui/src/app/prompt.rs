@@ -294,8 +294,7 @@ pub fn dispatch_key(app: &mut crate::app::App, key: KeyEvent) -> bool {
 
     // A live take owns the first Esc over the dock: it is abandoned
     // and the prompt stands for the next one.
-    if matches!(key.code, KeyCode::Esc) && crate::app::dictate::dictate_owns_esc(app) {
-        crate::app::dictate::dispatch_stop(app);
+    if matches!(key.code, KeyCode::Esc) && crate::app::dictate::abandon_take(app) {
         app.needs_redraw = true;
         return true;
     }

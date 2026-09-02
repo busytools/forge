@@ -469,13 +469,38 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             app.dictate_take_pending = false;
             if let Some(text) = clipboard_text_for_outcome(&outcome) {
                 let _ = crate::app::keys::write_text_to_clipboard(text.to_owned());
+                let truncated = matches!(
+                    outcome,
+                    forge_workspace::DictateOutcome::Landed { truncated: true, .. }
+                );
+                let landing = dictate_landing(app, &key);
                 match dictate_destination(app, &key) {
                     Some(editor) => editor.insert_str(text),
                     None => {
                         if let Some(bucket) = app.session_mut(&key) {
                             bucket.input.insert_str(text);
+                            // The words arrived in a draft the user was
+                            // not looking at; say so until the next
+                            // keystroke. An outcome notice (the
+                            // truncation warning) stamps over this.
+                            bucket.set_dictate_notice(crate::app::dictate::DictateNotice {
+                                severity: crate::app::dictate::NoticeSeverity::Dim,
+                                text: "dictated words landed here".to_owned(),
+                            });
+                        } else {
+                            tracing::warn!(
+                                target: crate::logging::targets::APP_INPUT,
+                                event_name = "dictate_transcript_dropped",
+                                message = "dictated transcript discarded: session closed mid-take",
+                                outcome = "failure",
+                            );
                         }
                     }
+                }
+                // A truncated take warns where its words landed, not
+                // only on the chat composer's notice row.
+                if truncated {
+                    stamp_truncation_warning(app, landing);
                 }
             }
             if let Some(bucket) = app.session_mut(&key) {
@@ -495,6 +520,52 @@ fn clipboard_text_for_outcome(outcome: &forge_workspace::DictateOutcome) -> Opti
     match outcome {
         forge_workspace::DictateOutcome::Landed { text, truncated: _ } => Some(text),
         _ => None,
+    }
+}
+
+/// Where a landed take's words went - the same question
+/// [`dictate_destination`] answers, without the borrow, so the
+/// truncation warning can follow the words after the insert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DictateLanding {
+    Chat,
+    Diff,
+    PluginsField,
+    Fallback,
+}
+
+fn dictate_landing(app: &App, key: &forge_workspace::SessionKey) -> DictateLanding {
+    if app.active_session_key.as_ref() != Some(key) {
+        return DictateLanding::Fallback;
+    }
+    match app.input_focus() {
+        crate::app::InputFocus::Chat => DictateLanding::Chat,
+        crate::app::InputFocus::DiffComment | crate::app::InputFocus::DiffFinishReview => {
+            DictateLanding::Diff
+        }
+        crate::app::InputFocus::None => match app.active_view {
+            crate::app::ActiveView::Plugins => DictateLanding::PluginsField,
+            _ => DictateLanding::Fallback,
+        },
+    }
+}
+
+/// Stamp the truncation warning on the surface that received the
+/// words: the diff overlay's notice line, the plugins status line, or
+/// the chat composer's notice row (which `apply_dictate_outcome`
+/// stamps from the outcome itself).
+fn stamp_truncation_warning(app: &mut App, landing: DictateLanding) {
+    let text = crate::app::dictate::truncated_notice_text().to_owned();
+    match landing {
+        DictateLanding::Diff => {
+            if let Some(overlay) = app.diff_overlay.as_mut() {
+                overlay.dictate_notice = Some(text);
+            }
+        }
+        DictateLanding::PluginsField => {
+            app.plugins.status_message = Some(format!("dictation truncated - {text}"));
+        }
+        DictateLanding::Chat | DictateLanding::Fallback => {}
     }
 }
 

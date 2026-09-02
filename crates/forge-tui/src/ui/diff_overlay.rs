@@ -69,9 +69,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     app.cached_frame_area = frame.area();
 
     let blip = blip_span_for(app);
-    if let Some(overlay) = app.diff_overlay.as_mut() {
-        overlay.dictate_blip = blip;
-    }
 
     let Some(overlay) = app.diff_overlay.as_ref() else {
         super::page::render_page(frame, "Diff review", None, Line::default(), |frame, body| {
@@ -94,8 +91,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // that has written nothing never reaches the store.
     let seals = overlay.comments.iter().any(|c| c.authored_this_session)
         && crate::app::diff_overlay::would_file(app);
-    let footer =
-        footer_line(overlay, effective_view_mode(overlay.view_mode, pane_width), body_width, seals);
+    let footer = footer_line(
+        overlay,
+        effective_view_mode(overlay.view_mode, pane_width),
+        body_width,
+        seals,
+        blip.as_ref(),
+    );
 
     super::page::render_page(frame, "Diff review", None, footer, |frame, body| {
         render_diff_body(frame, body, app);
@@ -127,6 +129,23 @@ fn render_diff_body(frame: &mut Frame, area: Rect, app: &mut App) {
     {
         let notice_area = Rect { height: 1, ..usable_area };
         frame.render_widget(Paragraph::new(notice), notice_area);
+        usable_area.y = usable_area.y.saturating_add(1);
+        usable_area.height = usable_area.height.saturating_sub(1);
+    }
+
+    // A truncated take's warning, stamped where its words landed.
+    if app.diff_overlay.as_ref().is_some_and(|o| o.dictate_notice.is_some())
+        && usable_area.height > 0
+    {
+        let line = Line::from(Span::styled(
+            format!(
+                "  dictated words truncated - {}",
+                crate::app::dictate::truncated_notice_text()
+            ),
+            Style::default().fg(theme::STATUS_WARNING),
+        ));
+        let notice_area = Rect { height: 1, ..usable_area };
+        frame.render_widget(Paragraph::new(line), notice_area);
         usable_area.y = usable_area.y.saturating_add(1);
         usable_area.height = usable_area.height.saturating_sub(1);
     }
@@ -598,8 +617,6 @@ fn render_jump_dropdown(frame: &mut Frame, area: Rect, overlay: &DiffOverlayStat
     frame.render_widget(Paragraph::new(lines), rect);
 }
 
-/// One `│ <text> │` content row of the Finish-review modal, fitted to the
-/// box's inner width.
 /// Render the Finish-review modal centered over the diff: the session's
 /// comment count + a short list, the optional overview editor, and the
 /// `[ Submit review ]` button. Stashes the button's screen span on the
@@ -648,11 +665,8 @@ fn render_finish_review(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlay
     for c in authored.iter().take(MAX_LIST) {
         let name = c.path.rsplit('/').next().unwrap_or(c.path.as_str());
         let snippet = c.comment_text.lines().next().unwrap_or("");
-        rows.push(composer::side_bordered(
-            Line::from(Span::styled(format!("   \u{b7} {name}:{}   {snippet}", c.line), dim)),
-            bw,
-            border,
-        ));
+        let list_row = fit_box_content(&format!("   \u{b7} {name}:{}   {snippet}", c.line), inner);
+        rows.push(composer::side_bordered(Line::from(Span::styled(list_row, dim)), bw, border));
     }
     if count > MAX_LIST {
         rows.push(composer::side_bordered(
@@ -670,9 +684,8 @@ fn render_finish_review(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlay
         overlay.finish_review.as_ref().map(|f| f.editor.lines().to_vec()).unwrap_or_default();
     let (caret_row, caret_col) =
         overlay.finish_review.as_ref().map_or((0, 0), |f| f.editor.cursor());
-    let blip = overlay.dictate_blip.as_ref();
     if editor_lines.iter().all(String::is_empty) {
-        let mut content = vec![leading_draft_span(blip)];
+        let mut content = vec![ComposerChrome::prompt_span()];
         content.push(Span::styled(
             fit_box_content(PLACEHOLDER_OVERVIEW, inner.saturating_sub(2)),
             dim,
@@ -686,17 +699,20 @@ fn render_finish_review(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlay
         for (idx, line) in editor_lines.iter().take(EDITOR_ROWS).enumerate() {
             let mut content: Vec<Span<'static>> = Vec::new();
             if idx == 0 {
-                content.push(leading_draft_span(blip));
+                content.push(ComposerChrome::prompt_span());
             } else {
                 content.push(Span::raw("  "));
             }
+            // The glyph or indent costs the text two of the inner
+            // columns, so a long overview line truncates inside the box.
+            let fitted = fit_box_content(line, inner.saturating_sub(2));
             if idx == caret_row {
-                let (head, tail) = split_at_char(line, caret_col.min(line.chars().count()));
+                let (head, tail) = split_at_char(&fitted, caret_col.min(fitted.chars().count()));
                 content.push(Span::raw(head.to_owned()));
                 content.push(ComposerChrome::caret_span());
                 content.push(Span::raw(tail.to_owned()));
             } else {
-                content.push(Span::raw(line.clone()));
+                content.push(Span::raw(fitted));
             }
             rows.push(composer::side_bordered(Line::from(content), bw, border));
         }
@@ -1156,16 +1172,23 @@ fn render_separator(frame: &mut Frame, area: Rect) {
 /// `seals` has to be answered from the same source Esc consults; taken
 /// from the cards it offers a review for a thread another view has
 /// already deleted, and Esc then closes without one.
+/// The key-hints bar. `blip` leads it when a take is live - the
+/// overlay's fixed blip spot, visible however far the editor row has
+/// scrolled.
 fn footer_line(
     overlay: &DiffOverlayState,
     mode: DiffViewMode,
     width: u16,
     seals: bool,
+    blip: Option<&Span<'static>>,
 ) -> Line<'static> {
     let dim = Style::default().fg(theme::DIM);
     let orange = Style::default().fg(theme::RUST_ORANGE);
     let count = overlay.comments.len();
     let mut spans = vec![Span::raw("  ")];
+    if let Some(blip) = blip {
+        spans.push(blip.clone());
+    }
     // In commit mode the running total already lives in the stepper
     // ("● N comments so far"), so the footer skips the redundant prefix
     // (and reclaims the width for the extra commit-nav hints).
@@ -1832,7 +1855,6 @@ fn push_unified_body(
                             gutter_width,
                             row.line_no.unwrap_or(0),
                             pane_width,
-                            overlay.dictate_blip.as_ref(),
                             lines,
                             keys,
                         );
@@ -1951,15 +1973,7 @@ fn push_split_body(
                             diff_line.new_line.unwrap_or(0)
                         }
                     };
-                    render_active_input(
-                        input,
-                        gutter_width,
-                        anchor_line,
-                        pane_width,
-                        overlay.dictate_blip.as_ref(),
-                        lines,
-                        keys,
-                    );
+                    render_active_input(input, gutter_width, anchor_line, pane_width, lines, keys);
                 }
             }
         }
@@ -2433,12 +2447,6 @@ fn blip_span_for(app: &App) -> Option<Span<'static>> {
     crate::app::dictate::blip_span(app, app.spinner_epoch.elapsed().as_secs_f32() * 1000.0)
 }
 
-/// The span leading a draft's first row: the prompt glyph, or the
-/// blip of a live take in its place.
-fn leading_draft_span(blip: Option<&Span<'static>>) -> Span<'static> {
-    blip.cloned().unwrap_or_else(ComposerChrome::prompt_span)
-}
-
 /// Split a row at the `n`th char for the caret insert, char-counted
 /// like the editor's own caret columns.
 fn split_at_char(text: &str, n: usize) -> (&str, &str) {
@@ -2451,7 +2459,6 @@ fn render_active_input(
     gutter_width: usize,
     anchor_line: u32,
     pane_width: u16,
-    blip: Option<&Span<'static>>,
     lines: &mut Vec<Line<'static>>,
     keys: &mut Vec<BodyRowKey>,
 ) {
@@ -2490,7 +2497,7 @@ fn render_active_input(
     let empty = editor_lines.is_empty() || editor_lines.iter().all(String::is_empty);
     let body_rows: Vec<String> = if empty { Vec::new() } else { editor_lines.to_vec() };
     if empty {
-        let mut content = vec![leading_draft_span(blip)];
+        let mut content = vec![ComposerChrome::prompt_span()];
         content.push(Span::styled(
             fit_box_content(PLACEHOLDER_COMMENT, inner_width.saturating_sub(2)),
             dim,
@@ -2505,7 +2512,7 @@ fn render_active_input(
         let fitted = fit_box_content(body_row, inner_width.saturating_sub(2));
         let mut content: Vec<Span<'static>> = Vec::new();
         if idx == 0 {
-            content.push(leading_draft_span(blip));
+            content.push(ComposerChrome::prompt_span());
         } else {
             content.push(Span::raw("  "));
         }
@@ -2859,7 +2866,7 @@ mod tests {
         };
         let mut lines = Vec::new();
         let mut keys = Vec::new();
-        render_active_input(&input, 4, 42, 80, None, &mut lines, &mut keys);
+        render_active_input(&input, 4, 42, 80, &mut lines, &mut keys);
 
         let texts: Vec<String> = lines
             .iter()
@@ -2921,7 +2928,7 @@ mod tests {
         };
         let mut lines = Vec::new();
         let mut keys = Vec::new();
-        render_active_input(&input, 4, 42, 80, None, &mut lines, &mut keys);
+        render_active_input(&input, 4, 42, 80, &mut lines, &mut keys);
         let body =
             lines[1].spans.iter().map(|span| span.content.as_ref()).collect::<Vec<_>>().join("");
         assert!(body.contains("ship it"), "the draft renders, got: {body}");
@@ -2937,10 +2944,11 @@ mod tests {
         );
     }
 
-    /// With a take live, the comment editor's draft row carries the
-    /// circle blip in the prompt glyph's place.
+    /// With a take live, the overlay's key-hints bar carries the circle
+    /// blip - the fixed spot, visible however far the editor row has
+    /// scrolled - and the editor's glyph stands.
     #[test]
-    fn the_comment_editor_blips_while_a_take_is_live() {
+    fn the_key_hints_bar_blips_while_a_take_is_live() {
         use forge_workspace::SessionUpdate;
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -2987,17 +2995,17 @@ mod tests {
         let rows: Vec<String> = (0..30)
             .map(|y| (0..w).map(|x| buffer.content[y * w + x].symbol()).collect::<String>())
             .collect();
+        assert!(
+            rows.iter().any(|row| row.contains('\u{25cf}')),
+            "the blip shows somewhere on the overlay while a take is live, got: {rows:?}"
+        );
         let editor_row = rows
             .iter()
             .find(|row| row.contains(PLACEHOLDER_COMMENT))
             .expect("the comment editor renders");
         assert!(
-            editor_row.contains('\u{25cf}'),
-            "the blip rides the editor's draft row, got: {editor_row}"
-        );
-        assert!(
-            !editor_row.contains('\u{27a4}'),
-            "the blip takes the prompt glyph's place, got: {editor_row}"
+            editor_row.contains('\u{27a4}') && !editor_row.contains('\u{25cf}'),
+            "the editor's glyph stands; the blip lives on the chrome, got: {editor_row}"
         );
     }
 
@@ -3010,13 +3018,16 @@ mod tests {
         state.finish_review = Some(crate::app::diff_overlay::FinishReviewState {
             editor: crate::app::input::InputState::new(),
         });
-        for text in ["FIRST", "SECOND"] {
-            let mut c = chip_comment(5, text, ReviewStatus::Open);
-            c.thread.id = format!("thread-{text}");
-            c.comment_text = text.to_owned();
-            c.authored_this_session = true;
-            state.comments.push(c);
-        }
+        let mut long = chip_comment(5, "FIRST", ReviewStatus::Open);
+        long.thread.id = "thread-FIRST".to_owned();
+        long.comment_text = format!("{} overflow", "a very long review snippet ".repeat(4));
+        long.authored_this_session = true;
+        state.comments.push(long);
+        let mut c = chip_comment(5, "SECOND", ReviewStatus::Open);
+        c.thread.id = "thread-SECOND".to_owned();
+        c.comment_text = "SECOND".to_owned();
+        c.authored_this_session = true;
+        state.comments.push(c);
 
         let (width, height) = (80u16, 20u16);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
@@ -3035,6 +3046,21 @@ mod tests {
             .map(|r| (0..w).map(|x| buffer.content[r * w + x].symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n");
+
+        // The modal is 68 wide at an 80-col area; no row may spill past
+        // its right border, whatever the snippet length.
+        let modal_width = usize::from(width.saturating_sub(8).clamp(44, 68));
+        let modal_x =
+            usize::from(width.saturating_sub(u16::try_from(modal_width).unwrap_or(0)) / 2);
+        for r in 0..usize::from(height) {
+            let row: String = (0..w).map(|x| buffer.content[r * w + x].symbol()).collect();
+            let inside: String = row.chars().skip(modal_x).take(modal_width).collect();
+            let row_width = crate::ui::wrap::display_width(inside.trim_end());
+            assert!(
+                row_width <= modal_width,
+                "row {r} spills past the modal's {modal_width} columns: {inside:?}"
+            );
+        }
 
         assert!(
             rows.contains("\u{250f}\u{2501} Finish review \u{b7} 2 comments "),
@@ -3072,7 +3098,7 @@ mod tests {
         let mut lines = Vec::new();
         let mut keys = Vec::new();
 
-        render_active_input(&input, 4, 371, 80, None, &mut lines, &mut keys);
+        render_active_input(&input, 4, 371, 80, &mut lines, &mut keys);
 
         let widths: Vec<usize> = lines.iter().map(crate::ui::wrap::line_display_width).collect();
         assert!(widths.len() >= 4, "border, body, hint, border");
@@ -4866,7 +4892,7 @@ mod tests {
                 hunks: Vec::new(),
             }],
         );
-        let text = line_text(&footer_line(&state, DiffViewMode::Unified, 160, false));
+        let text = line_text(&footer_line(&state, DiffViewMode::Unified, 160, false, None));
         assert!(text.contains("comment"), "still hints click-to-comment");
         assert!(!text.contains("resolve"), "no global resolve hint");
         assert!(!text.contains("reopen"), "no global reopen hint");
@@ -4882,11 +4908,11 @@ mod tests {
             "HEAD".to_owned(),
             Vec::new(),
         );
-        let closing = line_text(&footer_line(&state, DiffViewMode::Unified, 200, false));
+        let closing = line_text(&footer_line(&state, DiffViewMode::Unified, 200, false, None));
         assert!(closing.contains("close"), "nothing to seal reads close; got: {closing}");
         assert!(!closing.contains("finish review"), "and must not offer a review");
 
-        let sealing = line_text(&footer_line(&state, DiffViewMode::Unified, 200, true));
+        let sealing = line_text(&footer_line(&state, DiffViewMode::Unified, 200, true, None));
         assert!(sealing.contains("finish review"), "work to seal reads finish review");
     }
 }

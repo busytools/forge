@@ -81,11 +81,12 @@ fn build_lines(
     lines.push(Line::default());
 
     // Options stack.
-    lines.extend(build_option_lines(prompt, content_width, notes_text, blip));
+    lines.extend(build_option_lines(prompt, content_width, notes_text));
 
-    // Footer hint.
+    // Footer hint. A live take's blip leads it - the dock's fixed
+    // blip spot, visible whichever option holds the focus.
     lines.push(Line::default());
-    lines.push(build_footer_line(prompt));
+    lines.push(build_footer_line(prompt, blip));
 
     // 1 empty row bottom.
     lines.push(Line::default());
@@ -187,7 +188,6 @@ fn build_option_lines(
     prompt: &PromptState,
     content_width: usize,
     notes_text: Option<&str>,
-    blip: Option<&Span<'static>>,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let is_multi = prompt.is_multi_select();
@@ -229,14 +229,6 @@ fn build_option_lines(
             Style::default().fg(Color::Gray)
         };
         let mut spans: Vec<Span<'static>> = vec![Span::styled(pointer.to_string(), pointer_style)];
-        // A live dictate take aimed at the notes draft takes the
-        // pointer's place on its row: same left edge, same 2 cells.
-        if is_focused
-            && is_notes_kind
-            && let Some(blip) = blip
-        {
-            spans[0] = blip.clone();
-        }
         let checkbox_str = if is_multi { if is_toggled { "[x] " } else { "[ ] " } } else { "" };
         if is_multi {
             let checkbox_style = if is_toggled {
@@ -346,7 +338,7 @@ fn build_option_lines(
     lines
 }
 
-fn build_footer_line(prompt: &PromptState) -> Line<'static> {
+fn build_footer_line(prompt: &PromptState, blip: Option<&Span<'static>>) -> Line<'static> {
     let text = match prompt.mode {
         PromptMode::OptionPicker => {
             if prompt.is_multi_select() {
@@ -357,7 +349,12 @@ fn build_footer_line(prompt: &PromptState) -> Line<'static> {
         }
         PromptMode::EditingInput => "⏎ submit  esc back to options",
     };
-    Line::from(Span::styled(text.to_owned(), Style::default().fg(theme::DIM)))
+    let mut spans = Vec::new();
+    if let Some(blip) = blip {
+        spans.push(blip.clone());
+    }
+    spans.push(Span::styled(text.to_owned(), Style::default().fg(theme::DIM)));
+    Line::from(spans)
 }
 
 fn icon_for_kind(kind: PermissionOptionKind) -> (&'static str, Color) {
@@ -845,9 +842,11 @@ mod tests {
     }
 
     /// A live dictate take puts the circle blip on the focused Notes
-    /// row's left edge, in place of the pointer; no take, no blip.
+    /// A live dictate take puts the circle blip on the dock's footer
+    /// hint row - the fixed chrome spot, visible whichever option holds
+    /// the focus.
     #[test]
-    fn the_notes_option_carries_the_blip_while_a_take_is_live() {
+    fn the_dock_footer_blips_while_a_take_is_live() {
         let request = make_question_request(false);
         let mut prompt = PromptState::from_question("tc-q".into(), request);
         prompt.focused_option_index = prompt.options.len() - 1;
@@ -856,26 +855,18 @@ mod tests {
 
         let mut buf = Buffer::empty(area);
         render(area, &mut buf, &prompt, 1, Some(""), Some(&blip));
-        let notes_row = (0..area.height).find_map(|y| {
+        let footer_y = (0..area.height).find(|&y| {
             let row: String = (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect();
-            row.contains("Tell Claude something else").then_some((y, row))
+            row.contains("\u{23ce} confirm")
         });
-        let (y, row) = notes_row.expect("the focused Notes option renders");
-        assert!(row.contains("\u{25cf}"), "the blip rides the notes row, got: {row}");
-        assert!(!row.contains("\u{25b8}"), "the blip takes the pointer's place, got: {row}");
-        let cell = (0..4).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>();
-        assert!(
-            cell.contains("\u{25cf}"),
-            "the blip sits on the row's left edge (border + padding, then the circle), got: {cell:?}"
-        );
+        let y = footer_y.expect("the footer hint renders");
+        let row: String = (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect();
+        assert!(row.contains("\u{25cf}"), "the blip leads the hint row, got: {row}");
 
-        // No take, no blip: the pointer returns.
+        // No take, no blip.
         let mut buf = Buffer::empty(area);
         render(area, &mut buf, &prompt, 1, Some(""), None);
         let row: String = (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect();
-        assert!(
-            row.contains("\u{25b8}") && !row.contains("\u{25cf}"),
-            "without a take the pointer stands and no circle draws, got: {row}"
-        );
+        assert!(!row.contains("\u{25cf}"), "without a take no circle draws, got: {row}");
     }
 }

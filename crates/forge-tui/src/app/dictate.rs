@@ -416,6 +416,11 @@ pub(crate) enum NoticeSeverity {
     Error,
 }
 
+/// The warning a truncated take leaves beside its words.
+pub(crate) fn truncated_notice_text() -> &'static str {
+    "this is what fitted \u{b7} keep going from the end"
+}
+
 /// The notice a finished take leaves, worded per outcome. A finite
 /// quiet-room peak quotes its own measurement; structural silence
 /// offers no retry because it is sticky within the process.
@@ -428,7 +433,7 @@ pub(crate) fn notice_for_outcome(
         | forge_workspace::DictateOutcome::Cancelled => None,
         forge_workspace::DictateOutcome::Landed { truncated: true, .. } => Some(DictateNotice {
             severity: NoticeSeverity::Warn,
-            text: "this is what fitted \u{b7} keep going from the end".to_owned(),
+            text: truncated_notice_text().to_owned(),
         }),
         forge_workspace::DictateOutcome::Empty => Some(DictateNotice {
             severity: NoticeSeverity::Dim,
@@ -477,6 +482,33 @@ pub(crate) fn dispatch_stop(app: &App) {
             error_message = %message,
         );
     }
+}
+
+/// Abandon the live take: dispatch the stop AND clear the indicator
+/// optimistically, so the next Esc reaches the surface's own semantics
+/// instead of being eaten waiting for the async echo, and a duplicate
+/// stop cannot arrive inside the workspace's freshness window to
+/// pre-abandon a newer take at birth. The border eases home from
+/// wherever the take froze it. False when no take is live.
+pub(crate) fn abandon_take(app: &mut App) -> bool {
+    let Some(key) = app.active_session_key.clone() else { return false };
+    let cleared = {
+        let Some(bucket) = app.session_mut(&key) else { return false };
+        if bucket.dictate.take().is_none() {
+            return false;
+        }
+        let frozen = bucket.dictate_border.take().map(|border| border.rgb());
+        bucket.dictate_border = frozen.map(|rgb| DictateBorder::Afterglow {
+            started: Instant::now(),
+            rgb,
+            beat: false,
+        });
+        true
+    };
+    if cleared {
+        dispatch_stop(app);
+    }
+    cleared
 }
 
 /// The one-cell circle a non-chat surface carries while a take is
@@ -1090,6 +1122,26 @@ mod tests {
             },
         );
         assert!(app.shows_activity(), "the beat is still inside its window");
+
+        // The session-bound fallback: the words went to the owning
+        // session's draft, never to whichever session holds the focus,
+        // and the event is stamped visible on that draft.
+        assert_eq!(
+            app.sessions.get(&other).expect("bucket").input.text(),
+            "landed",
+            "the fallback lands the words in the owning session's draft"
+        );
+        assert!(app.input().text().is_empty(), "the focused session's draft keeps nothing");
+        let notice = app
+            .sessions
+            .get(&other)
+            .expect("bucket")
+            .visible_dictate_notice()
+            .expect("the fallback landing is announced");
+        assert_eq!(
+            notice.text, "dictated words landed here",
+            "the DIM notice explains the landing"
+        );
 
         let bucket = app.sessions.get_mut(&other).expect("bucket");
         let border = bucket.dictate_border.as_mut().expect("the afterglow persists on the bucket");

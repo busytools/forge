@@ -149,7 +149,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let border_fg =
         crate::app::dictate::border_color(app, Instant::now()).unwrap_or(theme::RUST_ORANGE);
     let chrome = crate::ui::composer::ComposerChrome::chat();
-    frame.render_widget(chrome.border_block(border_fg), geometry.box_area);
+    frame.render_widget(
+        crate::ui::composer::ComposerChrome::border_block(border_fg),
+        geometry.box_area,
+    );
 
     if let Some(hint_pad) = geometry.hint_pad {
         let mut hint_y = hint_pad.y;

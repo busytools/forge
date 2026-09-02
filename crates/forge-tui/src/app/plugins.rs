@@ -137,8 +137,7 @@ pub(crate) fn handle_paste(app: &mut App, text: &str) -> bool {
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     // A live take owns the first Esc on this view: it is abandoned
     // before any closing semantics fire.
-    if matches!(key.code, KeyCode::Esc) && crate::app::dictate::dictate_owns_esc(app) {
-        crate::app::dictate::dispatch_stop(app);
+    if matches!(key.code, KeyCode::Esc) && crate::app::dictate::abandon_take(app) {
         app.needs_redraw = true;
         return true;
     }
@@ -449,8 +448,7 @@ pub(crate) fn handle_add_marketplace_overlay_key(app: &mut App, key: KeyEvent) {
     if let (KeyCode::Esc, KeyModifiers::NONE) = (key.code, key.modifiers) {
         // A live take owns the first Esc here too: abandon, keep the
         // overlay up.
-        if crate::app::dictate::dictate_owns_esc(app) {
-            crate::app::dictate::dispatch_stop(app);
+        if crate::app::dictate::abandon_take(app) {
             app.needs_redraw = true;
             return;
         }
@@ -1323,6 +1321,40 @@ mod tests {
         );
         let overlay = app.config.add_marketplace_overlay_mut().expect("overlay still up");
         assert_eq!(overlay.editor.text(), "owner/repo");
+    }
+
+    /// Esc on the add-marketplace overlay abandons a live take before
+    /// the overlay closes.
+    #[test]
+    fn esc_abandons_a_live_take_before_closing_the_marketplace_overlay() {
+        let mut app = app_with_add_marketplace_open();
+        app.active_view = crate::app::ActiveView::Plugins;
+        let key = app.active_session_key.clone().expect("test_default has an active bucket");
+        apply_session_update(
+            &mut app,
+            SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1 },
+        );
+        if let Some(ws) = app.workspace.as_ref() {
+            ws.enable_test_dispatch_intercept();
+        }
+
+        handle_add_marketplace_overlay_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        );
+
+        assert!(
+            app.config.overlay.is_some(),
+            "the first Esc abandons the take, the overlay stands"
+        );
+        let dispatched = app.workspace.as_ref().map(|ws| ws.drain_test_dispatch_buffer());
+        let Some(dispatched) = dispatched else { panic!("test_default carries a workspace") };
+        assert!(
+            dispatched
+                .iter()
+                .any(|command| matches!(command, forge_workspace::Command::DictateStop { .. })),
+            "Esc dispatched the abandon: {dispatched:?}"
+        );
     }
 
     fn query(text: &str) -> InputState {

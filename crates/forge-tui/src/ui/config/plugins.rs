@@ -84,10 +84,17 @@ fn top_region_height(_app: &App, _width: u16) -> u16 {
 }
 
 fn tab_header_line(app: &App) -> Line<'static> {
-    let spans = PluginsViewTab::ALL
+    let mut spans = Vec::new();
+    // The view's fixed blip spot: visible on every sub-tab, whichever
+    // row holds the focus.
+    if let Some(blip) =
+        crate::app::dictate::blip_span(app, app.spinner_epoch.elapsed().as_secs_f32() * 1000.0)
+    {
+        spans.push(blip);
+    }
+    let spans = spans
         .into_iter()
-        .enumerate()
-        .flat_map(|(index, tab)| {
+        .chain(PluginsViewTab::ALL.into_iter().enumerate().flat_map(|(index, tab)| {
             let active = tab == app.plugins.active_tab;
             let count = match tab {
                 PluginsViewTab::Installed => filtered_installed(&app.plugins).len(),
@@ -110,7 +117,7 @@ fn tab_header_line(app: &App) -> Line<'static> {
                 spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
             }
             spans
-        })
+        }))
         .collect::<Vec<_>>();
     Line::from(spans)
 }
@@ -123,12 +130,6 @@ fn search_field_line(app: &App) -> Line<'static> {
     let query = app.plugins.search_query_for(app.plugins.active_tab);
 
     let mut spans = Vec::new();
-    if app.plugins.search_focused
-        && let Some(blip) =
-            crate::app::dictate::blip_span(app, app.spinner_epoch.elapsed().as_secs_f32() * 1000.0)
-    {
-        spans.push(blip);
-    }
     if query.is_empty() {
         if app.plugins.search_focused {
             spans.push(Span::styled(" ".to_owned(), cursor_style));
@@ -469,6 +470,7 @@ mod tests {
     use crate::app::plugins::PluginsViewTab;
     use crate::ui::theme;
     use ratatui::style::Style;
+    use unicode_width::UnicodeWidthStr;
 
     /// The unified single-line field is one row whatever the query
     /// length; long queries clip instead of growing the region.
@@ -504,6 +506,11 @@ mod tests {
             "the field is the one-row thick border, got: {text}"
         );
         assert!(text.contains("retry"), "the query rides inside the border, got: {text}");
+        assert_eq!(
+            text.width(),
+            40,
+            "the fill math assembles the row to the exact requested width, got {text:?}"
+        );
 
         // Unfocused: same shape, DIM border.
         app.plugins.search_focused = false;

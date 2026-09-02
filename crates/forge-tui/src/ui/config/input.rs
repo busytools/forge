@@ -46,11 +46,16 @@ pub(super) fn render_text_input_field(
     area: Rect,
     editor: &InputState,
     placeholder: &str,
+    blip: Option<&ratatui::text::Span<'static>>,
 ) {
-    let content = text_input_line(&editor.text(), editor.cursor_char_offset(), placeholder);
+    let mut content = Vec::new();
+    if let Some(blip) = blip {
+        content.push(blip.clone());
+    }
+    content.extend(text_input_line(&editor.text(), editor.cursor_char_offset(), placeholder).spans);
     frame.render_widget(
         Paragraph::new(crate::ui::composer::single_line_field(
-            content,
+            Line::from(content),
             usize::from(area.width),
             crate::ui::composer::border_style(),
         )),

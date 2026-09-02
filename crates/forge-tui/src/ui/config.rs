@@ -307,7 +307,15 @@ fn render_add_marketplace_overlay(frame: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(add_marketplace_example_lines()).wrap(Wrap { trim: false }),
         sections[1],
     );
-    render_text_input_field(frame, sections[3], &overlay.editor, "owner/repo or URL");
+    let blip =
+        crate::app::dictate::blip_span(app, app.spinner_epoch.elapsed().as_secs_f32() * 1000.0);
+    render_text_input_field(
+        frame,
+        sections[3],
+        &overlay.editor,
+        "owner/repo or URL",
+        blip.as_ref(),
+    );
 }
 
 fn installed_plugin_action_overlay_lines(app: &App) -> Vec<Line<'static>> {
