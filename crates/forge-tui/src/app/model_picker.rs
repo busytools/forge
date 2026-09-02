@@ -34,10 +34,7 @@ pub struct ModelPickerState {
 fn rows(app: &App) -> Vec<model::AvailableModel> {
     app.available_models()
         .iter()
-        .filter(|row| {
-            !row.id.eq_ignore_ascii_case("default")
-                && !row.display_name.eq_ignore_ascii_case("default")
-        })
+        .filter(|row| !crate::app::slash::is_sdk_default_model_option(row))
         .cloned()
         .collect()
 }
@@ -338,5 +335,40 @@ mod tests {
         let dispatched =
             app.workspace.as_ref().map(|ws| ws.drain_test_dispatch_buffer()).unwrap_or_default();
         assert!(dispatched.is_empty(), "esc must not switch models, got: {dispatched:?}");
+    }
+
+    /// The picker's rows and the `/model ` argument autocomplete both
+    /// build from the session's available models through the same
+    /// default-row filter - the lists must stay identical so the two
+    /// surfaces cannot drift.
+    #[test]
+    fn picker_rows_match_the_autocomplete_argument_list() {
+        let mut rows = vec![
+            model::AvailableModel::new("default", "Default (recommended)"),
+            model::AvailableModel::new("opus[1m]", "Opus (1M context)"),
+            model::AvailableModel::new("sonnet", "Sonnet"),
+            model::AvailableModel::new("haiku", "Haiku"),
+        ];
+        rows[0].description = Some("Use the default model".to_owned());
+        let mut app = app_with_rows(rows);
+
+        app.input_mut().set_text("/model ");
+        crate::app::slash::activate(&mut app);
+        let autocomplete: Vec<String> = app
+            .slash()
+            .expect("the argument autocomplete opens")
+            .candidates
+            .iter()
+            .map(|candidate| candidate.insert_value.clone())
+            .collect();
+        crate::app::slash::deactivate(&mut app);
+
+        assert!(open(&mut app), "the picker opens on the same rows");
+        let picker = app.model_picker.expect("open");
+        let picker_ids: Vec<String> = picker.rows.iter().map(|row| row.id.clone()).collect();
+        assert_eq!(
+            picker_ids, autocomplete,
+            "the picker and the autocomplete must offer the same models in the same order",
+        );
     }
 }

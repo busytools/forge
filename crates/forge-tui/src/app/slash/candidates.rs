@@ -21,7 +21,7 @@ fn opus_version_label_for_model_id(model_id: &str) -> Option<&'static str> {
     }
 }
 
-fn is_sdk_default_model_option(model: &crate::agent::model::AvailableModel) -> bool {
+pub(crate) fn is_sdk_default_model_option(model: &crate::agent::model::AvailableModel) -> bool {
     model.id.eq_ignore_ascii_case("default") || model.display_name.eq_ignore_ascii_case("default")
 }
 

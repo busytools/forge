@@ -25,6 +25,7 @@ pub const MAX_VISIBLE: usize = 20;
 use super::MAX_CANDIDATES;
 
 // Re-export public API
+pub(crate) use candidates::is_sdk_default_model_option;
 pub(crate) use executors::switch_model;
 pub use executors::try_handle_submit;
 pub use navigation::{
