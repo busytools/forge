@@ -455,6 +455,8 @@ fn status_row(
         Span::raw(" "),
         Span::styled(label.to_owned(), Style::default().fg(theme::DIM)),
     ];
+    // A narrow interior truncates the meter from the left: the right
+    // edge is always the newest frame.
     spans.extend(indicator.meter.window().iter().take(meter_len).map(|frac| {
         Span::styled(
             level_cell(*frac).to_string(),
@@ -494,6 +496,15 @@ pub(crate) fn active_db_readout(app: &mut App, now: Instant) -> Option<(String, 
     let bucket = app.try_active_bucket_mut()?;
     let indicator = bucket.dictate.as_mut()?;
     if indicator.phase != DictatePhase::Recording {
+        return None;
+    }
+    // The readout paints the cells after the caret, so it only shows
+    // at end-of-draft, where the design depicts it; mid-draft the
+    // blinking cursor stands and the draft keeps its text.
+    let (row, col) = bucket.input.cursor();
+    let last_row = bucket.input.lines().len().saturating_sub(1);
+    let last_col = bucket.input.lines().last().map_or(0, |line| line.chars().count());
+    if row != last_row || col != last_col {
         return None;
     }
     let (db, _) = indicator.db_readout(now);

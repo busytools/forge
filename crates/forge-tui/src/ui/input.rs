@@ -858,6 +858,27 @@ mod tests {
                 !caret.add_modifier.contains(ratatui::style::Modifier::SLOW_BLINK),
                 "the readout replaces the blinking block, not a bouncing block beside it"
             );
+
+            // Mid-draft the readout would paint over real words, so it
+            // stands down and the normal cursor returns.
+            app.input_mut().set_text("hello world");
+            app.input_mut().set_cursor_col(5);
+            terminal.draw(|frame| render(frame, frame.area(), &mut app)).expect("draw");
+            let buffer = terminal.backend().buffer().clone();
+            let draft_row: String = (0..80)
+                .map(|x| {
+                    buffer.cell((x, 2)).map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+                })
+                .collect();
+            assert!(
+                !draft_row.contains("dB"),
+                "a mid-draft caret keeps the readout off, got: {draft_row}"
+            );
+            let caret = buffer.cell((8, 2)).expect("caret cell mid-draft").style();
+            assert!(
+                caret.add_modifier.contains(ratatui::style::Modifier::SLOW_BLINK),
+                "the blinking cursor stands in the readout's place"
+            );
         }
 
         #[test]
