@@ -378,6 +378,14 @@ impl ForgeSdkBridge {
                         error = %message,
                         "event channel closed; SetModeFailed dropped",
                     );
+                } else {
+                    tracing::warn!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        session_id = %session_id,
+                        mode = %mode.as_wire(),
+                        error = %message,
+                        "set_permission_mode rejected; SetModeFailed emitted",
+                    );
                 }
             }
             Ok(())

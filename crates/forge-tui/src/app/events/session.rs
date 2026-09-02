@@ -956,6 +956,15 @@ pub(super) fn apply_session_update_set_mode_failed(
     let chip_shows_attempted =
         session.mode.as_ref().is_some_and(|m| m.current_mode_id == attempted);
     if chip_shows_attempted && session.rollback_pending_mode() {
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "set_mode_rollback_applied",
+            message = "mode chip rolled back after a CLI refusal",
+            outcome = "failure",
+            session_key = %key.as_str(),
+            mode = %attempted,
+            error_message = %message,
+        );
         app.invalidate_layout(crate::app::state::LayoutInvalidation::Global);
     }
     handle_slash_command_error_event(
