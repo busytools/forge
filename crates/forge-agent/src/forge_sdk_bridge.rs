@@ -370,7 +370,11 @@ impl ForgeSdkBridge {
             };
             if let Some(message) = failure {
                 if event_tx
-                    .send(AgentEvent::SetModeFailed { session_id, mode, message: message.clone() })
+                    .send(AgentEvent::SetModeFailed {
+                        session_id: session_id.clone(),
+                        mode,
+                        message: message.clone(),
+                    })
                     .is_err()
                 {
                     tracing::warn!(

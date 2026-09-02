@@ -731,6 +731,7 @@ mod tests {
                 let mut app = App::test_default();
                 let _rx = app.install_testing_stub();
                 seed_ask_session(&mut app);
+                let seeded_supported = app.with_turn_state(|ts| ts.supported_mode_ids.clone());
 
                 let consumed = try_handle_submit(&mut app, "/mode plan");
                 assert!(consumed);
@@ -759,6 +760,11 @@ mod tests {
                     app.with_turn_state(|ts| ts.mode),
                     Some(forge_workspace::PermissionMode::Ask),
                     "rejection must restore the pre-apply typed turn-state mode",
+                );
+                assert_eq!(
+                    app.with_turn_state(|ts| ts.supported_mode_ids.clone()),
+                    seeded_supported,
+                    "rejection must restore the pre-apply supported-mode list",
                 );
                 let last = app.messages().last().expect("rejection message pushed");
                 assert!(
