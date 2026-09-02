@@ -513,8 +513,11 @@ fn push_peer_envelope_user_turn_if_present(
         // The clock starts here rather than at the first frame, so the
         // turn-info row never sits as a bare loader while it waits for
         // usage; a prompt delivered mid-turn rides the live bar instead
-        // of starting a second one.
-        if matches!(app.status, crate::app::AppStatus::Thinking | crate::app::AppStatus::Running)
+        // of starting a second one. This runs inside with_pivoted for a
+        // background bucket, where app.status is the focused session's
+        // snapshot, so the in-flight test reads the pivoted bucket's own
+        // live turn.
+        if app.active_session().is_some_and(|bucket| bucket.live_turn.started_at.is_some())
             && !app.pending_cancel()
             && !app.is_compacting()
         {
@@ -3322,6 +3325,114 @@ mod inbound_message_surfacing_tests {
             placeholder.turn_info.started_at.is_some(),
             "the delivered turn's clock starts at the turn-open, not at its first frame",
         );
+    }
+
+    fn seed_background_bucket(app: &mut App, session_id: &str) -> forge_workspace::SessionKey {
+        use crate::app::session::UiSession;
+        let key = forge_workspace::SessionKey::from_session_id(session_id.to_owned());
+        let mut bucket = UiSession::new(key.clone());
+        bucket.session_id = Some(crate::agent::model::SessionId::new(session_id.to_owned()));
+        app.sessions.insert(key.clone(), bucket);
+        key
+    }
+
+    /// A prompt delivered to a session the user is NOT watching runs the
+    /// turn-open inside `with_pivoted`, where `app.status` still describes
+    /// the focused session. A background turn that is mid-turn must ride
+    /// its own live bar: the usage accumulator, the thinking estimate and
+    /// the in-flight row survive untouched.
+    #[test]
+    fn delivered_prompt_to_a_background_mid_turn_session_rides_its_live_bar() {
+        use crate::app::state::messages::LiveUsage;
+        let mut app = App::test_default();
+        app.set_session_id(Some(crate::agent::model::SessionId::new("session-a".to_owned())));
+        app.status = AppStatus::Ready;
+        let background_key = seed_background_bucket(&mut app, "session-b");
+        let t0 = std::time::Instant::now();
+        {
+            let background = app.sessions.get_mut(&background_key).expect("bucket");
+            background.live_turn.started_at = Some(t0);
+            background
+                .live_turn
+                .record("msg-1".to_owned(), LiveUsage { input_tokens: 42, ..LiveUsage::default() });
+            background.messages.push(ChatMessage::new(
+                MessageRole::User,
+                vec![MessageBlock::Text(TextBlock::from_complete("prior prompt"))],
+            ));
+            let mut streaming = ChatMessage::new(MessageRole::Assistant, Vec::new());
+            streaming.turn_info = crate::app::state::messages::TurnInfo {
+                started_at: Some(t0),
+                ..crate::app::state::messages::TurnInfo::default()
+            };
+            background.messages.push(streaming);
+        }
+
+        crate::app::events::client::apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::CronPromptAppended {
+                session_id: "session-b".to_owned(),
+                text: "check the queue".to_owned(),
+            },
+        );
+
+        let background = app.sessions.get(&background_key).expect("bucket");
+        assert_eq!(
+            background.live_turn.started_at,
+            Some(t0),
+            "the background turn's usage accumulator survives; a fresh start would have \
+             wiped it and made the delivered turn bill two turns into one bar",
+        );
+        assert_eq!(
+            background.live_turn.totals().map(|usage| usage.input_tokens),
+            Some(42),
+            "the recorded frame survives with the accumulator",
+        );
+        let live_bars: Vec<_> = background
+            .messages
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::Assistant))
+            .filter(|m| !m.turn_info.is_empty() && !m.turn_info.is_settled())
+            .collect();
+        assert_eq!(live_bars.len(), 1, "exactly one live bar on the background bucket");
+        assert_eq!(
+            live_bars[0].turn_info.started_at,
+            Some(t0),
+            "the carried bar keeps the background turn's clock",
+        );
+    }
+
+    /// The mirror shape: the focused session is busy while the background
+    /// bucket is idle. Reading `app.status` here would take the continue
+    /// branch on an empty accumulator and the first usage frame would
+    /// restart the row's clock, jumping the elapsed backward.
+    #[test]
+    fn delivered_prompt_to_an_idle_background_bucket_starts_a_fresh_clock() {
+        let mut app = App::test_default();
+        app.set_session_id(Some(crate::agent::model::SessionId::new("session-a".to_owned())));
+        app.status = AppStatus::Running;
+        let background_key = seed_background_bucket(&mut app, "session-b");
+
+        crate::app::events::client::apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::CronPromptAppended {
+                session_id: "session-b".to_owned(),
+                text: "check the queue".to_owned(),
+            },
+        );
+
+        let background = app.sessions.get(&background_key).expect("bucket");
+        assert!(
+            background.live_turn.started_at.is_some(),
+            "the fresh branch starts the accumulator, so the first usage frame stamps the \
+             delivery time rather than restarting the row's elapsed",
+        );
+        let placeholder = background
+            .messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, MessageRole::Assistant))
+            .expect("the delivered turn opens an assistant placeholder");
+        assert!(placeholder.turn_info.started_at.is_some(), "the row carries the fresh clock");
     }
 
     /// Bug B for gotify: the same running indicator fires for a
