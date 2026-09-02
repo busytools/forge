@@ -23,20 +23,34 @@ pub(crate) const LEVEL_RAMP: [char; 8] = [
 /// Meter cells in the status row.
 pub(crate) const METER_WIDTH: usize = 26;
 
-/// Envelope, reference and gate constants are per 50 ms tick, the
+/// Envelope, follower and gate constants are per 50 ms tick, the
 /// cadence `DictateLevel` arrives on.
 const ATTACK: f32 = 0.6;
 const RELEASE: f32 = 0.25;
-const REFERENCE_DECAY_DB: f32 = 0.7;
-const MIN_SPAN_DB: f32 = 6.0;
+/// The recent-max follower: grabs a new peak in a tick or two and
+/// forgets it slowly, so it stands for the loudest moment of the last
+/// couple of seconds.
+const MAX_ATTACK: f32 = 0.6;
+const MAX_DECAY_DB: f32 = 0.35;
+/// The recent-min follower: falls toward a new valley faster than it
+/// climbs back off one.
+const MIN_FALL: f32 = 0.5;
+const MIN_RISE: f32 = 0.15;
+/// The min's climb stops this far short of the envelope and the
+/// normalize span never drops under the same floor, so a flat feed
+/// still has a range to read against.
+const MIN_SPAN_DB: f32 = 8.0;
+/// Added to the span, so a fresh peak maps just under full scale
+/// instead of pinning it.
+const HEADROOM_DB: f32 = 2.0;
 const GAMMA: f32 = 0.9;
 /// Floor the raw feed stands in at for structural silence, so the
 /// envelope arithmetic stays finite.
 const SILENCE_DB: f32 = -52.0;
-/// Envelope and reference start points: under the gate, with an
+/// Envelope and follower start points: under the gate, with an
 /// autosens prior a quiet first syllable can still rise against.
 const START_ENV_DB: f32 = -50.0;
-const START_REFERENCE_DB: f32 = -30.0;
+const START_MAX_DB: f32 = -30.0;
 
 // The v3 handoff palette. Blue and green match the review accents'
 // values but carry dictate semantics, so they are named here rather
@@ -86,22 +100,50 @@ fn envelope_step(env_db: f32, raw_db: f32) -> f32 {
     env_db + (raw_db - env_db) * rate
 }
 
-/// The rolling reference decays slowly and never drops below the
-/// envelope, so it is the take's own loudness the meter scales against.
-fn reference_step(env_db: f32, reference_db: f32) -> f32 {
-    env_db.max(reference_db - REFERENCE_DECAY_DB)
+/// The loudest envelope moment of the last couple of seconds. The
+/// decay never drops below the envelope.
+fn recent_max_step(max_db: f32, env_db: f32) -> f32 {
+    if env_db > max_db {
+        max_db + (env_db - max_db) * MAX_ATTACK
+    } else {
+        (max_db - MAX_DECAY_DB).max(env_db)
+    }
 }
 
-/// Gate, scale against the reference span, then soften with the mock's
-/// gamma. Anything at or under the take's own silence floor is
-/// structurally zero - the same condition `Outcome::NoAudio` reports,
-/// so the meter and the verdict agree by construction.
-fn normalize(env_db: f32, reference_db: f32, floor_db: f32) -> f32 {
+/// The recent-min follower, the max's mirror over speech valleys. It
+/// falls toward a new low faster than it climbs back off one, and the
+/// climb stops a span short of the envelope so a flat feed keeps a
+/// range to read against. Structural silence teaches it nothing: a
+/// pause is not part of the speech the meter scales against.
+fn recent_min_step(min_db: f32, env_db: f32, floor_db: f32) -> f32 {
+    if env_db <= floor_db {
+        return min_db;
+    }
+    if env_db < min_db {
+        min_db + (env_db - min_db) * MIN_FALL
+    } else {
+        // The margin caps the climb but never pulls the min down, or
+        // a shallow dip would lose its depth against the span.
+        let risen = min_db + (env_db - min_db) * MIN_RISE;
+        risen.min(min_db.max(env_db - MIN_SPAN_DB))
+    }
+}
+
+/// Gate, scale against the envelope's recent dynamic range, then
+/// soften with the mock's gamma. Real mic AGC compresses syllables
+/// into a narrow band, so the meter scales against the recent max-min
+/// span and shows speech shape invariant to the mic's overall gain;
+/// the span floor keeps a flat feed finite and the headroom keeps a
+/// fresh peak just under full scale. Anything at or under the take's
+/// own silence floor is structurally zero - the same condition
+/// `Outcome::NoAudio` reports, so the meter and the verdict agree by
+/// construction.
+fn normalize(env_db: f32, recent_max_db: f32, recent_min_db: f32, floor_db: f32) -> f32 {
     if !env_db.is_finite() || env_db <= floor_db {
         return 0.0;
     }
-    let span = (reference_db - floor_db).max(MIN_SPAN_DB);
-    (((env_db - floor_db) / span).clamp(0.0, 1.0)).powf(GAMMA)
+    let span = (recent_max_db - recent_min_db).max(MIN_SPAN_DB) + HEADROOM_DB;
+    (((env_db - recent_min_db) / span).clamp(0.0, 1.0)).powf(GAMMA)
 }
 
 /// Map a normalized fraction onto the ramp. The floor glyph is zero: a
@@ -117,12 +159,14 @@ pub(crate) fn level_cell(frac: f32) -> char {
 
 /// The TUI-side normalized meter. `forge-dictate` stays host-blind: it
 /// keeps feeding per-window `peak_db`, and everything display-side -
-/// envelope ballistics, autosens reference, noise gate - lives here.
+/// envelope ballistics, recent dynamic-range followers, noise gate -
+/// lives here.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DictateMeter {
     floor_db: f32,
     env_db: f32,
-    reference_db: f32,
+    recent_max_db: f32,
+    recent_min_db: f32,
     /// Newest-last sliding window of normalized fractions.
     levels: Vec<f32>,
 }
@@ -132,7 +176,8 @@ impl DictateMeter {
         Self {
             floor_db,
             env_db: START_ENV_DB,
-            reference_db: START_REFERENCE_DB,
+            recent_max_db: START_MAX_DB,
+            recent_min_db: START_ENV_DB,
             levels: vec![0.0; METER_WIDTH],
         }
     }
@@ -140,11 +185,12 @@ impl DictateMeter {
     /// One 50 ms window peak; the oldest normalized frame falls off.
     pub(crate) fn push(&mut self, peak_db: f32) {
         // A non-finite reading is silence: +inf would latch the
-        // reference and poison the meter for the rest of the take.
+        // followers and poison the meter for the rest of the take.
         let raw = if peak_db.is_finite() { peak_db.clamp(SILENCE_DB, 0.0) } else { SILENCE_DB };
         self.env_db = envelope_step(self.env_db, raw);
-        self.reference_db = reference_step(self.env_db, self.reference_db);
-        let frac = normalize(self.env_db, self.reference_db, self.floor_db);
+        self.recent_max_db = recent_max_step(self.recent_max_db, self.env_db);
+        self.recent_min_db = recent_min_step(self.recent_min_db, self.env_db, self.floor_db);
+        let frac = normalize(self.env_db, self.recent_max_db, self.recent_min_db, self.floor_db);
         if self.levels.len() >= METER_WIDTH {
             self.levels.remove(0);
         }
@@ -609,13 +655,41 @@ mod tests {
     #[test]
     fn the_noise_gate_holds_everything_below_the_floor() {
         let floor = -46.0;
-        assert!(normalize(-52.0, -30.0, floor).abs() < f32::EPSILON, "below the gate is silence");
-        assert!(normalize(floor, -30.0, floor).abs() < f32::EPSILON, "at the gate is silence");
         assert!(
-            normalize(f32::NEG_INFINITY, -30.0, floor).abs() < f32::EPSILON,
+            normalize(-52.0, -30.0, -46.0, floor).abs() < f32::EPSILON,
+            "below the gate is silence"
+        );
+        assert!(
+            normalize(floor, -30.0, -46.0, floor).abs() < f32::EPSILON,
+            "at the gate is silence"
+        );
+        assert!(
+            normalize(f32::NEG_INFINITY, -30.0, -46.0, floor).abs() < f32::EPSILON,
             "no signal is silence"
         );
-        assert!(normalize(-40.0, -30.0, floor) > 0.0, "above the gate has signal");
+        assert!(
+            normalize(-40.0, -30.0, -46.0, floor) > 0.0,
+            "above the gate has signal"
+        );
+    }
+
+    #[test]
+    fn headroom_keeps_a_fresh_peak_just_under_full_scale() {
+        let at_max = normalize(-20.0, -20.0, -34.0, -50.0);
+        assert!(
+            at_max < 1.0,
+            "a peak at the recent max does not pin full scale, got {at_max}"
+        );
+        let past_max = normalize(-20.0, -24.0, -34.0, -50.0);
+        assert!(
+            (past_max - 1.0).abs() < f32::EPSILON,
+            "a peak past the recent max may touch full scale"
+        );
+        let flat = normalize(-20.0, -20.0, -26.0, -50.0);
+        assert!(
+            flat > 0.4,
+            "the floored span keeps a flat feed finite and readable, got {flat}"
+        );
     }
 
     #[test]
@@ -630,17 +704,47 @@ mod tests {
     }
 
     #[test]
-    fn the_rolling_reference_decays_slowly_and_never_drops_below_the_envelope() {
-        let decayed = reference_step(-40.0, -30.0);
+    fn the_recent_max_grabs_a_peak_and_forgets_it_slowly() {
+        let grabbed = recent_max_step(-30.0, -20.0);
         assert!(
-            (decayed - (-30.0 - REFERENCE_DECAY_DB)).abs() < 1e-5,
-            "one tick decays exactly the reference step, got {decayed}"
+            grabbed > -25.0,
+            "one tick closes most of a 10 dB gap onto a new peak, got {grabbed}"
         );
-        let floored = reference_step(-20.0, -30.0);
-        assert!((floored + 20.0).abs() < f32::EPSILON, "the envelope floors the reference");
+        let decayed = recent_max_step(-20.0, -40.0);
         assert!(
-            reference_step(-40.0, -30.0) > -38.0,
-            "a second of decay is under 14 dB, so quiet speech still scales against the reference"
+            (decayed - (-20.0 - MAX_DECAY_DB)).abs() < 1e-4,
+            "away from the envelope the max decays one slow step, got {decayed}"
+        );
+        assert!(decayed > -40.0, "the decay never drops below the envelope");
+    }
+
+    #[test]
+    fn the_recent_min_catches_a_valley_and_climbs_off_it_slowly() {
+        let caught = recent_min_step(-26.0, -32.0, -50.0);
+        assert!(
+            caught < -26.0 && caught > -32.0,
+            "a dip below the min pulls it down, got {caught}"
+        );
+        let climbed = recent_min_step(-32.0, -20.0, -50.0);
+        assert!(
+            (climbed - (-32.0 + (-20.0 + 32.0) * MIN_RISE)).abs() < 1e-4,
+            "speech above the min climbs it one proportional step, got {climbed}"
+        );
+        let capped = recent_min_step(-29.0, -20.0, -50.0);
+        assert!(
+            (capped - (-20.0 - MIN_SPAN_DB)).abs() < 1e-4,
+            "the climb stops a span short of the envelope, so a steady tone keeps a range, \
+             got {capped}"
+        );
+        assert_eq!(
+            recent_min_step(-28.0, -24.0, -50.0),
+            -28.0,
+            "a shallow dip holds the min instead of yanking it down"
+        );
+        assert_eq!(
+            recent_min_step(-30.0, -52.0, -50.0),
+            -30.0,
+            "structural silence teaches the min nothing"
         );
     }
 
@@ -653,21 +757,94 @@ mod tests {
         assert_eq!(level_cell(2.0), LEVEL_RAMP[7], "over-scale clamps to the full block");
     }
 
+    /// One spoken syllable at `level` with a short shallow dip after
+    /// it, into a fresh meter; answers the loudest frame read during
+    /// the syllable itself.
+    fn syllable_peak(meter: &mut DictateMeter, level: f32) -> f32 {
+        let mut peak: f32 = 0.0;
+        for _ in 0..6 {
+            meter.push(level);
+            peak = peak.max(meter.current());
+        }
+        for _ in 0..2 {
+            meter.push(-40.0);
+        }
+        peak
+    }
+
     #[test]
-    fn the_rolling_reference_scales_a_softer_voice_below_the_burst() {
-        let mut meter = DictateMeter::new(-50.0);
-        for _ in 0..40 {
-            meter.push(-18.0);
+    fn two_syllables_ten_db_apart_read_several_ramp_steps_apart() {
+        let mut gaps = Vec::new();
+        for offset in [0.0, -12.0] {
+            let mut meter = DictateMeter::new(-50.0);
+            let loud = syllable_peak(&mut meter, -20.0 + offset);
+            let quiet = syllable_peak(&mut meter, -30.0 + offset);
+            assert!(
+                loud > quiet,
+                "the meter shows the shape: the louder syllable reads higher \
+                 (offset {offset}: loud {loud:.2}, quiet {quiet:.2})"
+            );
+            gaps.push((loud - quiet) * 7.0);
         }
-        let burst = meter.current();
-        for _ in 0..8 {
-            meter.push(-34.0);
+        for (offset, gap) in [0.0, -12.0].iter().zip(gaps.iter()) {
+            assert!(
+                *gap >= 3.0,
+                "syllables 10 dB apart land several ramp steps apart whatever the \
+                 absolute level (offset {offset}: {gap:.1} steps)"
+            );
         }
-        let softer = meter.current();
         assert!(
-            softer > 0.1 && softer < burst,
-            "after a loud burst the reference holds, so a softer voice reads mid-scale \
-             instead of pegging: softer {softer:.2}, burst {burst:.2}"
+            (gaps[0] - gaps[1]).abs() <= 2.0,
+            "the step gap is roughly invariant to the mic's overall gain, got \
+             {:.1} vs {:.1} steps",
+            gaps[0],
+            gaps[1]
+        );
+    }
+
+    #[test]
+    fn the_meter_dances_through_a_three_push_take() {
+        // AGC-compressed speech: syllable peaks within a couple of dB,
+        // short shallow dips between them. The window must span the
+        // ramp instead of pinning in the top cells.
+        let mut meter = DictateMeter::new(-50.0);
+        for level in [-20.0, -21.0, -19.0] {
+            for _ in 0..6 {
+                meter.push(level);
+            }
+            for _ in 0..2 {
+                meter.push(-40.0);
+            }
+        }
+        let window = meter.window();
+        let lowest = window.iter().copied().reduce(f32::min).expect("the window is never empty");
+        let highest = window.iter().copied().reduce(f32::max).expect("the window is never empty");
+        assert!(lowest < 0.3, "the meter comes down between pushes, got {lowest:.2}");
+        assert!(highest > 0.6, "the meter rises onto the pushes, got {highest:.2}");
+        assert!(
+            highest - lowest >= 0.5,
+            "the meter dances across the ramp instead of pinning, span {:.2}",
+            highest - lowest
+        );
+        let mut glyphs: Vec<char> = window.iter().map(|frac| level_cell(*frac)).collect();
+        glyphs.sort_unstable();
+        glyphs.dedup();
+        assert!(
+            glyphs.len() >= 4,
+            "the rendered cells cover several ramp steps, got {glyphs:?}"
+        );
+    }
+
+    #[test]
+    fn a_steady_tone_holds_mid_scale_instead_of_collapsing() {
+        let mut meter = DictateMeter::new(-50.0);
+        for _ in 0..80 {
+            meter.push(-20.0);
+        }
+        let steady = meter.current();
+        assert!(
+            (0.6..=0.9).contains(&steady),
+            "a sustained tone keeps a span against itself and reads mid-scale, got {steady:.2}"
         );
     }
 
@@ -707,9 +884,9 @@ mod tests {
             meter.env_db()
         );
         assert!(
-            (meter.current() - 0.9392).abs() < 1e-3,
-            "the first frame scales -32 against the decayed -30.7 reference under the 0.9 \
-             gamma, got {}",
+            (meter.current() - 0.825).abs() < 1e-2,
+            "the first frame scales -32 against the -30.35 max and the -47.3 min under \
+             the floored span, got {}",
             meter.current()
         );
         meter.push(-20.0);
@@ -718,7 +895,7 @@ mod tests {
         assert!((meter.env_db() + 21.92).abs() < 1e-3, "the third attack step lands at -21.92");
         assert!(
             (meter.current() - 1.0).abs() < 1e-3,
-            "once the reference meets the envelope the meter reads full scale, got {}",
+            "once the envelope passes the recent max the meter reads full scale, got {}",
             meter.current()
         );
     }
