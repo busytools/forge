@@ -167,6 +167,11 @@ pub enum PaneHitTarget {
     /// AND the inspector scroll offset is 0 (otherwise the header
     /// is off-screen).
     InspectorGitOpenDiff { y: u16, height: u16, x_start: u16, x_end: u16 },
+    /// Click anywhere on the Inspector pane's `MCP SERVERS` section
+    /// (header or any row) → open the same MCP view the `/mcp` slash
+    /// command opens. Stamped for the section's on-screen rect,
+    /// clipped when the section scrolls off either edge.
+    InspectorMcpOpenStatus { y: u16, height: u16, x_start: u16, x_end: u16 },
     /// Click on a row in the Inspector's pinned NEEDS ATTENTION band ->
     /// switch the active session to `session_key` so its pending
     /// prompt lands in the chat. Stamped per row during render; the
@@ -222,6 +227,7 @@ impl PaneHitTarget {
             | Self::OverlayClose { y, height, .. }
             | Self::CloseSession { y, height, .. }
             | Self::InspectorGitOpenDiff { y, height, .. }
+            | Self::InspectorMcpOpenStatus { y, height, .. }
             | Self::InspectorAttentionRow { y, height, .. }
             | Self::CopySessionId { y, height, .. }
             | Self::CloseWorker { y, height, .. }
@@ -246,6 +252,7 @@ impl PaneHitTarget {
             | Self::OverlayClose { x_start, x_end, .. }
             | Self::CloseSession { x_start, x_end, .. }
             | Self::InspectorGitOpenDiff { x_start, x_end, .. }
+            | Self::InspectorMcpOpenStatus { x_start, x_end, .. }
             | Self::InspectorAttentionRow { x_start, x_end, .. }
             | Self::CopySessionId { x_start, x_end, .. }
             | Self::CloseWorker { x_start, x_end, .. } => (*x_start..*x_end).contains(&x),

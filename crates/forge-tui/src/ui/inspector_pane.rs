@@ -23,6 +23,15 @@
 //!   snapshot is the sole surface for the task list; the
 //!   chat-stream `Task*` tool-call cards (`TaskCreate`,
 //!   `TaskUpdate`, `TaskList`, `TaskGet`) are suppressed. #268.
+//! - `MCP SERVERS` - rendered when the session's MCP snapshot has at
+//!   least one server. Sourced entirely from the snapshot, so every
+//!   configured server renders: connected (● green) with scope + tool
+//!   count, pending (◌ blue), failed (✗ red) with its reason, and
+//!   sdk/in-process servers that have no process at all. A
+//!   subprocess-backed server carries a third line with the backing
+//!   command, memory and pid, joined by
+//!   `crate::app::mcp_servers::collect_mcp_servers`. The whole
+//!   section is a click-through to the `/mcp` view.
 //! - `PROCESSES` - rendered when the active session has at least
 //!   one currently-in-flight long-running tool call. Three kinds
 //!   surface here: backgrounded `Bash` (via `run_in_background:
@@ -415,10 +424,10 @@ fn render_scrollable_body(
     }
 
     let mut body_lines: Vec<Line<'static>> = Vec::new();
-    {
+    let mcp_section_range = {
         let _t = crate::perf::start("ui::inspector_pane::append_body");
-        append_body(&mut body_lines, app, body_area.width, subagents);
-    }
+        append_body(&mut body_lines, app, body_area.width, subagents)
+    };
     let has_open_diff_glyph = snapshot_has_diff(app);
     let total = body_lines.len();
     let visible = usize::from(body_area.height);
@@ -453,6 +462,25 @@ fn render_scrollable_body(
             x_start,
             x_end,
         });
+    }
+
+    // Stamp the MCP SERVERS click-through: the whole section's
+    // on-screen rect opens the /mcp view. The section scrolls with the
+    // body, so the band clips to the visible rows (fully scrolled off
+    // in either direction stamps nothing).
+    if let Some((start, len)) = mcp_section_range {
+        let off = usize::from(offset);
+        let vis_top = start.saturating_sub(off);
+        let vis_bottom =
+            start.saturating_add(len).saturating_sub(off).min(usize::from(body_area.height));
+        if vis_bottom > vis_top {
+            app.pane_hit_targets.push(PaneHitTarget::InspectorMcpOpenStatus {
+                y: body_area.y.saturating_add(u16::try_from(vis_top).unwrap_or(u16::MAX)),
+                height: u16::try_from(vis_bottom - vis_top).unwrap_or(u16::MAX),
+                x_start: body_area.x,
+                x_end: body_area.x.saturating_add(body_area.width),
+            });
+        }
     }
 
     render_inspector_thumb(frame, body_area, total, visible, offset);
@@ -532,12 +560,16 @@ const INSPECTOR_THUMB_MAX_CELLS: usize = 1;
 /// `─` rule mirroring the projects pane's project-list /
 /// account-panel boundary, so the two surfaces read as visually
 /// distinct rather than two `DIM bold` headers next to each other.
+///
+/// Returns the MCP SERVERS section's line range within `lines`, for
+/// the click-through hit band (the whole section opens the `/mcp`
+/// view).
 fn append_body(
     lines: &mut Vec<Line<'static>>,
     app: &App,
     width: u16,
     subagents: &[crate::app::SubagentEntry],
-) {
+) -> Option<(usize, usize)> {
     {
         let _t = crate::perf::start("ui::inspector_pane::git_section");
         append_git_section(lines, app, width);
@@ -599,10 +631,27 @@ fn append_body(
         append_gotify_section(lines, app, width);
     }
 
-    // PROCESSES is the single activity lens below SCHEDULES/GOTIFY:
+    // MCP SERVERS sits above PROCESSES and is sourced entirely from
+    // the session's MCP snapshot, so every configured server renders -
+    // sdk/in-process servers with no process, pending and failed ones
+    // included. Whole section is a click-through to the /mcp view.
+    let mcp_section = crate::app::mcp_servers::collect_mcp_servers(app);
+    let mcp_range = if mcp_section.rows.is_empty() {
+        None
+    } else {
+        lines.push(Line::default());
+        push_section_rule(lines, width);
+        lines.push(Line::default());
+        let start = lines.len();
+        append_mcp_servers_section(lines, &mcp_section.rows, width);
+        Some((start, lines.len() - start))
+    };
+
+    // PROCESSES is the single activity lens below MCP SERVERS:
     // the OS process tree plus the CLI's authoritative backgrounded
     // `local_bash` registry (agents render in SUBAGENTS, workflows in
-    // WORKFLOWS). Auto-hidden when nothing is active.
+    // WORKFLOWS; MCP servers render in MCP SERVERS above). Auto-hidden
+    // when nothing is active.
     let processes = collect_active_processes(app);
     if !processes.is_empty() {
         lines.push(Line::default());
@@ -610,12 +659,122 @@ fn append_body(
         lines.push(Line::default());
         append_processes_section(lines, &processes, width, app.active_spinner_glyph());
     }
+
+    mcp_range
 }
 
 /// Width threshold above which the PROCESSES section appends `· 12 MB`
 /// to each row's metadata. Wide tier (inspector at 40 cols) gets memory;
 /// Medium tier (inspector at 30 cols) drops it so the metadata fits.
 const PROCESSES_MEMORY_WIDTH_THRESHOLD: u16 = 36;
+
+/// Append the MCP SERVERS section: header (with the `▦` open-view
+/// affordance at the right edge, matching the GIT header's `🦉`) + one
+/// tree per server. Each tree is the name line carrying the status
+/// glyph, the DIM detail line under it, and - for a subprocess-backed
+/// server - the process line with memory + pid, exactly as the old
+/// PROCESSES tree rendered a matched server's backing process.
+///
+/// Rows pack tight (no blanks between servers) so the tree reads as
+/// one connected block.
+fn append_mcp_servers_section(
+    lines: &mut Vec<Line<'static>>,
+    rows: &[crate::app::mcp_servers::McpServerRow],
+    width: u16,
+) {
+    const LABEL: &str = " MCP SERVERS";
+    const AFFORDANCE: &str = "\u{25A6}"; // ▦ - the whole section opens /mcp
+    let mut header_spans = vec![Span::styled(
+        LABEL.to_owned(),
+        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+    )];
+    let label_chars = LABEL.chars().count();
+    let pad = usize::from(width)
+        .saturating_sub(label_chars + AFFORDANCE.chars().count() + usize::from(PANE_PAD));
+    header_spans.push(Span::raw(" ".repeat(pad)));
+    header_spans.push(Span::styled(AFFORDANCE.to_owned(), Style::default().fg(theme::DIM)));
+    header_spans.push(Span::raw(" ".repeat(usize::from(PANE_PAD))));
+    lines.push(Line::from(header_spans));
+    // Blank between header and content, matching every other section.
+    lines.push(Line::default());
+
+    let include_memory = width >= PROCESSES_MEMORY_WIDTH_THRESHOLD;
+    let server_count = rows.len();
+    for (idx, row) in rows.iter().enumerate() {
+        let is_last = idx + 1 == server_count;
+        // Continuation column under the name connector: `│   ` while
+        // more servers follow, blank once the trunk closed.
+        let trunk = if is_last { "    " } else { "\u{2502}   " };
+        let connector = if is_last { "\u{2514}\u{2500} " } else { "\u{251C}\u{2500} " };
+        let (glyph, glyph_color) = mcp_status_glyph(row.status);
+        let name_chrome = usize::from(PANE_PAD)
+            + 3 // connector
+            + 1 // space before the glyph
+            + glyph.chars().count()
+            + usize::from(PANE_PAD); // right gutter
+        let name = truncate_or_pass(&row.name, row_text_budget(usize::from(width), name_chrome));
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(usize::from(PANE_PAD))),
+            Span::styled(connector.to_owned(), Style::default().fg(theme::DIM)),
+            Span::styled(name, Style::default().fg(theme::RUST_ORANGE)),
+            Span::raw(" "),
+            Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
+        ]));
+
+        let child_chrome = usize::from(PANE_PAD) + 4 + 3 + usize::from(PANE_PAD); // pad + trunk + connector + gutter
+        let budget = row_text_budget(usize::from(width), child_chrome);
+        // Detail line: ├─ when the process line follows it, └─ when the
+        // detail is the tree's last child.
+        let detail_connector =
+            if row.process.is_some() { "\u{251C}\u{2500} " } else { "\u{2514}\u{2500} " };
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(usize::from(PANE_PAD))),
+            Span::styled(trunk.to_owned(), Style::default().fg(theme::DIM)),
+            Span::styled(detail_connector.to_owned(), Style::default().fg(theme::DIM)),
+            Span::styled(truncate_or_pass(&row.detail, budget), Style::default().fg(theme::DIM)),
+        ]));
+
+        // Process line - subprocess-backed servers only. Memory + pid
+        // ride the same threshold as PROCESSES so both tiers read
+        // alike; the pid earns its place so a long-lived server can be
+        // found with `ps`.
+        if let Some(process) = row.process.as_ref() {
+            let suffix = if include_memory {
+                format!(
+                    " \u{00B7} {} \u{00B7} {}",
+                    format_memory_short(process.memory_bytes),
+                    process.pid
+                )
+            } else {
+                String::new()
+            };
+            let text_budget = budget.saturating_sub(suffix.chars().count());
+            lines.push(Line::from(vec![
+                Span::raw(" ".repeat(usize::from(PANE_PAD))),
+                Span::styled(trunk.to_owned(), Style::default().fg(theme::DIM)),
+                Span::styled("\u{2514}\u{2500} ".to_owned(), Style::default().fg(theme::DIM)),
+                Span::styled(
+                    truncate_or_pass(&process.command, text_budget),
+                    Style::default().fg(theme::DIM),
+                ),
+                Span::styled(suffix, Style::default().fg(theme::DIM)),
+            ]));
+        }
+    }
+}
+
+/// Status glyph + colour for an MCP server row: `●` connected (green),
+/// `◌` pending (blue), `✗` failed (red). NeedsAuth / Disabled never
+/// appear in the --print snapshot today; they take the failed glyph
+/// and name themselves on the detail line.
+fn mcp_status_glyph(status: forge_primitives::McpServerConnectionStatus) -> (&'static str, Color) {
+    use forge_primitives::McpServerConnectionStatus as Status;
+    match status {
+        Status::Connected => ("\u{25CF}", theme::REVIEW_RESOLVED),
+        Status::Pending => ("\u{25CC}", theme::REVIEW_ADDRESSED),
+        Status::Failed | Status::NeedsAuth | Status::Disabled => ("\u{2717}", theme::STATUS_ERROR),
+    }
+}
 
 /// Append a dim `─` horizontal rule across `width − 2` cols with a
 /// 1-col leading space, matching the banner-rule + projects-pane
@@ -2303,15 +2462,7 @@ fn append_process_row(
     // Cron metadata for wire-only registrations. Always include it
     // when set; the headline truncates with `...` to make room.
     let suffix_text: Option<String> = match (include_memory, process.memory_bytes) {
-        (true, Some(bytes)) => {
-            let memory = format_memory_short(bytes);
-            // Only an MCP server's process child carries a pid, so every
-            // other row's suffix is byte-identical to before.
-            Some(match process.pid {
-                Some(pid) => format!("{memory} \u{00B7} {pid}"),
-                None => memory,
-            })
-        }
+        (true, Some(bytes)) => Some(format_memory_short(bytes)),
         _ => {
             if process.metadata.is_empty() {
                 None
@@ -2384,15 +2535,6 @@ fn glyph_and_style_for(process: &ProcessRow, active_glyph: char) -> (String, Col
                 active_glyph.to_string(),
                 theme::RUST_ORANGE,
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-            ),
-            ProcessKind::McpServer => (
-                // Recognized long-lived infra - a STEADY hexagon (no
-                // spinner) so it reads as persistent infrastructure
-                // rather than transient work, in a Cyan accent distinct
-                // from the orange Bash + dim generic spinners.
-                "\u{2B22}".to_owned(),
-                Color::Cyan,
-                Style::default().fg(Color::White),
             ),
         },
     }
@@ -3343,7 +3485,6 @@ mod tests {
             metadata: metadata.to_owned(),
             status: ToolCallStatus::InProgress,
             memory_bytes: Some(memory_bytes),
-            pid: None,
             depth: 0,
             is_last_sibling: true,
             ancestor_has_more: Vec::new(),
@@ -3365,31 +3506,6 @@ mod tests {
 
         let row_text = line_text(&lines[2]);
         assert!(row_text.contains("12 MB"), "expected memory suffix on Wide tier: {row_text:?}");
-    }
-
-    #[test]
-    fn processes_section_appends_pid_after_memory_only_when_set() {
-        // An MCP server's process child is the only row carrying a pid; every
-        // other row keeps exactly the bare memory suffix it has always had.
-        let mut with_pid =
-            make_row_with_memory(ProcessKind::Process, "npm exec", "", 132 * 1024 * 1024);
-        with_pid.pid = Some(47903);
-        let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![with_pid]), 40, '\u{280B}');
-        assert_eq!(
-            line_text(&lines[2]),
-            " \u{280B} npm exec \u{00B7} 132 MB \u{00B7} 47903",
-            "pid renders after memory",
-        );
-
-        let without = make_row_with_memory(ProcessKind::Process, "cargo", "", 12 * 1024 * 1024);
-        let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![without]), 40, '\u{280B}');
-        assert_eq!(
-            line_text(&lines[2]),
-            " \u{280B} cargo \u{00B7} 12 MB",
-            "a pid-less row's suffix is the memory alone",
-        );
     }
 
     #[test]
@@ -3928,42 +4044,141 @@ mod tests {
     }
 
     #[test]
-    fn mcp_version_child_keeps_its_tool_count_at_wide_width() {
-        // The real playwright-local handshake, which is what made this a bug:
-        // its version alone is 23 chars against a 35-col child budget at
-        // Wide. Prefixing the `Playwright` product name pushed the row to 45
-        // and truncated 10 chars into the version, so the tool count - the
-        // only fact on the row the parent doesn't already carry - never
-        // rendered at all.
+    fn mcp_servers_section_renders_every_server_including_the_process_free_sdk_one() {
+        // The regression this section closes: an sdk/in-process server has
+        // no pid for the OS walk to find, so the old PROCESSES tier
+        // silently dropped it. Snapshot-sourced means it renders with no
+        // process snapshot at all, next to a pending server that has no
+        // handshake either.
+        use forge_primitives::McpToolInfo;
+        let mut app = App::test_default();
+        app.mcp_mut().servers = vec![
+            forge_primitives::McpServerStatus {
+                name: "forge".to_owned(),
+                status: forge_primitives::McpServerConnectionStatus::Connected,
+                config: Some(serde_json::json!({ "type": "sdk", "name": "forge" })),
+                tools: Some(
+                    (0..18)
+                        .map(|i| McpToolInfo {
+                            name: format!("t{i}"),
+                            description: None,
+                            annotations: None,
+                        })
+                        .collect(),
+                ),
+                ..Default::default()
+            },
+            forge_primitives::McpServerStatus {
+                name: "greptile".to_owned(),
+                status: forge_primitives::McpServerConnectionStatus::Pending,
+                scope: Some("user".to_owned()),
+                ..Default::default()
+            },
+        ];
+
+        let mut lines = Vec::new();
+        append_body(&mut lines, &app, 40, &[]);
+        let texts: Vec<String> = lines.iter().map(line_text).collect();
+
+        let forge_idx = texts.iter().position(|t| t.contains("forge")).expect("forge row renders");
+        assert_eq!(texts[forge_idx], " \u{251C}\u{2500} forge \u{25CF}", "name + glyph line");
+        assert_eq!(
+            texts[forge_idx + 1],
+            " \u{2502}   \u{2514}\u{2500} sdk \u{00B7} 18 tools",
+            "sdk scope with the tool count, no process line",
+        );
+
+        let greptile_idx =
+            texts.iter().position(|t| t.contains("greptile")).expect("pending server renders");
+        assert_eq!(texts[greptile_idx], " \u{2514}\u{2500} greptile \u{25CC}", "pending glyph");
+        assert_eq!(
+            texts[greptile_idx + 1],
+            "     \u{2514}\u{2500} user \u{00B7} pending",
+            "the word pending rides the detail line",
+        );
+
+        assert!(
+            texts.iter().any(|t| t.trim().starts_with("MCP SERVERS") && t.contains('▦')),
+            "section header renders with the open-view affordance: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.trim().starts_with("PROCESSES")),
+            "no processes, no section: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn mcp_servers_failed_row_carries_the_failure_reason() {
+        // Wire shape from the live mcp_status baseline: a failed server
+        // with the CLI's error text. Wide enough that the reason fits;
+        // narrower panes truncate it like every other pane cell.
+        let mut app = App::test_default();
+        app.mcp_mut().servers = vec![forge_primitives::McpServerStatus {
+            name: "jetbrains".to_owned(),
+            status: forge_primitives::McpServerConnectionStatus::Failed,
+            error: Some("SSE error: Non-200 status code (502)".to_owned()),
+            scope: Some("project".to_owned()),
+            ..Default::default()
+        }];
+
+        let mut lines = Vec::new();
+        append_body(&mut lines, &app, 60, &[]);
+        let texts: Vec<String> = lines.iter().map(line_text).collect();
+        let idx =
+            texts.iter().position(|t| t.contains("jetbrains")).expect("failed server renders");
+        assert_eq!(texts[idx], " \u{2514}\u{2500} jetbrains \u{2717}", "failed glyph");
+        assert_eq!(
+            texts[idx + 1],
+            "     \u{2514}\u{2500} project \u{00B7} SSE error: Non-200 status code (502)",
+            "the failure reason rides the detail line",
+        );
+    }
+
+    #[test]
+    fn mcp_servers_subprocess_backed_server_renders_the_process_line() {
+        // Third line only for a server the OS walk joined: cmd + subtree
+        // memory + pid, exactly as the old PROCESSES tree rendered the
+        // backing process under a matched server.
         use forge_workspace::env::processes::{ProcessEntry, ProcessSnapshot};
         let mut app = App::test_default();
         app.set_active_process_snapshot_for_test(ProcessSnapshot {
             scanned_at: std::time::SystemTime::now(),
-            processes: vec![ProcessEntry {
-                pid: 12949,
-                parent_pid: 1,
-                name: "npm".to_owned(),
-                command: "npm exec @playwright/mcp@latest --cdp-endpoint http://127.0.0.1:9222"
-                    .to_owned(),
-                memory_bytes: 223 * 1024 * 1024,
-            }],
+            processes: vec![
+                ProcessEntry {
+                    pid: 300,
+                    parent_pid: 1,
+                    name: "npm".to_owned(),
+                    command: "npm exec @upstash/context7-mcp".to_owned(),
+                    memory_bytes: 81 * 1024 * 1024,
+                },
+                ProcessEntry {
+                    pid: 301,
+                    parent_pid: 300,
+                    name: "node".to_owned(),
+                    command: "node /x/.bin/context7-mcp".to_owned(),
+                    memory_bytes: 81 * 1024 * 1024,
+                },
+                // A non-MCP process so PROCESSES renders below.
+                ProcessEntry {
+                    pid: 400,
+                    parent_pid: 1,
+                    name: "cargo".to_owned(),
+                    command: "cargo build".to_owned(),
+                    memory_bytes: 20 * 1024 * 1024,
+                },
+            ],
         });
         app.mcp_mut().servers = vec![forge_primitives::McpServerStatus {
-            name: "playwright-local".to_owned(),
+            name: "context7".to_owned(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
-            server_info: Some(forge_primitives::McpServerInfo {
-                name: "Playwright".to_owned(),
-                version: "1.63.0-alpha-2026-08-05".to_owned(),
-            }),
-            error: None,
+            scope: Some("user".to_owned()),
             config: Some(serde_json::json!({
                 "type": "stdio",
                 "command": "npx",
-                "args": ["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://127.0.0.1:9222"],
+                "args": ["-y", "@upstash/context7-mcp"],
             })),
-            scope: Some("user".to_owned()),
             tools: Some(
-                (0..24)
+                (0..2)
                     .map(|i| forge_primitives::McpToolInfo {
                         name: format!("t{i}"),
                         description: None,
@@ -3971,31 +4186,123 @@ mod tests {
                     })
                     .collect(),
             ),
-            sampling_configured: None,
-            sampling_required: None,
+            ..Default::default()
         }];
 
-        let coll = crate::app::processes::collect_active_processes(&app);
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &coll, 40, '\u{280B}');
-        let version_row = lines
+        append_body(&mut lines, &app, 40, &[]);
+        let texts: Vec<String> = lines.iter().map(line_text).collect();
+        let idx = texts.iter().position(|t| t.contains("context7")).expect("server row renders");
+        assert_eq!(texts[idx], " \u{2514}\u{2500} context7 \u{25CF}");
+        assert_eq!(texts[idx + 1], "     \u{251C}\u{2500} user \u{00B7} 2 tools");
+        assert_eq!(
+            texts[idx + 2],
+            "     \u{2514}\u{2500} npm exec @upsta\u{2026} \u{00B7} 162 MB \u{00B7} 300",
+            "process line carries subtree memory + pid; the command truncates to make room",
+        );
+        // The joined process left PROCESSES with it.
+        let processes_hdr =
+            texts.iter().position(|t| t.trim() == "PROCESSES").expect("PROCESSES renders");
+        assert!(
+            texts[processes_hdr..].iter().all(|t| !t.contains("context7")),
+            "the server's process must not also render in PROCESSES: {:?}",
+            &texts[processes_hdr..],
+        );
+    }
+
+    #[test]
+    fn non_mcp_processes_stay_in_processes_below_the_mcp_section() {
+        use forge_workspace::env::processes::{ProcessEntry, ProcessSnapshot};
+        let mut app = App::test_default();
+        app.set_active_process_snapshot_for_test(ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                ProcessEntry {
+                    pid: 100,
+                    parent_pid: 1,
+                    name: "npm".to_owned(),
+                    command: "npm exec @upstash/context7-mcp".to_owned(),
+                    memory_bytes: 200 * 1024 * 1024,
+                },
+                ProcessEntry {
+                    pid: 200,
+                    parent_pid: 1,
+                    name: "cargo".to_owned(),
+                    command: "cargo build".to_owned(),
+                    memory_bytes: 20 * 1024 * 1024,
+                },
+            ],
+        });
+        app.mcp_mut().servers = vec![forge_primitives::McpServerStatus {
+            name: "context7".to_owned(),
+            status: forge_primitives::McpServerConnectionStatus::Connected,
+            config: Some(serde_json::json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@upstash/context7-mcp"],
+            })),
+            ..Default::default()
+        }];
+
+        let mut lines = Vec::new();
+        append_body(&mut lines, &app, 40, &[]);
+        let texts: Vec<String> = lines.iter().map(line_text).collect();
+        let mcp_hdr = texts
             .iter()
-            .map(line_text)
-            .find(|t| t.contains("1.63.0"))
-            .expect("version child renders");
+            .position(|t| t.trim().starts_with("MCP SERVERS"))
+            .expect("MCP section renders");
+        let processes_hdr = texts
+            .iter()
+            .position(|t| t.trim().starts_with("PROCESSES"))
+            .expect("PROCESSES renders");
+        assert!(mcp_hdr < processes_hdr, "MCP SERVERS sits above PROCESSES");
+        let cargo_idx =
+            texts.iter().position(|t| t.contains("cargo build")).expect("generic row stays");
+        assert!(cargo_idx > processes_hdr, "the non-MCP process renders under PROCESSES");
+        let processes_text: String = texts[processes_hdr..].iter().map(String::as_str).collect();
         assert!(
-            version_row.contains("24 tools"),
-            "the tool count must survive at 40 cols; got {version_row:?}",
+            !processes_text.contains("context7"),
+            "the MCP server's process must leave PROCESSES: {processes_text:?}"
         );
-        assert!(
-            !version_row.contains("Playwright"),
-            "the product name only restates the parent row; got {version_row:?}",
-        );
-        assert!(
-            version_row.chars().count() <= 40,
-            "row must still fit the pane; got {} cols in {version_row:?}",
-            version_row.chars().count(),
-        );
+    }
+
+    #[test]
+    fn mcp_server_rows_do_not_wrap_at_40_cols() {
+        // The name+glyph line is the scan target; the design drops the
+        // version token so it never wraps at the real inspector width.
+        use crate::app::mcp_servers::{McpProcessLine, McpServerRow};
+        let rows = vec![
+            McpServerRow {
+                name: "playwright-local".to_owned(),
+                status: forge_primitives::McpServerConnectionStatus::Connected,
+                detail: "user \u{00B7} 24 tools".to_owned(),
+                process: Some(McpProcessLine {
+                    command: "npm exec @playwright/mcp@latest --cdp-endpoint".to_owned(),
+                    memory_bytes: 184 * 1024 * 1024,
+                    pid: 90585,
+                }),
+            },
+            McpServerRow {
+                name: "a-very-long-server-name-from-a-plugin-namespace".to_owned(),
+                status: forge_primitives::McpServerConnectionStatus::Failed,
+                detail: "user \u{00B7} SSE error: Non-200 status code (502) with extra words"
+                    .to_owned(),
+                process: None,
+            },
+        ];
+        let mut lines = Vec::new();
+        append_mcp_servers_section(&mut lines, &rows, 40);
+        for line in &lines {
+            let text = line_text(line);
+            assert!(
+                text.chars().count() <= 40,
+                "every row fits the pane without wrapping; got {} cols in {text:?}",
+                text.chars().count(),
+            );
+        }
+        let name_row =
+            lines.iter().map(line_text).find(|t| t.contains("playwright-local")).expect("name row");
+        assert!(name_row.contains('\u{25CF}'), "the glyph survives next to the name");
     }
 
     // ---------------------------------------------------------
