@@ -2695,9 +2695,7 @@ mod tests {
         );
 
         app.switch_active_session(prior.clone());
-        app.try_active_bucket_mut()
-            .expect("active bucket")
-            .available_models =
+        app.try_active_bucket_mut().expect("active bucket").available_models =
             vec![crate::agent::model::AvailableModel::new("a", "A")];
         assert!(crate::app::model_picker::open(&mut app), "the picker opens on the active session");
 

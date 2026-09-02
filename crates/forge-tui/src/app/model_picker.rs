@@ -371,10 +371,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(
-            text.contains("Session changed"),
-            "the refusal names what happened, got: {text}",
-        );
+        assert!(text.contains("Session changed"), "the refusal names what happened, got: {text}");
     }
 
     #[test]

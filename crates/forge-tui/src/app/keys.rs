@@ -1332,11 +1332,12 @@ mod tests {
     #[test]
     fn the_model_picker_captures_its_keys_through_the_modal_dispatch() {
         let mut app = App::test_default();
-        app.try_active_bucket_mut().expect("test_default seeds an active bucket").available_models =
-            vec![
-                crate::agent::model::AvailableModel::new("a", "A"),
-                crate::agent::model::AvailableModel::new("b", "B"),
-            ];
+        app.try_active_bucket_mut()
+            .expect("test_default seeds an active bucket")
+            .available_models = vec![
+            crate::agent::model::AvailableModel::new("a", "A"),
+            crate::agent::model::AvailableModel::new("b", "B"),
+        ];
         assert!(crate::app::model_picker::open(&mut app), "the picker opens on the seeded rows");
 
         let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
