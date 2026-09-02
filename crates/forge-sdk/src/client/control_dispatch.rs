@@ -324,12 +324,27 @@ impl ControlDispatchHandle {
         input: &serde_json::Value,
         tool_use_id: Option<&str>,
     ) -> Result<(), Error> {
+        let received_at = std::time::Instant::now();
         let event_name = input
             .get("hook_event_name")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("Unknown")
             .to_string();
         let kind = HookKind::from_wire(&event_name);
+        let session_id = self.session_id.read().clone();
+
+        // The three traces below bracket the hook dispatch so a
+        // CLI-side hook timeout (control_cancel_request) can always be
+        // attributed: either forge answered late or the CLI never read
+        // the response. See the #827 incident.
+        tracing::debug!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            session_id = %session_id,
+            hook = %event_name,
+            %callback_id,
+            request_id = %req.request_id,
+            "hook dispatch-received",
+        );
 
         let ctx = HookContext {
             kind,
@@ -337,76 +352,90 @@ impl ControlDispatchHandle {
                 .get("tool_name")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
-            session_id: self.session_id.read().clone(),
+            session_id,
             tool_use_id: tool_use_id.map(str::to_string),
         };
 
         let decision = if let Some(cb) = self.hook_callbacks.get(callback_id) {
-            cb.call_erased(input.clone(), ctx).await
+            let decision = cb.call_erased(input.clone(), ctx).await;
+            tracing::debug!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                session_id = %self.session_id.read(),
+                hook = %event_name,
+                %callback_id,
+                elapsed_ms = u64::try_from(received_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+                "hook callback-done",
+            );
+            decision
         } else {
             tracing::warn!(%callback_id, "hook_callback for unknown id; passthrough");
             HookDecision::passthrough()
         };
 
-        if decision.is_deferred() {
+        let ctrl = if decision.is_deferred() {
             let mut defer_body = serde_json::Map::new();
             defer_body.insert("async".into(), serde_json::Value::Bool(true));
             if let Some(timeout) = decision.defer_timeout_ms() {
                 defer_body.insert("asyncTimeout".into(), serde_json::json!(timeout));
             }
-            let ctrl = ControlResponse {
+            ControlResponse {
                 ty: ControlResponseType::ControlResponse,
                 response: ControlResponseKind::Success {
                     request_id: req.request_id.clone(),
                     response: serde_json::Value::Object(defer_body),
                 },
+            }
+        } else {
+            let mut response_body = match (decision.is_allow(), decision.reason()) {
+                (true, _) => serde_json::json!({}),
+                (false, Some(reason)) => serde_json::json!({"decision": "block", "reason": reason}),
+                (false, None) => serde_json::json!({"decision": "block"}),
             };
-            let mut line = serde_json::to_string(&ctrl)
-                .map_err(|e| Error::encode("deferred hook payload", e))?;
-            line.push('\n');
-            self.writer.write_line(&line).await?;
-            return Ok(());
-        }
 
-        let mut response_body = match (decision.is_allow(), decision.reason()) {
-            (true, _) => serde_json::json!({}),
-            (false, Some(reason)) => serde_json::json!({"decision": "block", "reason": reason}),
-            (false, None) => serde_json::json!({"decision": "block"}),
+            if let Some(map) = response_body.as_object_mut() {
+                if let Some(cont) = decision.continue_execution() {
+                    map.insert("continue".into(), serde_json::Value::Bool(cont));
+                }
+                if let Some(suppress) = decision.suppress_output() {
+                    map.insert("suppressOutput".into(), serde_json::Value::Bool(suppress));
+                }
+                if let Some(stop) = decision.stop_reason() {
+                    map.insert("stopReason".into(), serde_json::Value::String(stop.into()));
+                }
+                if let Some(msg) = decision.system_message() {
+                    map.insert("systemMessage".into(), serde_json::Value::String(msg.into()));
+                }
+            }
+
+            if let Some(updated) = decision.updated_input()
+                && let Some(wrapper) = encode_updated_input_wrapper(kind, updated)
+                && let Some(map) = response_body.as_object_mut()
+            {
+                map.insert("hookSpecificOutput".into(), wrapper);
+            }
+
+            ControlResponse {
+                ty: ControlResponseType::ControlResponse,
+                response: ControlResponseKind::Success {
+                    request_id: req.request_id.clone(),
+                    response: response_body,
+                },
+            }
         };
 
-        if let Some(map) = response_body.as_object_mut() {
-            if let Some(cont) = decision.continue_execution() {
-                map.insert("continue".into(), serde_json::Value::Bool(cont));
-            }
-            if let Some(suppress) = decision.suppress_output() {
-                map.insert("suppressOutput".into(), serde_json::Value::Bool(suppress));
-            }
-            if let Some(stop) = decision.stop_reason() {
-                map.insert("stopReason".into(), serde_json::Value::String(stop.into()));
-            }
-            if let Some(msg) = decision.system_message() {
-                map.insert("systemMessage".into(), serde_json::Value::String(msg.into()));
-            }
-        }
-
-        if let Some(updated) = decision.updated_input()
-            && let Some(wrapper) = encode_updated_input_wrapper(kind, updated)
-            && let Some(map) = response_body.as_object_mut()
-        {
-            map.insert("hookSpecificOutput".into(), wrapper);
-        }
-
-        let ctrl = ControlResponse {
-            ty: ControlResponseType::ControlResponse,
-            response: ControlResponseKind::Success {
-                request_id: req.request_id.clone(),
-                response: response_body,
-            },
-        };
-        let mut line =
-            serde_json::to_string(&ctrl).map_err(|e| Error::encode("hook response", e))?;
+        let encode_label =
+            if decision.is_deferred() { "deferred hook payload" } else { "hook response" };
+        let mut line = serde_json::to_string(&ctrl).map_err(|e| Error::encode(encode_label, e))?;
         line.push('\n');
         self.writer.write_line(&line).await?;
+        tracing::debug!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            session_id = %self.session_id.read(),
+            hook = %event_name,
+            %callback_id,
+            elapsed_ms = u64::try_from(received_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            "hook response-written",
+        );
         Ok(())
     }
 }
