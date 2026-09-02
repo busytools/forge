@@ -1099,8 +1099,7 @@ impl Workspace {
             accounts.env(&account_key).cloned().unwrap_or_default()
         };
         // An account carrying `[[accounts]] permission_mode` owns the
-        // mode for every session it spawns; accounts without the key
-        // leave the launcher's settings JSON untouched.
+        // mode for every session it spawns.
         let account_mode = {
             let accounts = self.accounts.lock();
             accounts.permission_mode(&account_key)

@@ -130,10 +130,9 @@ struct AccountEntry {
     #[serde(default)]
     experimental: bool,
     /// Optional CLI permission mode stamped onto every session this
-    /// account spawns, overriding the launcher's session default. The
-    /// account owns the CLI's credential and endpoint, so it owns the
-    /// mode; that is also why the key lives here and not per-project.
-    /// Validated against `PermissionMode::from_wire` at load.
+    /// account spawns, overriding the launcher's session default;
+    /// validated against `PermissionMode::from_wire` at load. The
+    /// account owns the credential and endpoint, so it owns the mode.
     #[serde(default)]
     permission_mode: Option<String>,
 }

@@ -81,9 +81,8 @@ fn apply_lead_charter(settings: &mut SessionLaunchSettings) {
 
 /// Stamp the account's `[[accounts]] permission_mode` into the launch
 /// settings' `permissions.defaultMode`, where the existing
-/// `applied_permission_mode` arm in `forge_sdk_worker` picks it up.
-/// Overrides a launcher-supplied default because the account owns the
-/// CLI's credential and endpoint.
+/// `applied_permission_mode` arm in `forge_sdk_worker` picks it up;
+/// overrides a launcher-supplied default.
 pub(crate) fn stamp_account_permission_mode(
     settings: &mut SessionLaunchSettings,
     mode: forge_primitives::permission::PermissionMode,
