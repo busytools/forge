@@ -17,7 +17,7 @@ mod focus;
 pub(crate) mod git_diff;
 pub(crate) mod input;
 mod input_submit;
-mod keys;
+pub(crate) mod keys;
 pub(crate) mod launchpad;
 pub(crate) mod mention;
 pub(crate) mod model_picker;
@@ -1622,32 +1622,46 @@ mod tests {
         );
     }
 
-    /// A transcribing take past the silence threshold animates its
-    /// pinned cell on a timer and pushes nothing, so the gate is what
-    /// keeps the frames coming. Before the threshold the box shows
-    /// nothing and the gate owes nobody a tick.
+    /// A live take animates whatever the threshold state: the meter,
+    /// the dot pulse and the border handoff all move on timers and
+    /// push nothing, so the gate is what keeps the frames coming. The
+    /// border afterglow counts too - a settled take still eases its
+    /// colour home - and drops off the gate the moment it lands.
     #[test]
-    fn animation_gate_counts_an_overdue_transcribing_take() {
-        use std::time::{Duration, Instant};
+    fn animation_gate_counts_a_live_take_and_the_border_afterglow() {
+        use std::time::Instant;
 
         let mut app = App::test_default();
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
         {
             let bucket = app.session_mut(&key).expect("bucket");
-            let mut indicator = crate::app::dictate::DictateIndicator::recording(-50.0, 1);
-            indicator.begin_transcribing();
-            bucket.dictate = Some(indicator);
+            bucket.dictate = Some(crate::app::dictate::DictateIndicator::recording(-50.0, 1));
         }
-        assert!(!app.shows_activity(), "inside the 3 s silence the composer draws nothing at all");
+        assert!(app.shows_activity(), "a recording take pulses, times and rides the meter");
 
         {
             let bucket = app.session_mut(&key).expect("bucket");
             let indicator = bucket.dictate.as_mut().expect("a take is in flight");
-            indicator.transcribing_since = Some(
-                Instant::now().checked_sub(Duration::from_millis(4000)).expect("a 4 s backdate"),
-            );
+            indicator.begin_transcribing();
         }
-        assert!(app.shows_activity(), "past the threshold the pinned cell animates");
+        assert!(
+            app.shows_activity(),
+            "transcription eases the border blue even while the row is still silent"
+        );
+
+        {
+            let bucket = app.session_mut(&key).expect("bucket");
+            bucket.dictate = None;
+            bucket.dictate_border =
+                Some(crate::app::dictate::DictateBorder::live(None, Instant::now()));
+        }
+        assert!(app.shows_activity(), "the afterglow keeps easing after the take resolves");
+
+        {
+            let bucket = app.session_mut(&key).expect("bucket");
+            bucket.dictate_border = None;
+        }
+        assert!(!app.shows_activity(), "once the border settles the composer owes nobody a frame");
     }
 
     /// The gate never lands above either pinned step, at every accepted

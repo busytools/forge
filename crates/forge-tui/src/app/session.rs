@@ -505,6 +505,9 @@ pub struct UiSession {
     /// take is bound to the bucket: results land here regardless of
     /// which tab is focused when the transcript resolves.
     pub(crate) dictate: Option<crate::app::dictate::DictateIndicator>,
+    /// The composer border's eased colour during a take and its
+    /// afterglow. Dropped once the ease is back at the normal orange.
+    pub(crate) dictate_border: Option<crate::app::dictate::DictateBorder>,
     /// Post-take notice row and the input `content_version` it was
     /// stamped under. The next keystroke bumps the version, which is
     /// what clears the notice - no key path needs to know about it.
@@ -744,6 +747,7 @@ impl Default for UiSession {
             auto_continue_due_at: Option::default(),
             auto_continue_attempts: 0,
             dictate: Option::default(),
+            dictate_border: Option::default(),
             dictate_notice: Option::default(),
             dictate_notice_version: u64::default(),
         }

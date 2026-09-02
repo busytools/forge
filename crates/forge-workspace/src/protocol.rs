@@ -852,12 +852,10 @@ pub enum SessionUpdate {
     },
     /// Dictation models are loaded and the composer may offer to
     /// dictate. App-global (no key): the engine is process-wide and
-    /// every session's composer shares the availability. Never emitted
-    /// when `[dictate]` is disabled, so sessions that cannot dictate
-    /// render nothing.
-    DictateAvailability {
-        available: bool,
-    },
+    /// every session's composer shares the availability; the event's
+    /// existence is the signal. Never emitted when `[dictate]` is
+    /// disabled, so sessions that cannot dictate render nothing.
+    DictateAvailability,
     /// A recording started for the composer at `key`. `floor_db` is the
     /// silence floor the level meter maps onto its zero glyph, so the
     /// bar and the `NoAudio` verdict agree by construction. `generation`
@@ -1097,9 +1095,7 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("branch", branch)
                 .field("waiting", waiting)
                 .finish_non_exhaustive(),
-            Self::DictateAvailability { available } => {
-                f.debug_struct("DictateAvailability").field("available", available).finish()
-            }
+            Self::DictateAvailability => f.write_str("DictateAvailability"),
             Self::DictateStarted { key, .. } => {
                 f.debug_struct("DictateStarted").field("key", key).finish_non_exhaustive()
             }
