@@ -40,7 +40,9 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
     for (idx, row) in state.rows.iter().enumerate() {
         let selected = idx == state.highlight;
         let marker = if selected { "\u{25B6}" } else { " " };
-        let running = running_id.is_some_and(|id| id == row.id);
+        // Case-insensitive like the row filter and the highlight seeding
+        // - the three id comparisons must agree.
+        let running = running_id.is_some_and(|id| id.eq_ignore_ascii_case(&row.id));
         let row_style = if selected {
             Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
         } else {

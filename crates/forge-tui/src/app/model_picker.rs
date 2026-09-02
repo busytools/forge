@@ -51,8 +51,14 @@ pub(crate) fn open(app: &mut App) -> bool {
         .iter()
         .position(|row| {
             current.is_some_and(|model| {
-                model.requested_id.as_deref() == Some(row.id.as_str())
-                    || model.resolved_id == row.id
+                // Case-insensitive like the default-row filter: the CLI's
+                // ids are case-tolerant and the three id comparisons
+                // (filter, seeding, running dot) must agree.
+                model
+                    .requested_id
+                    .as_deref()
+                    .is_some_and(|requested| requested.eq_ignore_ascii_case(&row.id))
+                    || model.resolved_id.eq_ignore_ascii_case(&row.id)
             })
         })
         .unwrap_or(0);
@@ -254,6 +260,26 @@ mod tests {
         assert_eq!(
             picker.rows[picker.highlight].id, "z-ai/glm-5.3-flash",
             "the highlight follows the requested id",
+        );
+    }
+
+    /// The seeding match ignores id case, agreeing with the default-row
+    /// filter and the running dot.
+    #[test]
+    fn the_highlight_seeding_ignores_id_case() {
+        let mut app = app_with_rows(curated_rows());
+        app.set_current_model(Some(model::CurrentModel::new(
+            "Z-AI/GLM-5.3-FLASH",
+            "GLM 5.3 Flash",
+            "GLM 5.3 Flash",
+        )));
+
+        assert!(crate::app::slash::try_handle_submit(&mut app, "/model"));
+
+        let picker = app.model_picker.expect("picker open");
+        assert_eq!(
+            picker.rows[picker.highlight].id, "z-ai/glm-5.3-flash",
+            "an upper-case running id still seeds its row",
         );
     }
 
