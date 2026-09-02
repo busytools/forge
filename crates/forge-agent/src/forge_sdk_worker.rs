@@ -515,16 +515,22 @@ async fn reader_loop(
     client: Client,
     sdk_server_names: Vec<String>,
 ) {
-    let mut heal_attempted = false;
+    let mut heal_latch = HealLatch::Waiting;
     while let Some(item) = events.recv().await {
         match item {
             Ok(msg) => {
                 let session_id_for_sdk_msg =
                     frame_session_id(msg.session_id(), &client.session_id(), &spawn_session_id);
                 log_failed_mcp_servers(&msg, &session_id_for_sdk_msg);
-                let needs_heal = !heal_attempted
-                    && init_data_of(&msg)
-                        .is_some_and(|data| sdk_servers_missing_tools(data, &sdk_server_names));
+                let frame_is_init = init_data_of(&msg).is_some();
+                let frame_missing_tools =
+                    init_data_of(&msg).is_some_and(|data| {
+                        sdk_servers_missing_tools(data, &sdk_server_names)
+                    });
+                let needs_heal =
+                    matches!(heal_latch, HealLatch::Waiting) && frame_missing_tools;
+                let verify_due =
+                    matches!(heal_latch, HealLatch::Verify) && frame_is_init;
                 if event_tx
                     .send(AgentEvent::SdkMessage {
                         session_id: session_id_for_sdk_msg.clone(),
@@ -535,7 +541,7 @@ async fn reader_loop(
                     return;
                 }
                 if needs_heal {
-                    heal_attempted = true;
+                    heal_latch = HealLatch::Verify;
                     let client = client.clone();
                     let names = sdk_server_names.clone();
                     let session_id = session_id_for_sdk_msg;
@@ -553,6 +559,22 @@ async fn reader_loop(
                             );
                         }
                     });
+                } else if verify_due {
+                    heal_latch = HealLatch::Done;
+                    if frame_missing_tools {
+                        tracing::error!(
+                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                            session_id = %session_id_for_sdk_msg,
+                            "sdk mcp tools still missing after the re-add; \
+                             the CLI never re-runs an abandoned sdk handshake - restart the session"
+                        );
+                    } else {
+                        tracing::info!(
+                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                            session_id = %session_id_for_sdk_msg,
+                            "sdk mcp tools verified present after the re-add"
+                        );
+                    }
                 }
             }
             Err(err) => {
@@ -600,6 +622,17 @@ fn sdk_servers_missing_tools(init_data: &serde_json::Value, server_names: &[Stri
     })
 }
 
+/// Where the boot-tool heal stands. `Verify` arms exactly one further
+/// init frame after a fired heal, so the outcome is checked at least
+/// once instead of being claimed from a successful send.
+#[derive(Default)]
+enum HealLatch {
+    #[default]
+    Waiting,
+    Verify,
+    Done,
+}
+
 /// The CLI answers `mcp_set_servers` only after the re-handshake it
 /// triggers completes, so the wait is bounded past the CLI's own ~30s
 /// request budget.
@@ -610,26 +643,57 @@ const SDK_MCP_READD_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// promptly once the session is up, so the re-handshake revives the
 /// tools the boot-time handshake lost.
 async fn readd_sdk_mcp_servers(client: &Client, server_names: &[String]) -> anyhow::Result<()> {
-    tokio::time::timeout(SDK_MCP_READD_TIMEOUT, client.mcp_set_servers(serde_json::json!({})))
-        .await
-        .map_err(|_| anyhow::anyhow!("timed out waiting for the sdk server removal to answer"))??;
+    if let Err(err) = tokio::time::timeout(
+        SDK_MCP_READD_TIMEOUT,
+        client.mcp_set_servers(serde_json::json!({})),
+    )
+    .await
+    {
+        // The removal never landed, so the CLI-side dynamic set is
+        // untouched and the boot-time registration stands.
+        return Err(anyhow::anyhow!(
+            "sdk server removal did not answer (boot-time registration kept): {err}"
+        ));
+    }
     let servers: serde_json::Map<String, serde_json::Value> = server_names
         .iter()
         .map(|name| (name.clone(), serde_json::json!({ "type": "sdk", "name": name })))
         .collect();
-    let response = tokio::time::timeout(
+    let response = match tokio::time::timeout(
         SDK_MCP_READD_TIMEOUT,
         client.mcp_set_servers(serde_json::json!(servers)),
     )
     .await
-    .map_err(|_| anyhow::anyhow!("timed out waiting for the sdk server re-add to answer"))??;
-    tracing::info!(
-        target: crate::logging::targets::BRIDGE_LIFECYCLE,
-        added = ?response.added,
-        removed = ?response.removed,
-        errors = ?response.errors,
-        "sdk mcp tool re-add issued for a boot handshake that surfaced no tools"
-    );
+    {
+        Ok(Ok(response)) => response,
+        Ok(Err(err)) => {
+            return Err(anyhow::anyhow!(
+                "sdk server re-add failed after a landed removal (servers deregistered): {err}"
+            ));
+        }
+        Err(_) => {
+            return Err(anyhow::anyhow!(
+                "sdk server re-add timed out after a landed removal (servers deregistered)"
+            ));
+        }
+    };
+    if response.errors.is_empty() {
+        tracing::info!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            added = ?response.added,
+            removed = ?response.removed,
+            "sdk mcp tool re-add issued for a boot handshake that surfaced no tools"
+        );
+    } else {
+        for (name, message) in &response.errors {
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                server = %name,
+                error = %message,
+                "sdk mcp server failed to re-handshake on re-add"
+            );
+        }
+    }
     Ok(())
 }
 
