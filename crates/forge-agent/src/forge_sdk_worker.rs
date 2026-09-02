@@ -303,9 +303,11 @@ async fn emit_connected(
         .map(str::to_owned)
         .or_else(|| {
             launch_settings_record
-                .and_then(|r| r.get("permissions"))
+                .and_then(|r| r.get(crate::client::SessionLaunchSettings::PERMISSIONS_KEY))
                 .and_then(serde_json::Value::as_object)
-                .and_then(|p| p.get("defaultMode"))
+                .and_then(|p| {
+                    p.get(crate::client::SessionLaunchSettings::PERMISSIONS_DEFAULT_MODE_KEY)
+                })
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned)
         });
@@ -766,10 +768,12 @@ fn build_options_with_callback(
     if let Some(settings_value) = launch_settings.settings.as_ref()
         && let Some(settings_record) = settings_value.as_object()
     {
-        if let Some(perms) =
-            settings_record.get("permissions").and_then(serde_json::Value::as_object)
-            && let Some(default_mode_str) =
-                perms.get("defaultMode").and_then(serde_json::Value::as_str)
+        if let Some(perms) = settings_record
+            .get(crate::client::SessionLaunchSettings::PERMISSIONS_KEY)
+            .and_then(serde_json::Value::as_object)
+            && let Some(default_mode_str) = perms
+                .get(crate::client::SessionLaunchSettings::PERMISSIONS_DEFAULT_MODE_KEY)
+                .and_then(serde_json::Value::as_str)
             && let Ok(mode) = parse_permission_mode(default_mode_str)
         {
             b = b.permission_mode(mode);
@@ -1588,6 +1592,73 @@ mod tests {
             &super::AccountBinding { config_dir: Path::new("/cfg/x"), env: &env },
         );
         assert_eq!(options.env.get("CLAUDE_CONFIG_DIR").map(String::as_str), Some("/cfg/override"));
+    }
+
+    /// The workspace stamps an account's `permission_mode` into the
+    /// launch settings' `permissions.defaultMode`; this is the arm that
+    /// reads it, so the mode has to reach the OptionsBuilder from there.
+    #[test]
+    fn launch_settings_default_mode_reaches_the_options_builder() {
+        use crate::client::SessionLaunchSettings;
+        use forge_primitives::permission::PermissionMode;
+        use std::path::Path;
+        use tokio::sync::mpsc;
+
+        let (event_tx, _rx) = mpsc::unbounded_channel();
+        let launch = SessionLaunchSettings {
+            settings: Some(json!({
+                "permissions": { "defaultMode": "bypassPermissions" },
+                "model": "haiku",
+            })),
+            ..SessionLaunchSettings::default()
+        };
+        let options = super::build_options_with_callback(
+            "",
+            None,
+            &launch,
+            event_tx,
+            fresh_pending(),
+            fresh_pending_questions(),
+            Arc::new(Mutex::new(String::new())),
+            Vec::new(),
+            &super::AccountBinding { config_dir: Path::new("/cfg/x"), env: &HashMap::new() },
+        );
+        assert_eq!(
+            options.permission_mode,
+            PermissionMode::BypassPermissions,
+            "settings.permissions.defaultMode drives the CLI's permission mode",
+        );
+        assert_eq!(
+            options.model.as_deref(),
+            Some("haiku"),
+            "sibling settings survive the mode arm"
+        );
+    }
+
+    /// Launch settings without a `defaultMode` leave the builder at its
+    /// default - accounts (and callers) that never set the key spawn
+    /// exactly as before.
+    #[test]
+    fn launch_settings_without_a_default_mode_leave_the_builder_default() {
+        use crate::client::SessionLaunchSettings;
+        use forge_primitives::permission::PermissionMode;
+        use std::path::Path;
+        use tokio::sync::mpsc;
+
+        let (event_tx, _rx) = mpsc::unbounded_channel();
+        let launch = SessionLaunchSettings::default();
+        let options = super::build_options_with_callback(
+            "",
+            None,
+            &launch,
+            event_tx,
+            fresh_pending(),
+            fresh_pending_questions(),
+            Arc::new(Mutex::new(String::new())),
+            Vec::new(),
+            &super::AccountBinding { config_dir: Path::new("/cfg/x"), env: &HashMap::new() },
+        );
+        assert_eq!(options.permission_mode, PermissionMode::Ask);
     }
 
     #[test]

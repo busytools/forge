@@ -41,6 +41,16 @@ pub struct SessionLaunchSettings {
     pub force_new: bool,
 }
 
+impl SessionLaunchSettings {
+    /// The `permissions.defaultMode` keys inside `settings`, shared by
+    /// the workspace's account stamp and the readers here so a rename
+    /// cannot split the seam. The `settings` JSON is forge-internal -
+    /// the CLI is driven by argv - so one const per key is the whole
+    /// contract.
+    pub const PERMISSIONS_KEY: &str = "permissions";
+    pub const PERMISSIONS_DEFAULT_MODE_KEY: &str = "defaultMode";
+}
+
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     Connected {

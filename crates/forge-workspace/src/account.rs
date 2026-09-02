@@ -108,6 +108,9 @@ pub(crate) struct AccountState {
     /// stays globally selectable in the `/account` picker. Mirrors the
     /// `[[accounts]] experimental = true` toggle in forge.toml.
     pub experimental: bool,
+    /// Optional CLI permission mode stamped into launch settings at
+    /// spawn. Mirrors the `[[accounts]] permission_mode` key.
+    pub permission_mode: Option<forge_primitives::permission::PermissionMode>,
     /// Latest usage snapshot fetched by the workspace's background
     /// poller. `None` until the first successful fetch. Drives the
     /// picker's order; also surfaced to the TUI's bottom panel via
@@ -191,6 +194,7 @@ impl AccountStateMap {
                     provider: account.provider,
                     env: account.env.clone(),
                     experimental: account.experimental,
+                    permission_mode: account.permission_mode,
                     usage: None,
                     last_error: None,
                     next_probe_at: None,
@@ -257,6 +261,16 @@ impl AccountStateMap {
     /// preflight repair copy both branch on. `None` for unknown keys.
     pub fn provider(&self, key: &AccountKey) -> Option<forge_primitives::account::Provider> {
         self.by_key.get(key).map(|s| s.provider)
+    }
+
+    /// Optional per-account `permission_mode` for `key`. Consumed by
+    /// the spawn path to stamp `permissions.defaultMode` into launch
+    /// settings. `None` for unknown keys or an account without the key.
+    pub fn permission_mode(
+        &self,
+        key: &AccountKey,
+    ) -> Option<forge_primitives::permission::PermissionMode> {
+        self.by_key.get(key).and_then(|s| s.permission_mode)
     }
 
     /// [`Self::provider`] for a key that came out of this map, so a miss
@@ -804,7 +818,32 @@ mod tests {
             provider: forge_primitives::account::Provider::Anthropic,
             env: std::collections::HashMap::new(),
             experimental: false,
+            permission_mode: None,
         }
+    }
+
+    #[test]
+    fn account_state_map_carries_the_permission_mode() {
+        let with_mode = LoadedAccount {
+            permission_mode: Some(forge_primitives::permission::PermissionMode::BypassPermissions),
+            ..make_account("Openrouter")
+        };
+        let map = AccountStateMap::new(&[with_mode, make_account("Stargate")]);
+        assert_eq!(
+            map.permission_mode(&AccountKey("Openrouter".to_owned())),
+            Some(forge_primitives::permission::PermissionMode::BypassPermissions),
+            "the spawn path reads the mode off the account map",
+        );
+        assert_eq!(
+            map.permission_mode(&AccountKey("Stargate".to_owned())),
+            None,
+            "an account without the key reports None",
+        );
+        assert_eq!(
+            map.permission_mode(&AccountKey("Unknown".to_owned())),
+            None,
+            "an unknown key reports None",
+        );
     }
 
     /// Default snapshot fixture used by every account-picker test. The

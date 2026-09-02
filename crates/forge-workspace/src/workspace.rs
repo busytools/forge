@@ -1098,6 +1098,15 @@ impl Workspace {
             let accounts = self.accounts.lock();
             accounts.env(&account_key).cloned().unwrap_or_default()
         };
+        // An account carrying `[[accounts]] permission_mode` owns the
+        // mode for every session it spawns.
+        let account_mode = {
+            let accounts = self.accounts.lock();
+            accounts.permission_mode(&account_key)
+        };
+        if let Some(mode) = account_mode {
+            crate::spawn::stamp_account_permission_mode(&mut settings, mode);
+        }
         let session_env = self.session_env_for(&target, &account_env);
 
         // Hoist DomainSession creation to BEFORE Agent::spawn so the
@@ -6973,6 +6982,7 @@ mod tests {
                     provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: false,
+                    permission_mode: None,
                 },
                 crate::config::LoadedAccount {
                     display_name: "B".to_owned(),
@@ -6980,6 +6990,7 @@ mod tests {
                     provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: false,
+                    permission_mode: None,
                 },
             ]);
             // A: 5h saturated (100%, future reset) -> rate limited; 7d 63%.
@@ -7044,6 +7055,7 @@ mod tests {
                     provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: false,
+                    permission_mode: None,
                 },
                 crate::config::LoadedAccount {
                     display_name: "Exp".to_owned(),
@@ -7051,6 +7063,7 @@ mod tests {
                     provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: true,
+                    permission_mode: None,
                 },
             ]);
             map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
@@ -7081,6 +7094,7 @@ mod tests {
                     provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: false,
+                    permission_mode: None,
                 },
                 crate::config::LoadedAccount {
                     display_name: "Exp".to_owned(),
@@ -7088,6 +7102,7 @@ mod tests {
                     provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: true,
+                    permission_mode: None,
                 },
             ]);
             map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
@@ -7119,6 +7134,7 @@ mod tests {
                     provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: false,
+                    permission_mode: None,
                 },
                 crate::config::LoadedAccount {
                     display_name: "Two".to_owned(),
@@ -7126,6 +7142,7 @@ mod tests {
                     provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: false,
+                    permission_mode: None,
                 },
             ]);
             map.set_usage(&AccountKey("One".to_owned()), account_usage_snapshot(10.0, 10.0, None));
@@ -8242,6 +8259,7 @@ mod tests {
                 provider,
                 env,
                 experimental: false,
+                permission_mode: None,
             }]);
     }
 
