@@ -410,7 +410,7 @@ mod tests {
         let section = collect_mcp_servers(&app);
         assert!(section.rows[0].process.is_none(), "no text match, no claim; got {section:?}");
         assert!(section.claimed_pids.is_empty(), "got {:?}", section.claimed_pids);
-        let coll = crate::app::processes::collect_active_processes(&app);
+        let coll = crate::app::processes::collect_active_processes(&app, &section.claimed_pids);
         assert_eq!(
             coll.rows.iter().map(|r| r.headline.as_str()).collect::<Vec<_>>(),
             vec!["npm exec @upstash/context7-mcp"],
@@ -445,7 +445,7 @@ mod tests {
         let section = collect_mcp_servers(&app);
         assert!(section.rows[0].process.is_none(), "siblings decline; got {section:?}");
         assert!(section.claimed_pids.is_empty(), "got {:?}", section.claimed_pids);
-        let coll = crate::app::processes::collect_active_processes(&app);
+        let coll = crate::app::processes::collect_active_processes(&app, &section.claimed_pids);
         assert_eq!(coll.rows.len(), 2, "both siblings stay in PROCESSES; got {:?}", coll.rows);
     }
 

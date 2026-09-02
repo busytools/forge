@@ -650,9 +650,10 @@ fn append_body(
     // PROCESSES is the single activity lens below MCP SERVERS:
     // the OS process tree plus the CLI's authoritative backgrounded
     // `local_bash` registry (agents render in SUBAGENTS, workflows in
-    // WORKFLOWS; MCP servers render in MCP SERVERS above). Auto-hidden
-    // when nothing is active.
-    let processes = collect_active_processes(app);
+    // WORKFLOWS; MCP servers render in MCP SERVERS above). The join ran
+    // once above; its claimed pids hand off here. Auto-hidden when
+    // nothing is active.
+    let processes = collect_active_processes(app, &mcp_section.claimed_pids);
     if !processes.is_empty() {
         lines.push(Line::default());
         push_section_rule(lines, width);
@@ -3031,7 +3032,7 @@ mod tests {
             }],
         });
 
-        let coll = crate::app::processes::collect_active_processes(&app);
+        let coll = crate::app::processes::collect_active_processes(&app, &Default::default());
         let count = coll.rows.iter().filter(|row| row.headline == "Run unit tests").count();
         assert_eq!(count, 1, "backgrounded bash renders exactly once; rows: {:?}", coll.rows);
     }

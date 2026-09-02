@@ -146,7 +146,7 @@ impl ProcessCollection {
 /// Within each sibling group, rows sort matched work first, then generic
 /// processes, with `memory_bytes` descending inside each tier and PID as
 /// the tie-break. Final list is capped at [`PROCESSES_MAX`] for sanity.
-pub fn collect_active_processes(app: &App) -> ProcessCollection {
+pub fn collect_active_processes(app: &App, claimed_pids: &HashSet<u32>) -> ProcessCollection {
     let Some(session) = app.active_session() else {
         return ProcessCollection { rows: Vec::new() };
     };
@@ -174,9 +174,8 @@ pub fn collect_active_processes(app: &App) -> ProcessCollection {
     // intentionally dropped (the OS walk is the truth of what is
     // RUNNING). CronCreate registrations live in the dedicated
     // SCHEDULES Inspector section, not here.
-    let mcp = crate::app::mcp_servers::collect_mcp_servers(app);
     if let Some(snapshot) = session.process_snapshot.as_ref() {
-        rows.extend(rows_from_os_snapshot(snapshot, &wire_alive, &mcp.claimed_pids));
+        rows.extend(rows_from_os_snapshot(snapshot, &wire_alive, claimed_pids));
     }
 
     rows.truncate(PROCESSES_MAX);
@@ -1394,7 +1393,7 @@ mod tests {
             ts.task_tool_use_ids.clear();
         });
 
-        let coll = collect_active_processes(&app);
+        let coll = collect_active_processes(&app, &HashSet::new());
         let bash_rows: Vec<_> =
             coll.rows.iter().filter(|r| r.kind == ProcessKind::BashBackgrounded).collect();
         assert_eq!(bash_rows.len(), 1, "exactly one enriched bash row; got {:?}", coll.rows);
@@ -1456,7 +1455,7 @@ mod tests {
             ts.task_tool_use_ids.clear();
         });
 
-        let coll = collect_active_processes(&app);
+        let coll = collect_active_processes(&app, &HashSet::new());
         assert!(
             coll.rows.iter().all(|r| r.kind != ProcessKind::BashBackgrounded),
             "stale session-map entry alone must not enrich a phantom row; got {:?}",
@@ -1521,7 +1520,7 @@ mod tests {
             }],
         });
 
-        let coll = collect_active_processes(&app);
+        let coll = collect_active_processes(&app, &HashSet::new());
         assert_eq!(
             coll.rows.len(),
             1,
@@ -1577,7 +1576,10 @@ mod tests {
             ..Default::default()
         }];
 
-        let coll = collect_active_processes(&app);
+        let coll = collect_active_processes(
+            &app,
+            &crate::app::mcp_servers::collect_mcp_servers(&app).claimed_pids,
+        );
         assert_eq!(
             coll.rows.iter().map(|r| r.headline.as_str()).collect::<Vec<_>>(),
             vec!["cargo build"],
@@ -1627,7 +1629,7 @@ mod tests {
             processes,
         });
 
-        let coll = collect_active_processes(&app);
+        let coll = collect_active_processes(&app, &HashSet::new());
         assert_eq!(coll.rows.len(), PROCESSES_MAX, "capped at the sanity max");
         assert_eq!(
             coll.rows[0].kind,
