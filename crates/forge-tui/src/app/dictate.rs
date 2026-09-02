@@ -331,7 +331,11 @@ fn afterglow_colour(border: &DictateBorder, now: Instant) -> Option<[f32; 3]> {
 /// and the plain orange must stand.
 pub(crate) fn border_color(app: &mut App, now: Instant) -> Option<Color> {
     let bucket = app.try_active_bucket_mut()?;
-    if bucket.dictate_border.as_ref().is_some_and(|border| matches!(border, DictateBorder::Live { .. })) {
+    if bucket
+        .dictate_border
+        .as_ref()
+        .is_some_and(|border| matches!(border, DictateBorder::Live { .. }))
+    {
         let target = border_target(bucket);
         if let Some(DictateBorder::Live { rgb, last_step }) = bucket.dictate_border.as_mut() {
             let elapsed_ms = now.duration_since(*last_step).as_secs_f32() * 1000.0;
@@ -877,11 +881,7 @@ mod tests {
             "past the window the afterglow is gone with no render visit"
         );
 
-        let cancelled = DictateBorder::Afterglow {
-            started: now,
-            rgb: BLUE,
-            beat: false,
-        };
+        let cancelled = DictateBorder::Afterglow { started: now, rgb: BLUE, beat: false };
         let easing_home = afterglow_colour(&cancelled, now + Duration::from_millis(50))
             .expect("a cancelled take eases home too");
         assert!(
@@ -893,6 +893,8 @@ mod tests {
     #[test]
     fn an_afterglow_self_expires_without_render_visits() {
         let mut app = App::test_default();
+        let _clipboard =
+            crate::app::keys::override_test_clipboard(crate::app::keys::TestClipboardMode::Succeed);
         let other = forge_workspace::SessionKey::from_session_id("other-project");
         app.sessions.insert(other.clone(), UiSession::new(other.clone()));
         {
@@ -927,7 +929,7 @@ mod tests {
             "the afterglow self-expires with no border_color call in between"
         );
         assert!(
-            !app.sessions.get(&other).expect("bucket").dictate.is_some(),
+            app.sessions.get(&other).expect("bucket").dictate.is_none(),
             "and the resolved take is gone from the bucket"
         );
     }
@@ -939,11 +941,8 @@ mod tests {
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
         {
             let bucket = app.session_mut(&key).expect("bucket");
-            bucket.dictate_border = Some(DictateBorder::Afterglow {
-                started: Instant::now(),
-                rgb: BLUE,
-                beat: false,
-            });
+            bucket.dictate_border =
+                Some(DictateBorder::Afterglow { started: Instant::now(), rgb: BLUE, beat: false });
         }
         let now = Instant::now();
         assert!(

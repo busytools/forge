@@ -472,6 +472,16 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
     }
 }
 
+/// The text a resolved take leaves on the clipboard alongside the
+/// composer insert: what was inserted, for a landed take; nothing for
+/// every other outcome.
+fn clipboard_text_for_outcome(outcome: &forge_workspace::DictateOutcome) -> Option<&str> {
+    match outcome {
+        forge_workspace::DictateOutcome::Landed { text, truncated: _ } => Some(text),
+        _ => None,
+    }
+}
+
 /// `SessionUpdate::DictateEnded` reducer. Landed text inserts into the
 /// bucket's own editor - the take belongs to this session, whatever
 /// tab is focused. The notice stamps against the draft version the
@@ -486,8 +496,9 @@ fn apply_dictate_outcome(
 ) {
     let floor_db = bucket.dictate.as_ref().map_or(-50.0, |indicator| indicator.floor_db);
     let notice = crate::app::dictate::notice_for_outcome(outcome, floor_db);
-    if let forge_workspace::DictateOutcome::Landed { text, truncated: _ } = outcome {
+    if let Some(text) = clipboard_text_for_outcome(outcome) {
         bucket.input.insert_str(text);
+        let _ = crate::app::keys::write_text_to_clipboard(text.to_owned());
     }
     let live_generation = bucket.dictate.as_ref().map(|indicator| indicator.generation);
     if live_generation == Some(generation) {
@@ -1333,6 +1344,52 @@ mod tests {
 
     use super::*;
     use crate::app::session::{SessionLifecycleState, UiSession};
+
+    /// Only a landed take rides the clipboard along, and it copies
+    /// exactly what was inserted - truncated or whole; every other
+    /// outcome copies nothing.
+    #[test]
+    fn clipboard_text_follows_the_landed_outcome_only() {
+        assert_eq!(
+            clipboard_text_for_outcome(&forge_workspace::DictateOutcome::Landed {
+                text: "run just check".to_owned(),
+                truncated: false,
+            }),
+            Some("run just check"),
+            "a landed take copies its words"
+        );
+        assert_eq!(
+            clipboard_text_for_outcome(&forge_workspace::DictateOutcome::Landed {
+                text: "this is what fitted".to_owned(),
+                truncated: true,
+            }),
+            Some("this is what fitted"),
+            "a truncated take copies what was inserted, not what was said"
+        );
+        assert_eq!(
+            clipboard_text_for_outcome(&forge_workspace::DictateOutcome::Empty),
+            None,
+            "an empty take copies nothing"
+        );
+        assert_eq!(
+            clipboard_text_for_outcome(&forge_workspace::DictateOutcome::NoAudio {
+                peak_db: -38.2,
+                seconds: 4,
+            }),
+            None,
+            "a quiet take copies nothing"
+        );
+        assert_eq!(
+            clipboard_text_for_outcome(&forge_workspace::DictateOutcome::Cancelled),
+            None,
+            "a cancelled take copies nothing"
+        );
+        assert_eq!(
+            clipboard_text_for_outcome(&forge_workspace::DictateOutcome::Failed),
+            None,
+            "a failed take copies nothing"
+        );
+    }
 
     /// The echo is the only source the dialog's markers and reset row
     /// read, so it must land on the addressed bucket and nothing else.

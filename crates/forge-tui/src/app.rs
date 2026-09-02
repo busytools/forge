@@ -17,7 +17,7 @@ mod focus;
 pub(crate) mod git_diff;
 pub(crate) mod input;
 mod input_submit;
-mod keys;
+pub(crate) mod keys;
 pub(crate) mod launchpad;
 pub(crate) mod mention;
 pub(crate) mod monitor_output;

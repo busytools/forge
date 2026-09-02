@@ -133,7 +133,7 @@ fn handle_always_allowed_shortcuts(app: &mut App, key: KeyEvent) -> bool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ClipboardCopyResult {
+pub(crate) enum ClipboardCopyResult {
     Copied,
     Failed,
     NoText,
@@ -147,7 +147,7 @@ fn copy_selection_to_clipboard(app: &mut App) -> ClipboardCopyResult {
     write_text_to_clipboard(selected_text)
 }
 
-fn write_text_to_clipboard(selected_text: String) -> ClipboardCopyResult {
+pub(crate) fn write_text_to_clipboard(selected_text: String) -> ClipboardCopyResult {
     #[cfg(test)]
     {
         match TEST_CLIPBOARD_MODE.with(Cell::get) {

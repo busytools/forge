@@ -673,7 +673,9 @@ mod tests {
                 .map(|y| {
                     (0..80)
                         .map(|x| {
-                            buffer.cell((x, y)).map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+                            buffer
+                                .cell((x, y))
+                                .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
                         })
                         .collect::<String>()
                         .trim_end()
@@ -798,6 +800,9 @@ mod tests {
         #[test]
         fn a_landed_take_beats_the_border_green_then_settles() {
             let mut app = App::test_default();
+            let _clipboard = crate::app::keys::override_test_clipboard(
+                crate::app::keys::TestClipboardMode::Succeed,
+            );
             let key = active_key(&app);
             apply_session_update(
                 &mut app,
@@ -941,6 +946,9 @@ mod tests {
         #[test]
         fn landed_words_insert_at_the_caret_of_the_session_that_started() {
             let mut app = App::test_default();
+            let _clipboard = crate::app::keys::override_test_clipboard(
+                crate::app::keys::TestClipboardMode::Succeed,
+            );
             let key = active_key(&app);
             apply_session_update(
                 &mut app,
@@ -967,6 +975,9 @@ mod tests {
         #[test]
         fn a_stale_take_does_not_wipe_a_live_recording_on_the_same_key() {
             let mut app = App::test_default();
+            let _clipboard = crate::app::keys::override_test_clipboard(
+                crate::app::keys::TestClipboardMode::Succeed,
+            );
             let key = active_key(&app);
             // Generation 2 is live and recording; generation 1 is an older
             // take of the same session still finishing.
