@@ -27,6 +27,7 @@ pub(crate) use control_dispatch::ControlDispatchHandle;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -47,6 +48,24 @@ use forge_primitives::Message;
 /// the writer-side [`Client`] is `Clone` and can move freely between
 /// tasks while one task owns the receiver.
 pub type ClientEvents = mpsc::UnboundedReceiver<Result<Message, Error>>;
+
+/// Removes a `pending_controls` entry when the awaiting future is
+/// dropped without a response having been routed - the drop guard
+/// `send_control` parks in its future.
+struct PendingGuard {
+    pending: PendingControls,
+    request_id: String,
+    defused: bool,
+}
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        if !self.defused
+            && let Ok(mut pending) = self.pending.try_lock()
+        {
+            pending.remove(&self.request_id);
+        }
+    }
+}
 
 /// Budget for the `initialize` handshake inside [`Client::spawn`]. A
 /// wedged CLI (alive, stdout open, never answering) would otherwise
@@ -103,6 +122,10 @@ struct ClientInner {
     /// Shutdown signal for the reader task. `take()`'d on the first
     /// [`Client::disconnect`] call; subsequent calls are no-ops.
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+    /// Set by [`Client::disconnect`](Self::disconnect) before the
+    /// shutdown signal, so the stream's end can be read as "told to
+    /// stop" rather than pipe death.
+    disconnect_requested: AtomicBool,
 }
 
 impl std::fmt::Debug for Client {
@@ -365,6 +388,7 @@ impl Client {
             pending_controls,
             reader_task: Mutex::new(Some(reader_task)),
             shutdown_tx: Mutex::new(Some(shutdown_tx)),
+            disconnect_requested: AtomicBool::new(false),
         });
 
         Ok((Self { inner }, events_rx))
@@ -491,6 +515,11 @@ impl Client {
     /// None today; the inner reader-task close is best-effort. Kept
     /// `Result` for forward-compat.
     pub async fn disconnect(&self) -> Result<(), Error> {
+        // The flag goes up BEFORE the signal: a consumer watching the
+        // event stream end must be able to tell "told to stop" (a
+        // session swap or teardown, expected) from pipe death (a real
+        // failure) without any new event field.
+        self.inner.disconnect_requested.store(true, Ordering::Release);
         if let Some(tx) = self.inner.shutdown_tx.lock().await.take() {
             let _ = tx.send(());
         }
@@ -506,9 +535,26 @@ impl Client {
         Ok(())
     }
 
+    /// Whether [`disconnect`](Self::disconnect) has been called on any
+    /// clone of this client. Lets a consumer distinguish an expected
+    /// stream end (session swap, teardown) from the subprocess dying
+    /// on its own.
+    pub fn disconnect_requested(&self) -> bool {
+        self.inner.disconnect_requested.load(Ordering::Acquire)
+    }
+
     /// Internal: outbound `control_request` issuer. Inserts a oneshot
     /// into `pending_controls`, writes the envelope via the cloned
     /// writer, and awaits the reader task's routed response.
+    ///
+    /// If the awaiting future is dropped - a caller's timeout fired, or
+    /// the task died - the oneshot sender would otherwise sit in
+    /// `pending_controls` forever, one leak per dropped call (the
+    /// footer's context-usage poll being the unbounded one). The
+    /// `PendingGuard` returned in the future removes the entry whenever
+    /// the future is dropped without a response having been routed; a
+    /// late response then finds no entry, which the reader task already
+    /// handles.
     pub(crate) async fn send_control(
         &self,
         subtype: &str,
@@ -536,18 +582,59 @@ impl Client {
             let mut pending = self.inner.pending_controls.lock().await;
             pending.insert(request_id.clone(), resp_tx);
         }
+        let mut guard = PendingGuard {
+            pending: Arc::clone(&self.inner.pending_controls),
+            request_id: request_id.clone(),
+            defused: false,
+        };
         if let Err(e) = self.inner.writer.write_line(&line).await {
             // Remove the pending entry on write failure so the EOF
             // drain doesn't fire on a request that never went out.
             let mut pending = self.inner.pending_controls.lock().await;
             pending.remove(&request_id);
+            guard.defused = true;
             return Err(e);
         }
-        match resp_rx.await {
+        let outcome = match resp_rx.await {
             Ok(outcome) => outcome,
             Err(_) => Err(Error::Connection {
                 reason: format!("subprocess closed before {subtype} response"),
             }),
-        }
+        };
+        guard.defused = true;
+        outcome
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Client;
+    use crate::options::OptionsBuilder;
+
+    fn control_mock_binary() -> String {
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mock_claude_control.sh").to_owned()
+    }
+
+    /// A control request whose awaiting future is dropped (the bridge's
+    /// 60s timeout firing) must not leave its `pending_controls` entry
+    /// behind - a wedged CLI would otherwise accumulate one entry per
+    /// context-usage poll, unbounded.
+    #[tokio::test]
+    async fn dropped_control_response_future_drains_the_pending_entry() {
+        let opts = OptionsBuilder::new()
+            .binary(control_mock_binary())
+            .env("FORGED_MOCK_SKIP_SUBTYPE", "get_context_usage")
+            .build();
+        let (client, _events) = Client::spawn(opts).await.expect("spawn");
+
+        let _ =
+            tokio::time::timeout(std::time::Duration::from_millis(200), client.get_context_usage())
+                .await;
+
+        assert!(
+            client.inner.pending_controls.lock().await.is_empty(),
+            "the dropped request's pending entry must be removed"
+        );
+        client.disconnect().await.expect("disconnect");
     }
 }

@@ -205,20 +205,7 @@ pub(super) fn handle_auth_required_event(
         // (login_hint, status_message, pending_command). The bucket
         // becomes "needs auth"; if/when the user switches to it we
         // surface the hint then.
-        session.key = None;
-        session.session_id = None;
-        session.account_info = None;
-        session.current_model = None;
-        session.mode = None;
-        session.runtime_session_state = None;
-        session.observed_permission_mode = None;
-        session.observed_effort = None;
-        session.pending_mode_rollback = None;
-        session.session_usage = crate::app::state::SessionUsageState::default();
-        session.last_rate_limit_update = None;
-        session.cancelled_turn_pending_hint = false;
-        session.pending_cancel = false;
-        session.mcp = super::super::McpState::default();
+        session.clear_runtime_identity();
         // Teardown is a hard terminal - clear the roster first so the sweep
         // has nothing to exempt and every open card fails.
         session.clear_background_task_registry();
@@ -307,20 +294,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         // pending_submit, push_message, status). Status surface for
         // a background bucket is the bucket itself; the active
         // session's status stays as-is.
-        session.key = None;
-        session.session_id = None;
-        session.account_info = None;
-        session.current_model = None;
-        session.mode = None;
-        session.runtime_session_state = None;
-        session.observed_permission_mode = None;
-        session.observed_effort = None;
-        session.pending_mode_rollback = None;
-        session.session_usage = crate::app::state::SessionUsageState::default();
-        session.cancelled_turn_pending_hint = false;
-        session.pending_cancel = false;
-        session.last_rate_limit_update = None;
-        session.mcp = super::super::McpState::default();
+        session.clear_runtime_identity();
         // Teardown is a hard terminal - clear the roster first so the sweep
         // has nothing to exempt and every open card fails.
         session.clear_background_task_registry();

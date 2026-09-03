@@ -3852,6 +3852,7 @@ impl App {
         self.set_observed_permission_mode(None);
         self.set_observed_effort(None);
         self.set_pending_mode_rollback(None);
+        self.set_pending_model_rollback(None);
         *self.session_usage_mut() = SessionUsageState::default();
     }
 

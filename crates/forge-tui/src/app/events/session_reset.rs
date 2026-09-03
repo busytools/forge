@@ -42,6 +42,7 @@ fn reset_session_identity_state(
     app.set_observed_effort(None);
     app.set_observed_assistant_model(None);
     app.set_pending_mode_rollback(None);
+    app.set_pending_model_rollback(None);
     app.set_prompt_suggestion(None);
     app.set_last_rate_limit_update(None);
     app.should_quit = false;
@@ -1163,9 +1164,7 @@ mod tests {
     ///
     /// Deliberately not a general state diff. Below the gate, the four
     /// `&App` sites only read fields and hand them to a tracing macro,
-    /// so there is no state for them to suppress - `&App` alone does
-    /// not establish that, since `TerminalMap` is an `Rc<RefCell<_>>` a
-    /// shared reference can still mutate through. A wider fingerprint
+    /// so there is no state for them to suppress. A wider fingerprint
     /// would also fail on clean code, since a replay legitimately adds
     /// a welcome message, renders user text the live walker drops, and
     /// rebuilds render-cache accounting.

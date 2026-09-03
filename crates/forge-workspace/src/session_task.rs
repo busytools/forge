@@ -420,6 +420,10 @@ impl SessionTask {
                         &key,
                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                     );
+                    // Same for Gotify notifications buffered at the synth
+                    // key: the failed spawn strands them - drain and
+                    // record the drop.
+                    workspace.expire_buffered_gotify_prompts(&key);
                     // Worker async spawn failure: classify the
                     // failure, dispatch a typed
                     // WorkerSpawnFailedNotice envelope to the lead's

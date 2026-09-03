@@ -3,7 +3,6 @@ use anyhow::Context as _;
 use std::fs::{File, OpenOptions, create_dir_all, metadata, remove_file, rename};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use tracing_appender::non_blocking::WorkerGuard;
 
 pub mod targets {
@@ -33,7 +32,6 @@ const DEFAULT_LOG_FILE_NAME: &str = "forge.log";
 pub(crate) const DEFAULT_PERF_FILE_NAME: &str = "forge-perf.log";
 pub(crate) const LOG_ROTATION_MAX_BYTES: u64 = 10 * 1024 * 1024;
 pub(crate) const LOG_ROTATION_MAX_FILES: usize = 5;
-static BRIDGE_DIAGNOSTICS_ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub struct LoggingRuntime {
     _guard: Option<WorkerGuard>,
@@ -42,7 +40,6 @@ pub struct LoggingRuntime {
 impl LoggingRuntime {
     pub fn init(cli: &Cli) -> anyhow::Result<Self> {
         let Some(log_path) = resolve_log_path(cli)? else {
-            BRIDGE_DIAGNOSTICS_ENABLED.store(false, Ordering::Relaxed);
             return Ok(Self { _guard: None });
         };
 
@@ -84,14 +81,9 @@ impl LoggingRuntime {
             log_rotation_max_files = LOG_ROTATION_MAX_FILES,
             version = crate::FORGE_VERSION,
         );
-        BRIDGE_DIAGNOSTICS_ENABLED.store(true, Ordering::Relaxed);
 
         Ok(Self { _guard: Some(guard) })
     }
-}
-
-pub fn bridge_diagnostics_enabled() -> bool {
-    BRIDGE_DIAGNOSTICS_ENABLED.load(Ordering::Relaxed)
 }
 
 /// Default tracing filter. `info` baseline keeps signal-to-noise

@@ -1129,6 +1129,11 @@ fn apply_current_model_from_init(app: &mut App, data: &Value) {
 
     let next_wire =
         resolve_current_model_from_inputs(model_id, requested, resolved_runtime, &available_models);
+    // The CLI reporting a model retires the optimistic `/model`
+    // rollback snapshot - the verdict has landed, whatever it is. Sits
+    // ahead of the equality early-return: the CLI confirming the model
+    // the optimistic apply already set still closes the pending switch.
+    app.set_pending_model_rollback(None);
     if app.current_model() == Some(&next_wire) {
         return;
     }

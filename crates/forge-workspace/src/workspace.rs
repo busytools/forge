@@ -213,7 +213,10 @@ pub struct Workspace {
     /// Per-session [`Command`] sender map. Populated when
     /// [`Self::get_agent_handle`] spawns the first `SessionTask` for a
     /// key; cleared on [`Self::release_session_with_cascade`] and [`Self::shutdown`].
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) command_senders: Mutex<HashMap<SessionKey, mpsc::UnboundedSender<Command>>>,
+    #[cfg(not(any(test, feature = "testing")))]
+    command_senders: Mutex<HashMap<SessionKey, mpsc::UnboundedSender<Command>>>,
     /// Per-project list of live worker sessions. In-memory only -
     /// wiped on forge restart by design (workers are ephemeral at the
     /// forge UI level; their JSONLs persist on disk). Mutated via
@@ -3219,6 +3222,15 @@ impl Workspace {
     /// `Arc<AgentHandle>` for that key so the underlying `claude`
     /// subprocess exits once the consumer (forge-tui's bucket) also
     /// **Cascade-aware** lead release. Use this when closing a project's
+    /// lead session from the TUI: the lead-row `×` click, the launchpad's
+    /// per-row close on a failed lead bucket, etc.
+    ///
+    /// Release a single session's pool entry: drops the workspace's
+    /// `Arc<AgentHandle>` for that key so the underlying `claude`
+    /// subprocess exits once the consumer (forge-tui's bucket) also
+    /// drops its reference.
+    ///
+    /// Cascade-aware lead release. Use this when closing a project's
     /// lead session from the TUI: the lead-row `×` click, the launchpad's
     /// per-row close on a failed lead bucket, etc.
     ///
@@ -6495,6 +6507,29 @@ impl Workspace {
         };
         for wrapped in buffered {
             self.expire_inflight_ask_failed(&wrapped.correlation_id, reason);
+        }
+    }
+
+    /// Drain the Gotify notifications buffered at `synth_key` and log
+    /// each as dropped - the spawn the bucket was waiting on has failed,
+    /// so the notifications would otherwise be stranded by the release
+    /// below and silently lost. There is no caller awaiting a delivery
+    /// confirmation for a notification, so a typed notice has no
+    /// recipient; the log is the record.
+    pub(crate) fn expire_buffered_gotify_prompts(&self, synth_key: &SessionKey) {
+        let domain = self.domain_handles.lock().get(synth_key).cloned();
+        let Some(domain) = domain else {
+            return;
+        };
+        let buffered = std::mem::take(&mut domain.lock().pending_gotify_prompts);
+        for notification in buffered {
+            tracing::warn!(
+                target: "forge_workspace::spawn",
+                synth_key = %synth_key.as_str(),
+                app = %notification.app,
+                title = %notification.title,
+                "gotify notification dropped: the spawn it was buffered for failed",
+            );
         }
     }
 }

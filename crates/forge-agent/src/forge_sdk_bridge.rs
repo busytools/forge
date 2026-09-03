@@ -652,7 +652,10 @@ impl ForgeSdkBridge {
         self.dispatch("get_context_usage", move |client| async move {
             // The footer poll fires this every few seconds; a wedged
             // CLI must cost one skipped poll, not a parked task per
-            // poll with the Ctx bar frozen.
+            // poll with the Ctx bar frozen. Accept-and-document: the
+            // expiry stays log-only (no typed event) because the bar
+            // showing a stale percentage is preferable to flashing an
+            // error - the next poll re-fires and recovers on its own.
             let usage = match tokio::time::timeout(
                 Self::CONTROL_RESPONSE_TIMEOUT,
                 client.get_context_usage(),
@@ -744,7 +747,22 @@ impl ForgeSdkBridge {
         self.dispatch_with_failure(
             "get_mcp_snapshot",
             move |client| async move {
-                let response = client.mcp_status().await?;
+                let outcome =
+                    tokio::time::timeout(Self::CONTROL_RESPONSE_TIMEOUT, client.mcp_status()).await;
+                let response = match outcome {
+                    Ok(Err(e)) => return Err(e.into()),
+                    Ok(Ok(result)) => result,
+                    Err(_) => {
+                        Self::emit_mcp_error_or_log(
+                            &event_tx,
+                            session_id,
+                            "status",
+                            None,
+                            "no response from the CLI".to_owned(),
+                        );
+                        return Ok(());
+                    }
+                };
                 if event_tx
                     .send(AgentEvent::McpSnapshot {
                         session_id,
@@ -1207,10 +1225,19 @@ mod tests {
 
         // Outer wrapper past the 60s budget: virtual time advances to
         // the SOONEST timer, so the dispatch's 60s fires before this.
+        // Either failure text is a legitimate SetModelFailed cause: the
+        // timeout's "no response from the CLI", or the connection
+        // failure's Display when the mock's stdout ends inside the
+        // virtual-time window. The test's job is the mechanism, not
+        // which wedge won.
         match tokio::time::timeout(std::time::Duration::from_secs(120), events.recv()).await {
             Ok(Some(AgentEvent::SetModelFailed { model, message, .. })) => {
                 assert_eq!(model, "claude-attempted");
-                assert_eq!(message, "no response from the CLI");
+                assert!(
+                    message == "no response from the CLI"
+                        || message.contains("connection to claude subprocess failed"),
+                    "a SetModelFailed failure text is required: {message}"
+                );
             }
             other => panic!("expected SetModelFailed on the wedged set_model, got {other:?}"),
         }

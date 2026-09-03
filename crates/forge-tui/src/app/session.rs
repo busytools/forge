@@ -667,6 +667,27 @@ impl UiSession {
         self.turn_state.requested_model_id = snapshot.requested_model_id;
         true
     }
+
+    /// Clear the session-identity mirror set a hard teardown applies -
+    /// the one place to add a mirror field, so a new field cannot be
+    /// missed at one of the hand-synced teardown sites.
+    pub fn clear_runtime_identity(&mut self) {
+        self.key = None;
+        self.session_id = None;
+        self.account_info = None;
+        self.current_model = None;
+        self.mode = None;
+        self.runtime_session_state = None;
+        self.observed_permission_mode = None;
+        self.observed_effort = None;
+        self.pending_mode_rollback = None;
+        self.pending_model_rollback = None;
+        self.session_usage = crate::app::state::SessionUsageState::default();
+        self.cancelled_turn_pending_hint = false;
+        self.pending_cancel = false;
+        self.last_rate_limit_update = None;
+        self.mcp = McpState::default();
+    }
 }
 
 impl Default for UiSession {
