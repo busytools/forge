@@ -800,17 +800,10 @@ impl App {
         }
     }
 
-    /// Switch which session the renderer reads from. State on both
-    /// sides is preserved (in-memory buckets in `sessions`); the
-    /// next paint reflects the new active session. No-op if `key`
-    /// is already active or unknown.
-    ///
-    /// Drops any [`Self::pending_spawn_focus`]: landing somewhere by
-    /// any route settles where the user wants to be, so a spawn they
-    /// asked for earlier must not pull them back when it arrives.
-    /// Map a session's lifecycle state to the App-level status enum so
-    /// a background turn that completed while the user was away doesn't
-    /// leave a stale `Thinking` / `Running` status on switch-in.
+    /// Map a bucket lifecycle to the App-level status. Every focus
+    /// move re-runs this (switch-in, KeyRenamed's active move, the
+    /// boot id-adoption), so the mirror tracks the bucket the user
+    /// lands on rather than the one they left.
     fn status_for_lifecycle(lifecycle: crate::app::session::SessionLifecycleState) -> AppStatus {
         use crate::app::session::SessionLifecycleState as L;
         match lifecycle {
@@ -836,6 +829,15 @@ impl App {
         }
     }
 
+    /// Switch which session the renderer reads from. State on both
+    /// sides is preserved (in-memory buckets in `sessions`); the
+    /// next paint reflects the new active session. No-op if `key`
+    /// is already active or unknown; a same-key landing still
+    /// re-derives the status mirror.
+    ///
+    /// Drops any [`Self::pending_spawn_focus`]: landing somewhere by
+    /// any route settles where the user wants to be, so a spawn they
+    /// asked for earlier must not pull them back when it arrives.
     pub fn switch_active_session(&mut self, key: forge_workspace::SessionKey) {
         // Cleared before the early returns: a click that lands on the
         // session already focused is still the user settling where
