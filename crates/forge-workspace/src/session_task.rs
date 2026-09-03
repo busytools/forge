@@ -994,18 +994,10 @@ impl Drop for SessionTask {
     fn drop(&mut self) {
         // Teardown backstop for the routes out of `run` that produce no
         // terminal envelope: the command channel closing on a release or
-        // despawn, and the runtime dropping the task.
-        //
-        // NOT subprocess death. `self.handle` owns an `Arc` chain down to
-        // `BridgeInner.event_tx`, so a sender outlives this task and
-        // `event_rx.recv()` never yields `None`; `reader_loop` returns
-        // silently on stream close and on error without emitting an
-        // `AgentEvent`, and nothing watches for child exit. A `claude`
-        // killed mid-turn therefore reaches none of these paths and its
-        // review activity still strands. Tracked separately - closing it
-        // needs either a terminal event on child exit or dropping
-        // `event_tx` when `reader_loop` ends, and the first is
-        // user-visible.
+        // despawn, and the runtime dropping the task. Child death needs
+        // no backstop - `reader_loop` emits ConnectionFailed on both of
+        // its exit arms (stream error and stream close), and that arm
+        // drains review activity before terminating the task.
         let caller = self.domain.lock().key.clone();
         self.drain_review_activity_for(&caller);
         if let Some(workspace) = self.workspace.upgrade() {
