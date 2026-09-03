@@ -218,6 +218,24 @@ fn quietest_frame(pcm: &[f32]) -> usize {
     if quietest == usize::MAX { 0 } else { quietest * ENERGY_FRAME }
 }
 
+/// The store entry a job's answer earns: `None` keeps nothing.
+///
+/// An abandoned take (the user's own cancel) and a take the silence
+/// gate resolved before the weights persist nothing - there is no
+/// transcript stage to examine and nothing was recognised. Everything
+/// else keeps its audio: an `empty` or a `recognition_error` are
+/// exactly the takes worth opening files over.
+fn diagnostic_outcome(answer: &Result<Outcome, Error>) -> Option<(&'static str, String)> {
+    match answer {
+        Err(Error::Cancelled) | Ok(Outcome::NoAudio { .. }) => None,
+        Err(_) => Some(("recognition_error", String::new())),
+        Ok(Outcome::Transcript(transcript)) => {
+            let label = if transcript.text.is_empty() { "empty" } else { "transcript" };
+            Some((label, transcript.text.clone()))
+        }
+    }
+}
+
 /// Window texts back into one transcript. Trims and drops empties, so
 /// a silent stretch inside a take vanishes at the join instead of
 /// leaving a doubled space.
@@ -249,6 +267,7 @@ struct Job {
     cancel: CancelToken,
     progress: Option<Sender<WindowProgress>>,
     reply: Sender<Result<Outcome, Error>>,
+    queued_at: Instant,
 }
 
 /// How the weights ended up, once the worker has resolved them.
@@ -496,6 +515,7 @@ impl Engine {
         truncated: bool,
         options: NormalizeOptions,
     ) -> Result<Ticket, Error> {
+        let queued_at = Instant::now();
         let (reply, answer) = channel();
         let (progress_tx, progress_rx) = channel();
         let cancel = CancelToken::new();
@@ -522,6 +542,7 @@ impl Engine {
                 cancel: cancel.clone(),
                 progress: Some(progress_tx),
                 reply,
+                queued_at,
             })
             .map_err(|_| Error::EngineStopped)?;
         Ok(Ticket { answer, cancel, progress: Some(progress_rx) })
@@ -839,6 +860,10 @@ fn worker(
         let mut truncated = job.truncated;
         let mut failure: Option<Error> = None;
         let started = Instant::now();
+        // How long the take sat before its first window ran: the queue,
+        // and for early takes the tail of the model load. The felt lag
+        // `processing_ms` never sees.
+        let start_lag_ms = u64::try_from(job.queued_at.elapsed().as_millis()).unwrap_or(u64::MAX);
         let windows = window_bounds(&job.pcm);
         let total = windows.len();
         let window_ms =
@@ -909,22 +934,17 @@ fn worker(
             first = false;
             Ok(Outcome::Transcript(Transcript { text, asr, stages, truncated }))
         };
-        let diag = match &answer {
-            Err(Error::Cancelled) | Ok(Outcome::NoAudio { .. }) => None,
-            Err(_) => Some(("recognition_error", String::new())),
-            Ok(Outcome::Transcript(transcript)) => {
-                let label = if transcript.text.is_empty() { "empty" } else { "transcript" };
-                Some((label, transcript.text.clone()))
-            }
-        };
+        let diag = diagnostic_outcome(&answer);
         in_flight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
         let _ = job.reply.send(answer);
 
         // Best-effort diagnostics, after the take has landed: the reply
-        // is never held back by a write, and an abandoned take (the
-        // user's own cancel) keeps nothing. A queued take starts after
-        // the write, which is the one cost a 30-minute capture's wav
-        // ever asks anyone to pay.
+        // is never held back by a write. An abandoned take persists
+        // nothing (the classifier's None). Teardown skips the write:
+        // quitting fast beats blocking shutdown on a capture-sized
+        // write, and that is a stated trade, not a side effect. A
+        // queued take starts after the write, which is the one cost a
+        // 30-minute capture's wav ever asks anyone to pay.
         if let (Some(dir), Some((outcome, text))) = (&cfg.diagnostics_dir, diag)
             && !stopping.load(Ordering::Relaxed)
         {
@@ -934,6 +954,7 @@ fn worker(
                 joined: &join_window_texts(&asr_parts),
                 text: &text,
                 stages: &diag_stages,
+                start_lag_ms,
                 processing_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
                 truncated,
                 outcome,
@@ -956,6 +977,45 @@ mod tests_engine {
         let cfg = ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build();
         let engine = Engine::new(cfg).expect("an engine must start without waiting for weights");
         (dir, engine)
+    }
+
+    /// What the store keeps, decided weightless. The abandoned take
+    /// persisting NOTHING is privacy-relevant: a take the user chose
+    /// not to submit must not leave audio on disk.
+    #[test]
+    fn the_diagnostics_classifier_keeps_what_is_worth_debugging() {
+        assert_eq!(
+            diagnostic_outcome(&Err(Error::Recognition { message: "x".into() })),
+            Some(("recognition_error", String::new())),
+            "a recognition failure is exactly a take worth opening files over"
+        );
+        assert_eq!(
+            diagnostic_outcome(&Err(Error::Cancelled)),
+            None,
+            "an abandoned take must persist nothing: no audio, no directory"
+        );
+        // The silence gate resolves before the worker ever sees a job,
+        // so this arm is defensive; the assert documents the intent so
+        // a future edit cannot quietly start storing silence.
+        assert_eq!(
+            diagnostic_outcome(&Ok(Outcome::NoAudio {
+                peak: f32::NEG_INFINITY,
+                audio: Duration::ZERO
+            })),
+            None,
+            "silence has no transcript stage to examine and no words to lose"
+        );
+        let empty = Outcome::Transcript(Transcript {
+            text: String::new(),
+            asr: String::new(),
+            stages: Stages::default(),
+            truncated: false,
+        });
+        assert_eq!(
+            diagnostic_outcome(&Ok(empty)),
+            Some(("empty", String::new())),
+            "a take that normalized to nothing still keeps its audio"
+        );
     }
 
     #[test]
@@ -1565,8 +1625,11 @@ mod tests_real_recognition {
         let Outcome::Transcript(transcript) = outcome else {
             panic!("a spoken take must not read as silence: {outcome:?}");
         };
-        // The store entry is written after the reply, by design; joining
-        // the worker is what makes the write observable here.
+        // The store entry is written after the reply, by design, so
+        // dropping the engine (which joins the worker) is the reliable
+        // way to observe the write. Its own stopping flag is set first,
+        // but the write check already ran on this job's answer, so the
+        // join only ever waits out a write that started.
         drop(engine);
 
         let entries: Vec<_> = std::fs::read_dir(dir.path()).expect("store dir").flatten().collect();
@@ -1593,6 +1656,11 @@ mod tests_real_recognition {
             transcript.text,
             "text.txt is that take's final text"
         );
+
+        let windows = meta["windows"].as_array().expect("windows array");
+        assert_eq!(windows.len(), 1, "a sub-window take records its one window");
+        let raw = std::fs::read_to_string(take.join("raw/0.txt")).expect("window 0's transcript");
+        assert!(!raw.is_empty(), "a spoken window produces a non-empty raw transcript");
 
         let mut reader = hound::WavReader::open(take.join("output.wav")).unwrap();
         assert_eq!(

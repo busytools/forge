@@ -38,6 +38,11 @@ pub(crate) struct TakeRecord<'a> {
     pub(crate) joined: &'a str,
     pub(crate) text: &'a str,
     pub(crate) stages: &'a Stages,
+    /// Engine accept to first window start: the queue, and for early
+    /// takes the tail of the model load. The felt lag the stages do
+    /// not carry; `start_lag_ms` + `processing_ms` spans accept to
+    /// reply.
+    pub(crate) start_lag_ms: u64,
     pub(crate) processing_ms: u64,
     pub(crate) truncated: bool,
     /// `transcript`, `empty` or `recognition_error`.
@@ -60,6 +65,10 @@ pub(crate) fn take_stamp() -> u128 {
 /// logs its own failure and stops that take's capture.
 pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>) {
     let take_dir = dir.join(format!("take-{take_id:013}"));
+    // meta.json is written LAST, which is what makes a take directory
+    // without it incomplete: an early return above leaves a partial
+    // directory that still counts for retention, but never reads as a
+    // complete take.
     if let Err(error) = std::fs::create_dir_all(take_dir.join("raw")) {
         tracing::warn!(%error, dir = %take_dir.display(), "diagnostics: store directory not writable");
         return;
@@ -87,6 +96,9 @@ pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>) {
     let ms = |d: std::time::Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
     let meta = json!({
         "duration_ms": ms(take.stages.audio),
+        // Accept to first window start, so the wall total reconciles:
+        // start_lag_ms + processing_ms spans the engine's accept-to-reply.
+        "start_lag_ms": take.start_lag_ms,
         "processing_ms": take.processing_ms,
         "truncated": take.truncated,
         "outcome": take.outcome,
@@ -129,16 +141,19 @@ fn write_wav(path: &Path, audio: &[f32]) -> Result<(), String> {
     };
     let mut writer = hound::WavWriter::create(path, spec).map_err(|error| error.to_string())?;
     for &sample in audio {
-        let quantized = (sample * 32767.0).clamp(-32768.0, 32767.0);
+        // Safe after the clamp: the value is inside i16's range.
         #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-        let value = quantized.round() as i16;
+        let value = (sample * 32767.0).clamp(-32768.0, 32767.0).round() as i16;
         writer.write_sample(value).map_err(|error| error.to_string())?;
     }
     writer.finalize().map_err(|error| error.to_string())
 }
 
-/// Delete every take but the newest [`RETAINED_TAKES`], best-effort:
-/// a directory that will not leave is left behind rather than fought.
+/// Delete every take but the newest [`RETAINED_TAKES`]. Only store
+/// directories count - `take-` followed by nothing but digits - so a
+/// user directory that happens to share the prefix is never touched.
+/// Removal is best-effort, and a directory that will not leave is
+/// logged: it occupies a retention slot invisibly otherwise.
 fn prune(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     let mut takes: Vec<PathBuf> = entries
@@ -148,12 +163,20 @@ fn prune(dir: &Path) {
         .collect();
     takes.sort();
     for stale in takes.iter().rev().skip(RETAINED_TAKES) {
-        let _ = std::fs::remove_dir_all(stale);
+        if let Err(error) = std::fs::remove_dir_all(stale) {
+            tracing::warn!(%error, dir = %stale.display(), "diagnostics: stale take not pruned");
+        }
     }
 }
 
+/// A store directory: `take-` followed by all-ASCII digits. Anything
+/// else - `take-2026-photos`, a user's own folder - is not ours to
+/// prune.
 fn starts_take(name: &std::ffi::OsStr) -> bool {
-    name.to_str().is_some_and(|s| s.starts_with("take-"))
+    name.to_str().is_some_and(|s| {
+        let id = s.strip_prefix("take-").unwrap_or_default();
+        !id.is_empty() && id.len() >= 13 && id.bytes().all(|b| b.is_ascii_digit())
+    })
 }
 
 #[cfg(test)]
@@ -174,6 +197,7 @@ mod tests {
             joined,
             text,
             stages,
+            start_lag_ms: 3,
             processing_ms: 7,
             truncated: false,
             outcome: "transcript",
@@ -240,12 +264,38 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(take.join("meta.json")).unwrap())
                 .unwrap();
         assert_eq!(meta["duration_ms"], 1000);
+        assert_eq!(meta["start_lag_ms"], 3, "the pre-transcribe lag reaches the metadata");
         assert_eq!(meta["processing_ms"], 7);
         assert_eq!(meta["truncated"], false);
         assert_eq!(meta["outcome"], "transcript");
         assert_eq!(meta["stages_ms"]["mel"], 0);
         assert_eq!(meta["windows"][0]["file"], "raw/0.txt");
         assert_eq!(meta["windows"][1]["end_ms"], 1000);
+    }
+
+    /// Prune only ever touches store directories: `take-` followed by
+    /// nothing but digits. A user folder sharing the prefix is not ours
+    /// to remove, whatever its age.
+    #[test]
+    fn prune_never_touches_a_foreign_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let foreign = dir.path().join("take-2026-photos");
+        std::fs::create_dir_all(&foreign).unwrap();
+        std::fs::write(foreign.join("holiday.jpg"), "not ours").unwrap();
+        let stages = Stages::default();
+        let audio = vec![0.5; 16];
+        let windows = vec![];
+        for id in 1..=11u128 {
+            capture_take(dir.path(), id, &take_record(&audio, &windows, "", "", &stages));
+        }
+        assert!(foreign.is_dir(), "a user directory sharing the take- prefix must survive pruning");
+        let takes: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("take-0"))
+            .collect();
+        assert_eq!(takes.len(), RETAINED_TAKES, "eleven takes leave ten, got {takes:?}");
     }
 
     /// The store cannot grow without bound: past the retained count the
