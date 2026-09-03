@@ -8,18 +8,12 @@ use forge_primitives::HookContext;
 
 /// A hook decision.
 ///
-/// The primary shape (allow / deny / replace-input / passthrough) mirrors
-/// the CLI's `SyncHookJSONOutput.decision` field; the `with_*` builders
-/// attach the optional control fields the CLI documents alongside it -
-/// `continue_` / `suppressOutput` / `stopReason` / `systemMessage`. See
-/// + for the full contract.
+/// The shape (allow / deny / replace-input / passthrough) mirrors
+/// the CLI's `SyncHookJSONOutput.decision` field. See the hook-callback
+/// contract docs for the full wire story.
 #[derive(Debug, Clone)]
 pub struct HookDecision {
     inner: HookDecisionKind,
-    continue_execution: Option<bool>,
-    suppress_output: Option<bool>,
-    stop_reason: Option<String>,
-    system_message: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -45,13 +39,7 @@ enum HookDecisionKind {
 
 impl HookDecision {
     fn with_inner(inner: HookDecisionKind) -> Self {
-        Self {
-            inner,
-            continue_execution: None,
-            suppress_output: None,
-            stop_reason: None,
-            system_message: None,
-        }
+        Self { inner }
     }
 
     /// Allow the action unchanged.
@@ -77,12 +65,11 @@ impl HookDecision {
     }
 
     /// Defer the hook response. Emits the CLI's `AsyncHookJSONOutput`
-    /// shape: `{"async": true, "asyncTimeout":
-    /// <ms>?}`. Pass `None` for no explicit timeout. The CLI will
-    /// proceed without waiting for the hook's final verdict; the
-    /// caller is expected to deliver the real decision out-of-band
-    /// (wiring that channel is follow-up work - forge-sdk currently
-    /// emits only the ACK shape).
+    /// shape: `{"async": true, "asyncTimeout": <ms>?}`. Pass `None` for
+    /// no explicit timeout. The CLI will proceed without waiting for the
+    /// hook's final verdict; the caller is expected to deliver the real
+    /// decision out-of-band (wiring that channel is follow-up work -
+    /// forge-sdk currently emits only the ACK shape).
     pub fn defer(timeout_ms: Option<u64>) -> Self {
         Self::with_inner(HookDecisionKind::Defer { timeout_ms })
     }
@@ -99,36 +86,6 @@ impl HookDecision {
             HookDecisionKind::Defer { timeout_ms } => *timeout_ms,
             _ => None,
         }
-    }
-
-    /// Attach the `continue_` control field (CLI wire name:
-    /// `continue`). Pass `false` to signal that Claude should not proceed
-    /// after the hook - typically combined with
-    /// [`with_stop_reason`](Self::with_stop_reason).
-    pub fn with_continue(mut self, should_continue: bool) -> Self {
-        self.continue_execution = Some(should_continue);
-        self
-    }
-
-    /// Attach the `suppressOutput` control field. When
-    /// `true`, the CLI hides stdout from transcript mode.
-    pub fn with_suppress_output(mut self, suppress: bool) -> Self {
-        self.suppress_output = Some(suppress);
-        self
-    }
-
-    /// Attach the `stopReason` control field - the message
-    /// the CLI shows when `continue` is set to `false`.
-    pub fn with_stop_reason(mut self, reason: impl Into<String>) -> Self {
-        self.stop_reason = Some(reason.into());
-        self
-    }
-
-    /// Attach the `systemMessage` control field - a warning
-    /// displayed to the user alongside the hook's decision.
-    pub fn with_system_message(mut self, msg: impl Into<String>) -> Self {
-        self.system_message = Some(msg.into());
-        self
     }
 
     /// True if the decision allows the action.
@@ -150,27 +107,6 @@ impl HookDecision {
             HookDecisionKind::Deny { reason } => Some(reason),
             _ => None,
         }
-    }
-
-    /// `continue` control field, if the callback set one. Wire name is
-    /// `continue` (stored as `continue_` to dodge the keyword).
-    pub fn continue_execution(&self) -> Option<bool> {
-        self.continue_execution
-    }
-
-    /// `suppressOutput` control field, if the callback set one.
-    pub fn suppress_output(&self) -> Option<bool> {
-        self.suppress_output
-    }
-
-    /// `stopReason` control field, if the callback set one.
-    pub fn stop_reason(&self) -> Option<&str> {
-        self.stop_reason.as_deref()
-    }
-
-    /// `systemMessage` control field, if the callback set one.
-    pub fn system_message(&self) -> Option<&str> {
-        self.system_message.as_deref()
     }
 }
 

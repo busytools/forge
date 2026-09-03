@@ -132,11 +132,6 @@ fn run() -> anyhow::Result<()> {
         forge_tui::app::start_service_status_check(&app);
         let result = forge_tui::app::run_tui(&mut app).await;
 
-        // Kill any spawned terminal child processes before exiting
-        if let Some(terminals) = app.terminals() {
-            forge_tui::agent::events::kill_all_terminals(terminals);
-        }
-
         let exit_error = app.exit_error.take();
 
         // Drop the App so its `Arc<Workspace>` clone releases, then

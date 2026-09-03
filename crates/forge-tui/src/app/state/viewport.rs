@@ -751,32 +751,11 @@ impl ChatViewport {
         self.remeasure_plan = None;
     }
 
-    /// Mark all message heights exact at the current width.
-    ///
-    /// This remains available for tests that seed viewport state directly.
+    /// Mark all message heights exact at the current width. Called by
+    /// the chat render once it has laid every message out.
     pub fn mark_heights_valid(&mut self) {
         self.stale_message_heights.fill(false);
         self.finalize_remeasure_if_clean();
-    }
-
-    /// Compatibility helper for tests and metrics.
-    pub fn resize_remeasure_active(&self) -> bool {
-        self.remeasure_active()
-    }
-
-    /// Compatibility helper for tests that seed and advance the queued plan directly.
-    pub fn ensure_resize_remeasure_anchor(
-        &mut self,
-        visible_start: usize,
-        visible_end: usize,
-        message_count: usize,
-    ) {
-        self.ensure_remeasure_anchor(visible_start, visible_end, message_count);
-    }
-
-    /// Compatibility helper for tests that seed and advance the queued plan directly.
-    pub fn next_resize_remeasure_index(&mut self, message_count: usize) -> Option<usize> {
-        self.next_remeasure_index(message_count)
     }
 
     // --- Prefix sums ---

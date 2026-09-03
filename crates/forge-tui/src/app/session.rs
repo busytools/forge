@@ -6,7 +6,6 @@ use std::time::Instant;
 
 use forge_workspace::SessionKey;
 
-use crate::agent::events::TerminalMap;
 use crate::agent::model;
 use crate::app::file_index::FileIndexState;
 use crate::app::input::InputSnapshot;
@@ -20,7 +19,7 @@ use crate::app::state::types::{
     SessionUsageState, StopHookSummaryState, TodoItem, ToolCallScope, UsageState, WorkflowEntry,
 };
 use crate::app::state::viewport::ChatViewport;
-use crate::app::state::{ChatRenderTraceState, TerminalToolCallRef, TurnNoticeRef};
+use crate::app::state::{ChatRenderTraceState, TurnNoticeRef};
 pub use forge_primitives::runtime::SessionLifecycleState;
 use forge_primitives::runtime::{RuntimeSessionState, SessionTurnState};
 use forge_primitives::{AccountInfo, PeerInflightStats, SessionId};
@@ -140,16 +139,6 @@ pub struct UiSession {
     /// O(1) lookup: `tool_call_id` -> `(message_index, block_index)`.
     /// Use `App::lookup_tool_call()` / `index_tool_call()`.
     pub tool_call_index: HashMap<String, (usize, usize)>,
-    /// Shared terminal process map - used to snapshot output on
-    /// completion.
-    pub terminals: TerminalMap,
-    /// Indexed terminal tool calls for per-frame terminal snapshot
-    /// updates. Avoids O(n*m) scan of all messages/blocks every
-    /// frame.
-    pub terminal_tool_calls: Vec<TerminalToolCallRef>,
-    /// Membership index for [`Self::terminal_tool_calls`], used to
-    /// avoid linear duplicate checks.
-    pub terminal_tool_call_membership: HashSet<TerminalToolCallRef>,
     /// Hook-observed sub-agent attribution: maps `tool_use_id` to
     /// the sub-agent's typed identifier (e.g. `"general-purpose"`).
     /// Used to label tool-call rows fired by sub-agents (#84
@@ -714,9 +703,6 @@ impl Default for UiSession {
             active_task_ids: HashSet::default(),
             tool_call_scopes: HashMap::default(),
             tool_call_index: HashMap::default(),
-            terminals: TerminalMap::default(),
-            terminal_tool_calls: Vec::default(),
-            terminal_tool_call_membership: HashSet::default(),
             subagent_attribution: HashMap::default(),
             current_model: Option::default(),
             available_models: Vec::default(),

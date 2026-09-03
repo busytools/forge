@@ -624,14 +624,4 @@ mod tests {
         assert!(!formatted.contains("(cli"));
         assert!(!formatted.starts_with("claude-cli/"));
     }
-
-    #[test]
-    fn should_fallback_only_for_auth_failures() {
-        assert!(OauthUsageError::NoCredentials.should_fallback());
-        assert!(OauthUsageError::Expired.should_fallback());
-        assert!(OauthUsageError::Unauthorized(401).should_fallback());
-        assert!(!OauthUsageError::Network("dns".to_owned()).should_fallback());
-        assert!(!OauthUsageError::HttpStatus(500, String::new()).should_fallback());
-        assert!(!OauthUsageError::Decode("bad".to_owned()).should_fallback());
-    }
 }

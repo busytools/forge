@@ -347,6 +347,18 @@ mod tests {
     #[test]
     fn all_styles_lists_every_variant() {
         assert_eq!(SpinnerStyle::ALL_STYLES.len(), 6);
+        // Per-variant identity: a variant added to the enum without
+        // joining ALL_STYLES would be unparseable by key and unpickable.
+        for style in [
+            SpinnerStyle::Braille,
+            SpinnerStyle::PhaseOfMoon,
+            SpinnerStyle::Ember,
+            SpinnerStyle::BarsV,
+            SpinnerStyle::Star,
+            SpinnerStyle::Sparkle,
+        ] {
+            assert!(SpinnerStyle::ALL_STYLES.contains(&style), "{style:?} missing from ALL_STYLES");
+        }
     }
 
     #[test]

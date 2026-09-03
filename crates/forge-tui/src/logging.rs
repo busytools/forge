@@ -1,7 +1,5 @@
 use crate::{Cli, DiagnosticsPreset};
 use anyhow::Context as _;
-use serde::Deserialize;
-use serde_json::{Map, Value};
 use std::fs::{File, OpenOptions, create_dir_all, metadata, remove_file, rename};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -30,8 +28,6 @@ pub mod targets {
     pub const BRIDGE_SDK: &str = "bridge.sdk";
 }
 
-const BRIDGE_LOG_SCHEMA: &str = "forge-log/v1";
-const BRIDGE_LINE_PREVIEW_LIMIT: usize = 240;
 const DEFAULT_LOG_DIR: &str = "forge-tui";
 const DEFAULT_LOG_FILE_NAME: &str = "forge.log";
 pub(crate) const DEFAULT_PERF_FILE_NAME: &str = "forge-perf.log";
@@ -352,218 +348,17 @@ fn rotated_log_path(base_path: &Path, index: usize) -> PathBuf {
     }
 }
 
-pub fn emit_bridge_stderr_line(line: &str) {
-    if let Some(record) = BridgeDiagnosticRecord::parse(line) {
-        record.emit();
-        return;
-    }
-    let preview = preview_text(line, BRIDGE_LINE_PREVIEW_LIMIT);
-    let line_chars = line.chars().count();
-    tracing::warn!(
-        target: targets::BRIDGE_SDK,
-        event_name = "bridge_stderr_unstructured",
-        message = "unstructured bridge stderr line received",
-        outcome = "unexpected",
-        preview = %preview,
-        preview_chars = preview.chars().count(),
-        line_chars,
-    );
-}
-
-fn preview_text(input: &str, limit: usize) -> String {
-    let mut preview = String::new();
-    for (index, ch) in input.chars().enumerate() {
-        if index >= limit {
-            preview.push_str("...");
-            return preview;
-        }
-        preview.push(ch);
-    }
-    preview
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum BridgeDiagnosticLevel {
-    Error,
-    Warn,
-    Info,
-    Debug,
-    Trace,
-}
-
-#[derive(Debug, Deserialize)]
-struct BridgeDiagnosticRecord {
-    schema: String,
-    level: BridgeDiagnosticLevel,
-    target: String,
-    event_name: String,
-    message: String,
-    #[serde(default)]
-    timestamp: Option<String>,
-    #[serde(default)]
-    outcome: Option<String>,
-    #[serde(default)]
-    session_id: Option<String>,
-    #[serde(default)]
-    request_id: Option<String>,
-    #[serde(default)]
-    tool_call_id: Option<String>,
-    #[serde(default)]
-    command_id: Option<String>,
-    #[serde(default)]
-    terminal_id: Option<String>,
-    #[serde(default)]
-    error_kind: Option<String>,
-    #[serde(default)]
-    error_code: Option<String>,
-    #[serde(default)]
-    duration_ms: Option<u64>,
-    #[serde(default)]
-    count: Option<u64>,
-    #[serde(default)]
-    size_bytes: Option<u64>,
-    #[serde(default)]
-    fields: Map<String, Value>,
-}
-
-impl BridgeDiagnosticRecord {
-    fn parse(line: &str) -> Option<Self> {
-        let record: Self = serde_json::from_str(line).ok()?;
-        (record.schema == BRIDGE_LOG_SCHEMA).then_some(record)
-    }
-
-    fn fields_json(&self) -> String {
-        serde_json::to_string(&self.fields).unwrap_or_else(|_| "{}".to_owned())
-    }
-
-    fn outcome(&self) -> &str {
-        self.outcome.as_deref().unwrap_or("")
-    }
-
-    fn timestamp(&self) -> &str {
-        self.timestamp.as_deref().unwrap_or("")
-    }
-
-    fn session_id(&self) -> &str {
-        self.session_id.as_deref().unwrap_or("")
-    }
-
-    fn request_id(&self) -> &str {
-        self.request_id.as_deref().unwrap_or("")
-    }
-
-    fn tool_call_id(&self) -> &str {
-        self.tool_call_id.as_deref().unwrap_or("")
-    }
-
-    fn command_id(&self) -> &str {
-        self.command_id.as_deref().unwrap_or("")
-    }
-
-    fn terminal_id(&self) -> &str {
-        self.terminal_id.as_deref().unwrap_or("")
-    }
-
-    fn error_kind(&self) -> &str {
-        self.error_kind.as_deref().unwrap_or("")
-    }
-
-    fn error_code(&self) -> &str {
-        self.error_code.as_deref().unwrap_or("")
-    }
-
-    fn emit(&self) {
-        let fields_json = self.fields_json();
-        macro_rules! emit_for_target {
-            ($target:expr, $log:ident) => {
-                tracing::$log!(
-                    target: $target,
-                    event_name = %self.event_name,
-                    message = %self.message,
-                    outcome = %self.outcome(),
-                    bridge_timestamp = %self.timestamp(),
-                    bridge_target = %self.target,
-                    session_id = %self.session_id(),
-                    request_id = %self.request_id(),
-                    tool_call_id = %self.tool_call_id(),
-                    command_id = %self.command_id(),
-                    terminal_id = %self.terminal_id(),
-                    error_kind = %self.error_kind(),
-                    error_code = %self.error_code(),
-                    duration_ms = self.duration_ms.unwrap_or_default(),
-                    count = self.count.unwrap_or_default(),
-                    size_bytes = self.size_bytes.unwrap_or_default(),
-                    fields_json = %fields_json,
-                )
-            };
-        }
-
-        macro_rules! emit_for_level {
-            ($target:expr) => {
-                match self.level {
-                    BridgeDiagnosticLevel::Error => emit_for_target!($target, error),
-                    BridgeDiagnosticLevel::Warn => emit_for_target!($target, warn),
-                    BridgeDiagnosticLevel::Info => emit_for_target!($target, info),
-                    BridgeDiagnosticLevel::Debug => emit_for_target!($target, debug),
-                    BridgeDiagnosticLevel::Trace => emit_for_target!($target, trace),
-                }
-            };
-        }
-
-        match self.target.as_str() {
-            targets::APP_LIFECYCLE => emit_for_level!(targets::APP_LIFECYCLE),
-            targets::APP_AUTH => emit_for_level!(targets::APP_AUTH),
-            targets::APP_CACHE => emit_for_level!(targets::APP_CACHE),
-            targets::APP_CONFIG => emit_for_level!(targets::APP_CONFIG),
-            targets::APP_COMMAND => emit_for_level!(targets::APP_COMMAND),
-            targets::APP_INPUT => emit_for_level!(targets::APP_INPUT),
-            targets::APP_PERMISSION => emit_for_level!(targets::APP_PERMISSION),
-            targets::APP_PASTE => emit_for_level!(targets::APP_PASTE),
-            targets::APP_PERF => emit_for_level!(targets::APP_PERF),
-            targets::APP_RENDER => emit_for_level!(targets::APP_RENDER),
-            targets::APP_SESSION => emit_for_level!(targets::APP_SESSION),
-            targets::APP_TOOL => emit_for_level!(targets::APP_TOOL),
-            targets::APP_NETWORK => emit_for_level!(targets::APP_NETWORK),
-            targets::APP_UPDATE => emit_for_level!(targets::APP_UPDATE),
-            targets::BRIDGE_LIFECYCLE => emit_for_level!(targets::BRIDGE_LIFECYCLE),
-            targets::BRIDGE_MCP => emit_for_level!(targets::BRIDGE_MCP),
-            targets::BRIDGE_PERMISSION => emit_for_level!(targets::BRIDGE_PERMISSION),
-            targets::BRIDGE_PROTOCOL => emit_for_level!(targets::BRIDGE_PROTOCOL),
-            targets::BRIDGE_SDK => emit_for_level!(targets::BRIDGE_SDK),
-            _ => emit_for_level!(targets::BRIDGE_SDK),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        BridgeDiagnosticRecord, DEFAULT_LOG_DIRECTIVES, RollingFileWriter, clear_rotated_files,
-        preview_text, resolve_log_path, resolve_perf_path, rotated_log_path,
+        DEFAULT_LOG_DIRECTIVES, RollingFileWriter, clear_rotated_files, resolve_log_path,
+        resolve_perf_path, rotated_log_path,
     };
     use crate::{Cli, DiagnosticsPreset};
     use std::fs;
     use std::io::Write;
     use std::path::PathBuf;
     use tempfile::tempdir;
-
-    #[test]
-    fn parses_structured_bridge_diagnostic() {
-        let line = r#"{"schema":"forge-log/v1","timestamp":"2026-04-08T12:00:00Z","level":"warn","target":"bridge.sdk","event_name":"sdk_spawn_failed","message":"spawn failed","session_id":"session-1","fields":{"preview":"node"}}"#;
-        let record = BridgeDiagnosticRecord::parse(line).expect("structured bridge log");
-
-        assert_eq!(record.target, "bridge.sdk");
-        assert_eq!(record.event_name, "sdk_spawn_failed");
-        assert_eq!(record.message, "spawn failed");
-        assert_eq!(record.session_id.as_deref(), Some("session-1"));
-    }
-
-    #[test]
-    fn preview_truncates_with_ellipsis() {
-        let preview = preview_text("abcdefgh", 5);
-        assert_eq!(preview, "abcde...");
-    }
 
     #[test]
     fn resolve_log_path_uses_explicit_path_when_provided() {

@@ -401,4 +401,13 @@ mod tests {
             "06:30-05:30 is the same instant as 12:00Z"
         );
     }
+
+    /// Pre-epoch instants are rejected on purpose: `SystemTime +
+    /// Duration` cannot represent them, so a negative epoch returns
+    /// None rather than silently wrapping or clamping.
+    #[test]
+    fn rejects_pre_epoch_timestamps() {
+        use crate::cloud::time::parse_iso8601_timestamp;
+        assert!(parse_iso8601_timestamp("1969-12-31T23:59:59.000Z").is_none());
+    }
 }

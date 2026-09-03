@@ -124,17 +124,6 @@ impl Client {
         serde_json::from_value(raw).map_err(|e| Error::message_parse(format!("mcp_status: {e}")))
     }
 
-    /// Query MCP server status, returning the raw JSON payload. Use this
-    /// escape hatch when the CLI returns fields not yet modelled by
-    /// [`McpStatusResponse`](forge_primitives::McpStatusResponse).
-    ///
-    /// # Errors
-    ///
-    /// See the outbound control error cases.
-    pub async fn mcp_status_raw(&self) -> Result<serde_json::Value, Error> {
-        self.send_control("mcp_status", serde_json::json!({})).await
-    }
-
     /// Query current context usage (tokens consumed vs. budget).
     /// Returns the typed response.
     ///
@@ -147,17 +136,6 @@ impl Client {
         let raw = self.send_control("get_context_usage", serde_json::json!({})).await?;
         serde_json::from_value(raw)
             .map_err(|e| Error::message_parse(format!("get_context_usage: {e}")))
-    }
-
-    /// Query current context usage, returning the raw JSON payload.
-    /// Use this when the CLI returns fields not yet modelled by
-    /// [`ContextUsageResponse`](forge_primitives::ContextUsageResponse).
-    ///
-    /// # Errors
-    ///
-    /// See the outbound control error cases.
-    pub async fn get_context_usage_raw(&self) -> Result<serde_json::Value, Error> {
-        self.send_control("get_context_usage", serde_json::json!({})).await
     }
 
     /// Ask the CLI to reload session plugins (slash commands, agents,

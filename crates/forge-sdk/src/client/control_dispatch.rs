@@ -392,21 +392,6 @@ impl ControlDispatchHandle {
                 (false, None) => serde_json::json!({"decision": "block"}),
             };
 
-            if let Some(map) = response_body.as_object_mut() {
-                if let Some(cont) = decision.continue_execution() {
-                    map.insert("continue".into(), serde_json::Value::Bool(cont));
-                }
-                if let Some(suppress) = decision.suppress_output() {
-                    map.insert("suppressOutput".into(), serde_json::Value::Bool(suppress));
-                }
-                if let Some(stop) = decision.stop_reason() {
-                    map.insert("stopReason".into(), serde_json::Value::String(stop.into()));
-                }
-                if let Some(msg) = decision.system_message() {
-                    map.insert("systemMessage".into(), serde_json::Value::String(msg.into()));
-                }
-            }
-
             if let Some(updated) = decision.updated_input()
                 && let Some(wrapper) = encode_updated_input_wrapper(kind, updated)
                 && let Some(map) = response_body.as_object_mut()

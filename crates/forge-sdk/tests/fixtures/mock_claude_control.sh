@@ -62,10 +62,10 @@ print(json.dumps({
 
     case "$subtype" in
         mcp_status)
-            response_payload='{"servers":[]}'
+            response_payload='{"mcpServers":[]}'
             ;;
         get_context_usage)
-            response_payload='{"used":0,"budget":200000}'
+            response_payload='{"categories":[],"totalTokens":0,"maxTokens":200000,"rawMaxTokens":200000,"percentage":0,"model":"claude-opus-4-5","isAutoCompactEnabled":false,"memoryFiles":[],"mcpTools":[],"agents":[],"gridRows":[]}'
             ;;
         *)
             response_payload='{}'

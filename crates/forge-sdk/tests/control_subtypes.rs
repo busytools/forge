@@ -97,27 +97,24 @@ async fn stop_task_round_trip() {
 }
 
 #[tokio::test]
-async fn mcp_status_raw_returns_canned_payload() {
+async fn mcp_status_returns_typed_canned_payload() {
     let dir = tempfile::tempdir().expect("tempdir");
     let echo = dir.path().join("echo");
     let client = spawn_client(&echo).await;
-    let resp = client.mcp_status_raw().await.expect("mcp_status");
-    assert_eq!(resp, serde_json::json!({"servers": []}), "mcp_status payload mismatch");
+    let resp = client.mcp_status().await.expect("mcp_status");
+    assert!(resp.mcp_servers.is_empty(), "mcp_status payload mismatch: {resp:?}");
     assert_last_subtype(&echo, "mcp_status");
     client.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-async fn get_context_usage_raw_returns_canned_payload() {
+async fn get_context_usage_returns_typed_canned_payload() {
     let dir = tempfile::tempdir().expect("tempdir");
     let echo = dir.path().join("echo");
     let client = spawn_client(&echo).await;
-    let resp = client.get_context_usage_raw().await.expect("get_context_usage");
-    assert_eq!(
-        resp,
-        serde_json::json!({"used": 0, "budget": 200_000}),
-        "get_context_usage payload mismatch"
-    );
+    let resp = client.get_context_usage().await.expect("get_context_usage");
+    assert_eq!(resp.total_tokens, 0, "total_tokens mismatch: {resp:?}");
+    assert_eq!(resp.max_tokens, 200_000, "max_tokens mismatch: {resp:?}");
     assert_last_subtype(&echo, "get_context_usage");
     client.disconnect().await.expect("disconnect");
 }

@@ -292,6 +292,8 @@ impl PasteBurstDetector {
     }
 
     /// Whether the detector is actively buffering characters.
+    /// Test-only: reads state production code matches on directly.
+    #[cfg(test)]
     pub fn is_buffering(&self) -> bool {
         matches!(self.state, BurstState::Buffering | BurstState::Pending { .. })
     }

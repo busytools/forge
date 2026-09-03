@@ -11,10 +11,6 @@ pub(super) fn reset_for_new_session(
     mode: Option<super::super::ModeState>,
     preserve_current_welcome_tip: bool,
 ) {
-    if let Some(terminals) = app.terminals() {
-        crate::agent::events::kill_all_terminals(terminals);
-    }
-
     reset_session_identity_state(app, session_id, current_model, mode);
     reset_messages_for_new_session(app, preserve_current_welcome_tip);
     reset_input_state_for_new_session(app);
@@ -107,7 +103,6 @@ fn reset_render_state_for_new_session(app: &mut App) {
 }
 
 fn reset_cache_and_footer_state_for_new_session(app: &mut App) {
-    app.clear_terminal_tool_call_tracking();
     *app.mcp_mut() = super::super::McpState::default();
     crate::app::usage::reset_for_session_change(app);
     crate::app::plugins::reset_for_session_change(app);
