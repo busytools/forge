@@ -93,6 +93,11 @@ pub struct Config {
     /// Peak input level, in dBFS, below which a capture counts as
     /// silence rather than as an empty transcript.
     pub silence_floor: f32,
+    /// Directory the crate writes per-take diagnostics into: the
+    /// capture audio and every transcription stage, best-effort, under
+    /// `crate::diagnostics`. `None` writes nothing - diagnostics are
+    /// the host's choice of directory, never a requirement.
+    pub diagnostics_dir: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -106,6 +111,7 @@ impl Default for Config {
             language: None,
             max_capture: Duration::from_secs(30 * 60),
             silence_floor: -50.0,
+            diagnostics_dir: None,
         }
     }
 }
@@ -173,6 +179,13 @@ impl ConfigBuilder {
         self
     }
 
+    /// Point per-take diagnostics at a directory. `None` (the default)
+    /// writes nothing.
+    pub fn diagnostics_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.inner.diagnostics_dir = Some(dir.into());
+        self
+    }
+
     /// Finalise and return the [`Config`].
     pub fn build(self) -> Config {
         self.inner
@@ -221,6 +234,7 @@ mod tests_config {
             .language("en")
             .max_capture(Duration::from_secs(5))
             .silence_floor(-30.0)
+            .diagnostics_dir("/diag")
             .normalizer(ModelSpec::cohere_transcribe_q4_k_m())
             .normalize_options(NormalizeOptions {
                 styling: Styling::Casual,
@@ -252,6 +266,11 @@ mod tests_config {
             (cfg.silence_floor - -30.0).abs() < f32::EPSILON,
             "silence_floor must carry the caller's threshold, not the -50 dBFS default, got {}",
             cfg.silence_floor
+        );
+        assert_eq!(
+            cfg.diagnostics_dir.as_deref(),
+            Some(Path::new("/diag")),
+            "diagnostics_dir must carry the caller's store location, not be dropped by the builder"
         );
         assert_eq!(
             cfg.normalizer.map(|n| n.file),

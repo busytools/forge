@@ -395,6 +395,23 @@ impl DictateState {
     }
 }
 
+/// The config preflight builds the engine from: the `[dictate]`
+/// settings plus the always-on diagnostics store under forge's
+/// app-support dir, machine-local and never synced.
+///
+/// A directory that cannot be resolved turns the capture off with a
+/// warning rather than failing preflight - diagnostics never break
+/// dictation, but the absence must not be silent either: a capability
+/// believed present and quietly missing is the failure nobody can see.
+fn preflight_config(settings: &DictateSettings) -> forge_dictate::Config {
+    let mut cfg = settings.to_config();
+    match forge_sdk::app_support_dir() {
+        Ok(dir) => cfg.diagnostics_dir = Some(dir.join("dictate-diagnostics")),
+        Err(error) => tracing::warn!(%error, "dictate diagnostics off: no app-support dir"),
+    }
+    cfg
+}
+
 /// Fetch, verify and load every configured model, reporting progress
 /// into `state` as it goes.
 ///
@@ -404,7 +421,7 @@ pub(crate) async fn run_dictate_preflight(settings: DictateSettings, state: Arc<
     if !settings.enabled {
         return;
     }
-    let cfg = settings.to_config();
+    let cfg = preflight_config(&settings);
 
     let prepare_state = Arc::clone(&state);
     let prepare_cfg = cfg.clone();
@@ -1112,6 +1129,25 @@ mod tests {
         assert!(
             err.to_string().contains("modelsdir"),
             "the error must name the key that was not understood, got: {err}"
+        );
+    }
+
+    /// The preflight config always points the diagnostics store at
+    /// forge's app-support dir. A refactor dropping that assignment
+    /// would leave the feature shipped-dead with CI green, which is why
+    /// the assembly is its own function and this pins it.
+    #[test]
+    fn preflight_config_points_diagnostics_at_app_support() {
+        let settings: DictateSettings = toml::from_str("enabled = true\n").expect("parse");
+        let cfg = preflight_config(&settings);
+        assert_eq!(
+            cfg.diagnostics_dir.as_deref(),
+            forge_sdk::app_support_dir().ok().map(|dir| dir.join("dictate-diagnostics")).as_deref(),
+            "the diagnostics store must sit beside forge's other machine-local state"
+        );
+        assert!(
+            cfg.diagnostics_dir.is_some(),
+            "on this machine an app-support dir resolves, so the store must be armed"
         );
     }
 

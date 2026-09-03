@@ -27,6 +27,10 @@ dirs = { workspace = true }
 transcribe-cpp = { workspace = true }
 llama-cpp-2 = { workspace = true }
 encoding_rs = { workspace = true }
+# Per-take diagnostics: the take's capture written back as a canonical
+# 16-bit PCM wav, and its metadata as JSON.
+hound = { workspace = true }
+serde_json = { workspace = true }
 # Microphone capture. The stream is !Send, which is why it lives on a
 # thread of its own rather than inside `Capture`.
 cpal = { workspace = true }
@@ -39,9 +43,8 @@ llama-cpp-2 = { workspace = true, features = ["metal"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-serde_json = { workspace = true }
 serde = { workspace = true }
 # WAV header reads for the fixture-corpus gate, and decoding fixtures for
-# the bench. Test-only: the crate ships no WAV handling.
+# the bench.
 hound = { workspace = true }
 toml = { workspace = true }
