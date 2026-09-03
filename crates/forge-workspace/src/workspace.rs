@@ -2930,27 +2930,9 @@ impl Workspace {
                     spawn::handle_switch_account(self, key, &account_display_name, launch_settings);
                 }
                 Command::OpenUrl { url } => {
-                    let ws = Arc::clone(self);
-                    tokio::spawn(async move {
-                        if let Err(err) = forge_agent::env::open_url::open_url(&url).await {
-                            // The notice is the user-visible surface;
-                            // the warn is the triage trail. Never
-                            // both-swallowed.
-                            tracing::warn!(
-                                target: "forge_workspace",
-                                event_name = "open_url_failed",
-                                message = "browser open failed",
-                                outcome = "failure",
-                                url = %url,
-                                error = %err,
-                            );
-                            let _ = ws.update_tx.send(SessionUpdate::ServiceStatus {
-                                severity:
-                                    forge_primitives::cloud::service_status::ServiceSeverity::Warning,
-                                message: format!("Failed to open {url}: {err}"),
-                            });
-                        }
-                    });
+                    let span = tracing::info_span!("open_url", url = %url);
+                    let _enter = span.enter();
+                    spawn::handle_open_url(self, url);
                 }
                 Command::DictateStart { key } => {
                     let ws = Arc::clone(self);

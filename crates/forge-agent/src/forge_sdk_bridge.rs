@@ -449,46 +449,61 @@ impl ForgeSdkBridge {
             return Ok(());
         }
         let event_tx = self.inner.event_tx.clone();
-        self.dispatch("set_mode", move |client| async move {
-            let outcome = tokio::time::timeout(
-                Self::CONTROL_RESPONSE_TIMEOUT,
-                client.set_permission_mode(mode),
-            )
-            .await;
-            let failure = match outcome {
-                Ok(Ok(())) => None,
-                Ok(Err(e)) => {
-                    let text = Self::set_mode_rejection_text(&e);
-                    Some(if text.trim().is_empty() { "no reason given".to_owned() } else { text })
+        let err_session_id = session_id.clone();
+        self.dispatch_with_failure(
+            "set_mode",
+            move |client| async move {
+                let outcome = tokio::time::timeout(
+                    Self::CONTROL_RESPONSE_TIMEOUT,
+                    client.set_permission_mode(mode),
+                )
+                .await;
+                let failure = match outcome {
+                    Ok(Ok(())) => None,
+                    Ok(Err(e)) => {
+                        let text = Self::set_mode_rejection_text(&e);
+                        Some(if text.trim().is_empty() {
+                            "no reason given".to_owned()
+                        } else {
+                            text
+                        })
+                    }
+                    Err(_) => Some("no response from the CLI".to_owned()),
+                };
+                if let Some(message) = failure {
+                    if event_tx
+                        .send(AgentEvent::SetModeFailed {
+                            session_id: session_id.clone(),
+                            mode,
+                            message: message.clone(),
+                        })
+                        .is_err()
+                    {
+                        tracing::warn!(
+                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                            error = %message,
+                            "event channel closed; SetModeFailed dropped",
+                        );
+                    } else {
+                        tracing::warn!(
+                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                            session_id = %session_id,
+                            mode = %mode.as_wire(),
+                            error = %message,
+                            "set_permission_mode rejected; SetModeFailed emitted",
+                        );
+                    }
                 }
-                Err(_) => Some("no response from the CLI".to_owned()),
-            };
-            if let Some(message) = failure {
-                if event_tx
-                    .send(AgentEvent::SetModeFailed {
-                        session_id: session_id.clone(),
-                        mode,
-                        message: message.clone(),
-                    })
-                    .is_err()
-                {
-                    tracing::warn!(
-                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                        error = %message,
-                        "event channel closed; SetModeFailed dropped",
-                    );
-                } else {
-                    tracing::warn!(
-                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                        session_id = %session_id,
-                        mode = %mode.as_wire(),
-                        error = %message,
-                        "set_permission_mode rejected; SetModeFailed emitted",
-                    );
-                }
-            }
-            Ok(())
-        })
+                Ok(())
+            },
+            move |err| {
+                Some(AgentEvent::SetModeFailed {
+                    session_id: err_session_id,
+                    mode,
+                    message: format!("set_mode never reached the CLI: {err}"),
+                })
+            },
+        )
     }
 
     pub(crate) fn set_model(&self, session_id: String, model: String) -> anyhow::Result<()> {
@@ -504,37 +519,53 @@ impl ForgeSdkBridge {
             return Ok(());
         }
         let event_tx = self.inner.event_tx.clone();
-        self.dispatch("set_model", move |client| async move {
-            let outcome = tokio::time::timeout(
-                Self::CONTROL_RESPONSE_TIMEOUT,
-                client.set_model(Some(model.as_str())),
-            )
-            .await;
-            let failure = match outcome {
-                Ok(Ok(())) => None,
-                Ok(Err(e)) => {
-                    let text = Self::set_mode_rejection_text(&e);
-                    Some(if text.trim().is_empty() { "no reason given".to_owned() } else { text })
+        let err_session_id = session_id.clone();
+        let err_model = model.clone();
+        self.dispatch_with_failure(
+            "set_model",
+            move |client| async move {
+                let outcome = tokio::time::timeout(
+                    Self::CONTROL_RESPONSE_TIMEOUT,
+                    client.set_model(Some(model.as_str())),
+                )
+                .await;
+                let failure = match outcome {
+                    Ok(Ok(())) => None,
+                    Ok(Err(e)) => {
+                        let text = Self::set_mode_rejection_text(&e);
+                        Some(if text.trim().is_empty() {
+                            "no reason given".to_owned()
+                        } else {
+                            text
+                        })
+                    }
+                    Err(_) => Some("no response from the CLI".to_owned()),
+                };
+                if let Some(message) = failure
+                    && event_tx
+                        .send(AgentEvent::SetModelFailed {
+                            session_id: session_id.clone(),
+                            model: model.clone(),
+                            message: message.clone(),
+                        })
+                        .is_err()
+                {
+                    tracing::warn!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        error = %message,
+                        "event channel closed; SetModelFailed dropped",
+                    );
                 }
-                Err(_) => Some("no response from the CLI".to_owned()),
-            };
-            if let Some(message) = failure
-                && event_tx
-                    .send(AgentEvent::SetModelFailed {
-                        session_id: session_id.clone(),
-                        model: model.clone(),
-                        message: message.clone(),
-                    })
-                    .is_err()
-            {
-                tracing::warn!(
-                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                    error = %message,
-                    "event channel closed; SetModelFailed dropped",
-                );
-            }
-            Ok(())
-        })
+                Ok(())
+            },
+            move |err| {
+                Some(AgentEvent::SetModelFailed {
+                    session_id: err_session_id,
+                    model: err_model,
+                    message: format!("set_model never reached the CLI: {err}"),
+                })
+            },
+        )
     }
 
     /// Verify the requested `session_id` matches the bridge's current
@@ -711,47 +742,65 @@ impl ForgeSdkBridge {
 
     pub(crate) fn reload_plugins(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
-        self.dispatch("reload_plugins", move |client| async move {
-            let outcome =
-                tokio::time::timeout(Self::CONTROL_RESPONSE_TIMEOUT, client.reload_plugins()).await;
-            match outcome {
-                Ok(Ok(_)) => {
-                    if event_tx.send(AgentEvent::RuntimeReloadCompleted { session_id }).is_err() {
-                        tracing::warn!(
-                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                            "event channel closed; RuntimeReloadCompleted dropped",
-                        );
+        let err_session_id = session_id.clone();
+        self.dispatch_with_failure(
+            "reload_plugins",
+            move |client| async move {
+                let outcome =
+                    tokio::time::timeout(Self::CONTROL_RESPONSE_TIMEOUT, client.reload_plugins())
+                        .await;
+                match outcome {
+                    Ok(Ok(_)) => {
+                        if event_tx.send(AgentEvent::RuntimeReloadCompleted { session_id }).is_err()
+                        {
+                            tracing::warn!(
+                                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                                "event channel closed; RuntimeReloadCompleted dropped",
+                            );
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        let msg = format!("reload_plugins failed: {e}");
+                        if event_tx
+                            .send(AgentEvent::RuntimeReloadFailed {
+                                session_id,
+                                message: msg.clone(),
+                            })
+                            .is_err()
+                        {
+                            tracing::warn!(
+                                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                                error = %msg,
+                                "event channel closed; RuntimeReloadFailed dropped",
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        let msg = "no response from the CLI".to_owned();
+                        if event_tx
+                            .send(AgentEvent::RuntimeReloadFailed {
+                                session_id,
+                                message: msg.clone(),
+                            })
+                            .is_err()
+                        {
+                            tracing::warn!(
+                                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                                error = %msg,
+                                "event channel closed; RuntimeReloadFailed dropped",
+                            );
+                        }
                     }
                 }
-                Ok(Err(e)) => {
-                    let msg = format!("reload_plugins failed: {e}");
-                    if event_tx
-                        .send(AgentEvent::RuntimeReloadFailed { session_id, message: msg.clone() })
-                        .is_err()
-                    {
-                        tracing::warn!(
-                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                            error = %msg,
-                            "event channel closed; RuntimeReloadFailed dropped",
-                        );
-                    }
-                }
-                Err(_) => {
-                    let msg = "no response from the CLI".to_owned();
-                    if event_tx
-                        .send(AgentEvent::RuntimeReloadFailed { session_id, message: msg.clone() })
-                        .is_err()
-                    {
-                        tracing::warn!(
-                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                            error = %msg,
-                            "event channel closed; RuntimeReloadFailed dropped",
-                        );
-                    }
-                }
-            }
-            Ok(())
-        })
+                Ok(())
+            },
+            move |err| {
+                Some(AgentEvent::RuntimeReloadFailed {
+                    session_id: err_session_id,
+                    message: format!("reload_plugins never reached the CLI: {err}"),
+                })
+            },
+        )
     }
 
     pub(crate) fn get_mcp_snapshot(&self, session_id: String) -> anyhow::Result<()> {
@@ -1180,6 +1229,77 @@ mod tests {
                 );
             }
             other => panic!("expected a TurnError from the client-less early Err, got {other:?}"),
+        }
+    }
+
+    /// The client-None window passes `check_session_id` for both
+    /// sibling methods (the slot holds the old session id, or is
+    /// empty), so the typed failure is the only thing that unflips the
+    /// optimistic mode chip - a silent Err return leaves it stuck.
+    #[tokio::test]
+    async fn set_mode_without_client_emits_set_mode_failed() {
+        let bridge = test_bridge();
+        let mut events = bridge.take_events().expect("fresh bridge yields its events receiver");
+
+        bridge
+            .set_mode("session-1".to_owned(), PermissionMode::AcceptEdits)
+            .expect_err("no client, dispatch refused");
+
+        match tokio::time::timeout(std::time::Duration::from_secs(2), events.recv()).await {
+            Ok(Some(AgentEvent::SetModeFailed { session_id, mode, message })) => {
+                assert_eq!(session_id, "session-1");
+                assert_eq!(mode, PermissionMode::AcceptEdits);
+                assert!(
+                    message.contains("set_mode never reached the CLI"),
+                    "the typed failure names the op and carries the early Err: {message}"
+                );
+            }
+            other => panic!("expected SetModeFailed from the client-less early Err, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_model_without_client_emits_set_model_failed() {
+        let bridge = test_bridge();
+        let mut events = bridge.take_events().expect("fresh bridge yields its events receiver");
+
+        bridge
+            .set_model("session-1".to_owned(), "claude-sonnet-5".to_owned())
+            .expect_err("no client, dispatch refused");
+
+        match tokio::time::timeout(std::time::Duration::from_secs(2), events.recv()).await {
+            Ok(Some(AgentEvent::SetModelFailed { session_id, model, message })) => {
+                assert_eq!(session_id, "session-1");
+                assert_eq!(model, "claude-sonnet-5");
+                assert!(
+                    message.contains("set_model never reached the CLI"),
+                    "the typed failure names the op and carries the early Err: {message}"
+                );
+            }
+            other => {
+                panic!("expected SetModelFailed from the client-less early Err, got {other:?}")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn reload_plugins_without_client_emits_runtime_reload_failed() {
+        let bridge = test_bridge();
+        let mut events = bridge.take_events().expect("fresh bridge yields its events receiver");
+
+        bridge.reload_plugins("session-1".to_owned()).expect_err("no client, dispatch refused");
+
+        match tokio::time::timeout(std::time::Duration::from_secs(2), events.recv()).await {
+            Ok(Some(AgentEvent::RuntimeReloadFailed { session_id, message })) => {
+                assert_eq!(session_id, "session-1");
+                assert!(
+                    message.contains("reload_plugins never reached the CLI"),
+                    "the typed failure names the op and carries the early Err: {message}"
+                );
+            }
+            other => {
+                panic!("expected RuntimeReloadFailed from the client-less early Err, got {other:?}")
+            }
         }
     }
 

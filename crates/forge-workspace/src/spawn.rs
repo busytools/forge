@@ -1617,6 +1617,30 @@ pub(crate) fn handle_deliver_worker_prompt_to_lead(
     }
 }
 
+/// Open a URL in the user's browser off the dispatch thread, surfacing
+/// a failure as a warning notice.
+pub(crate) fn handle_open_url(workspace: &Arc<Workspace>, url: String) {
+    let ws = Arc::clone(workspace);
+    tokio::spawn(async move {
+        if let Err(err) = forge_agent::env::open_url::open_url(&url).await {
+            // The notice is the user-visible surface; the warn is the
+            // triage trail. Never both-swallowed.
+            tracing::warn!(
+                target: "forge_workspace",
+                event_name = "open_url_failed",
+                message = "browser open failed",
+                outcome = "failure",
+                url = %url,
+                error = %err,
+            );
+            let _ = ws.update_sender().send(SessionUpdate::ServiceStatus {
+                severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
+                message: format!("Failed to open {url}: {err}"),
+            });
+        }
+    });
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
