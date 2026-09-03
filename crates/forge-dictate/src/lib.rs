@@ -38,6 +38,7 @@
 mod audio;
 mod capture;
 mod config;
+mod diagnostics;
 mod engine;
 mod error;
 mod fetch;

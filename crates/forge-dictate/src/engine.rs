@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use transcribe_cpp::{CancelToken, Feature, Model, RunOptions, Session};
 
 use crate::audio::{AudioSource, SAMPLE_RATE};
+use crate::diagnostics;
 use crate::normalize::NormalizeOptions;
 use crate::{Config, Error};
 
@@ -834,10 +835,14 @@ fn worker(
         // and hands the flag up, where today the whole rest of the take
         // would have been lost with it.
         let mut asr_parts: Vec<String> = Vec::new();
+        let mut window_records: Vec<diagnostics::WindowRecord> = Vec::new();
         let mut truncated = job.truncated;
         let mut failure: Option<Error> = None;
+        let started = Instant::now();
         let windows = window_bounds(&job.pcm);
         let total = windows.len();
+        let window_ms =
+            |samples: usize| u64::try_from(audio_duration(samples).as_millis()).unwrap_or(u64::MAX);
         for (k, &(start, end)) in windows.iter().enumerate() {
             if let Some(progress) = job.progress.as_ref() {
                 let _ = progress.send(WindowProgress { window: k + 1, total });
@@ -853,6 +858,11 @@ fn worker(
                     stages.decode = stages.decode.saturating_add(Duration::from_secs_f64(
                         f64::from(out.timings.decode_ms) / 1000.0,
                     ));
+                    window_records.push(diagnostics::WindowRecord {
+                        start_ms: window_ms(start),
+                        end_ms: window_ms(end),
+                        raw: out.text.clone(),
+                    });
                     asr_parts.push(out.text);
                 }
                 // Discriminated on the ERROR VARIANT rather than on
@@ -867,6 +877,11 @@ fn worker(
                     break;
                 }
                 Err(transcribe_cpp::Error::OutputTruncated { partial: Some(partial), .. }) => {
+                    window_records.push(diagnostics::WindowRecord {
+                        start_ms: window_ms(start),
+                        end_ms: window_ms(end),
+                        raw: partial.text.clone(),
+                    });
                     asr_parts.push(partial.text);
                     truncated = true;
                 }
@@ -876,6 +891,9 @@ fn worker(
                 }
             }
         }
+        // The diagnostics record snapshots the stages, since the
+        // transcript the answer carries takes the original.
+        let diag_stages = stages.clone();
         let answer = if let Some(error) = failure {
             Err(error)
         } else {
@@ -891,8 +909,37 @@ fn worker(
             first = false;
             Ok(Outcome::Transcript(Transcript { text, asr, stages, truncated }))
         };
+        let diag = match &answer {
+            Err(Error::Cancelled) | Ok(Outcome::NoAudio { .. }) => None,
+            Err(_) => Some(("recognition_error", String::new())),
+            Ok(Outcome::Transcript(transcript)) => {
+                let label = if transcript.text.is_empty() { "empty" } else { "transcript" };
+                Some((label, transcript.text.clone()))
+            }
+        };
         in_flight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
         let _ = job.reply.send(answer);
+
+        // Best-effort diagnostics, after the take has landed: the reply
+        // is never held back by a write, and an abandoned take (the
+        // user's own cancel) keeps nothing. A queued take starts after
+        // the write, which is the one cost a 30-minute capture's wav
+        // ever asks anyone to pay.
+        if let (Some(dir), Some((outcome, text))) = (&cfg.diagnostics_dir, diag)
+            && !stopping.load(Ordering::Relaxed)
+        {
+            let record = diagnostics::TakeRecord {
+                audio: &job.pcm,
+                windows: &window_records,
+                joined: &join_window_texts(&asr_parts),
+                text: &text,
+                stages: &diag_stages,
+                processing_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                truncated,
+                outcome,
+            };
+            diagnostics::capture_take(dir, diagnostics::take_stamp(), &record);
+        }
     }
 }
 
@@ -1470,6 +1517,90 @@ mod tests_real_recognition {
             "a styling override that changes nothing is a decorative argument: {}",
             a.text
         );
+    }
+
+    /// Diagnostics must never break a take: a store directory that
+    /// cannot be created is logged and dropped, and the words land
+    /// anyway.
+    #[test]
+    #[ignore = "needs the ASR weights; run with --run-ignored all after `--example fetch`"]
+    fn a_failed_diagnostics_store_does_not_fail_the_take() {
+        let clip = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/08_009s.wav");
+        let (pcm, rate) = read_wav(&clip);
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, "a regular file, so nothing can be created under it").unwrap();
+
+        let cfg =
+            ConfigBuilder::new().normalizer(None).diagnostics_dir(blocker.join("store")).build();
+        let engine = Engine::new(cfg).expect("engine must start");
+        let outcome = engine
+            .transcribe(Samples::new(pcm, rate, 1))
+            .expect("queued")
+            .recv()
+            .expect("recognition must succeed");
+        assert!(
+            matches!(outcome, Outcome::Transcript(_)),
+            "the take must land over a dead store, got {outcome:?}"
+        );
+    }
+
+    /// The wiring leg: a real take populates the store, not just the
+    /// store functions in isolation. The artifacts must agree with the
+    /// answer the caller got - joined.txt is that take's exact
+    /// normalizer input, and the capture is that take's own audio.
+    #[test]
+    #[ignore = "needs the ASR weights; run with --run-ignored all after `--example fetch`"]
+    fn a_live_take_populates_the_diagnostics_store() {
+        let clip = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/08_009s.wav");
+        let (pcm, rate) = read_wav(&clip);
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = ConfigBuilder::new().normalizer(None).diagnostics_dir(dir.path()).build();
+        let engine = Engine::new(cfg).expect("engine must start");
+        let outcome = engine
+            .transcribe(Samples::new(pcm.clone(), rate, 1))
+            .expect("queued")
+            .recv()
+            .expect("recognition must succeed");
+        let Outcome::Transcript(transcript) = outcome else {
+            panic!("a spoken take must not read as silence: {outcome:?}");
+        };
+        // The store entry is written after the reply, by design; joining
+        // the worker is what makes the write observable here.
+        drop(engine);
+
+        let entries: Vec<_> = std::fs::read_dir(dir.path()).expect("store dir").flatten().collect();
+        assert_eq!(entries.len(), 1, "one take makes one store entry");
+        let take = entries[0].path();
+
+        let meta: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(take.join("meta.json")).unwrap())
+                .expect("meta.json parses");
+        assert_eq!(meta["outcome"], "transcript", "the take's own outcome is recorded");
+        let duration_ms = u64::try_from(pcm.len()).unwrap_or(u64::MAX) * 1000 / 16_000;
+        assert_eq!(
+            meta["duration_ms"], duration_ms,
+            "the metadata carries the capture's own length"
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(take.join("joined.txt")).unwrap(),
+            transcript.asr,
+            "joined.txt is that take's exact normalizer input"
+        );
+        assert_eq!(
+            std::fs::read_to_string(take.join("text.txt")).unwrap(),
+            transcript.text,
+            "text.txt is that take's final text"
+        );
+
+        let mut reader = hound::WavReader::open(take.join("output.wav")).unwrap();
+        assert_eq!(
+            reader.spec().sample_rate,
+            SAMPLE_RATE,
+            "the capture is stored at the model rate"
+        );
+        assert_eq!(reader.samples::<i16>().count(), pcm.len(), "the whole capture is stored");
     }
 
     /// The `Config` -> `Engine` settings leg, which is a DIFFERENT path

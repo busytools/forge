@@ -404,7 +404,13 @@ pub(crate) async fn run_dictate_preflight(settings: DictateSettings, state: Arc<
     if !settings.enabled {
         return;
     }
-    let cfg = settings.to_config();
+    let mut cfg = settings.to_config();
+    // Always-on per-take diagnostics under forge's app-support dir,
+    // machine-local and never synced. A dir that cannot resolve turns
+    // the capture off rather than failing preflight - diagnostics never
+    // break dictation.
+    cfg.diagnostics_dir =
+        forge_sdk::app_support_dir().ok().map(|dir| dir.join("dictate-diagnostics"));
 
     let prepare_state = Arc::clone(&state);
     let prepare_cfg = cfg.clone();
