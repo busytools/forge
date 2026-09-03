@@ -824,8 +824,10 @@ mod tests {
     /// with the rest of the identity set.
     #[test]
     fn clear_runtime_identity_clears_observed_assistant_model() {
-        let mut session = UiSession::default();
-        session.observed_assistant_model = Some("claude-observed".to_owned());
+        let mut session = UiSession {
+            observed_assistant_model: Some("claude-observed".to_owned()),
+            ..UiSession::default()
+        };
 
         session.clear_runtime_identity();
 
