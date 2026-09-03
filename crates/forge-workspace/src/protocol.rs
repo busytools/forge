@@ -315,6 +315,14 @@ pub enum Command {
         project_key: crate::ProjectKey,
         label: String,
     },
+    /// Open a URL in the system browser. Dispatched by the TUI's
+    /// Inspector PR-row click. App-level command (`key()` returns
+    /// `None`); the shell-out runs in `forge_agent::env::open_url`
+    /// off the render thread and a failure surfaces as a
+    /// `SessionUpdate::ServiceStatus` warning.
+    OpenUrl {
+        url: String,
+    },
     /// Despawn the worker identified by `label` in `project_key`:
     /// terminate its agent, drop it from `live_workers`, expire its
     /// inflight asks, AND clean up its git worktree. Dispatched by the
@@ -496,6 +504,7 @@ impl Command {
             | Self::DeliverWorkerPromptToLead { .. }
             | Self::DeliverGotifyMessage { .. }
             | Self::SwitchAccount { .. }
+            | Self::OpenUrl { .. }
             | Self::SaveReviewThreads { .. }
             | Self::RemoveReviewThread { .. }
             | Self::SetReviewThreadStatus { .. }
@@ -620,6 +629,7 @@ impl std::fmt::Debug for Command {
                 .field("key", key)
                 .field("account_display_name", account_display_name)
                 .finish_non_exhaustive(),
+            Self::OpenUrl { url } => f.debug_struct("OpenUrl").field("url", url).finish(),
             Self::DictateStart { key } => f.debug_struct("DictateStart").field("key", key).finish(),
             Self::DictateStop { key, submit } => {
                 f.debug_struct("DictateStop").field("key", key).field("submit", submit).finish()

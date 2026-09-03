@@ -266,8 +266,8 @@ fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>) {
 ///
 /// `prev` is the most recent snapshot for this `cwd` (if any). It's
 /// used to reuse cached PR info while the branch name, pushed sha
-/// and fetch age (5 minutes) all say the cached answer still holds;
-/// see [`pr_cache_fresh`]. Pass `None` for cold starts.
+/// and fetch age (5 minutes) all say the cached answer still holds
+/// (`pr_cache_fresh`). Pass `None` for cold starts.
 /// The caller's current branch name via `git rev-parse --abbrev-ref HEAD`,
 /// keeping a detached HEAD apart from a failed read: `Ok(Some(name))` on
 /// a named branch, `Ok(None)` on a detached HEAD, `Err(gate)` when git
@@ -612,8 +612,11 @@ async fn pr_for_head(
     prev: Option<&GitDiffSnapshot>,
 ) -> (Option<GitPrInfo>, Vec<GitIssueRef>, Option<std::time::SystemTime>) {
     let now = std::time::SystemTime::now();
-    if pr_cache_fresh(prev, branch, pushed_sha, now) {
-        let prev = prev.expect("pr_cache_fresh checked the snapshot");
+    let cached = match prev {
+        Some(prev) if pr_cache_fresh(Some(prev), branch, pushed_sha, now) => Some(prev),
+        _ => None,
+    };
+    if let Some(prev) = cached {
         return (prev.pr.clone(), prev.closes.clone(), prev.pr_fetched_at);
     }
     let (pr, closes) = fetch_pr_for_pushed_sha(cwd, pushed_sha).await;
@@ -628,17 +631,18 @@ async fn pr_for_head(
 /// happens inside git so a worktree ahead of the PR tip by unpushed
 /// commits still resolves the commit the PR was pushed from.
 async fn resolve_pushed_sha(cwd: &Path, cap: usize) -> Option<String> {
-    let remote_shas = match run_git(cwd, &["for-each-ref", "refs/remotes", "--format=%(objectname)"])
-        .await
-    {
-        GitOutput::Ok(raw) => raw
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(str::to_owned)
-            .collect::<std::collections::HashSet<_>>(),
-        GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => Default::default(),
-    };
+    let remote_shas =
+        match run_git(cwd, &["for-each-ref", "refs/remotes", "--format=%(objectname)"]).await {
+            GitOutput::Ok(raw) => raw
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_owned)
+                .collect::<std::collections::HashSet<_>>(),
+            GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => {
+                std::collections::HashSet::default()
+            }
+        };
     if remote_shas.is_empty() {
         return None;
     }
@@ -933,9 +937,7 @@ async fn run_gh(cwd: &Path, args: &[&str], not_found: GhNotFound) -> GitOutput {
         // The commits/<sha>/pulls endpoint answers HTTP 422 with
         // this prose when the sha isn't on the remote - an unpushed
         // HEAD mid-work, not an operator fault.
-        if matches!(not_found, GhNotFound::Tolerate)
-            && stderr.contains("No commit found for SHA")
-        {
+        if matches!(not_found, GhNotFound::Tolerate) && stderr.contains("No commit found for SHA") {
             tracing::debug!(
                 target: crate::logging::targets::ENV_GIT,
                 cwd = %cwd.display(),
@@ -1351,12 +1353,7 @@ mod tests {
     #[test]
     fn pr_cache_fresh_reuses_when_branch_sha_and_age_hold() {
         let prev = snapshot_with_pr(42);
-        assert!(pr_cache_fresh(
-            Some(&prev),
-            "feat/x",
-            Some("aaaa"),
-            std::time::SystemTime::now()
-        ));
+        assert!(pr_cache_fresh(Some(&prev), "feat/x", Some("aaaa"), std::time::SystemTime::now()));
     }
 
     /// Refetch trigger: the pushed sha moved (new push / rebase
@@ -1591,7 +1588,7 @@ mod tests {
     }
 
     fn snapshot_with_pr_at(number: u64, fetched_secs_ago: Option<u64>) -> GitDiffSnapshot {
-        let pr = GitPrInfo { number, url: format!("https://example/pull/{number}").into() };
+        let pr = GitPrInfo { number, url: format!("https://example/pull/{number}") };
         let pr_fetched_at = fetched_secs_ago
             .map(|secs| std::time::SystemTime::now() - std::time::Duration::from_secs(secs));
         GitDiffSnapshot {

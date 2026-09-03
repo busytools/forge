@@ -963,6 +963,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
                     | PaneHitTarget::OverlayClose { .. }
                     | PaneHitTarget::CloseSession { .. }
                     | PaneHitTarget::InspectorGitOpenDiff { .. }
+                    | PaneHitTarget::InspectorGitPrOpen { .. }
                     | PaneHitTarget::InspectorMcpOpenStatus { .. }
                     | PaneHitTarget::InspectorAttentionRow { .. }
                     | PaneHitTarget::CopySessionId { .. }
@@ -1003,6 +1004,13 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             }
             PaneHitTarget::InspectorGitOpenDiff { .. } => {
                 crate::app::diff_overlay::open_default(app);
+                app.needs_redraw = true;
+                return true;
+            }
+            PaneHitTarget::InspectorGitPrOpen { url, .. } => {
+                if let Some(workspace) = app.workspace.as_ref() {
+                    let _ = workspace.dispatch(forge_workspace::Command::OpenUrl { url });
+                }
                 app.needs_redraw = true;
                 return true;
             }
@@ -1070,6 +1078,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             | PaneHitTarget::OverlayClose { .. }
             | PaneHitTarget::CloseSession { .. }
             | PaneHitTarget::InspectorGitOpenDiff { .. }
+            | PaneHitTarget::InspectorGitPrOpen { .. }
             | PaneHitTarget::InspectorMcpOpenStatus { .. }
             | PaneHitTarget::InspectorAttentionRow { .. }
             | PaneHitTarget::CopySessionId { .. }
@@ -1109,6 +1118,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
         | PaneHitTarget::OverlayClose { .. }
         | PaneHitTarget::CloseSession { .. }
         | PaneHitTarget::InspectorGitOpenDiff { .. }
+        | PaneHitTarget::InspectorGitPrOpen { .. }
         | PaneHitTarget::InspectorMcpOpenStatus { .. }
         | PaneHitTarget::InspectorAttentionRow { .. }
         | PaneHitTarget::CopySessionId { .. }
@@ -2672,6 +2682,74 @@ mod tests {
             app.active_session_key, initial_active,
             "close_worker dispatch is fire-and-forget",
         );
+    }
+
+    /// Clicking the Inspector's PR row dispatches `Command::OpenUrl`
+    /// with the stamped url - the click-through's contract. The test
+    /// intercept captures the command; the browser shell-out never
+    /// runs in the test.
+    #[test]
+    fn pr_row_click_dispatches_open_url_with_the_stamped_url() {
+        use crossterm::event::KeyModifiers;
+        use crossterm::event::MouseButton;
+
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("test workspace");
+        workspace.enable_test_dispatch_intercept();
+
+        let url = "https://github.com/busytools/forge/pull/857".to_owned();
+        app.pane_hit_targets.push(PaneHitTarget::InspectorGitPrOpen {
+            url: url.clone(),
+            y: 4,
+            height: 1,
+            x_start: 0,
+            x_end: 40,
+        });
+
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 4,
+            modifiers: KeyModifiers::empty(),
+        };
+        assert!(handle_pane_click(&mut app, mouse), "PR-row click must be consumed");
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert_eq!(dispatched.len(), 1, "exactly one command for the PR-row click");
+        assert!(
+            matches!(&dispatched[0], forge_workspace::Command::OpenUrl { url: got } if *got == url),
+            "the dispatched OpenUrl must carry the stamped url"
+        );
+    }
+
+    /// A click off the PR row's band dispatches nothing - the row is
+    /// the only GIT-section surface wired to OpenUrl.
+    #[test]
+    fn click_off_the_pr_row_does_not_dispatch_open_url() {
+        use crossterm::event::KeyModifiers;
+        use crossterm::event::MouseButton;
+
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("test workspace");
+        workspace.enable_test_dispatch_intercept();
+
+        app.pane_hit_targets.push(PaneHitTarget::InspectorGitPrOpen {
+            url: "https://github.com/busytools/forge/pull/857".into(),
+            y: 4,
+            height: 1,
+            x_start: 0,
+            x_end: 40,
+        });
+
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 9,
+            modifiers: KeyModifiers::empty(),
+        };
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert!(dispatched.is_empty(), "a click outside the PR row must not dispatch OpenUrl");
+        let _ = handle_pane_click(&mut app, mouse);
+        assert!(workspace.drain_test_dispatch_buffer().is_empty());
     }
 
     /// Closing the active session lands on the row the Projects pane

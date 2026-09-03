@@ -421,7 +421,7 @@ fn render_scrollable_body(
     }
 
     let mut body_lines: Vec<Line<'static>> = Vec::new();
-    let mcp_section_range = {
+    let hit_ranges = {
         let _t = crate::perf::start("ui::inspector_pane::append_body");
         append_body(&mut body_lines, app, body_area.width, subagents)
     };
@@ -465,7 +465,26 @@ fn render_scrollable_body(
     // on-screen rect opens the /mcp view. The section scrolls with the
     // body, so the band clips to the visible rows (fully scrolled off
     // in either direction stamps nothing).
-    if let Some((start, len)) = mcp_section_range {
+    // Stamp the GIT section's PR row click-through: the row's
+    // on-screen line opens the PR's URL. One row tall, clipped to
+    // visible like the MCP band (scrolled off stamps nothing).
+    if let Some((row, url)) = hit_ranges.git_pr {
+        let off = usize::from(offset);
+        let vis_top = row.saturating_sub(off);
+        let vis_bottom =
+            row.saturating_add(1).saturating_sub(off).min(usize::from(body_area.height));
+        if vis_bottom > vis_top {
+            app.pane_hit_targets.push(PaneHitTarget::InspectorGitPrOpen {
+                url,
+                y: body_area.y.saturating_add(u16::try_from(vis_top).unwrap_or(u16::MAX)),
+                height: 1,
+                x_start: body_area.x,
+                x_end: body_area.x.saturating_add(body_area.width),
+            });
+        }
+    }
+
+    if let Some((start, len)) = hit_ranges.mcp {
         let off = usize::from(offset);
         let vis_top = start.saturating_sub(off);
         let vis_bottom =
@@ -566,11 +585,11 @@ fn append_body(
     app: &App,
     width: u16,
     subagents: &[crate::app::SubagentEntry],
-) -> Option<(usize, usize)> {
-    {
+) -> BodyHitRanges {
+    let git_pr_range = {
         let _t = crate::perf::start("ui::inspector_pane::git_section");
-        append_git_section(lines, app, width);
-    }
+        append_git_section(lines, app, width)
+    };
 
     let todos = app.todos();
     // Section visibility gates on PENDING/IN-PROGRESS tasks
@@ -658,7 +677,16 @@ fn append_body(
         append_processes_section(lines, &processes, width, app.active_spinner_glyph());
     }
 
-    mcp_range
+    BodyHitRanges { mcp: mcp_range, git_pr: git_pr_range }
+}
+
+/// The line ranges `append_body` produces for click-through hit
+/// bands, consumed by `render_scrollable_body`'s stamping. `mcp`
+/// covers the MCP SERVERS section; `git_pr` is the GIT section's
+/// single PR row carrying its url.
+struct BodyHitRanges {
+    mcp: Option<(usize, usize)>,
+    git_pr: Option<(usize, String)>,
 }
 
 /// Width threshold above which the PROCESSES section appends `· 12 MB`
@@ -792,7 +820,15 @@ fn push_section_rule(lines: &mut Vec<Line<'static>>, width: u16) {
 /// renders header + path + branch + diff + file tree as usual; for
 /// scanner failures inside a real repo the unhealthy banner still
 /// surfaces so the operator gets a triage signal.
-fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
+/// Append the GIT section's lines. Returns the PR row's line index
+/// and url (for the click-through hit band), or `None` when no PR
+/// row rendered (suppressed section, pre-first-scan, scanner failure,
+/// or no open PR).
+fn append_git_section(
+    lines: &mut Vec<Line<'static>>,
+    app: &App,
+    width: u16,
+) -> Option<(usize, String)> {
     // Suppress the whole section when the focused session's cwd
     // isn't inside a git repo (and the scanner ran cleanly so this
     // isn't a "scanner crashed" failsafe). Without this the user
@@ -802,7 +838,7 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     if let Some(snapshot) = app.active_session().and_then(|s| s.git_diff_snapshot.as_ref())
         && matches!(snapshot.repo_gate, RepoGate::NotARepo)
     {
-        return;
+        return None;
     }
 
     // Section header - DIM bold, flush against the rule above
@@ -851,7 +887,7 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
 
     let Some(snapshot) = app.active_session().and_then(|s| s.git_diff_snapshot.as_ref()) else {
         // Pre-first-scan window: only the path is known.
-        return;
+        return None;
     };
     if matches!(snapshot.repo_gate, RepoGate::ScannerFailed) {
         // Scanner crashed (rev-parse Failed / Oversize) and the
@@ -868,7 +904,7 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
                 Style::default().fg(theme::STATUS_WARNING),
             ),
         ]));
-        return;
+        return None;
     }
 
     // Branch row - just the branch glyph + name. Diff totals live
@@ -880,7 +916,9 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // PR row - sits below the branch row when the scanner resolved
     // a PR. Renders BEFORE the layered diff sub-sections because PR
     // info is a property of the branch as a whole, not of either
-    // diff layer.
+    // diff layer. The row's line index + url ride out for the
+    // click-through hit band.
+    let pr_row = snapshot.pr.as_ref().map(|pr| (lines.len(), pr.url.clone()));
     if let Some(pr) = snapshot.pr.as_ref() {
         lines.push(pr_line(width, pr, &snapshot.closes));
     }
@@ -926,6 +964,7 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         }
         _ => {}
     }
+    pr_row
 }
 
 /// Render a single-line "(scan failed)" subtitle for a diff layer
