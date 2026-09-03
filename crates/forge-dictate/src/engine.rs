@@ -859,6 +859,7 @@ fn worker(
         let mut window_records: Vec<diagnostics::WindowRecord> = Vec::new();
         let mut truncated = job.truncated;
         let mut failure: Option<Error> = None;
+        let mut recognition_error: Option<(usize, String)> = None;
         let started = Instant::now();
         // How long the take sat before its first window ran: the queue,
         // and for early takes the tail of the model load. The felt lag
@@ -911,7 +912,9 @@ fn worker(
                     truncated = true;
                 }
                 Err(source) => {
-                    failure = Some(Error::Recognition { message: source.to_string() });
+                    let message = source.to_string();
+                    failure = Some(Error::Recognition { message: message.clone() });
+                    recognition_error = Some((k, message));
                     break;
                 }
             }
@@ -958,6 +961,7 @@ fn worker(
                 processing_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
                 truncated,
                 outcome,
+                recognition_error,
             };
             diagnostics::capture_take(dir, diagnostics::take_stamp(), &record);
         }

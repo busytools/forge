@@ -47,6 +47,9 @@ pub(crate) struct TakeRecord<'a> {
     pub(crate) truncated: bool,
     /// `transcript`, `empty` or `recognition_error`.
     pub(crate) outcome: &'a str,
+    /// The window whose recognition failed and the error text, when
+    /// the take ended in a recognition error.
+    pub(crate) recognition_error: Option<(usize, String)>,
 }
 
 /// How many takes the store keeps. Ten typical dictations are a few
@@ -94,7 +97,7 @@ pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>) {
     }
 
     let ms = |d: std::time::Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
-    let meta = json!({
+    let mut meta = json!({
         "duration_ms": ms(take.stages.audio),
         // Accept to first window start, so the wall total reconciles:
         // start_lag_ms + processing_ms spans the engine's accept-to-reply.
@@ -114,6 +117,9 @@ pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>) {
             "end_ms": window.end_ms,
         })).collect::<Vec<_>>(),
     });
+    if let Some((window, error)) = &take.recognition_error {
+        meta["recognition_error"] = json!({ "window": window, "error": error });
+    }
     match serde_json::to_vec_pretty(&meta) {
         Ok(bytes) => {
             if let Err(error) = std::fs::write(take_dir.join("meta.json"), bytes) {
@@ -201,6 +207,7 @@ mod tests {
             processing_ms: 7,
             truncated: false,
             outcome: "transcript",
+            recognition_error: None,
         }
     }
 
@@ -271,6 +278,36 @@ mod tests {
         assert_eq!(meta["stages_ms"]["mel"], 0);
         assert_eq!(meta["windows"][0]["file"], "raw/0.txt");
         assert_eq!(meta["windows"][1]["end_ms"], 1000);
+        assert!(
+            meta.get("recognition_error").is_none(),
+            "a successful take names no failed window"
+        );
+    }
+
+    /// A recognition-error take names the window that failed and the
+    /// error text, so meta.json answers "which stage ate the words"
+    /// for the one outcome whose transcript stages cannot.
+    #[test]
+    fn a_recognition_error_take_records_the_failed_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = vec![0.5; 16];
+        let stages = Stages::default();
+        let windows = vec![WindowRecord { start_ms: 0, end_ms: 500, raw: "first".into() }];
+        let mut record = take_record(&audio, &windows, "first", "", &stages);
+        record.outcome = "recognition_error";
+        record.recognition_error = Some((1, "decode failed: bad input".into()));
+        capture_take(dir.path(), 7, &record);
+
+        let meta: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("take-0000000000007/meta.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(meta["outcome"], "recognition_error");
+        assert_eq!(meta["recognition_error"]["window"], 1, "the failed window index");
+        assert_eq!(
+            meta["recognition_error"]["error"], "decode failed: bad input",
+            "the recognition failure text"
+        );
     }
 
     /// Prune only ever touches store directories: `take-` followed by
