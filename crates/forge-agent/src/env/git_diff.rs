@@ -34,13 +34,13 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use super::git_command;
 use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
 use forge_primitives::git_diff::{
     GitBranchAhead, GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState, RepoGate,
 };
 use parking_lot::Mutex;
 use serde::Deserialize;
-use tokio::process::Command;
 use tokio::time::timeout;
 
 pub mod hunks;
@@ -106,7 +106,7 @@ enum RepoPresence {
 /// collapsed with "git would not run", which the caller has already
 /// logged with git's stderr.
 async fn repo_presence(cwd: &Path) -> RepoPresence {
-    let mut command = Command::new("git");
+    let mut command = git_command::tokio_command("git");
     command.arg("-C").arg(cwd).args(["rev-parse", "--git-dir"]).kill_on_drop(true);
     match timeout(COMMAND_TIMEOUT, command.output()).await {
         Ok(Ok(output)) if output.status.success() => RepoPresence::Present,
@@ -223,7 +223,7 @@ fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>) {
     let cwd = cwd.to_path_buf();
     let remote_branch = remote_branch.to_owned();
     tokio::spawn(async move {
-        let fetch = Command::new("git")
+        let fetch = git_command::tokio_command("git")
             .arg("-C")
             .arg(&cwd)
             .args(["fetch", "origin", &remote_branch])
@@ -856,7 +856,7 @@ const STDERR_LOG_CAP: usize = 1024;
 /// the captured stderr so operators can distinguish "clean tree"
 /// from "corrupt index / permissions / fatal: …" without re-running.
 pub(super) async fn run_git(cwd: &Path, args: &[&str]) -> GitOutput {
-    let mut command = Command::new("git");
+    let mut command = git_command::tokio_command("git");
     command.arg("-C").arg(cwd).args(args).kill_on_drop(true);
     let fut = command.output();
     let output = match timeout(COMMAND_TIMEOUT, fut).await {
@@ -948,7 +948,7 @@ enum GhNotFound {
 /// (not a github remote) from "no pull requests found" (legitimate
 /// empty result) when triaging "PR row never shows".
 async fn run_gh(cwd: &Path, args: &[&str], not_found: GhNotFound) -> GitOutput {
-    let mut command = Command::new("gh");
+    let mut command = git_command::tokio_command("gh");
     command.current_dir(cwd).args(args).kill_on_drop(true);
     let fut = command.output();
     let output = match timeout(COMMAND_TIMEOUT, fut).await {
@@ -1199,6 +1199,86 @@ mod tests {
             Err(RepoGate::ScannerFailed),
             "a repo with no commits is still a repo, so it must not be suppressed as NotARepo",
         );
+    }
+
+    /// The foreign-repo hazard, end to end: with `GIT_DIR` /
+    /// `GIT_WORK_TREE` / `GIT_COMMON_DIR` exported at a foreign repo -
+    /// the shape a git hook or a `rebase --exec` shell hands down -
+    /// every routed spawn must answer from its own cwd, not the
+    /// exported repo. The layer cannot be injected in-process (the
+    /// env is process-global and `unsafe` to set under this edition),
+    /// so the probe re-execs this test binary as a child with the
+    /// three variables in its ambient environment and asserts the
+    /// child's answers. Unscrubbed, `git -C <plain dir> rev-parse
+    /// --git-dir` exits 0 answering from the foreign repo, so every
+    /// assertion below fails against the unscrubbed shape.
+    #[tokio::test(flavor = "current_thread")]
+    async fn git_layer_answers_from_cwd_not_an_exported_git_dir() {
+        const PROBE: &str = "FORGE_SCRUB_PROBE";
+        const PROBE_OK: &str = "FORGE_SCRUB_PROBE_OK";
+        const PROBE_TEST: &str =
+            "env::git_diff::tests::git_layer_answers_from_cwd_not_an_exported_git_dir";
+
+        let foreign = tempfile::tempdir().expect("foreign tempdir");
+        let host = tempfile::tempdir().expect("host tempdir");
+        let plain = tempfile::tempdir().expect("plain tempdir");
+        init_repo(&foreign, "exported-only-branch");
+        write_file(&foreign, "README.md", "foreign\n");
+        commit_all(&foreign, "foreign init");
+        init_repo(&host, "cwd-repo-branch");
+        write_file(&host, "README.md", "host\n");
+        commit_all(&host, "host init");
+
+        if std::env::var(PROBE).is_err() {
+            // Parent mode: export the three repo-location variables at
+            // the foreign repo and run this test again as a child.
+            let out = StdCommand::new(std::env::current_exe().expect("current_exe"))
+                .args(["--exact", PROBE_TEST, "--test-threads=1", "--nocapture"])
+                .env(PROBE, "1")
+                .env("GIT_DIR", foreign.path().join(".git"))
+                .env("GIT_WORK_TREE", foreign.path())
+                .env("GIT_COMMON_DIR", foreign.path().join(".git"))
+                .env("FORGE_SCRUB_HOST", host.path())
+                .env("FORGE_SCRUB_PLAIN", plain.path())
+                .output()
+                .expect("spawn probe");
+            assert!(
+                out.status.success(),
+                "probe failed under exported GIT_DIR: {}",
+                String::from_utf8_lossy(&out.stdout),
+            );
+            assert!(
+                String::from_utf8_lossy(&out.stdout).contains(PROBE_OK),
+                "the probe never ran (filter matched nothing?)",
+            );
+            return;
+        }
+
+        // Child mode: the three variables are ambient here. Fixtures
+        // already exist (git fixture calls would otherwise init the
+        // foreign repo); only production spawns run.
+        let host = PathBuf::from(std::env::var("FORGE_SCRUB_HOST").expect("host path"));
+        let plain = PathBuf::from(std::env::var("FORGE_SCRUB_PLAIN").expect("plain path"));
+
+        assert_eq!(
+            repo_presence(&plain).await,
+            RepoPresence::Absent,
+            "a plain dir with GIT_DIR exported must not answer as a repo",
+        );
+        assert!(
+            !crate::env::worktree::is_git_repo(&plain),
+            "is_git_repo must not inherit the exported repo",
+        );
+        let GitOutput::Ok(branch) = run_git(&host, &["rev-parse", "--abbrev-ref", "HEAD"]).await
+        else {
+            panic!("run_git failed against a live repo");
+        };
+        assert_eq!(
+            branch.trim(),
+            "cwd-repo-branch",
+            "run_git must answer from -C, not the exported GIT_DIR",
+        );
+        println!("{PROBE_OK}");
     }
 
     #[tokio::test(flavor = "current_thread")]

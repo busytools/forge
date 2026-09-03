@@ -98,7 +98,16 @@ fn compute_suffixes() -> (String, String) {
 }
 
 fn run_git(args: &[&str]) -> Option<String> {
-    let output = Command::new("git").args(args).output().ok()?;
+    // GIT_DIR / GIT_WORK_TREE / GIT_COMMON_DIR would answer from a
+    // foreign repo; a build script cannot reach forge-agent's shared
+    // scrubbed constructor, so the same three removals live here.
+    let output = Command::new("git")
+        .args(args)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }

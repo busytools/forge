@@ -9,6 +9,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use super::git_command;
+
 /// Check whether `path` is inside a git repository. Shells out to
 /// `git rev-parse --git-dir`. Exit 0 -> true; anything else -> false.
 ///
@@ -17,7 +19,7 @@ use std::process::Command;
 /// own answer rather than re-implementing detection. Non-existent
 /// paths return false because git itself errors on them.
 pub fn is_git_repo(path: &Path) -> bool {
-    Command::new("git")
+    git_command::command("git")
         .args(["rev-parse", "--git-dir"])
         .current_dir(path)
         .output()
@@ -62,7 +64,7 @@ pub enum WorktreeError {
 /// any teardown so a dirty worker is blocked without being killed.
 pub fn worktree_dirty_reason(path: &Path) -> Option<String> {
     // Uncommitted or untracked changes.
-    match Command::new("git").args(["status", "--porcelain"]).current_dir(path).output() {
+    match git_command::command("git").args(["status", "--porcelain"]).current_dir(path).output() {
         Ok(out) if out.status.success() => {
             if !out.stdout.is_empty() {
                 return Some("uncommitted or untracked changes".to_owned());
@@ -77,7 +79,7 @@ pub fn worktree_dirty_reason(path: &Path) -> Option<String> {
     // upstream -> `rev-list @{upstream}..HEAD` errors; treat as
     // not-unpushed (the porcelain check above already guarded
     // uncommitted work).
-    if let Ok(out) = Command::new("git")
+    if let Ok(out) = git_command::command("git")
         .args(["rev-list", "--count", "@{upstream}..HEAD"])
         .current_dir(path)
         .output()
@@ -110,9 +112,13 @@ pub fn remove_worktree(path: &Path, force: bool) -> Result<(), WorktreeError> {
     // The worktree carries the claude session's own lock, which git
     // won't remove even with --force; unlock first, ignoring the result
     // since a not-locked worktree errors harmlessly.
-    let _ =
-        Command::new("git").arg("worktree").arg("unlock").arg(path).current_dir(parent).output();
-    let mut cmd = Command::new("git");
+    let _ = git_command::command("git")
+        .arg("worktree")
+        .arg("unlock")
+        .arg(path)
+        .current_dir(parent)
+        .output();
+    let mut cmd = git_command::command("git");
     cmd.arg("worktree").arg("remove");
     if force {
         cmd.arg("--force");
@@ -158,7 +164,7 @@ pub fn reap_worktree_branch(repo: &Path, branch: &str) -> BranchReapOutcome {
     // Existence plus the tip in one call. `--quiet` exits 1 for a ref that
     // is missing or broken and 128 for a repo it cannot read, so "no such
     // branch" never absorbs "no such repo".
-    let tip = match Command::new("git")
+    let tip = match git_command::command("git")
         .args(["rev-parse", "--short", "--verify", "--quiet", &refname])
         .current_dir(repo)
         .output()
@@ -173,7 +179,7 @@ pub fn reap_worktree_branch(repo: &Path, branch: &str) -> BranchReapOutcome {
     // precede it; placed after, git ignores it and every branch reads as
     // holding nothing.
     let exclude = format!("--exclude={refname}");
-    let count = match Command::new("git")
+    let count = match git_command::command("git")
         .args(["rev-list", "--count", &refname, "--not", &exclude, "--all"])
         .current_dir(repo)
         .output()
@@ -198,7 +204,7 @@ pub fn reap_worktree_branch(repo: &Path, branch: &str) -> BranchReapOutcome {
     // `-D`, not `-d`: the count above IS the safety decision. `-d` would
     // re-derive merged-ness from history shape and refuses a pristine
     // branch whenever HEAD predates the commit it was created from.
-    match Command::new("git").args(["branch", "-D", branch]).current_dir(repo).output() {
+    match git_command::command("git").args(["branch", "-D", branch]).current_dir(repo).output() {
         Ok(out) if out.status.success() => BranchReapOutcome::Reaped,
         Ok(out) => BranchReapOutcome::DeleteFailed { reason: git_error(&out) },
         Err(err) => BranchReapOutcome::DeleteFailed { reason: err.to_string() },
@@ -239,17 +245,10 @@ fn git_in_repo(repo: &Path, args: &[&str]) -> Option<String> {
 }
 
 /// The command [`git_in_repo`] runs, built separately so a test can
-/// assert the scrub is on it. Removing any of the three `env_remove`
-/// calls leaves every other test in the crate passing.
+/// assert the scrub is on it.
 fn scrubbed_git(repo: &Path, args: &[&str]) -> Command {
-    let mut command = Command::new("git");
-    command
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_COMMON_DIR");
+    let mut command = git_command::command("git");
+    command.arg("-C").arg(repo).args(args);
     command
 }
 
