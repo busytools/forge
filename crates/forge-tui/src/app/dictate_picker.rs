@@ -161,7 +161,8 @@ fn live_device_pin(app: &App) -> Option<DictateDeviceChoice> {
 
 /// The INPUT DEVICE readout row: what a take records from, and where
 /// that value came from. Resolved from the session pick over the
-/// configured pin; names come from the last catalog.
+/// configured pin; names come from the last catalog. A machine with
+/// no inputs says so rather than naming a default that is not there.
 fn device_readout(app: &App) -> (String, Option<(String, TagTone)>) {
     let pin = live_device_pin(app);
     let Some(catalog) = app.dictate_devices.as_ref() else {
@@ -173,6 +174,12 @@ fn device_readout(app: &App) -> (String, Option<(String, TagTone)>) {
             return ("Device: ...".to_owned(), Some((error.clone(), TagTone::Error)));
         }
     };
+    if catalog.devices.is_empty() || catalog.devices.iter().all(|d| !d.is_default) {
+        return (
+            "Device: no input device".to_owned(),
+            Some(("no input devices found".to_owned(), TagTone::Error)),
+        );
+    }
     let name_of = |id: &str| catalog.devices.iter().find(|d| d.id == id).map(|d| d.name.clone());
     let default_name = || catalog.devices.iter().find(|d| d.is_default).map(|d| d.name.clone());
     match pin {
@@ -639,6 +646,34 @@ mod tests {
         let row = rows(&app).into_iter().find(|r| r.group == "INPUT DEVICE").expect("device row");
         assert_eq!(row.label, "Device: MacBook Pro Microphone");
         assert_eq!(row.tag, Some(("active until restart".into(), TagTone::Accent)));
+    }
+
+    #[test]
+    fn an_empty_or_defaultless_catalog_says_no_input_device() {
+        let mut app = App::test_default();
+        app.dictate_devices = Some(Ok(DictateDeviceCatalog { devices: vec![], configured: None }));
+        let (label, tag) = device_readout(&app);
+        assert_eq!(
+            label, "Device: no input device",
+            "an empty catalog must not dress up a default that does not exist"
+        );
+        assert_eq!(tag, Some(("no input devices found".into(), TagTone::Error)));
+
+        // Same for a catalog whose entries carry no default flag: the
+        // system default is not a functioning device here.
+        let mut app = App::test_default();
+        app.dictate_devices =
+            Some(Ok(DictateDeviceCatalog {
+                devices: vec![forge_workspace::Device {
+                    id: "d".into(),
+                    name: "Some Mic".into(),
+                    is_default: false,
+                }],
+                configured: None,
+            }));
+        let (label, tag) = device_readout(&app);
+        assert_eq!(label, "Device: no input device");
+        assert_eq!(tag.map(|(_, tone)| tone), Some(TagTone::Error));
     }
 
     #[test]
