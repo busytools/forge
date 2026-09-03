@@ -608,7 +608,7 @@ fn handle_spinner_submit(app: &mut App, args: &[&str]) -> bool {
 
     app.spinner_style = style;
     if let Some(ws) = app.workspace.as_ref() {
-        ws.persist_spinner(style);
+        let _ = ws.dispatch(forge_workspace::Command::PersistSpinner { style });
     }
     app.needs_redraw = true;
     push_system_info(app, format!("Spinner: {}", style.key()));

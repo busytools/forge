@@ -1262,7 +1262,14 @@ pub(crate) fn execute_command_via_handle(
         | Command::DeliverWorkerPrompt { .. }
         | Command::DeliverWorkerPromptToLead { .. }
         | Command::DeliverGotifyMessage { .. }
-        | Command::SwitchAccount { .. }) => {
+        | Command::SwitchAccount { .. }
+        | Command::SaveReviewThreads { .. }
+        | Command::RemoveReviewThread { .. }
+        | Command::SetReviewThreadStatus { .. }
+        | Command::PersistSpinner { .. }
+        | Command::CloseSession { .. }
+        | Command::UpsertReviewThread { .. }
+        | Command::SubmitReview { .. }) => {
             tracing::warn!(
                 target: "forge_workspace::session_task",
                 key = %key.as_str(),

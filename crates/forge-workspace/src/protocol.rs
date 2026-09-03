@@ -34,6 +34,7 @@ use forge_primitives::permission::PermissionMode;
 use forge_primitives::permission_ui::{PermissionOutcome, PermissionRequest};
 use forge_primitives::plugins::{PluginsCliActionSuccess, PluginsInventorySnapshot};
 use forge_primitives::question::{QuestionOutcome, QuestionRequest};
+use forge_primitives::review::{ReviewStatus, ReviewThread};
 use forge_primitives::runtime::{AvailableModel, CurrentModel, ModeState, TerminalReason};
 use forge_primitives::{
     AccountInfo, ForgeAccountIdentity, ImageAttachment, McpOperationError, McpServerStatus,
@@ -395,6 +396,70 @@ pub enum Command {
         key: SessionKey,
         submit: bool,
     },
+    /// Overwrite the review-thread set for `(project, branch)`.
+    /// Dispatched by the diff overlay's re-anchor recompute. Fire-and-
+    /// forget: a write failure is warned, not surfaced. App-level
+    /// command (`key()` returns `None`); routed inline in dispatch.
+    SaveReviewThreads {
+        project: String,
+        branch: String,
+        threads: Vec<ReviewThread>,
+    },
+    /// Remove one review thread by id from `(project, branch)`, so a
+    /// deleted comment does not resurrect on the next hydrate.
+    /// App-level command (`key()` returns `None`); routed inline.
+    RemoveReviewThread {
+        project: String,
+        branch: String,
+        thread_id: String,
+    },
+    /// Set the status of one review thread by id, bumping its
+    /// `updated_at`. App-level command (`key()` returns `None`);
+    /// routed inline.
+    SetReviewThreadStatus {
+        project: String,
+        branch: String,
+        thread_id: String,
+        status: ReviewStatus,
+    },
+    /// Persist the `/spinner` override so it survives restart. The
+    /// in-session active style lives on the TUI's `App::spinner_style`
+    /// already; this is the durable-store write. App-level command
+    /// (`key()` returns `None`); routed inline.
+    PersistSpinner {
+        style: crate::ui::SpinnerStyle,
+    },
+    /// Release the session `session_key` (cascade-aware: a project
+    /// lead's workers terminate first). Dispatched by the TUI's
+    /// per-row close click; the TUI removes its own bucket around the
+    /// dispatch. App-level command (`key()` returns `None`); routed
+    /// inline.
+    CloseSession {
+        session_key: SessionKey,
+    },
+    /// Insert or replace one review thread by id in `(project, branch)`.
+    /// `respond` carries whether the write was confirmed, so the
+    /// overlay's at-risk durability flag stays honest (the same
+    /// value-returning shape as `SpawnWorker.return_to`). The handler
+    /// runs inline in dispatch, so the response is present the moment
+    /// dispatch returns. App-level command (`key()` returns `None`).
+    UpsertReviewThread {
+        project: String,
+        branch: String,
+        thread: ReviewThread,
+        respond: oneshot::Sender<bool>,
+    },
+    /// Submit (seal) the listed threads as one review round.
+    /// `respond` carries the minted review, `None` when the store
+    /// write failed. App-level command (`key()` returns `None`).
+    SubmitReview {
+        project: String,
+        branch: String,
+        summary: Option<String>,
+        thread_ids: Vec<String>,
+        origin: SessionKey,
+        respond: oneshot::Sender<Option<forge_primitives::ReviewSet>>,
+    },
 }
 
 impl Command {
@@ -430,7 +495,14 @@ impl Command {
             | Self::DeliverWorkerPrompt { .. }
             | Self::DeliverWorkerPromptToLead { .. }
             | Self::DeliverGotifyMessage { .. }
-            | Self::SwitchAccount { .. } => None,
+            | Self::SwitchAccount { .. }
+            | Self::SaveReviewThreads { .. }
+            | Self::RemoveReviewThread { .. }
+            | Self::SetReviewThreadStatus { .. }
+            | Self::PersistSpinner { .. }
+            | Self::CloseSession { .. }
+            | Self::UpsertReviewThread { .. }
+            | Self::SubmitReview { .. } => None,
         }
     }
 }
@@ -552,6 +624,42 @@ impl std::fmt::Debug for Command {
             Self::DictateStop { key, submit } => {
                 f.debug_struct("DictateStop").field("key", key).field("submit", submit).finish()
             }
+            Self::SaveReviewThreads { project, branch, .. } => f
+                .debug_struct("SaveReviewThreads")
+                .field("project", project)
+                .field("branch", branch)
+                .finish_non_exhaustive(),
+            Self::RemoveReviewThread { project, branch, thread_id } => f
+                .debug_struct("RemoveReviewThread")
+                .field("project", project)
+                .field("branch", branch)
+                .field("thread_id", thread_id)
+                .finish(),
+            Self::SetReviewThreadStatus { project, branch, thread_id, status } => f
+                .debug_struct("SetReviewThreadStatus")
+                .field("project", project)
+                .field("branch", branch)
+                .field("thread_id", thread_id)
+                .field("status", status)
+                .finish(),
+            Self::PersistSpinner { style } => {
+                f.debug_struct("PersistSpinner").field("style", style).finish()
+            }
+            Self::CloseSession { session_key } => {
+                f.debug_struct("CloseSession").field("session_key", session_key).finish()
+            }
+            Self::UpsertReviewThread { project, branch, thread, .. } => f
+                .debug_struct("UpsertReviewThread")
+                .field("project", project)
+                .field("branch", branch)
+                .field("thread_id", &thread.id)
+                .finish_non_exhaustive(),
+            Self::SubmitReview { project, branch, thread_ids, .. } => f
+                .debug_struct("SubmitReview")
+                .field("project", project)
+                .field("branch", branch)
+                .field("thread_ids", thread_ids)
+                .finish_non_exhaustive(),
         }
     }
 }

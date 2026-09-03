@@ -2938,6 +2938,79 @@ impl Workspace {
                         crate::dictate::handle_dictate_stop(&ws, &key, submit).await;
                     });
                 }
+                // User-action store writes routed through the command
+                // bus (MVVM: one channel pair). Synchronous inline
+                // handlers - the writes are local redb operations, and
+                // the TUI has already applied its optimistic state.
+                Command::SaveReviewThreads { project, branch, threads } => {
+                    let span = tracing::info_span!(
+                        "save_review_threads",
+                        project = %project,
+                        branch = %branch,
+                    );
+                    let _enter = span.enter();
+                    self.save_review_threads(&project, &branch, &threads);
+                }
+                Command::RemoveReviewThread { project, branch, thread_id } => {
+                    let span = tracing::info_span!(
+                        "remove_review_thread",
+                        project = %project,
+                        branch = %branch,
+                        thread_id = %thread_id,
+                    );
+                    let _enter = span.enter();
+                    self.remove_review_thread(&project, &branch, &thread_id);
+                }
+                Command::SetReviewThreadStatus { project, branch, thread_id, status } => {
+                    let span = tracing::info_span!(
+                        "set_review_thread_status",
+                        project = %project,
+                        branch = %branch,
+                        thread_id = %thread_id,
+                        status = ?status,
+                    );
+                    let _enter = span.enter();
+                    self.set_review_thread_status(&project, &branch, &thread_id, status);
+                }
+                Command::PersistSpinner { style } => {
+                    let span = tracing::info_span!("persist_spinner", style = %style.key());
+                    let _enter = span.enter();
+                    self.persist_spinner(style);
+                }
+                Command::CloseSession { session_key } => {
+                    let span = tracing::info_span!(
+                        "close_session",
+                        session_key = %session_key.as_str(),
+                    );
+                    let _enter = span.enter();
+                    self.release_session_with_cascade(&session_key);
+                }
+                Command::UpsertReviewThread { project, branch, thread, respond } => {
+                    let span = tracing::info_span!(
+                        "upsert_review_thread",
+                        project = %project,
+                        branch = %branch,
+                        thread_id = %thread.id,
+                    );
+                    let _enter = span.enter();
+                    let _ = respond.send(self.upsert_review_thread(&project, &branch, thread));
+                }
+                Command::SubmitReview { project, branch, summary, thread_ids, origin, respond } => {
+                    let span = tracing::info_span!(
+                        "submit_review",
+                        project = %project,
+                        branch = %branch,
+                        threads = thread_ids.len(),
+                    );
+                    let _enter = span.enter();
+                    let _ = respond.send(self.submit_review(
+                        &project,
+                        &branch,
+                        summary,
+                        &thread_ids,
+                        origin,
+                    ));
+                }
                 other => {
                     tracing::warn!(
                         target: "forge_workspace",
@@ -10833,6 +10906,69 @@ provider = "anthropic"
         workspace.dispatch(Command::Cancel { key }).expect("dispatch");
         let cmd = rx.try_recv().expect("queued");
         assert!(matches!(cmd, forge_primitives::AgentCommand::Cancel { .. }));
+    }
+
+    /// The review/spinner/close store writes route through the command
+    /// bus: a `SaveReviewThreads` dispatch lands in the redb store
+    /// (observable via the query-side load), and an `UpsertReviewThread`
+    /// dispatch carries its confirmation back on the responder - the
+    /// overlay's at-risk flag depends on it.
+    #[test]
+    fn dispatch_buses_the_review_and_spinner_writes() {
+        use forge_primitives::review::{ReviewAnchor, ReviewSide, ReviewThread};
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let db_dir = tempfile::tempdir().expect("tempdir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&db_dir.path().join("db.redb")).expect("db"),
+        );
+        let thread = ReviewThread {
+            id: "t1".to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 1,
+                content_hash: 1,
+                context: vec!["ctx".to_owned()],
+                base_ref: "main".to_owned(),
+            },
+            comments: Vec::new(),
+            status: ReviewStatus::Open,
+            created_at: "t".to_owned(),
+            updated_at: "t".to_owned(),
+            commit: None,
+        };
+
+        workspace
+            .dispatch(Command::SaveReviewThreads {
+                project: "forge".to_owned(),
+                branch: "feat".to_owned(),
+                threads: vec![thread.clone()],
+            })
+            .expect("dispatch");
+        let loaded = workspace.load_review_threads("forge", "feat").expect("load");
+        assert_eq!(loaded.len(), 1, "the bus-routed save landed in the store");
+
+        let (respond_tx, mut respond_rx) = tokio::sync::oneshot::channel();
+        workspace
+            .dispatch(Command::UpsertReviewThread {
+                project: "forge".to_owned(),
+                branch: "feat".to_owned(),
+                thread: thread.clone(),
+                respond: respond_tx,
+            })
+            .expect("dispatch");
+        assert!(
+            respond_rx.try_recv().expect("response present"),
+            "an open store confirms the upsert on the responder"
+        );
+
+        // The spinner override persists through its variant too.
+        workspace
+            .dispatch(Command::PersistSpinner { style: crate::ui::SpinnerStyle::Star })
+            .expect("dispatch");
+        let db = workspace.db.lock();
+        let stored = crate::store::state::spinner(db.as_ref().expect("db")).expect("read spinner");
+        assert_eq!(stored, Some(crate::ui::SpinnerStyle::Star));
     }
 
     /// `/new` and `/resume` re-spawn on the already-pooled handle, where

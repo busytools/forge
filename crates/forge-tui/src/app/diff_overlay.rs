@@ -2134,7 +2134,11 @@ fn hydrate_threads(app: &mut App) {
     overlay.comments.extend(unwritten);
     overlay.recompute_comment_counts();
     if changed {
-        workspace.save_review_threads(&project, &branch, &persist);
+        let _ = workspace.dispatch(forge_workspace::Command::SaveReviewThreads {
+            project: project.clone(),
+            branch: branch.clone(),
+            threads: persist.clone(),
+        });
     }
     // `persist` is every thread on the branch, post re-anchoring - the
     // authoritative recompute that self-corrects a parked count drifted
@@ -2581,7 +2585,12 @@ fn set_thread_status_by_key(
     if let Some(project) = project
         && let Some(workspace) = app.workspace.as_ref()
     {
-        workspace.set_review_thread_status(&project, &branch, &id, next);
+        let _ = workspace.dispatch(forge_workspace::Command::SetReviewThreadStatus {
+            project,
+            branch,
+            thread_id: id,
+            status: next,
+        });
     }
     true
 }
@@ -2880,7 +2889,25 @@ fn persist_active_input(app: &mut App) {
                     let persisted = if let (Some(project), Some(branch), Some(workspace)) =
                         (project.as_deref(), branch.as_deref(), workspace.as_ref())
                     {
-                        workspace.upsert_review_thread(project, branch, prior.thread.clone())
+                        let (respond_tx, mut respond_rx) = tokio::sync::oneshot::channel();
+                        workspace
+                            .dispatch(forge_workspace::Command::UpsertReviewThread {
+                                project: project.to_owned(),
+                                branch: branch.to_owned(),
+                                thread: prior.thread.clone(),
+                                respond: respond_tx,
+                            })
+                            .ok()
+                            .and_then(|()| respond_rx.try_recv().ok())
+                            .unwrap_or_else(|| {
+                                tracing::warn!(
+                                    target: crate::logging::targets::APP_SESSION,
+                                    event_name = "diff_overlay_review_thread_not_persisted",
+                                    message = "trimmed review thread persistence unconfirmed on the bus; kept in-memory only",
+                                    outcome = "at_risk",
+                                );
+                                false
+                            })
                     } else {
                         tracing::warn!(
                             target: crate::logging::targets::APP_SESSION,
@@ -2907,7 +2934,11 @@ fn persist_active_input(app: &mut App) {
                     if let (Some(project), Some(branch), Some(workspace)) =
                         (project.as_deref(), branch.as_deref(), workspace.as_ref())
                     {
-                        workspace.remove_review_thread(project, branch, &prior.thread.id);
+                        let _ = workspace.dispatch(forge_workspace::Command::RemoveReviewThread {
+                            project: project.to_owned(),
+                            branch: branch.to_owned(),
+                            thread_id: prior.thread.id.clone(),
+                        });
                     } else {
                         tracing::warn!(
                             target: crate::logging::targets::APP_SESSION,
@@ -3025,7 +3056,22 @@ fn persist_active_input(app: &mut App) {
     let persisted = if let (Some(project), Some(branch), Some(workspace)) =
         (project.as_deref(), branch.as_deref(), workspace.as_ref())
     {
-        workspace.upsert_review_thread(project, branch, thread.clone())
+        let (respond_tx, mut respond_rx) = tokio::sync::oneshot::channel();
+        let dispatched = workspace.dispatch(forge_workspace::Command::UpsertReviewThread {
+            project: project.to_owned(),
+            branch: branch.to_owned(),
+            thread: thread.clone(),
+            respond: respond_tx,
+        });
+        dispatched.ok().and_then(|()| respond_rx.try_recv().ok()).unwrap_or_else(|| {
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "diff_overlay_review_thread_not_persisted",
+                message = "review comment persistence unconfirmed on the bus; kept in-memory only",
+                outcome = "at_risk",
+            );
+            false
+        })
     } else {
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
@@ -3766,8 +3812,19 @@ fn finalize_review_close(app: &mut App, overview: Option<&str>, seal_ids: &[Stri
     let review_number = if seal_ids.is_empty() {
         None
     } else if let (Some(project), Some(branch), Some(workspace)) = (&project, &branch, &workspace) {
-        let review =
-            workspace.submit_review(project, branch, overview.map(str::to_owned), seal_ids, origin);
+        let (respond_tx, mut respond_rx) = tokio::sync::oneshot::channel();
+        let review = workspace
+            .dispatch(forge_workspace::Command::SubmitReview {
+                project: project.clone(),
+                branch: branch.clone(),
+                summary: overview.map(str::to_owned),
+                thread_ids: seal_ids.to_owned(),
+                origin,
+                respond: respond_tx,
+            })
+            .ok()
+            .and_then(|()| respond_rx.try_recv().ok())
+            .flatten();
         if review.is_none() {
             // The store write failed. Comments are already persisted unfiled
             // at save-time; only the local reviews-list record and the agent

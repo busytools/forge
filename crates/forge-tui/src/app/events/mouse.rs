@@ -1154,8 +1154,10 @@ fn close_session(app: &mut App, session_key: &forge_workspace::SessionKey) {
     let drawn = if was_active { super::drawn_session_order(app) } else { Vec::new() };
     if let Some(workspace) = app.workspace.as_ref() {
         // Cascade-aware: if the session is a project's lead, all
-        // workers under that project terminate first.
-        workspace.release_session_with_cascade(session_key);
+        // workers under that project terminate first. Through the
+        // command bus, like CloseWorker below.
+        let _ = workspace
+            .dispatch(forge_workspace::Command::CloseSession { session_key: session_key.clone() });
     }
     app.sessions.remove(session_key);
     if was_active {
