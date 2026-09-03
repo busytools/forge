@@ -3846,6 +3846,7 @@ impl App {
     pub fn clear_session_runtime_identity(&mut self) {
         self.set_session_id(None);
         self.set_current_model(None);
+        self.set_observed_assistant_model(None);
         self.set_mode(None);
         self.set_runtime_session_state(None);
         self.set_observed_permission_mode(None);
@@ -6091,6 +6092,16 @@ mod tests {
         assert!(app.current_model().is_none());
         assert!(app.mode().is_none());
         assert_eq!(*app.session_usage(), SessionUsageState::default());
+    }
+
+    #[test]
+    fn clear_session_runtime_identity_clears_observed_assistant_model() {
+        let mut app = App::test_default();
+        app.set_observed_assistant_model(Some("claude-observed".to_owned()));
+
+        app.clear_session_runtime_identity();
+
+        assert!(app.observed_assistant_model().is_none());
     }
 
     #[test]

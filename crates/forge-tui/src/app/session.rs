@@ -670,12 +670,15 @@ impl UiSession {
 
     /// Clear the session-identity mirror set a hard teardown applies -
     /// the one place to add a mirror field, so a new field cannot be
-    /// missed at one of the hand-synced teardown sites.
+    /// missed at one of the hand-synced teardown sites. The list in
+    /// `App::clear_session_runtime_identity` mirrors this one field
+    /// for field; add to both or neither.
     pub fn clear_runtime_identity(&mut self) {
         self.key = None;
         self.session_id = None;
         self.account_info = None;
         self.current_model = None;
+        self.observed_assistant_model = None;
         self.mode = None;
         self.runtime_session_state = None;
         self.observed_permission_mode = None;
@@ -813,7 +816,21 @@ impl Default for UiSession {
 #[cfg(test)]
 mod tests {
 
+    use super::UiSession;
     use crate::app::App;
+
+    /// `clear_runtime_identity` is the mirror-clear choke point for a
+    /// hard teardown; the observed-assistant-model mirror must leave
+    /// with the rest of the identity set.
+    #[test]
+    fn clear_runtime_identity_clears_observed_assistant_model() {
+        let mut session = UiSession::default();
+        session.observed_assistant_model = Some("claude-observed".to_owned());
+
+        session.clear_runtime_identity();
+
+        assert!(session.observed_assistant_model.is_none());
+    }
 
     /// Pre-Connect bucket state (cwd, files_accessed, …) accumulated
     /// before the first `Connected` event must survive the
