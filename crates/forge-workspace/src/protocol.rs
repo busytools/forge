@@ -1151,14 +1151,6 @@ pub enum DispatchError {
 #[cfg(test)]
 mod workers_command_tests {
     use super::*;
-    use forge_primitives::{WorkerLiveness, WorkerStatus};
-    use std::time::SystemTime;
-
-    #[test]
-    fn worker_status_action_added_constructs() {
-        let action = WorkerStatusAction::Added;
-        assert!(format!("{action:?}").contains("Added"));
-    }
 
     #[test]
     fn worker_spawn_reply_constructs() {
@@ -1169,24 +1161,5 @@ mod workers_command_tests {
             durability_warning: None,
         };
         assert_eq!(r.tag, "forge:worker:reviewer");
-    }
-
-    #[test]
-    fn worker_status_session_update_variant_compiles() {
-        let _u = SessionUpdate::WorkerStatusChanged {
-            project_key: crate::ProjectKey::new("test"),
-            action: WorkerStatusAction::Added,
-            status: WorkerStatus {
-                label: "reviewer".into(),
-                charter: "you are a reviewer".into(),
-                status: WorkerLiveness::Running,
-                session_id: "abc".into(),
-                spawned_at: SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead-uuid".into(),
-                diagnostic: None,
-                activity: None,
-            },
-            worktree: WorktreeDisposition::Intact,
-        };
     }
 }

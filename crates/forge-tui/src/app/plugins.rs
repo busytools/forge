@@ -1618,6 +1618,15 @@ mod tests {
         };
 
         assert_eq!(filtered_marketplace_plugins(&state).len(), 1);
+
+        // Negative case: a query matching none of the three fields
+        // excludes the entry entirely.
+        let mut none = state;
+        none.plugins_search_query = query("zzz-no-match");
+        assert!(
+            filtered_marketplace_plugins(&none).is_empty(),
+            "a non-matching query filters the row out"
+        );
     }
 
     fn app_with_focused_search(tab: PluginsViewTab) -> crate::app::App {

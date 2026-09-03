@@ -460,9 +460,14 @@ mod tests {
     #[test]
     fn strip_outer_code_fence_preserves_inner_fences_and_large_blocks() {
         let nested = "```\nsome code\n```\nmore code\n```";
-        let nested_result = strip_outer_code_fence(nested);
-        assert!(nested_result.contains("some code"));
-        assert!(nested_result.contains("more code"));
+        // Exact: only the OUTERMOST fence pair is stripped - the inner
+        // fence must survive verbatim, which a contains assert cannot
+        // distinguish from the outer pair never being stripped at all.
+        assert_eq!(
+            strip_outer_code_fence(nested),
+            "some code\n```\nmore code",
+            "inner fence survives, outer pair stripped"
+        );
 
         let quadruple = "````\ncontent here\n````";
         assert!(strip_outer_code_fence(quadruple).contains("content here"));

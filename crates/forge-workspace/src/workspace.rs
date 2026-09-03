@@ -11684,33 +11684,6 @@ provider = "anthropic"
     /// command channel without panicking. The full spawn-path handling
     /// is exercised in the spawn::handle_deliver_peer_prompt test.
     #[tokio::test]
-    async fn dispatch_command_deliver_peer_prompt_routes_cleanly() {
-        use crate::mcp::peers::types::{AskChannel, CorrelationId, WrappedKind, WrappedPrompt};
-        let dir = forge_toml_with_two_projects();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
-
-        let caller = SessionKey::from_str_for_test("caller-dispatch");
-        let wrapped = WrappedPrompt {
-            correlation_id: CorrelationId::new_tell(),
-            kind: WrappedKind::Message,
-            channel: AskChannel::Peers,
-            sender_name: "forge".to_owned(),
-            sender_org: "Default".to_owned(),
-            body: "fyi".to_owned(),
-        };
-        // The command channel is the workspace's main dispatch bus -
-        // routing to an unknown target still queues, the spawn handler
-        // is the one that rejects. Smoke: dispatch returns Ok.
-        let result = workspace.dispatch(crate::protocol::Command::DeliverPeerPrompt {
-            caller,
-            target_project: "gateway-backend".to_owned(),
-            wrapped,
-        });
-        assert!(result.is_ok(), "dispatch routed cleanly: {result:?}");
-    }
-
-    #[tokio::test]
     async fn deliver_reply_to_caller_routes_by_session_and_guards() {
         use crate::mcp::peers::facade::ReplyDeliverError;
         use crate::mcp::peers::types::{AskChannel, CorrelationId, WrappedKind, WrappedPrompt};

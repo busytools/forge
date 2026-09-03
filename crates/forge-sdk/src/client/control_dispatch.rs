@@ -516,4 +516,41 @@ mod tests {
         assert_eq!(v["response"]["request_id"], "req-unknown-1");
         assert!(v["response"]["response"]["mcp_response"].is_null(), "must not be a success body");
     }
+
+    /// A control_request whose subtype forge does not know must answer
+    /// the CLI with an error response (so the CLI's awaiting tool call
+    /// unblocks) and must not error the dispatch itself - the session
+    /// continues.
+    #[tokio::test]
+    async fn unknown_subtype_answers_error_and_continues() {
+        let (writer, mut lines) = SharedWriter::test_stub();
+        let handle = ControlDispatchHandle::new(
+            Arc::new(writer),
+            None,
+            None,
+            McpHosts::new(Vec::new(), HashMap::new()),
+            HashMap::new(),
+            Arc::new(parking_lot::RwLock::new(String::new())),
+        );
+
+        let req = ControlRequest {
+            ty: ControlRequestType::ControlRequest,
+            request_id: "req-unknown-subtype-1".to_owned(),
+            request: ControlRequestKind::Unknown {
+                subtype: "hologram_project".to_owned(),
+                raw: serde_json::json!({"subtype": "hologram_project"}),
+            },
+        };
+        handle.dispatch(req).await.expect("unknown subtype is answered, dispatch continues");
+
+        let line = lines.recv().await.expect("an error control_response was written");
+        let v: serde_json::Value = serde_json::from_str(&line).expect("valid json line");
+        assert_eq!(v["type"], "control_response");
+        assert_eq!(v["response"]["subtype"], "error");
+        assert_eq!(v["response"]["request_id"], "req-unknown-subtype-1");
+        assert!(
+            v["response"]["error"].as_str().is_some_and(|e| e.contains("unsupported")),
+            "the error names the unsupported subtype: {v}"
+        );
+    }
 }

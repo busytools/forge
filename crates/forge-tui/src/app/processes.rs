@@ -734,11 +734,9 @@ mod tests {
     #[test]
     fn collect_active_processes_returns_empty_when_no_session() {
         // Defensive: a fresh App with no active session must not
-        // panic and must collapse to an empty collection. (App
-        // construction is heavyweight enough that we don't build
-        // one here - we just verify the contract via the empty
-        // path's shape.)
-        let coll = ProcessCollection { rows: Vec::new() };
+        // panic and must collapse to an empty collection.
+        let app = crate::app::App::test_default();
+        let coll = collect_active_processes(&app, &std::collections::HashSet::new());
         assert!(coll.is_empty());
     }
 

@@ -1878,6 +1878,154 @@ mod tests {
         );
     }
 
+    /// A `PermissionRequest` registers a pending slot; `RespondPermission`
+    /// consumes it and the outcome reaches the agent round-trip. The
+    /// happy path of the can_use_tool parking lot.
+    #[tokio::test]
+    async fn respond_permission_round_trips_to_the_agent() {
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub").await;
+        let (handle, mut agent_rx) = Agent::testing_stub();
+        let handle = Arc::new(handle);
+        let key = SessionKey::from_session_id("perm");
+        let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
+        let (update_tx, _update_rx) = mpsc::unbounded_channel();
+        let mut task = SessionTask {
+            key: key.clone(),
+            handle: Arc::clone(&handle),
+            command_rx,
+            domain: Arc::new(Mutex::new(DomainSession::new(
+                key.clone(),
+                Some(Arc::clone(&handle)),
+            ))),
+            update_tx,
+            spawn_key: None,
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        task.translate_event(AgentEvent::PermissionRequest {
+            session_id: key.as_str().to_owned(),
+            request: permission_request_fixture("tu-1"),
+        });
+        assert!(
+            task.domain.lock().pending_interactions.contains_key("tu-1"),
+            "the request parks a pending permission slot"
+        );
+
+        task.execute_command(Command::RespondPermission {
+            key: key.clone(),
+            tool_id: "tu-1".to_owned(),
+            outcome: forge_primitives::PermissionOutcome::Cancelled,
+        });
+
+        let cmd = tokio::time::timeout(std::time::Duration::from_secs(2), agent_rx.recv())
+            .await
+            .expect("the forwarded outcome reaches the agent promptly")
+            .expect("command channel open");
+        assert!(
+            matches!(
+                cmd,
+                forge_primitives::AgentCommand::PermissionResponse { tool_call_id, .. }
+                    if tool_call_id == "tu-1"
+            ),
+            "the outcome forwards to the bridge with the right tool id"
+        );
+        assert!(
+            !task.domain.lock().pending_interactions.contains_key("tu-1"),
+            "the slot is consumed"
+        );
+    }
+
+    /// The cross-kind guard: `AskUserQuestion` reuses the can_use_tool
+    /// wire, so a `RespondPermission` can arrive with a tool id whose
+    /// slot is a Question. The mismatched outcome must be dropped and
+    /// the REAL waiter (the question's oneshot) preserved.
+    #[tokio::test]
+    async fn respond_permission_against_a_question_slot_is_dropped() {
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub").await;
+        let (handle, mut agent_rx) = Agent::testing_stub();
+        let handle = Arc::new(handle);
+        let key = SessionKey::from_session_id("xkind");
+        let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
+        let (update_tx, _update_rx) = mpsc::unbounded_channel();
+        let mut task = SessionTask {
+            key: key.clone(),
+            handle: Arc::clone(&handle),
+            command_rx,
+            domain: Arc::new(Mutex::new(DomainSession::new(
+                key.clone(),
+                Some(Arc::clone(&handle)),
+            ))),
+            update_tx,
+            spawn_key: None,
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        task.translate_event(AgentEvent::QuestionRequest {
+            session_id: key.as_str().to_owned(),
+            request: question_request_fixture("tu-q1"),
+        });
+
+        task.execute_command(Command::RespondPermission {
+            key: key.clone(),
+            tool_id: "tu-q1".to_owned(),
+            outcome: forge_primitives::PermissionOutcome::Cancelled,
+        });
+
+        assert!(
+            task.domain.lock().pending_interactions.contains_key("tu-q1"),
+            "the question slot survives the mismatched permission response"
+        );
+        assert!(agent_rx.try_recv().is_err(), "nothing forwards to the agent on a kind mismatch");
+    }
+
+    fn permission_request_fixture(tool_id: &str) -> forge_primitives::PermissionRequest {
+        forge_primitives::PermissionRequest {
+            tool_call: forge_primitives::ToolCall {
+                tool_call_id: tool_id.to_owned(),
+                title: "Read".to_owned(),
+                kind: forge_primitives::ToolKind::Read,
+                status: forge_primitives::ToolCallStatus::Pending,
+                content: Vec::new(),
+                raw_input: None,
+                raw_output: None,
+                output_metadata: None,
+                task_metadata: None,
+                locations: Vec::new(),
+                meta: None,
+            },
+            options: Vec::new(),
+            display: None,
+        }
+    }
+
+    fn question_request_fixture(tool_id: &str) -> forge_primitives::QuestionRequest {
+        forge_primitives::QuestionRequest {
+            tool_call: forge_primitives::ToolCall {
+                tool_call_id: tool_id.to_owned(),
+                title: "AskUserQuestion".to_owned(),
+                kind: forge_primitives::ToolKind::Other,
+                status: forge_primitives::ToolCallStatus::Pending,
+                content: Vec::new(),
+                raw_input: None,
+                raw_output: None,
+                output_metadata: None,
+                task_metadata: None,
+                locations: Vec::new(),
+                meta: None,
+            },
+            prompt: forge_primitives::QuestionPrompt {
+                question: "Which?".to_owned(),
+                header: "Pick".to_owned(),
+                multi_select: false,
+                options: Vec::new(),
+            },
+            question_index: 0,
+            total_questions: 1,
+        }
+    }
+
     /// The typed dispatch-failure events map onto their session-keyed
     /// envelopes: `SetModelFailed` (the /model rollback trigger) and
     /// `TurnError` (the committed-turn unwind).

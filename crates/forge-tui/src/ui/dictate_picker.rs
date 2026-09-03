@@ -230,12 +230,14 @@ mod tests {
     }
 
     #[test]
-    fn the_inert_reset_row_draws_dim_and_the_note_warns_about_permissions() {
+    fn the_inert_reset_row_draws_and_the_note_warns_about_permissions() {
         let mut app = App::test_default();
         crate::app::dictate_picker::open(&mut app);
         let lines = render_overlay(&app, 80, 30);
-        let reset = lines.iter().find(|l| l.contains("Reset all to defaults")).expect("reset");
-        assert!(reset.contains("Reset all to defaults"), "reset is drawn: {reset}");
+        assert!(
+            lines.iter().any(|l| l.contains("Reset all to defaults")),
+            "reset is drawn: {lines:?}"
+        );
         let joined: String = lines.join("\n");
         assert!(
             joined.contains("it declined, not that the setting failed."),

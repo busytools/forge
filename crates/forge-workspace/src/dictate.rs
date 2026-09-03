@@ -203,6 +203,17 @@ fn default_max_capture_minutes() -> u64 {
     DEFAULT_MAX_CAPTURE_MINUTES
 }
 
+#[cfg(test)]
+mod default_max_capture_minutes_tests {
+    /// The book (`docs/book/src/configuration.md`) documents `30` as
+    /// the default; a drift here must fail a test, not the user's
+    /// expectation.
+    #[test]
+    fn default_matches_the_documented_thirty_minutes() {
+        assert_eq!(super::default_max_capture_minutes(), 30);
+    }
+}
+
 impl Default for DictateSettings {
     fn default() -> Self {
         Self {
