@@ -72,8 +72,8 @@ pub(crate) struct PickerRow {
     /// Right-justified state tag; only the INPUT DEVICE row carries
     /// one today.
     pub tag: Option<(String, TagTone)>,
-    /// False only for the reset row while nothing is overridden: the
-    /// mock draws it DIM and unreachable.
+    /// False only for the inert reset row - nothing overridden and no
+    /// device pick: DIM and unreachable, there is nothing to clear.
     pub selectable: bool,
 }
 
@@ -182,30 +182,25 @@ fn device_readout(app: &App) -> (String, Option<(String, TagTone)>) {
     }
     let name_of = |id: &str| catalog.devices.iter().find(|d| d.id == id).map(|d| d.name.clone());
     let default_name = || catalog.devices.iter().find(|d| d.is_default).map(|d| d.name.clone());
-    match pin {
-        Some(DictateDeviceChoice::System) => (
+    let in_force =
+        forge_workspace::resolve_capture_device(pin.as_ref(), catalog.configured.as_deref());
+    // Where the value came from: a session pick until the session
+    // ends, else the pin, else the system default.
+    let source: (&str, TagTone) = match pin {
+        Some(_) => ("active until restart", TagTone::Accent),
+        None if catalog.configured.is_some() => {
+            ("configured default (forge.toml)", TagTone::Dim)
+        }
+        None => ("system default", TagTone::Dim),
+    };
+    match in_force {
+        None => (
             format!("Device: {}", default_name().unwrap_or_else(|| "system default".into())),
-            Some(("active until restart".to_owned(), TagTone::Accent)),
+            Some((source.0.to_owned(), source.1)),
         ),
-        Some(DictateDeviceChoice::Device(id)) => match name_of(&id) {
-            Some(name) => (
-                format!("Device: {name}"),
-                Some(("active until restart".to_owned(), TagTone::Accent)),
-            ),
+        Some(id) => match name_of(&id) {
+            Some(name) => (format!("Device: {name}"), Some((source.0.to_owned(), source.1))),
             None => (format!("Device: {id}"), Some(("not present".to_owned(), TagTone::Error))),
-        },
-        None => match catalog.configured.as_deref() {
-            Some(id) => match name_of(id) {
-                Some(name) => (
-                    format!("Device: {name}"),
-                    Some(("configured default (forge.toml)".to_owned(), TagTone::Dim)),
-                ),
-                None => (format!("Device: {id}"), Some(("not present".to_owned(), TagTone::Error))),
-            },
-            None => (
-                format!("Device: {}", default_name().unwrap_or_else(|| "system default".into())),
-                Some(("system default".to_owned(), TagTone::Dim)),
-            ),
         },
     }
 }
@@ -283,9 +278,10 @@ pub(crate) fn device_list(app: &App) -> DeviceList {
     if let Some(gone) =
         in_force.as_deref().filter(|id| !catalog.devices.iter().any(|d| d.id == *id))
     {
-        // A session pick is always one the list offered, so a gone
-        // device here is the configured pin: name the file it came
-        // from.
+        // Either source can go absent between walks: a configured
+        // pin, or a session pick whose device was unplugged since the
+        // last enumeration. The tag names forge.toml only when the
+        // pin field is the one that is stale.
         let tag =
             if pin.is_none() { "not present \u{b7} pinned in forge.toml" } else { "not present" };
         rows.push(DeviceRow {
