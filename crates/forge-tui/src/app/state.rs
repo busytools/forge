@@ -3936,6 +3936,7 @@ impl App {
         self.set_session_id(None);
         self.set_current_model(None);
         self.set_mode(None);
+        self.set_runtime_session_state(None);
         *self.session_usage_mut() = SessionUsageState::default();
     }
 

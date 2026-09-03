@@ -212,7 +212,7 @@ pub struct Workspace {
     /// Per-session [`Command`] sender map. Populated when
     /// [`Self::get_agent_handle`] spawns the first `SessionTask` for a
     /// key; cleared on [`Self::release_session_with_cascade`] and [`Self::shutdown`].
-    command_senders: Mutex<HashMap<SessionKey, mpsc::UnboundedSender<Command>>>,
+    pub(crate) command_senders: Mutex<HashMap<SessionKey, mpsc::UnboundedSender<Command>>>,
     /// Per-project list of live worker sessions. In-memory only -
     /// wiped on forge restart by design (workers are ephemeral at the
     /// forge UI level; their JSONLs persist on disk). Mutated via
@@ -3107,33 +3107,31 @@ impl Workspace {
     }
 
     /// Graceful shutdown of every pooled Agent. Drains the pool, then
-    /// drops each `Arc<AgentHandle>` so the underlying
-    /// `forge_sdk::Client` kills its `claude` subprocess via its
-    /// existing `Drop` impl when the last reference goes away.
+    /// drops each `Arc<AgentHandle>`.
     ///
+    /// The subprocess kill is asynchronous through each `SessionTask`:
+    /// dropping the command senders closes every task's command channel,
+    /// each task's run loop exits, and its exit path awaits
+    /// `AgentHandle::disconnect`, which takes the bridge's client slot
+    /// and runs the SDK's graceful shutdown (signal reader task, drain,
+    /// close the child). `Client` has no `Drop` of its own, so without
+    /// that disconnect the child would survive the pool drain.
     /// forge-tui releases its handle reference before calling shutdown,
-    /// so Workspace is the sole owner of every pool entry and dropping
-    /// it triggers the subprocess shutdown chain (sender drop ->
-    /// dispatcher exit -> Client drop -> subprocess kill_on_drop).
-    /// Callers that hold cloned handles across shutdown will need to
-    /// release them for the kill-chain to fire promptly.
+    /// so Workspace is the sole owner of every pool entry. Callers that
+    /// hold cloned handles across shutdown keep the AgentHandle's task
+    /// alive until they release them.
     pub fn shutdown(&self) {
         // Release any live dictation before the pools go: a recording
         // task outliving its session's teardown would otherwise hold
         // the microphone for a composer nobody can reach.
         crate::dictate::teardown_all(self);
         // Drop command senders first so every SessionTask sees its
-        // command channel close and exits cleanly.
+        // command channel close and exits cleanly; each task's exit
+        // path then disconnects its subprocess (see the doc above).
         let _ = self.command_senders.lock().drain().collect::<Vec<_>>();
         let _ = self.domain_handles.lock().drain().collect::<Vec<_>>();
-        let entries: Vec<_> = self.pool.lock().drain().collect();
-        // Each (SessionKey, PooledAgent) drops here; the subprocess
-        // teardown chain (sender drop -> dispatcher exit -> Client
-        // drop -> subprocess kill_on_drop) is synchronous and fast.
-        drop(entries);
+        drop(self.pool.lock().drain().collect::<Vec<_>>());
     }
-
-    /// Release a single session's pool entry. Drops the workspace's
     /// `Arc<AgentHandle>` for that key so the underlying `claude`
     /// subprocess exits once the consumer (forge-tui's bucket) also
     /// **Cascade-aware** lead release. Use this when closing a project's
@@ -5393,6 +5391,11 @@ impl Workspace {
             // (the worker never existed; the user-visible signal is
             // the typed notice routed to the lead, not the worker row).
             self.remove_worker_by_session_key(session_key);
+            // Same release the tag-rollback arm runs: without it the
+            // synth-keyed pool entry + command sender + domain handle +
+            // SessionTask leak per failed fresh spawn, unbounded across
+            // retries.
+            self.release_session(session_key);
             // A dynamic worker persisted its row on the optimistic spawn
             // reply, before this async failure. A worktree-creation
             // failure is a hard removal (the worker never started), so
@@ -13956,7 +13959,9 @@ mod async_worker_spawn_failure_tests {
     /// #2: a worktree-creation failure is a hard removal (the worker
     /// never started), so it deletes the persisted dynamic-worker row -
     /// otherwise the row zombie-re-spawns every restart despite a
-    /// visibly-failed spawn.
+    /// visibly-failed spawn. Also mirrors the tag-rollback arm's
+    /// `release_session`: the synth-keyed pool entry + command sender
+    /// must not leak per failed fresh spawn.
     #[tokio::test]
     async fn worktree_failure_deletes_persisted_dynamic_worker_row() {
         let (workspace, _update_rx) = Workspace::testing_stub();
@@ -13979,12 +13984,25 @@ mod async_worker_spawn_failure_tests {
         install_lead_in_pool(&workspace, lead_id);
 
         let session_key = SessionKey::from_session_id(synth_key);
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<Command>();
+        workspace.pool.lock().insert(
+            session_key.clone(),
+            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
+        );
+        workspace.command_senders.lock().insert(session_key.clone(), cmd_tx);
+
         let worktree_msg = "fatal: 'reviewer' is already used by worktree at /a";
         assert!(workspace.handle_async_worker_spawn_failure(&session_key, worktree_msg));
 
         assert!(
             persisted_labels(&workspace, "proj-x").is_empty(),
             "worktree-failure hard removal deletes the persisted row",
+        );
+        assert!(
+            !workspace.pool.lock().contains_key(&session_key)
+                && !workspace.command_senders.lock().contains_key(&session_key),
+            "the failed spawn's synth-keyed session registrations are released",
         );
     }
 

@@ -86,6 +86,25 @@ impl AgentHandle {
         self.bridge.env()
     }
 
+    /// Disconnect the bound `claude` subprocess: take the bridge's
+    /// client slot and run the SDK's graceful shutdown (signal the
+    /// reader task, drain, close the child). Both layers are
+    /// idempotent via `Option::take`, so repeated calls on clones are
+    /// no-ops. Called from `SessionTask`'s exit path so release /
+    /// despawn / teardown paths actually kill the subprocess instead
+    /// of leaving it alive until forge exits.
+    pub async fn disconnect(&self) {
+        if let Some(client) = self.bridge.clear_client()
+            && let Err(err) = client.disconnect().await
+        {
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                error = %err,
+                "client disconnect failed during session teardown",
+            );
+        }
+    }
+
     // ---- Fire-and-forget AgentCommand shorthands ----
     //
     // Each method builds the matching `AgentCommand` variant and pushes it

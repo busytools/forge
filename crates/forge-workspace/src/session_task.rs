@@ -111,7 +111,9 @@ impl SessionTask {
                 maybe_event = event_rx.recv() => {
                     let Some(event) = maybe_event else { break; };
                     let event = self.merge_catalog_models(event).await;
-                    self.translate_event(event);
+                    if !self.translate_event(event) {
+                        break;
+                    }
                 }
                 maybe_cmd = self.command_rx.recv() => {
                     let Some(cmd) = maybe_cmd else { break; };
@@ -136,6 +138,12 @@ impl SessionTask {
         if let Some(workspace) = self.workspace.upgrade() {
             workspace.release_session_if_current(&self.key, &self.handle);
         }
+        // Take the bridge's client slot and run the SDK's graceful
+        // shutdown. Without this, release / despawn / reader-death left
+        // the `claude` subprocess (and its reader/writer/stderr tasks)
+        // alive until forge exited - the bridge holds the `Client` and
+        // `Client` has no `Drop` of its own.
+        self.handle.disconnect().await;
     }
 
     /// Swap an OpenRouter session's discovered `available_models` for
@@ -183,7 +191,11 @@ impl SessionTask {
     /// (or pair of updates for `Connected`, which also emits
     /// `KeyRenamed` if a synthetic spawn key is pending). Updates
     /// `DomainSession` in-place before each emit.
-    fn translate_event(&mut self, event: AgentEvent) {
+    ///
+    /// Returns `true` to keep the run loop running; `false` when the
+    /// event is terminal for this task and the loop must exit (so the
+    /// exit path releases the session and disconnects the subprocess).
+    fn translate_event(&mut self, event: AgentEvent) -> bool {
         // First, update DomainSession in-place.
         {
             let mut guard = self.domain.lock();
@@ -420,7 +432,30 @@ impl SessionTask {
                     // - this branch is a no-op for them.
                     workspace.handle_async_worker_spawn_failure(&key, &message);
                 }
-                self.emit(SessionUpdate::ConnectionFailed { key, message, fatal: false });
+                self.emit(SessionUpdate::ConnectionFailed {
+                    key: key.clone(),
+                    message,
+                    fatal: false,
+                });
+                // Terminal for this task: the spawn failed before any
+                // Connected, so the pooled handle is dead and must not
+                // survive it - otherwise the pool fast path hands the
+                // dead handle back to every later click / cron fire /
+                // peer ask and the retry "succeeds" into nothing.
+                // Release both registrations (the resolved key the
+                // workspace maps hold, and the synth key while the TUI
+                // may still route to it); `release_session_if_current`
+                // no-ops on absent keys. The run loop then exits, so
+                // Drop's expiry backstop fires too.
+                if let Some(workspace) = self.workspace.upgrade() {
+                    workspace.release_session_if_current(&self.key, &self.handle);
+                    if let Some(spawn_key) = self.spawn_key.clone()
+                        && spawn_key != self.key
+                    {
+                        workspace.release_session_if_current(&spawn_key, &self.handle);
+                    }
+                }
+                return false;
             }
             AgentEvent::PermissionRequest { session_id, request } => {
                 let session_key = SessionKey::from_session_id(session_id.clone());
@@ -600,6 +635,7 @@ impl SessionTask {
                 });
             }
         }
+        true
     }
 
     /// Mark this session's account rate-limited on a live 429 so the
@@ -1238,10 +1274,12 @@ fn warn_no_session(key: &SessionKey, command: &'static str) {
 /// account info) lives on the TUI's `UiSession`, populated via the
 /// `SessionUpdate` envelopes the task emits.
 pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEvent) {
-    // Always overwrite so /new / /login / /logout don't leave the
-    // mirror stale on the second-Connected emission. A fresh identity
-    // has no turn in flight yet, so clear the runtime mirror + the
-    // turn-commit marker too.
+    if let AgentEvent::ConnectionFailed { .. } = event {
+        // The subprocess is gone - drop the runtime/turn mirrors so the
+        // `/account` backstop doesn't read a stale in-flight turn.
+        domain.runtime_state = None;
+        domain.turn_pending = false;
+    }
     if let AgentEvent::Connected { session_id, .. } = event {
         domain.session_id = Some(SessionId::new(session_id.clone()));
         domain.runtime_state = None;
@@ -1722,6 +1760,105 @@ mod tests {
         assert_eq!(key, reviewer);
     }
 
+    /// A `ConnectionFailed` event is terminal for the task: the dead
+    /// spawn's pool entry and command sender are released so the next
+    /// retry (projects-pane click, cron fire) re-spawns instead of
+    /// dispatching into the dead handle, the TUI still receives the
+    /// user-visible `SessionUpdate::ConnectionFailed`, and
+    /// `translate_event` signals the run loop to exit so `Drop`'s
+    /// expiry backstop fires.
+    #[tokio::test]
+    async fn connection_failed_releases_registrations_and_terminates() {
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub").await;
+        let key = SessionKey::from_str_for_test("dead-spawn");
+        let (handle, _cmds) = Agent::testing_stub();
+        let handle = Arc::new(handle);
+        let (cmd_tx, command_rx) = mpsc::unbounded_channel();
+        let (update_tx, mut update_rx) = mpsc::unbounded_channel();
+        workspace.pool.lock().insert(
+            key.clone(),
+            crate::workspace::PooledAgent {
+                handle: Arc::clone(&handle),
+                account: crate::account::AccountKey("Acct".to_owned()),
+            },
+        );
+        workspace.command_senders.lock().insert(key.clone(), cmd_tx);
+        workspace.register_domain_session(key.clone(), Some(Arc::clone(&handle)));
+        let mut task = SessionTask {
+            key: key.clone(),
+            handle,
+            command_rx,
+            domain: Arc::new(Mutex::new(DomainSession::new(key.clone(), None))),
+            update_tx,
+            spawn_key: None,
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        let continues = task
+            .translate_event(AgentEvent::ConnectionFailed { message: "spawn failed".to_owned() });
+
+        assert!(!continues, "ConnectionFailed must terminate the task");
+        assert!(
+            !workspace.pool.lock().contains_key(&key),
+            "pool entry released so a retry spawns fresh"
+        );
+        assert!(!workspace.command_senders.lock().contains_key(&key), "command sender released");
+        let update = update_rx.try_recv().expect("an update emits");
+        assert!(
+            matches!(
+                update,
+                SessionUpdate::ConnectionFailed { key: ref emitted, .. } if *emitted == key
+            ),
+            "the TUI still receives the ConnectionFailed envelope"
+        );
+    }
+
+    /// A `ConnectionFailed` on a task that still carries its synthetic
+    /// spawn key releases BOTH registrations - the synth key the TUI
+    /// may still route to, and the resolved key the pool holds.
+    #[tokio::test]
+    async fn connection_failed_releases_spawn_key_registrations_too() {
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub").await;
+        let key = SessionKey::from_str_for_test("real-key");
+        let spawn_key = SessionKey::from_str_for_test("__spawn_proj__");
+        let (handle, _cmds) = Agent::testing_stub();
+        let handle = Arc::new(handle);
+        let (cmd_tx, command_rx) = mpsc::unbounded_channel();
+        let (update_tx, _update_rx) = mpsc::unbounded_channel();
+        workspace.pool.lock().insert(
+            key.clone(),
+            crate::workspace::PooledAgent {
+                handle: Arc::clone(&handle),
+                account: crate::account::AccountKey("Acct".to_owned()),
+            },
+        );
+        workspace.command_senders.lock().insert(key.clone(), cmd_tx);
+        let mut task = SessionTask {
+            key: key.clone(),
+            handle: Arc::clone(&handle),
+            command_rx,
+            domain: Arc::new(Mutex::new(DomainSession::new(key.clone(), None))),
+            update_tx,
+            spawn_key: Some(spawn_key.clone()),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        let continues = task
+            .translate_event(AgentEvent::ConnectionFailed { message: "spawn failed".to_owned() });
+
+        assert!(!continues);
+        assert!(
+            !workspace.pool.lock().contains_key(&key),
+            "pool entry under the real key released"
+        );
+        assert!(
+            !workspace.command_senders.lock().contains_key(&key),
+            "command sender under the real key released"
+        );
+    }
+
     /// The teardown drain must not double-notify a turn that already
     /// ended cleanly - every site shares one idempotent drain.
     #[tokio::test]
@@ -1817,6 +1954,25 @@ mod tests {
             domain.session_id.as_ref().map(std::string::ToString::to_string),
             Some("real-uuid-1".to_owned())
         );
+    }
+
+    /// `apply_event_to_domain` on `AgentEvent::ConnectionFailed`
+    /// clears the runtime/turn mirrors: the subprocess is gone, so the
+    /// `/account` backstop must not read a stale "turn in flight" and
+    /// refuse the switch with "Finish or cancel the current turn".
+    #[test]
+    fn connection_failed_clears_domain_turn_state() {
+        let mut domain = empty_domain();
+        domain.runtime_state = Some(forge_primitives::RuntimeSessionState::Running);
+        domain.turn_pending = true;
+
+        apply_event_to_domain(
+            &mut domain,
+            &AgentEvent::ConnectionFailed { message: "reader died".to_owned() },
+        );
+
+        assert_eq!(domain.runtime_state, None, "runtime_state cleared on ConnectionFailed");
+        assert!(!domain.turn_pending, "turn_pending cleared on ConnectionFailed");
     }
 
     /// A second `Connected` (`/new`, `/login`, `/logout`) overwrites
@@ -2356,10 +2512,8 @@ mod tests {
         }
         assert!(saw_nonfatal, "the failed re-spawn emits ConnectionFailed with fatal=false");
 
-        // The task then exits (dead event stream) and releases the
-        // session - no lingering agent under the key.
-        assert!(workspace.pool.lock().contains_key(&key), "precondition: pooled before exit");
-        task.run().await;
+        // The dead spawn's registrations are released in the arm itself,
+        // before the task exits - no lingering agent under the key.
         assert!(
             !workspace.pool.lock().contains_key(&key),
             "a failed re-spawn leaves no lingering pooled agent",

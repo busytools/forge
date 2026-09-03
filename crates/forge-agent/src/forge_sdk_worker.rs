@@ -556,6 +556,9 @@ async fn reader_loop(
                     error = %err,
                     "forge_sdk reader: events stream errored",
                 );
+                let _ = event_tx.send(AgentEvent::ConnectionFailed {
+                    message: format!("the claude subprocess stream errored: {err}"),
+                });
                 return;
             }
         }
@@ -564,6 +567,9 @@ async fn reader_loop(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
         "forge_sdk reader: events stream closed",
     );
+    let _ = event_tx.send(AgentEvent::ConnectionFailed {
+        message: "the claude subprocess closed its output stream".to_owned(),
+    });
 }
 
 /// The `data` payload of a `system/init` frame, else `None`.
@@ -2498,5 +2504,82 @@ mod tests_permission_options {
             dispatch_permission_action(PermissionAction::AllowWithInput, "", Some(edited.clone()));
         let updated_input = decision.updated_input().expect("allow_with_input carries value");
         assert_eq!(updated_input, &edited);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests_reader_terminal {
+    use super::reader_loop;
+    use crate::client::AgentEvent;
+    use forge_sdk::{Client, OptionsBuilder};
+
+    /// forge-sdk's shared dev fixture. reader_loop only needs a
+    /// completed handshake to hold a `Client`; the stream it drains is
+    /// a private channel the test drives directly.
+    fn sdk_mock_binary() -> String {
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../forge-sdk/tests/fixtures/mock_claude.sh")
+            .to_owned()
+    }
+
+    async fn mock_client() -> (Client, forge_sdk::ClientEvents) {
+        let opts = OptionsBuilder::new().binary(sdk_mock_binary()).build();
+        Client::spawn(opts).await.expect("mock client spawns")
+    }
+
+    /// A stream ERROR must surface as `AgentEvent::ConnectionFailed`
+    /// before `reader_loop` returns - the only terminal signal the
+    /// consumer gets; log-only death leaves the spinner and the turn
+    /// pending forever.
+    #[tokio::test]
+    async fn reader_loop_emits_connection_failed_on_stream_error() {
+        let (client, _events) = mock_client().await;
+        let (stream_tx, stream_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (event_tx, mut observed) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+        stream_tx
+            .send(Err(forge_sdk::Error::Connection { reason: "pipe broke".into() }))
+            .expect("seed a stream error");
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            reader_loop(stream_rx, event_tx, "spawn-id".to_owned(), client, Vec::new()),
+        )
+        .await
+        .expect("reader_loop returns after a stream error");
+
+        match observed.try_recv() {
+            Ok(AgentEvent::ConnectionFailed { message }) => {
+                assert!(
+                    message.contains("pipe broke"),
+                    "the failure message carries the stream error: {message}"
+                );
+            }
+            other => panic!("expected ConnectionFailed on stream error, got {other:?}"),
+        }
+        assert!(observed.try_recv().is_err(), "no further events after the terminal one");
+    }
+
+    /// A clean stream CLOSE (EOF drain, e.g. the child exited) is the
+    /// same terminal: emit, then return.
+    #[tokio::test]
+    async fn reader_loop_emits_connection_failed_on_stream_close() {
+        let (client, _events) = mock_client().await;
+        let (events_tx, events) = tokio::sync::mpsc::unbounded_channel();
+        let (event_tx, mut observed) = tokio::sync::mpsc::unbounded_channel();
+        drop(events_tx);
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            reader_loop(events, event_tx, "spawn-id".to_owned(), client, Vec::new()),
+        )
+        .await
+        .expect("reader_loop returns after the stream closes");
+
+        match observed.try_recv() {
+            Ok(AgentEvent::ConnectionFailed { message }) => {
+                assert!(!message.trim().is_empty(), "the close arm still carries a message");
+            }
+            other => panic!("expected ConnectionFailed on stream close, got {other:?}"),
+        }
     }
 }

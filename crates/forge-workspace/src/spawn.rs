@@ -1213,12 +1213,13 @@ pub(crate) fn handle_close_worker(
 ///
 /// Order matters: the worktree dirty-check runs BEFORE any teardown,
 /// so a dirty worker (uncommitted/untracked or unpushed) is blocked
-/// without being killed (unless `force`). Then the teardown runs (the
-/// subprocess dies on drop - the kill signal is sent synchronously,
-/// before the worktree is touched). Then the worktree is removed. A
-/// post-teardown worktree-removal failure is surfaced as a warning in
-/// the [`DespawnResult`] but never rolls back the kill - teardown and
-/// worktree cleanup are independent.
+/// without being killed (unless `force`). Then the teardown runs -
+/// releasing the session closes the worker's command channel, its
+/// `SessionTask` exits and awaits `AgentHandle::disconnect`, which
+/// signals and drains the subprocess - and then the worktree is
+/// removed. A post-teardown worktree-removal failure is surfaced as a
+/// warning in the [`DespawnResult`] but never rolls back the kill -
+/// teardown and worktree cleanup are independent.
 pub(crate) fn handle_despawn_worker(
     workspace: &Arc<Workspace>,
     project_key: &ProjectKey,

@@ -48,6 +48,11 @@ use forge_primitives::Message;
 /// tasks while one task owns the receiver.
 pub type ClientEvents = mpsc::UnboundedReceiver<Result<Message, Error>>;
 
+/// Budget for the `initialize` handshake inside [`Client::spawn`]. A
+/// wedged CLI (alive, stdout open, never answering) would otherwise
+/// park the caller forever with the child leaked.
+const INIT_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// An active `claude` binary subprocess.
 ///
 /// Construct via [`spawn`](Self::spawn). The init handshake
@@ -203,120 +208,137 @@ impl Client {
         let mut pre_init_messages: VecDeque<Message> = VecDeque::new();
         let mut cached_init_data: Option<serde_json::Value> = None;
         let mut line_number: u64 = 0;
-        let initialization_result = loop {
-            line_number += 1;
-            let line = sub.read_line().await?.ok_or_else(|| Error::Connection {
-                reason: "transport closed stdout before initialize control_response".into(),
-            })?;
-            let value: serde_json::Value = serde_json::from_str(&line)
-                .map_err(|source| Error::JsonDecode { line: line_number, source })?;
-            let ty = value.get("type").and_then(serde_json::Value::as_str).unwrap_or("");
-            match ty {
-                "control_response" => {
-                    let resp_request_id =
-                        value.pointer("/response/request_id").and_then(serde_json::Value::as_str);
-                    if resp_request_id != Some(&init_request_id) {
-                        return Err(Error::message_parse(format!(
-                            "init: control_response request_id mismatch \
-                             (expected {init_request_id:?}, got {resp_request_id:?}); \
-                             raw line: {}",
-                            line.trim_end()
-                        )));
-                    }
-                    let resp_subtype =
-                        value.pointer("/response/subtype").and_then(serde_json::Value::as_str);
-                    if resp_subtype == Some("success") {
-                        let body = value
-                            .pointer("/response/response")
-                            .cloned()
-                            .unwrap_or(serde_json::Value::Null);
-                        break match body {
-                            serde_json::Value::Null => None,
-                            v => Some(v),
-                        };
-                    }
-                    let err_msg = value
-                        .pointer("/response/error")
-                        .and_then(serde_json::Value::as_str)
-                        .map_or_else(
-                            || {
-                                format!(
-                                    "no `error` string field; full response: {}",
-                                    value.pointer("/response").map_or_else(
-                                        || "<missing>".to_string(),
-                                        ToString::to_string,
+        let initialization_result = tokio::time::timeout(INIT_HANDSHAKE_TIMEOUT, async {
+            let response: Option<serde_json::Value> = loop {
+                line_number += 1;
+                let line = sub.read_line().await?.ok_or_else(|| Error::Connection {
+                    reason: "transport closed stdout before initialize control_response".into(),
+                })?;
+                let value: serde_json::Value = serde_json::from_str(&line)
+                    .map_err(|source| Error::JsonDecode { line: line_number, source })?;
+                let ty = value.get("type").and_then(serde_json::Value::as_str).unwrap_or("");
+                match ty {
+                    "control_response" => {
+                        let resp_request_id = value
+                            .pointer("/response/request_id")
+                            .and_then(serde_json::Value::as_str);
+                        if resp_request_id != Some(&init_request_id) {
+                            return Err(Error::message_parse(format!(
+                                "init: control_response request_id mismatch \
+                                     (expected {init_request_id:?}, got {resp_request_id:?}); \
+                                     raw line: {}",
+                                line.trim_end()
+                            )));
+                        }
+                        let resp_subtype =
+                            value.pointer("/response/subtype").and_then(serde_json::Value::as_str);
+                        if resp_subtype == Some("success") {
+                            let body = value
+                                .pointer("/response/response")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null);
+                            break match body {
+                                serde_json::Value::Null => None,
+                                v => Some(v),
+                            };
+                        }
+                        let err_msg = value
+                            .pointer("/response/error")
+                            .and_then(serde_json::Value::as_str)
+                            .map_or_else(
+                                || {
+                                    format!(
+                                        "no `error` string field; full response: {}",
+                                        value.pointer("/response").map_or_else(
+                                            || "<missing>".to_string(),
+                                            ToString::to_string,
+                                        )
                                     )
-                                )
-                            },
-                            ToString::to_string,
+                                },
+                                ToString::to_string,
+                            );
+                        return Err(Error::message_parse(format!("initialize failed: {err_msg}")));
+                    }
+                    "control_request" => {
+                        // Interleaved CLI → SDK request during init -
+                        // most commonly an MCP `mcp_message` bootstrap.
+                        // Dispatch synchronously through the dispatch
+                        // handle (the reader task isn't running yet, so
+                        // there's no concurrent reader to worry about).
+                        let req: crate::control::ControlRequest = serde_json::from_value(value)
+                            .map_err(|e| {
+                                Error::message_parse(format!(
+                                    "line {line_number}: control_request decode: {e}"
+                                ))
+                            })?;
+                        dispatch.dispatch(req).await?;
+                    }
+                    "control_cancel_request" => {
+                        tracing::debug!(
+                            line_number,
+                            "control_cancel_request during init; nothing live to cancel"
                         );
-                    return Err(Error::message_parse(format!("initialize failed: {err_msg}")));
-                }
-                "control_request" => {
-                    // Interleaved CLI → SDK request during init -
-                    // most commonly an MCP `mcp_message` bootstrap.
-                    // Dispatch synchronously through the dispatch
-                    // handle (the reader task isn't running yet, so
-                    // there's no concurrent reader to worry about).
-                    let req: crate::control::ControlRequest = serde_json::from_value(value)
-                        .map_err(|e| {
-                            Error::message_parse(format!(
-                                "line {line_number}: control_request decode: {e}"
-                            ))
-                        })?;
-                    dispatch.dispatch(req).await?;
-                }
-                "control_cancel_request" => {
-                    tracing::debug!(
-                        line_number,
-                        "control_cancel_request during init; nothing live to cancel"
-                    );
-                }
-                _ => match decode_dispatch(&line, line_number)? {
-                    DecodedLine::Message(msg) => {
-                        debug!(line_number, "buffering pre-init frame for caller");
-                        // Capture session id off pre-init messages so
-                        // callers reading session_id() right after
-                        // spawn see a real value when the CLI happens
-                        // to emit init early.
-                        if let Some(id) = msg.session_id()
-                            && !id.is_empty()
-                        {
-                            let mut current = session_id.write();
-                            if current.is_empty() {
-                                *current = id.to_string();
+                    }
+                    _ => match decode_dispatch(&line, line_number)? {
+                        DecodedLine::Message(msg) => {
+                            debug!(line_number, "buffering pre-init frame for caller");
+                            // Capture session id off pre-init messages so
+                            // callers reading session_id() right after
+                            // spawn see a real value when the CLI happens
+                            // to emit init early.
+                            if let Some(id) = msg.session_id()
+                                && !id.is_empty()
+                            {
+                                let mut current = session_id.write();
+                                if current.is_empty() {
+                                    *current = id.to_string();
+                                }
+                            }
+                            // Drop `system/init` from the pre-init buffer -
+                            // the CLI consumes it inside `query._fetch_init`
+                            // and never surfaces it to callers; we mirror.
+                            // Cache its `data` so `forge-agent` can read
+                            // model / mcp / slash-command info off it.
+                            if let Message::System { ref subtype, ref data, .. } = msg
+                                && subtype == "init"
+                            {
+                                cached_init_data = Some(data.clone());
+                            } else {
+                                pre_init_messages.push_back(msg);
                             }
                         }
-                        // Drop `system/init` from the pre-init buffer -
-                        // the CLI consumes it inside `query._fetch_init`
-                        // and never surfaces it to callers; we mirror.
-                        // Cache its `data` so `forge-agent` can read
-                        // model / mcp / slash-command info off it.
-                        if let Message::System { ref subtype, ref data, .. } = msg
-                            && subtype == "init"
-                        {
-                            cached_init_data = Some(data.clone());
-                        } else {
-                            pre_init_messages.push_back(msg);
+                        DecodedLine::Unknown { type_str, raw } => {
+                            tracing::warn!(
+                                type = %type_str,
+                                raw = %raw,
+                                line = line_number,
+                                "unknown top-level type during init - buffering as Message::Unknown"
+                            );
+                            pre_init_messages.push_back(Message::Unknown { type_str, raw });
                         }
-                    }
-                    DecodedLine::Unknown { type_str, raw } => {
-                        tracing::warn!(
-                            type = %type_str,
-                            raw = %raw,
-                            line = line_number,
-                            "unknown top-level type during init - buffering as Message::Unknown"
-                        );
-                        pre_init_messages.push_back(Message::Unknown { type_str, raw });
-                    }
-                    other => {
-                        debug!(
-                            line_number,
-                            ?other,
-                            "unexpected DecodedLine during init fallthrough; ignoring"
-                        );
-                    }
-                },
+                        other => {
+                            debug!(
+                                line_number,
+                                ?other,
+                                "unexpected DecodedLine during init fallthrough; ignoring"
+                            );
+                        }
+                    },
+                }
+            };
+            Ok(response)
+        })
+        .await;
+        let initialization_result = match initialization_result {
+            Ok(result) => result?,
+            Err(_) => {
+                return Err(Error::Connection {
+                    reason: format!(
+                        "initialize handshake timed out after {}s; the CLI never answered the \
+                         initialize control_request",
+                        INIT_HANDSHAKE_TIMEOUT.as_secs()
+                    ),
+                });
             }
         };
         debug!("client init handshake complete");

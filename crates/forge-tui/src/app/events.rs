@@ -3341,6 +3341,55 @@ mod tests {
         assert_eq!(tc.status, model::ToolCallStatus::Failed);
     }
 
+    /// A terminal connection failure ends the session's runtime: the
+    /// stale `Running` mirror must not survive it, or the `/account`
+    /// backstop keeps refusing the switch on a dead session.
+    #[test]
+    fn connection_failed_clears_runtime_session_state() {
+        let mut app = make_test_app();
+        app.set_runtime_session_state(Some(model::RuntimeSessionState::Running));
+
+        let session_key = active_session_key(&app);
+        apply_session_update(
+            &mut app,
+            SessionUpdate::ConnectionFailed {
+                key: session_key,
+                message: "bridge down".into(),
+                fatal: false,
+            },
+        );
+
+        assert_eq!(
+            app.runtime_session_state(),
+            None,
+            "ConnectionFailed clears the runtime session state mirror"
+        );
+    }
+
+    /// Auth-required is the same hard teardown - the runtime mirror
+    /// must not outlive it.
+    #[test]
+    fn auth_required_clears_runtime_session_state() {
+        let mut app = make_test_app();
+        app.set_runtime_session_state(Some(model::RuntimeSessionState::Running));
+
+        let session_key = active_session_key(&app);
+        apply_session_update(
+            &mut app,
+            SessionUpdate::AuthRequired {
+                key: session_key,
+                method_name: "oauth".into(),
+                method_description: "Open browser".into(),
+            },
+        );
+
+        assert_eq!(
+            app.runtime_session_state(),
+            None,
+            "AuthRequired clears the runtime session state mirror"
+        );
+    }
+
     #[test]
     fn fatal_event_clears_active_turn_runtime_tracking() {
         let mut app = make_test_app();
