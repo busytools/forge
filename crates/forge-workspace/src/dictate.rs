@@ -1483,10 +1483,10 @@ mod dictate_lifecycle_tests {
     #[tokio::test]
     async fn a_start_for_a_closed_session_never_holds_the_microphone() {
         let (ws, _updates) = crate::Workspace::testing_stub();
-        // A real engine, so begin_capture gets past readiness and
-        // reaches the liveness check on any machine with an input.
+        // A synthetic engine, so begin_capture gets past the open and
+        // reaches the liveness check on every machine.
         let dir = tempfile::tempdir().unwrap();
-        let engine = forge_dictate::Engine::new(
+        let engine = forge_dictate::test_support::engine_with_synthetic_microphone(
             forge_dictate::ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build(),
         )
         .expect("an engine starts without its weights");

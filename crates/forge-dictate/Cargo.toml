@@ -12,6 +12,12 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Gate for `test_support`, so other crates' tests can build engines whose
+# microphone never touches hardware. Off by default, so nothing of it
+# reaches a production build.
+test-helpers = []
+
 [dependencies]
 # `blocking` on top of the workspace feature set: this crate's API is
 # synchronous by design, so it must not require a caller's runtime. The

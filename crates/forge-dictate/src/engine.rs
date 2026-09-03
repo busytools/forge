@@ -310,6 +310,7 @@ impl Readiness {
 pub struct Engine {
     max_capture: Duration,
     device: Option<String>,
+    recorder: crate::capture::Recorder,
     normalize_options: NormalizeOptions,
     silence_floor: f32,
     /// Set before teardown. The worker checks it between jobs, so a
@@ -363,6 +364,16 @@ impl Engine {
     /// cannot be loaded surfaces from the first [`Ticket::recv`] rather
     /// than here, because that is where it is first used.
     pub fn new(cfg: Config) -> Result<Arc<Engine>, Error> {
+        Self::with_recorder(cfg, crate::capture::record)
+    }
+
+    /// Build the engine recording through `recorder` instead of
+    /// [`crate::capture::record`]. The seam that keeps tests off real
+    /// input hardware.
+    pub(crate) fn with_recorder(
+        cfg: Config,
+        recorder: crate::capture::Recorder,
+    ) -> Result<Arc<Engine>, Error> {
         let dir = crate::fetch::models_dir(&cfg)?;
         let asr_path = dir.join(&cfg.asr_model.file);
         let max_capture = cfg.max_capture;
@@ -387,6 +398,7 @@ impl Engine {
         Ok(Arc::new(Engine {
             max_capture,
             device,
+            recorder,
             normalize_options,
             silence_floor,
             stopping,
@@ -480,9 +492,10 @@ impl Engine {
         let max_capture = self.max_capture;
         let shared = Arc::clone(&recording);
         let wanted = self.device.clone();
+        let record_fn = self.recorder;
         let recorder = std::thread::Builder::new()
             .name("forge-dictate-mic".into())
-            .spawn(move || crate::capture::record(&shared, max_capture, wanted.as_deref(), &ready))
+            .spawn(move || record_fn(&shared, max_capture, wanted.as_deref(), &ready))
             .ok();
 
         // Carried on the capture rather than returned here: `Busy`
@@ -973,13 +986,15 @@ mod tests_engine {
     use super::*;
     use crate::{ConfigBuilder, Samples};
 
-    /// An engine whose weights live in an empty directory. Enough for
-    /// anything decided before a job is queued; a job would fail at
-    /// `recv`, and these tests never queue one.
+    /// An engine whose weights live in an empty directory and whose
+    /// microphone is a stand-in. Enough for anything decided before a
+    /// job is queued; a job would fail at `recv`, and these tests never
+    /// queue one.
     fn engine_without_weights() -> (tempfile::TempDir, Arc<Engine>) {
         let dir = tempfile::tempdir().unwrap();
         let cfg = ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build();
-        let engine = Engine::new(cfg).expect("an engine must start without waiting for weights");
+        let engine =
+            crate::test_support::engine_with_synthetic_microphone(cfg).expect("engine must start");
         (dir, engine)
     }
 
@@ -1082,12 +1097,17 @@ mod tests_engine {
     /// when the recorder cannot open a REAL default - the workspace-level
     /// refusal tests cover that arm without hardware.
     #[test]
+    #[ignore = "opens the real default input; run with --run-ignored all on a machine with a microphone"]
     fn a_fresh_capture_over_a_working_device_carries_no_open_error() {
         let Ok(found) = crate::capture::devices() else { return };
         if !found.iter().any(|d| d.is_default) {
             return;
         }
-        let (_dir, engine) = engine_without_weights();
+        // The real recorder, not the synthetic helper: a stand-in that
+        // always opens would make the assertion a tautology.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build();
+        let engine = Engine::new(cfg).expect("an engine must start without waiting for weights");
         let capture = engine.try_capture("open-error").expect("an idle microphone must be held");
         assert!(
             capture.open_error().is_none(),

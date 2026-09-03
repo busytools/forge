@@ -44,6 +44,9 @@ mod error;
 mod fetch;
 pub mod normalize;
 
+#[cfg(any(test, feature = "test-helpers"))]
+pub mod test_support;
+
 pub use audio::{AudioSource, SAMPLE_RATE, Samples};
 pub use capture::{Device, devices};
 pub use config::{Config, ConfigBuilder, ModelSpec};
