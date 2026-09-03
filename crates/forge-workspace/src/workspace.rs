@@ -3219,12 +3219,7 @@ impl Workspace {
         let _ = self.domain_handles.lock().drain().collect::<Vec<_>>();
         drop(self.pool.lock().drain().collect::<Vec<_>>());
     }
-    /// `Arc<AgentHandle>` for that key so the underlying `claude`
-    /// subprocess exits once the consumer (forge-tui's bucket) also
-    /// **Cascade-aware** lead release. Use this when closing a project's
-    /// lead session from the TUI: the lead-row `×` click, the launchpad's
-    /// per-row close on a failed lead bucket, etc.
-    ///
+
     /// Release a single session's pool entry: drops the workspace's
     /// `Arc<AgentHandle>` for that key so the underlying `claude`
     /// subprocess exits once the consumer (forge-tui's bucket) also
