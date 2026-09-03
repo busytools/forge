@@ -714,7 +714,7 @@ fn append_mcp_servers_section(
         lines.push(Line::from(vec![
             Span::raw(" ".repeat(usize::from(PANE_PAD))),
             Span::styled(connector.to_owned(), Style::default().fg(theme::DIM)),
-            Span::styled(name, Style::default().fg(theme::RUST_ORANGE)),
+            Span::styled(name, Style::default().fg(theme::DIM)),
             Span::raw(" "),
             Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
         ]));
@@ -4397,9 +4397,17 @@ mod tests {
                 text.chars().count(),
             );
         }
-        let name_row =
-            lines.iter().map(line_text).find(|t| t.contains("playwright-local")).expect("name row");
+        let name_line =
+            lines.iter().find(|l| line_text(l).contains("playwright-local")).expect("name row");
+        let name_row = line_text(name_line);
         assert!(name_row.contains('\u{25CF}'), "the glyph survives next to the name");
+        // The name is section chrome; bright colour here is reserved for the status glyph.
+        let name_span = name_line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("playwright-local"))
+            .expect("name span");
+        assert_eq!(name_span.style.fg, Some(theme::DIM), "server name renders in DIM chrome");
     }
 
     // ---------------------------------------------------------
