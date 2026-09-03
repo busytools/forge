@@ -809,6 +809,21 @@ pub(crate) async fn handle_dictate_stop(
     }
 }
 
+/// The notice a refused take carries. The generic string answers only
+/// the genuine no-device case; a named pin that did not open says so,
+/// because "no input device is available" is factually wrong exactly
+/// when a pin names one.
+fn refused_message(error: &forge_dictate::Error) -> String {
+    match error {
+        forge_dictate::Error::NoInputDevice => {
+            "no input device is available · dictation did not start".to_owned()
+        }
+        other => {
+            format!("input device did not open · {other} · dictation did not start")
+        }
+    }
+}
+
 /// Take the microphone, refusing everything a host should say no to
 /// before the first sample. Blocking (the device open waits on the
 /// recorder thread), so it runs under `spawn_blocking`.
@@ -846,8 +861,9 @@ fn begin_capture(
     }
     if let Some(error) = capture.open_error() {
         tracing::warn!(?error, "dictation refused: the input device did not open");
+        let message = refused_message(&error);
         drop(capture);
-        return Err("no input device is available · dictation did not start".to_owned());
+        return Err(message);
     }
     runtime.recording = Some(LiveRecording { key: key.clone(), stop: stop_tx.clone() });
     // A stop the scheduler ordered before this registration is honoured
@@ -1404,6 +1420,23 @@ mod tests {
             pin_echoes,
             vec![Some(DictateDeviceChoice::System), None],
             "the pick echoes when set, and the reset echoes the clear"
+        );
+    }
+
+    #[test]
+    fn a_refused_take_says_what_failed_to_open() {
+        let gone = refused_message(&forge_dictate::Error::DeviceNotFound {
+            wanted: "shure-id".into(),
+            available: String::new(),
+        });
+        assert!(
+            gone.contains("shure-id"),
+            "a pin that did not open must name what it named, got: {gone}"
+        );
+        assert_eq!(
+            refused_message(&forge_dictate::Error::NoInputDevice),
+            "no input device is available · dictation did not start",
+            "the generic string answers only the genuine no-device case"
         );
     }
 
