@@ -374,9 +374,10 @@ pub struct UiSession {
     /// `None` until the first scan completes. Mirrors `git_diff_snapshot`
     /// but holds OS-level process state instead of git state.
     pub process_snapshot: Option<forge_workspace::env::processes::ProcessSnapshot>,
-    /// Generation epoch for the process scanner. Bumped on session
-    /// swap so a scan kicked off against the old `claude_pid` can be
-    /// dropped if it lands after the swap.
+    /// Generation epoch for the process scanner. Bumped alongside
+    /// `git_diff_generation` when a Connected delivers a changed cwd,
+    /// so a scan kicked off against the old `claude_pid` is dropped
+    /// if it lands after the swap.
     pub process_scan_generation: u64,
     /// In-flight scan guard. `request_refresh` short-circuits when
     /// already `true`.

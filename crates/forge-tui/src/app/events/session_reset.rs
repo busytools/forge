@@ -42,6 +42,10 @@ fn reset_session_identity_state(
     super::clear_compaction_state(app, false);
     *app.session_usage_mut() = super::super::SessionUsageState::default();
     app.set_runtime_session_state(None);
+    app.set_observed_permission_mode(None);
+    app.set_observed_effort(None);
+    app.set_observed_assistant_model(None);
+    app.set_pending_mode_rollback(None);
     app.set_prompt_suggestion(None);
     app.set_last_rate_limit_update(None);
     app.should_quit = false;

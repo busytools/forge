@@ -2062,6 +2062,41 @@ mod tests {
         assert!(app.needs_redraw);
     }
 
+    /// The hook-observed mirrors die with the session: a terminal
+    /// connection failure must not leave the dead run's mode/effort
+    /// chips rendered after a reconnect, until the next hook fires.
+    #[test]
+    fn connection_failed_clears_the_hook_observed_mirrors() {
+        let mut app = App::test_default();
+        let (key_a, _key_b) = seed_two_sessions(&mut app);
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::HookObservation {
+                session_id: key_a.as_str().to_owned(),
+                tool_use_id: None,
+                permission_mode: Some("acceptEdits".into()),
+                effort: Some("max".into()),
+                agent_id: None,
+                agent_type: None,
+            },
+        );
+        let a = app.sessions.get(&key_a).expect("a");
+        assert!(a.observed_permission_mode.is_some() && a.observed_effort.is_some());
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::ConnectionFailed {
+                key: key_a.clone(),
+                message: "bridge down".into(),
+                fatal: false,
+            },
+        );
+
+        let a = app.sessions.get(&key_a).expect("a");
+        assert!(a.observed_permission_mode.is_none(), "dead run's mode chip must not survive");
+        assert!(a.observed_effort.is_none(), "dead run's effort chip must not survive");
+    }
+
     #[test]
     fn unknown_session_event_drops_cleanly() {
         let mut app = App::test_default();

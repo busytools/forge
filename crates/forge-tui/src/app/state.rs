@@ -3958,6 +3958,9 @@ impl App {
         self.set_current_model(None);
         self.set_mode(None);
         self.set_runtime_session_state(None);
+        self.set_observed_permission_mode(None);
+        self.set_observed_effort(None);
+        self.set_pending_mode_rollback(None);
         *self.session_usage_mut() = SessionUsageState::default();
     }
 
