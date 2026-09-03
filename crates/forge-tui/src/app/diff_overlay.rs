@@ -5700,10 +5700,12 @@ mod tests {
             branch: forge_primitives::git::GitBranch::default(),
             default_branch: default_branch.map(str::to_owned),
             repo_gate,
+            pushed_sha: None,
             worktree,
             branch_ahead,
             pr: None,
             closes: vec![],
+            pr_fetched_at: None,
         }
     }
 
@@ -6889,10 +6891,12 @@ mod tests {
             branch: forge_primitives::git::GitBranch::Named("stale-cache".to_owned()),
             default_branch: Some("main".to_owned()),
             repo_gate: RepoGate::InRepo,
+            pushed_sha: None,
             worktree: forge_primitives::git_diff::LayerState::Clean,
             branch_ahead: forge_primitives::git_diff::LayerState::Clean,
             pr: None,
             closes: Vec::new(),
+            pr_fetched_at: None,
         });
         set_active_view(&mut app, ActiveView::Chat);
 

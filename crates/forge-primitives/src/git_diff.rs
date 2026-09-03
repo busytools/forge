@@ -72,6 +72,19 @@ pub enum RepoGate {
 pub struct GitDiffSnapshot {
     /// Current branch (Named / Detached / NoRepo / Unknown).
     pub branch: GitBranch,
+    /// HEAD's newest pushed ancestor at scan time: the first sha of
+    /// HEAD's first-parent history the remote already tracks. `None`
+    /// when nothing is pushed, the walk failed, or the PR lookup was
+    /// skipped (default branch / detached). The PR cache key rides on
+    /// this rather than the branch name, so a worktree whose local
+    /// branch differs from the PR's head ref still resolves its PR.
+    pub pushed_sha: Option<String>,
+    /// Wall-clock stamp of the last PR-lookup attempt, `Some` even
+    /// when the attempt found nothing or failed - the refetch timer
+    /// must rate-limit failed lookups too or a persistent `gh`
+    /// failure hammers every 10 s scan. `None` when the PR side never
+    /// ran (non-repo, default branch, detached).
+    pub pr_fetched_at: Option<std::time::SystemTime>,
     /// Resolved default branch (e.g. `main`, `master`), if known.
     /// `None` when `origin/HEAD` is missing AND neither `main` nor
     /// `master` exists as a local ref.
@@ -88,10 +101,12 @@ pub struct GitDiffSnapshot {
     /// commit into a single stat block; the count tells the
     /// renderer "this many commits produced these stats".
     pub branch_ahead: LayerState<GitBranchAhead>,
-    /// Open pull request for the current branch, if one exists. Only
-    /// populated for `Named` non-default branches; `None` otherwise.
-    /// Cached across scans by branch name - refetched only when the
-    /// branch changes (see the scanner's `prev` parameter).
+    /// Open pull request containing the current branch's newest
+    /// pushed ancestor, if one exists. Only populated for `Named`
+    /// non-default branches; `None` otherwise. Cached across scans
+    /// while the branch name and pushed sha both hold and the fetch
+    /// is less than 5 minutes old (see the scanner's `prev`
+    /// parameter).
     pub pr: Option<GitPrInfo>,
     /// Issues the open PR closes (from GitHub's
     /// `closingIssuesReferences`). Empty when there's no PR or the

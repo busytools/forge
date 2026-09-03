@@ -3124,10 +3124,12 @@ mod tests {
             branch,
             default_branch: default.map(str::to_owned),
             repo_gate: if in_repo { RepoGate::InRepo } else { RepoGate::NotARepo },
+            pushed_sha: None,
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Clean,
             pr: None,
             closes: Vec::new(),
+            pr_fetched_at: None,
         }
     }
 
@@ -4461,10 +4463,12 @@ mod tests {
             branch: forge_primitives::git::GitBranch::NoRepo,
             default_branch: None,
             repo_gate,
+            pushed_sha: None,
             worktree: forge_primitives::git_diff::LayerState::Clean,
             branch_ahead: forge_primitives::git_diff::LayerState::Clean,
             pr: None,
             closes: vec![],
+            pr_fetched_at: None,
         });
         app.sessions.insert(key.clone(), session);
         app.active_session_key = Some(key);
