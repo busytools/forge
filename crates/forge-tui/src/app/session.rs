@@ -694,6 +694,10 @@ impl UiSession {
         self.cancelled_turn_pending_hint = false;
         self.pending_cancel = false;
         self.last_rate_limit_update = None;
+        // The workspace no longer holds these for the identity being
+        // torn down; mirrors must not either.
+        self.dictate_overrides = forge_workspace::DictateOverrides::default();
+        self.dictate_device_pin = None;
         self.mcp = McpState::default();
     }
 }
@@ -838,6 +842,25 @@ mod tests {
         session.clear_runtime_identity();
 
         assert!(session.observed_assistant_model.is_none());
+    }
+
+    /// The dictate mirrors ride the same teardown: a hard clear must
+    /// not leave a pin the workspace no longer holds.
+    #[test]
+    fn clear_runtime_identity_clears_the_dictate_mirrors() {
+        let mut session = UiSession {
+            dictate_overrides: forge_workspace::DictateOverrides {
+                styling: Some(forge_workspace::Styling::Formal),
+                ..Default::default()
+            },
+            dictate_device_pin: Some(forge_workspace::DictateDeviceChoice::System),
+            ..UiSession::default()
+        };
+
+        session.clear_runtime_identity();
+
+        assert_eq!(session.dictate_overrides, forge_workspace::DictateOverrides::default());
+        assert_eq!(session.dictate_device_pin, None);
     }
 
     /// Pre-Connect bucket state (cwd, files_accessed, …) accumulated

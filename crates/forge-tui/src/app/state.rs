@@ -3884,6 +3884,9 @@ impl App {
         self.set_pending_mode_rollback(None);
         self.set_pending_model_rollback(None);
         *self.session_usage_mut() = SessionUsageState::default();
+        let bucket = self.active_bucket_mut();
+        bucket.dictate_overrides = forge_workspace::DictateOverrides::default();
+        bucket.dictate_device_pin = None;
     }
 
     pub(crate) fn shift_active_turn_assistant_for_insert(&mut self, idx: usize) {
@@ -6115,6 +6118,12 @@ mod tests {
         usage.context_usage_in_flight = true;
         usage.context_usage_refresh_pending = Some(crate::app::state::types::RefreshPending::Auto);
         usage.last_compaction_pre_tokens = Some(123_456);
+        {
+            let bucket = app.active_bucket_mut();
+            bucket.dictate_overrides.styling = Some(forge_workspace::Styling::Formal);
+            bucket.dictate_device_pin =
+                Some(forge_workspace::DictateDeviceChoice::Device("shure-id".into()));
+        }
 
         app.clear_session_runtime_identity();
 
@@ -6122,6 +6131,16 @@ mod tests {
         assert!(app.current_model().is_none());
         assert!(app.mode().is_none());
         assert_eq!(*app.session_usage(), SessionUsageState::default());
+        let bucket = app.active_bucket_mut();
+        assert_eq!(
+            bucket.dictate_overrides,
+            forge_workspace::DictateOverrides::default(),
+            "a torn-down identity keeps no override mirrors"
+        );
+        assert_eq!(
+            bucket.dictate_device_pin, None,
+            "a torn-down identity keeps no device pin: the workspace holds none"
+        );
     }
 
     #[test]
