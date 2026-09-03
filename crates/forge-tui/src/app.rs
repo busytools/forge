@@ -77,11 +77,11 @@ pub use state::{
     RecentSessionInfo, ReviewRepliesWaiting, SUBAGENT_TAIL_CAP, ScheduleEntry, ScheduleKind,
     ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState, SessionTurnState,
     SessionUsageState, StopHookEntry, StopHookSummaryState, SubagentChildEntry, SubagentEntry,
-    SystemSeverity, TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem, TodoStatus,
-    ToolCallInfo, ToolCallScope, TurnInfo, TurnNoticeLocation, TurnNoticeRef, UsageSnapshot,
-    UsageSourceKind, UsageState, UsageWindow, WelcomeBlock, WorkflowEntry, WorkflowStatus,
-    compute_scrollbar_geometry, control_gutter_start, hash_text_block_content,
-    hash_welcome_block_content, is_execute_tool_name, is_monitor_tool_name,
+    SystemSeverity, TextBlock, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope,
+    TurnInfo, TurnNoticeLocation, TurnNoticeRef, UsageSnapshot, UsageSourceKind, UsageState,
+    UsageWindow, WelcomeBlock, WorkflowEntry, WorkflowStatus, compute_scrollbar_geometry,
+    control_gutter_start, hash_text_block_content, hash_welcome_block_content,
+    is_execute_tool_name, is_monitor_tool_name,
 };
 pub use usage_overlay::UsageOverlayState;
 pub use view::ActiveView;

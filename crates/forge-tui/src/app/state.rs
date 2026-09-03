@@ -18,8 +18,7 @@ pub use messages::{
     hash_text_block_content, hash_welcome_block_content,
 };
 pub use tool_call_info::{
-    AnsweredQuestion, TerminalSnapshotMode, ToolCallInfo, is_execute_tool_name,
-    is_monitor_tool_name,
+    AnsweredQuestion, ToolCallInfo, is_execute_tool_name, is_monitor_tool_name,
 };
 pub use types::{
     AppStatus, AttentionEntry, AttentionKind, BackgroundTask, ExtraUsage, FailedTurn, HelpView,
@@ -4107,11 +4106,7 @@ mod tests {
             content: Vec::new(),
             hidden: false,
             terminal_id: None,
-            terminal_command: None,
             terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
             render_epoch: 0,
@@ -4184,11 +4179,7 @@ mod tests {
             content: Vec::new(),
             hidden: true,
             terminal_id: None,
-            terminal_command: None,
             terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
             render_epoch: 0,
@@ -4262,11 +4253,7 @@ mod tests {
             content: Vec::new(),
             hidden: false,
             terminal_id: None,
-            terminal_command: None,
             terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
             render_epoch: 0,
@@ -4337,11 +4324,7 @@ mod tests {
             content: Vec::new(),
             hidden: false,
             terminal_id: None,
-            terminal_command: None,
             terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
             render_epoch: 0,
@@ -6239,11 +6222,7 @@ mod tests {
                 content: Vec::new(),
                 hidden: false,
                 terminal_id: None,
-                terminal_command: None,
                 terminal_output: Some("x".repeat(1024)),
-                terminal_output_len: 1024,
-                terminal_bytes_seen: 1024,
-                terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
                 monitor_output_tail: Vec::default(),
                 monitor_status: None,
                 render_epoch: 0,
@@ -6280,11 +6259,7 @@ mod tests {
                 content: Vec::new(),
                 hidden: false,
                 terminal_id: Some(terminal_id.to_owned()),
-                terminal_command: Some("echo hi".to_owned()),
                 terminal_output: Some("x".repeat(1024)),
-                terminal_output_len: 1024,
-                terminal_bytes_seen: 1024,
-                terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
                 monitor_output_tail: Vec::default(),
                 monitor_status: None,
                 render_epoch: 0,
@@ -9388,7 +9363,6 @@ mod tests {
     #[test]
     fn cmd_x_clears_collapsed_override_on_all_tool_calls() {
         use crate::agent::model;
-        use crate::app::TerminalSnapshotMode;
         use crate::app::{BlockCache, ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
         let mut app = App::test_default();
         let push_tool = |app: &mut App, id: &str, override_val: bool| {
@@ -9406,11 +9380,7 @@ mod tests {
                     content: Vec::new(),
                     hidden: false,
                     terminal_id: None,
-                    terminal_command: None,
                     terminal_output: None,
-                    terminal_output_len: 0,
-                    terminal_bytes_seen: 0,
-                    terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
                     monitor_output_tail: Vec::default(),
                     monitor_status: None,
                     render_epoch: 0,
@@ -9538,7 +9508,6 @@ mod tests {
     #[test]
     fn click_on_tool_after_cmd_x_sets_fresh_collapsed_override() {
         use crate::agent::model;
-        use crate::app::TerminalSnapshotMode;
         use crate::app::{BlockCache, ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
         fn read_override(app: &App) -> Option<bool> {
             app.active_session()
@@ -9583,11 +9552,7 @@ mod tests {
                 content: Vec::new(),
                 hidden: false,
                 terminal_id: None,
-                terminal_command: None,
                 terminal_output: None,
-                terminal_output_len: 0,
-                terminal_bytes_seen: 0,
-                terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
                 monitor_output_tail: Vec::default(),
                 monitor_status: None,
                 render_epoch: 0,
@@ -9656,11 +9621,7 @@ mod tests {
             content: Vec::new(),
             hidden: false,
             terminal_id: None,
-            terminal_command: None,
             terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
             render_epoch: 0,
@@ -9690,11 +9651,7 @@ mod tests {
             content: Vec::new(),
             hidden: true,
             terminal_id: None,
-            terminal_command: None,
             terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
             render_epoch: 0,

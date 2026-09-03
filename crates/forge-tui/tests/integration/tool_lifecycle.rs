@@ -10,7 +10,7 @@ use forge_tui::agent::model;
 use forge_tui::app::session::UiSession;
 use forge_tui::app::{
     App, AppStatus, BackgroundTask, BlockCache, ChatMessage, MessageBlock, MessageRole,
-    TerminalSnapshotMode, ToolCallInfo, ToolCallScope,
+    ToolCallInfo, ToolCallScope,
 };
 use pretty_assertions::assert_eq;
 
@@ -975,11 +975,7 @@ fn backgrounded_bash_card(id: &str) -> ToolCallInfo {
         content: Vec::new(),
         hidden: false,
         terminal_id: None,
-        terminal_command: None,
         terminal_output: None,
-        terminal_output_len: 0,
-        terminal_bytes_seen: 0,
-        terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
         monitor_output_tail: Vec::default(),
         monitor_status: None,
         render_epoch: 0,

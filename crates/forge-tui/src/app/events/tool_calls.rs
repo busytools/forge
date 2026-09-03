@@ -244,11 +244,7 @@ fn build_tool_info_from_tool_call(
         hidden: is_chat_suppressed
             || matches!(scope, ToolCallScope::SubagentRoot | ToolCallScope::SubagentChild { .. },),
         terminal_id,
-        terminal_command: None,
         terminal_output: None,
-        terminal_output_len: 0,
-        terminal_bytes_seen: 0,
-        terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
         monitor_output_tail: Vec::default(),
         monitor_status,
         render_epoch: 0,
@@ -266,10 +262,7 @@ fn build_tool_info_from_tool_call(
     tool_info.raw_input_bytes =
         tool_info.raw_input.as_ref().map_or(0, ToolCallInfo::estimate_json_value_bytes);
     if let Some(output) = initial_execute_output {
-        tool_info.terminal_output_len = output.len();
-        tool_info.terminal_bytes_seen = output.len();
         tool_info.terminal_output = Some(output);
-        tool_info.terminal_snapshot_mode = crate::app::TerminalSnapshotMode::ReplaceSnapshot;
     }
     tool_info
 }
@@ -399,19 +392,8 @@ fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &To
         if tool_info.terminal_id.is_some() {
             changed |= sync_if_changed(&mut existing.terminal_id, &tool_info.terminal_id);
         }
-        if tool_info.terminal_command.is_some() {
-            changed |= sync_if_changed(&mut existing.terminal_command, &tool_info.terminal_command);
-        }
         if tool_info.terminal_output.is_some() {
             changed |= sync_if_changed(&mut existing.terminal_output, &tool_info.terminal_output);
-            changed |=
-                sync_if_changed(&mut existing.terminal_output_len, &tool_info.terminal_output_len);
-            changed |=
-                sync_if_changed(&mut existing.terminal_bytes_seen, &tool_info.terminal_bytes_seen);
-            changed |= sync_if_changed(
-                &mut existing.terminal_snapshot_mode,
-                &tool_info.terminal_snapshot_mode,
-            );
         }
         if changed {
             existing.mark_tool_call_layout_dirty();
@@ -566,8 +548,9 @@ pub(super) fn log_command_started(app: &App, tc: &ToolCallInfo) {
                 tool_name = %tc.sdk_tool_name,
                 tool_status = ?tc.status,
                 has_terminal = tc.terminal_id.is_some(),
-                has_command = tc.terminal_command.is_some(),
-                terminal_output_bytes = u64::try_from(tc.terminal_output_len).unwrap_or_default(),
+                terminal_output_bytes =
+                    u64::try_from(tc.terminal_output.as_deref().map_or(0, str::len))
+                        .unwrap_or_default(),
                 assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
             );
         }
@@ -583,8 +566,8 @@ pub(super) fn log_command_started(app: &App, tc: &ToolCallInfo) {
             tool_name = %tc.sdk_tool_name,
             tool_status = ?tc.status,
             has_terminal = tc.terminal_id.is_some(),
-            has_command = tc.terminal_command.is_some(),
-            terminal_output_bytes = u64::try_from(tc.terminal_output_len).unwrap_or_default(),
+            terminal_output_bytes = u64::try_from(tc.terminal_output.as_deref().map_or(0, str::len))
+                .unwrap_or_default(),
             assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
         ),
         model::ToolCallStatus::Failed | model::ToolCallStatus::Killed => tracing::warn!(
@@ -608,8 +591,8 @@ pub(super) fn log_command_started(app: &App, tc: &ToolCallInfo) {
             tool_status = ?tc.status,
             error_kind = "command_error",
             has_terminal = tc.terminal_id.is_some(),
-            has_command = tc.terminal_command.is_some(),
-            terminal_output_bytes = u64::try_from(tc.terminal_output_len).unwrap_or_default(),
+            terminal_output_bytes = u64::try_from(tc.terminal_output.as_deref().map_or(0, str::len))
+                .unwrap_or_default(),
             assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
         ),
     }
@@ -630,7 +613,6 @@ pub(super) fn log_terminal_spawned(app: &App, tc: &ToolCallInfo, source: &str) {
         terminal_id = %tc.terminal_id.as_deref().unwrap_or(""),
         tool_name = %tc.sdk_tool_name,
         spawn_source = source,
-        has_command = tc.terminal_command.is_some(),
         assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
     );
 }
@@ -685,11 +667,7 @@ mod tests {
             content: Vec::new(),
             hidden: false,
             terminal_id: None,
-            terminal_command: None,
             terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::new(),
             monitor_status: None,
             render_epoch: 0,
