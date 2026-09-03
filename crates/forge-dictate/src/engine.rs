@@ -1103,7 +1103,11 @@ mod tests_engine {
         if !found.iter().any(|d| d.is_default) {
             return;
         }
-        let (_dir, engine) = engine_without_weights();
+        // The real recorder, not the synthetic helper: a stand-in that
+        // always opens would make the assertion a tautology.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build();
+        let engine = Engine::new(cfg).expect("an engine must start without waiting for weights");
         let capture = engine.try_capture("open-error").expect("an idle microphone must be held");
         assert!(
             capture.open_error().is_none(),
