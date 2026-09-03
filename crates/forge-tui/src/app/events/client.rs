@@ -1423,6 +1423,7 @@ pub(super) fn apply_session_update_key_renamed(app: &mut App, from: &SessionKey,
     }
     if app.active_session_key.as_ref() == Some(from) {
         app.active_session_key = Some(to);
+        app.refresh_status_from_active_lifecycle();
     }
     app.needs_redraw = true;
 }
@@ -1465,6 +1466,33 @@ mod tests {
 
     use super::*;
     use crate::app::session::{SessionLifecycleState, UiSession};
+
+    /// KeyRenamed moves `active_session_key` when the user sits on the
+    /// spawn synthetic; the status mirror must re-derive from the
+    /// renamed bucket instead of keeping the Connecting the switch-in
+    /// derived.
+    #[test]
+    fn key_renamed_active_move_rederives_status() {
+        let mut app = App::test_default();
+        let synth = forge_workspace::SessionKey::from_session_id("__spawn_demo__");
+        let mut bucket = UiSession::new(synth.clone());
+        bucket.lifecycle_state = SessionLifecycleState::Spawning;
+        app.sessions.insert(synth.clone(), bucket);
+        app.active_session_key = Some(synth.clone());
+        app.status = crate::app::AppStatus::Connecting;
+
+        apply_session_update_key_renamed(
+            &mut app,
+            &synth,
+            forge_workspace::SessionKey::from_session_id("real-uuid"),
+        );
+
+        assert_eq!(
+            app.status,
+            crate::app::AppStatus::Ready,
+            "the renamed bucket is Idle; the mirror follows"
+        );
+    }
 
     /// Only a landed take rides the clipboard along, and it copies
     /// exactly what was inserted - truncated or whole; every other

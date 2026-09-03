@@ -800,39 +800,53 @@ impl App {
         }
     }
 
+    /// Map a bucket lifecycle to the App-level status. Every focus
+    /// move re-runs this (switch-in, KeyRenamed's active move, the
+    /// boot id-adoption), so the mirror tracks the bucket the user
+    /// lands on rather than the one they left.
+    fn status_for_lifecycle(lifecycle: crate::app::session::SessionLifecycleState) -> AppStatus {
+        use crate::app::session::SessionLifecycleState as L;
+        match lifecycle {
+            L::Spawning => AppStatus::Connecting,
+            L::Running => AppStatus::Running,
+            L::Sleeping | L::Idle | L::Attention | L::AuthRequired | L::Failed | L::LoggedOut => {
+                AppStatus::Ready
+            }
+        }
+    }
+
+    /// Re-derive `App.status` from the active bucket's lifecycle.
+    /// `status` is a mirror of the focused bucket, so every path that
+    /// moves `active_session_key` owes one call.
+    pub(crate) fn refresh_status_from_active_lifecycle(&mut self) {
+        let Some(lifecycle) = self.active_session().map(|s| s.lifecycle_state) else {
+            return;
+        };
+        let next = Self::status_for_lifecycle(lifecycle);
+        if self.status != next {
+            self.status = next;
+            self.needs_redraw = true;
+        }
+    }
+
     /// Switch which session the renderer reads from. State on both
     /// sides is preserved (in-memory buckets in `sessions`); the
     /// next paint reflects the new active session. No-op if `key`
-    /// is already active or unknown.
+    /// is already active or unknown; a same-key landing still
+    /// re-derives the status mirror.
     ///
     /// Drops any [`Self::pending_spawn_focus`]: landing somewhere by
     /// any route settles where the user wants to be, so a spawn they
     /// asked for earlier must not pull them back when it arrives.
     pub fn switch_active_session(&mut self, key: forge_workspace::SessionKey) {
-        // Local helper: map a session's lifecycle state to the
-        // App-level status enum so a background turn that completed
-        // while the user was away doesn't leave a stale `Thinking` /
-        // `Running` status on switch-in.
-        fn status_for_lifecycle(
-            lifecycle: crate::app::session::SessionLifecycleState,
-        ) -> AppStatus {
-            use crate::app::session::SessionLifecycleState as L;
-            match lifecycle {
-                L::Spawning => AppStatus::Connecting,
-                L::Running => AppStatus::Running,
-                L::Sleeping
-                | L::Idle
-                | L::Attention
-                | L::AuthRequired
-                | L::Failed
-                | L::LoggedOut => AppStatus::Ready,
-            }
-        }
         // Cleared before the early returns: a click that lands on the
         // session already focused is still the user settling where
         // they want to be.
         self.pending_spawn_focus = None;
         if self.active_session_key.as_ref() == Some(&key) {
+            // A same-key landing still settles the mirror: a focus
+            // move that skipped re-derivation can leave it stale.
+            self.refresh_status_from_active_lifecycle();
             return;
         }
         if !self.sessions.contains_key(&key) {
@@ -863,7 +877,7 @@ impl App {
             bucket.failed_turn = None;
         }
         self.active_session_key = Some(key);
-        self.status = status_for_lifecycle(incoming_lifecycle);
+        self.status = Self::status_for_lifecycle(incoming_lifecycle);
         // Update terminal/tab title immediately on switch so the host
         // terminal reflects the project the user just selected. The
         // render-loop's tab-title call (in `app::run`) only fires
@@ -1090,6 +1104,7 @@ impl App {
                     bucket.session_id = Some(primitive_id.clone());
                 }
                 self.active_session_key = Some(key.clone());
+                self.refresh_status_from_active_lifecycle();
                 // Mirror `session_id` onto the workspace's
                 // DomainSession so `AgentHandle` dispatch (which
                 // routes by claude-issued session UUID) finds it.
@@ -5199,6 +5214,80 @@ mod tests {
         assert!(
             !app.needs_attention_sessions().iter().any(|e| e.session_key == key),
             "the attended failure does not come back on switch-away",
+        );
+    }
+
+    /// The boot id-adoption moves the active key onto the real bucket
+    /// without a switch, so the status mirror must re-derive there
+    /// instead of keeping the boot Connecting.
+    #[test]
+    fn set_session_id_adopts_status_from_the_destination_bucket() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Connecting;
+        let uuid = "11111111-2222-3333-4444-555555555555";
+        let real = forge_workspace::SessionKey::from_session_id(uuid);
+        let mut bucket = crate::app::session::UiSession::new(real.clone());
+        bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+        app.sessions.insert(real.clone(), bucket);
+
+        app.set_session_id(Some(crate::agent::model::SessionId::new(uuid)));
+
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&real),
+            "adoption lands on the real bucket"
+        );
+        assert_eq!(
+            app.status,
+            AppStatus::Ready,
+            "status re-derives from the adopted bucket instead of sticking at Connecting"
+        );
+    }
+
+    /// A pick that lands on the already-focused session must still
+    /// settle the status mirror: after the boot id-adoption the next
+    /// launchpad Enter hits this path with a stale Connecting.
+    #[test]
+    fn same_key_switch_still_derives_status_from_the_bucket() {
+        let mut app = App::test_default();
+        let key = forge_workspace::SessionKey::from_session_id("same");
+        let mut bucket = crate::app::session::UiSession::new(key.clone());
+        bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+        app.sessions.insert(key.clone(), bucket);
+        app.active_session_key = Some(key.clone());
+        app.status = AppStatus::Connecting;
+
+        app.switch_active_session(key);
+
+        assert_eq!(
+            app.status,
+            AppStatus::Ready,
+            "a same-key landing re-derives from the bucket's Idle lifecycle"
+        );
+    }
+
+    /// The launchpad-stall repro end to end: the boot adoption moves
+    /// focus, the user's first pick lands on the same key, and the
+    /// composer must come out of the blocked-input set.
+    #[test]
+    fn boot_adoption_then_same_key_pick_leaves_the_composer_typable() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Connecting;
+        let real = forge_workspace::SessionKey::from_session_id("boot-resumed");
+        let mut bucket = crate::app::session::UiSession::new(real.clone());
+        bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+        app.sessions.insert(real.clone(), bucket);
+
+        app.set_session_id(Some(crate::agent::model::SessionId::new("boot-resumed")));
+        app.switch_active_session(real);
+
+        assert!(
+            !matches!(
+                app.status,
+                AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error
+            ),
+            "the composer must be typable after the pick, got {:?}",
+            app.status
         );
     }
 
