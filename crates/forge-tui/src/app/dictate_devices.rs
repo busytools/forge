@@ -10,6 +10,13 @@
 //! flashes the list empty nor stacks walks. The spawn happens in the
 //! main-loop [`tick`], never in `open` itself: unit tests drive the
 //! overlay without a runtime and inject catalogs directly.
+//!
+//! The walk runs once per open, not per frame, because the cpal
+//! listing itself trips a TCC microphone check (auth-allowed, no
+//! prompt, no device open). Between walks the catalog is frozen: a
+//! device unplugged since the last open stays selectable until the
+//! next open re-enumerates - the replacement never clears a still-
+//! shown list.
 
 use std::sync::mpsc as std_mpsc;
 
