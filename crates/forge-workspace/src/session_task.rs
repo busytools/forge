@@ -311,6 +311,17 @@ impl SessionTask {
                     // buffer this turn's review actions sit in.
                     let caller = self.domain.lock().key.clone();
                     self.drain_review_activity_for(&caller);
+                    // Session-scoped `/dictate` state dies with the
+                    // identity too: the TUI mints a blank bucket for
+                    // the replaced session, so a pick (or an override)
+                    // left here would record on a session that no
+                    // longer exists while the readout claims the
+                    // configured default.
+                    {
+                        let mut domain = self.domain.lock();
+                        domain.dictate_overrides = crate::dictate::DictateOverrides::default();
+                        domain.dictate_device = None;
+                    }
                     let previous_key = self.key.clone();
                     self.rekey_to(&real_key);
                     self.emit(SessionUpdate::SessionReplaced {
@@ -323,6 +334,17 @@ impl SessionTask {
                         mode,
                         history,
                         compaction_count,
+                    });
+                    // After SessionReplaced so the echoes land on the
+                    // fresh bucket the TUI minted for it: the cleared
+                    // values re-affirm the blank state.
+                    self.emit(SessionUpdate::DictateOverrides {
+                        key: real_key.clone(),
+                        overrides: crate::dictate::DictateOverrides::default(),
+                    });
+                    self.emit(SessionUpdate::DictateDevicePin {
+                        key: real_key.clone(),
+                        pick: None,
                     });
                 } else {
                     self.rekey_to(&real_key);
@@ -1246,6 +1268,7 @@ pub(crate) fn execute_command_via_handle(
         // Handled inline in `Workspace::dispatch`; never agent traffic.
         misrouted @ (Command::SetDictateOverride { .. }
         | Command::ResetDictateOverrides { .. }
+        | Command::SetDictateDevice { .. }
         | Command::DictateStart { .. }
         | Command::DictateStop { .. }
         | Command::SpawnProject { .. }
@@ -2665,6 +2688,77 @@ mod tests {
             "connected_once=true emits SessionReplaced carrying the resumed conversation",
         );
         assert!(!saw_plain_connected, "an account switch must not emit a fresh Connected");
+    }
+
+    /// The replaced identity's `/dictate` state must die with it: the
+    /// TUI mints a blank bucket for the new session, so a pick left on
+    /// the domain would record on the previous session's device while
+    /// the fresh readout claims the configured default.
+    #[tokio::test]
+    async fn a_replaced_identity_drops_its_dictate_state_and_echoes_the_clear() {
+        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+        let session_key = SessionKey::from_session_id("dictate-rekey-uuid");
+        let domain =
+            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
+        domain.lock().dictate_overrides.styling = Some(forge_dictate::normalize::Styling::Formal);
+        domain.lock().dictate_device =
+            Some(crate::dictate::DictateDeviceChoice::Device("shure-id".into()));
+
+        let (handle, _agent_cmd_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let mut task = SessionTask {
+            key: session_key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain: Arc::clone(&domain),
+            update_tx: workspace.update_sender(),
+            spawn_key: None,
+            connected_once: true,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        task.translate_event(AgentEvent::Connected {
+            session_id: session_key.as_str().to_owned(),
+            cwd: "/tmp/switch".to_owned(),
+            current_model: forge_primitives::CurrentModel {
+                resolved_id: "claude".to_owned(),
+                display_name_short: "claude".to_owned(),
+                display_name_long: "claude".to_owned(),
+                requested_id: None,
+                catalog_id: None,
+                supports_effort: false,
+                supported_effort_levels: Vec::new(),
+                supports_auto_mode: None,
+                supports_adaptive_thinking: None,
+                is_authoritative: true,
+            },
+            available_models: Vec::new(),
+            mode: None,
+            history_updates: None,
+            compaction_count: 0,
+        });
+
+        assert_eq!(
+            domain.lock().dictate_device,
+            None,
+            "the replaced identity must not carry its pick onto the new session"
+        );
+        assert_eq!(domain.lock().dictate_overrides, crate::dictate::DictateOverrides::default());
+
+        let mut replaced_seen = false;
+        let mut pin_echoes = vec![];
+        while let Ok(u) = update_rx.try_recv() {
+            match u {
+                SessionUpdate::SessionReplaced { .. } => replaced_seen = true,
+                SessionUpdate::DictateDevicePin { pick, .. } => {
+                    assert!(replaced_seen, "the echo must land after the fresh bucket is minted");
+                    pin_echoes.push(pick);
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(pin_echoes, vec![None], "the clear echoes with the pick gone");
     }
 
     /// A forced-account switch tears the live session down BEFORE

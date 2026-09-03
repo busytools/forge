@@ -211,6 +211,14 @@ pub enum Command {
     ResetDictateOverrides {
         key: SessionKey,
     },
+    /// Set this session's `/dictate` input-device pick, or clear it
+    /// back to the configured pin. Workspace state on the
+    /// `DomainSession`, never routed to the agent; the echo lands as
+    /// `SessionUpdate::DictateDevicePin`.
+    SetDictateDevice {
+        key: SessionKey,
+        pick: Option<crate::dictate::DictateDeviceChoice>,
+    },
     /// Reconnect a configured MCP server.
     ReconnectMcpServer {
         key: SessionKey,
@@ -490,7 +498,8 @@ impl Command {
             | Self::ReconnectMcpServer { key, .. }
             | Self::ToggleMcpServer { key, .. }
             | Self::SetDictateOverride { key, .. }
-            | Self::ResetDictateOverrides { key } => Some(key),
+            | Self::ResetDictateOverrides { key }
+            | Self::SetDictateDevice { key, .. } => Some(key),
             Self::SpawnProject { .. }
             | Self::SpawnSession { .. }
             | Self::StartDefault { .. }
@@ -559,6 +568,9 @@ impl std::fmt::Debug for Command {
             }
             Self::ResetDictateOverrides { key } => {
                 f.debug_struct("ResetDictateOverrides").field("key", key).finish()
+            }
+            Self::SetDictateDevice { key, .. } => {
+                f.debug_struct("SetDictateDevice").field("key", key).finish_non_exhaustive()
             }
             Self::ReconnectMcpServer { key, server_name } => f
                 .debug_struct("ReconnectMcpServer")
@@ -874,6 +886,13 @@ pub enum SessionUpdate {
         key: SessionKey,
         overrides: crate::dictate::DictateOverrides,
     },
+    /// The input-device pick a session holds after a `/dictate`
+    /// device edit landed. Sent after every `SetDictateDevice`, and
+    /// alongside the overrides echo by a Reset.
+    DictateDevicePin {
+        key: SessionKey,
+        pick: Option<crate::dictate::DictateDeviceChoice>,
+    },
     OauthCredentialsSnapshot {
         session_id: String,
         credentials: Option<OauthCredentials>,
@@ -1057,6 +1076,7 @@ impl SessionUpdate {
             | Self::TurnError { key, .. }
             | Self::ForgeAccountIdentity { key, .. }
             | Self::DictateOverrides { key, .. }
+            | Self::DictateDevicePin { key, .. }
             | Self::SessionsListed { key, .. }
             | Self::ReviewActivityNotice { key, .. }
             | Self::PeerInflightStatsChanged { key, .. }
@@ -1180,6 +1200,9 @@ impl std::fmt::Debug for SessionUpdate {
             }
             Self::DictateOverrides { key, .. } => {
                 f.debug_struct("DictateOverrides").field("key", key).finish_non_exhaustive()
+            }
+            Self::DictateDevicePin { key, .. } => {
+                f.debug_struct("DictateDevicePin").field("key", key).finish_non_exhaustive()
             }
             Self::OauthCredentialsSnapshot { session_id, .. } => f
                 .debug_struct("OauthCredentialsSnapshot")

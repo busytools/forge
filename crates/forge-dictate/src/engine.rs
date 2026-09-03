@@ -472,6 +472,13 @@ impl Engine {
         self.submit(pcm, resample, false, options)
     }
 
+    /// The configured input device id, when one is pinned. A caller
+    /// resolving its own per-capture choice (a session pick over this
+    /// pin) reads it here rather than rebuilding the config.
+    pub fn device(&self) -> Option<&str> {
+        self.device.as_deref()
+    }
+
     /// Take the microphone, labelling the holder so a competing caller
     /// can be told who has it.
     ///
@@ -479,6 +486,19 @@ impl Engine {
     /// own engine is not arbitrated; the operating system decides, and
     /// both may record.
     pub fn try_capture(self: &Arc<Self>, holder: impl Into<String>) -> Result<Capture, Busy> {
+        self.try_capture_with(holder, self.device.as_deref())
+    }
+
+    /// [`Engine::try_capture`], recording from `device` for this one
+    /// capture. `None` is the system default - the same semantics as
+    /// [`crate::Config::device`] - so a caller that resolved a session
+    /// pick passes the resolved value outright rather than layering on
+    /// the configured pin.
+    pub fn try_capture_with(
+        self: &Arc<Self>,
+        holder: impl Into<String>,
+        device: Option<&str>,
+    ) -> Result<Capture, Busy> {
         let mut lock = self.holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(held) = lock.as_deref() {
             return Err(Busy { holder: held.to_owned() });
@@ -491,7 +511,7 @@ impl Engine {
         let (ready, started) = channel();
         let max_capture = self.max_capture;
         let shared = Arc::clone(&recording);
-        let wanted = self.device.clone();
+        let wanted = device.map(str::to_owned);
         let record_fn = self.recorder;
         let recorder = std::thread::Builder::new()
             .name("forge-dictate-mic".into())
@@ -1046,6 +1066,61 @@ mod tests_engine {
         assert!(
             matches!(err, Error::SampleRate { expected: SAMPLE_RATE, actual: 44_100 }),
             "a wrong rate must be refused synchronously rather than resampled, got: {err:?}"
+        );
+    }
+
+    /// Refuses to open with the device it was handed in the error, so a
+    /// test can read back exactly which choice reached the recorder
+    /// without touching hardware.
+    fn device_echoing_recorder(
+        _shared: &Arc<crate::capture::Recording>,
+        _max_capture: Duration,
+        wanted: Option<&str>,
+        ready: &std::sync::mpsc::Sender<Result<(), Error>>,
+    ) {
+        let _ = ready.send(Err(Error::DeviceNotFound {
+            wanted: wanted.unwrap_or("<system default>").to_owned(),
+            available: String::new(),
+        }));
+    }
+
+    fn echo_engine(device: Option<&str>) -> Arc<Engine> {
+        let dir = tempfile::tempdir().unwrap();
+        let mut builder = ConfigBuilder::new().models_dir(dir.path()).normalizer(None);
+        if let Some(device) = device {
+            builder = builder.device(device);
+        }
+        Engine::with_recorder(builder.build(), device_echoing_recorder).expect("engine must start")
+    }
+
+    /// `try_capture` records from the configured device;
+    /// `try_capture_with` replaces it for the one capture, where `None`
+    /// means the system default and not "whatever is configured".
+    #[test]
+    fn the_per_capture_device_choice_reaches_the_recorder() {
+        let engine = echo_engine(Some("config-device"));
+        let which = |capture: Result<Capture, Busy>| match capture {
+            Ok(capture) => match capture.open_error() {
+                Some(Error::DeviceNotFound { wanted, .. }) => wanted.clone(),
+                other => panic!("the recorder echoes the device back, got {other:?}"),
+            },
+            Err(busy) => panic!("the engine is free: {busy:?}"),
+        };
+
+        assert_eq!(
+            which(engine.try_capture("test")),
+            "config-device",
+            "try_capture must carry the configured device"
+        );
+        assert_eq!(
+            which(engine.try_capture_with("test", Some("pin-device"))),
+            "pin-device",
+            "an explicit per-capture device must replace the configured one"
+        );
+        assert_eq!(
+            which(engine.try_capture_with("test", None)),
+            "<system default>",
+            "None must mean the system default, not the configured device"
         );
     }
 

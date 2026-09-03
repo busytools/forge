@@ -410,6 +410,22 @@ pub struct App {
     /// Mirrors the file_index channel pattern.
     pub git_diff_event_tx: std_mpsc::Sender<crate::app::git_diff::GitDiffEvent>,
     pub git_diff_event_rx: std_mpsc::Receiver<crate::app::git_diff::GitDiffEvent>,
+    /// Send / receive ends of the TUI-internal channel the
+    /// `crate::app::dictate_devices` enumeration tasks use to hand the
+    /// `/dictate` overlay its device catalog. Same shape as
+    /// `git_diff_event_*`.
+    pub dictate_devices_tx: std_mpsc::Sender<crate::app::dictate_devices::DictateDevicesEvent>,
+    pub dictate_devices_rx: std_mpsc::Receiver<crate::app::dictate_devices::DictateDevicesEvent>,
+    /// The last device catalog the workspace enumerated, or why it
+    /// could not. `None` until the first `/dictate` open asks for one;
+    /// a fresh open re-enumerates and replaces it on arrival.
+    pub dictate_devices: Option<Result<forge_workspace::DictateDeviceCatalog, String>>,
+    /// A catalog request is in flight; the tick guards on it so rapid
+    /// opens do not stack walks.
+    pub dictate_devices_in_flight: bool,
+    /// The overlay re-opened since the last walk: the cache is stale
+    /// and the next main-loop tick re-enumerates.
+    pub dictate_devices_dirty: bool,
     /// Send / receive ends of the channel the one-shot
     /// `crate::app::review_waiting` recompute tasks hand their result
     /// back on. Same shape as `git_diff_event_*`.
@@ -3592,6 +3608,7 @@ impl App {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<forge_workspace::SessionUpdate>();
         let (file_index_tx, file_index_rx) = std_mpsc::channel();
         let (git_diff_tx, git_diff_rx) = std_mpsc::channel();
+        let (dictate_devices_tx, dictate_devices_rx) = std_mpsc::channel();
         let (review_waiting_tx, review_waiting_rx) = std_mpsc::channel();
         let (process_scan_tx, process_scan_rx) = std_mpsc::channel();
         let (cli_version_tx, cli_version_rx) = std_mpsc::channel();
@@ -3655,6 +3672,11 @@ impl App {
             file_index_event_rx: file_index_rx,
             git_diff_event_tx: git_diff_tx,
             git_diff_event_rx: git_diff_rx,
+            dictate_devices_tx,
+            dictate_devices_rx,
+            dictate_devices: None,
+            dictate_devices_in_flight: false,
+            dictate_devices_dirty: false,
             review_waiting_event_tx: review_waiting_tx,
             review_waiting_event_rx: review_waiting_rx,
             process_scan_event_tx: process_scan_tx,
@@ -3862,6 +3884,9 @@ impl App {
         self.set_pending_mode_rollback(None);
         self.set_pending_model_rollback(None);
         *self.session_usage_mut() = SessionUsageState::default();
+        let bucket = self.active_bucket_mut();
+        bucket.dictate_overrides = forge_workspace::DictateOverrides::default();
+        bucket.dictate_device_pin = None;
     }
 
     pub(crate) fn shift_active_turn_assistant_for_insert(&mut self, idx: usize) {
@@ -6093,6 +6118,12 @@ mod tests {
         usage.context_usage_in_flight = true;
         usage.context_usage_refresh_pending = Some(crate::app::state::types::RefreshPending::Auto);
         usage.last_compaction_pre_tokens = Some(123_456);
+        {
+            let bucket = app.active_bucket_mut();
+            bucket.dictate_overrides.styling = Some(forge_workspace::Styling::Formal);
+            bucket.dictate_device_pin =
+                Some(forge_workspace::DictateDeviceChoice::Device("shure-id".into()));
+        }
 
         app.clear_session_runtime_identity();
 
@@ -6100,6 +6131,16 @@ mod tests {
         assert!(app.current_model().is_none());
         assert!(app.mode().is_none());
         assert_eq!(*app.session_usage(), SessionUsageState::default());
+        let bucket = app.active_bucket_mut();
+        assert_eq!(
+            bucket.dictate_overrides,
+            forge_workspace::DictateOverrides::default(),
+            "a torn-down identity keeps no override mirrors"
+        );
+        assert_eq!(
+            bucket.dictate_device_pin, None,
+            "a torn-down identity keeps no device pin: the workspace holds none"
+        );
     }
 
     #[test]

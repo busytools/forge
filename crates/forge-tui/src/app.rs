@@ -7,6 +7,7 @@ pub(crate) mod config;
 pub(crate) mod connect;
 mod dialog;
 pub(crate) mod dictate;
+pub(crate) mod dictate_devices;
 pub(crate) mod dictate_key;
 pub(crate) mod dictate_picker;
 pub(crate) mod diff_overlay;
@@ -378,6 +379,8 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 
         file_index::drain_events(app);
         git_diff::drain_events(app);
+        dictate_devices::tick(app);
+        dictate_devices::drain_events(app);
         cli_version::drain_events(app);
         process_scanner::drain_events(app);
         diff_overlay::drain_events(app);
