@@ -216,6 +216,12 @@ pub(crate) fn sample_cap(max_capture: Duration) -> usize {
 /// than any dictation could use.
 const CAP_CEILING: usize = SAMPLE_RATE as usize * 3600;
 
+/// The body a capture thread runs: open the input, record into `shared`
+/// until stopped or capped, answer `ready` either way. The engine holds
+/// one, so a test can stand in a recorder that never touches hardware.
+pub(crate) type Recorder =
+    fn(&Arc<Recording>, Duration, Option<&str>, &std::sync::mpsc::Sender<Result<(), Error>>);
+
 /// Open the default input and record until asked to stop or until
 /// `max_capture` elapses.
 ///
@@ -360,6 +366,7 @@ mod tests_recording {
     }
 
     #[test]
+    #[ignore = "enumerates the real audio devices; run with --run-ignored all on a machine with audio hardware"]
     fn enumeration_names_at_most_one_default() {
         // No audio hardware in CI, so an empty list is a valid answer;
         // what must never happen is two devices both claiming default,
@@ -376,6 +383,7 @@ mod tests_recording {
     }
 
     #[test]
+    #[ignore = "enumerates the real audio devices; run with --run-ignored all on a machine with audio hardware"]
     fn a_named_device_that_is_absent_never_falls_back() {
         // Skipped where there is no audio stack at all, since then the
         // absence proves nothing about the resolution path.
