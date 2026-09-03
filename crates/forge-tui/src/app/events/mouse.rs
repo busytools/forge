@@ -1008,8 +1008,21 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
                 return true;
             }
             PaneHitTarget::InspectorGitPrOpen { url, .. } => {
-                if let Some(workspace) = app.workspace.as_ref() {
-                    let _ = workspace.dispatch(forge_workspace::Command::OpenUrl { url });
+                let Some(workspace) = app.workspace.as_ref() else {
+                    tracing::warn!(
+                        target: crate::logging::targets::APP_INPUT,
+                        event_name = "pr_row_click_no_workspace",
+                        message = "PR-row click dropped: workspace unset",
+                        outcome = "dropped",
+                        url = %url,
+                    );
+                    app.needs_redraw = true;
+                    return true;
+                };
+                if let Err(err) =
+                    workspace.dispatch(forge_workspace::Command::OpenUrl { url: url.clone() })
+                {
+                    push_system_message(app, format!("Failed to open {url}: {err}"));
                 }
                 app.needs_redraw = true;
                 return true;

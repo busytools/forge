@@ -655,10 +655,13 @@ fn same_branch_and_sha(prev: &GitDiffSnapshot, branch: &str, pushed_sha: Option<
 /// Resolve HEAD's newest pushed ancestor: walk HEAD's first-parent
 /// history newest-first (bounded by `cap`) and stop at the first sha
 /// the remote-tracking refs already contain. `None` when nothing of
-/// HEAD's ancestry is pushed, no remote refs exist, or git itself
-/// failed - all truthful "no PR row" states, never errors. The walk
-/// happens inside git so a worktree ahead of the PR tip by unpushed
-/// commits still resolves the commit the PR was pushed from.
+/// HEAD's ancestry is pushed or no remote refs exist (a truthful
+/// negative); a git failure also yields `None` but is an
+/// UNRESOLVABLE lookup, not a negative - the row may flicker off for
+/// one scan while git is broken, WARN-logged, and recovers on the
+/// next scan. The walk happens inside git so a worktree ahead of the
+/// PR tip by unpushed commits still resolves the commit the PR was
+/// pushed from.
 async fn resolve_pushed_sha(cwd: &Path, cap: usize) -> Option<String> {
     let remote_shas =
         match run_git(cwd, &["for-each-ref", "refs/remotes", "--format=%(objectname)"]).await {
@@ -700,9 +703,9 @@ async fn fetch_pr_for_pushed_sha(cwd: &Path, pushed_sha: Option<&str>) -> PrLook
     let raw = match run_gh(cwd, &["api", &endpoint], GhNotFound::Tolerate).await {
         GitOutput::Ok(s) => s,
         GitOutput::Empty => {
-            // `gh` returned exit 0 with empty stdout - unusual for a
-            // list endpoint, which emits at least `[]`. Treat as no
-            // PR rather than a hard failure.
+            // A completed query with a definitive negative: exit 0
+            // with `[]`, or the commit-not-on-remote shape run_gh
+            // folds into Empty. No open PR, no cache-keep.
             return PrLookup::None;
         }
         GitOutput::Failed | GitOutput::Oversize => return PrLookup::Failed,
@@ -734,6 +737,9 @@ async fn fetch_pr_for_pushed_sha(cwd: &Path, pushed_sha: Option<&str>) -> PrLook
 /// actively-evolving PR is the right answer in stacked workflows -
 /// with the higher number breaking ties. One row renders, never a
 /// list.
+///
+/// `updated_at` compares lexicographically, which is chronological
+/// for GitHub's uniform RFC3339 `Z`-suffixed format.
 fn pick_open_pr(raw: &str) -> Result<Option<(u64, String)>, serde_json::Error> {
     let entries: Vec<GhApiPull> = serde_json::from_str(raw)?;
     Ok(entries
@@ -963,7 +969,10 @@ async fn run_gh(cwd: &Path, args: &[&str], not_found: GhNotFound) -> GitOutput {
         let stderr = String::from_utf8_lossy(&output.stderr);
         // The commits/<sha>/pulls endpoint answers HTTP 422 with
         // this prose when the sha isn't on the remote - an unpushed
-        // HEAD mid-work, not an operator fault.
+        // HEAD mid-work, not an operator fault. That is a completed
+        // query with a definitive negative, not a failure, so it
+        // returns Empty (PrLookup::None downstream) rather than
+        // inheriting the keep-cached-PR semantics of Failed.
         if matches!(not_found, GhNotFound::Tolerate) && stderr.contains("No commit found for SHA") {
             tracing::debug!(
                 target: crate::logging::targets::ENV_GIT,
@@ -973,7 +982,7 @@ async fn run_gh(cwd: &Path, args: &[&str], not_found: GhNotFound) -> GitOutput {
                 outcome = "no_data",
                 args = ?args,
             );
-            return GitOutput::Failed;
+            return GitOutput::Empty;
         }
         // gh exits non-zero on: missing auth (4), not a github
         // remote (1), API error (1). All collapse to "no PR" for

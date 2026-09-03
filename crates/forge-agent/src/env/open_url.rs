@@ -21,6 +21,8 @@ const STDERR_DETAIL_CAP: usize = 200;
 
 #[derive(Debug, thiserror::Error)]
 pub enum OpenUrlError {
+    #[error("refusing to open a non-https url: {0}")]
+    UnsupportedScheme(String),
     #[error("the OS opener ({0}) is unavailable: {1}")]
     Unavailable(&'static str, #[source] std::io::Error),
     #[error("the OS opener ({0}) timed out")]
@@ -49,15 +51,23 @@ fn classify_output(
     Err(OpenUrlError::OpenFailed(opener, detail))
 }
 
-/// Hand `url` to the platform's default handler. The url is passed as
-/// a single argv element (no shell), so an odd value fails the opener
-/// rather than executing anything.
+/// Hand `url` to the platform's default handler. Only `https://` urls
+/// are accepted - the opener's argument surface stays structural, not
+/// ambient. Caveat conceded: `xdg-open` exits 0 even when no handler
+/// accepts the url, so a failed open on Linux can read as success;
+/// macOS `open` reports honestly. The url is passed as a single argv
+/// element (no shell), so an odd value fails the opener rather than
+/// executing anything.
 pub async fn open_url(url: &str) -> Result<(), OpenUrlError> {
     const OPENER: &str = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    let output = timeout(COMMAND_TIMEOUT, Command::new(OPENER).arg(url).output())
-        .await
-        .map_err(|_| OpenUrlError::Timeout(OPENER))?
-        .map_err(|err| OpenUrlError::Unavailable(OPENER, err))?;
+    if !url.starts_with("https://") {
+        return Err(OpenUrlError::UnsupportedScheme(url.to_owned()));
+    }
+    let output =
+        timeout(COMMAND_TIMEOUT, Command::new(OPENER).arg(url).kill_on_drop(true).output())
+            .await
+            .map_err(|_| OpenUrlError::Timeout(OPENER))?
+            .map_err(|err| OpenUrlError::Unavailable(OPENER, err))?;
     classify_output(
         OPENER,
         output.status.success(),
@@ -74,6 +84,21 @@ mod tests {
     #[test]
     fn successful_opener_is_ok() {
         assert!(matches!(classify_output("open", true, Some(0), "noise"), Ok(())));
+    }
+
+    /// Only https:// urls reach the opener - the rejection happens
+    /// before any subprocess is spawned, so this test exercises the
+    /// allowlist with no OS interaction.
+    #[tokio::test]
+    async fn non_https_urls_are_refused_before_spawning() {
+        assert!(matches!(
+            open_url("file:///etc/passwd").await,
+            Err(OpenUrlError::UnsupportedScheme(_))
+        ));
+        assert!(matches!(
+            open_url("http://example.com").await,
+            Err(OpenUrlError::UnsupportedScheme(_))
+        ));
     }
 
     /// A failed opener surfaces its stderr as the error detail, so
