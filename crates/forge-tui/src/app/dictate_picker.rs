@@ -225,7 +225,9 @@ pub(crate) fn rows(app: &App) -> Vec<PickerRow> {
         marker: false,
         session_set: false,
         tag: None,
-        selectable: !overrides.is_empty(),
+        // A device-only pick leaves the override axes empty, but back
+        // to defaults still has something to clear.
+        selectable: !overrides.is_empty() || live_device_pin(app).is_some(),
     });
     rows
 }
@@ -582,6 +584,41 @@ mod tests {
         app.sessions.get_mut(&key).expect("bucket").dictate_overrides = overridden();
         let set = rows(&app);
         assert!(set.last().expect("reset row").selectable);
+    }
+
+    /// A device-only pick leaves the override axes empty; the reset
+    /// row is still the way back, so it must stay reachable.
+    #[test]
+    fn a_device_only_pick_keeps_the_reset_row_reachable() {
+        let mut app = App::test_default();
+        app.dictate_devices = Some(Ok(catalog()));
+        let key = app.active_session_key.clone().expect("active session");
+        app.sessions.get_mut(&key).expect("bucket").dictate_device_pin =
+            Some(DictateDeviceChoice::Device("shure-id".into()));
+
+        let reset = rows(&app).last().expect("reset row").clone();
+        assert!(
+            reset.selectable,
+            "a pick the reset must clear exists, whatever the axes say"
+        );
+
+        let workspace = app.workspace.clone().expect("test workspace");
+        workspace.enable_test_dispatch_intercept();
+        crate::app::slash::try_handle_submit(&mut app, "/dictate");
+        let key_codes =
+            |code| KeyEvent::new(code, crossterm::event::KeyModifiers::NONE);
+        for _ in 0..9 {
+            handle_key(&mut app, key_codes(KeyCode::Down));
+        }
+        handle_key(&mut app, key_codes(KeyCode::Enter));
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        match dispatched.last() {
+            Some(forge_workspace::Command::SetDictateOverride { update, .. }) => {
+                assert_eq!(*update, DictateOverrideUpdate::Reset);
+            }
+            other => panic!("a reset dispatch, got {other:?}"),
+        }
     }
 
     #[test]
