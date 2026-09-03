@@ -465,6 +465,14 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 indicator.begin_transcribing();
             }
         }
+        SessionUpdate::DictateProgress { key, generation, window, total } => {
+            if let Some(bucket) = app.session_mut(&key)
+                && let Some(indicator) = bucket.dictate.as_mut()
+                && indicator.generation == generation
+            {
+                indicator.set_progress(window, total);
+            }
+        }
         SessionUpdate::DictateEnded { key, outcome, generation } => {
             app.dictate_take_pending = false;
             if let Some(text) = clipboard_text_for_outcome(&outcome) {

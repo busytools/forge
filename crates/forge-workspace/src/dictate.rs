@@ -588,6 +588,10 @@ fn failure_for(cfg: &forge_dictate::Config, error: &forge_dictate::Error) -> Dic
 /// lands on a repaint without driving it.
 const METER_INTERVAL: Duration = Duration::from_millis(50);
 
+/// How often a submitted take's per-window progress stream is polled.
+/// A window takes seconds to decode; this cannot be felt.
+const PROGRESS_POLL: Duration = Duration::from_millis(150);
+
 /// The microphone side of one dictation: the session that started it
 /// and the channel its recording task polls for the stop decision.
 /// `true` on the channel means submit, `false` means abandon.
@@ -815,7 +819,7 @@ async fn run_recording(
         .domain_session_for(&key)
         .map(|domain| domain.lock().dictate_overrides.normalize_options())
         .unwrap_or_default();
-    let Ok(ticket) = capture.finish_with(options) else {
+    let Ok(mut ticket) = capture.finish_with(options) else {
         tracing::warn!("dictation could not submit its take");
         clear_recording_if_ours(&ws, &key);
         let _ = updates.send(SessionUpdate::DictateEnded {
@@ -833,7 +837,40 @@ async fn run_recording(
     // read, so abandoning this take touches only its own job - a queued
     // take behind it keeps its own token and aborts on its own turn.
     let cancel = ticket.cancel_token();
+    // The per-window progress stream drains off the ticket before the
+    // move; a single-window take emits one step, which the composer
+    // renders as it always has.
+    let mut progress = ticket.take_progress();
     let mut answer = tokio::task::spawn_blocking(move || ticket.recv());
+    // Forward window steps as updates while the take decodes. The task
+    // ends when the engine closes the stream at job end.
+    let forward = updates.clone();
+    let forward_key = key.clone();
+    tokio::spawn(async move {
+        let Some(progress) = progress.as_mut() else { return };
+        let mut tick = tokio::time::interval(PROGRESS_POLL);
+        tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            match progress.try_recv() {
+                Ok(window_step) => {
+                    if forward
+                        .send(SessionUpdate::DictateProgress {
+                            key: forward_key.clone(),
+                            generation,
+                            window: window_step.window,
+                            total: window_step.total,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+            }
+        }
+    });
     let outcome = match wait_for_take(&mut answer, &mut stop, &cancel).await {
         TakeResolution::Abandoned => DictateOutcome::Cancelled,
         TakeResolution::Answered(resolved) => match resolved {
