@@ -817,6 +817,16 @@ impl Workspace {
             #[cfg(any(test, feature = "testing"))]
             test_extra_projects: Mutex::new(Vec::new()),
         };
+        if workspace.db.lock().is_none() {
+            // One user-visible notice for the whole best-effort-persist
+            // class (spinner override, durable crons, Gotify subs): the
+            // store is gone this run, so every one of those warns would
+            // otherwise fire per-op into the log only.
+            let _ = workspace.update_tx.send(SessionUpdate::ServiceStatus {
+                severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
+                message: "Machine-local store unavailable this run; crons, Gotify subscriptions and the spinner override will not persist".to_owned(),
+            });
+        }
         Ok(workspace)
     }
 
@@ -4986,6 +4996,13 @@ impl Workspace {
                         cron_id = %id,
                         "cron fire dispatch failed; leaving it due for the next boot",
                     );
+                    let _ = self.update_tx.send(SessionUpdate::ServiceStatus {
+                        severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
+                        message: format!(
+                            "Cron in '{}' could not fire (its session is shutting down); it stays due for the next boot",
+                            cron.project_name
+                        ),
+                    });
                 }
             }
         }

@@ -419,6 +419,11 @@ pub(crate) fn switch_model(
         key,
         model: model_name.to_owned(),
     }) {
+        // The command never left, so no SetModelFailed can arrive;
+        // undo the optimistic apply here.
+        if app.rollback_pending_model() {
+            app.invalidate_layout(crate::app::state::LayoutInvalidation::Global);
+        }
         let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
             key: session_key,
             message: format!("Failed to run /model: {e}"),
@@ -430,6 +435,17 @@ fn apply_optimistic_model_change(app: &mut App, model_name: &str) {
     use forge_workspace::commands::{build_mode_state_from_supported, supported_mode_ids_filtered};
     use forge_workspace::session_lifecycle::resolve_current_model_from_inputs;
 
+    // Rapid submits overlap: park only the FIRST pre-apply state, so a
+    // rejection of any in-flight request restores the true original and
+    // a refusal for a superseded request cannot consume a newer one.
+    let rollback = if app.pending_model_rollback().is_none() {
+        Some(crate::app::session::ModelRollback {
+            current_model: app.current_model().cloned(),
+            requested_model_id: app.with_turn_state(|ts| ts.requested_model_id.clone()),
+        })
+    } else {
+        None
+    };
     let _: () = app.with_turn_state_mut(|ts| ts.requested_model_id = Some(model_name.to_owned()));
     let (model_id, resolved_runtime) =
         app.with_turn_state(|ts| (ts.model_id.clone(), ts.resolved_runtime_model_id.clone()));
@@ -458,6 +474,9 @@ fn apply_optimistic_model_change(app: &mut App, model_name: &str) {
         let wire_mode_state = build_mode_state_from_supported(mode, &supported);
         let model_mode_state = wire_mode_state;
         crate::app::events::apply_mode_state_update(app, model_mode_state);
+    }
+    if let Some(rollback) = rollback {
+        app.set_pending_model_rollback(Some(rollback));
     }
 }
 

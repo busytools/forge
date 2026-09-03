@@ -1519,6 +1519,27 @@ impl App {
         self.active_bucket_mut().rollback_pending_mode()
     }
 
+    /// Park the optimistic `/model` pre-apply snapshot on the active
+    /// session, for the `SetModelFailed` rollback.
+    pub fn set_pending_model_rollback(
+        &mut self,
+        value: Option<crate::app::session::ModelRollback>,
+    ) {
+        self.active_bucket_mut().pending_model_rollback = value;
+    }
+
+    /// The active session's parked optimistic-`/model` snapshot, if a
+    /// switch is awaiting the CLI's verdict.
+    pub fn pending_model_rollback(&self) -> Option<&crate::app::session::ModelRollback> {
+        self.active_session().and_then(|s| s.pending_model_rollback.as_ref())
+    }
+
+    /// Restore the active session's parked optimistic-`/model`
+    /// snapshot. Returns false when no snapshot is parked.
+    pub fn rollback_pending_model(&mut self) -> bool {
+        self.active_bucket_mut().rollback_pending_model()
+    }
+
     /// Mutable borrow of the active session's mode snapshot.
     pub fn mode_mut(&mut self) -> Option<&mut ModeState> {
         self.active_bucket_mut().mode.as_mut()

@@ -269,6 +269,10 @@ pub enum AgentError {
     /// command could be dispatched.
     #[error("failed to encode launch settings: {0}")]
     EncodeFailed(#[from] serde_json::Error),
+    /// The command needs a session id but the bridge hasn't emitted
+    /// its first `Connected` yet, so it was dropped.
+    #[error("no active session for {command}")]
+    NoSession { command: &'static str },
 }
 
 /// Agent factory - wraps a private `ForgeSdkBridge` behind a channel API.

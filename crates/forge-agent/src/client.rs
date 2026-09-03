@@ -71,6 +71,13 @@ pub enum AgentEvent {
     ConnectionFailed {
         message: String,
     },
+    /// A user-facing turn never reached the CLI (or was never
+    /// acknowledged): the TUI committed to `Thinking` before the
+    /// dispatch, so without this event the spinner never tears down.
+    TurnError {
+        session_id: String,
+        message: String,
+    },
     PermissionRequest {
         session_id: String,
         request: types::PermissionRequest,
@@ -97,6 +104,14 @@ pub enum AgentEvent {
     SetModeFailed {
         session_id: String,
         mode: forge_primitives::PermissionMode,
+        message: String,
+    },
+    /// The CLI refused (or failed) a `set_model` control request.
+    /// `message` carries the underlying error text so the consumer can
+    /// roll back the optimistic model change and surface the reason.
+    SetModelFailed {
+        session_id: String,
+        model: String,
         message: String,
     },
     SessionsListed {

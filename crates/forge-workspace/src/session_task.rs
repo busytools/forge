@@ -564,6 +564,19 @@ impl SessionTask {
                 let session_key = SessionKey::from_session_id(session_id);
                 self.emit(SessionUpdate::SetModeFailed { key: session_key, mode, message });
             }
+            AgentEvent::SetModelFailed { session_id, model, message } => {
+                let session_key = SessionKey::from_session_id(session_id);
+                self.emit(SessionUpdate::SetModelFailed { key: session_key, model, message });
+            }
+            AgentEvent::TurnError { session_id, message } => {
+                let session_key = SessionKey::from_session_id(session_id);
+                self.emit(SessionUpdate::TurnError {
+                    key: session_key,
+                    message,
+                    class: None,
+                    terminal_reason: None,
+                });
+            }
             AgentEvent::SessionsListed { sessions } => {
                 // Route via `spawn_key` while the pre-Connect bucket
                 // is still in place - same pattern as `AuthRequired`
@@ -758,6 +771,15 @@ impl SessionTask {
                         error = %err,
                         "agent command dispatch failed; bridge channel closed?"
                     );
+                    // Surface it - the TUI may already have committed
+                    // optimistic state (Thinking, a flipped chip) that
+                    // unwinds only when the failure is visible.
+                    self.emit(SessionUpdate::TurnError {
+                        key: self.key.clone(),
+                        message: err.to_string(),
+                        class: None,
+                        terminal_reason: None,
+                    });
                 }
             }
         }
@@ -889,6 +911,7 @@ impl SessionTask {
                     error = ?err,
                     "drain_pending_peer_prompts: dispatch failed; prompt dropped"
                 );
+                crate::spawn::send_dispatch_turn_error(&workspace, self.key.clone(), &err);
             }
         }
     }
@@ -915,6 +938,7 @@ impl SessionTask {
                     error = ?err,
                     "drain_pending_cron_prompts: dispatch failed; prompt dropped",
                 );
+                crate::spawn::send_dispatch_turn_error(&workspace, self.key.clone(), &err);
             }
         }
     }
@@ -948,6 +972,7 @@ impl SessionTask {
                     error = ?err,
                     "drain_pending_gotify_prompts: dispatch failed; prompt dropped"
                 );
+                crate::spawn::send_dispatch_turn_error(&workspace, self.key.clone(), &err);
             }
         }
     }
@@ -1159,10 +1184,9 @@ fn on_connected_for_test(
 /// path) and `Workspace::dispatch`'s synchronous test fallback when
 /// no `SessionTask` is running for `key`.
 ///
-/// Returns `Ok(())` on successful enqueue; `Err(...)` only on
-/// AgentHandle send failure (dispatcher channel closed). Commands
-/// requiring a `session_id` that the domain doesn't have yet
-/// (pre-Connect) log a warning and return `Ok(())`.
+/// Returns `Ok(())` on successful enqueue; `Err(...)` on AgentHandle
+/// send failure (dispatcher channel closed) or on a command dropped
+/// for having no `session_id` yet (pre-Connect).
 pub(crate) fn execute_command_via_handle(
     handle: &Arc<AgentHandle>,
     key: &SessionKey,
@@ -1172,29 +1196,25 @@ pub(crate) fn execute_command_via_handle(
     match cmd {
         Command::Prompt { key: _, text, attachments } => {
             let Some(sid) = session_id else {
-                warn_no_session(key, "Prompt");
-                return Ok(());
+                return Err(warn_no_session(key, "Prompt"));
             };
             handle.prompt_with_images(sid.to_owned(), text, attachments)
         }
         Command::Cancel { key: _ } => {
             let Some(sid) = session_id else {
-                warn_no_session(key, "Cancel");
-                return Ok(());
+                return Err(warn_no_session(key, "Cancel"));
             };
             handle.cancel(sid.to_owned())
         }
         Command::SetMode { key: _, mode } => {
             let Some(sid) = session_id else {
-                warn_no_session(key, "SetMode");
-                return Ok(());
+                return Err(warn_no_session(key, "SetMode"));
             };
             handle.set_mode(sid.to_owned(), mode)
         }
         Command::SetModel { key: _, model } => {
             let Some(sid) = session_id else {
-                warn_no_session(key, "SetModel");
-                return Ok(());
+                return Err(warn_no_session(key, "SetModel"));
             };
             handle.set_model(sid.to_owned(), model)
         }
@@ -1206,15 +1226,13 @@ pub(crate) fn execute_command_via_handle(
         }
         Command::ReconnectMcpServer { key: _, server_name } => {
             let Some(sid) = session_id else {
-                warn_no_session(key, "ReconnectMcpServer");
-                return Ok(());
+                return Err(warn_no_session(key, "ReconnectMcpServer"));
             };
             handle.reconnect_mcp_server(sid.to_owned(), server_name)
         }
         Command::ToggleMcpServer { key: _, server_name, enabled } => {
             let Some(sid) = session_id else {
-                warn_no_session(key, "ToggleMcpServer");
-                return Ok(());
+                return Err(warn_no_session(key, "ToggleMcpServer"));
             };
             handle.toggle_mcp_server(sid.to_owned(), server_name, enabled)
         }
@@ -1256,13 +1274,14 @@ pub(crate) fn execute_command_via_handle(
     }
 }
 
-fn warn_no_session(key: &SessionKey, command: &'static str) {
+fn warn_no_session(key: &SessionKey, command: &'static str) -> forge_agent::AgentError {
     tracing::warn!(
         target: "forge_workspace::session_task",
         key = %key.as_str(),
         command,
         "command dropped: no session_id stamped on DomainSession yet",
     );
+    forge_agent::AgentError::NoSession { command }
 }
 
 /// Apply an [`AgentEvent`] to a [`DomainSession`]. Pure mutation; no
@@ -1856,6 +1875,42 @@ mod tests {
         assert!(
             !workspace.command_senders.lock().contains_key(&key),
             "command sender under the real key released"
+        );
+    }
+
+    /// The typed dispatch-failure events map onto their session-keyed
+    /// envelopes: `SetModelFailed` (the /model rollback trigger) and
+    /// `TurnError` (the committed-turn unwind).
+    #[tokio::test]
+    async fn set_model_failed_and_turn_error_map_to_keyed_updates() {
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub").await;
+        let (mut task, mut update_rx) =
+            review_task_for(&workspace, &SessionKey::from_session_id("m"));
+
+        task.translate_event(AgentEvent::SetModelFailed {
+            session_id: "m".to_owned(),
+            model: "claude-attempted".to_owned(),
+            message: "not available".to_owned(),
+        });
+        assert!(
+            matches!(
+                update_rx.try_recv(),
+                Ok(SessionUpdate::SetModelFailed { model, message, .. })
+                    if model == "claude-attempted" && message == "not available"
+            ),
+            "SetModelFailed keeps model + message for the rollback reducer"
+        );
+
+        task.translate_event(AgentEvent::TurnError {
+            session_id: "m".to_owned(),
+            message: "stdin write failed".to_owned(),
+        });
+        assert!(
+            matches!(
+                update_rx.try_recv(),
+                Ok(SessionUpdate::TurnError { message, .. }) if message == "stdin write failed"
+            ),
+            "TurnError carries the failure text so the spinner unwinds"
         );
     }
 
@@ -2621,8 +2676,10 @@ mod tests {
     fn execute_command_without_session_id_is_dropped() {
         let (handle, mut rx) = stub_handle_with_rx();
         let key = SessionKey::from_str_for_test("sess");
-        execute_command_via_handle(&handle, &key, None, Command::Cancel { key: key.clone() })
-            .expect("dispatch returns Ok");
+        let err =
+            execute_command_via_handle(&handle, &key, None, Command::Cancel { key: key.clone() })
+                .expect_err("a no-session dispatch reports the drop, not Ok");
+        assert!(err.to_string().contains("no active session"), "the error names the drop: {err}");
         // Nothing should have been queued.
         assert!(rx.try_recv().is_err());
     }

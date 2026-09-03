@@ -21,6 +21,11 @@ use serde::Deserialize;
 
 use forge_primitives::AccountInfo;
 
+/// Bound on the `claude auth status` shell-out. A hung probe would
+/// otherwise stall the StatusSnapshot (spawn_blocking) and the resume
+/// picker behind it.
+const AUTH_STATUS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// `claude auth status` JSON response. Captured from claude 2.1.117.
 /// Field shape may evolve; we treat all fields as optional and ignore
 /// unknown ones.
@@ -80,14 +85,55 @@ pub fn account_info_from_shell(config_dir: &Path) -> Option<AccountInfo> {
     let mut cmd = std::process::Command::new("claude");
     cmd.args(["auth", "status"]);
     cmd.env("CLAUDE_CONFIG_DIR", config_dir);
-    let output = match cmd.output() {
-        Ok(o) => o,
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
         Err(err) => {
             tracing::warn!(
                 target: "forge_agent::cloud::auth_status",
                 error = %err,
                 config_dir = %config_dir.display(),
                 "claude auth status spawn failed"
+            );
+            return None;
+        }
+    };
+    let started = std::time::Instant::now();
+    let output = loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break child.wait_with_output(),
+            Ok(None) if started.elapsed() < AUTH_STATUS_TIMEOUT => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                tracing::warn!(
+                    target: "forge_agent::cloud::auth_status",
+                    config_dir = %config_dir.display(),
+                    timeout_secs = AUTH_STATUS_TIMEOUT.as_secs(),
+                    "claude auth status killed after timeout",
+                );
+                return None;
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target: "forge_agent::cloud::auth_status",
+                    error = %err,
+                    "claude auth status wait failed"
+                );
+                return None;
+            }
+        }
+    };
+    let output = match output {
+        Ok(o) => o,
+        Err(err) => {
+            tracing::warn!(
+                target: "forge_agent::cloud::auth_status",
+                error = %err,
+                "claude auth status output collection failed"
             );
             return None;
         }

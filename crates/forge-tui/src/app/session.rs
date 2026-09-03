@@ -171,6 +171,10 @@ pub struct UiSession {
     /// to roll the chip back when the CLI refuses the switch
     /// (`SessionUpdate::SetModeFailed`).
     pub pending_mode_rollback: Option<ModeRollback>,
+    /// Pre-apply snapshot taken by the optimistic `/model` apply, used
+    /// to roll the chip back when the CLI refuses the switch
+    /// (`SessionUpdate::SetModelFailed`).
+    pub pending_model_rollback: Option<ModelRollback>,
     /// Hook-observed permission mode. Higher fidelity than [`Self::mode`]
     /// when the CLI changes mode without re-emitting status (#88).
     pub observed_permission_mode: Option<forge_workspace::PermissionMode>,
@@ -646,6 +650,14 @@ pub struct ModeRollback {
     pub supported_mode_ids: Vec<forge_workspace::PermissionMode>,
 }
 
+/// What the optimistic `/model` apply changed, snapshotted so a CLI
+/// refusal (`SessionUpdate::SetModelFailed`) can restore it.
+#[derive(Debug, Clone)]
+pub struct ModelRollback {
+    pub current_model: Option<model::CurrentModel>,
+    pub requested_model_id: Option<String>,
+}
+
 impl UiSession {
     /// Restore the snapshot parked by the optimistic `/mode` apply.
     /// Returns false when no snapshot is parked.
@@ -654,6 +666,15 @@ impl UiSession {
         self.mode = snapshot.mode_state;
         self.turn_state.mode = snapshot.turn_mode;
         self.turn_state.supported_mode_ids = snapshot.supported_mode_ids;
+        true
+    }
+
+    /// Restore the snapshot parked by the optimistic `/model` apply.
+    /// Returns false when no snapshot is parked.
+    pub fn rollback_pending_model(&mut self) -> bool {
+        let Some(snapshot) = self.pending_model_rollback.take() else { return false };
+        self.current_model = snapshot.current_model;
+        self.turn_state.requested_model_id = snapshot.requested_model_id;
         true
     }
 }
@@ -702,6 +723,7 @@ impl Default for UiSession {
             available_agents: Vec::default(),
             mode: Option::default(),
             pending_mode_rollback: Option::default(),
+            pending_model_rollback: Option::default(),
             observed_permission_mode: Option::default(),
             observed_effort: Option::default(),
             observed_assistant_model: Option::default(),

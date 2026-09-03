@@ -688,6 +688,14 @@ pub enum SessionUpdate {
         mode: PermissionMode,
         message: String,
     },
+    /// The CLI refused (or failed) a `set_model` control request for
+    /// `key`. `message` carries the underlying error text; the TUI
+    /// rolls the optimistic model change back and surfaces it.
+    SetModelFailed {
+        key: SessionKey,
+        model: String,
+        message: String,
+    },
     /// Permission prompt. No response_tx - TUI replies via
     /// `Command::RespondPermission { tool_id, outcome }`.
     PermissionRequest {
@@ -911,6 +919,7 @@ impl SessionUpdate {
             | Self::AuthRequired { key, .. }
             | Self::SlashCommandError { key, .. }
             | Self::SetModeFailed { key, .. }
+            | Self::SetModelFailed { key, .. }
             | Self::PermissionRequest { key, .. }
             | Self::QuestionRequest { key, .. }
             | Self::McpOperationError { key, .. }
@@ -998,6 +1007,9 @@ impl std::fmt::Debug for SessionUpdate {
                 .finish_non_exhaustive(),
             Self::SetModeFailed { key, .. } => {
                 f.debug_struct("SetModeFailed").field("key", key).finish_non_exhaustive()
+            }
+            Self::SetModelFailed { key, .. } => {
+                f.debug_struct("SetModelFailed").field("key", key).finish_non_exhaustive()
             }
             Self::PermissionRequest { key, tool_id, .. } => f
                 .debug_struct("PermissionRequest")

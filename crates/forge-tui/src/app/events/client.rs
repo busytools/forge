@@ -169,6 +169,9 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::SetModeFailed { key, mode, message } => {
             session::apply_session_update_set_mode_failed(app, &key, mode, &message);
         }
+        SessionUpdate::SetModelFailed { key, model, message } => {
+            session::apply_session_update_set_model_failed(app, &key, &model, &message);
+        }
         SessionUpdate::ServiceStatus { severity, message } => {
             session::apply_session_update_service_status(app, severity, &message);
         }

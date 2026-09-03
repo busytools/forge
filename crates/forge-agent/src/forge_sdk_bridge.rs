@@ -245,9 +245,29 @@ impl ForgeSdkBridge {
         F: FnOnce(Client) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
     {
+        self.dispatch_with_failure(label, f, |_| None)
+    }
+
+    /// Spawn a fire-and-forget client call. A failure inside the
+    /// spawned future is emitted to the App as the caller's typed
+    /// event (a `None` maps to log-only) - the TUI rolled back nothing
+    /// otherwise: the spinner, the optimistic chip, the waiting
+    /// awaiter all unwind only if this event arrives.
+    fn dispatch_with_failure<F, Fut, T>(
+        &self,
+        label: &'static str,
+        f: F,
+        on_failure: T,
+    ) -> anyhow::Result<()>
+    where
+        F: FnOnce(Client) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
+        T: FnOnce(&anyhow::Error) -> Option<AgentEvent> + Send + 'static,
+    {
         let Some(client) = self.client() else {
             return Err(anyhow::anyhow!("forge-sdk bridge: {label} called before active session"));
         };
+        let event_tx = self.inner.event_tx.clone();
         let span = tracing::info_span!("bridge_dispatch", label);
         tokio::spawn(
             async move {
@@ -258,6 +278,15 @@ impl ForgeSdkBridge {
                         error = %err,
                         "forge-sdk bridge: dispatch failed",
                     );
+                    if let Some(event) = on_failure(&err)
+                        && event_tx.send(event).is_err()
+                    {
+                        tracing::warn!(
+                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                            label,
+                            "event channel closed; typed dispatch failure dropped",
+                        );
+                    }
                 }
             }
             .instrument(span),
@@ -324,26 +353,63 @@ impl ForgeSdkBridge {
             kind: "text".to_owned(),
             value: Value::String(text),
         });
-        self.dispatch("prompt", move |client| async move {
-            forge_sdk_worker::send_prompt(&client, chunks).await
-        })
+        self.dispatch_with_failure(
+            "prompt",
+            move |client| async move { forge_sdk_worker::send_prompt(&client, chunks).await },
+            move |err| {
+                Some(AgentEvent::TurnError {
+                    session_id: session_id.clone(),
+                    message: err.to_string(),
+                })
+            },
+        )
     }
 
     pub(crate) fn cancel(&self, session_id: String) -> anyhow::Result<()> {
         if !self.check_session_id(&session_id, "cancel") {
             return Ok(());
         }
-        self.dispatch("cancel", |client| async move {
-            client.interrupt().await?;
-            Ok(())
-        })
+        let event_tx = self.inner.event_tx.clone();
+        let err_session_id = session_id.clone();
+        self.dispatch_with_failure(
+            "cancel",
+            move |client| async move {
+                match tokio::time::timeout(Self::CONTROL_RESPONSE_TIMEOUT, client.interrupt()).await
+                {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(e)) => Err(e.into()),
+                    Err(_) => {
+                        let message = "interrupt not acknowledged by the CLI".to_owned();
+                        if event_tx
+                            .send(AgentEvent::TurnError {
+                                session_id: session_id.clone(),
+                                message: message.clone(),
+                            })
+                            .is_err()
+                        {
+                            tracing::warn!(
+                                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                                "event channel closed; TurnError dropped",
+                            );
+                        }
+                        Ok(())
+                    }
+                }
+            },
+            move |err| {
+                Some(AgentEvent::TurnError {
+                    session_id: err_session_id,
+                    message: format!("interrupt not acknowledged: {err}"),
+                })
+            },
+        )
     }
 
-    /// `send_control` parks until the CLI's `control_response`; this
-    /// bounds the wait at the CLI's own hook budget so a silent CLI
-    /// surfaces as a refusal instead of a chip stuck on a mode that
+    /// `send_control` parks until the CLI's `control_response`; the
+    /// wait is bounded so a silent CLI surfaces as a typed failure
+    /// instead of a chip/spinner stuck on an optimistic change that
     /// never took.
-    const SET_MODE_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+    const CONTROL_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
     /// The CLI's own refusal text for a failed `set_permission_mode`.
     /// The SDK wraps it twice (`MessageParse` Display + a
@@ -372,7 +438,7 @@ impl ForgeSdkBridge {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("set_mode", move |client| async move {
             let outcome = tokio::time::timeout(
-                Self::SET_MODE_RESPONSE_TIMEOUT,
+                Self::CONTROL_RESPONSE_TIMEOUT,
                 client.set_permission_mode(mode),
             )
             .await;
@@ -414,10 +480,46 @@ impl ForgeSdkBridge {
 
     pub(crate) fn set_model(&self, session_id: String, model: String) -> anyhow::Result<()> {
         if !self.check_session_id(&session_id, "set_model") {
+            // A session-swap race dropped the dispatch; surface it on
+            // the attempted session so the model chip doesn't stay
+            // flipped.
+            let _ = self.inner.event_tx.send(AgentEvent::SetModelFailed {
+                session_id: session_id.clone(),
+                model: model.clone(),
+                message: "the session it was sent to is no longer active".to_owned(),
+            });
             return Ok(());
         }
+        let event_tx = self.inner.event_tx.clone();
         self.dispatch("set_model", move |client| async move {
-            client.set_model(Some(model.as_str())).await?;
+            let outcome = tokio::time::timeout(
+                Self::CONTROL_RESPONSE_TIMEOUT,
+                client.set_model(Some(model.as_str())),
+            )
+            .await;
+            let failure = match outcome {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => {
+                    let text = Self::set_mode_rejection_text(&e);
+                    Some(if text.trim().is_empty() { "no reason given".to_owned() } else { text })
+                }
+                Err(_) => Some("no response from the CLI".to_owned()),
+            };
+            if let Some(message) = failure
+                && event_tx
+                    .send(AgentEvent::SetModelFailed {
+                        session_id: session_id.clone(),
+                        model: model.clone(),
+                        message: message.clone(),
+                    })
+                    .is_err()
+            {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    error = %message,
+                    "event channel closed; SetModelFailed dropped",
+                );
+            }
             Ok(())
         })
     }
@@ -436,7 +538,7 @@ impl ForgeSdkBridge {
         if current.is_empty() || current == session_id {
             return true;
         }
-        tracing::debug!(
+        tracing::warn!(
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
             event_name = "stale_session_dispatch",
             label,
@@ -548,7 +650,25 @@ impl ForgeSdkBridge {
     pub(crate) fn get_context_usage(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("get_context_usage", move |client| async move {
-            let usage = client.get_context_usage().await?;
+            // The footer poll fires this every few seconds; a wedged
+            // CLI must cost one skipped poll, not a parked task per
+            // poll with the Ctx bar frozen.
+            let usage = match tokio::time::timeout(
+                Self::CONTROL_RESPONSE_TIMEOUT,
+                client.get_context_usage(),
+            )
+            .await
+            {
+                Ok(Ok(usage)) => usage,
+                Ok(Err(e)) => return Err(e.into()),
+                Err(_) => {
+                    tracing::warn!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        "context usage probe timed out; skipping this poll",
+                    );
+                    return Ok(());
+                }
+            };
             let percentage = forge_sdk_worker::clamp_percentage_to_u8(usage.percentage);
             // `raw_max_tokens` is the model's nominal context-window
             // size; `max_tokens` is the effective cap after autocompact
@@ -576,8 +696,10 @@ impl ForgeSdkBridge {
     pub(crate) fn reload_plugins(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("reload_plugins", move |client| async move {
-            match client.reload_plugins().await {
-                Ok(_) => {
+            let outcome =
+                tokio::time::timeout(Self::CONTROL_RESPONSE_TIMEOUT, client.reload_plugins()).await;
+            match outcome {
+                Ok(Ok(_)) => {
                     if event_tx.send(AgentEvent::RuntimeReloadCompleted { session_id }).is_err() {
                         tracing::warn!(
                             target: crate::logging::targets::BRIDGE_LIFECYCLE,
@@ -585,8 +707,21 @@ impl ForgeSdkBridge {
                         );
                     }
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     let msg = format!("reload_plugins failed: {e}");
+                    if event_tx
+                        .send(AgentEvent::RuntimeReloadFailed { session_id, message: msg.clone() })
+                        .is_err()
+                    {
+                        tracing::warn!(
+                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                            error = %msg,
+                            "event channel closed; RuntimeReloadFailed dropped",
+                        );
+                    }
+                }
+                Err(_) => {
+                    let msg = "no response from the CLI".to_owned();
                     if event_tx
                         .send(AgentEvent::RuntimeReloadFailed { session_id, message: msg.clone() })
                         .is_err()
@@ -605,23 +740,37 @@ impl ForgeSdkBridge {
 
     pub(crate) fn get_mcp_snapshot(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
-        self.dispatch("get_mcp_snapshot", move |client| async move {
-            let response = client.mcp_status().await?;
-            if event_tx
-                .send(AgentEvent::McpSnapshot {
-                    session_id,
-                    servers: response.mcp_servers,
-                    error: None,
+        let err_session_id = session_id.clone();
+        self.dispatch_with_failure(
+            "get_mcp_snapshot",
+            move |client| async move {
+                let response = client.mcp_status().await?;
+                if event_tx
+                    .send(AgentEvent::McpSnapshot {
+                        session_id,
+                        servers: response.mcp_servers,
+                        error: None,
+                    })
+                    .is_err()
+                {
+                    tracing::warn!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        "event channel closed; McpSnapshot dropped",
+                    );
+                }
+                Ok(())
+            },
+            move |err| {
+                Some(AgentEvent::McpOperationError {
+                    session_id: err_session_id,
+                    error: forge_primitives::McpOperationError {
+                        operation: "status".to_owned(),
+                        server_name: None,
+                        message: err.to_string(),
+                    },
                 })
-                .is_err()
-            {
-                tracing::warn!(
-                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                    "event channel closed; McpSnapshot dropped",
-                );
-            }
-            Ok(())
-        })
+            },
+        )
     }
 
     pub(crate) fn reconnect_mcp_server(
@@ -630,18 +779,42 @@ impl ForgeSdkBridge {
         server_name: String,
     ) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
-        self.dispatch("reconnect_mcp_server", move |client| async move {
-            if let Err(e) = client.mcp_reconnect(&server_name).await {
-                Self::emit_mcp_error_or_log(
-                    &event_tx,
-                    session_id,
-                    "reconnect",
-                    Some(server_name),
-                    format!("{e}"),
-                );
-            }
-            Ok(())
-        })
+        let err_session_id = session_id.clone();
+        let err_server_name = server_name.clone();
+        self.dispatch_with_failure(
+            "reconnect_mcp_server",
+            move |client| async move {
+                match tokio::time::timeout(
+                    Self::CONTROL_RESPONSE_TIMEOUT,
+                    client.mcp_reconnect(&server_name),
+                )
+                .await
+                {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(e)) => Err(e.into()),
+                    Err(_) => {
+                        Self::emit_mcp_error_or_log(
+                            &event_tx,
+                            session_id,
+                            "reconnect",
+                            Some(server_name),
+                            "no response from the CLI".to_owned(),
+                        );
+                        Ok(())
+                    }
+                }
+            },
+            move |err| {
+                Some(AgentEvent::McpOperationError {
+                    session_id: err_session_id,
+                    error: forge_primitives::McpOperationError {
+                        operation: "reconnect".to_owned(),
+                        server_name: Some(err_server_name),
+                        message: err.to_string(),
+                    },
+                })
+            },
+        )
     }
 
     pub(crate) fn toggle_mcp_server(
@@ -651,18 +824,42 @@ impl ForgeSdkBridge {
         enabled: bool,
     ) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
-        self.dispatch("toggle_mcp_server", move |client| async move {
-            if let Err(e) = client.mcp_toggle(&server_name, enabled).await {
-                Self::emit_mcp_error_or_log(
-                    &event_tx,
-                    session_id,
-                    "toggle",
-                    Some(server_name),
-                    format!("{e}"),
-                );
-            }
-            Ok(())
-        })
+        let err_session_id = session_id.clone();
+        let err_server_name = server_name.clone();
+        self.dispatch_with_failure(
+            "toggle_mcp_server",
+            move |client| async move {
+                match tokio::time::timeout(
+                    Self::CONTROL_RESPONSE_TIMEOUT,
+                    client.mcp_toggle(&server_name, enabled),
+                )
+                .await
+                {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(e)) => Err(e.into()),
+                    Err(_) => {
+                        Self::emit_mcp_error_or_log(
+                            &event_tx,
+                            session_id,
+                            "toggle",
+                            Some(server_name),
+                            "no response from the CLI".to_owned(),
+                        );
+                        Ok(())
+                    }
+                }
+            },
+            move |err| {
+                Some(AgentEvent::McpOperationError {
+                    session_id: err_session_id,
+                    error: forge_primitives::McpOperationError {
+                        operation: "toggle".to_owned(),
+                        server_name: Some(err_server_name),
+                        message: err.to_string(),
+                    },
+                })
+            },
+        )
     }
 
     pub(crate) fn new_session(
@@ -932,5 +1129,90 @@ mod tests {
             other.to_string(),
             "non-control errors pass through as their Display",
         );
+    }
+
+    /// forge-sdk's shared dev fixture (same file the forge-sdk
+    /// integration tests drive); the bridge only needs a completed
+    /// handshake behind `set_client`.
+    fn sdk_mock_binary() -> String {
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../forge-sdk/tests/fixtures/mock_claude.sh")
+            .to_owned()
+    }
+
+    async fn bridge_with_mock_client() -> (ForgeSdkBridge, mpsc::UnboundedReceiver<AgentEvent>) {
+        bridge_with_mock_client_opts(forge_sdk::OptionsBuilder::new()).await
+    }
+
+    async fn bridge_with_mock_client_opts(
+        builder: forge_sdk::OptionsBuilder,
+    ) -> (ForgeSdkBridge, mpsc::UnboundedReceiver<AgentEvent>) {
+        let bridge = ForgeSdkBridge::default();
+        let events = bridge.take_events().expect("fresh bridge yields its events receiver");
+        let opts = builder.binary(sdk_mock_binary()).build();
+        let (client, _client_events) = forge_sdk::Client::spawn(opts).await.expect("mock client");
+        bridge.set_client(client);
+        (bridge, events)
+    }
+
+    /// A failure inside the spawned dispatch future reaches the App as
+    /// the caller's typed event - the spinner/optimistic state unwinds
+    /// only when this arrives, so log-only failure is a regression.
+    #[tokio::test]
+    async fn dispatch_failure_emits_the_typed_event() {
+        let (bridge, mut events) = bridge_with_mock_client().await;
+
+        bridge
+            .dispatch_with_failure(
+                "prompt",
+                |_client| async { Err::<(), _>(anyhow::anyhow!("stdin write failed")) },
+                |err| {
+                    Some(AgentEvent::TurnError {
+                        session_id: "s1".to_owned(),
+                        message: err.to_string(),
+                    })
+                },
+            )
+            .expect("dispatch accepted");
+
+        match tokio::time::timeout(std::time::Duration::from_secs(2), events.recv()).await {
+            Ok(Some(AgentEvent::TurnError { message, .. })) => {
+                assert!(
+                    message.contains("stdin write failed"),
+                    "the typed failure carries the error: {message}"
+                );
+            }
+            other => panic!("expected a TurnError from the dispatch Err arm, got {other:?}"),
+        }
+    }
+
+    /// A CLI that never answers `set_model` must surface
+    /// `SetModelFailed` at the 60s budget (virtual time) instead of
+    /// leaving the optimistic model flip unrecoverable. The wedge rides
+    /// `Options::env` so the mock subprocess alone skips the subtype.
+    /// Time runs REAL for the spawn handshake (a paused clock would
+    /// fire the init budget before the mock's real stdout arrives),
+    /// then pauses so the 60s dispatch budget elapses virtually.
+    #[tokio::test(start_paused = true)]
+    async fn set_model_timeout_emits_set_model_failed() {
+        tokio::time::resume();
+        let (bridge, mut events) = bridge_with_mock_client_opts(
+            forge_sdk::OptionsBuilder::new().env("FORGED_MOCK_SKIP_SUBTYPE", "set_model"),
+        )
+        .await;
+        tokio::time::pause();
+
+        bridge
+            .set_model("mock-session-001".to_owned(), "claude-attempted".to_owned())
+            .expect("dispatch");
+
+        // Outer wrapper past the 60s budget: virtual time advances to
+        // the SOONEST timer, so the dispatch's 60s fires before this.
+        match tokio::time::timeout(std::time::Duration::from_secs(120), events.recv()).await {
+            Ok(Some(AgentEvent::SetModelFailed { model, message, .. })) => {
+                assert_eq!(model, "claude-attempted");
+                assert_eq!(message, "no response from the CLI");
+            }
+            other => panic!("expected SetModelFailed on the wedged set_model, got {other:?}"),
+        }
     }
 }

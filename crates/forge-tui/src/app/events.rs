@@ -3366,6 +3366,59 @@ mod tests {
         );
     }
 
+    /// A CLI refusal of `/model` restores the pre-apply model chip and
+    /// requested id from the parked snapshot and surfaces the reason -
+    /// the /mode rollback's sibling.
+    #[test]
+    fn set_model_failed_rolls_back_the_optimistic_model_change() {
+        let mut app = make_test_app();
+        app.set_current_model(Some(test_current_model("claude-original")));
+        app.set_pending_model_rollback(Some(crate::app::session::ModelRollback {
+            current_model: Some(test_current_model("claude-original")),
+            requested_model_id: Some("claude-original".into()),
+        }));
+        // Mirror the optimistic apply: the chip now shows the attempted id.
+        app.with_turn_state_mut(|ts| ts.requested_model_id = Some("claude-attempted".into()));
+
+        let session_key = active_session_key(&app);
+        apply_session_update(
+            &mut app,
+            SessionUpdate::SetModelFailed {
+                key: session_key,
+                model: "claude-attempted".into(),
+                message: "model not available".into(),
+            },
+        );
+
+        assert_eq!(
+            app.current_model().map(|m| m.resolved_id.as_str()),
+            Some("claude-original"),
+            "the model chip rolled back to the pre-apply model"
+        );
+        assert_eq!(
+            app.with_turn_state(|ts| ts.requested_model_id.clone()),
+            Some("claude-original".into()),
+            "the requested model id rolled back with the chip"
+        );
+        let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) = app.messages().last()
+        else {
+            panic!("expected a system refusal message");
+        };
+        let Some(MessageBlock::Text(block)) = blocks.first() else {
+            panic!("expected a text block");
+        };
+        assert!(
+            block.text.contains("Model switch to claude-attempted was refused by the CLI"),
+            "the refusal names the attempted model and the CLI's reason: {}",
+            block.text
+        );
+        assert!(
+            block.text.contains("model not available"),
+            "the CLI text surfaces: {}",
+            block.text
+        );
+    }
+
     /// Auth-required is the same hard teardown - the runtime mirror
     /// must not outlive it.
     #[test]

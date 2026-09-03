@@ -987,6 +987,43 @@ pub(super) fn apply_session_update_set_mode_failed(
     );
 }
 
+pub(super) fn apply_session_update_set_model_failed(
+    app: &mut App,
+    key: &SessionKey,
+    model: &str,
+    message: &str,
+) {
+    let Some(session) = app.sessions.get_mut(key) else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "set_model_failed_dropped",
+            message = "set model failure dropped for an unknown session",
+            outcome = "dropped",
+            session_key = %key.as_str(),
+            reason = "unknown_session",
+        );
+        return;
+    };
+    let chip_shows_attempted = session.turn_state.requested_model_id.as_deref() == Some(model);
+    if chip_shows_attempted && session.rollback_pending_model() {
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "set_model_rollback_applied",
+            message = "model chip rolled back after a CLI refusal",
+            outcome = "failure",
+            session_key = %key.as_str(),
+            model = %model,
+            error_message = %message,
+        );
+        app.invalidate_layout(crate::app::state::LayoutInvalidation::Global);
+    }
+    handle_slash_command_error_event(
+        app,
+        key,
+        &format!("Model switch to {model} was refused by the CLI: {message}"),
+    );
+}
+
 pub(super) fn apply_session_update_service_status(
     app: &mut App,
     severity: forge_primitives::cloud::service_status::ServiceSeverity,
