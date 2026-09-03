@@ -342,7 +342,10 @@ impl SessionTask {
                         key: real_key.clone(),
                         overrides: crate::dictate::DictateOverrides::default(),
                     });
-                    self.emit(SessionUpdate::DictateDevicePin { key: real_key.clone(), pick: None });
+                    self.emit(SessionUpdate::DictateDevicePin {
+                        key: real_key.clone(),
+                        pick: None,
+                    });
                 } else {
                     self.rekey_to(&real_key);
                     self.connected_once = true;
@@ -2697,8 +2700,7 @@ mod tests {
         let session_key = SessionKey::from_session_id("dictate-rekey-uuid");
         let domain =
             Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
-        domain.lock().dictate_overrides.styling =
-            Some(forge_dictate::normalize::Styling::Formal);
+        domain.lock().dictate_overrides.styling = Some(forge_dictate::normalize::Styling::Formal);
         domain.lock().dictate_device =
             Some(crate::dictate::DictateDeviceChoice::Device("shure-id".into()));
 
@@ -2738,7 +2740,8 @@ mod tests {
         });
 
         assert_eq!(
-            domain.lock().dictate_device, None,
+            domain.lock().dictate_device,
+            None,
             "the replaced identity must not carry its pick onto the new session"
         );
         assert_eq!(domain.lock().dictate_overrides, crate::dictate::DictateOverrides::default());
@@ -2749,20 +2752,13 @@ mod tests {
             match u {
                 SessionUpdate::SessionReplaced { .. } => replaced_seen = true,
                 SessionUpdate::DictateDevicePin { pick, .. } => {
-                    assert!(
-                        replaced_seen,
-                        "the echo must land after the fresh bucket is minted"
-                    );
+                    assert!(replaced_seen, "the echo must land after the fresh bucket is minted");
                     pin_echoes.push(pick);
                 }
                 _ => {}
             }
         }
-        assert_eq!(
-            pin_echoes,
-            vec![None],
-            "the clear echoes with the pick gone"
-        );
+        assert_eq!(pin_echoes, vec![None], "the clear echoes with the pick gone");
     }
 
     /// A forced-account switch tears the live session down BEFORE

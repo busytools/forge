@@ -211,8 +211,11 @@ fn row_line(row: &PickerRow, selected: bool) -> Line<'static> {
         ));
     } else {
         spans.push(Span::raw("  "));
-        let style =
-            if row.selectable { Style::default().fg(Color::White) } else { Style::default().fg(theme::DIM) };
+        let style = if row.selectable {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(theme::DIM)
+        };
         spans.push(Span::styled(row.label.clone(), style));
     }
     if row.session_set {

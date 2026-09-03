@@ -188,9 +188,7 @@ fn device_readout(app: &App) -> (String, Option<(String, TagTone)>) {
     // ends, else the pin, else the system default.
     let source: (&str, TagTone) = match pin {
         Some(_) => ("active until restart", TagTone::Accent),
-        None if catalog.configured.is_some() => {
-            ("configured default (forge.toml)", TagTone::Dim)
-        }
+        None if catalog.configured.is_some() => ("configured default (forge.toml)", TagTone::Dim),
         None => ("system default", TagTone::Dim),
     };
     match in_force {
@@ -600,16 +598,12 @@ mod tests {
             Some(DictateDeviceChoice::Device("shure-id".into()));
 
         let reset = rows(&app).last().expect("reset row").clone();
-        assert!(
-            reset.selectable,
-            "a pick the reset must clear exists, whatever the axes say"
-        );
+        assert!(reset.selectable, "a pick the reset must clear exists, whatever the axes say");
 
         let workspace = app.workspace.clone().expect("test workspace");
         workspace.enable_test_dispatch_intercept();
         crate::app::slash::try_handle_submit(&mut app, "/dictate");
-        let key_codes =
-            |code| KeyEvent::new(code, crossterm::event::KeyModifiers::NONE);
+        let key_codes = |code| KeyEvent::new(code, crossterm::event::KeyModifiers::NONE);
         for _ in 0..9 {
             handle_key(&mut app, key_codes(KeyCode::Down));
         }
@@ -658,15 +652,14 @@ mod tests {
         // Same for a catalog whose entries carry no default flag: the
         // system default is not a functioning device here.
         let mut app = App::test_default();
-        app.dictate_devices =
-            Some(Ok(DictateDeviceCatalog {
-                devices: vec![forge_workspace::Device {
-                    id: "d".into(),
-                    name: "Some Mic".into(),
-                    is_default: false,
-                }],
-                configured: None,
-            }));
+        app.dictate_devices = Some(Ok(DictateDeviceCatalog {
+            devices: vec![forge_workspace::Device {
+                id: "d".into(),
+                name: "Some Mic".into(),
+                is_default: false,
+            }],
+            configured: None,
+        }));
         let (label, tag) = device_readout(&app);
         assert_eq!(label, "Device: no input device");
         assert_eq!(tag.map(|(_, tone)| tone), Some(TagTone::Error));

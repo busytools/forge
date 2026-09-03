@@ -861,7 +861,7 @@ fn begin_capture(
     }
     if let Some(error) = capture.open_error() {
         tracing::warn!(?error, "dictation refused: the input device did not open");
-        let message = refused_message(&error);
+        let message = refused_message(error);
         drop(capture);
         return Err(message);
     }
