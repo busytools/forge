@@ -23,6 +23,7 @@ use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
 use crate::protocol::{Command, DispatchError, SessionUpdate};
 use crate::session_task::SessionTask;
+use crate::session_task::parse_worker_synth_key;
 use crate::spawn;
 use crate::target::{ProjectKey, SessionKey, SessionTarget};
 use crate::views::{AccountLoadingRow, ProjectView, SessionView};
@@ -5362,7 +5363,7 @@ impl Workspace {
         // worktree-failure path still removes (rollback semantics
         // for "worker never existed"); the general-failure path
         // transitions to Failed so the user sees what happened.
-        let lookup = {
+        let direct = {
             let workers = self.live_workers.lock();
             workers.iter().find_map(|(project_key, entries)| {
                 entries
@@ -5371,9 +5372,31 @@ impl Workspace {
                     .map(|entry| (project_key.clone(), entry.clone()))
             })
         };
-        let Some((project_key, entry)) = lookup else {
-            return false;
+        // A failed RESUME-path worker spawn emits ConnectionFailed keyed
+        // by the synth spawn key, but the entry was registered under the
+        // real session id being resumed - the direct match above misses,
+        // the label stays "already live" until restart, and asks wait
+        // the full timeout. Fall back to matching by (project_key,
+        // label) parsed off the synth key.
+        let (project_key, entry, matched_directly) = if let Some(hit) = direct {
+            (hit.0, hit.1, true)
+        } else {
+            match parse_worker_synth_key(session_key).and_then(|(project_key, label)| {
+                let workers = self.live_workers.lock();
+                let project_key = ProjectKey::new(project_key);
+                let entry = workers.get(&project_key)?.iter().find(|e| e.label == label)?.clone();
+                Some((project_key, entry))
+            }) {
+                Some((project_key, entry)) => (project_key, entry, false),
+                None => return false,
+            }
         };
+        if !matched_directly {
+            // The direct match missed, so `session_key` is the dead
+            // spawn's synth key: release its registrations so the label
+            // is spawnable again instead of "already live".
+            self.release_session(session_key);
+        }
         // Any ask already routed at this worker dies with the spawn -
         // buffered asks were never delivered, so the target_session
         // predicate in expire_target_inflight can't catch them.
@@ -5390,11 +5413,14 @@ impl Workspace {
             // Worktree-creation failure: roll back the worker entry
             // (the worker never existed; the user-visible signal is
             // the typed notice routed to the lead, not the worker row).
-            self.remove_worker_by_session_key(session_key);
+            // Keyed on the ENTRY's session id, not the incoming key -
+            // the fallback path matched by (project_key, label) and the
+            // entry may sit under the real resumed session id.
+            self.remove_worker_by_session_key(&entry.session_key);
             // Same release the tag-rollback arm runs: without it the
             // synth-keyed pool entry + command sender + domain handle +
             // SessionTask leak per failed fresh spawn, unbounded across
-            // retries.
+            // retries. No-op when the fallback release above ran first.
             self.release_session(session_key);
             // A dynamic worker persisted its row on the optimistic spawn
             // reply, before this async failure. A worktree-creation
@@ -5466,7 +5492,7 @@ impl Workspace {
             // it did pre-#245) and the user would be left wondering
             // why a team worker disappeared mid-flight.
             let diagnostic = message.lines().next().map(str::to_owned);
-            transition_worker_to_failed(self, &project_key, session_key, diagnostic);
+            transition_worker_to_failed(self, &project_key, &entry.session_key, diagnostic);
         }
         true
     }
@@ -14048,6 +14074,53 @@ mod async_worker_spawn_failure_tests {
             dispositions,
             vec![crate::protocol::WorktreeDisposition::Absent],
             "a worktree that failed to be created must not be reported preserved",
+        );
+    }
+
+    /// A failed RESUME-path worker spawn arrives keyed by the synth
+    /// spawn key, but the entry was registered under the real session
+    /// id being resumed. The direct session_key match misses; the
+    /// (project_key, label) fallback must still transition the entry
+    /// to Failed and release the synth-keyed registrations, or the
+    /// label is locked as "already live" until restart.
+    #[tokio::test]
+    async fn resume_spawn_failure_matches_worker_entry_by_synth_key_fallback() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+
+        let project_key = ProjectKey::new("proj-x");
+        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let real_id = "real-worker-uuid";
+        // Resume spawn: the entry sits under the REAL session id.
+        workspace
+            .insert_live_worker(&project_key, fake_worker("reviewer", real_id, "lead-uuid", true));
+        // The synth spawn key still holds its registrations.
+        let session_key = SessionKey::from_session_id(synth_key);
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<Command>();
+        workspace.pool.lock().insert(
+            session_key.clone(),
+            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
+        );
+        workspace.command_senders.lock().insert(session_key.clone(), cmd_tx);
+
+        assert!(
+            workspace
+                .handle_async_worker_spawn_failure(&session_key, "resume failed: stale session"),
+            "the synth-key fallback must find the entry the direct match missed"
+        );
+
+        let entries = workspace.list_live_workers(&project_key);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].status,
+            forge_primitives::WorkerLiveness::Failed,
+            "the resume-matched entry transitions to Failed"
+        );
+        assert_eq!(entries[0].diagnostic.as_deref(), Some("resume failed: stale session"));
+        assert!(
+            !workspace.pool.lock().contains_key(&session_key)
+                && !workspace.command_senders.lock().contains_key(&session_key),
+            "the dead spawn's synth-keyed registrations are released"
         );
     }
 
