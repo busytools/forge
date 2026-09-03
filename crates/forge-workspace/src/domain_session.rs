@@ -75,6 +75,11 @@ pub struct DomainSession {
     /// `NormalizeOptions`. Session-scoped and volatile: dies with the
     /// session, never persisted.
     pub dictate_overrides: crate::dictate::DictateOverrides,
+    /// The `/dictate` overlay's per-session input-device pick, `None`
+    /// until one lands. A pick overrides the `forge.toml`
+    /// `[dictate] device` pin for the session; a Reset clears it here
+    /// too. Session-scoped and volatile, like `dictate_overrides`.
+    pub dictate_device: Option<crate::dictate::DictateDeviceChoice>,
 }
 
 impl DomainSession {
@@ -94,6 +99,7 @@ impl DomainSession {
             runtime_state: None,
             turn_pending: false,
             dictate_overrides: crate::dictate::DictateOverrides::default(),
+            dictate_device: None,
         }
     }
 

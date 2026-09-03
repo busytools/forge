@@ -78,8 +78,8 @@ impl<'de> Deserialize<'de> for DictateMode {
 }
 
 /// What a session has overridden on the normalizer's prompt axes.
-/// `None` on an axis means "the crate default"; the `●` the `/dictate`
-/// dialog draws marks exactly this, not the value in force.
+/// `None` on an axis means "the crate default"; the `/dictate` dialog
+/// derives each row's in-force marker from this plus the defaults.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DictateOverrides {
     pub styling: Option<forge_dictate::normalize::Styling>,
@@ -105,7 +105,7 @@ impl DictateOverrides {
     }
 
     /// `true` when nothing is overridden: the reset row is inert and
-    /// the dialog draws no markers.
+    /// no row carries the session-set suffix.
     pub fn is_empty(self) -> bool {
         self.styling.is_none() && self.structure.is_none() && self.context.is_none()
     }
@@ -120,6 +120,48 @@ pub enum DictateOverrideUpdate {
     Structure(forge_dictate::normalize::Structure),
     Context(forge_dictate::normalize::Context),
     Reset,
+}
+
+/// A session's pick in the `/dictate` overlay's device list. The
+/// `forge.toml` `[dictate] device` pin is the default state, so it
+/// needs no variant: the field is `None` until a pick lands. A pick
+/// overrides the pin until the session ends - a restart reverts to the
+/// pin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DictateDeviceChoice {
+    /// Record from the system default input for the rest of the
+    /// session, whatever the pin names.
+    System,
+    /// Record from this device id.
+    Device(String),
+}
+
+/// The input a capture records from: the session pick when one is set,
+/// else the `[dictate] device` pin, else the system default. The
+/// `None`/`Some` shape matches `forge_dictate::Config::device`, so the
+/// result passes straight through `Engine::try_capture_with`. Shared
+/// with the TUI, which resolves the same way to mark the device in
+/// force.
+pub fn resolve_capture_device(
+    pick: Option<&DictateDeviceChoice>,
+    configured: Option<&str>,
+) -> Option<String> {
+    match pick {
+        Some(DictateDeviceChoice::System) => None,
+        Some(DictateDeviceChoice::Device(id)) => Some(id.clone()),
+        None => configured.map(str::to_owned),
+    }
+}
+
+/// Everything the `/dictate` overlay's device block renders from: the
+/// inputs a pick can offer and the configured pin the session pick
+/// overrides. Resolved by [`crate::Workspace::dictate_device_catalog`].
+#[derive(Debug, Clone)]
+pub struct DictateDeviceCatalog {
+    /// Every input present, in enumeration order.
+    pub devices: Vec<forge_dictate::Device>,
+    /// The `forge.toml` `[dictate] device` pin, if one is set.
+    pub configured: Option<String>,
 }
 
 impl DictateBind {
@@ -787,8 +829,13 @@ fn begin_capture(
         .lock()
         .clone()
         .ok_or("dictation is not ready · enable [dictate] in forge.toml and restart")?;
+    // The session pick wins over the configured pin; with neither, the
+    // system default records. Resolved before the open so a pin naming
+    // a gone device errors here rather than falling back.
+    let pick = ws.domain_session_for(key).and_then(|domain| domain.lock().dictate_device.clone());
+    let wanted = crate::dictate::resolve_capture_device(pick.as_ref(), engine.device());
     let capture = engine
-        .try_capture(key.as_str())
+        .try_capture_with(key.as_str(), wanted.as_deref())
         .map_err(|busy| format!("the microphone is in use by session {}", busy.holder))?;
     // The session can close while the device open waits above. A
     // capture handed to a session that no longer exists holds the
@@ -1296,6 +1343,94 @@ mod tests {
             .dispatch(Command::ResetDictateOverrides { key })
             .expect_err("an unknown session must be refused");
         assert!(matches!(err, crate::DispatchError::UnknownSession(_)));
+    }
+
+    #[test]
+    fn a_device_pick_lands_on_the_session_and_echoes() {
+        let (workspace, mut updates) = crate::Workspace::testing_stub();
+        let key = crate::SessionKey::from_session_id("dictate-device");
+        workspace.register_domain_session(key.clone(), None);
+
+        workspace
+            .dispatch(Command::SetDictateDevice {
+                key: key.clone(),
+                pick: Some(DictateDeviceChoice::Device("shure-id".into())),
+            })
+            .expect("dispatch");
+
+        let binding = workspace.domain_session_for(&key).expect("session");
+        assert_eq!(
+            binding.lock().dictate_device,
+            Some(DictateDeviceChoice::Device("shure-id".into())),
+        );
+        let echo = updates.try_recv().expect("a pin echo for the pick");
+        match echo {
+            SessionUpdate::DictateDevicePin { key: echoed, pick } => {
+                assert_eq!(echoed, key);
+                assert_eq!(pick, Some(DictateDeviceChoice::Device("shure-id".into())));
+            }
+            other => panic!("unexpected update: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reset_clears_the_device_pick_with_the_axes() {
+        let (workspace, mut updates) = crate::Workspace::testing_stub();
+        let key = crate::SessionKey::from_session_id("dictate-device-reset");
+        workspace.register_domain_session(key.clone(), None);
+
+        workspace
+            .dispatch(Command::SetDictateDevice {
+                key: key.clone(),
+                pick: Some(DictateDeviceChoice::System),
+            })
+            .expect("dispatch");
+        workspace.dispatch(Command::ResetDictateOverrides { key: key.clone() }).expect("dispatch");
+
+        let binding = workspace.domain_session_for(&key).expect("session");
+        assert_eq!(
+            binding.lock().dictate_device,
+            None,
+            "back to defaults means back to the configured pin, so the pick must go"
+        );
+
+        let mut pin_echoes = vec![];
+        while let Ok(update) = updates.try_recv() {
+            if let SessionUpdate::DictateDevicePin { pick, .. } = update {
+                pin_echoes.push(pick);
+            }
+        }
+        assert_eq!(
+            pin_echoes,
+            vec![Some(DictateDeviceChoice::System), None],
+            "the pick echoes when set, and the reset echoes the clear"
+        );
+    }
+
+    #[test]
+    fn the_capture_device_resolves_pick_over_pin_over_system() {
+        let pick =
+            |p: Option<DictateDeviceChoice>| resolve_capture_device(p.as_ref(), Some("config-id"));
+        assert_eq!(
+            pick(Some(DictateDeviceChoice::Device("pin-id".into()))).as_deref(),
+            Some("pin-id"),
+            "a session pick must beat the configured pin"
+        );
+        assert_eq!(
+            pick(Some(DictateDeviceChoice::System)),
+            None,
+            "the system-default pick must override the configured pin too"
+        );
+        assert_eq!(
+            pick(None).as_deref(),
+            Some("config-id"),
+            "no pick falls through to the configured pin"
+        );
+        assert_eq!(
+            resolve_capture_device(None, None),
+            None,
+            "with neither, the system default records"
+        );
     }
 
     /// The mode rides the same parsing rules as `bind`: three values,

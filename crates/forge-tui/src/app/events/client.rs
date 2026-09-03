@@ -187,6 +187,12 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 app.needs_redraw = true;
             }
         }
+        SessionUpdate::DictateDevicePin { key, pick } => {
+            if let Some(bucket) = app.sessions.get_mut(&key) {
+                bucket.dictate_device_pin = pick;
+                app.needs_redraw = true;
+            }
+        }
         SessionUpdate::StatusSnapshot { session_id, account, forge_account } => {
             apply_session_update_status_snapshot(app, &session_id, account, forge_account);
         }

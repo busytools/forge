@@ -1515,6 +1515,22 @@ impl Workspace {
         self.config.dictate.models_dir()
     }
 
+    /// The inputs a `/dictate` device pick can offer, plus the
+    /// configured pin. Blocking (the cpal device walk), so the TUI
+    /// calls it from a spawned task, never the render thread.
+    ///
+    /// # Errors
+    ///
+    /// When the audio stack cannot be enumerated at all; the overlay
+    /// renders the message in place of a list.
+    pub fn dictate_device_catalog(&self) -> Result<crate::dictate::DictateDeviceCatalog, String> {
+        let devices = forge_dictate::devices().map_err(|error| error.to_string())?;
+        Ok(crate::dictate::DictateDeviceCatalog {
+            devices,
+            configured: self.config.dictate.device.clone(),
+        })
+    }
+
     /// Stop the in-flight model fetch. Whatever reached the disk stays
     /// there as a `.part`, so the next run resumes; the snapshot then
     /// carries [`crate::DictateFailure::Cancelled`] and forge quits,
@@ -2650,13 +2666,36 @@ impl Workspace {
                 domain.lock().dictate_overrides.context = Some(v);
             }
             crate::dictate::DictateOverrideUpdate::Reset => {
-                domain.lock().dictate_overrides = crate::dictate::DictateOverrides::default();
+                let mut domain = domain.lock();
+                domain.dictate_overrides = crate::dictate::DictateOverrides::default();
+                domain.dictate_device = None;
             }
         }
         let overrides = domain.lock().dictate_overrides;
+        let pick = domain.lock().dictate_device.clone();
         let _ = self
             .update_sender()
             .send(SessionUpdate::DictateOverrides { key: key.clone(), overrides });
+        let _ =
+            self.update_sender().send(SessionUpdate::DictateDevicePin { key: key.clone(), pick });
+        Ok(())
+    }
+
+    /// Apply a `/dictate` device pick (or its clear) and echo the pin.
+    /// The pick is workspace state on the `DomainSession`, like the
+    /// override axes; a capture start resolves it over the configured
+    /// pin.
+    fn apply_dictate_device(
+        self: &Arc<Self>,
+        key: &SessionKey,
+        pick: Option<crate::dictate::DictateDeviceChoice>,
+    ) -> Result<(), DispatchError> {
+        let Some(domain) = self.domain_session_for(key) else {
+            return Err(DispatchError::UnknownSession(key.clone()));
+        };
+        domain.lock().dictate_device.clone_from(&pick);
+        let _ =
+            self.update_sender().send(SessionUpdate::DictateDevicePin { key: key.clone(), pick });
         Ok(())
     }
 
@@ -2707,6 +2746,9 @@ impl Workspace {
                         &key,
                         crate::dictate::DictateOverrideUpdate::Reset,
                     );
+                }
+                Command::SetDictateDevice { key, pick } => {
+                    return self.apply_dictate_device(&key, pick);
                 }
                 _ => {}
             }

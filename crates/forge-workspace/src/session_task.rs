@@ -1246,6 +1246,7 @@ pub(crate) fn execute_command_via_handle(
         // Handled inline in `Workspace::dispatch`; never agent traffic.
         misrouted @ (Command::SetDictateOverride { .. }
         | Command::ResetDictateOverrides { .. }
+        | Command::SetDictateDevice { .. }
         | Command::DictateStart { .. }
         | Command::DictateStop { .. }
         | Command::SpawnProject { .. }

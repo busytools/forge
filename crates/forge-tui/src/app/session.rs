@@ -47,6 +47,11 @@ pub struct UiSession {
     /// `SessionUpdate::DictateOverrides` echoes. The `/dictate`
     /// dialog's markers and reset row read from here.
     pub dictate_overrides: forge_workspace::DictateOverrides,
+    /// This session's `/dictate` input-device pick, mirrored from the
+    /// workspace via `SessionUpdate::DictateDevicePin` echoes. The
+    /// dialog's Device row reads from here; `None` means the
+    /// configured pin stands.
+    pub dictate_device_pin: Option<forge_workspace::DictateDeviceChoice>,
     /// TUI-side mirror of the workspace's authoritative `session_id`.
     /// Workspace stamps the real id onto `DomainSession.session_id`
     /// (for `AgentHandle` dispatch); TUI mirrors it here for render
@@ -701,6 +706,7 @@ impl Default for UiSession {
         Self {
             key: Option::default(),
             dictate_overrides: forge_workspace::DictateOverrides::default(),
+            dictate_device_pin: None,
             session_id: Option::default(),
             lifecycle_state: SessionLifecycleState::default(),
             cwd_raw: String::default(),
