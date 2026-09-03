@@ -796,7 +796,7 @@ fn update_aggregate(
 mod tests {
     use super::*;
     use crate::agent::model;
-    use crate::app::{BlockCache, TerminalSnapshotMode, TextBlock, ToolCallInfo};
+    use crate::app::{BlockCache, TextBlock, ToolCallInfo};
 
     fn tool_call_block(id: &str, sdk_tool_name: &str) -> MessageBlock {
         MessageBlock::ToolCall(Box::new(ToolCallInfo {
@@ -811,11 +811,7 @@ mod tests {
             content: Vec::new(),
             hidden: false,
             terminal_id: None,
-            terminal_command: None,
             terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
             render_epoch: 0,

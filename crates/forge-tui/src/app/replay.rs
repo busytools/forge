@@ -710,9 +710,7 @@ mod tests {
 
     fn build_app_with_consecutive_reads(n: usize) -> App {
         use crate::agent::model::{self, SessionId};
-        use crate::app::{
-            BlockCache, ChatMessage, MessageBlock, MessageRole, TerminalSnapshotMode, ToolCallInfo,
-        };
+        use crate::app::{BlockCache, ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
 
         let mut app = App::test_default();
         app.set_session_id(Some(SessionId::new("group-render-test")));
@@ -730,11 +728,7 @@ mod tests {
                     content: Vec::new(),
                     hidden: false,
                     terminal_id: None,
-                    terminal_command: None,
                     terminal_output: None,
-                    terminal_output_len: 0,
-                    terminal_bytes_seen: 0,
-                    terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
                     monitor_output_tail: Vec::default(),
                     monitor_status: None,
                     render_epoch: 0,

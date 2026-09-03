@@ -3824,7 +3824,6 @@ mod subagent_sentinel_tests {
     //! `task_notification`.
     use super::handle_sdk_message;
     use crate::agent::model::ToolCallStatus;
-    use crate::app::TerminalSnapshotMode;
     use crate::app::state::types::ToolCallScope;
     use crate::app::{App, BlockCache, ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
     use forge_primitives::messages::TaskUpdatePatch;
@@ -3850,11 +3849,7 @@ mod subagent_sentinel_tests {
             content: Vec::new(),
             hidden,
             terminal_id: None,
-            terminal_command: None,
             terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
             render_epoch: 0,

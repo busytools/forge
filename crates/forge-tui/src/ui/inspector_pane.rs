@@ -3898,7 +3898,7 @@ mod tests {
         description: &str,
     ) -> crate::app::ToolCallInfo {
         use crate::agent::model::ToolCallStatus;
-        use crate::app::{BlockCache, TerminalSnapshotMode, ToolCallInfo};
+        use crate::app::{BlockCache, ToolCallInfo};
         ToolCallInfo {
             id: id.to_owned(),
             title: "Task".to_owned(),
@@ -3915,11 +3915,7 @@ mod tests {
             content: Vec::new(),
             hidden: false,
             terminal_id: None,
-            terminal_command: None,
             terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
             render_epoch: 0,
@@ -3942,7 +3938,7 @@ mod tests {
         title: &str,
     ) -> crate::app::ToolCallInfo {
         use crate::agent::model::ToolCallStatus;
-        use crate::app::{BlockCache, TerminalSnapshotMode, ToolCallInfo};
+        use crate::app::{BlockCache, ToolCallInfo};
         ToolCallInfo {
             id: id.to_owned(),
             title: title.to_owned(),
@@ -3955,11 +3951,7 @@ mod tests {
             content: Vec::new(),
             hidden: true,
             terminal_id: None,
-            terminal_command: None,
             terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
             render_epoch: 0,

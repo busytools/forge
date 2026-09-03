@@ -18,8 +18,6 @@ pub struct ToolCallInfo {
     pub hidden: bool,
     /// Terminal ID if this is a Bash-like SDK tool call with a running/completed terminal.
     pub terminal_id: Option<String>,
-    /// The shell command that was executed (e.g. "echo hello && ls -la").
-    pub terminal_command: Option<String>,
     /// Snapshot of terminal output, updated each frame while `InProgress`.
     pub terminal_output: Option<String>,
     /// Last 5 lines of the watched command's output for a `Monitor`
@@ -45,13 +43,6 @@ pub struct ToolCallInfo {
     /// rebuild resolves `None` - which renders as live. Syncing it
     /// would silently reopen collapsed blocks.
     pub monitor_status: Option<MonitorStatus>,
-    /// Length of terminal buffer at last snapshot - used to skip O(n) re-snapshots
-    /// when the buffer hasn't grown.
-    pub terminal_output_len: usize,
-    /// Number of terminal output bytes consumed for incremental append updates.
-    pub terminal_bytes_seen: usize,
-    /// Current terminal snapshot ingestion mode.
-    pub terminal_snapshot_mode: TerminalSnapshotMode,
     /// Monotonic generation for render-affecting changes.
     pub render_epoch: u64,
     /// Monotonic generation for layout-affecting changes.
@@ -107,12 +98,6 @@ pub struct AnsweredQuestion {
     pub question: String,
     pub picked_labels: Vec<String>,
     pub typed_note: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TerminalSnapshotMode {
-    AppendOnly,
-    ReplaceSnapshot,
 }
 
 impl ToolCallInfo {

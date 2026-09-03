@@ -249,10 +249,11 @@ impl ForgeSdkBridge {
     }
 
     /// Spawn a fire-and-forget client call. A failure inside the
-    /// spawned future is emitted to the App as the caller's typed
-    /// event (a `None` maps to log-only) - the TUI rolled back nothing
-    /// otherwise: the spinner, the optimistic chip, the waiting
-    /// awaiter all unwind only if this event arrives.
+    /// spawned future - or the client-less early Err - is emitted to
+    /// the App as the caller's typed event (a `None` maps to
+    /// log-only) - the TUI rolled back nothing otherwise: the
+    /// spinner, the optimistic chip, the waiting awaiter all unwind
+    /// only if this event arrives.
     fn dispatch_with_failure<F, Fut, T>(
         &self,
         label: &'static str,
@@ -265,7 +266,19 @@ impl ForgeSdkBridge {
         T: FnOnce(&anyhow::Error) -> Option<AgentEvent> + Send + 'static,
     {
         let Some(client) = self.client() else {
-            return Err(anyhow::anyhow!("forge-sdk bridge: {label} called before active session"));
+            let err = anyhow::anyhow!("forge-sdk bridge: {label} called before active session");
+            // The caller warn-logs this Err and drops it; the typed
+            // event is what unwinds the TUI's optimistic state.
+            if let Some(event) = on_failure(&err)
+                && self.inner.event_tx.send(event).is_err()
+            {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    label,
+                    "event channel closed; typed dispatch failure dropped",
+                );
+            }
+            return Err(err);
         };
         let event_tx = self.inner.event_tx.clone();
         let span = tracing::info_span!("bridge_dispatch", label);
@@ -1133,6 +1146,41 @@ mod tests {
         let bridge = test_bridge();
         let err = bridge.cancel("session-1".to_owned()).unwrap_err();
         assert!(err.to_string().contains("before active session"));
+    }
+
+    /// The client-None window (clear_client, then set_client only
+    /// after init completes) still routes commands with the old
+    /// session id, so the caller's typed event is the only thing that
+    /// unwinds the TUI's optimistic state - a silent Err return loses
+    /// the prompt entirely.
+    #[tokio::test]
+    async fn dispatch_without_client_emits_the_typed_event() {
+        let bridge = test_bridge();
+        let mut events = bridge.take_events().expect("fresh bridge yields its events receiver");
+
+        let err = bridge
+            .dispatch_with_failure(
+                "prompt",
+                |_client| async { Ok::<(), anyhow::Error>(()) },
+                |err| {
+                    Some(AgentEvent::TurnError {
+                        session_id: "s1".to_owned(),
+                        message: err.to_string(),
+                    })
+                },
+            )
+            .expect_err("no client, dispatch refused");
+        assert!(err.to_string().contains("before active session"));
+
+        match tokio::time::timeout(std::time::Duration::from_secs(2), events.recv()).await {
+            Ok(Some(AgentEvent::TurnError { message, .. })) => {
+                assert!(
+                    message.contains("before active session"),
+                    "the typed failure carries the early Err: {message}"
+                );
+            }
+            other => panic!("expected a TurnError from the client-less early Err, got {other:?}"),
+        }
     }
 
     #[test]

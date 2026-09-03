@@ -373,10 +373,7 @@ fn apply_tool_call_raw_output_update(
     if tc.terminal_output.as_deref() == Some(output.as_str()) {
         return false;
     }
-    tc.terminal_output_len = output.len();
-    tc.terminal_bytes_seen = output.len();
     tc.terminal_output = Some(output);
-    tc.terminal_snapshot_mode = crate::app::TerminalSnapshotMode::ReplaceSnapshot;
     true
 }
 
@@ -747,7 +744,9 @@ fn log_command_update_applied(
                 tool_call_id = %tc.id,
                 terminal_id = %tc.terminal_id.as_deref().unwrap_or(""),
                 tool_name = %tc.sdk_tool_name,
-                terminal_output_bytes = u64::try_from(tc.terminal_output_len).unwrap_or_default(),
+                terminal_output_bytes =
+                    u64::try_from(tc.terminal_output.as_deref().map_or(0, str::len))
+                        .unwrap_or_default(),
                 has_terminal = tc.terminal_id.is_some(),
                 assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
             );
@@ -770,7 +769,8 @@ fn log_command_update_applied(
             terminal_id = %tc.terminal_id.as_deref().unwrap_or(""),
             tool_name = %tc.sdk_tool_name,
             error_kind = failure_kind,
-            terminal_output_bytes = u64::try_from(tc.terminal_output_len).unwrap_or_default(),
+            terminal_output_bytes = u64::try_from(tc.terminal_output.as_deref().map_or(0, str::len))
+                .unwrap_or_default(),
             has_terminal = tc.terminal_id.is_some(),
             assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
         ),
@@ -796,9 +796,7 @@ fn command_failure_kind(tc: &ToolCallInfo) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{
-        App, BlockCache, ChatMessage, MessageBlock, MessageRole, TerminalSnapshotMode,
-    };
+    use crate::app::{App, BlockCache, ChatMessage, MessageBlock, MessageRole};
 
     fn make_bash_tool_call(
         id: &str,
@@ -817,11 +815,7 @@ mod tests {
             content: Vec::new(),
             hidden: false,
             terminal_id: terminal_id.map(str::to_owned),
-            terminal_command: Some("echo test".to_owned()),
             terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
             render_epoch: 0,
@@ -851,11 +845,7 @@ mod tests {
             content: Vec::new(),
             hidden: false,
             terminal_id: None,
-            terminal_command: None,
             terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
             render_epoch: 0,

@@ -291,11 +291,7 @@ mod tests {
             content: Vec::new(),
             hidden: false,
             terminal_id: None,
-            terminal_command: None,
             terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
             render_epoch: 0,
@@ -376,8 +372,7 @@ mod tests {
         // Bash title from claude is just the command (no "Bash " prefix).
         // The renderer should emit the "Bash" label so the column is
         // consistent with Read / Edit / Grep where claude already prefixes.
-        let mut tc = test_tool_call("ls -la", "Bash", model::ToolCallStatus::Completed);
-        tc.terminal_command = Some("ls -la".to_owned());
+        let tc = test_tool_call("ls -la", "Bash", model::ToolCallStatus::Completed);
 
         let line =
             standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, '\u{280B}');
@@ -475,8 +470,7 @@ mod tests {
 
     #[test]
     fn bash_title_preserves_command_in_plan_mode() {
-        let mut tc = test_tool_call("echo hi", "Bash", model::ToolCallStatus::Completed);
-        tc.terminal_command = Some("echo hi".to_owned());
+        let tc = test_tool_call("echo hi", "Bash", model::ToolCallStatus::Completed);
 
         let title = standard::render_tool_call_title(
             &tc,
@@ -492,8 +486,7 @@ mod tests {
     #[test]
     fn bash_title_renders_geometric_kind_icon_not_chevron() {
         // Issue #39: chevron ⟩ replaced with triangle ▶ in the Bash row title.
-        let mut tc = test_tool_call("ls -la", "Bash", model::ToolCallStatus::Completed);
-        tc.terminal_command = Some("ls -la".to_owned());
+        let tc = test_tool_call("ls -la", "Bash", model::ToolCallStatus::Completed);
 
         let title =
             standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, '\u{280B}');
@@ -512,7 +505,6 @@ mod tests {
         // no bordered card. Output should be a title row + body lines
         // prefixed with `  │  ` / `  └─ ` (DIM), like every other tool.
         let mut tc = test_tool_call("echo hi", "Bash", model::ToolCallStatus::Completed);
-        tc.terminal_command = Some("echo hi".to_owned());
         tc.terminal_output = Some("hello\nworld".to_owned());
 
         let mut out = Vec::new();
@@ -553,7 +545,6 @@ mod tests {
     #[test]
     fn execute_measure_fast_path_keeps_height_stable_across_repeated_measurement() {
         let mut tc = test_tool_call("tc-fast", "Bash", model::ToolCallStatus::InProgress);
-        tc.terminal_command = Some("echo hi".to_owned());
         tc.terminal_output = Some("hello\nworld".to_owned());
 
         let (h1, lines1) = measure_tool_call_height_cached_with_tools_collapsed(
@@ -582,7 +573,6 @@ mod tests {
     #[test]
     fn execute_measure_recomputes_on_layout_generation_change() {
         let mut tc = test_tool_call("tc-layout-gen", "Bash", model::ToolCallStatus::InProgress);
-        tc.terminal_command = Some("echo hi".to_owned());
         tc.terminal_output = Some("hello".to_owned());
 
         let (_, first_lines) = measure_tool_call_height_cached_with_tools_collapsed(
@@ -1013,18 +1003,16 @@ mod tests {
         assert!(rendered.iter().any(|line| line == "Line B"));
     }
 
-    /// The 28-field ToolCallInfo literal behind the captured-terminal
-    /// tests, differing only in the five fields that matter.
+    /// The ToolCallInfo literal behind the captured-terminal tests,
+    /// differing only in the four fields that matter.
     fn terminal_tool_call(
         id: &str,
         status: model::ToolCallStatus,
         terminal_id: &str,
-        terminal_command: &str,
         terminal_output: &str,
     ) -> ToolCallInfo {
         let mut tc = test_tool_call(id, "Bash", status);
         tc.terminal_id = Some(terminal_id.to_owned());
-        tc.terminal_command = Some(terminal_command.to_owned());
         tc.terminal_output = Some(terminal_output.to_owned());
         tc
     }
@@ -1035,7 +1023,6 @@ mod tests {
             "tc-1",
             model::ToolCallStatus::Completed,
             "term-1",
-            "echo done",
             "<tool_use_error>bad</tool_use_error>\ndone",
         );
         assert_eq!(content_summary(&tc), "done");
@@ -1047,7 +1034,6 @@ mod tests {
             "tc-1",
             model::ToolCallStatus::Failed,
             "term-1",
-            "echo done",
             "<tool_use_error>bad</tool_use_error>\ndone",
         );
         assert_eq!(content_summary(&tc), "bad");
@@ -1059,7 +1045,6 @@ mod tests {
             "tc-2",
             model::ToolCallStatus::Failed,
             "term-2",
-            "cd path with spaces",
             "Exit code 1\n/usr/bin/bash: line 1: cd: too many arguments\nmore detail",
         );
         assert_eq!(content_summary(&tc), "Exit code 1");
@@ -1085,7 +1070,6 @@ mod tests {
             "tc-3",
             model::ToolCallStatus::Failed,
             "term-3",
-            "cd path with spaces",
             "Exit code 1\n/usr/bin/bash: line 1: cd: too many arguments\nmore detail",
         );
 

@@ -62,7 +62,7 @@ pub fn is_carved_out_from_global_directive(tc: &ToolCallInfo) -> bool {
 mod tests {
     use super::*;
     use crate::agent::model;
-    use crate::app::{BlockCache, TerminalSnapshotMode};
+    use crate::app::BlockCache;
 
     fn make_tc(name: &str) -> ToolCallInfo {
         ToolCallInfo {
@@ -77,11 +77,7 @@ mod tests {
             content: Vec::new(),
             hidden: false,
             terminal_id: None,
-            terminal_command: None,
             terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
             render_epoch: 0,

@@ -1464,9 +1464,7 @@ mod tests {
         raw_input: Option<serde_json::Value>,
     ) -> crate::ui::message::grouping::GroupId {
         use crate::agent::model;
-        use crate::app::{
-            BlockCache, ChatMessage, MessageRole, TerminalSnapshotMode, ToolCallInfo,
-        };
+        use crate::app::{BlockCache, ChatMessage, MessageRole, ToolCallInfo};
         use crate::ui::message::grouping::GroupId;
         let tool_id = "tu-solo";
         let tc = ToolCallInfo {
@@ -1481,11 +1479,7 @@ mod tests {
             content: Vec::new(),
             hidden: false,
             terminal_id: None,
-            terminal_command: None,
             terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
             render_epoch: 0,
@@ -2088,9 +2082,7 @@ mod tests {
     /// with a `Text` block, outbound with a `ToolCall`.
     fn seed_peer_run(app: &mut App, inbound: bool) -> crate::ui::message::grouping::GroupId {
         use crate::agent::model;
-        use crate::app::{
-            BlockCache, ChatMessage, MessageRole, TerminalSnapshotMode, TextBlock, ToolCallInfo,
-        };
+        use crate::app::{BlockCache, ChatMessage, MessageRole, TextBlock, ToolCallInfo};
         use crate::ui::message::grouping::{RenderUnit, partition_blocks_into_render_units};
 
         let envelope = |id: &str, y: usize| {
@@ -2119,11 +2111,7 @@ mod tests {
                 content: Vec::new(),
                 hidden: false,
                 terminal_id: None,
-                terminal_command: None,
                 terminal_output: None,
-                terminal_output_len: 0,
-                terminal_bytes_seen: 0,
-                terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
                 monitor_output_tail: Vec::default(),
                 monitor_status: None,
                 render_epoch: 0,
@@ -2205,9 +2193,7 @@ mod tests {
     #[test]
     fn click_resolving_to_a_tool_block_hidden_by_an_l2_summary_does_not_toggle_it() {
         use crate::agent::model;
-        use crate::app::{
-            BlockCache, ChatMessage, MessageRole, TerminalSnapshotMode, ToolCallInfo,
-        };
+        use crate::app::{BlockCache, ChatMessage, MessageRole, ToolCallInfo};
         use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 
         let read_tool = |id: &str, y: usize| ToolCallInfo {
@@ -2222,11 +2208,7 @@ mod tests {
             content: Vec::new(),
             hidden: false,
             terminal_id: None,
-            terminal_command: None,
             terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
             render_epoch: 0,
@@ -2277,9 +2259,7 @@ mod tests {
     #[test]
     fn click_resolving_to_a_block_hidden_by_an_l2_summary_does_not_toggle_it() {
         use crate::agent::model;
-        use crate::app::{
-            BlockCache, ChatMessage, MessageRole, TerminalSnapshotMode, ToolCallInfo,
-        };
+        use crate::app::{BlockCache, ChatMessage, MessageRole, ToolCallInfo};
         use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 
         let peer_tool = |id: &str, target: &str, y: usize, h: usize| ToolCallInfo {
@@ -2294,11 +2274,7 @@ mod tests {
             content: Vec::new(),
             hidden: false,
             terminal_id: None,
-            terminal_command: None,
             terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
             render_epoch: 0,
@@ -2460,9 +2436,7 @@ mod tests {
     #[test]
     fn click_on_multi_item_tool_group_summary_cycles_to_l1() {
         use crate::agent::model;
-        use crate::app::{
-            BlockCache, ChatMessage, MessageRole, TerminalSnapshotMode, ToolCallInfo,
-        };
+        use crate::app::{BlockCache, ChatMessage, MessageRole, ToolCallInfo};
         use crate::ui::message::grouping::{GroupCollapseLevel, GroupId};
         use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 
@@ -2478,11 +2452,7 @@ mod tests {
             content: Vec::new(),
             hidden: false,
             terminal_id: None,
-            terminal_command: None,
             terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
             render_epoch: 0,
@@ -2583,9 +2553,7 @@ mod tests {
     #[test]
     fn cmd_x_after_group_click_still_toggles_global_tools_collapsed() {
         use crate::agent::model;
-        use crate::app::{
-            BlockCache, ChatMessage, MessageRole, TerminalSnapshotMode, ToolCallInfo,
-        };
+        use crate::app::{BlockCache, ChatMessage, MessageRole, ToolCallInfo};
         use crate::ui::message::grouping::{
             GroupCollapseLevel, GroupId, RenderUnit, partition_blocks_into_render_units,
         };
@@ -2606,11 +2574,7 @@ mod tests {
             content: Vec::new(),
             hidden: false,
             terminal_id: None,
-            terminal_command: None,
             terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
             render_epoch: 0,

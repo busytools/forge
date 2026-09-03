@@ -223,16 +223,18 @@ fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>) {
     let cwd = cwd.to_path_buf();
     let remote_branch = remote_branch.to_owned();
     tokio::spawn(async move {
-        let output = Command::new("git")
+        let fetch = Command::new("git")
             .arg("-C")
             .arg(&cwd)
             .args(["fetch", "origin", &remote_branch])
             .kill_on_drop(true)
-            .output()
-            .await;
-        match output {
-            Ok(out) if out.status.success() => {}
-            Ok(out) => {
+            .output();
+        // A hung remote must not leak the child every throttle window;
+        // without the timeout neither kill_on_drop nor the task ever
+        // fires.
+        match timeout(COMMAND_TIMEOUT, fetch).await {
+            Ok(Ok(out)) if out.status.success() => {}
+            Ok(Ok(out)) => {
                 tracing::warn!(
                     target: crate::logging::targets::ENV_GIT,
                     cwd = %cwd.display(),
@@ -243,7 +245,7 @@ fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>) {
                     branch = %remote_branch,
                 );
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 tracing::warn!(
                     target: crate::logging::targets::ENV_GIT,
                     cwd = %cwd.display(),
@@ -251,6 +253,16 @@ fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>) {
                     message = "background git fetch spawn/wait failed",
                     outcome = "failure",
                     error = %err,
+                    branch = %remote_branch,
+                );
+            }
+            Err(_) => {
+                tracing::warn!(
+                    target: crate::logging::targets::ENV_GIT,
+                    cwd = %cwd.display(),
+                    event_name = "git_background_fetch_timeout",
+                    message = "background git fetch exceeded the command timeout",
+                    outcome = "failure",
                     branch = %remote_branch,
                 );
             }

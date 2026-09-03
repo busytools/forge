@@ -128,7 +128,6 @@ impl super::App {
             .saturating_add(tc.title.capacity())
             .saturating_add(tc.sdk_tool_name.capacity())
             .saturating_add(tc.terminal_id.as_ref().map_or(0, String::capacity))
-            .saturating_add(tc.terminal_command.as_ref().map_or(0, String::capacity))
             .saturating_add(tc.terminal_output.as_ref().map_or(0, String::capacity))
             .saturating_add(
                 tc.content.capacity().saturating_mul(size_of::<model::ToolCallContent>()),

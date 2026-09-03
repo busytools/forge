@@ -871,12 +871,17 @@ mod tests {
             serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
         assert!(parsed.get("note").is_none(), "a resolved reply carries no degraded note");
 
-        // The routed envelope carries the Reply kind, and nothing falls
-        // through to the unsolicited-delivery path.
-        let delivered = mock.deliver_calls.lock();
+        let replies = mock.reply_to_caller_calls.lock();
+        assert_eq!(replies.len(), 1, "reply delivered to the caller exactly once: {replies:?}");
         assert!(
-            delivered.iter().all(|(_, _, w)| w.kind != WrappedKind::Reply),
-            "a resolved reply never re-delivers as a fresh prompt: {delivered:?}"
+            matches!(replies[0].1.kind, WrappedKind::Reply),
+            "a resolved reply is delivered as a Reply, not a Message: {replies:?}"
+        );
+        drop(replies);
+        assert_eq!(
+            mock.deliver_calls.lock().len(),
+            0,
+            "a resolved reply never re-delivers as a fresh prompt",
         );
     }
 

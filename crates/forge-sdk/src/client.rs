@@ -59,10 +59,30 @@ struct PendingGuard {
 }
 impl Drop for PendingGuard {
     fn drop(&mut self) {
-        if !self.defused
-            && let Ok(mut pending) = self.pending.try_lock()
-        {
-            pending.remove(&self.request_id);
+        if self.defused {
+            return;
+        }
+        match self.pending.try_lock() {
+            Ok(mut pending) => {
+                pending.remove(&self.request_id);
+            }
+            // The mutex is momentarily held (the reader routing a
+            // response); the removal must still land, so finish it on a
+            // task once the holder releases.
+            Err(_) if tokio::runtime::Handle::try_current().is_ok() => {
+                let pending = Arc::clone(&self.pending);
+                let request_id = self.request_id.clone();
+                tokio::spawn(async move {
+                    pending.lock().await.remove(&request_id);
+                });
+            }
+            Err(_) => {
+                tracing::debug!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    request_id = %self.request_id,
+                    "pending_controls mutex contended outside a runtime; entry removal skipped",
+                );
+            }
         }
     }
 }
@@ -608,8 +628,12 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
-    use super::Client;
+    use super::{Client, PendingGuard};
+    use crate::client::runtime::PendingControls;
     use crate::options::OptionsBuilder;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
 
     fn control_mock_binary() -> String {
         concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mock_claude_control.sh").to_owned()
@@ -636,5 +660,34 @@ mod tests {
             "the dropped request's pending entry must be removed"
         );
         client.disconnect().await.expect("disconnect");
+    }
+
+    /// The reader task can hold `pending_controls` at the instant a
+    /// dropped future's guard runs; the removal must still land (via a
+    /// spawned retry) rather than silently stranding a dead sender.
+    #[tokio::test]
+    async fn pending_guard_removal_survives_a_contended_mutex() {
+        let pending: PendingControls = Arc::new(Mutex::new(HashMap::new()));
+        let (tx, _rx) = tokio::sync::oneshot::channel::<crate::client::runtime::ControlOutcome>();
+        pending.lock().await.insert("req-1".to_owned(), tx);
+
+        let guard = PendingGuard {
+            pending: Arc::clone(&pending),
+            request_id: "req-1".to_owned(),
+            defused: false,
+        };
+        // Hold the map across the drop so the guard's synchronous
+        // try_lock loses the race.
+        let held = pending.lock().await;
+        drop(guard);
+        drop(held);
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !pending.lock().await.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("removal retried after the lost race");
     }
 }
