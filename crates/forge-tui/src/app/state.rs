@@ -159,6 +159,12 @@ pub enum PaneHitTarget {
     /// command opens. Stamped for the section's on-screen rect,
     /// clipped when the section scrolls off either edge.
     InspectorMcpOpenStatus { y: u16, height: u16, x_start: u16, x_end: u16 },
+    /// Click on the Inspector pane's `PR #N` row -> open the PR's
+    /// URL in the system browser via `Command::OpenUrl`. `url` is
+    /// captured at stamp time (the snapshot's `GitPrInfo.url`) so a
+    /// session switch between render and click can't open a stale
+    /// PR.
+    InspectorGitPrOpen { url: String, y: u16, height: u16, x_start: u16, x_end: u16 },
     /// Click on a row in the Inspector's pinned NEEDS ATTENTION band ->
     /// switch the active session to `session_key` so its pending
     /// prompt lands in the chat. Stamped per row during render; the
@@ -214,6 +220,7 @@ impl PaneHitTarget {
             | Self::OverlayClose { y, height, .. }
             | Self::CloseSession { y, height, .. }
             | Self::InspectorGitOpenDiff { y, height, .. }
+            | Self::InspectorGitPrOpen { y, height, .. }
             | Self::InspectorMcpOpenStatus { y, height, .. }
             | Self::InspectorAttentionRow { y, height, .. }
             | Self::CopySessionId { y, height, .. }
@@ -239,6 +246,7 @@ impl PaneHitTarget {
             | Self::OverlayClose { x_start, x_end, .. }
             | Self::CloseSession { x_start, x_end, .. }
             | Self::InspectorGitOpenDiff { x_start, x_end, .. }
+            | Self::InspectorGitPrOpen { x_start, x_end, .. }
             | Self::InspectorMcpOpenStatus { x_start, x_end, .. }
             | Self::InspectorAttentionRow { x_start, x_end, .. }
             | Self::CopySessionId { x_start, x_end, .. }

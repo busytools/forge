@@ -336,10 +336,12 @@ mod tests {
             branch: GitBranch::Named("main".into()),
             default_branch: Some("main".into()),
             repo_gate: RepoGate::InRepo,
+            pushed_sha: None,
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Clean,
             pr: None,
             closes: Vec::new(),
+            pr_fetched_at: None,
         }
     }
 

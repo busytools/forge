@@ -165,6 +165,19 @@ async fn rev_parse_gate(cwd: &Path) -> Result<String, RepoGate> {
 /// fetches at most once per window.
 const FETCH_THROTTLE: Duration = Duration::from_secs(240);
 
+/// Minimum gap between PR-lookup attempts for one branch+sha, even
+/// when the attempt found nothing or failed - without this a cached
+/// `None` would stick for the branch's whole life (a PR opened after
+/// the session's first scan would never show) and a persistent `gh`
+/// failure would hammer every 10 s scan.
+const PR_REFETCH_INTERVAL: Duration = Duration::from_secs(300);
+
+/// Max commits the pushed-sha walk examines. Bounds the pathological
+/// case (a deep unpushed history) so one scan can't walk the whole
+/// repo; 500 first-parent commits is generous headroom over any real
+/// worktree's unpushed depth.
+const PUSHED_SHA_WALK_CAP: usize = 500;
+
 /// Per-repo last-fetch timestamps, keyed by the scan `cwd`. Module-level
 /// because [`scan`] is a free function with no owning state; the ticker
 /// scans one active session at a time, so keying by scan cwd gives
@@ -252,10 +265,9 @@ fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>) {
 /// regardless of which variant came back.
 ///
 /// `prev` is the most recent snapshot for this `cwd` (if any). It's
-/// used to reuse cached PR info: when `prev.branch` matches the
-/// newly-resolved branch (same `Named(name)`), the prior
-/// `pr` / `closes` carry over without re-running `gh`. Pass `None`
-/// for cold starts.
+/// used to reuse cached PR info while the branch name, pushed sha
+/// and fetch age (5 minutes) all say the cached answer still holds
+/// (`pr_cache_fresh`). Pass `None` for cold starts.
 /// The caller's current branch name via `git rev-parse --abbrev-ref HEAD`,
 /// keeping a detached HEAD apart from a failed read: `Ok(Some(name))` on
 /// a named branch, `Ok(None)` on a detached HEAD, `Err(gate)` when git
@@ -280,10 +292,12 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
                 branch: GitBranch::NoRepo,
                 default_branch: None,
                 repo_gate,
+                pushed_sha: None,
                 worktree: LayerState::Clean,
                 branch_ahead: LayerState::Clean,
                 pr: None,
                 closes: Vec::new(),
+                pr_fetched_at: None,
             };
         }
     };
@@ -364,11 +378,18 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
     // PR / closes only make sense for named non-default branches -
     // default branch never has a PR open against itself, detached /
     // unknown branches can't be queried by name. For eligible
-    // branches, reuse the prior snapshot's data when the branch name
-    // matches; otherwise spawn a fresh `gh pr list` call.
-    let (pr, closes) = match &branch {
-        GitBranch::Named(name) if !on_default => pr_for_branch(cwd, name, prev).await,
-        _ => (None, Vec::new()),
+    // branches, resolve HEAD's newest pushed ancestor (the lookup
+    // key - never the branch name, which diverges from the PR head
+    // ref for `HEAD:<name>` pushes) and reuse the prior snapshot's
+    // data while the sha and fetch age say the cache still holds.
+    let (pr, closes, pr_fetched_at, pushed_sha) = match &branch {
+        GitBranch::Named(name) if !on_default => {
+            let pushed_sha = resolve_pushed_sha(cwd, PUSHED_SHA_WALK_CAP).await;
+            let (pr, closes, pr_fetched_at) =
+                pr_for_head(cwd, name, pushed_sha.as_deref(), prev).await;
+            (pr, closes, pr_fetched_at, pushed_sha)
+        }
+        _ => (None, Vec::new(), None, None),
     };
 
     // repo_gate=InRepo here - we've passed the rev-parse gate and
@@ -382,10 +403,12 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
         branch,
         default_branch,
         repo_gate: RepoGate::InRepo,
+        pushed_sha,
         worktree,
         branch_ahead,
         pr,
         closes,
+        pr_fetched_at,
     }
 }
 
@@ -553,92 +576,233 @@ fn parse_numstat(raw: &str) -> Vec<GitDiffFile> {
         .collect()
 }
 
-/// Resolve PR info for a named branch, reusing `prev`'s cached
-/// `pr` / `closes` when the prior snapshot's branch matches `branch`.
-/// Otherwise spawns `gh pr list` to fetch fresh.
-///
-/// The cache key is the branch name. The implication: branch
-/// rename / new branch / fresh session all force a refetch, but
-/// staying on the same branch across the polled 10s scans is free.
-async fn pr_for_branch(
-    cwd: &Path,
-    branch: &str,
+/// Whether the previous snapshot's PR block is still reusable: the
+/// branch name and pushed sha both match the current scan AND the
+/// last lookup attempt is less than [`PR_REFETCH_INTERVAL`] old.
+/// The sha leg - not the branch name - is what makes a PR opened or
+/// pushed after an earlier scan show up; the timer leg unsticks a
+/// cached `None` (a scan that ran before the PR existed would
+/// otherwise hold `pr: None` for the branch's whole life).
+fn pr_cache_fresh(
     prev: Option<&GitDiffSnapshot>,
-) -> (Option<GitPrInfo>, Vec<GitIssueRef>) {
-    if let Some(prev) = prev
-        && let GitBranch::Named(prev_name) = &prev.branch
-        && prev_name == branch
-    {
-        return (prev.pr.clone(), prev.closes.clone());
-    }
-    fetch_pr_for_branch(cwd, branch).await
+    branch: &str,
+    pushed_sha: Option<&str>,
+    now: std::time::SystemTime,
+) -> bool {
+    let Some(prev) = prev else {
+        return false;
+    };
+    let GitBranch::Named(prev_name) = &prev.branch else {
+        return false;
+    };
+    prev_name == branch
+        && prev.pushed_sha.as_deref() == pushed_sha
+        && prev.pr_fetched_at.is_some_and(|at| {
+            now.duration_since(at).is_ok_and(|elapsed| elapsed < PR_REFETCH_INTERVAL)
+        })
 }
 
-/// Shell out to `gh pr list --head <branch> --state open --json …`
-/// and parse the first entry. Returns `(None, vec![])` on any
-/// failure path - `gh` missing, unauthenticated, not a github
-/// repo, no PR for the branch, JSON parse error. Failures log
-/// at WARN with a structured event so operators can grep for
-/// `gh_pr_lookup_*` when triaging "PR row never shows".
-async fn fetch_pr_for_branch(cwd: &Path, branch: &str) -> (Option<GitPrInfo>, Vec<GitIssueRef>) {
-    let args = [
-        "pr",
-        "list",
-        "--head",
-        branch,
-        "--state",
-        "open",
-        "--limit",
-        "1",
-        "--json",
-        "number,url,closingIssuesReferences",
-    ];
-    let raw = match run_gh(cwd, &args).await {
+/// What one PR lookup produced. `Failed` is kept apart from `None`
+/// so a transient `gh` blip cannot evict a known-good cached PR.
+enum PrLookup {
+    Found(GitPrInfo, Vec<GitIssueRef>),
+    /// The query ran and answered "no open PR containing this sha".
+    None,
+    /// The query did not complete (gh missing / auth / rate limit /
+    /// unparseable response).
+    Failed,
+}
+
+/// Resolve PR info for the branch from `prev`'s cache when fresh,
+/// else query fresh by the pushed sha. Stamps `pr_fetched_at` on the
+/// returned attempt time so failed / empty lookups rate-limit too.
+/// A `Failed` lookup keeps `prev`'s PR when branch and sha still
+/// match - a gh blip must not flash the row off.
+async fn pr_for_head(
+    cwd: &Path,
+    branch: &str,
+    pushed_sha: Option<&str>,
+    prev: Option<&GitDiffSnapshot>,
+) -> (Option<GitPrInfo>, Vec<GitIssueRef>, Option<std::time::SystemTime>) {
+    let now = std::time::SystemTime::now();
+    let cached = match prev {
+        Some(prev) if pr_cache_fresh(Some(prev), branch, pushed_sha, now) => Some(prev),
+        _ => None,
+    };
+    if let Some(prev) = cached {
+        return (prev.pr.clone(), prev.closes.clone(), prev.pr_fetched_at);
+    }
+    match fetch_pr_for_pushed_sha(cwd, pushed_sha).await {
+        PrLookup::Found(pr, closes) => (Some(pr), closes, Some(now)),
+        PrLookup::None => (None, Vec::new(), Some(now)),
+        PrLookup::Failed => match prev {
+            Some(prev) if same_branch_and_sha(prev, branch, pushed_sha) => {
+                (prev.pr.clone(), prev.closes.clone(), Some(now))
+            }
+            _ => (None, Vec::new(), Some(now)),
+        },
+    }
+}
+
+/// Whether `prev` describes the same branch and pushed sha the
+/// current scan resolved - the condition under which a failed
+/// lookup may keep `prev`'s cached PR.
+fn same_branch_and_sha(prev: &GitDiffSnapshot, branch: &str, pushed_sha: Option<&str>) -> bool {
+    matches!(&prev.branch, GitBranch::Named(prev_name) if prev_name == branch)
+        && prev.pushed_sha.as_deref() == pushed_sha
+}
+
+/// Resolve HEAD's newest pushed ancestor: walk HEAD's first-parent
+/// history newest-first (bounded by `cap`) and stop at the first sha
+/// the remote-tracking refs already contain. `None` when nothing of
+/// HEAD's ancestry is pushed or no remote refs exist (a truthful
+/// negative); a git failure also yields `None` but is an
+/// UNRESOLVABLE lookup, not a negative - the row may flicker off for
+/// one scan while git is broken, WARN-logged, and recovers on the
+/// next scan. The walk happens inside git so a worktree ahead of the
+/// PR tip by unpushed commits still resolves the commit the PR was
+/// pushed from.
+async fn resolve_pushed_sha(cwd: &Path, cap: usize) -> Option<String> {
+    let remote_shas =
+        match run_git(cwd, &["for-each-ref", "refs/remotes", "--format=%(objectname)"]).await {
+            GitOutput::Ok(raw) => raw
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_owned)
+                .collect::<std::collections::HashSet<_>>(),
+            GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => {
+                std::collections::HashSet::default()
+            }
+        };
+    if remote_shas.is_empty() {
+        return None;
+    }
+    let max_count = format!("--max-count={cap}");
+    let walk = run_git(cwd, &["rev-list", "--first-parent", &max_count, "HEAD"]).await;
+    let GitOutput::Ok(raw) = walk else {
+        return None;
+    };
+    raw.lines().map(str::trim).find(|sha| remote_shas.contains(*sha)).map(str::to_owned)
+}
+
+/// Look up the open PR containing `pushed_sha`. Returns
+/// [`PrLookup::None`] when the query ran and answered "no open PR"
+/// (nothing pushed, or no open PR contains the sha) and
+/// [`PrLookup::Failed`] on every failure path - `gh` missing,
+/// unauthenticated, not a github repo, JSON parse error. Failures
+/// log at WARN with a structured event so operators can grep for
+/// `gh_pr_lookup_*` when triaging "PR row never shows"; the
+/// commit-not-on-remote shape logs at DEBUG instead because an
+/// unpushed HEAD is a normal mid-work state, not an operator signal.
+async fn fetch_pr_for_pushed_sha(cwd: &Path, pushed_sha: Option<&str>) -> PrLookup {
+    let Some(sha) = pushed_sha else {
+        return PrLookup::None;
+    };
+    let endpoint = format!("repos/{{owner}}/{{repo}}/commits/{sha}/pulls");
+    let raw = match run_gh(cwd, &["api", &endpoint], GhNotFound::Tolerate).await {
         GitOutput::Ok(s) => s,
         GitOutput::Empty => {
-            // `gh` returned exit 0 with empty stdout - unusual for
-            // `--json`, which always emits at least `[]`. Treat as
-            // no PR rather than a hard failure.
-            return (None, Vec::new());
+            // A completed query with a definitive negative: exit 0
+            // with `[]`, or the commit-not-on-remote shape run_gh
+            // folds into Empty. No open PR, no cache-keep.
+            return PrLookup::None;
         }
-        GitOutput::Failed | GitOutput::Oversize => return (None, Vec::new()),
+        GitOutput::Failed | GitOutput::Oversize => return PrLookup::Failed,
     };
-    let entries: Vec<GhPrEntry> = match serde_json::from_str(&raw) {
+    match pick_open_pr(&raw) {
+        Err(err) => {
+            tracing::warn!(
+                target: crate::logging::targets::ENV_GIT,
+                cwd = %cwd.display(),
+                event_name = "gh_pr_lookup_parse_failed",
+                message = "gh api commits pulls returned unparseable json",
+                outcome = "failure",
+                error = %err,
+                sha = %sha,
+            );
+            PrLookup::Failed
+        }
+        Ok(None) => PrLookup::None,
+        Ok(Some((number, url))) => {
+            let closes = fetch_closing_issues(cwd, number).await;
+            PrLookup::Found(GitPrInfo { number, url }, closes)
+        }
+    }
+}
+
+/// Select the open PR from the `commits/<sha>/pulls` REST response.
+/// Multiple open PRs can contain the same commit (stacked PRs,
+/// cherry-picks); the most recently `updated_at` one wins - the
+/// actively-evolving PR is the right answer in stacked workflows -
+/// with the higher number breaking ties. One row renders, never a
+/// list.
+///
+/// `updated_at` compares lexicographically, which is chronological
+/// for GitHub's uniform RFC3339 `Z`-suffixed format.
+fn pick_open_pr(raw: &str) -> Result<Option<(u64, String)>, serde_json::Error> {
+    let entries: Vec<GhApiPull> = serde_json::from_str(raw)?;
+    Ok(entries
+        .into_iter()
+        .filter(|pr| pr.state == "open")
+        .max_by(|a, b| (&a.updated_at, a.number).cmp(&(&b.updated_at, b.number)))
+        .map(|pr| (pr.number, pr.html_url)))
+}
+
+/// `commits/<sha>/pulls` REST entry shape. Only the fields the
+/// selection rule reads are deserialised; `gh api` adds others
+/// (`title`, `body`, …) that serde silently drops.
+#[derive(Deserialize)]
+struct GhApiPull {
+    number: u64,
+    state: String,
+    html_url: String,
+    updated_at: String,
+}
+
+/// Fetch the PR's closing-issue list via
+/// `gh pr view <n> --json closingIssuesReferences`. The REST
+/// `commits/<sha>/pulls` response doesn't carry closing issues (a
+/// GraphQL-only field), so this second call keeps the
+/// `→ closes #M` tail rendering. Degrades to an empty list on any
+/// failure - the PR row is the headline, the closes are the tail.
+async fn fetch_closing_issues(cwd: &Path, number: u64) -> Vec<GitIssueRef> {
+    let number = number.to_string();
+    let raw = match run_gh(
+        cwd,
+        &["pr", "view", &number, "--json", "closingIssuesReferences"],
+        GhNotFound::Warn,
+    )
+    .await
+    {
+        GitOutput::Ok(raw) => raw,
+        GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => return Vec::new(),
+    };
+    let parsed: GhPrView = match serde_json::from_str(&raw) {
         Ok(parsed) => parsed,
         Err(err) => {
             tracing::warn!(
                 target: crate::logging::targets::ENV_GIT,
                 cwd = %cwd.display(),
                 event_name = "gh_pr_lookup_parse_failed",
-                message = "gh pr list returned unparseable json",
+                message = "gh pr view returned unparseable json",
                 outcome = "failure",
                 error = %err,
-                branch = %branch,
+                pr = %number,
             );
-            return (None, Vec::new());
+            return Vec::new();
         }
     };
-    let Some(first) = entries.into_iter().next() else {
-        // Empty array - no open PR for this branch. Cache as None so
-        // subsequent scans on the same branch skip the gh call.
-        return (None, Vec::new());
-    };
-    let pr = GitPrInfo { number: first.number, url: first.url };
-    let closes = first
+    parsed
         .closing_issues
         .into_iter()
         .map(|issue| GitIssueRef { number: issue.number, url: issue.url })
-        .collect();
-    (Some(pr), closes)
+        .collect()
 }
 
-/// `gh pr list --json` entry shape. Only the fields we actually
-/// render are deserialised; `gh` adds others (`id`, `title`, …) that
-/// serde silently drops.
+/// `gh pr view --json` wrapper shape.
 #[derive(Deserialize)]
-struct GhPrEntry {
-    number: u64,
-    url: String,
+struct GhPrView {
     #[serde(default, rename = "closingIssuesReferences")]
     closing_issues: Vec<GhIssueEntry>,
 }
@@ -754,6 +918,16 @@ pub(super) async fn run_git(cwd: &Path, args: &[&str]) -> GitOutput {
     if stdout.trim().is_empty() { GitOutput::Empty } else { GitOutput::Ok(stdout) }
 }
 
+/// How a `gh` call's "not found" failure should log. `Tolerate`
+/// covers the shape the endpoint legitimately produces for a
+/// mid-work state (an unpushed HEAD): DEBUG, not WARN, so the
+/// operator's `gh_pr_lookup_*` triage grep stays free of per-scan
+/// noise.
+enum GhNotFound {
+    Warn,
+    Tolerate,
+}
+
 /// Spawn `gh <args>` from `cwd` (gh derives the github repo from
 /// the current working directory - there's no `-C` equivalent).
 /// Mirrors [`run_git`]'s timeout / classification / WARN logging so
@@ -761,7 +935,7 @@ pub(super) async fn run_git(cwd: &Path, args: &[&str]) -> GitOutput {
 /// from "gh: To use GitHub CLI in a Git repository, please run …"
 /// (not a github remote) from "no pull requests found" (legitimate
 /// empty result) when triaging "PR row never shows".
-async fn run_gh(cwd: &Path, args: &[&str]) -> GitOutput {
+async fn run_gh(cwd: &Path, args: &[&str], not_found: GhNotFound) -> GitOutput {
     let mut command = Command::new("gh");
     command.current_dir(cwd).args(args).kill_on_drop(true);
     let fut = command.output();
@@ -792,11 +966,28 @@ async fn run_gh(cwd: &Path, args: &[&str]) -> GitOutput {
         }
     };
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // The commits/<sha>/pulls endpoint answers HTTP 422 with
+        // this prose when the sha isn't on the remote - an unpushed
+        // HEAD mid-work, not an operator fault. That is a completed
+        // query with a definitive negative, not a failure, so it
+        // returns Empty (PrLookup::None downstream) rather than
+        // inheriting the keep-cached-PR semantics of Failed.
+        if matches!(not_found, GhNotFound::Tolerate) && stderr.contains("No commit found for SHA") {
+            tracing::debug!(
+                target: crate::logging::targets::ENV_GIT,
+                cwd = %cwd.display(),
+                event_name = "gh_pr_lookup_unpushed_sha",
+                message = "commit not on the remote; PR lookup skipped",
+                outcome = "no_data",
+                args = ?args,
+            );
+            return GitOutput::Empty;
+        }
         // gh exits non-zero on: missing auth (4), not a github
         // remote (1), API error (1). All collapse to "no PR" for
         // the renderer, but the log captures stderr so an operator
         // can tell which case fired.
-        let stderr = String::from_utf8_lossy(&output.stderr);
         let stderr_truncated = if stderr.len() > STDERR_LOG_CAP {
             format!("{}…", &stderr[..STDERR_LOG_CAP])
         } else {
@@ -1134,6 +1325,83 @@ mod tests {
         assert_eq!(snap.repo_gate, RepoGate::InRepo);
         assert!(matches!(snap.worktree, LayerState::Clean));
         assert!(matches!(snap.branch_ahead, LayerState::Clean));
+        assert_eq!(snap.pr, None, "detached HEAD resolves no PR row");
+        assert_eq!(snap.pushed_sha, None, "the pushed-sha walk is skipped when detached");
+    }
+
+    /// The pushed-sha walk resolves a DIVERGED upstream: the remote
+    /// has commits HEAD lacks (a sibling commit the remote gained),
+    /// and the walk still stops at HEAD's newest pushed ancestor -
+    /// never the sibling, which is outside HEAD's ancestry.
+    #[tokio::test(flavor = "current_thread")]
+    async fn pushed_sha_walk_resolves_pushed_ancestor_when_upstream_diverged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "audit/x");
+        write_file(&dir, "README.md", "one\n");
+        commit_all(&dir, "pushed commit");
+        let pushed = rev_parse_head(&dir);
+        let run = |args: &[&str]| {
+            StdCommand::new("git").arg("-C").arg(dir.path()).args(args).output().expect("git ok");
+        };
+        run(&["update-ref", "refs/remotes/origin/audit/x", &pushed]);
+        // A remote-only sibling commit: same parent as the pushed
+        // tip, so the remote history diverged - HEAD lacks it.
+        let out = StdCommand::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["commit-tree", "HEAD^{tree}", "-p", &pushed, "-m", "remote-only"])
+            .output()
+            .expect("git ok");
+        assert!(out.status.success(), "commit-tree failed");
+        let remote_only = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        run(&["update-ref", "refs/remotes/origin/main", &remote_only]);
+        write_file(&dir, "more.rs", "y\n");
+        commit_all(&dir, "unpushed commit");
+
+        assert_eq!(
+            resolve_pushed_sha(dir.path(), 500).await.as_deref(),
+            Some(pushed.as_str()),
+            "the sibling remote-only commit is outside HEAD's ancestry and must not resolve"
+        );
+    }
+
+    /// The unstick trap pinned at the cache-decision level: a cached
+    /// `None` (scan ran before the PR was opened) goes stale on the
+    /// same timer and refetches even with branch and sha unchanged.
+    #[test]
+    fn pr_cache_fresh_refetches_a_cached_none_when_stale() {
+        let old = std::time::SystemTime::now()
+            .checked_sub(PR_REFETCH_INTERVAL + std::time::Duration::from_secs(1))
+            .expect("wall clock is at least PR_REFETCH_INTERVAL + 1s past boot");
+        let prev = GitDiffSnapshot {
+            branch: GitBranch::Named("feat/x".into()),
+            default_branch: Some("main".into()),
+            repo_gate: RepoGate::InRepo,
+            pushed_sha: Some("aaaa".into()),
+            worktree: LayerState::Clean,
+            branch_ahead: LayerState::Clean,
+            pr: None,
+            closes: Vec::new(),
+            pr_fetched_at: Some(old),
+        };
+        assert!(
+            !pr_cache_fresh(Some(&prev), "feat/x", Some("aaaa"), std::time::SystemTime::now()),
+            "stale None must refetch so a PR opened after the first scan shows up"
+        );
+    }
+
+    /// An unborn HEAD (fresh init, no commits): the scan collapses to
+    /// the scanner-failed gate and the PR side stays dark - no row,
+    /// no panic.
+    #[tokio::test(flavor = "current_thread")]
+    async fn scan_on_an_unborn_head_has_no_pr_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "main");
+        let snap = scan(dir.path(), None).await;
+        assert_eq!(snap.repo_gate, RepoGate::ScannerFailed);
+        assert_eq!(snap.pr, None);
+        assert_eq!(snap.pushed_sha, None);
+        assert_eq!(snap.pr_fetched_at, None);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1192,13 +1460,48 @@ mod tests {
         assert_eq!(files[3].path, "small.rs");
     }
 
-    /// `pr_for_branch` short-circuits the `gh pr list` call when
-    /// `prev`'s branch matches the requested branch - even when the
-    /// `cwd` would make a real `gh` invocation fail (tempdir has no
-    /// git remote). The returned `pr` / `closes` MUST be clones of
-    /// `prev`'s, proving the cache hit.
+    /// Cache hit: same branch, same pushed sha, fetched inside the
+    /// 5-minute window. The reuse that keeps steady-state 10 s scans
+    /// gh-free.
+    #[test]
+    fn pr_cache_fresh_reuses_when_branch_sha_and_age_hold() {
+        let prev = snapshot_with_pr(42);
+        assert!(pr_cache_fresh(Some(&prev), "feat/x", Some("aaaa"), std::time::SystemTime::now()));
+    }
+
+    /// Refetch trigger: the pushed sha moved (new push / rebase
+    /// landed on the remote), so the cached PR may no longer be the
+    /// one containing the branch's pushed tip.
+    #[test]
+    fn pr_cache_fresh_refetches_when_pushed_sha_changes() {
+        let prev = snapshot_with_pr(42);
+        assert!(
+            !pr_cache_fresh(Some(&prev), "feat/x", Some("bbbb"), std::time::SystemTime::now()),
+            "sha change must invalidate the cached PR"
+        );
+    }
+
+    /// Refetch trigger: the fetch is older than the interval, even
+    /// with branch and sha unchanged - unsticks a cached `None` from
+    /// before the PR was opened.
+    #[test]
+    fn pr_cache_fresh_refetches_when_fetch_is_stale() {
+        let prev = snapshot_with_pr(42);
+        let old = std::time::SystemTime::now()
+            .checked_sub(PR_REFETCH_INTERVAL + std::time::Duration::from_secs(1))
+            .expect("monotonic wall clock is at least PR_REFETCH_INTERVAL + 1s past boot");
+        assert!(
+            !pr_cache_fresh(Some(&prev), "feat/x", Some("aaaa"), old),
+            "stale fetch must refetch so a PR opened after the first scan shows up"
+        );
+    }
+
+    /// `pr_for_head` short-circuits the `gh` calls when the cache is
+    /// fresh - even when the `cwd` would make a real `gh` invocation
+    /// fail (tempdir has no github remote). The returned `pr` /
+    /// `closes` MUST be clones of `prev`'s, proving the cache hit.
     #[tokio::test(flavor = "current_thread")]
-    async fn pr_for_branch_reuses_prev_when_named_branch_matches() {
+    async fn pr_for_head_reuses_prev_when_cache_fresh() {
         let dir = tempfile::tempdir().expect("tempdir");
         let pr = GitPrInfo { number: 42, url: "https://example/pull/42".into() };
         let closes = vec![GitIssueRef { number: 7, url: "https://example/issues/7".into() }];
@@ -1206,58 +1509,252 @@ mod tests {
             branch: GitBranch::Named("feat/x".into()),
             default_branch: Some("main".into()),
             repo_gate: RepoGate::InRepo,
+            pushed_sha: Some("aaaa".into()),
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Clean,
             pr: Some(pr.clone()),
             closes: closes.clone(),
+            pr_fetched_at: Some(std::time::SystemTime::now()),
         };
 
-        let (got_pr, got_closes) = pr_for_branch(dir.path(), "feat/x", Some(&prev)).await;
+        let (got_pr, got_closes, got_at) =
+            pr_for_head(dir.path(), "feat/x", Some("aaaa"), Some(&prev)).await;
         assert_eq!(got_pr, Some(pr));
         assert_eq!(got_closes, closes);
+        assert_eq!(got_at, prev.pr_fetched_at);
     }
 
-    /// Cache miss when the requested branch differs from `prev`'s.
-    /// `cwd` here isn't a github repo, so `gh pr list` collapses to
-    /// `(None, vec![])` whether or not `gh` is installed - that's the
-    /// expected miss outcome.
+    /// A stale cache refetches - and when the refetch FAILS (tempdir
+    /// makes `gh` fail whether or not it is installed), the known-good
+    /// cached PR survives instead of flashing off: a gh blip must not
+    /// evict the row.
     #[tokio::test(flavor = "current_thread")]
-    async fn pr_for_branch_refetches_when_branch_differs() {
+    async fn pr_for_head_keeps_cached_pr_when_refetch_fails() {
         let dir = tempfile::tempdir().expect("tempdir");
+        let stale_at = std::time::SystemTime::now()
+            .checked_sub(PR_REFETCH_INTERVAL + std::time::Duration::from_secs(1))
+            .expect("wall clock is at least PR_REFETCH_INTERVAL + 1s past boot");
         let prev = GitDiffSnapshot {
             branch: GitBranch::Named("feat/x".into()),
             default_branch: Some("main".into()),
             repo_gate: RepoGate::InRepo,
+            pushed_sha: Some("aaaa".into()),
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Clean,
             pr: Some(GitPrInfo { number: 42, url: "https://example/pull/42".into() }),
             closes: Vec::new(),
+            pr_fetched_at: Some(stale_at),
         };
 
-        let (got_pr, got_closes) = pr_for_branch(dir.path(), "feat/y", Some(&prev)).await;
-        assert_eq!(got_pr, None, "cache must not apply across branches");
-        assert!(got_closes.is_empty());
+        let (got_pr, _got_closes, got_at) =
+            pr_for_head(dir.path(), "feat/x", Some("aaaa"), Some(&prev)).await;
+        assert_eq!(got_pr.as_ref().map(|p| p.number), Some(42), "failed refetch keeps the row");
+        let now = std::time::SystemTime::now();
+        assert!(
+            got_at.is_some_and(|at| now.duration_since(at).is_ok_and(|d| d.as_secs() < 60)),
+            "the refetch attempt must be stamped so the next retry waits for the interval"
+        );
     }
 
-    /// Cache miss when `prev`'s branch is non-Named (Detached /
-    /// NoRepo / Unknown). Defensive: by construction prev shouldn't
-    /// carry pr data in those states, but we shouldn't trust the
-    /// invariant from the cache path.
+    /// A failed refetch after a BRANCH change has no matching cached
+    /// PR to keep - the row clears rather than showing the previous
+    /// branch's PR.
     #[tokio::test(flavor = "current_thread")]
-    async fn pr_for_branch_refetches_when_prev_is_detached() {
+    async fn pr_for_head_clears_failed_refetch_when_branch_changed() {
         let dir = tempfile::tempdir().expect("tempdir");
+        let stale_at = std::time::SystemTime::now()
+            .checked_sub(PR_REFETCH_INTERVAL + std::time::Duration::from_secs(1))
+            .expect("wall clock is at least PR_REFETCH_INTERVAL + 1s past boot");
         let prev = GitDiffSnapshot {
-            branch: GitBranch::Detached,
+            branch: GitBranch::Named("feat/x".into()),
             default_branch: Some("main".into()),
             repo_gate: RepoGate::InRepo,
+            pushed_sha: Some("aaaa".into()),
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Clean,
-            pr: Some(GitPrInfo { number: 42, url: "url".into() }),
+            pr: Some(GitPrInfo { number: 42, url: "https://example/pull/42".into() }),
             closes: Vec::new(),
+            pr_fetched_at: Some(stale_at),
         };
 
-        let (got_pr, _got_closes) = pr_for_branch(dir.path(), "feat/x", Some(&prev)).await;
-        assert_eq!(got_pr, None);
+        let (got_pr, got_closes, got_at) =
+            pr_for_head(dir.path(), "feat/y", Some("aaaa"), Some(&prev)).await;
+        assert_eq!(got_pr, None, "a failed lookup must not show another branch's PR");
+        assert!(got_closes.is_empty());
+        assert!(got_at.is_some());
+    }
+
+    /// The incident shape: a worktree whose local branch name differs
+    /// from the PR's head ref still resolves its PR, because the
+    /// lookup key is the pushed ancestor sha, not the branch name.
+    /// Real git, no network: `origin`'s tracking ref is simulated
+    /// with `update-ref`, exactly what a `HEAD:<name>` push + fetch
+    /// leaves behind.
+    #[tokio::test(flavor = "current_thread")]
+    async fn pushed_sha_walk_resolves_pushed_ancestor_when_worktree_is_ahead() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "worktree-inspector-pr-row");
+        write_file(&dir, "README.md", "one\n");
+        commit_all(&dir, "pushed commit");
+        let pushed = rev_parse_head(&dir);
+        let run = |args: &[&str]| {
+            StdCommand::new("git").arg("-C").arg(dir.path()).args(args).output().expect("git ok");
+        };
+        // Simulate the push as `HEAD:audit/2026-09-03` + fetch: the
+        // local branch stays `worktree-inspector-pr-row` while the
+        // remote tracking ref names the pushed target.
+        run(&["update-ref", "refs/remotes/origin/audit/2026-09-03", &pushed]);
+        write_file(&dir, "more.rs", "fn y() {}\n");
+        commit_all(&dir, "unpushed commit");
+        write_file(&dir, "more2.rs", "fn z() {}\n");
+        commit_all(&dir, "unpushed commit 2");
+
+        assert_eq!(
+            resolve_pushed_sha(dir.path(), 500).await.as_deref(),
+            Some(pushed.as_str()),
+            "the walk must stop at the pushed ancestor, not the unpushed tip"
+        );
+    }
+
+    /// A worktree sitting exactly on its pushed tip resolves the tip
+    /// itself (the names-match happy path).
+    #[tokio::test(flavor = "current_thread")]
+    async fn pushed_sha_walk_resolves_tip_when_pushed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "main");
+        write_file(&dir, "README.md", "one\n");
+        commit_all(&dir, "pushed commit");
+        let pushed = rev_parse_head(&dir);
+        StdCommand::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["update-ref", "refs/remotes/origin/main", &pushed])
+            .output()
+            .expect("git ok");
+
+        assert_eq!(resolve_pushed_sha(dir.path(), 500).await.as_deref(), Some(pushed.as_str()));
+    }
+
+    /// Nothing pushed - no remote refs share any of HEAD's history.
+    /// No row, and the walk terminates rather than scanning the repo.
+    #[tokio::test(flavor = "current_thread")]
+    async fn pushed_sha_walk_returns_none_when_nothing_pushed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "main");
+        write_file(&dir, "README.md", "one\n");
+        commit_all(&dir, "local commit");
+
+        assert_eq!(resolve_pushed_sha(dir.path(), 500).await, None);
+    }
+
+    /// A pathological unpushed history terminates at the cap: shas
+    /// beyond `cap` first-parent commits are never examined, so a
+    /// pushed ancestor outside the cap does not resolve (truthful
+    /// "no row" rather than an unbounded walk).
+    #[tokio::test(flavor = "current_thread")]
+    async fn pushed_sha_walk_caps_at_max_count() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "main");
+        write_file(&dir, "README.md", "one\n");
+        commit_all(&dir, "pushed commit");
+        let pushed = rev_parse_head(&dir);
+        StdCommand::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["update-ref", "refs/remotes/origin/main", &pushed])
+            .output()
+            .expect("git ok");
+        for i in 0..4 {
+            write_file(&dir, &format!("f{i}.rs"), "x\n");
+            commit_all(&dir, &format!("unpushed {i}"));
+        }
+
+        // Cap 2 reaches only the newest 2 unpushed commits; the
+        // pushed ancestor at depth 5 stays out of reach.
+        assert_eq!(resolve_pushed_sha(dir.path(), 2).await, None);
+        // Full cap reaches it.
+        assert_eq!(resolve_pushed_sha(dir.path(), 500).await.as_deref(), Some(pushed.as_str()));
+    }
+
+    /// The open-filter + newest-updatedAt selection against the
+    /// `commits/<sha>/pulls` REST shape: a closed PR with a NEWER
+    /// updated_at must lose to an open PR, and two open PRs pick the
+    /// most recently updated one (the actively-evolving stacked PR).
+    #[test]
+    fn pick_open_pr_filters_to_open_and_picks_newest_updated_at() {
+        let raw = concat!(
+            r#"[{"number":900,"state":"closed","html_url":"https://example/pull/900","updated_at":"2026-09-03T15:00:00Z"},"#,
+            r#"{"number":858,"state":"open","html_url":"https://example/pull/858","updated_at":"2026-09-03T10:00:00Z"},"#,
+            r#"{"number":859,"state":"open","html_url":"https://example/pull/859","updated_at":"2026-09-03T12:00:00Z"}]"#
+        );
+        let picked = pick_open_pr(raw).expect("parses");
+        assert_eq!(
+            picked,
+            Some((859, "https://example/pull/859".to_owned())),
+            "open filter first, then most recently updated wins"
+        );
+    }
+
+    /// Equal `updated_at` breaks deterministically on the higher
+    /// number, so the pick never depends on response ordering.
+    #[test]
+    fn pick_open_pr_ties_break_on_higher_number() {
+        let raw = concat!(
+            r#"[{"number":401,"state":"open","html_url":"https://example/pull/401","updated_at":"2026-09-03T12:00:00Z"},"#,
+            r#"{"number":402,"state":"open","html_url":"https://example/pull/402","updated_at":"2026-09-03T12:00:00Z"}]"#
+        );
+        assert_eq!(
+            pick_open_pr(raw).expect("parses"),
+            Some((402, "https://example/pull/402".to_owned()))
+        );
+    }
+
+    /// Only merged/closed PRs contain the sha: no row. The
+    /// open-only invariant means a merged PR row can never render.
+    #[test]
+    fn pick_open_pr_returns_none_when_only_closed_prs() {
+        let raw = r#"[{"number":857,"state":"closed","html_url":"https://example/pull/857","updated_at":"2026-09-03T13:16:33Z"}]"#;
+        assert_eq!(pick_open_pr(raw).expect("parses"), None);
+    }
+
+    /// Garbage JSON is an Err (the caller logs
+    /// `gh_pr_lookup_parse_failed`), never a silent None.
+    #[test]
+    fn pick_open_pr_reports_parse_error() {
+        assert!(pick_open_pr("not json").is_err());
+    }
+
+    fn snapshot_with_pr(number: u64) -> GitDiffSnapshot {
+        snapshot_with_pr_at(number, Some(0))
+    }
+
+    fn snapshot_with_pr_at(number: u64, fetched_secs_ago: Option<u64>) -> GitDiffSnapshot {
+        let pr = GitPrInfo { number, url: format!("https://example/pull/{number}") };
+        let pr_fetched_at = fetched_secs_ago
+            .map(|secs| std::time::SystemTime::now() - std::time::Duration::from_secs(secs));
+        GitDiffSnapshot {
+            branch: GitBranch::Named("feat/x".into()),
+            default_branch: Some("main".into()),
+            repo_gate: RepoGate::InRepo,
+            pushed_sha: Some("aaaa".into()),
+            worktree: LayerState::Clean,
+            branch_ahead: LayerState::Clean,
+            pr: Some(pr),
+            closes: Vec::new(),
+            pr_fetched_at,
+        }
+    }
+
+    /// Full 40-hex sha of HEAD in the test repo.
+    fn rev_parse_head(dir: &TempDir) -> String {
+        let out = StdCommand::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .expect("git ok");
+        assert!(out.status.success(), "rev-parse HEAD failed");
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
     }
 
     /// `scan` carries cached PR data through the cache-hit path. Set
@@ -1286,15 +1783,18 @@ mod tests {
             branch: GitBranch::Named("feat/cache".into()),
             default_branch: Some("main".into()),
             repo_gate: RepoGate::InRepo,
+            pushed_sha: None,
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Clean,
             pr: Some(synthetic_pr.clone()),
             closes: synthetic_closes.clone(),
+            pr_fetched_at: Some(std::time::SystemTime::now()),
         };
 
         let snap = scan(dir.path(), Some(&prev)).await;
         assert_eq!(snap.pr, Some(synthetic_pr), "cached PR must carry through scan");
         assert_eq!(snap.closes, synthetic_closes);
+        assert_eq!(snap.pushed_sha, None, "nothing pushed in this repo");
     }
 
     /// On the default branch, `scan` skips the PR fetch entirely -
@@ -1312,16 +1812,20 @@ mod tests {
             branch: GitBranch::Named("main".into()),
             default_branch: Some("main".into()),
             repo_gate: RepoGate::InRepo,
+            pushed_sha: None,
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Clean,
             pr: Some(GitPrInfo { number: 1, url: "url".into() }),
             closes: Vec::new(),
+            pr_fetched_at: Some(std::time::SystemTime::now()),
         };
         // Even with a cache-hit-shaped prev, the default-branch gate
         // wins and the PR field clears.
         let snap = scan(dir.path(), Some(&prev)).await;
         assert_eq!(snap.pr, None);
         assert!(snap.closes.is_empty());
+        assert_eq!(snap.pushed_sha, None, "the walk must not run on the default branch");
+        assert_eq!(snap.pr_fetched_at, None);
     }
 
     #[test]

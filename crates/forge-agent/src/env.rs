@@ -9,6 +9,7 @@ pub mod cli_version;
 pub mod file_index;
 pub mod git_diff;
 pub mod gotify;
+pub mod open_url;
 pub mod processes;
 pub mod timezone;
 pub mod token_usage;
