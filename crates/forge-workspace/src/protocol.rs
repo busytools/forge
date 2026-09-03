@@ -886,6 +886,17 @@ pub enum SessionUpdate {
     DictateTranscribing {
         key: SessionKey,
     },
+    /// A take from `key` is decoding window `window` of `total`, so a
+    /// long take can show progress. Emitted per window, single-window
+    /// takes included; a composer renders only what it wants to.
+    /// `generation` is the take's own, as handed out by
+    /// [`SessionUpdate::DictateStarted`].
+    DictateProgress {
+        key: SessionKey,
+        generation: u64,
+        window: usize,
+        total: usize,
+    },
     /// A take from `key` is done: insert, notice or reset per
     /// [`DictateOutcome`]. `generation` is the take's own, as handed
     /// out by [`SessionUpdate::DictateStarted`].
@@ -925,6 +936,7 @@ impl SessionUpdate {
             | Self::DictateStarted { key, .. }
             | Self::DictateLevel { key, .. }
             | Self::DictateTranscribing { key }
+            | Self::DictateProgress { key, .. }
             | Self::DictateEnded { key, .. } => Some(key.clone()),
             Self::RuntimeReloadCompleted { session_id }
             | Self::RuntimeReloadFailed { session_id, .. }
@@ -1117,6 +1129,13 @@ impl std::fmt::Debug for SessionUpdate {
             Self::DictateTranscribing { key } => {
                 f.debug_struct("DictateTranscribing").field("key", key).finish()
             }
+            Self::DictateProgress { key, generation, window, total } => f
+                .debug_struct("DictateProgress")
+                .field("key", key)
+                .field("generation", generation)
+                .field("window", window)
+                .field("total", total)
+                .finish(),
             Self::DictateEnded { key, outcome, .. } => f
                 .debug_struct("DictateEnded")
                 .field("key", key)

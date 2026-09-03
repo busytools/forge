@@ -49,6 +49,15 @@ pub struct Stages {
     pub audio: Duration,
 }
 
+/// Which window of a take is decoding, for a host that shows
+/// transcription progress over a multi-window take. `window` counts
+/// from 1; a single-window take reports once, at 1 of 1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowProgress {
+    pub window: usize,
+    pub total: usize,
+}
+
 /// Clean text, plus what it was before normalization.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Transcript {
@@ -153,6 +162,82 @@ fn audio_duration(samples: usize) -> Duration {
     Duration::from_micros((samples as u64).saturating_mul(1_000_000) / u64::from(SAMPLE_RATE))
 }
 
+/// Long takes are transcribed in windows rather than as one pass: the
+/// recognition runtime decodes a whole buffer against one encoder
+/// output, and past about two minutes the decoder derails into
+/// repetition loops and skip-ahead re-syncs that drop mid-take audio
+/// with nothing flagged. The ceiling is measured, not assumed: a
+/// four-minute ten-paragraph take loses whole paragraphs at a 90 s
+/// ceiling and lands complete at 60 s, so 60 is the shipping value.
+const WINDOW_TARGET: usize = 60 * SAMPLE_RATE as usize;
+/// Shortest a sought window may be, so pause-seeking cannot shred a
+/// take into fragments too short to transcribe well. The take's final
+/// window is exempt: it is whatever audio is left.
+const WINDOW_MIN: usize = 30 * SAMPLE_RATE as usize;
+/// 20 ms energy frames for pause-seeking.
+const ENERGY_FRAME: usize = SAMPLE_RATE as usize / 50;
+
+/// Sample ranges tiling `pcm`, each at most [`WINDOW_TARGET`] long,
+/// cutting at the quietest [`ENERGY_FRAME`] block between
+/// [`WINDOW_MIN`] and [`WINDOW_TARGET`] past the previous cut. A take
+/// that fits one window comes back whole, which is the exact buffer
+/// the recognition runtime saw before windowing existed.
+///
+/// Audio with no dip anywhere still splits, at the ceiling: the
+/// windows tile exactly either way, so a word straddling such a cut
+/// may transcribe loosely across the join but no audio is dropped.
+fn window_bounds(pcm: &[f32]) -> Vec<(usize, usize)> {
+    let mut bounds = Vec::new();
+    let mut start = 0;
+    while pcm.len() - start > WINDOW_TARGET {
+        let lo = start + WINDOW_MIN;
+        let hi = start + WINDOW_TARGET;
+        let cut = lo + quietest_frame(&pcm[lo..hi]);
+        bounds.push((start, cut));
+        start = cut;
+    }
+    bounds.push((start, pcm.len()));
+    bounds
+}
+
+/// Sample offset of the quietest [`ENERGY_FRAME`] block by summed
+/// square. Ties go to the latest block, so a window runs as long as the
+/// reliability ceiling allows and a flat pause cuts at its end. Zero
+/// for a region shorter than one block.
+fn quietest_frame(pcm: &[f32]) -> usize {
+    let mut quietest = usize::MAX;
+    let mut quietest_energy = f32::INFINITY;
+    for (frame, block) in pcm.chunks_exact(ENERGY_FRAME).enumerate() {
+        let energy: f32 = block.iter().map(|s| s * s).sum();
+        if energy <= quietest_energy {
+            quietest_energy = energy;
+            quietest = frame;
+        }
+    }
+    if quietest == usize::MAX { 0 } else { quietest * ENERGY_FRAME }
+}
+
+/// Window texts back into one transcript. Trims and drops empties, so
+/// a silent stretch inside a take vanishes at the join instead of
+/// leaving a doubled space.
+fn join_window_texts(parts: &[String]) -> String {
+    parts.iter().map(|p| p.trim()).filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" ")
+}
+
+/// The joined raw recognition, and the rewritten text over it, in that
+/// order. The order is load-bearing: the normalizer reads the whole
+/// take at once, so a sentence crossing a window boundary is repaired
+/// with full context - normalizing per window would rewrite each
+/// fragment without the context around the cut.
+fn finalize_transcript(
+    parts: &[String],
+    normalize: impl FnOnce(&str) -> String,
+) -> (String, String) {
+    let asr = join_window_texts(parts);
+    let text = normalize(&asr);
+    (asr, text)
+}
+
 /// One queued transcription.
 struct Job {
     pcm: Vec<f32>,
@@ -161,6 +246,7 @@ struct Job {
     truncated: bool,
     options: NormalizeOptions,
     cancel: CancelToken,
+    progress: Option<Sender<WindowProgress>>,
     reply: Sender<Result<Outcome, Error>>,
 }
 
@@ -410,6 +496,7 @@ impl Engine {
         options: NormalizeOptions,
     ) -> Result<Ticket, Error> {
         let (reply, answer) = channel();
+        let (progress_tx, progress_rx) = channel();
         let cancel = CancelToken::new();
 
         // Silence is a property of the samples, so it is decided here
@@ -419,15 +506,24 @@ impl Engine {
         let audio = audio_duration(pcm.len());
         if peak < self.silence_floor {
             let _ = reply.send(Ok(Outcome::NoAudio { peak, audio }));
-            return Ok(Ticket { answer, cancel });
+            return Ok(Ticket { answer, cancel, progress: None });
         }
 
         self.jobs
             .as_ref()
             .ok_or(Error::EngineStopped)?
-            .send(Job { pcm, resample, audio, truncated, options, cancel: cancel.clone(), reply })
+            .send(Job {
+                pcm,
+                resample,
+                audio,
+                truncated,
+                options,
+                cancel: cancel.clone(),
+                progress: Some(progress_tx),
+                reply,
+            })
             .map_err(|_| Error::EngineStopped)?;
-        Ok(Ticket { answer, cancel })
+        Ok(Ticket { answer, cancel, progress: Some(progress_rx) })
     }
 
     /// Loudest sample in `pcm`, in dBFS.
@@ -562,6 +658,7 @@ impl Drop for Capture {
 pub struct Ticket {
     answer: Receiver<Result<Outcome, Error>>,
     cancel: CancelToken,
+    progress: Option<Receiver<WindowProgress>>,
 }
 
 impl std::fmt::Debug for Ticket {
@@ -589,6 +686,14 @@ impl Ticket {
     /// rather than through anything engine-wide.
     pub fn cancel_token(&self) -> CancelToken {
         self.cancel.clone()
+    }
+
+    /// Takes this ticket's per-window progress stream, if it has not
+    /// been taken. Steps arrive before each window decodes; the stream
+    /// closes when the job ends. A host that never takes it costs the
+    /// worker a failed send per window and nothing more.
+    pub fn take_progress(&mut self) -> Option<Receiver<WindowProgress>> {
+        self.progress.take()
     }
 }
 
@@ -724,41 +829,67 @@ fn worker(
         if stopping.load(Ordering::Relaxed) {
             job.cancel.cancel();
         }
-        let answer = match session.run(&job.pcm, &options) {
-            Ok(out) => {
-                stages.mel = Duration::from_secs_f64(f64::from(out.timings.mel_ms) / 1000.0);
-                stages.encode = Duration::from_secs_f64(f64::from(out.timings.encode_ms) / 1000.0);
-                stages.decode = Duration::from_secs_f64(f64::from(out.timings.decode_ms) / 1000.0);
-                let asr = out.text.trim().to_owned();
+        // Each window runs on its own against the shared session; a
+        // window that outruns the decode budget keeps what it recognised
+        // and hands the flag up, where today the whole rest of the take
+        // would have been lost with it.
+        let mut asr_parts: Vec<String> = Vec::new();
+        let mut truncated = job.truncated;
+        let mut failure: Option<Error> = None;
+        let windows = window_bounds(&job.pcm);
+        let total = windows.len();
+        for (k, &(start, end)) in windows.iter().enumerate() {
+            if let Some(progress) = job.progress.as_ref() {
+                let _ = progress.send(WindowProgress { window: k + 1, total });
+            }
+            match session.run(&job.pcm[start..end], &options) {
+                Ok(out) => {
+                    stages.mel = stages.mel.saturating_add(Duration::from_secs_f64(
+                        f64::from(out.timings.mel_ms) / 1000.0,
+                    ));
+                    stages.encode = stages.encode.saturating_add(Duration::from_secs_f64(
+                        f64::from(out.timings.encode_ms) / 1000.0,
+                    ));
+                    stages.decode = stages.decode.saturating_add(Duration::from_secs_f64(
+                        f64::from(out.timings.decode_ms) / 1000.0,
+                    ));
+                    asr_parts.push(out.text);
+                }
+                // Discriminated on the ERROR VARIANT rather than on
+                // `was_aborted`/`was_truncated`. Those report "the most
+                // recent run", and `run` has early returns that never reach
+                // native at all - an interior NUL in the language string, an
+                // oversized buffer, a busy session - on which the flags still
+                // hold the PREVIOUS job's value. Per-error state cannot go
+                // stale.
+                Err(transcribe_cpp::Error::Aborted { .. }) => {
+                    failure = Some(Error::Cancelled);
+                    break;
+                }
+                Err(transcribe_cpp::Error::OutputTruncated { partial: Some(partial), .. }) => {
+                    asr_parts.push(partial.text);
+                    truncated = true;
+                }
+                Err(source) => {
+                    failure = Some(Error::Recognition { message: source.to_string() });
+                    break;
+                }
+            }
+        }
+        let answer = if let Some(error) = failure {
+            Err(error)
+        } else {
+            let (asr, text) = finalize_transcript(&asr_parts, |raw| {
                 // A normalizer that fails mid-session must not cost the
                 // speaker their words: fall back to the recognised text
                 // and say so, where a load failure above is fatal.
-                let text = normalize_text(normalizer.as_ref(), &asr, job.options, &mut stages);
-                // Consumed here rather than where `stages` is built: an
-                // error or a cancel discards the stages, and taking the
-                // load cost there would lose it for the process.
-                first = false;
-                Ok(Outcome::Transcript(Transcript { asr, text, stages, truncated: job.truncated }))
-            }
-            // Discriminated on the ERROR VARIANT rather than on
-            // `was_aborted`/`was_truncated`. Those report "the most
-            // recent run", and `run` has early returns that never reach
-            // native at all - an interior NUL in the language string, an
-            // oversized buffer, a busy session - on which the flags still
-            // hold the PREVIOUS job's value. Per-error state cannot go
-            // stale.
-            Err(transcribe_cpp::Error::Aborted { .. }) => Err(Error::Cancelled),
-            // A decode that ran out of budget still recognised words, and
-            // the library hands them back on the error. Normalized like
-            // any other transcript: the only thing different about this
-            // path is that the audio outran the budget.
-            Err(transcribe_cpp::Error::OutputTruncated { partial: Some(partial), .. }) => {
-                let asr = partial.text.trim().to_owned();
-                let text = normalize_text(normalizer.as_ref(), &asr, job.options, &mut stages);
-                first = false;
-                Ok(Outcome::Transcript(Transcript { asr, text, stages, truncated: true }))
-            }
-            Err(source) => Err(Error::Recognition { message: source.to_string() }),
+                normalize_text(normalizer.as_ref(), raw, job.options, &mut stages)
+            });
+            // Consumed here rather than where `stages` is built: an
+            // error or a cancel discards the stages, and taking the
+            // load cost there would lose it for the process.
+            first = false;
+            Ok(Outcome::Transcript(Transcript { text, asr, stages, truncated }))
         };
         in_flight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
         let _ = job.reply.send(answer);
@@ -979,6 +1110,150 @@ mod tests_engine {
             matches!(outcome, Outcome::NoAudio { .. }),
             "a -12 dBFS signal must fall below a -3 dBFS floor, so the config is what decides"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests_windowing {
+    use super::*;
+
+    /// A take that fits one window must come back whole: that is the
+    /// exact buffer the recognition runtime saw before windowing
+    /// existed, and short takes must not move.
+    #[test]
+    fn a_take_that_fits_one_window_is_returned_whole() {
+        for len in [0, 1, seconds(10), WINDOW_TARGET] {
+            let pcm = vec![0.5; len];
+            assert_eq!(
+                window_bounds(&pcm),
+                vec![(0, len)],
+                "a take of {len} samples fits one window and must be returned undivided"
+            );
+        }
+    }
+
+    /// Every window respects the sizing bounds, the windows tile the
+    /// take with no gap and no overlap, and only the final window may
+    /// be shorter than the minimum.
+    #[test]
+    fn windows_stay_within_the_sizing_bounds_and_cover_everything() {
+        // 200 s of speech with pauses, so both the pause-seeking and the
+        // hard-cut paths are exercised across several windows.
+        let pcm = with_silence(loud(200), seconds(40), seconds(44));
+        let pcm = with_silence(pcm, seconds(85), seconds(88));
+
+        let bounds = window_bounds(&pcm);
+        assert!(!bounds.is_empty(), "a non-empty take gets at least one window");
+
+        let mut expected_start = 0;
+        for (i, &(start, end)) in bounds.iter().enumerate() {
+            assert_eq!(start, expected_start, "window {i} must continue where the last ended");
+            assert!(end > start, "window {i} must not be empty");
+            assert!(end - start <= WINDOW_TARGET, "window {i} must not exceed the target size");
+            let last = i + 1 == bounds.len();
+            if !last {
+                assert!(
+                    end - start >= WINDOW_MIN,
+                    "window {i} may only shrink past the minimum as the take's final window"
+                );
+            }
+            expected_start = end;
+        }
+        assert_eq!(expected_start, pcm.len(), "the windows must cover the whole take");
+    }
+
+    /// A cut goes into the quietest stretch the search region offers:
+    /// a pause between phrases, never a decoy quiet blip that sits
+    /// before the region, and never mid-word while a pause is in range.
+    #[test]
+    fn cuts_land_in_the_quietest_stretch_of_the_search_region() {
+        // A decoy pause before the first search region, the real pause
+        // inside it, then more speech with a second pause inside the
+        // next window's region.
+        let pcm = with_silence(loud(200), seconds(20), seconds(20).saturating_add(seconds(1) / 2));
+        let pcm = with_silence(pcm, seconds(40), seconds(44));
+        let pcm = with_silence(pcm, seconds(85), seconds(88));
+
+        let bounds = window_bounds(&pcm);
+        assert!(
+            bounds.len() >= 3,
+            "a 200 s take over a 60 s target must split into several windows, got {bounds:?}"
+        );
+        let first_cut = bounds[0].1;
+        assert!(
+            (seconds(40)..seconds(44)).contains(&first_cut),
+            "the first cut must land inside the pause at 40 s, got {first_cut}"
+        );
+        let second_cut = bounds[1].1;
+        assert!(
+            (seconds(85)..seconds(88)).contains(&second_cut),
+            "the second cut must land inside the pause at 85 s, got {second_cut}"
+        );
+    }
+
+    /// Speech with no pause anywhere still splits, hard-cutting just
+    /// under the target: a cut mid-word beats a window long enough to
+    /// derail.
+    #[test]
+    fn a_take_with_no_quiet_still_splits_hard_at_the_ceiling() {
+        let pcm = loud(200);
+        let bounds = window_bounds(&pcm);
+        assert_eq!(bounds.len(), 4, "200 s over a 60 s target splits into four windows");
+        for (i, &(start, end)) in bounds.iter().enumerate() {
+            if i + 1 == bounds.len() {
+                continue;
+            }
+            assert!(
+                end - start >= WINDOW_TARGET - ENERGY_FRAME,
+                "with no pause to seek, window {i} must run to the ceiling"
+            );
+        }
+    }
+
+    /// Window texts reassemble into one transcript without doubled
+    /// spaces: a silent stretch inside a take transcribes to nothing
+    /// and must vanish at the join rather than leave a mark.
+    #[test]
+    fn joining_drops_empty_windows_and_joins_the_rest_with_spaces() {
+        let parts = vec!["alpha ".to_owned(), String::new(), " beta".to_owned()];
+        assert_eq!(join_window_texts(&parts), "alpha beta", "empties vanish, edges trim");
+        assert_eq!(join_window_texts(&["only".to_owned()]), "only", "one window joins to itself");
+        assert_eq!(join_window_texts(&[String::new()]), "", "an all-empty take joins to nothing");
+    }
+
+    /// The normalizer must see the JOINED take exactly once. Asserted
+    /// through the input it receives rather than through a counter:
+    /// normalizing per window and joining after would hand it the last
+    /// window alone, and a sentence crossing a window boundary would be
+    /// rewritten without the context around the cut.
+    #[test]
+    fn the_normalizer_reads_the_joined_take_not_the_windows() {
+        let parts = vec!["alpha and".to_owned(), " ".to_owned(), "beta continued".to_owned()];
+        let mut seen = Vec::new();
+        let (asr, text) = finalize_transcript(&parts, |raw| {
+            seen.push(raw.to_owned());
+            raw.replace("alpha and beta continued", "one flow")
+        });
+        assert_eq!(asr, "alpha and beta continued", "the raw join is the recognition output");
+        assert_eq!(
+            seen.as_slice(),
+            ["alpha and beta continued"],
+            "the rewriter must receive the whole joined take, once"
+        );
+        assert_eq!(text, "one flow", "the rewrite runs over the joined text");
+    }
+
+    fn seconds(s: usize) -> usize {
+        s * SAMPLE_RATE as usize
+    }
+
+    fn loud(seconds_long: usize) -> Vec<f32> {
+        vec![0.5; seconds(seconds_long)]
+    }
+
+    fn with_silence(mut pcm: Vec<f32>, from: usize, to: usize) -> Vec<f32> {
+        pcm[from..to].fill(0.0);
+        pcm
     }
 }
 

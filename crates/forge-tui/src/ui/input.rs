@@ -751,6 +751,60 @@ mod tests {
         }
 
         #[test]
+        fn a_multi_window_take_tallies_the_window_on_the_row() {
+            let mut app = App::test_default();
+            let key = active_key(&app);
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+            );
+            apply_session_update(&mut app, SessionUpdate::DictateTranscribing { key: key.clone() });
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateProgress {
+                    key: key.clone(),
+                    generation: 1,
+                    window: 2,
+                    total: 6,
+                },
+            );
+
+            let rows = render_input(&mut app, 80, 5);
+            assert!(
+                rows[1].contains("transcribing 2/6"),
+                "a multi-window take counts its windows on the row, got: {}",
+                rows[1]
+            );
+        }
+
+        #[test]
+        fn a_single_window_take_renders_the_untallied_row() {
+            let mut app = App::test_default();
+            let key = active_key(&app);
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+            );
+            apply_session_update(&mut app, SessionUpdate::DictateTranscribing { key: key.clone() });
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateProgress {
+                    key: key.clone(),
+                    generation: 1,
+                    window: 1,
+                    total: 1,
+                },
+            );
+
+            let rows = render_input(&mut app, 80, 5);
+            assert!(
+                rows[1].contains("transcribing") && !rows[1].contains("1/1"),
+                "a single-window take must render as it always has, got: {}",
+                rows[1]
+            );
+        }
+
+        #[test]
         fn a_landed_take_beats_the_border_green_then_settles() {
             let mut app = App::test_default();
             let _clipboard = crate::app::keys::override_test_clipboard(
