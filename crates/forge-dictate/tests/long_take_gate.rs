@@ -58,14 +58,18 @@ const OPENERS: &[&str] = &[
 /// The clip, regenerated whenever the script changes. Recipe if you
 /// would rather make it by hand: `say -v Samantha -r 145 -o clip.aiff -f script.txt`
 /// then `afconvert -f WAVE -d LEI16@16000 -c 1 clip.aiff clip.wav`.
-fn ensure_clip() -> Option<PathBuf> {
+///
+/// The wav lands via write-temp-then-rename: a run killed mid-convert
+/// must not leave a truncated clip that every later run trusts.
+fn ensure_clip() -> PathBuf {
     let tag = hex::encode(Sha256::digest(SCRIPT.as_bytes()))[..8].to_owned();
     let wav = std::env::temp_dir().join(format!("forge-dictate-gate-{tag}.wav"));
     if wav.exists() {
-        return Some(wav);
+        return wav;
     }
     let text = std::env::temp_dir().join(format!("forge-dictate-gate-{tag}.txt"));
     let aiff = std::env::temp_dir().join(format!("forge-dictate-gate-{tag}.aiff"));
+    let part = std::env::temp_dir().join(format!("forge-dictate-gate-{tag}.wav.part"));
     std::fs::write(&text, SCRIPT).expect("the say script must be writable");
     let said = std::process::Command::new("say")
         .args(["-v", "Samantha", "-r", "145", "-o"])
@@ -78,14 +82,19 @@ fn ensure_clip() -> Option<PathBuf> {
         && std::process::Command::new("afconvert")
             .args(["-f", "WAVE", "-d", "LEI16@16000", "-c", "1"])
             .arg(&aiff)
-            .arg(&wav)
+            .arg(&part)
             .status()
             .is_ok_and(|s| s.success());
     if !converted {
-        eprintln!("skipping: `say`/`afconvert` are unavailable, so the clip cannot be made");
-        return None;
+        let _ = std::fs::remove_file(&part);
+        panic!(
+            "the gate clip could not be made: `say`/`afconvert` are unavailable or failed, \
+             and a gate that runs nothing must not read green. Make the clip by hand \
+             (recipe in this module's comment) or restore the tools."
+        );
     }
-    Some(wav)
+    std::fs::rename(&part, &wav).expect("the finished clip must rename into place");
+    wav
 }
 
 /// The gate: every paragraph must reach the recognition, the take must
@@ -106,7 +115,7 @@ fn a_long_take_lands_complete_with_window_progress() {
             path.display()
         );
     }
-    let Some(wav) = ensure_clip() else { return };
+    let wav = ensure_clip();
 
     let mut reader =
         hound::WavReader::new(std::fs::File::open(&wav).expect("the clip must be readable"))
